@@ -1,0 +1,20 @@
+# Minimal Configuration Example
+# Perfect for testing or simple setups
+
+domain: dev.example.com
+
+image:
+  repository: myregistry.com/coder
+  tag: devlaptop-v0.1.0
+  pullSecretName: regcred
+
+ingress:
+  tls:
+    enabled: false  # Disable HTTPS for simplicity
+  auth:
+    type: none      # No authentication
+
+users:
+  - name: dev
+    pvcSize: 20Gi
+    host: dev.example.com

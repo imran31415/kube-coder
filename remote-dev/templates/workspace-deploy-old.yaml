@@ -4,53 +4,19 @@ kind: Deployment
 metadata:
   name: ws-{{ .name }}
   namespace: {{ $.Values.namespace }}
-  labels: 
-    app: ws-{{ .name }}
-    {{- with $.Values.advanced.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- with $.Values.advanced.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  labels: { app: ws-{{ .name }} }
 spec:
   replicas: 1
-  selector: 
-    matchLabels: 
-      app: ws-{{ .name }}
+  selector: { matchLabels: { app: ws-{{ .name }} } }
   template:
     metadata:
-      labels: 
-        app: ws-{{ .name }}
-        {{- with $.Values.advanced.labels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+      labels: { app: ws-{{ .name }} }
     spec:
       serviceAccountName: ws-{{ .name }}
-      {{- if $.Values.image.pullSecretName }}
-      imagePullSecrets:
-      - name: {{ $.Values.image.pullSecretName }}
-      {{- end }}
-      {{- with $.Values.advanced.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $.Values.advanced.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $.Values.advanced.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       securityContext:
-        {{- if $.Values.advanced.securityContext }}
-        {{- toYaml $.Values.advanced.securityContext | nindent 8 }}
-        {{- else }}
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-        {{- end }}
       containers:
       - name: ide
         image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
@@ -74,12 +40,15 @@ spec:
         - name: kaniko-wrapper
           mountPath: /usr/local/bin/docker-build
           subPath: docker-build
+        lifecycle:
+          postStart:
+            exec:
+              command: ["/bin/bash","-lc","chmod +x /usr/local/bin/docker-build"]
         resources:
 {{ toYaml $.Values.resources | indent 10 }}
       volumes:
       - name: home
-        persistentVolumeClaim: 
-          claimName: ws-{{ .name }}-home
+        persistentVolumeClaim: { claimName: ws-{{ .name }}-home }
       - name: kaniko-wrapper
         configMap:
           name: kaniko-wrapper

@@ -4,28 +4,16 @@ kind: Ingress
 metadata:
   name: ws-{{ .name }}
   namespace: {{ $.Values.namespace }}
-  labels:
-    app: ws-{{ .name }}
-    {{- with $.Values.advanced.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
   annotations:
     kubernetes.io/ingress.class: {{ $.Values.ingress.className | quote }}
-    {{- if $.Values.ingress.tls.enabled }}
-    cert-manager.io/cluster-issuer: {{ $.Values.ingress.tls.clusterIssuer }}
-    {{- end }}
     {{- if eq $.Values.ingress.auth.type "basic" }}
     nginx.ingress.kubernetes.io/auth-type: basic
     nginx.ingress.kubernetes.io/auth-secret: {{ $.Values.ingress.auth.secretName }}
     {{- end }}
-    {{- with $.Values.advanced.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
 spec:
   {{- if $.Values.ingress.tls.enabled }}
   tls:
-  - hosts: 
-    - {{ .host | quote }}
+  - hosts: [ {{ .host | quote }} ]
     secretName: {{ $.Values.ingress.tls.secretName }}
   {{- end }}
   rules:
@@ -37,7 +25,6 @@ spec:
         backend:
           service:
             name: ws-{{ .name }}
-            port: 
-              number: 8080
+            port: { number: 8080 }
 ---
 {{- end }}

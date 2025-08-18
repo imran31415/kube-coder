@@ -1,22 +1,48 @@
+# Default values for remote-dev
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Kubernetes namespace where resources will be created
 namespace: coder
 
+# Container image configuration
 image:
-  # Build & push this image first (see devlaptop/Dockerfile)
+  # Container registry and repository - update this to your own registry
   repository: registry.digitalocean.com/resourceloop/coder
   tag: devlaptop-v0.1.0
   pullPolicy: IfNotPresent
+  
+  # Docker registry secret for pulling private images
+  # Create this secret with: kubectl create secret docker-registry <secretName> ...
+  pullSecretName: regcred
 
+# Ingress configuration for web access
 ingress:
+  # Ingress class (nginx, traefik, etc.)
   className: nginx
+  
+  # TLS/HTTPS configuration
   tls:
-    enabled: false         # set to true when your TLS secret is ready
-    secretName: ""         # e.g., dev-scalebase-io-tls
+    enabled: true
+    # Name of the TLS secret (will be auto-created by cert-manager if using Let's Encrypt)
+    secretName: dev-tls-secret
+    # cert-manager cluster issuer for automatic certificate generation
+    # Common values: letsencrypt-production, letsencrypt-staging, selfsigned-issuer
+    clusterIssuer: letsencrypt-production
+  
+  # Authentication configuration
   auth:
-    type: basic            # protects IDE with nginx basic-auth
-    secretName: api-basic-auth   # create in the 'coder' namespace
+    # Authentication type: "basic" or "none"
+    type: basic
+    # Secret containing auth credentials (for basic auth)
+    # Create with: htpasswd -c auth admin && kubectl create secret generic <secretName> --from-file=auth
+    secretName: api-basic-auth
 
-domain: dev.scalebase.io  # per-user hosts like imran.dev.scalebase.io
+# Base domain for user workspaces
+# Each user will get a subdomain: <username>.<domain>
+domain: dev.example.com
 
+# Resource limits and requests for each workspace
 resources:
   requests:
     cpu: "500m"
@@ -25,22 +51,65 @@ resources:
     cpu: "4"
     memory: "8Gi"
 
+# Docker build configuration using Kaniko
 build:
+  # Build mode: "kaniko" for in-cluster builds
   mode: kaniko
+  # Kaniko executor image
   kanikoImage: gcr.io/kaniko-project/executor:latest
+  # Docker registry secret for pushing built images
   pushSecretName: regcred
-  defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
+  # Default repository for built images
+  defaultDestinationRepo: registry.digitalocean.com/your-org/builds
 
+# SSH server configuration (optional)
 ssh:
   enabled: false
   port: 22
 
+# User workspace definitions
+# Each user gets their own isolated workspace with persistent storage
 users:
-  - name: imran
+  - name: alice
     pvcSize: 50Gi
-    host: imran.dev.scalebase.io
-    env: []
-  # - name: alice
-  #   pvcSize: 40Gi
-  #   host: alice.dev.scalebase.io
-  #   env: []
+    host: alice.dev.example.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Alice Developer"
+      - name: GIT_USER_EMAIL
+        value: "alice@example.com"
+      
+  - name: bob
+    pvcSize: 30Gi
+    host: bob.dev.example.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Bob Developer"
+      - name: GIT_USER_EMAIL
+        value: "bob@example.com"
+
+# Advanced configuration (optional)
+advanced:
+  # Storage class for persistent volumes
+  storageClass: ""  # Uses cluster default if empty
+  
+  # Node selector for pod placement
+  nodeSelector: {}
+  
+  # Tolerations for pod scheduling
+  tolerations: []
+  
+  # Affinity rules for pod placement
+  affinity: {}
+  
+  # Security context for pods
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    
+  # Additional labels for all resources
+  labels: {}
+  
+  # Additional annotations for all resources
+  annotations: {}

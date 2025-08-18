@@ -1,0 +1,46 @@
+# DigitalOcean Configuration Example
+# Optimized for DigitalOcean Kubernetes with DO Container Registry
+
+domain: dev.myteam.io
+
+image:
+  repository: registry.digitalocean.com/myteam/coder
+  tag: devlaptop-v0.1.0
+  pullSecretName: do-registry
+
+ingress:
+  className: nginx
+  tls:
+    enabled: true
+    secretName: dev-myteam-tls
+    clusterIssuer: letsencrypt-production
+  auth:
+    type: basic
+    secretName: api-basic-auth
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+
+build:
+  pushSecretName: do-registry
+  defaultDestinationRepo: registry.digitalocean.com/myteam/builds
+
+users:
+  - name: developer
+    pvcSize: 50Gi
+    host: developer.dev.myteam.io
+    env:
+      - name: GIT_USER_NAME
+        value: "Developer Name"
+      - name: GIT_USER_EMAIL
+        value: "developer@myteam.io"
+
+advanced:
+  storageClass: "do-block-storage"
+  nodeSelector:
+    doks.digitalocean.com/node-pool: "dev-pool"
