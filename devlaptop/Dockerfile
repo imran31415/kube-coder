@@ -15,13 +15,13 @@ RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSL "https://github.com/coder/code-server/releases/download/v4.95.3/code-server_4.95.3_${ARCH}.deb" -o /tmp/cs.deb \
   && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
 
+# Claude Code CLI (terminal assistant). Bring your own API key (or Bedrock/Vertex).
+# https://docs.anthropic.com/en/docs/claude-code/setup
+RUN npm install -g @anthropic-ai/claude-code
+
 # Non-root dev user
 RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev
 WORKDIR /home/dev
-
-# Claude Code CLI (terminal assistant). Bring your own API key (or Bedrock/Vertex).
-# https://docs.anthropic.com/en/docs/claude-code/setup
-RUN npm install -g @anthropic-ai/claude-code
 
 # Note: docker builds use the mounted 'docker-build' wrapper that spawns a Kaniko Job.
