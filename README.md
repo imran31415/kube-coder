@@ -2,8 +2,8 @@
 
 A production-ready Helm chart for deploying multi-user remote development workspaces with VS Code, Claude Code CLI, and secure container builds.
 
-<!-- SCREENSHOT PLACEHOLDER: Hero image showing VS Code interface in browser -->
-![Kube Coder Interface](./screenshots/hero-image.png)
+<!-- SCREENSHOT PLACEHOLDER: VS Code web interface -->
+![Kube Coder Web IDE](./screenshots/web-ide.png)
 
 ## ✨ Features
 
@@ -14,9 +14,6 @@ A production-ready Helm chart for deploying multi-user remote development worksp
 - 💾 **Persistent Storage** - Each user gets dedicated storage
 - 🐳 **Container Builds** - Secure in-cluster builds with Kaniko
 - ⚡ **Ready-to-Use** - Pre-configured development stack
-
-<!-- SCREENSHOT PLACEHOLDER: Feature overview showing multiple workspaces -->
-![Multi-User Workspaces](./screenshots/multi-user-overview.png)
 
 ## 🚀 Quick Start
 
@@ -62,18 +59,9 @@ users:
     pvcSize: 50Gi
 ```
 
-<!-- SCREENSHOT PLACEHOLDER: Configuration example -->
-![Configuration Example](./screenshots/configuration.png)
-
 ### 3. Access Your Workspace
 
 Visit `https://alice.dev.yourdomain.com` and login with your credentials.
-
-<!-- SCREENSHOT PLACEHOLDER: Login screen -->
-![Login Screen](./screenshots/login.png)
-
-<!-- SCREENSHOT PLACEHOLDER: VS Code workspace -->
-![VS Code Workspace](./screenshots/vscode-workspace.png)
 
 ## 📋 Example Configurations
 
@@ -92,8 +80,6 @@ helm install team-workspace ./remote-dev -f examples/values-team.yaml -n coder
 helm install dev-workspace ./remote-dev -f examples/values-no-tls.yaml -n coder
 ```
 
-<!-- SCREENSHOT PLACEHOLDER: Different deployment scenarios -->
-![Deployment Scenarios](./screenshots/deployment-scenarios.png)
 
 ## 🛠️ Pre-installed Tools
 
@@ -107,8 +93,6 @@ Each workspace includes:
 | **AI Assistant** | Claude Code CLI |
 | **Utilities** | curl, wget, jq, tmux |
 
-<!-- SCREENSHOT PLACEHOLDER: Terminal showing installed tools -->
-![Pre-installed Tools](./screenshots/tools-overview.png)
 
 ## 🐳 Container Builds
 
@@ -119,8 +103,6 @@ Use the built-in `docker-build` command for secure container builds:
 docker-build -t myregistry.com/myapp:latest .
 ```
 
-<!-- SCREENSHOT PLACEHOLDER: Container build in action -->
-![Container Build](./screenshots/container-build.png)
 
 ## 🔧 Configuration Reference
 
@@ -166,8 +148,6 @@ ingress:
 2. Run: `helm upgrade remote-dev ./remote-dev -n coder`
 3. Manually delete PVC if needed: `kubectl delete pvc ws-username-home -n coder`
 
-<!-- SCREENSHOT PLACEHOLDER: User management interface -->
-![User Management](./screenshots/user-management.png)
 
 ## 🔍 Troubleshooting
 
@@ -198,8 +178,6 @@ kubectl describe pvc ws-username-home -n coder
 - ✅ Private registry authentication
 - ✅ Isolated persistent storage
 
-<!-- SCREENSHOT PLACEHOLDER: Security overview diagram -->
-![Security Overview](./screenshots/security-overview.png)
 
 ## 📈 Monitoring
 
