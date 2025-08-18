@@ -1,376 +1,230 @@
-# Remote Dev Helm Chart
+# Kube Coder
 
-A production-ready Helm chart for deploying multi-user remote development workspaces with VS Code (code-server), Claude Code CLI, and containerized builds via Kaniko.
+A production-ready Helm chart for deploying multi-user remote development workspaces with VS Code, Claude Code CLI, and secure container builds.
 
-## Features
+<!-- SCREENSHOT PLACEHOLDER: Hero image showing VS Code interface in browser -->
+![Kube Coder Interface](./screenshots/hero-image.png)
 
-🚀 **Full-Featured IDE**: VS Code running in the browser with extensions support  
-🔒 **Secure Access**: HTTPS with automatic Let's Encrypt certificates and basic authentication  
-👥 **Multi-User**: Isolated workspaces for multiple developers  
-💾 **Persistent Storage**: Each user gets dedicated persistent storage  
-🐳 **Container Builds**: In-cluster Docker builds using Kaniko (no Docker daemon required)  
-🤖 **AI Assistant**: Pre-installed Claude Code CLI for AI-powered development assistance  
-🛠️ **Pre-configured Tools**: Node.js, Python, Go, Java, Git, and more out of the box  
-⚡ **Scalable**: Resource limits and requests configurable per workspace  
+## ✨ Features
 
-## Quick Start
+- 🚀 **VS Code in Browser** - Full IDE with extensions support
+- 🤖 **Claude Code CLI** - AI-powered development assistant  
+- 🔒 **Secure Access** - HTTPS with Let's Encrypt + authentication
+- 👥 **Multi-User** - Isolated workspaces for teams
+- 💾 **Persistent Storage** - Each user gets dedicated storage
+- 🐳 **Container Builds** - Secure in-cluster builds with Kaniko
+- ⚡ **Ready-to-Use** - Pre-configured development stack
+
+<!-- SCREENSHOT PLACEHOLDER: Feature overview showing multiple workspaces -->
+![Multi-User Workspaces](./screenshots/multi-user-overview.png)
+
+## 🚀 Quick Start
 
 ### Prerequisites
-
 - Kubernetes cluster (1.19+)
 - Helm 3.0+
-- Ingress controller (nginx recommended)
-- cert-manager (for automatic HTTPS certificates)
-- Docker registry access
+- nginx ingress controller
+- cert-manager for automatic HTTPS
 
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/your-org/remote-dev-helm.git
-cd remote-dev-helm
-```
-
-### 2. Build and Push the Base Image
+### 1. Install the Chart
 
 ```bash
-cd devlaptop
-docker build --platform linux/amd64,linux/arm64 -t YOUR_REGISTRY/coder:devlaptop-v0.1.0 .
-docker push YOUR_REGISTRY/coder:devlaptop-v0.1.0
-```
+# Clone the repository
+git clone https://github.com/imran31415/kube-coder.git
+cd kube-coder
 
-### 3. Create Kubernetes Namespace
-
-```bash
+# Create namespace
 kubectl create namespace coder
+
+# Create secrets (replace with your values)
+kubectl create secret docker-registry regcred \
+  --docker-server=your-registry.com \
+  --docker-username=your-username \
+  --docker-password=your-password \
+  -n coder
+
+# Create basic auth secret
+htpasswd -c auth admin
+kubectl create secret generic api-basic-auth --from-file=auth -n coder
+
+# Install with custom values
+helm install remote-dev ./remote-dev -f examples/values-single-user.yaml -n coder
 ```
 
-### 4. Create Required Secrets
+### 2. Configure Your Domain
 
-#### Docker Registry Secret
-```bash
-kubectl -n coder create secret docker-registry regcred \\
-  --docker-server=YOUR_REGISTRY \\
-  --docker-username=YOUR_USERNAME \\
-  --docker-password=YOUR_PASSWORD \\
-  --docker-email=your-email@example.com
-```
-
-#### Basic Auth Secret
-```bash
-htpasswd -nb admin YOUR_PASSWORD | kubectl -n coder create secret generic api-basic-auth --from-file=auth=/dev/stdin
-```
-
-### 5. Configure DNS
-
-Add DNS records pointing to your ingress controller:
-- `*.dev.yourdomain.com` → Your Ingress IP (wildcard recommended)
-- OR individual records: `alice.dev.yourdomain.com` → Your Ingress IP
-
-### 6. Customize Configuration
-
-Edit `remote-dev/values.yaml`:
+Update the values file with your domain:
 
 ```yaml
-# Update these values for your environment
-domain: dev.yourdomain.com
-image:
-  repository: YOUR_REGISTRY/coder
-  tag: devlaptop-v0.1.0
-  pullSecretName: regcred
+users:
+  - name: alice
+    host: alice.dev.yourdomain.com
+    pvcSize: 50Gi
+```
 
+<!-- SCREENSHOT PLACEHOLDER: Configuration example -->
+![Configuration Example](./screenshots/configuration.png)
+
+### 3. Access Your Workspace
+
+Visit `https://alice.dev.yourdomain.com` and login with your credentials.
+
+<!-- SCREENSHOT PLACEHOLDER: Login screen -->
+![Login Screen](./screenshots/login.png)
+
+<!-- SCREENSHOT PLACEHOLDER: VS Code workspace -->
+![VS Code Workspace](./screenshots/vscode-workspace.png)
+
+## 📋 Example Configurations
+
+### Single User
+```bash
+helm install my-workspace ./remote-dev -f examples/values-single-user.yaml -n coder
+```
+
+### Team Setup
+```bash
+helm install team-workspace ./remote-dev -f examples/values-team.yaml -n coder
+```
+
+### Development (No TLS)
+```bash
+helm install dev-workspace ./remote-dev -f examples/values-no-tls.yaml -n coder
+```
+
+<!-- SCREENSHOT PLACEHOLDER: Different deployment scenarios -->
+![Deployment Scenarios](./screenshots/deployment-scenarios.png)
+
+## 🛠️ Pre-installed Tools
+
+Each workspace includes:
+
+| Category | Tools |
+|----------|-------|
+| **Languages** | Node.js, Python 3, Go, Java 17 |
+| **Build Tools** | npm, pip, make, gcc |
+| **Version Control** | Git |
+| **AI Assistant** | Claude Code CLI |
+| **Utilities** | curl, wget, jq, tmux |
+
+<!-- SCREENSHOT PLACEHOLDER: Terminal showing installed tools -->
+![Pre-installed Tools](./screenshots/tools-overview.png)
+
+## 🐳 Container Builds
+
+Use the built-in `docker-build` command for secure container builds:
+
+```bash
+# In your workspace terminal
+docker-build -t myregistry.com/myapp:latest .
+```
+
+<!-- SCREENSHOT PLACEHOLDER: Container build in action -->
+![Container Build](./screenshots/container-build.png)
+
+## 🔧 Configuration Reference
+
+### Image Settings
+```yaml
+image:
+  repository: your-registry/coder
+  tag: latest
+  pullSecretName: regcred
+```
+
+### User Configuration
+```yaml
+users:
+  - name: username
+    pvcSize: 50Gi
+    host: username.dev.yourdomain.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Your Name"
+```
+
+### TLS/Security
+```yaml
 ingress:
   tls:
     enabled: true
     clusterIssuer: letsencrypt-production
-
-users:
-  - name: alice
-    pvcSize: 50Gi
-    host: alice.dev.yourdomain.com
-    env:
-      - name: GIT_USER_NAME
-        value: "Alice Developer"
-      - name: GIT_USER_EMAIL
-        value: "alice@yourdomain.com"
-```
-
-### 7. Deploy the Chart
-
-```bash
-cd remote-dev
-helm install remote-dev . -n coder
-```
-
-### 8. Access Your Workspace
-
-Navigate to `https://alice.dev.yourdomain.com` and log in with your basic auth credentials.
-
-## Configuration
-
-### Core Configuration
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `namespace` | Kubernetes namespace | `coder` |
-| `domain` | Base domain for workspaces | `dev.example.com` |
-| `image.repository` | Container image repository | `registry.digitalocean.com/resourceloop/coder` |
-| `image.tag` | Container image tag | `devlaptop-v0.1.0` |
-| `image.pullSecretName` | Docker registry secret name | `regcred` |
-
-### TLS/HTTPS Configuration
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `ingress.tls.enabled` | Enable HTTPS | `true` |
-| `ingress.tls.secretName` | TLS secret name | `dev-tls-secret` |
-| `ingress.tls.clusterIssuer` | cert-manager cluster issuer | `letsencrypt-production` |
-
-### Authentication
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `ingress.auth.type` | Auth type (`basic` or `none`) | `basic` |
-| `ingress.auth.secretName` | Basic auth secret name | `api-basic-auth` |
-
-### User Workspaces
-
-Each user workspace is defined in the `users` array:
-
-```yaml
-users:
-  - name: username           # Workspace identifier
-    pvcSize: 50Gi           # Persistent storage size
-    host: user.domain.com   # Full hostname
-    env:                    # Environment variables
-      - name: GIT_USER_NAME
-        value: "Full Name"
-```
-
-### Resource Configuration
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `resources.requests.cpu` | CPU request per workspace | `500m` |
-| `resources.requests.memory` | Memory request per workspace | `1Gi` |
-| `resources.limits.cpu` | CPU limit per workspace | `4` |
-| `resources.limits.memory` | Memory limit per workspace | `8Gi` |
-
-### Advanced Configuration
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `advanced.storageClass` | Storage class for PVCs | `""` (cluster default) |
-| `advanced.nodeSelector` | Node selector for pods | `{}` |
-| `advanced.tolerations` | Pod tolerations | `[]` |
-| `advanced.affinity` | Pod affinity rules | `{}` |
-
-## Examples
-
-### Minimal Configuration
-
-```yaml
-domain: dev.mycompany.com
-image:
-  repository: myregistry.com/coder
-  pullSecretName: my-registry-secret
-
-users:
-  - name: john
-    pvcSize: 30Gi
-    host: john.dev.mycompany.com
-```
-
-### Production Configuration with Multiple Users
-
-```yaml
-domain: dev.mycompany.com
-image:
-  repository: myregistry.com/coder
-  tag: v1.0.0
-  pullSecretName: registry-credentials
-
-ingress:
-  tls:
-    enabled: true
-    clusterIssuer: letsencrypt-prod
-
-resources:
-  requests:
-    cpu: "1"
-    memory: "2Gi"
-  limits:
-    cpu: "8"
-    memory: "16Gi"
-
-users:
-  - name: alice
-    pvcSize: 100Gi
-    host: alice.dev.mycompany.com
-    env:
-      - name: GIT_USER_NAME
-        value: "Alice Smith"
-      - name: GIT_USER_EMAIL
-        value: "alice@mycompany.com"
-      - name: NODE_ENV
-        value: "development"
-        
-  - name: bob
-    pvcSize: 50Gi
-    host: bob.dev.mycompany.com
-    env:
-      - name: GIT_USER_NAME
-        value: "Bob Johnson"
-      - name: GIT_USER_EMAIL
-        value: "bob@mycompany.com"
-
-advanced:
-  storageClass: "fast-ssd"
-  nodeSelector:
-    workload-type: "development"
-```
-
-### Disable TLS (Development)
-
-```yaml
-domain: dev.local
-ingress:
-  tls:
-    enabled: false
   auth:
-    type: none  # No authentication
-
-users:
-  - name: dev
-    pvcSize: 20Gi
-    host: dev.local
+    type: basic
+    secretName: api-basic-auth
 ```
 
-## Pre-installed Tools
+## 📊 Managing Users
 
-Each workspace comes with:
+### Add a User
+1. Add to `values.yaml`
+2. Run: `helm upgrade remote-dev ./remote-dev -n coder`
+3. Configure DNS for new subdomain
 
-- **Languages**: Node.js, Python 3, Go, Java 17
-- **Build Tools**: npm, pip, make, gcc, pkg-config
-- **Version Control**: Git
-- **Editors**: vim, nano
-- **Utilities**: curl, wget, jq, unzip, tmux
-- **AI Assistant**: Claude Code CLI
+### Remove a User
+1. Remove from `values.yaml`  
+2. Run: `helm upgrade remote-dev ./remote-dev -n coder`
+3. Manually delete PVC if needed: `kubectl delete pvc ws-username-home -n coder`
 
-## Container Builds
+<!-- SCREENSHOT PLACEHOLDER: User management interface -->
+![User Management](./screenshots/user-management.png)
 
-Workspaces include a `docker-build` wrapper that uses Kaniko for secure, in-cluster container builds:
+## 🔍 Troubleshooting
 
+### Check Pod Status
 ```bash
-# Build and push to registry
-docker-build -t myregistry.com/myapp:latest .
-```
-
-## Troubleshooting
-
-### Pod Not Starting
-
-```bash
-kubectl -n coder get pods
-kubectl -n coder describe pod ws-username-xxxxx
-kubectl -n coder logs ws-username-xxxxx
+kubectl get pods -n coder
+kubectl describe pod ws-username-xxxxx -n coder
 ```
 
 ### Certificate Issues
-
 ```bash
-kubectl -n coder get certificate
-kubectl -n coder describe certificate dev-tls-secret
-kubectl -n coder get challenge
-```
-
-### Ingress Not Working
-
-```bash
-kubectl -n coder get ingress
-kubectl -n coder describe ingress ws-username
-nslookup username.dev.yourdomain.com
+kubectl get certificate -n coder
+kubectl describe certificate your-tls-secret -n coder
 ```
 
 ### Storage Issues
-
 ```bash
-kubectl -n coder get pvc
-kubectl -n coder describe pvc ws-username-home
+kubectl get pvc -n coder
+kubectl describe pvc ws-username-home -n coder
 ```
 
-## Adding New Users
+## 🛡️ Security Features
 
-1. Add user to `values.yaml`:
-```yaml
-users:
-  - name: newuser
-    pvcSize: 50Gi
-    host: newuser.dev.yourdomain.com
-    env: []
-```
+- ✅ TLS encryption for all traffic
+- ✅ Basic authentication protection
+- ✅ RBAC isolation between users
+- ✅ Non-root containers
+- ✅ Private registry authentication
+- ✅ Isolated persistent storage
 
-2. Update deployment:
-```bash
-helm upgrade remote-dev . -n coder
-```
+<!-- SCREENSHOT PLACEHOLDER: Security overview diagram -->
+![Security Overview](./screenshots/security-overview.png)
 
-3. Configure DNS for new subdomain
-
-## Removing Users
-
-1. Remove user from `values.yaml`
-2. Update deployment: `helm upgrade remote-dev . -n coder`
-3. **Warning**: PVCs are not automatically deleted to prevent data loss
-
-To manually remove user data:
-```bash
-kubectl -n coder delete pvc ws-username-home
-```
-
-## Security Considerations
-
-- Basic authentication protects workspace access
-- Each user has an isolated workspace with separate storage
-- RBAC configured for workspace isolation
-- Non-root containers with security contexts
-- TLS encryption for all traffic
-- Private registry authentication required
-
-## Monitoring
-
-Monitor workspace usage:
+## 📈 Monitoring
 
 ```bash
 # Resource usage
-kubectl -n coder top pods
+kubectl top pods -n coder
 
-# Storage usage
-kubectl -n coder get pvc
+# Storage usage  
+kubectl get pvc -n coder
 
-# Active users
-kubectl -n coder get pods -l app!=kaniko-wrapper
+# Active workspaces
+kubectl get pods -l app!=kaniko-wrapper -n coder
 ```
 
-## Upgrading
-
-To upgrade the chart:
+## 🗑️ Uninstall
 
 ```bash
-helm upgrade remote-dev . -n coder
-```
-
-For major version upgrades, review the changelog and backup user data.
-
-## Uninstalling
-
-```bash
+# Remove the deployment
 helm uninstall remote-dev -n coder
 
 # WARNING: This deletes all user data
 kubectl delete namespace coder
 ```
 
-## Contributing
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -378,13 +232,16 @@ kubectl delete namespace coder
 4. Test thoroughly
 5. Submit a pull request
 
-## License
+## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
-## Support
+## 🆘 Support
 
-- 📧 Email: support@yourcompany.com
-- 💬 Slack: #dev-tools
-- 🐛 Issues: [GitHub Issues](https://github.com/your-org/remote-dev-helm/issues)
-- 📖 Docs: [Documentation](https://docs.yourcompany.com/remote-dev)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/imran31415/kube-coder/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/imran31415/kube-coder/discussions)
+- 📧 **Email**: Support via GitHub issues preferred
+
+---
+
+⭐ **Star this repo** if you find it useful!

@@ -1,0 +1,43 @@
+# Example: Basic setup without TLS (for testing/development)
+# Usage: helm install test-workspace . -f examples/values-no-tls.yaml
+
+namespace: test-workspace
+
+image:
+  repository: your-registry/remote-dev
+  tag: latest
+  pullPolicy: IfNotPresent
+  # No pullSecretName for public images
+
+ingress:
+  className: nginx
+  tls:
+    enabled: false
+  auth:
+    type: none  # No authentication for testing
+
+users:
+  - name: test-user
+    pvcSize: 20Gi
+    host: test.local
+    env:
+      - name: GIT_USER_NAME
+        value: "Test User"
+      - name: GIT_USER_EMAIL
+        value: "test@example.com"
+      - name: ENVIRONMENT
+        value: "testing"
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "4Gi"
+
+build:
+  mode: kaniko
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  # No pushSecretName for testing
+  defaultDestinationRepo: localhost:5000/test-builds

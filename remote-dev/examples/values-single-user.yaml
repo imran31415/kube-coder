@@ -1,0 +1,44 @@
+# Example: Single user workspace with basic configuration
+# Usage: helm install my-workspace . -f examples/values-single-user.yaml
+
+namespace: dev-workspace
+
+image:
+  repository: your-registry/remote-dev
+  tag: latest
+  pullPolicy: IfNotPresent
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  tls:
+    enabled: true
+    secretName: workspace-tls
+    clusterIssuer: letsencrypt-production
+  auth:
+    type: basic
+    secretName: workspace-auth
+
+users:
+  - name: developer
+    pvcSize: 100Gi
+    host: dev.yourdomain.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Developer Name"
+      - name: GIT_USER_EMAIL
+        value: "dev@yourdomain.com"
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+
+build:
+  mode: kaniko
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: your-registry/builds

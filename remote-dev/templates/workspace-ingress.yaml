@@ -10,7 +10,6 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
   annotations:
-    kubernetes.io/ingress.class: {{ $.Values.ingress.className | quote }}
     {{- if $.Values.ingress.tls.enabled }}
     cert-manager.io/cluster-issuer: {{ $.Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -22,6 +21,7 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  ingressClassName: {{ $.Values.ingress.className | quote }}
   {{- if $.Values.ingress.tls.enabled }}
   tls:
   - hosts: 

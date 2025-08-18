@@ -1,0 +1,77 @@
+# Example: Multi-user team workspace
+# Usage: helm install team-workspace . -f examples/values-team.yaml
+
+namespace: team-dev
+
+image:
+  repository: your-registry/remote-dev
+  tag: latest
+  pullPolicy: IfNotPresent
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  tls:
+    enabled: true
+    secretName: team-tls
+    clusterIssuer: letsencrypt-production
+  auth:
+    type: basic
+    secretName: team-auth
+
+users:
+  - name: alice
+    pvcSize: 50Gi
+    host: alice.team.yourdomain.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Alice Johnson"
+      - name: GIT_USER_EMAIL
+        value: "alice@company.com"
+      - name: TEAM
+        value: "frontend"
+        
+  - name: bob
+    pvcSize: 75Gi
+    host: bob.team.yourdomain.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Bob Smith"
+      - name: GIT_USER_EMAIL
+        value: "bob@company.com"
+      - name: TEAM
+        value: "backend"
+        
+  - name: charlie
+    pvcSize: 100Gi
+    host: charlie.team.yourdomain.com
+    env:
+      - name: GIT_USER_NAME
+        value: "Charlie Brown"
+      - name: GIT_USER_EMAIL
+        value: "charlie@company.com"
+      - name: TEAM
+        value: "devops"
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+
+build:
+  mode: kaniko
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: your-registry/team-builds
+
+advanced:
+  nodeSelector:
+    node-type: "development"
+  tolerations:
+    - key: "development"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
