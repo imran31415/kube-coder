@@ -11,7 +11,9 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 
 # code-server (VS Code in the browser, MIT-licensed)
 # https://github.com/coder/code-server
-RUN curl -fsSL https://github.com/coder/code-server/releases/download/v4.95.3/code-server_4.95.3_amd64.deb -o /tmp/cs.deb   && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
+RUN ARCH=$(dpkg --print-architecture) \
+  && curl -fsSL "https://github.com/coder/code-server/releases/download/v4.95.3/code-server_4.95.3_${ARCH}.deb" -o /tmp/cs.deb \
+  && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
 
 # Non-root dev user
 RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
