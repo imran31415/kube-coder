@@ -60,6 +60,7 @@ spec:
           - >
             mkdir -p ~/.local/share/code-server &&
             code-server --bind-addr 0.0.0.0:8080 --auth none &
+            ttyd --port 7681 --interface 0.0.0.0 --writable bash &
             sleep infinity
         env:
         {{- with .env }}
@@ -68,6 +69,8 @@ spec:
         ports:
         - name: http
           containerPort: 8080
+        - name: terminal
+          containerPort: 7681
         volumeMounts:
         - name: home
           mountPath: /home/dev
