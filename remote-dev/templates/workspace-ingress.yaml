@@ -39,5 +39,16 @@ spec:
             name: ws-{{ .name }}
             port: 
               number: 8080
+      {{- if .forwardPorts }}
+      {{- range .forwardPorts }}
+      - path: {{ .path }}
+        pathType: Prefix
+        backend:
+          service:
+            name: ws-{{ $.name }}
+            port: 
+              number: {{ .port }}
+      {{- end }}
+      {{- end }}
 ---
 {{- end }}

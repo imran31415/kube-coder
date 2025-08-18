@@ -1,0 +1,45 @@
+namespace: coder
+
+image:
+  repository: registry.digitalocean.com/resourceloop/coder
+  tag: devlaptop-v0.1.0
+  pullPolicy: IfNotPresent
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  auth:
+    type: basic
+    secretName: api-basic-auth
+  tls:
+    enabled: true
+    secretName: imran-dev-scalebase-io-tls
+    clusterIssuer: letsencrypt-production
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "4"
+    memory: 8Gi
+
+build:
+  mode: kaniko
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
+
+ssh:
+  enabled: false
+  port: 22
+
+users:
+  - name: imran
+    pvcSize: 50Gi
+    host: imran.dev.scalebase.io
+    env:
+      - name: GIT_USER_NAME
+        value: "Imran Ali"
+      - name: GIT_USER_EMAIL
+        value: "imran@scalebase.io"
