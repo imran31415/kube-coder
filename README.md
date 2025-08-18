@@ -3,7 +3,8 @@
 A production-ready Helm chart for deploying multi-user remote development workspaces with VS Code, Claude Code CLI, and secure container builds.
 
 <!-- SCREENSHOT PLACEHOLDER: VS Code web interface -->
-![Kube Coder Web IDE](./screenshots/web-ide.png)
+<img width="2720" height="1796" alt="image" src="https://github.com/user-attachments/assets/72ca8635-80c0-4ae2-b9ee-14ed918185eb" />
+
 
 ## ✨ Features
 
