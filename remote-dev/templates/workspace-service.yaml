@@ -11,6 +11,9 @@ spec:
   - name: http
     port: 8080
     targetPort: http
+  - name: terminal
+    port: 7681
+    targetPort: terminal
 ---
 {{- if $.Values.ssh.enabled }}
 apiVersion: v1
