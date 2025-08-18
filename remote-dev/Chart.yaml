@@ -1,0 +1,6 @@
+apiVersion: v2
+name: remote-dev
+description: Multi-user remote dev workspaces with code-server, Claude Code, and safe image builds via Kaniko Jobs
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

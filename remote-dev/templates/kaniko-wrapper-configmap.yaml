@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kaniko-wrapper
+  namespace: {{ .Values.namespace }}
+data:
+  docker-build: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    usage() { echo "Usage: docker-build -t <image:tag> [--file Dockerfile] [context]"; exit 1; }
+
+    DEST=""
+    DOCKERFILE="Dockerfile"
+    CTX="."
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -t|--tag) DEST="$2"; shift 2;;
+        --file) DOCKERFILE="$2"; shift 2;;
+        *) CTX="$1"; shift;;
+      esac
+    done
+    [[ -z "$DEST" ]] && usage
+
+    NS="{{ .Values.namespace }}"
+    # Try to infer user name from pod name like ws-<user>-xxxxx
+    USER_POD="$(hostname)"
+    USER_NAME="$(echo "$USER_POD" | sed -E 's/^ws-([^-]+)-.*/\1/')"
+    PVC="ws-${USER_NAME}-home"
+
+    JOB="kaniko-${USER_NAME}-$(date +%s)"
+    echo "Starting Kaniko Job $JOB to build $DEST from $CTX (Dockerfile: $DOCKERFILE)"
+
+    TMPYAML="$(mktemp)"
+    cat >"$TMPYAML" <<EOF
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: ${JOB}
+      namespace: ${NS}
+    spec:
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: ws-${USER_NAME}
+          containers:
+          - name: kaniko
+            image: {{ .Values.build.kanikoImage }}
+            args:
+              - "--context=dir:///workspace/${CTX}"
+              - "--dockerfile=/workspace/${CTX}/${DOCKERFILE}"
+              - "--destination=${DEST}"
+              - "--cleanup"
+            volumeMounts:
+            - name: work
+              mountPath: /workspace
+            {{- if .Values.build.pushSecretName }}
+            env:
+            - name: DOCKER_CONFIG
+              value: /kaniko/.docker/
+            volumeMounts:
+            - name: regcred
+              mountPath: /kaniko/.docker
+            {{- end }}
+          volumes:
+          - name: work
+            persistentVolumeClaim:
+              claimName: ${PVC}
+          {{- if .Values.build.pushSecretName }}
+          - name: regcred
+            secret:
+              secretName: {{ .Values.build.pushSecretName }}
+          {{- end }}
+    EOF
+
+    kubectl apply -f "$TMPYAML"
+    echo "Waiting for build to complete..."
+    kubectl -n "$NS" wait --for=condition=complete --timeout=30m job/${JOB}
+    echo "------ Build Logs ------"
+    kubectl -n "$NS" logs job/${JOB} -c kaniko --tail=-1
+    echo "------------------------"
+    kubectl -n "$NS" delete job ${JOB} --ignore-not-found

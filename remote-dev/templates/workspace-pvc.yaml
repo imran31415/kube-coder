@@ -1,0 +1,13 @@
+{{- range .Values.users }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ws-{{ .name }}-home
+  namespace: {{ $.Values.namespace }}
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: {{ .pvcSize | default "30Gi" }}
+---
+{{- end }}
