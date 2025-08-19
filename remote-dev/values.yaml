@@ -51,11 +51,11 @@ resources:
     cpu: "4"
     memory: "8Gi"
 
-# Docker build configuration using Kaniko
+# Docker build configuration
 build:
-  # Build mode: "kaniko" for in-cluster builds
+  # Build mode: "kaniko" for in-cluster builds, "buildkit" for Docker-in-Docker with BuildKit
   mode: kaniko
-  # Kaniko executor image
+  # Kaniko executor image (only used when mode is "kaniko")
   kanikoImage: gcr.io/kaniko-project/executor:latest
   # Docker registry secret for pushing built images
   pushSecretName: regcred

@@ -1,0 +1,25 @@
+{{- if eq .Values.build.mode "buildkit" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkit-wrapper
+  namespace: {{ .Values.namespace }}
+data:
+  docker-buildx: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    # Wait for Docker daemon to be ready
+    echo "Waiting for Docker daemon to be ready..."
+    while ! docker version >/dev/null 2>&1; do
+      sleep 1
+    done
+    echo "Docker daemon is ready!"
+    
+    # Use the default buildx builder which uses the docker daemon
+    # This is simpler and more reliable than docker-container driver
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    
+    # Execute the original docker buildx command  
+    exec docker buildx "$@"
+{{- end }}
