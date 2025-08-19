@@ -59,6 +59,7 @@ spec:
         args:
           - >
             mkdir -p ~/.local/share/code-server &&
+            mkdir -p ~/.config &&
             mkdir -p /shared-data/.ssh /shared-data/.config &&
             ln -sf /shared-data/.ssh ~/.ssh &&
             ln -sf /shared-data/.config/git ~/.config/git &&
