@@ -1,62 +1,35 @@
-{{- range .Values.users }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ws-{{ .name }}
-  namespace: {{ $.Values.namespace }}
+  name: ws-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
   labels: 
-    app: ws-{{ .name }}
-    {{- with $.Values.advanced.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- with $.Values.advanced.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    app: ws-{{ .Values.user.name }}
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector: 
     matchLabels: 
-      app: ws-{{ .name }}
+      app: ws-{{ .Values.user.name }}
   template:
     metadata:
       labels: 
-        app: ws-{{ .name }}
-        {{- with $.Values.advanced.labels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        app: ws-{{ .Values.user.name }}
     spec:
-      serviceAccountName: ws-{{ .name }}
-      {{- if $.Values.image.pullSecretName }}
+      serviceAccountName: ws-{{ .Values.user.name }}
+      {{- if .Values.image.pullSecretName }}
       imagePullSecrets:
-      - name: {{ $.Values.image.pullSecretName }}
-      {{- end }}
-      {{- with $.Values.advanced.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $.Values.advanced.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $.Values.advanced.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
+      - name: {{ .Values.image.pullSecretName }}
       {{- end }}
       securityContext:
-        {{- if $.Values.advanced.securityContext }}
-        {{- toYaml $.Values.advanced.securityContext | nindent 8 }}
-        {{- else }}
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-        {{- end }}
       containers:
       - name: ide
-        image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-        imagePullPolicy: {{ $.Values.image.pullPolicy }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
         workingDir: /home/dev
         command: ["/bin/bash","-lc"]
         args:
@@ -71,7 +44,7 @@ spec:
             ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev bash &
             sleep infinity
         env:
-        {{- if eq $.Values.build.mode "buildkit" }}
+        {{- if eq .Values.build.mode "buildkit" }}
         - name: DOCKER_HOST
           value: "tcp://localhost:2376"
         - name: DOCKER_CERT_PATH
@@ -79,7 +52,7 @@ spec:
         - name: DOCKER_TLS_VERIFY
           value: "1"
         {{- end }}
-        {{- with .env }}
+        {{- with .Values.user.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         ports:
@@ -92,7 +65,7 @@ spec:
           mountPath: /home/dev
         - name: shared-credentials
           mountPath: /shared-data
-        {{- if eq $.Values.build.mode "buildkit" }}
+        {{- if eq .Values.build.mode "buildkit" }}
         - name: docker-certs
           mountPath: /certs/client
           readOnly: true
@@ -100,14 +73,14 @@ spec:
         - name: kaniko-wrapper
           mountPath: /usr/local/bin/docker-build
           subPath: docker-build
-        {{- if eq $.Values.build.mode "buildkit" }}
+        {{- if eq .Values.build.mode "buildkit" }}
         - name: buildkit-wrapper
           mountPath: /usr/local/bin/docker-buildx
           subPath: docker-buildx
         {{- end }}
         resources:
-{{ toYaml $.Values.resources | indent 10 }}
-      {{- if eq $.Values.build.mode "buildkit" }}
+{{ toYaml .Values.resources | indent 10 }}
+      {{- if eq .Values.build.mode "buildkit" }}
       - name: dind
         image: docker:27-dind
         securityContext:
@@ -129,14 +102,14 @@ spec:
       volumes:
       - name: home
         persistentVolumeClaim: 
-          claimName: ws-{{ .name }}-home
+          claimName: ws-{{ .Values.user.name }}-home
       - name: shared-credentials
         emptyDir: {}
       - name: kaniko-wrapper
         configMap:
           name: kaniko-wrapper
           defaultMode: 0555
-      {{- if eq $.Values.build.mode "buildkit" }}
+      {{- if eq .Values.build.mode "buildkit" }}
       - name: buildkit-wrapper
         configMap:
           name: buildkit-wrapper
@@ -146,5 +119,3 @@ spec:
       - name: dind-storage
         emptyDir: {}
       {{- end }}
----
-{{- end }}
