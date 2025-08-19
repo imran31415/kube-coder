@@ -42,6 +42,7 @@ spec:
             ln -sf /shared-data/.config/git ~/.config/git &&
             code-server --bind-addr 0.0.0.0:8080 --auth none /home/dev &
             ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev bash &
+            echo '<!DOCTYPE html><html><head><title>Port Forward Helper</title><style>body{font-family:system-ui,sans-serif;max-width:800px;margin:40px auto;padding:20px;line-height:1.6}code{background:#f5f5f5;padding:2px 6px;border-radius:3px;font-family:monospace}h1{color:#333}p{margin:16px 0}</style></head><body><h1>Port Forward Helper</h1><p>To access services running in this workspace from your local machine, use kubectl port-forward:</p><h3>For web applications on port 3000:</h3><code>kubectl port-forward -n {{ .Values.namespace }} deployment/ws-{{ .Values.user.name }} 3000:3000</code><p>Then visit <a href="http://localhost:3000">http://localhost:3000</a></p><h3>For custom ports:</h3><code>kubectl port-forward -n {{ .Values.namespace }} deployment/ws-{{ .Values.user.name }} LOCAL_PORT:REMOTE_PORT</code><p>Replace LOCAL_PORT and REMOTE_PORT with your desired ports.</p></body></html>' > /tmp/index.html && python3 -m http.server 6080 --directory /tmp --bind 0.0.0.0 &
             sleep infinity
         env:
         {{- if eq .Values.build.mode "buildkit" }}
@@ -60,6 +61,8 @@ spec:
           containerPort: 8080
         - name: terminal
           containerPort: 7681
+        - name: browser
+          containerPort: 6080
         volumeMounts:
         - name: home
           mountPath: /home/dev

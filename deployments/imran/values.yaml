@@ -12,7 +12,7 @@ user:
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.5.0
+  tag: devlaptop-v1.6.0
   pullPolicy: Always
   pullSecretName: regcred
 
@@ -28,11 +28,11 @@ ingress:
 
 resources:
   requests:
-    cpu: 200m
-    memory: 512Mi
+    cpu: "1"
+    memory: 2Gi
   limits:
-    cpu: "2"
-    memory: 4Gi
+    cpu: "4"
+    memory: 8Gi
 
 build:
   mode: buildkit

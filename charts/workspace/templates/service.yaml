@@ -17,3 +17,7 @@ spec:
     port: 7681
     targetPort: 7681
     protocol: TCP
+  - name: browser
+    port: 6080
+    targetPort: 6080
+    protocol: TCP

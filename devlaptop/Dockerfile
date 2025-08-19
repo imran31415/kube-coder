@@ -60,6 +60,38 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Install browser with noVNC for web access
+RUN apt-get update && apt-get install -y \
+    xvfb x11vnc novnc websockify wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget -O /tmp/firefox.tar.bz2 "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
+    && file /tmp/firefox.tar.bz2 \
+    && tar -xf /tmp/firefox.tar.bz2 -C /opt/ \
+    && ln -s /opt/firefox/firefox /usr/local/bin/firefox \
+    && rm /tmp/firefox.tar.bz2
+
+# Create a simple script to start the browser service
+RUN mkdir -p /opt/browser && \
+    cat > /opt/browser/start-browser.sh << 'EOF'
+#!/bin/bash
+# Start Xvfb
+Xvfb :99 -screen 0 1280x720x24 &
+export DISPLAY=:99
+sleep 2
+
+# Start x11vnc (no password for simplicity within the pod)
+x11vnc -display :99 -nopw -listen localhost -xkb -ncache 10 -forever &
+sleep 2
+
+# Start Firefox
+firefox &
+
+# Start websockify to serve noVNC
+websockify --web=/usr/share/novnc/ 6080 localhost:5900
+EOF
+
+RUN chmod +x /opt/browser/start-browser.sh
+
 # Non-root dev user
 RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 # Also give ubuntu user (created by code-server) passwordless sudo
