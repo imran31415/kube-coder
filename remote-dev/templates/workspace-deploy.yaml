@@ -63,6 +63,12 @@ spec:
             ttyd --port 7681 --interface 0.0.0.0 --writable bash &
             sleep infinity
         env:
+        - name: DOCKER_HOST
+          value: "tcp://localhost:2376"
+        - name: DOCKER_CERT_PATH
+          value: "/certs/client"
+        - name: DOCKER_TLS_VERIFY
+          value: "1"
         {{- with .env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -74,11 +80,36 @@ spec:
         volumeMounts:
         - name: home
           mountPath: /home/dev
+        - name: docker-certs
+          mountPath: /certs/client
+          readOnly: true
         - name: kaniko-wrapper
           mountPath: /usr/local/bin/docker-build
           subPath: docker-build
+        - name: buildkit-wrapper
+          mountPath: /usr/local/bin/docker-buildx
+          subPath: docker-buildx
         resources:
 {{ toYaml $.Values.resources | indent 10 }}
+      {{- if eq $.Values.build.mode "buildkit" }}
+      - name: dind
+        image: docker:27-dind
+        securityContext:
+          privileged: true
+          runAsUser: 0
+          runAsGroup: 0
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: "/certs"
+        ports:
+        - containerPort: 2376
+          name: docker
+        volumeMounts:
+        - name: docker-certs
+          mountPath: /certs/client
+        - name: dind-storage
+          mountPath: /var/lib/docker
+        {{- end }}
       volumes:
       - name: home
         persistentVolumeClaim: 
@@ -87,5 +118,15 @@ spec:
         configMap:
           name: kaniko-wrapper
           defaultMode: 0555
+      {{- if eq $.Values.build.mode "buildkit" }}
+      - name: buildkit-wrapper
+        configMap:
+          name: buildkit-wrapper
+          defaultMode: 0555
+      - name: docker-certs
+        emptyDir: {}
+      - name: dind-storage
+        emptyDir: {}
+      {{- end }}
 ---
 {{- end }}
