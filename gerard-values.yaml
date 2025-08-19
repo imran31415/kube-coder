@@ -10,19 +10,19 @@ ingress:
   className: nginx
   auth:
     type: basic
-    secretName: api-basic-auth
+    secretName: gerard-basic-auth
   tls:
     enabled: true
-    secretName: imran-dev-scalebase-io-tls
+    secretName: gerard-dev-scalebase-io-tls
     clusterIssuer: letsencrypt-production
 
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 200m
+    memory: 512Mi
   limits:
-    cpu: "4"
-    memory: 8Gi
+    cpu: "2"
+    memory: 4Gi
 
 build:
   mode: buildkit
@@ -35,11 +35,11 @@ ssh:
   port: 22
 
 users:
-  - name: imran
+  - name: gerard
     pvcSize: 50Gi
-    host: imran.dev.scalebase.io
+    host: gerard.dev.scalebase.io
     env:
       - name: GIT_USER_NAME
-        value: "Imran Ali"
+        value: "Gerard Developer"
       - name: GIT_USER_EMAIL
-        value: "imran@scalebase.io"
+        value: "gerard@scalebase.io"

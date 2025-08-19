@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     golang-go \
     apt-transport-https lsb-release \
     mysql-client \
+    && npm install -g yarn \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI and Docker Compose
