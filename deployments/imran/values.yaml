@@ -28,8 +28,8 @@ ingress:
 
 resources:
   requests:
-    cpu: "1"
-    memory: 2Gi
+    cpu: "2"
+    memory: 3Gi
   limits:
     cpu: "4"
     memory: 8Gi
