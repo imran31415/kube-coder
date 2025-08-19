@@ -63,12 +63,14 @@ spec:
             ttyd --port 7681 --interface 0.0.0.0 --writable bash &
             sleep infinity
         env:
+        {{- if eq $.Values.build.mode "buildkit" }}
         - name: DOCKER_HOST
           value: "tcp://localhost:2376"
         - name: DOCKER_CERT_PATH
           value: "/certs/client"
         - name: DOCKER_TLS_VERIFY
           value: "1"
+        {{- end }}
         {{- with .env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -80,15 +82,19 @@ spec:
         volumeMounts:
         - name: home
           mountPath: /home/dev
+        {{- if eq $.Values.build.mode "buildkit" }}
         - name: docker-certs
           mountPath: /certs/client
           readOnly: true
+        {{- end }}
         - name: kaniko-wrapper
           mountPath: /usr/local/bin/docker-build
           subPath: docker-build
+        {{- if eq $.Values.build.mode "buildkit" }}
         - name: buildkit-wrapper
           mountPath: /usr/local/bin/docker-buildx
           subPath: docker-buildx
+        {{- end }}
         resources:
 {{ toYaml $.Values.resources | indent 10 }}
       {{- if eq $.Values.build.mode "buildkit" }}
