@@ -20,8 +20,6 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/websocket-services: "ws-{{ .name }}"
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
-    nginx.ingress.kubernetes.io/use-regex: "true"
     {{- with $.Values.advanced.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -37,8 +35,8 @@ spec:
   - host: {{ .host }}
     http:
       paths:
-      - path: /terminal(/|$)(.*) 
-        pathType: ImplementationSpecific
+      - path: /terminal
+        pathType: Prefix
         backend:
           service:
             name: ws-{{ .name }}
