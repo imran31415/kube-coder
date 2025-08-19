@@ -59,6 +59,9 @@ spec:
         args:
           - >
             mkdir -p ~/.local/share/code-server &&
+            mkdir -p /shared-data/.ssh /shared-data/.config &&
+            ln -sf /shared-data/.ssh ~/.ssh &&
+            ln -sf /shared-data/.config/git ~/.config/git &&
             code-server --bind-addr 0.0.0.0:8080 --auth none &
             ttyd --port 7681 --interface 0.0.0.0 --writable bash &
             sleep infinity
@@ -82,6 +85,8 @@ spec:
         volumeMounts:
         - name: home
           mountPath: /home/dev
+        - name: shared-credentials
+          mountPath: /shared-data
         {{- if eq $.Values.build.mode "buildkit" }}
         - name: docker-certs
           mountPath: /certs/client
@@ -120,6 +125,8 @@ spec:
       - name: home
         persistentVolumeClaim: 
           claimName: ws-{{ .name }}-home
+      - name: shared-credentials
+        emptyDir: {}
       - name: kaniko-wrapper
         configMap:
           name: kaniko-wrapper

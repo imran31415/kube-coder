@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs npm python3 python3-pip openjdk-17-jdk \
     golang-go \
     apt-transport-https lsb-release \
+    mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI and Docker Compose
@@ -16,6 +17,12 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
     && apt-get update \
     && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
+
+# Install standalone docker-compose for compatibility
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "amd64" ]; then COMPOSE_ARCH="x86_64"; elif [ "$ARCH" = "arm64" ]; then COMPOSE_ARCH="aarch64"; else COMPOSE_ARCH="$ARCH"; fi \
+    && curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/bin/docker-compose \
+    && chmod +x /usr/local/bin/docker-compose
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" \
@@ -49,6 +56,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
 
 # Non-root dev user
 RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# Also give ubuntu user (created by code-server) passwordless sudo
+RUN echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev
 WORKDIR /home/dev
 
