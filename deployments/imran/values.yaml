@@ -1,5 +1,15 @@
 namespace: coder
 
+user:
+  name: imran
+  pvcSize: 50Gi
+  host: imran.dev.scalebase.io
+  env:
+    - name: GIT_USER_NAME
+      value: "Imran Ali"
+    - name: GIT_USER_EMAIL
+      value: "imran@scalebase.io"
+
 image:
   repository: registry.digitalocean.com/resourceloop/coder
   tag: devlaptop-v1.5.0
@@ -10,10 +20,10 @@ ingress:
   className: nginx
   auth:
     type: basic
-    secretName: gerard-basic-auth
+    secretName: api-basic-auth
   tls:
     enabled: true
-    secretName: gerard-dev-scalebase-io-tls
+    secretName: imran-dev-scalebase-io-tls
     clusterIssuer: letsencrypt-production
 
 resources:
@@ -33,13 +43,3 @@ build:
 ssh:
   enabled: false
   port: 22
-
-users:
-  - name: gerard
-    pvcSize: 50Gi
-    host: gerard.dev.scalebase.io
-    env:
-      - name: GIT_USER_NAME
-        value: "Gerard Developer"
-      - name: GIT_USER_EMAIL
-        value: "gerard@scalebase.io"

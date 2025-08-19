@@ -1,0 +1,13 @@
+# Base infrastructure configuration
+namespace: coder
+
+# Docker registry configuration
+registry:
+  name: regcred
+  server: registry.digitalocean.com
+
+# Build configuration
+build:
+  mode: buildkit  # kaniko or buildkit
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder

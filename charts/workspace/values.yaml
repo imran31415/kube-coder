@@ -1,21 +1,36 @@
+# Workspace configuration
 namespace: coder
 
+# User configuration
+user:
+  name: ""
+  pvcSize: 50Gi
+  host: ""
+  env:
+    - name: GIT_USER_NAME
+      value: ""
+    - name: GIT_USER_EMAIL
+      value: ""
+
+# Container image configuration
 image:
   repository: registry.digitalocean.com/resourceloop/coder
   tag: devlaptop-v1.5.0
   pullPolicy: Always
   pullSecretName: regcred
 
+# Ingress configuration
 ingress:
   className: nginx
   auth:
     type: basic
-    secretName: gerard-basic-auth
+    secretName: ""
   tls:
     enabled: true
-    secretName: gerard-dev-scalebase-io-tls
+    secretName: ""
     clusterIssuer: letsencrypt-production
 
+# Resource limits and requests
 resources:
   requests:
     cpu: 200m
@@ -24,22 +39,14 @@ resources:
     cpu: "2"
     memory: 4Gi
 
+# Build configuration
 build:
   mode: buildkit
   kanikoImage: gcr.io/kaniko-project/executor:latest
   pushSecretName: regcred
   defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
 
+# SSH server configuration
 ssh:
   enabled: false
   port: 22
-
-users:
-  - name: gerard
-    pvcSize: 50Gi
-    host: gerard.dev.scalebase.io
-    env:
-      - name: GIT_USER_NAME
-        value: "Gerard Developer"
-      - name: GIT_USER_EMAIL
-        value: "gerard@scalebase.io"

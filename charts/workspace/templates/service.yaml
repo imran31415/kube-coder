@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ws-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+spec:
+  selector:
+    app: ws-{{ .Values.user.name }}
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: terminal
+    port: 7681
+    targetPort: 7681
+    protocol: TCP

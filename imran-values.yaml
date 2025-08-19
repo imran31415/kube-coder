@@ -2,8 +2,8 @@ namespace: coder
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.4.0
-  pullPolicy: IfNotPresent
+  tag: devlaptop-v1.5.0
+  pullPolicy: Always
   pullSecretName: regcred
 
 ingress:

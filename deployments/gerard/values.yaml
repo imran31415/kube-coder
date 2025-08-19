@@ -1,5 +1,15 @@
 namespace: coder
 
+user:
+  name: gerard
+  pvcSize: 50Gi
+  host: gerard.dev.scalebase.io
+  env:
+    - name: GIT_USER_NAME
+      value: "Gerard Developer"
+    - name: GIT_USER_EMAIL
+      value: "gerard@scalebase.io"
+
 image:
   repository: registry.digitalocean.com/resourceloop/coder
   tag: devlaptop-v1.5.0
@@ -33,13 +43,3 @@ build:
 ssh:
   enabled: false
   port: 22
-
-users:
-  - name: gerard
-    pvcSize: 50Gi
-    host: gerard.dev.scalebase.io
-    env:
-      - name: GIT_USER_NAME
-        value: "Gerard Developer"
-      - name: GIT_USER_EMAIL
-        value: "gerard@scalebase.io"

@@ -5,10 +5,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg git openssh-server sudo jq unzip zip less vim nano tmux \
     build-essential pkg-config make \
-    nodejs npm python3 python3-pip openjdk-17-jdk \
+    python3 python3-pip openjdk-17-jdk \
     golang-go \
     apt-transport-https lsb-release \
     mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20.x via NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && npm install -g yarn \
     && rm -rf /var/lib/apt/lists/*
 
@@ -61,5 +66,8 @@ RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sud
 RUN echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev
 WORKDIR /home/dev
+
+# Ensure shell always starts in /home/dev
+RUN echo 'cd /home/dev' >> ~/.bashrc
 
 # Note: docker builds use the mounted 'docker-build' wrapper that spawns a Kaniko Job.
