@@ -2,7 +2,7 @@ namespace: coder
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.3.0
+  tag: devlaptop-v1.4.0
   pullPolicy: IfNotPresent
   pullSecretName: regcred
 
