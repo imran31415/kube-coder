@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: browser-config-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+data:
+  index.html: |
+{{ .Files.Get "index.html" | indent 4 }}
+  server.py: |
+{{ .Files.Get "server.py" | indent 4 }}

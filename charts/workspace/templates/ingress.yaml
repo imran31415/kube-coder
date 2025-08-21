@@ -51,11 +51,8 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    {{- if eq .Values.ingress.auth.type "basic" }}
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
-    {{- end }}
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Disable nginx auth for browser - Kasm has its own auth
+    #nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
@@ -117,3 +114,51 @@ spec:
             name: ws-{{ .Values.user.name }}
             port:
               number: 7681
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-vnc
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if .Values.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    # Disable nginx auth for VNC (websockets don't support basic auth)
+    # VNC access will be controlled by the network security and VNC's own auth if enabled
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-set-headers: "ingress-nginx/websocket-headers"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /vnc-direct/(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6081
+      - path: /websockify
+        pathType: Prefix
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6081

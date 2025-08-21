@@ -21,3 +21,7 @@ spec:
     port: 6080
     targetPort: 6080
     protocol: TCP
+  - name: vnc
+    port: 6081
+    targetPort: 6081
+    protocol: TCP
