@@ -4,3 +4,8 @@
 *~
 .idea/
 .vscode/
+
+# Secrets - never commit these!
+secrets/
+*.secret
+*.key

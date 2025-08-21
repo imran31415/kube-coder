@@ -1,7 +1,8 @@
+{{- if eq .Values.ingress.auth.type "oauth2" }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}
+  name: ws-{{ .Values.user.name }}-oauth2
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
@@ -12,15 +13,13 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    {{- if eq .Values.ingress.auth.type "basic" }}
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
-    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
-    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
+    nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
   {{- if .Values.ingress.tls.enabled }}
   tls:
@@ -32,18 +31,25 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /
-        pathType: Prefix
+      - path: /oauth
+        pathType: Exact
         backend:
           service:
             name: ws-{{ .Values.user.name }}
             port:
-              number: 8080
+              number: 6080
+      - path: /oauth/
+        pathType: Exact
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}-browser
+  name: ws-{{ .Values.user.name }}-oauth2-browser
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
@@ -54,11 +60,10 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    {{- if eq .Values.ingress.auth.type "basic" }}
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
-    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
-    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
@@ -73,8 +78,8 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /browser
-        pathType: Prefix
+      - path: /oauth/browser/(.*)
+        pathType: ImplementationSpecific
         backend:
           service:
             name: ws-{{ .Values.user.name }}
@@ -84,7 +89,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}-terminal
+  name: ws-{{ .Values.user.name }}-oauth2-terminal
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
@@ -95,16 +100,13 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    {{- if eq .Values.ingress.auth.type "basic" }}
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
-    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
-    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
     nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
   {{- if .Values.ingress.tls.enabled }}
   tls:
@@ -116,7 +118,7 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /terminal
+      - path: /oauth/terminal
         pathType: Prefix
         backend:
           service:
@@ -127,7 +129,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}-vnc
+  name: ws-{{ .Values.user.name }}-oauth2-vnc
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
@@ -138,12 +140,9 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    # Protect VNC HTML pages with basic auth
-    {{- if eq .Values.ingress.auth.type "basic" }}
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
-    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
-    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
     nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/proxy-set-headers: "ingress-nginx/websocket-headers"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
@@ -161,7 +160,7 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /vnc-direct/(.*)
+      - path: /oauth/vnc-direct/(.*) 
         pathType: ImplementationSpecific
         backend:
           service:
@@ -172,7 +171,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}-websocket
+  name: ws-{{ .Values.user.name }}-oauth2-websocket
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
@@ -183,7 +182,9 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    # WebSocket connections - no auth required (protected by session)
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
     nginx.ingress.kubernetes.io/proxy-set-headers: "ingress-nginx/websocket-headers"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
@@ -200,10 +201,51 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /websockify
+      - path: /oauth/websockify
         pathType: Prefix
         backend:
           service:
             name: ws-{{ .Values.user.name }}
             port:
               number: 6081
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-oauth2-ide
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if .Values.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /oauth/ide
+        pathType: Prefix
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 8080
+{{- end }}

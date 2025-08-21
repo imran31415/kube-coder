@@ -8,7 +8,9 @@ import time
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ["/", "/browser", "/browser/"]:
+        if self.path in ["/", "/dashboard", "/dashboard/"]:
+            self.path = "/dashboard.html"
+        elif self.path in ["/browser", "/browser/"]:
             self.path = "/index.html"
         elif self.path == "/vnc" or self.path == "/vnc/":
             self.send_vnc_viewer()

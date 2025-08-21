@@ -1,0 +1,146 @@
+{{- if eq .Values.ingress.auth.type "oauth2" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-proxy-secrets-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+type: Opaque
+stringData:
+  cookie-secret: {{ .Values.oauth2.cookieSecret | quote }}
+  client-id: {{ .Values.oauth2.clientId | quote }}
+  client-secret: {{ .Values.oauth2.clientSecret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: oauth2-proxy-{{ .Values.user.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy-{{ .Values.user.name }}
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy-{{ .Values.user.name }}
+    spec:
+      containers:
+      - name: oauth2-proxy
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.0
+        args:
+        - --provider=github
+        - --email-domain=*
+        - --upstream=http://ws-{{ .Values.user.name }}:8080/
+        - --http-address=0.0.0.0:4180
+        - --cookie-secure=true
+        - --cookie-domain={{ .Values.user.host }}
+        - --cookie-path=/
+        - --cookie-expire=24h0m0s
+        - --cookie-refresh=1h0m0s
+        - --whitelist-domain={{ .Values.user.host }}
+        - --redirect-url=https://{{ .Values.user.host }}/oauth2/callback
+        {{- if .Values.oauth2.githubUsers }}
+        - --github-user={{ .Values.oauth2.githubUsers }}
+        {{- end }}
+        {{- if .Values.oauth2.githubOrg }}
+        - --github-org={{ .Values.oauth2.githubOrg }}
+        {{- end }}
+        {{- if .Values.oauth2.githubTeam }}
+        - --github-team={{ .Values.oauth2.githubTeam }}
+        {{- end }}
+        - --skip-provider-button=false
+        - --pass-access-token=true
+        - --pass-user-headers=true
+        - --set-xauthrequest=true
+        env:
+        - name: OAUTH2_PROXY_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: oauth2-proxy-secrets-{{ .Values.user.name }}
+              key: client-id
+        - name: OAUTH2_PROXY_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: oauth2-proxy-secrets-{{ .Values.user.name }}
+              key: client-secret
+        - name: OAUTH2_PROXY_COOKIE_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: oauth2-proxy-secrets-{{ .Values.user.name }}
+              key: cookie-secret
+        ports:
+        - containerPort: 4180
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 4180
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 4180
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: oauth2-proxy-{{ .Values.user.name }}
+spec:
+  selector:
+    app: oauth2-proxy-{{ .Values.user.name }}
+  ports:
+  - port: 4180
+    targetPort: 4180
+    name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oauth2-proxy-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: oauth2-proxy-{{ .Values.user.name }}
+  annotations:
+    {{- if .Values.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "8"
+spec:
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /oauth2
+        pathType: Prefix
+        backend:
+          service:
+            name: oauth2-proxy-{{ .Values.user.name }}
+            port:
+              number: 4180
+{{- end }}

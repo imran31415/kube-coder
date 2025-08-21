@@ -43,20 +43,22 @@ spec:
             code-server --bind-addr 0.0.0.0:8080 --auth none /home/dev &
             ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev bash &
             export DISPLAY=:99 &&
-            Xvfb :99 -screen 0 1280x720x24 &
+            rm -f /tmp/.X99-lock &&
+            Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
             sleep 3 &&
-            echo "Starting VNC server..." &&
-            x11vnc -display :99 -nopw -listen localhost -xkb -ncache 10 -ncache_cr -forever -shared &
+            DISPLAY=:99 setxkbmap us &&
+            DISPLAY=:99 fluxbox &
+            sleep 1 &&
+            x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat -cursor -cursorpos -24to32 -nobell -noipv6 &
             sleep 2 &&
-            echo "Setting up noVNC..." &&
             mkdir -p /tmp/novnc &&
             cd /tmp/novnc &&
             wget -q https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz -O novnc.tar.gz &&
             tar -xzf novnc.tar.gz --strip-components=1 &&
-            echo "Starting noVNC on port 6081..." &&
-            ./utils/novnc_proxy --vnc localhost:5900 --listen 6081 &
+            pkill -f websockify || true &&
+            sleep 1 &&
+            websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 &
             sleep 2 &&
-            echo "Setting up browser server..." &&
             mkdir -p /tmp/browser &&
             cp /browser-config/* /tmp/browser/ &&
             cd /tmp/browser &&
@@ -79,6 +81,10 @@ spec:
           containerPort: 8080
         - name: terminal
           containerPort: 7681
+        - name: browser
+          containerPort: 6080
+        - name: vnc
+          containerPort: 6081
         volumeMounts:
         - name: home
           mountPath: /home/dev
