@@ -135,8 +135,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     
     def do_POST(self):
         try:
-            # Handle both /api/* and /browser/api/* paths
-            path = self.path.replace('/browser', '')
+            # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
+            path = self.path.replace('/browser', '').replace('/oauth', '')
             
             if path == "/api/launch-chrome":
                 self.launch_chrome()

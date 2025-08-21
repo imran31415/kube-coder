@@ -78,15 +78,8 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /oauth/ide/(.*)
+      - path: /oauth/ide/?(.*)
         pathType: ImplementationSpecific
-        backend:
-          service:
-            name: ws-{{ .Values.user.name }}
-            port:
-              number: 8080
-      - path: /oauth/ide
-        pathType: Prefix
         backend:
           service:
             name: ws-{{ .Values.user.name }}
@@ -126,15 +119,8 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /oauth/terminal/(.*)
+      - path: /oauth/terminal/?(.*)
         pathType: ImplementationSpecific
-        backend:
-          service:
-            name: ws-{{ .Values.user.name }}
-            port:
-              number: 7681
-      - path: /oauth/terminal
-        pathType: Prefix
         backend:
           service:
             name: ws-{{ .Values.user.name }}
