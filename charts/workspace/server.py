@@ -8,7 +8,7 @@ import time
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ["/", "/dashboard", "/dashboard/"]:
+        if self.path in ["/", "/dashboard", "/dashboard/", "/oauth", "/oauth/"]:
             self.path = "/dashboard.html"
         elif self.path in ["/browser", "/browser/"]:
             self.path = "/index.html"
