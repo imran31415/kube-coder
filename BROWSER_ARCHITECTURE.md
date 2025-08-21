@@ -1,4 +1,6 @@
 # Remote Browser Architecture Documentation
+<img width="1336" height="848" alt="image" src="https://github.com/user-attachments/assets/c9a557e5-54aa-4915-b848-0d514227f142" />
+
 
 ## Overview
 
