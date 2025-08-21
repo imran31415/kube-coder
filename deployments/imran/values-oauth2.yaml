@@ -26,10 +26,14 @@ ingress:
     secretName: imran-dev-scalebase-io-tls
     clusterIssuer: letsencrypt-production
 
-# OAuth2 configuration override - inherits from main values.yaml
-# Actual secrets are in secrets/imran/oauth2.yaml (gitignored)
-# To deploy with OAuth2: helm upgrade -f deployments/imran/values-oauth2.yaml -f secrets/imran/oauth2.yaml
-# Note: oauth2.githubUsers, cookieSecret, clientId, and clientSecret are now configured in main values.yaml
+# OAuth2 configuration 
+oauth2:
+  # GitHub user authorization - comma-separated list of GitHub usernames
+  githubUsers: "imran31415"  # Authorized GitHub usernames
+  # Secrets are provided separately in secrets/imran/oauth2.yaml
+  cookieSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
+  clientId: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
+  clientSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
 
 resources:
   requests:
