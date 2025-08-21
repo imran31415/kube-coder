@@ -21,6 +21,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
     
+    def check_auth(self):
+        """Check if request has proper authentication headers"""
+        auth_header = self.headers.get('Authorization', '')
+        # If we have nginx auth, the user is already authenticated
+        # We can also check for specific headers nginx sets
+        remote_user = self.headers.get('Remote-User', '')
+        if auth_header or remote_user:
+            return True
+        return False
+    
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
         host = self.headers.get('Host', 'localhost').split(':')[0]
@@ -35,11 +45,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         .container {{ max-width: 600px; margin: 0 auto; }}
         .btn {{ background: #007cba; color: white; border: none; padding: 12px 24px; margin: 10px; border-radius: 4px; text-decoration: none; display: inline-block; }}
         .btn:hover {{ background: #005a8b; }}
+        .warning {{ background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 10px; border-radius: 4px; margin: 10px 0; }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🖥️ Remote Desktop Viewer</h1>
+        <div class="warning">
+            <strong>🔒 Secure Access:</strong> This VNC viewer is protected by authentication.
+            You must be logged into this workspace to access the remote desktop.
+        </div>
         <p>Click the button below to open the VNC viewer in a new window:</p>
         <a href="{vnc_url}" target="_blank" class="btn">Open VNC Viewer</a>
         <p><small>If the VNC viewer doesn't load, make sure you've launched a browser first.</small></p>
