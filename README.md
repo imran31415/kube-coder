@@ -1,20 +1,28 @@
 # Remote Dev Helm
 
-A production-ready Helm chart architecture for deploying multi-user remote development workspaces with VS Code, Node.js 20, Yarn, and secure container builds.
+A production-ready Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides a complete development environment with VS Code IDE, terminal access, and remote browser capabilities, all protected by GitHub OAuth2 authentication.
 
 <img width="2720" height="1796" alt="image" src="https://github.com/user-attachments/assets/72ca8635-80c0-4ae2-b9ee-14ed918185eb" />
 
 ## ✨ Features
 
-- 🚀 **VS Code in Browser** - Full IDE with extensions support
+### Core Development Environment
+- 💻 **VS Code IDE** - Full-featured browser-based IDE with extensions support
+- ⚡ **Terminal Access** - Browser-based terminal with full system access
+- 🌐 **Remote Browser** - Firefox browser with VNC viewer for testing web applications
+- 🎨 **Modern Control Panel** - Beautiful, mobile-responsive dashboard to access all services
+
+### Security & Authentication  
+- 🔐 **GitHub OAuth2** - Secure authentication with configurable user authorization
+- 🔒 **HTTPS Everywhere** - Let's Encrypt certificates with automatic renewal
+- 🛡️ **Isolated Workspaces** - Complete isolation between user environments
+- 👥 **Multi-User Support** - Independent workspaces with separate authentication
+
+### Development Stack
 - 🔧 **Node.js 20 + Yarn** - Latest Node.js with Yarn package manager
-- 🤖 **Claude Code CLI** - AI-powered development assistant  
-- 🔒 **Secure Access** - HTTPS with Let's Encrypt + basic auth
-- 👥 **Multi-User** - Independent workspaces per user
-- 💾 **Persistent Storage** - Dedicated storage that survives redeploys
 - 🐳 **Container Builds** - Docker-in-Docker with BuildKit support
-- ⚡ **Independent Management** - Deploy/update users separately
-- 🌐 **Terminal Access** - Browser-based terminal with ttyd
+- 🤖 **Claude Code CLI** - AI-powered development assistant built-in
+- 💾 **Persistent Storage** - Dedicated storage that survives redeploys and restarts
 
 ## 🏗️ Architecture
 
@@ -64,6 +72,7 @@ charts/
 - Helm 3.0+
 - nginx ingress controller
 - cert-manager for automatic HTTPS
+- GitHub OAuth App (for OAuth2 authentication)
 
 ### 1. Setup Infrastructure
 
@@ -86,30 +95,61 @@ kubectl create secret docker-registry regcred \
 make deploy-base
 ```
 
-### 2. Deploy User Workspaces
+### 2. Setup Authentication
 
+#### Option A: GitHub OAuth2 (Recommended)
+```bash
+# 1. Create GitHub OAuth App at https://github.com/settings/developers
+#    - Authorization callback URL: https://username.yourdomain.com/oauth2/callback
+#    - Note the Client ID and Client Secret
+
+# 2. Configure authorized users in deployments/imran/values.yaml
+oauth2:
+  githubUsers: "username1,username2"  # Comma-separated GitHub usernames
+
+# 3. Create OAuth secrets file (gitignored)
+mkdir -p secrets/imran
+cat > secrets/imran/oauth2.yaml << EOF
+oauth2:
+  cookieSecret: "$(openssl rand -base64 32)"
+  clientId: "your_github_oauth_app_client_id"
+  clientSecret: "your_github_oauth_app_client_secret"
+EOF
+
+# 4. Deploy with OAuth2
+helm upgrade imran-workspace charts/workspace/ \
+  -f deployments/imran/values-oauth2.yaml \
+  -f secrets/imran/oauth2.yaml \
+  --namespace coder --install
+```
+
+#### Option B: Basic Auth (Legacy)
 ```bash
 # Create basic auth for users
 htpasswd -c auth admin
 kubectl create secret generic api-basic-auth --from-file=auth -n coder
 
-# Deploy Imran's workspace
+# Deploy with basic auth
 make deploy-imran
-
-# Deploy Gerard's workspace (with separate auth)
-htpasswd -c gerard-auth admin
-kubectl create secret generic gerard-basic-auth --from-file=auth=gerard-auth -n coder
-make deploy-gerard
 ```
 
-### 3. Test Everything Works
+### 3. Access Your Workspace
+
+#### With OAuth2:
+- **Control Panel**: `https://username.yourdomain.com/oauth` - Modern dashboard with service selection
+- **VS Code IDE**: `https://username.yourdomain.com/oauth/ide` - Full-featured code editor  
+- **Terminal**: `https://username.yourdomain.com/oauth/terminal` - Browser-based terminal
+- **Remote Browser**: Launch from control panel - Firefox with VNC viewer
+
+#### With Basic Auth:
+- **VS Code IDE**: `https://username.yourdomain.com/` - Main IDE interface
+- **Terminal**: `https://username.yourdomain.com/terminal` - Browser-based terminal
+- **Browser Controls**: `https://username.yourdomain.com/browser` - Remote browser interface
 
 ```bash
-# Test both workspaces
-make test-all
-
 # Check deployment status
 make status
+kubectl get pods -n coder
 ```
 
 ## 🛠️ Pre-installed Stack
@@ -214,22 +254,34 @@ user:
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.5.0
+  tag: devlaptop-v1.6.2-browser-stealth
   pullPolicy: Always
+
+ingress:
+  className: nginx
+  auth:
+    type: basic  # or 'oauth2' for GitHub OAuth
+    secretName: username-basic-auth
+  tls:
+    enabled: true
+    secretName: username-dev-yourdomain-com-tls
+    clusterIssuer: letsencrypt-production
+
+# OAuth2 configuration (when auth.type is 'oauth2')
+oauth2:
+  githubUsers: "user1,user2"  # Authorized GitHub usernames
+  # Secrets provided separately in secrets/username/oauth2.yaml
+  cookieSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
+  clientId: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
+  clientSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
 
 resources:
   requests:
-    cpu: 200m
-    memory: 512Mi  
-  limits:
     cpu: "2"
-    memory: 4Gi
-
-ingress:
-  auth:
-    secretName: username-basic-auth  # User-specific auth
-  tls:
-    secretName: username-dev-yourdomain-com-tls
+    memory: 3Gi
+  limits:
+    cpu: "3"
+    memory: 5Gi
 ```
 
 ## 🐳 Container Builds
@@ -277,13 +329,14 @@ pwd              # Should be /home/dev
 
 ## 🛡️ Security Features
 
-- ✅ **TLS encryption** for all traffic
-- ✅ **Per-user authentication** with basic auth
-- ✅ **RBAC isolation** between users  
-- ✅ **Non-root containers** (uid/gid 1000)
-- ✅ **Private registry** authentication
-- ✅ **Isolated storage** per user
-- ✅ **Recreate deployment** strategy prevents resource conflicts
+- 🔐 **GitHub OAuth2 Authentication** - Secure, modern authentication with user authorization
+- ✅ **TLS encryption** for all traffic with Let's Encrypt certificates
+- 🛡️ **Complete workspace isolation** - Users cannot access each other's environments
+- ✅ **Non-root containers** - All processes run as uid/gid 1000 for security
+- 🔒 **Private registry authentication** - Secure container image pulling
+- 💾 **Isolated storage** - Dedicated PVC per user with persistent data
+- ⚡ **Recreate deployment strategy** - Prevents resource conflicts and ensures clean restarts
+- 🌐 **Protected endpoints** - All services (IDE, Terminal, Browser) behind authentication
 
 ## 🔄 Architecture Benefits
 
