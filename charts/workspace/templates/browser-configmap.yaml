@@ -4,6 +4,8 @@ metadata:
   name: browser-config-{{ .Values.user.name }}
   namespace: {{ .Values.namespace }}
 data:
+  dashboard.html: |
+{{ .Files.Get "dashboard.html" | indent 4 }}
   index.html: |
 {{ .Files.Get "index.html" | indent 4 }}
   server.py: |

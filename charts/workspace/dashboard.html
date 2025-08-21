@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Development Workspace</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .header {
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1rem;
+            line-height: 1.6;
+        }
+
+        .user-info {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 30px;
+            border-left: 4px solid #667eea;
+        }
+
+        .user-info strong {
+            color: #333;
+        }
+
+        .services-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        @media (min-width: 480px) {
+            .services-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        .service-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px 20px;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e9ecef;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .service-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+        }
+
+        .service-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--accent-color);
+        }
+
+        .service-card.ide::before {
+            --accent-color: linear-gradient(45deg, #007ACC, #0098FF);
+        }
+
+        .service-card.terminal::before {
+            --accent-color: linear-gradient(45deg, #2ECC40, #01FF70);
+        }
+
+        .service-card.browser::before {
+            --accent-color: linear-gradient(45deg, #FF6B35, #F7931E);
+        }
+
+        .service-icon {
+            font-size: 2.5rem;
+            margin-bottom: 15px;
+            display: block;
+        }
+
+        .service-card h3 {
+            color: #333;
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .service-card p {
+            color: #666;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .browser-controls {
+            margin-top: 20px;
+        }
+
+        .browser-btn {
+            background: linear-gradient(45deg, #FF6B35, #F7931E);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            margin: 5px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .browser-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
+        }
+
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .vnc-container {
+            margin-top: 20px;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .vnc-header {
+            background: linear-gradient(45deg, #FF6B35, #F7931E);
+            color: white;
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 500;
+        }
+
+        .vnc-close {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+
+        .vnc-frame {
+            width: 100%;
+            height: 400px;
+            border: none;
+        }
+
+        @media (max-width: 767px) {
+            .container {
+                padding: 30px 20px;
+                margin: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .services-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .service-card {
+                padding: 20px 15px;
+            }
+            
+            .service-icon {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Remote Workspace</h1>
+            <p>Your cloud development environment</p>
+        </div>
+
+        <div class="user-info">
+            <strong>🔐 Authenticated via GitHub OAuth</strong>
+            <div id="user-details">Welcome to your secure workspace</div>
+        </div>
+
+        <div class="services-grid">
+            <a href="/oauth/ide" class="service-card ide">
+                <div class="service-icon">💻</div>
+                <h3>VS Code IDE</h3>
+                <p>Full-featured code editor with extensions</p>
+            </a>
+
+            <a href="/oauth/terminal" class="service-card terminal">
+                <div class="service-icon">⚡</div>
+                <h3>Terminal</h3>
+                <p>Command line interface with full system access</p>
+            </a>
+
+            <div class="service-card browser" onclick="toggleBrowserControls()">
+                <div class="service-icon">🌐</div>
+                <h3>Browser</h3>
+                <p>Remote Firefox browser with VNC viewer</p>
+            </div>
+        </div>
+
+        <div id="browser-controls" class="browser-controls" style="display: none;">
+            <h4 style="margin-bottom: 15px; color: #333;">🌐 Browser Controls</h4>
+            <button class="browser-btn" onclick="launchBrowser()">Launch Browser</button>
+            <button class="browser-btn" onclick="openLocalhost()">Open localhost:8080</button>
+            <button class="browser-btn" onclick="testBrowser()">Test Installation</button>
+            <button class="browser-btn" onclick="showVNC()">View Remote Desktop</button>
+            <div id="browser-status"></div>
+            
+            <div id="vnc-container" class="vnc-container" style="display: none;">
+                <div class="vnc-header">
+                    <span>🖥️ Remote Desktop Viewer</span>
+                    <button class="vnc-close" onclick="hideVNC()">Close</button>
+                </div>
+                <iframe id="vnc-frame" class="vnc-frame"></iframe>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Secure • Scalable • Always Available</p>
+            <p style="font-size: 0.8rem; margin-top: 5px; opacity: 0.7;">
+                Powered by Kubernetes & Docker
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // Extract user info from headers if available
+        document.addEventListener('DOMContentLoaded', function() {
+            // Try to get user info from headers or cookies if available
+            // This would be populated by the OAuth2 proxy headers
+        });
+
+        function toggleBrowserControls() {
+            const controls = document.getElementById('browser-controls');
+            const isVisible = controls.style.display !== 'none';
+            controls.style.display = isVisible ? 'none' : 'block';
+        }
+
+        function showBrowserStatus(message, isError = false) {
+            const status = document.getElementById('browser-status');
+            status.innerHTML = message;
+            status.className = 'status ' + (isError ? 'error' : 'success');
+        }
+
+        async function launchBrowser() {
+            try {
+                showBrowserStatus('🚀 Starting browser...');
+                const response = await fetch('/oauth/browser/api/launch-chrome', { method: 'POST' });
+                const result = await response.text();
+                showBrowserStatus(result, !response.ok);
+            } catch (error) {
+                showBrowserStatus('❌ Error: ' + error.message, true);
+            }
+        }
+
+        async function openLocalhost() {
+            try {
+                showBrowserStatus('🌐 Opening localhost:8080 in browser...');
+                const response = await fetch('/oauth/browser/api/open-localhost', { method: 'POST' });
+                const result = await response.text();
+                showBrowserStatus(result, !response.ok);
+            } catch (error) {
+                showBrowserStatus('❌ Error: ' + error.message, true);
+            }
+        }
+
+        async function testBrowser() {
+            try {
+                showBrowserStatus('🔍 Testing browser installation...');
+                const response = await fetch('/oauth/browser/api/test-chrome', { method: 'POST' });
+                const result = await response.text();
+                showBrowserStatus(result, !response.ok);
+            } catch (error) {
+                showBrowserStatus('❌ Error: ' + error.message, true);
+            }
+        }
+
+        function showVNC() {
+            showBrowserStatus('📺 Loading VNC viewer...');
+            const container = document.getElementById('vnc-container');
+            const frame = document.getElementById('vnc-frame');
+            
+            // Point to the OAuth2-protected VNC endpoint
+            const vncUrl = '/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale';
+            frame.src = vncUrl;
+            container.style.display = 'block';
+            showBrowserStatus('✅ VNC viewer loaded. Launch a browser first to see the desktop.');
+        }
+
+        function hideVNC() {
+            const container = document.getElementById('vnc-container');
+            const frame = document.getElementById('vnc-frame');
+            container.style.display = 'none';
+            frame.src = '';
+            showBrowserStatus('VNC viewer closed.');
+        }
+
+        // Add keyboard shortcut for quick access
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === '`') {
+                window.location.href = '/oauth/terminal';
+            } else if (e.ctrlKey && e.key === '1') {
+                window.location.href = '/oauth';
+            } else if (e.ctrlKey && e.key === '2') {
+                toggleBrowserControls();
+            }
+        });
+    </script>
+</body>
+</html>
