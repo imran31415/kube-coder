@@ -203,37 +203,29 @@ kubectl top pods -n coder  # Resource usage
 
 ## 👥 Adding New Users
 
-1. **Create user values file:**
+For detailed user provisioning instructions, see **[NEW_USER_PROVISIONING.md](./NEW_USER_PROVISIONING.md)**.
+
+### Quick Start
 ```bash
-mkdir deployments/newuser
-cp deployments/imran/values.yaml deployments/newuser/values.yaml
+# Automated provisioning (recommended)
+./scripts/provision-user.sh john john_doe "John Doe" john.doe@company.com dev.company.com
+
+# Manual provisioning
+mkdir deployments/john
+cp templates/user-values-template.yaml deployments/john/values.yaml
+# Edit the values file with user details
+make deploy-john
 ```
 
-2. **Update configuration:**
-```yaml
-# deployments/newuser/values.yaml
-user:
-  name: newuser
-  host: newuser.dev.yourdomain.com
-  env:
-    - name: GIT_USER_NAME
-      value: "New User"
-    - name: GIT_USER_EMAIL
-      value: "newuser@yourdomain.com"
-```
+### Required Information
+- **GitHub username** (for OAuth2 authentication)
+- **Full name** and **email** (for git configuration)  
+- **Subdomain** (e.g., `john` for `john.dev.company.com`)
+- **Storage size** (default: 50Gi)
 
-3. **Add Makefile targets:**
-```makefile
-deploy-newuser: ## Deploy newuser's workspace
-	helm upgrade newuser-workspace ./charts/workspace \
-		-f ./deployments/newuser/values.yaml \
-		--namespace $(NAMESPACE) --install --wait
-```
-
-4. **Deploy:**
-```bash
-make deploy-newuser
-```
+### Access URLs
+- **Basic Auth**: `https://username.yourdomain.com/`
+- **OAuth2**: `https://username.yourdomain.com/oauth` (recommended)
 
 ## 🔧 Configuration Reference
 

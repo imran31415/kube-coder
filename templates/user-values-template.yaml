@@ -1,0 +1,61 @@
+# User Values Template
+# Copy this file to deployments/{username}/values.yaml and customize
+
+namespace: coder
+
+user:
+  name: USERNAME_HERE                    # Change to actual username
+  pvcSize: 50Gi                         # Adjust storage size as needed
+  host: USERNAME_HERE.dev.company.com   # Change domain and username
+  env:
+    - name: GIT_USER_NAME
+      value: "FULL_NAME_HERE"           # User's full name
+    - name: GIT_USER_EMAIL
+      value: "EMAIL_HERE"               # User's email
+
+image:
+  repository: registry.digitalocean.com/resourceloop/coder
+  tag: devlaptop-v1.6.2-browser-stealth
+  pullPolicy: Always
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  auth:
+    type: basic                         # Change to 'oauth2' for GitHub OAuth
+    secretName: USERNAME_HERE-basic-auth
+  tls:
+    enabled: true
+    secretName: USERNAME_HERE-dev-company-com-tls
+    clusterIssuer: letsencrypt-production
+
+# OAuth2 configuration (uncomment and configure if using OAuth2)
+oauth2:
+  # GitHub user authorization
+  githubUsers: "GITHUB_USERNAME_HERE"   # User's GitHub username
+  # Optional: Use org/team instead of individual users
+  # githubOrg: "your-github-org"
+  # githubTeam: "your-github-org:your-team"
+  
+  # These will be overridden by secrets file
+  cookieSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
+  clientId: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE" 
+  clientSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
+
+resources:
+  requests:
+    cpu: "2"
+    memory: 3Gi
+  limits:
+    cpu: "3"
+    memory: 5Gi
+
+build:
+  mode: buildkit
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
+
+ssh:
+  enabled: false
+  port: 22
