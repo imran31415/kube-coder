@@ -38,6 +38,13 @@ spec:
           service:
             name: ws-{{ .Values.user.name }}
             port:
+              number: 6080
+      - path: /vscode
+        pathType: Prefix
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
               number: 8080
 ---
 apiVersion: networking.k8s.io/v1

@@ -114,6 +114,34 @@
             --accent-color: linear-gradient(45deg, #FF6B35, #F7931E);
         }
 
+        .health-indicator {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #28a745;
+            box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+            animation: pulse 2s infinite;
+        }
+
+        .health-indicator.warning {
+            background: #ffc107;
+            box-shadow: 0 0 8px rgba(255, 193, 7, 0.6);
+        }
+
+        .health-indicator.error {
+            background: #dc3545;
+            box-shadow: 0 0 8px rgba(220, 53, 69, 0.6);
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
         .service-icon {
             font-size: 2.5rem;
             margin-bottom: 15px;
@@ -252,19 +280,22 @@
         </div>
 
         <div class="services-grid">
-            <a href="/oauth/ide/?folder=/home/dev" class="service-card ide">
+            <a href="/oauth/vscode/?folder=/home/dev" class="service-card ide">
+                <div class="health-indicator" id="ide-health"></div>
                 <div class="service-icon">💻</div>
                 <h3>VS Code IDE</h3>
                 <p>Full-featured code editor with extensions</p>
             </a>
 
             <a href="/oauth/terminal" class="service-card terminal">
+                <div class="health-indicator" id="terminal-health"></div>
                 <div class="service-icon">⚡</div>
                 <h3>Terminal</h3>
                 <p>Command line interface with full system access</p>
             </a>
 
             <div class="service-card browser" onclick="toggleBrowserControls()">
+                <div class="health-indicator" id="browser-health"></div>
                 <div class="service-icon">🌐</div>
                 <h3>Browser</h3>
                 <p>Remote Firefox browser with VNC viewer</p>
@@ -277,6 +308,7 @@
             <button class="browser-btn" onclick="openLocalhost()">Open localhost:8080</button>
             <button class="browser-btn" onclick="testBrowser()">Test Installation</button>
             <button class="browser-btn" onclick="showVNC()">View Remote Desktop</button>
+            <button class="browser-btn" onclick="openFullscreenVNC()">🖥️ Open Fullscreen VNC</button>
             <div id="browser-status"></div>
             
             <div id="vnc-container" class="vnc-container" style="display: none;">
@@ -301,7 +333,43 @@
         document.addEventListener('DOMContentLoaded', function() {
             // Try to get user info from headers or cookies if available
             // This would be populated by the OAuth2 proxy headers
+            checkServicesHealth();
+            // Check health every 30 seconds
+            setInterval(checkServicesHealth, 30000);
         });
+
+        function setHealthIndicator(serviceId, status) {
+            const indicator = document.getElementById(serviceId + '-health');
+            if (indicator) {
+                indicator.className = 'health-indicator ' + status;
+            }
+        }
+
+        async function checkServicesHealth() {
+            // Check IDE health
+            try {
+                const ideResponse = await fetch('/oauth/vscode/', { method: 'HEAD', timeout: 5000 });
+                setHealthIndicator('ide', ideResponse.ok ? '' : 'error');
+            } catch {
+                setHealthIndicator('ide', 'error');
+            }
+
+            // Check Terminal health  
+            try {
+                const terminalResponse = await fetch('/oauth/terminal', { method: 'HEAD', timeout: 5000 });
+                setHealthIndicator('terminal', terminalResponse.ok ? '' : 'error');
+            } catch {
+                setHealthIndicator('terminal', 'error');
+            }
+
+            // Check VNC/Browser health
+            try {
+                const vncResponse = await fetch('/oauth/vnc-direct/vnc.html', { method: 'HEAD', timeout: 5000 });
+                setHealthIndicator('browser', vncResponse.ok ? '' : 'error');
+            } catch {
+                setHealthIndicator('browser', 'error');
+            }
+        }
 
         function toggleBrowserControls() {
             const controls = document.getElementById('browser-controls');
@@ -366,6 +434,13 @@
             container.style.display = 'none';
             frame.src = '';
             showBrowserStatus('VNC viewer closed.');
+        }
+
+        function openFullscreenVNC() {
+            showBrowserStatus('🖥️ Opening fullscreen VNC viewer...');
+            const vncUrl = '/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&fullscreen=true';
+            window.open(vncUrl, '_blank', 'width=1280,height=720,scrollbars=no,resizable=yes');
+            showBrowserStatus('✅ Fullscreen VNC viewer opened in new window.');
         }
 
         // Add keyboard shortcut for quick access

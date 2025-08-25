@@ -45,11 +45,11 @@ spec:
             port:
               number: 6080
 ---
-# Separate ingress for IDE with path rewriting
+# Separate ingress for VS Code with path rewriting
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}-oauth2-ide
+  name: ws-{{ .Values.user.name }}-oauth2-vscode
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
@@ -78,8 +78,48 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /oauth/ide/?(.*)
+      - path: /oauth/vscode/?(.*)
         pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 8080
+---
+# Additional ingress for /vscode path (without OAuth sub-path)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-oauth2-vscode-direct
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if .Values.ingress.className }}
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
+    {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /vscode
+        pathType: Prefix
         backend:
           service:
             name: ws-{{ .Values.user.name }}
