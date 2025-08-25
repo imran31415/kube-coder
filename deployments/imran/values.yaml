@@ -19,7 +19,7 @@ image:
 ingress:
   className: nginx
   auth:
-    type: basic
+    type: oauth2
     secretName: api-basic-auth
   tls:
     enabled: true
