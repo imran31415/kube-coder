@@ -51,13 +51,27 @@ spec:
             sleep 1 &&
             x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat -cursor -cursorpos -24to32 -nobell -noipv6 &
             sleep 2 &&
+            echo "Waiting for VNC server..." &&
+            for i in {1..30}; do netstat -tln 2>/dev/null | grep :5900 && break || sleep 1; done &&
             mkdir -p /tmp/novnc &&
             cd /tmp/novnc &&
             wget -q https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz -O novnc.tar.gz &&
             tar -xzf novnc.tar.gz --strip-components=1 &&
-            pkill -f websockify || true &&
-            sleep 1 &&
-            websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 &
+            echo "Starting websockify with retry logic..." &&
+            for retry in {1..3}; do
+              pkill -f websockify || true;
+              sleep 2;
+              websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 > /tmp/websockify.log 2>&1 &
+              WEBSOCKIFY_PID=$!;
+              sleep 3;
+              if netstat -tln 2>/dev/null | grep :6081 > /dev/null; then
+                echo "Websockify started successfully (PID: $WEBSOCKIFY_PID)";
+                break;
+              else
+                echo "Websockify attempt $retry failed, retrying...";
+                kill $WEBSOCKIFY_PID 2>/dev/null || true;
+              fi;
+            done &&
             sleep 2 &&
             mkdir -p /tmp/browser &&
             cp /browser-config/* /tmp/browser/ &&
@@ -85,6 +99,24 @@ spec:
           containerPort: 6080
         - name: vnc
           containerPort: 6081
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 6080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 6080
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
         volumeMounts:
         - name: home
           mountPath: /home/dev

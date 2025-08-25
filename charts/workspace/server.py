@@ -12,6 +12,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.path = "/dashboard.html"
         elif self.path in ["/browser", "/browser/"]:
             self.path = "/index.html"
+        elif self.path == "/health":
+            self.send_health_check()
+            return
+        elif self.path == "/health/vscode":
+            self.send_vscode_health()
+            return
+        elif self.path == "/health/terminal":
+            self.send_terminal_health()
+            return
+        elif self.path == "/health/browser":
+            self.send_browser_health()
+            return
         elif self.path == "/vnc" or self.path == "/vnc/":
             self.send_vnc_viewer()
             return
@@ -167,6 +179,82 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(message.encode())
+    
+    def send_health_check(self):
+        """Overall health check endpoint"""
+        vscode_status = self.check_service_health('localhost', 8080)
+        terminal_status = self.check_service_health('localhost', 7681)
+        browser_status = self.check_service_health('localhost', 6081)
+        
+        health_data = {
+            'status': 'healthy' if all([vscode_status, terminal_status, browser_status]) else 'degraded',
+            'services': {
+                'vscode': {'status': 'up' if vscode_status else 'down', 'port': 8080},
+                'terminal': {'status': 'up' if terminal_status else 'down', 'port': 7681},
+                'browser': {'status': 'up' if browser_status else 'down', 'port': 6081}
+            },
+            'timestamp': time.time()
+        }
+        
+        self.send_response(200 if health_data['status'] == 'healthy' else 503)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(health_data).encode())
+    
+    def send_vscode_health(self):
+        """VS Code health check"""
+        status = self.check_service_health('localhost', 8080)
+        response = {'service': 'vscode', 'status': 'up' if status else 'down', 'port': 8080}
+        
+        self.send_response(200 if status else 503)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
+    
+    def send_terminal_health(self):
+        """Terminal health check"""
+        status = self.check_service_health('localhost', 7681)
+        response = {'service': 'terminal', 'status': 'up' if status else 'down', 'port': 7681}
+        
+        self.send_response(200 if status else 503)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
+    
+    def send_browser_health(self):
+        """Browser/VNC health check"""
+        vnc_status = self.check_service_health('localhost', 5900)  # x11vnc
+        websockify_status = self.check_service_health('localhost', 6081)  # websockify
+        
+        status = vnc_status and websockify_status
+        response = {
+            'service': 'browser',
+            'status': 'up' if status else 'down',
+            'components': {
+                'vnc': 'up' if vnc_status else 'down',
+                'websockify': 'up' if websockify_status else 'down'
+            }
+        }
+        
+        self.send_response(200 if status else 503)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
+    
+    def check_service_health(self, host, port):
+        """Check if a service is listening on the given port"""
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
+                result = s.connect_ex((host, port))
+                return result == 0
+        except Exception:
+            return False
     
     def test_chrome(self):
         try:

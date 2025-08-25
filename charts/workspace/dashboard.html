@@ -342,30 +342,43 @@
             const indicator = document.getElementById(serviceId + '-health');
             if (indicator) {
                 indicator.className = 'health-indicator ' + status;
+                // Add title for accessibility
+                const statusText = status === '' ? 'Service is healthy' : 
+                                 status === 'warning' ? 'Service has issues' : 'Service is down';
+                indicator.title = statusText;
             }
         }
 
         async function checkServicesHealth() {
-            // Check IDE health
+            // Check IDE health via our health endpoint
             try {
-                const ideResponse = await fetch('/oauth/vscode/', { method: 'HEAD', timeout: 5000 });
+                const ideResponse = await fetch('/health/vscode', { 
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
                 setHealthIndicator('ide', ideResponse.ok ? '' : 'error');
             } catch {
                 setHealthIndicator('ide', 'error');
             }
 
-            // Check Terminal health  
+            // Check Terminal health via our health endpoint
             try {
-                const terminalResponse = await fetch('/oauth/terminal', { method: 'HEAD', timeout: 5000 });
+                const terminalResponse = await fetch('/health/terminal', { 
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
                 setHealthIndicator('terminal', terminalResponse.ok ? '' : 'error');
             } catch {
                 setHealthIndicator('terminal', 'error');
             }
 
-            // Check VNC/Browser health
+            // Check VNC/Browser health via our health endpoint
             try {
-                const vncResponse = await fetch('/oauth/vnc-direct/vnc.html', { method: 'HEAD', timeout: 5000 });
-                setHealthIndicator('browser', vncResponse.ok ? '' : 'error');
+                const browserResponse = await fetch('/health/browser', { 
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                setHealthIndicator('browser', browserResponse.ok ? '' : 'error');
             } catch {
                 setHealthIndicator('browser', 'error');
             }
