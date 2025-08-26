@@ -61,7 +61,11 @@ spec:
             echo "Starting websockify in background..." &&
             pkill -f websockify || true &&
             sleep 1 &&
-            nohup websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 > /tmp/websockify.log 2>&1 &
+            (
+              cd /tmp/novnc &&
+              exec websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 > /tmp/websockify.log 2>&1
+            ) &
+            sleep 2 &&
             echo "Starting browser server..." &&
             mkdir -p /tmp/browser &&
             cp /browser-config/* /tmp/browser/ &&
@@ -74,9 +78,14 @@ spec:
                 echo "Restarting browser server...";
                 cd /tmp/browser && python3 server.py &
               fi;
-              if ! pgrep -f websockify > /dev/null; then
-                echo "Restarting websockify...";
-                nohup websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 > /tmp/websockify.log 2>&1 &
+              if ! netstat -tln 2>/dev/null | grep :6081 > /dev/null; then
+                echo "Websockify not listening, restarting...";
+                pkill -f websockify || true;
+                sleep 1;
+                (
+                  cd /tmp/novnc &&
+                  exec websockify --web=/tmp/novnc --heartbeat=30 6081 localhost:5900 >> /tmp/websockify.log 2>&1
+                ) &
               fi;
             done
         env:
