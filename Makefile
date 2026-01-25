@@ -1,5 +1,5 @@
-# Makefile for remote-dev-helm (New Architecture)
-.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs shell version
+# Makefile for kube-coder
+.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard
 
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
@@ -11,11 +11,18 @@ NAMESPACE := coder
 # Docker image full name
 IMAGE := $(REGISTRY):$(IMAGE_NAME)-$(VERSION)
 
+# Default target
+.DEFAULT_GOAL := help
+
 help: ## Show this help message
-	@echo 'Usage: make [target]'
-	@echo ''
-	@echo 'Targets:'
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo "Usage: make [target]"
+	@echo ""
+	@echo "Targets:"
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# =============================================================================
+# Docker Image
+# =============================================================================
 
 build: ## Build Docker image for amd64 architecture
 	@echo "Building $(IMAGE) for $(PLATFORM)..."
@@ -33,6 +40,14 @@ push: build ## Build and push Docker image
 		-f devlaptop/Dockerfile \
 		--push \
 		.
+
+clean: ## Clean up local Docker images
+	@echo "Cleaning up local images..."
+	docker rmi $(IMAGE) || true
+
+# =============================================================================
+# Deployment
+# =============================================================================
 
 deploy-base: ## Deploy base infrastructure
 	@echo "Deploying base infrastructure..."
@@ -63,60 +78,61 @@ rollback-imran: ## Rollback Imran's workspace
 	@echo "Rolling back Imran's workspace..."
 	helm rollback imran-workspace --namespace $(NAMESPACE)
 
-rollback-gerard: ## Rollback Gerard's workspace  
+rollback-gerard: ## Rollback Gerard's workspace
 	@echo "Rolling back Gerard's workspace..."
 	helm rollback gerard-workspace --namespace $(NAMESPACE)
 
-clean: ## Clean up local Docker images
-	@echo "Cleaning up local images..."
-	docker rmi $(IMAGE) || true
+# =============================================================================
+# Monitoring
+# =============================================================================
 
 status: ## Check deployment status
-	@echo "Checking deployment status..."
-	@echo "=== Base Infrastructure ==="
-	helm status base-infrastructure -n $(NAMESPACE) || echo "Not deployed"
+	@echo "=== Helm Releases ==="
+	@helm list -n $(NAMESPACE)
 	@echo ""
-	@echo "=== Workspaces ==="
-	helm list -n $(NAMESPACE)
+	@echo "=== Pods ==="
+	@kubectl get pods -n $(NAMESPACE)
 	@echo ""
-	kubectl get pods -n $(NAMESPACE)
-	@echo ""
-	kubectl get ingress -n $(NAMESPACE)
+	@echo "=== Ingresses ==="
+	@kubectl get ingress -n $(NAMESPACE) --no-headers | awk '{print $$1, $$3}'
 
-logs-imran: ## Show logs from Imran's workspace pod
-	@echo "Showing logs from Imran's workspace..."
-	kubectl logs -f -n $(NAMESPACE) deployment/ws-imran
-
-logs-gerard: ## Show logs from Gerard's workspace pod
-	@echo "Showing logs from Gerard's workspace..."
-	kubectl logs -f -n $(NAMESPACE) deployment/ws-gerard
-
-shell-imran: ## Get shell access to Imran's workspace pod
-	@echo "Getting shell access to Imran's workspace..."
-	kubectl exec -it -n $(NAMESPACE) deployment/ws-imran -- /bin/bash
-
-shell-gerard: ## Get shell access to Gerard's workspace pod
-	@echo "Getting shell access to Gerard's workspace..."
-	kubectl exec -it -n $(NAMESPACE) deployment/ws-gerard -- /bin/bash
-
-version: ## Show current versions
+version: ## Show current versions and config
 	@echo "Current configuration:"
-	@echo "  Registry: $(REGISTRY)"
-	@echo "  Image: $(IMAGE_NAME)"
-	@echo "  Version: $(VERSION)"
-	@echo "  Platform: $(PLATFORM)"
+	@echo "  Registry:  $(REGISTRY)"
+	@echo "  Image:     $(IMAGE_NAME)"
+	@echo "  Version:   $(VERSION)"
+	@echo "  Platform:  $(PLATFORM)"
 	@echo "  Namespace: $(NAMESPACE)"
+	@echo "  Full tag:  $(IMAGE)"
 
-test-imran: ## Test Imran's workspace (Node version and yarn)
+logs-imran: ## Show logs from Imran's workspace
+	kubectl logs -f -n $(NAMESPACE) deployment/ws-imran -c ide
+
+logs-gerard: ## Show logs from Gerard's workspace
+	kubectl logs -f -n $(NAMESPACE) deployment/ws-gerard -c ide
+
+test-imran: ## Test Imran's workspace
 	@echo "Testing Imran's workspace..."
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -- node --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -- yarn --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -- pwd
+	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- node --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- yarn --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- gh --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- code-server --version | head -1
 
-test-gerard: ## Test Gerard's workspace (Node version and yarn)  
+test-gerard: ## Test Gerard's workspace
 	@echo "Testing Gerard's workspace..."
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -- node --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -- yarn --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -- pwd
+	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- node --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- yarn --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- gh --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- code-server --version | head -1
 
-test-all: test-imran test-gerard ## Test both workspaces
+test-all: test-imran test-gerard ## Test all workspaces
+
+# =============================================================================
+# Shell Access
+# =============================================================================
+
+shell-imran: ## Shell into Imran's workspace
+	kubectl exec -it -n $(NAMESPACE) deployment/ws-imran -c ide -- /bin/bash
+
+shell-gerard: ## Shell into Gerard's workspace
+	kubectl exec -it -n $(NAMESPACE) deployment/ws-gerard -c ide -- /bin/bash
