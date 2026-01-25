@@ -1,4 +1,4 @@
-<img width="601" height="173" alt="image" src="https://github.com/user-attachments/assets/b07b3e76-8a9a-4611-8e2f-b4c3a995f589" /># Kube-Coder
+# Kube-Coder
 
 
 A Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides VS Code IDE, terminal access, and remote browser capabilities, protected by GitHub OAuth2 authentication.
