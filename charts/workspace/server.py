@@ -5,6 +5,326 @@ import subprocess
 import os
 import json
 import time
+import re
+
+# Alert thresholds for metrics
+ALERT_THRESHOLDS = {
+    'cpu': {'warning': 70, 'critical': 90},
+    'memory': {'warning': 80, 'critical': 95},
+    'disk': {'warning': 80, 'critical': 90}
+}
+
+class MetricsCollector:
+    """Collects system metrics from /proc filesystem and os.statvfs"""
+
+    @staticmethod
+    def get_cpu_usage():
+        """Get CPU usage percentage using /proc/stat"""
+        try:
+            def read_cpu_times():
+                with open('/proc/stat', 'r') as f:
+                    line = f.readline()
+                    parts = line.split()
+                    # cpu user nice system idle iowait irq softirq steal guest guest_nice
+                    if parts[0] == 'cpu':
+                        times = [int(x) for x in parts[1:]]
+                        idle = times[3] + times[4]  # idle + iowait
+                        total = sum(times)
+                        return idle, total
+                return 0, 0
+
+            idle1, total1 = read_cpu_times()
+            time.sleep(0.5)
+            idle2, total2 = read_cpu_times()
+
+            idle_delta = idle2 - idle1
+            total_delta = total2 - total1
+
+            if total_delta == 0:
+                usage_percent = 0.0
+            else:
+                usage_percent = ((total_delta - idle_delta) / total_delta) * 100
+
+            # Count CPU cores
+            cores = 0
+            with open('/proc/stat', 'r') as f:
+                for line in f:
+                    if line.startswith('cpu') and line[3].isdigit():
+                        cores += 1
+
+            return {
+                'usage_percent': round(usage_percent, 1),
+                'cores': cores if cores > 0 else 1
+            }
+        except Exception as e:
+            return {'usage_percent': 0.0, 'cores': 1, 'error': str(e)}
+
+    @staticmethod
+    def get_memory_usage():
+        """Get memory usage from /proc/meminfo"""
+        try:
+            meminfo = {}
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    key = parts[0].rstrip(':')
+                    value = int(parts[1])  # Value in kB
+                    meminfo[key] = value
+
+            total_kb = meminfo.get('MemTotal', 0)
+            available_kb = meminfo.get('MemAvailable', meminfo.get('MemFree', 0))
+            used_kb = total_kb - available_kb
+
+            total_mb = total_kb / 1024
+            used_mb = used_kb / 1024
+            available_mb = available_kb / 1024
+
+            percent = (used_kb / total_kb * 100) if total_kb > 0 else 0
+
+            return {
+                'total_mb': round(total_mb, 1),
+                'used_mb': round(used_mb, 1),
+                'available_mb': round(available_mb, 1),
+                'percent': round(percent, 1)
+            }
+        except Exception as e:
+            return {'total_mb': 0, 'used_mb': 0, 'available_mb': 0, 'percent': 0, 'error': str(e)}
+
+    @staticmethod
+    def get_disk_usage():
+        """Get disk usage for /home/dev"""
+        try:
+            path = '/home/dev'
+            if not os.path.exists(path):
+                path = '/'
+
+            stat = os.statvfs(path)
+            total_bytes = stat.f_blocks * stat.f_frsize
+            available_bytes = stat.f_bavail * stat.f_frsize
+            used_bytes = total_bytes - available_bytes
+
+            total_gb = total_bytes / (1024 ** 3)
+            used_gb = used_bytes / (1024 ** 3)
+            available_gb = available_bytes / (1024 ** 3)
+
+            percent = (used_bytes / total_bytes * 100) if total_bytes > 0 else 0
+
+            return {
+                'total_gb': round(total_gb, 1),
+                'used_gb': round(used_gb, 1),
+                'available_gb': round(available_gb, 1),
+                'percent': round(percent, 1),
+                'path': path
+            }
+        except Exception as e:
+            return {'total_gb': 0, 'used_gb': 0, 'available_gb': 0, 'percent': 0, 'path': '/home/dev', 'error': str(e)}
+
+    @staticmethod
+    def get_alerts(cpu, memory, disk):
+        """Generate alerts based on current metrics"""
+        alerts = []
+
+        if cpu.get('usage_percent', 0) >= ALERT_THRESHOLDS['cpu']['critical']:
+            alerts.append({'type': 'critical', 'resource': 'cpu', 'message': f"CPU usage at {cpu['usage_percent']}%"})
+        elif cpu.get('usage_percent', 0) >= ALERT_THRESHOLDS['cpu']['warning']:
+            alerts.append({'type': 'warning', 'resource': 'cpu', 'message': f"CPU usage at {cpu['usage_percent']}%"})
+
+        if memory.get('percent', 0) >= ALERT_THRESHOLDS['memory']['critical']:
+            alerts.append({'type': 'critical', 'resource': 'memory', 'message': f"Memory usage at {memory['percent']}%"})
+        elif memory.get('percent', 0) >= ALERT_THRESHOLDS['memory']['warning']:
+            alerts.append({'type': 'warning', 'resource': 'memory', 'message': f"Memory usage at {memory['percent']}%"})
+
+        if disk.get('percent', 0) >= ALERT_THRESHOLDS['disk']['critical']:
+            alerts.append({'type': 'critical', 'resource': 'disk', 'message': f"Disk usage at {disk['percent']}%"})
+        elif disk.get('percent', 0) >= ALERT_THRESHOLDS['disk']['warning']:
+            alerts.append({'type': 'warning', 'resource': 'disk', 'message': f"Disk usage at {disk['percent']}%"})
+
+        return alerts
+
+    @staticmethod
+    def get_all_metrics():
+        """Return all metrics as a dictionary"""
+        cpu = MetricsCollector.get_cpu_usage()
+        memory = MetricsCollector.get_memory_usage()
+        disk = MetricsCollector.get_disk_usage()
+        alerts = MetricsCollector.get_alerts(cpu, memory, disk)
+
+        return {
+            'cpu': cpu,
+            'memory': memory,
+            'disk': disk,
+            'alerts': alerts,
+            'timestamp': time.time()
+        }
+
+
+class GitHubManager:
+    """Handles GitHub authentication and configuration"""
+
+    SSH_DIR = os.path.expanduser('~/.ssh')
+    GH_CONFIG_DIR = os.path.expanduser('~/.config/gh')
+
+    @staticmethod
+    def get_ssh_status():
+        """Check if SSH key exists and get its details"""
+        key_path = os.path.join(GitHubManager.SSH_DIR, 'id_ed25519')
+        pub_key_path = key_path + '.pub'
+
+        if not os.path.exists(pub_key_path):
+            return {'configured': False}
+
+        try:
+            with open(pub_key_path, 'r') as f:
+                public_key = f.read().strip()
+
+            # Get fingerprint
+            result = subprocess.run(
+                ['ssh-keygen', '-lf', pub_key_path],
+                capture_output=True, text=True
+            )
+            fingerprint = result.stdout.split()[1] if result.returncode == 0 else 'unknown'
+
+            return {
+                'configured': True,
+                'key_type': 'ed25519',
+                'key_fingerprint': fingerprint,
+                'public_key': public_key
+            }
+        except Exception as e:
+            return {'configured': False, 'error': str(e)}
+
+    @staticmethod
+    def generate_ssh_key(email):
+        """Generate new SSH key pair"""
+        key_path = os.path.join(GitHubManager.SSH_DIR, 'id_ed25519')
+        os.makedirs(GitHubManager.SSH_DIR, mode=0o700, exist_ok=True)
+
+        # Remove existing key if present
+        for ext in ['', '.pub']:
+            path = key_path + ext
+            if os.path.exists(path):
+                os.remove(path)
+
+        result = subprocess.run([
+            'ssh-keygen', '-t', 'ed25519', '-C', email,
+            '-f', key_path, '-N', ''
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            raise Exception(f"Failed to generate key: {result.stderr}")
+
+        # Add GitHub config to SSH config file
+        config_path = os.path.join(GitHubManager.SSH_DIR, 'config')
+        github_config = """
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+"""
+        # Check if config exists and already has github.com
+        existing_config = ''
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                existing_config = f.read()
+
+        if 'github.com' not in existing_config:
+            with open(config_path, 'a') as f:
+                f.write(github_config)
+            os.chmod(config_path, 0o600)
+
+        return GitHubManager.get_ssh_status()
+
+    @staticmethod
+    def get_gh_cli_status():
+        """Check gh CLI authentication status"""
+        try:
+            result = subprocess.run(
+                ['gh', 'auth', 'status', '--hostname', 'github.com'],
+                capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                return {'installed': True, 'authenticated': False}
+
+            # Parse output to get username (gh writes to stderr)
+            output = result.stderr + result.stdout
+            username = None
+            for line in output.split('\n'):
+                if 'Logged in to github.com' in line:
+                    # Try to extract username
+                    if 'account' in line:
+                        parts = line.split('account')
+                        if len(parts) > 1:
+                            username = parts[1].strip().split()[0].strip('()')
+                    break
+
+            return {
+                'installed': True,
+                'authenticated': True,
+                'username': username
+            }
+        except FileNotFoundError:
+            return {'installed': False, 'authenticated': False}
+        except Exception as e:
+            return {'installed': True, 'authenticated': False, 'error': str(e)}
+
+    @staticmethod
+    def start_device_flow():
+        """Start gh auth device flow - returns instructions for manual auth"""
+        # We can't truly start interactive device flow from a server
+        # Instead, provide instructions for the user
+        return {
+            'instructions': 'Run the following command in the terminal to authenticate:',
+            'command': 'gh auth login --hostname github.com --git-protocol https --web',
+            'manual_steps': [
+                '1. Open Terminal from the dashboard',
+                '2. Run: gh auth login',
+                '3. Select GitHub.com',
+                '4. Select HTTPS',
+                '5. Authenticate with browser when prompted',
+                '6. Return here and click "Check Status"'
+            ]
+        }
+
+    @staticmethod
+    def get_git_config():
+        """Get git global config"""
+        try:
+            name_result = subprocess.run(
+                ['git', 'config', '--global', 'user.name'],
+                capture_output=True, text=True
+            )
+            email_result = subprocess.run(
+                ['git', 'config', '--global', 'user.email'],
+                capture_output=True, text=True
+            )
+            return {
+                'user_name': name_result.stdout.strip() if name_result.returncode == 0 else '',
+                'user_email': email_result.stdout.strip() if email_result.returncode == 0 else ''
+            }
+        except Exception as e:
+            return {'user_name': '', 'user_email': '', 'error': str(e)}
+
+    @staticmethod
+    def set_git_config(name, email):
+        """Set git global config"""
+        try:
+            subprocess.run(['git', 'config', '--global', 'user.name', name], check=True)
+            subprocess.run(['git', 'config', '--global', 'user.email', email], check=True)
+            return GitHubManager.get_git_config()
+        except Exception as e:
+            return {'error': str(e)}
+
+    @staticmethod
+    def get_full_status():
+        """Get combined GitHub status"""
+        return {
+            'ssh': GitHubManager.get_ssh_status(),
+            'gh_cli': GitHubManager.get_gh_cli_status(),
+            'git_config': GitHubManager.get_git_config()
+        }
+
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -23,6 +343,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         elif self.path == "/health/browser":
             self.send_browser_health()
+            return
+        elif self.path == "/metrics":
+            self.send_metrics()
+            return
+        elif self.path == "/api/github/status":
+            self.send_github_status()
+            return
+        elif self.path == "/api/github/config":
+            self.send_git_config()
             return
         elif self.path == "/vnc" or self.path == "/vnc/":
             self.send_vnc_viewer()
@@ -161,6 +490,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.launch_chrome()
             elif path == "/api/test-firefox":
                 self.test_chrome()
+            # GitHub configuration endpoints
+            elif path == "/api/github/ssh/generate":
+                self.handle_ssh_generate()
+            elif path == "/api/github/config":
+                self.handle_git_config_post()
+            elif path == "/api/github/cli/login-url":
+                self.handle_gh_login_instructions()
+            elif path == "/api/github/cli/complete-auth":
+                self.handle_gh_check_auth()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -245,7 +583,104 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(json.dumps(response).encode())
-    
+
+    def send_metrics(self):
+        """Send system metrics (CPU, memory, disk) as JSON"""
+        metrics = MetricsCollector.get_all_metrics()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(metrics).encode())
+
+    def send_github_status(self):
+        """Send combined GitHub status as JSON"""
+        status = GitHubManager.get_full_status()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(status).encode())
+
+    def send_git_config(self):
+        """Send git config as JSON"""
+        config = GitHubManager.get_git_config()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(json.dumps(config).encode())
+
+    def handle_ssh_generate(self):
+        """Handle SSH key generation request"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            email = data.get('email', 'user@example.com')
+            result = GitHubManager.generate_ssh_key(email)
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': str(e)}).encode())
+
+    def handle_git_config_post(self):
+        """Handle git config update request"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            name = data.get('name', '')
+            email = data.get('email', '')
+
+            if not name or not email:
+                self.send_response(400)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'Name and email are required'}).encode())
+                return
+
+            result = GitHubManager.set_git_config(name, email)
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': str(e)}).encode())
+
+    def handle_gh_login_instructions(self):
+        """Return instructions for gh CLI authentication"""
+        instructions = GitHubManager.start_device_flow()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(instructions).encode())
+
+    def handle_gh_check_auth(self):
+        """Check if gh CLI authentication is complete"""
+        status = GitHubManager.get_gh_cli_status()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(status).encode())
+
     def check_service_health(self, host, port):
         """Check if a service is listening on the given port"""
         import socket

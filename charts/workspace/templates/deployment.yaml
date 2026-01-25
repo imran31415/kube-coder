@@ -14,8 +14,10 @@ spec:
       app: ws-{{ .Values.user.name }}
   template:
     metadata:
-      labels: 
+      labels:
         app: ws-{{ .Values.user.name }}
+      annotations:
+        checksum/browser-config: {{ include (print $.Template.BasePath "/browser-configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: ws-{{ .Values.user.name }}
       {{- if .Values.image.pullSecretName }}
@@ -36,10 +38,12 @@ spec:
           - >
             cd /home/dev &&
             mkdir -p ~/.local/share/code-server &&
-            mkdir -p ~/.config &&
-            mkdir -p /shared-data/.ssh /shared-data/.config &&
-            ln -sf /shared-data/.ssh ~/.ssh &&
-            ln -sf /shared-data/.config/git ~/.config/git &&
+            mkdir -p ~/.config ~/.config/git ~/.config/gh &&
+            mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh &&
+            chmod 700 /home/dev/.credentials/.ssh &&
+            ln -sf /home/dev/.credentials/.ssh ~/.ssh &&
+            ln -sf /home/dev/.credentials/.config/git ~/.gitconfig &&
+            ln -sf /home/dev/.credentials/.config/gh ~/.config/gh &&
             code-server --bind-addr 0.0.0.0:8080 --auth none /home/dev &
             ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev bash &
             export DISPLAY=:99 &&
@@ -130,8 +134,6 @@ spec:
         volumeMounts:
         - name: home
           mountPath: /home/dev
-        - name: shared-credentials
-          mountPath: /shared-data
         - name: browser-config
           mountPath: /browser-config
         {{- if eq .Values.build.mode "buildkit" }}
@@ -170,10 +172,8 @@ spec:
         {{- end }}
       volumes:
       - name: home
-        persistentVolumeClaim: 
+        persistentVolumeClaim:
           claimName: ws-{{ .Values.user.name }}-home
-      - name: shared-credentials
-        emptyDir: {}
       - name: browser-config
         configMap:
           name: browser-config-{{ .Values.user.name }}
