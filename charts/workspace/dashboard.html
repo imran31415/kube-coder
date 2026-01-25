@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Remote Development Workspace</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -248,22 +249,274 @@
                 padding: 30px 20px;
                 margin: 10px;
             }
-            
+
             .header h1 {
                 font-size: 2rem;
             }
-            
+
             .services-grid {
                 grid-template-columns: 1fr;
             }
-            
+
             .service-card {
                 padding: 20px 15px;
             }
-            
+
             .service-icon {
                 font-size: 2rem;
             }
+        }
+
+        /* Metrics Section Styles */
+        .metrics-section {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .metrics-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 15px;
+        }
+
+        .metric-card {
+            background: white;
+            border-radius: 8px;
+            padding: 10px 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
+        }
+
+        .metric-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .metric-card h4 {
+            margin: 0;
+            color: #555;
+            font-size: 0.8rem;
+            font-weight: 500;
+            min-width: 50px;
+        }
+
+        .metric-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .metric-value.normal { color: #28a745; }
+        .metric-value.warning { color: #ffc107; }
+        .metric-value.critical { color: #dc3545; }
+
+        .metric-details {
+            font-size: 0.7rem;
+            color: #888;
+        }
+
+        .chart-container {
+            display: none;
+        }
+
+
+        .alert-banner {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin-top: 15px;
+            display: none;
+            text-align: left;
+        }
+
+        .alert-banner.critical {
+            background: #f8d7da;
+            border-color: #dc3545;
+        }
+
+        .alert-banner.visible {
+            display: block;
+        }
+
+        /* GitHub Configuration Styles */
+        .github-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .github-status {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .github-status.authenticated {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+        }
+
+        .github-status.not-authenticated {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+        }
+
+        .config-panel {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
+            text-align: left;
+        }
+
+        .config-panel h4 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 1rem;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #555;
+            font-size: 0.9rem;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+            box-sizing: border-box;
+        }
+
+        .form-group input:focus {
+            border-color: #667eea;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        }
+
+        .config-btn {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            width: 100%;
+            margin-top: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .config-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .config-btn.secondary {
+            background: #6c757d;
+        }
+
+        .config-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .help-text {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 10px;
+        }
+
+        .help-text a {
+            color: #667eea;
+        }
+
+        .pubkey-textarea {
+            width: 100%;
+            font-family: monospace;
+            font-size: 0.75rem;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #f8f9fa;
+            resize: none;
+            box-sizing: border-box;
+        }
+
+        .gh-instructions {
+            background: #e3f2fd;
+            border: 1px solid #90caf9;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            font-size: 0.9rem;
+        }
+
+        .gh-instructions ol {
+            margin: 10px 0 0 20px;
+            padding: 0;
+        }
+
+        .gh-instructions li {
+            margin-bottom: 5px;
+        }
+
+        .gh-instructions code {
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        /* Hide content until authenticated */
+        .auth-required {
+            display: none;
+        }
+
+        .auth-required.authenticated {
+            display: block;
+        }
+
+        .auth-loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .auth-loading .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid #e9ecef;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -274,12 +527,18 @@
             <p>Your cloud development environment</p>
         </div>
 
-        <div class="user-info">
-            <strong>🔐 Authenticated via GitHub OAuth</strong>
-            <div id="user-details">Welcome to your secure workspace</div>
+        <div id="auth-loading" class="auth-loading">
+            <div class="spinner"></div>
+            <p>Checking authentication...</p>
         </div>
 
-        <div class="services-grid">
+        <div id="auth-content" class="auth-required">
+            <div class="user-info">
+                <strong>🔐 Authenticated via GitHub OAuth</strong>
+                <div id="user-details">Welcome to your secure workspace</div>
+            </div>
+
+            <div class="services-grid">
             <a href="/oauth/vscode/?folder=/home/dev" class="service-card ide">
                 <div class="health-indicator" id="ide-health"></div>
                 <div class="service-icon">💻</div>
@@ -302,6 +561,118 @@
             </div>
         </div>
 
+        <div class="metrics-section">
+            <h4 style="color: #333; text-align: center; margin: 0 0 10px 0; font-size: 0.95rem;">System Resources</h4>
+
+            <div id="alert-banner" class="alert-banner">
+                <span id="alert-icon">&#x26A0;</span>
+                <span id="alert-message"></span>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-info">
+                        <h4>CPU</h4>
+                        <div id="cpu-value" class="metric-value normal">--%</div>
+                    </div>
+                    <div id="cpu-details" class="metric-details">--</div>
+                    <div class="chart-container">
+                        <canvas id="cpu-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-info">
+                        <h4>Memory</h4>
+                        <div id="memory-value" class="metric-value normal">--%</div>
+                    </div>
+                    <div id="memory-details" class="metric-details">--</div>
+                    <div class="chart-container">
+                        <canvas id="memory-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-info">
+                        <h4>Disk</h4>
+                        <div id="disk-value" class="metric-value normal">--%</div>
+                    </div>
+                    <div id="disk-details" class="metric-details">--</div>
+                    <div class="chart-container">
+                        <canvas id="disk-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="github-section">
+            <h3 style="color: #333; text-align: center; margin-bottom: 5px;">GitHub Configuration</h3>
+            <p style="color: #666; font-size: 0.9rem; text-align: center;">Configure Git and GitHub authentication</p>
+
+            <div id="github-status-banner" class="github-status">
+                <span id="github-status-icon">&#x1F512;</span>
+                <span id="github-status-text">Checking GitHub status...</span>
+            </div>
+
+            <!-- Git Config Section -->
+            <div class="config-panel">
+                <h4>Git Identity</h4>
+                <div class="form-group">
+                    <label for="git-name">Name:</label>
+                    <input type="text" id="git-name" placeholder="Your Name">
+                </div>
+                <div class="form-group">
+                    <label for="git-email">Email:</label>
+                    <input type="email" id="git-email" placeholder="your@email.com">
+                </div>
+                <button onclick="saveGitConfig()" class="config-btn">Save Git Config</button>
+            </div>
+
+            <!-- SSH Key Section -->
+            <div class="config-panel">
+                <h4>SSH Key Authentication</h4>
+                <div id="ssh-status">
+                    <p id="ssh-status-text">No SSH key configured</p>
+                </div>
+                <div id="ssh-pubkey-container" style="display: none;">
+                    <textarea id="ssh-pubkey" class="pubkey-textarea" readonly rows="3"></textarea>
+                    <button onclick="copySSHKey()" class="config-btn secondary">Copy Public Key</button>
+                    <p class="help-text">
+                        <a href="https://github.com/settings/keys" target="_blank">Add this key to GitHub &rarr;</a>
+                    </p>
+                </div>
+                <button onclick="generateSSHKey()" class="config-btn" id="generate-ssh-btn">
+                    Generate New SSH Key
+                </button>
+            </div>
+
+            <!-- GitHub CLI Section -->
+            <div class="config-panel">
+                <h4>GitHub CLI Authentication</h4>
+                <div id="gh-cli-status">
+                    <p id="gh-cli-status-text">Checking...</p>
+                </div>
+                <div id="gh-auth-container">
+                    <button onclick="showGHAuthInstructions()" class="config-btn" id="gh-login-btn">
+                        Authenticate with GitHub CLI
+                    </button>
+                    <div id="gh-auth-instructions" class="gh-instructions" style="display: none;">
+                        <strong>To authenticate with GitHub CLI:</strong>
+                        <ol>
+                            <li>Open <a href="/oauth/terminal" target="_blank">Terminal</a></li>
+                            <li>Run: <code>gh auth login</code></li>
+                            <li>Select GitHub.com and HTTPS</li>
+                            <li>Follow the prompts to authenticate</li>
+                            <li>Return here and click "Check Status"</li>
+                        </ol>
+                        <button onclick="checkGHAuth()" class="config-btn secondary" style="margin-top: 10px;">
+                            Check Status
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div id="browser-controls" class="browser-controls" style="display: none;">
             <h4 style="margin-bottom: 15px; color: #333;">🌐 Browser Controls</h4>
             <button class="browser-btn" onclick="launchBrowser()">Launch Browser</button>
@@ -320,6 +691,8 @@
             </div>
         </div>
 
+        </div><!-- end auth-content -->
+
         <div class="footer">
             <p>Secure • Scalable • Always Available</p>
             <p style="font-size: 0.8rem; margin-top: 5px; opacity: 0.7;">
@@ -329,14 +702,196 @@
     </div>
 
     <script>
-        // Extract user info from headers if available
+        // Metrics history for charts (keep last 20 data points)
+        const metricsHistory = {
+            cpu: [],
+            memory: [],
+            disk: [],
+            labels: []
+        };
+        const MAX_HISTORY = 20;
+        let cpuChart, memoryChart, diskChart;
+        let chartsInitialized = false;
+
+        // Check authentication and initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
-            // Try to get user info from headers or cookies if available
-            // This would be populated by the OAuth2 proxy headers
-            checkServicesHealth();
-            // Check health every 30 seconds
-            setInterval(checkServicesHealth, 30000);
+            checkAuthentication();
         });
+
+        function checkAuthentication() {
+            // If not on OAuth-protected path, redirect to it
+            const path = window.location.pathname;
+            if (!path.startsWith('/oauth')) {
+                // Redirect to OAuth-protected dashboard
+                window.location.href = '/oauth/';
+                return;
+            }
+
+            // On OAuth path - show authenticated content
+            showAuthenticatedContent();
+        }
+
+        function showAuthenticatedContent() {
+            // Hide loading, show content
+            document.getElementById('auth-loading').style.display = 'none';
+            document.getElementById('auth-content').classList.add('authenticated');
+
+            // Initialize dashboard features
+            checkServicesHealth();
+            setInterval(checkServicesHealth, 30000);
+
+            initializeCharts();
+            fetchMetrics();
+            setInterval(fetchMetrics, 10000);
+
+            loadGitHubStatus();
+            setInterval(loadGitHubStatus, 60000);
+        }
+
+        function initializeCharts() {
+            if (typeof Chart === 'undefined') {
+                console.warn('Chart.js not loaded yet');
+                setTimeout(initializeCharts, 500);
+                return;
+            }
+
+            const chartConfig = {
+                type: 'line',
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { min: 0, max: 100, display: false },
+                        x: { display: false }
+                    },
+                    elements: {
+                        point: { radius: 0 },
+                        line: { tension: 0.4, borderWidth: 2 }
+                    },
+                    animation: { duration: 300 }
+                }
+            };
+
+            cpuChart = new Chart(document.getElementById('cpu-chart'), {
+                ...chartConfig,
+                data: {
+                    labels: [],
+                    datasets: [{ data: [], borderColor: '#667eea', fill: true, backgroundColor: 'rgba(102, 126, 234, 0.1)' }]
+                }
+            });
+
+            memoryChart = new Chart(document.getElementById('memory-chart'), {
+                ...chartConfig,
+                data: {
+                    labels: [],
+                    datasets: [{ data: [], borderColor: '#764ba2', fill: true, backgroundColor: 'rgba(118, 75, 162, 0.1)' }]
+                }
+            });
+
+            diskChart = new Chart(document.getElementById('disk-chart'), {
+                ...chartConfig,
+                data: {
+                    labels: [],
+                    datasets: [{ data: [], borderColor: '#28a745', fill: true, backgroundColor: 'rgba(40, 167, 69, 0.1)' }]
+                }
+            });
+
+            chartsInitialized = true;
+        }
+
+        async function fetchMetrics() {
+            try {
+                const response = await fetch('/metrics', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    updateMetricsDisplay(data);
+                    updateMetricsHistory(data);
+                    updateAlerts(data.alerts || []);
+                }
+            } catch (error) {
+                console.error('Failed to fetch metrics:', error);
+            }
+        }
+
+        function updateMetricsDisplay(data) {
+            // Update CPU
+            const cpuPercent = data.cpu?.usage_percent ?? 0;
+            document.getElementById('cpu-value').textContent = cpuPercent.toFixed(1) + '%';
+            document.getElementById('cpu-value').className = 'metric-value ' + getStatusClass(cpuPercent, 70, 90);
+            document.getElementById('cpu-details').textContent = (data.cpu?.cores || 0) + ' cores';
+
+            // Update Memory
+            const memPercent = data.memory?.percent ?? 0;
+            document.getElementById('memory-value').textContent = memPercent.toFixed(1) + '%';
+            document.getElementById('memory-value').className = 'metric-value ' + getStatusClass(memPercent, 80, 95);
+            document.getElementById('memory-details').textContent =
+                (data.memory?.used_mb / 1024).toFixed(1) + ' / ' + (data.memory?.total_mb / 1024).toFixed(1) + ' GB';
+
+            // Update Disk
+            const diskPercent = data.disk?.percent ?? 0;
+            document.getElementById('disk-value').textContent = diskPercent.toFixed(1) + '%';
+            document.getElementById('disk-value').className = 'metric-value ' + getStatusClass(diskPercent, 80, 90);
+            document.getElementById('disk-details').textContent =
+                (data.disk?.used_gb?.toFixed(1) || 0) + ' / ' + (data.disk?.total_gb?.toFixed(1) || 0) + ' GB';
+        }
+
+        function updateMetricsHistory(data) {
+            if (!chartsInitialized) return;
+
+            const now = new Date().toLocaleTimeString();
+            metricsHistory.labels.push(now);
+            metricsHistory.cpu.push(data.cpu?.usage_percent ?? 0);
+            metricsHistory.memory.push(data.memory?.percent ?? 0);
+            metricsHistory.disk.push(data.disk?.percent ?? 0);
+
+            // Keep only last MAX_HISTORY points
+            if (metricsHistory.labels.length > MAX_HISTORY) {
+                metricsHistory.labels.shift();
+                metricsHistory.cpu.shift();
+                metricsHistory.memory.shift();
+                metricsHistory.disk.shift();
+            }
+
+            // Update charts
+            cpuChart.data.labels = metricsHistory.labels;
+            cpuChart.data.datasets[0].data = metricsHistory.cpu;
+            cpuChart.update('none');
+
+            memoryChart.data.labels = metricsHistory.labels;
+            memoryChart.data.datasets[0].data = metricsHistory.memory;
+            memoryChart.update('none');
+
+            diskChart.data.labels = metricsHistory.labels;
+            diskChart.data.datasets[0].data = metricsHistory.disk;
+            diskChart.update('none');
+        }
+
+        function getStatusClass(value, warningThreshold, criticalThreshold) {
+            if (value >= criticalThreshold) return 'critical';
+            if (value >= warningThreshold) return 'warning';
+            return 'normal';
+        }
+
+        function updateAlerts(alerts) {
+            const banner = document.getElementById('alert-banner');
+            const message = document.getElementById('alert-message');
+
+            if (alerts.length === 0) {
+                banner.classList.remove('visible', 'critical');
+                return;
+            }
+
+            const hasCritical = alerts.some(a => a.type === 'critical');
+            const alertMessages = alerts.map(a => a.message).join('; ');
+
+            message.textContent = alertMessages;
+            banner.classList.add('visible');
+            banner.classList.toggle('critical', hasCritical);
+        }
 
         function setHealthIndicator(serviceId, status) {
             const indicator = document.getElementById(serviceId + '-health');
@@ -454,6 +1009,169 @@
             const vncUrl = '/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&fullscreen=true';
             window.open(vncUrl, '_blank', 'width=1280,height=720,scrollbars=no,resizable=yes');
             showBrowserStatus('✅ Fullscreen VNC viewer opened in new window.');
+        }
+
+        // GitHub configuration functions
+        async function loadGitHubStatus() {
+            try {
+                const response = await fetch('/api/github/status', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    updateGitHubUI(data);
+                }
+            } catch (error) {
+                console.error('Failed to load GitHub status:', error);
+            }
+        }
+
+        function updateGitHubUI(data) {
+            // Update status banner
+            const banner = document.getElementById('github-status-banner');
+            const statusText = document.getElementById('github-status-text');
+            const statusIcon = document.getElementById('github-status-icon');
+
+            const sshOk = data.ssh?.configured;
+            const ghOk = data.gh_cli?.authenticated;
+
+            if (sshOk || ghOk) {
+                banner.className = 'github-status authenticated';
+                statusIcon.textContent = '\u2705';
+                statusText.textContent = ghOk
+                    ? 'Authenticated as ' + (data.gh_cli.username || 'GitHub user')
+                    : 'SSH key configured';
+            } else {
+                banner.className = 'github-status not-authenticated';
+                statusIcon.textContent = '\u26A0';
+                statusText.textContent = 'GitHub not configured';
+            }
+
+            // Update git config inputs
+            document.getElementById('git-name').value = data.git_config?.user_name || '';
+            document.getElementById('git-email').value = data.git_config?.user_email || '';
+
+            // Update SSH section
+            if (data.ssh?.configured) {
+                document.getElementById('ssh-status-text').textContent =
+                    'SSH key configured (' + data.ssh.key_type + ')';
+                document.getElementById('ssh-pubkey').value = data.ssh.public_key;
+                document.getElementById('ssh-pubkey-container').style.display = 'block';
+                document.getElementById('generate-ssh-btn').textContent = 'Regenerate SSH Key';
+            } else {
+                document.getElementById('ssh-status-text').textContent = 'No SSH key configured';
+                document.getElementById('ssh-pubkey-container').style.display = 'none';
+                document.getElementById('generate-ssh-btn').textContent = 'Generate SSH Key';
+            }
+
+            // Update gh CLI section
+            const ghStatusText = document.getElementById('gh-cli-status-text');
+            const ghLoginBtn = document.getElementById('gh-login-btn');
+
+            if (data.gh_cli?.authenticated) {
+                ghStatusText.textContent = 'Logged in as ' + (data.gh_cli.username || 'GitHub user');
+                ghLoginBtn.style.display = 'none';
+                document.getElementById('gh-auth-instructions').style.display = 'none';
+            } else {
+                ghStatusText.textContent = 'Not authenticated';
+                ghLoginBtn.style.display = 'block';
+            }
+        }
+
+        async function saveGitConfig() {
+            const name = document.getElementById('git-name').value.trim();
+            const email = document.getElementById('git-email').value.trim();
+
+            if (!name || !email) {
+                alert('Please enter both name and email');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/github/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name, email})
+                });
+
+                if (response.ok) {
+                    alert('Git configuration saved!');
+                    loadGitHubStatus();
+                } else {
+                    const data = await response.json();
+                    alert('Failed to save configuration: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        async function generateSSHKey() {
+            const email = document.getElementById('git-email').value.trim();
+            if (!email) {
+                alert('Please set your email first in Git Identity section');
+                return;
+            }
+
+            if (!confirm('This will generate a new SSH key. Any existing key will be replaced. Continue?')) {
+                return;
+            }
+
+            try {
+                const btn = document.getElementById('generate-ssh-btn');
+                btn.disabled = true;
+                btn.textContent = 'Generating...';
+
+                const response = await fetch('/api/github/ssh/generate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({email})
+                });
+
+                if (response.ok) {
+                    alert('SSH key generated! Copy the public key and add it to GitHub.');
+                    loadGitHubStatus();
+                } else {
+                    const data = await response.json();
+                    alert('Failed to generate SSH key: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                const btn = document.getElementById('generate-ssh-btn');
+                btn.disabled = false;
+            }
+        }
+
+        function copySSHKey() {
+            const textarea = document.getElementById('ssh-pubkey');
+            textarea.select();
+            textarea.setSelectionRange(0, 99999);
+            document.execCommand('copy');
+            alert('Public key copied to clipboard!');
+        }
+
+        function showGHAuthInstructions() {
+            document.getElementById('gh-auth-instructions').style.display = 'block';
+        }
+
+        async function checkGHAuth() {
+            try {
+                const response = await fetch('/api/github/cli/complete-auth', {method: 'POST'});
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.authenticated) {
+                        alert('Successfully authenticated with GitHub!');
+                        document.getElementById('gh-auth-instructions').style.display = 'none';
+                        loadGitHubStatus();
+                    } else {
+                        alert('Authentication not yet complete. Please finish the process in the terminal.');
+                    }
+                }
+            } catch (error) {
+                alert('Error checking authentication: ' + error.message);
+            }
         }
 
         // Add keyboard shortcut for quick access
