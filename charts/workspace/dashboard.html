@@ -86,6 +86,7 @@
             border: 1px solid #e9ecef;
             position: relative;
             overflow: hidden;
+            cursor: pointer;
         }
 
         .service-card:hover {
@@ -561,6 +562,24 @@
             </div>
         </div>
 
+        <div id="browser-controls" class="browser-controls" style="display: none;">
+            <h4 style="margin-bottom: 15px; color: #333;">🌐 Browser Controls</h4>
+            <button class="browser-btn" onclick="launchBrowser()">Launch Browser</button>
+            <button class="browser-btn" onclick="openLocalhost()">Open localhost:8080</button>
+            <button class="browser-btn" onclick="testBrowser()">Test Installation</button>
+            <button class="browser-btn" onclick="showVNC()">View Remote Desktop</button>
+            <button class="browser-btn" onclick="openFullscreenVNC()">🖥️ Open Fullscreen VNC</button>
+            <div id="browser-status"></div>
+
+            <div id="vnc-container" class="vnc-container" style="display: none;">
+                <div class="vnc-header">
+                    <span>🖥️ Remote Desktop Viewer</span>
+                    <button class="vnc-close" onclick="hideVNC()">Close</button>
+                </div>
+                <iframe id="vnc-frame" class="vnc-frame"></iframe>
+            </div>
+        </div>
+
         <div class="metrics-section">
             <h4 style="color: #333; text-align: center; margin: 0 0 10px 0; font-size: 0.95rem;">System Resources</h4>
 
@@ -670,24 +689,6 @@
                         </button>
                     </div>
                 </div>
-            </div>
-        </div>
-
-        <div id="browser-controls" class="browser-controls" style="display: none;">
-            <h4 style="margin-bottom: 15px; color: #333;">🌐 Browser Controls</h4>
-            <button class="browser-btn" onclick="launchBrowser()">Launch Browser</button>
-            <button class="browser-btn" onclick="openLocalhost()">Open localhost:8080</button>
-            <button class="browser-btn" onclick="testBrowser()">Test Installation</button>
-            <button class="browser-btn" onclick="showVNC()">View Remote Desktop</button>
-            <button class="browser-btn" onclick="openFullscreenVNC()">🖥️ Open Fullscreen VNC</button>
-            <div id="browser-status"></div>
-            
-            <div id="vnc-container" class="vnc-container" style="display: none;">
-                <div class="vnc-header">
-                    <span>🖥️ Remote Desktop Viewer</span>
-                    <button class="vnc-close" onclick="hideVNC()">Close</button>
-                </div>
-                <iframe id="vnc-frame" class="vnc-frame"></iframe>
             </div>
         </div>
 
@@ -802,7 +803,7 @@
 
         async function fetchMetrics() {
             try {
-                const response = await fetch('/metrics', {
+                const response = await fetch('/oauth/metrics', {
                     method: 'GET',
                     signal: AbortSignal.timeout(5000)
                 });
@@ -907,7 +908,7 @@
         async function checkServicesHealth() {
             // Check IDE health via our health endpoint
             try {
-                const ideResponse = await fetch('/health/vscode', { 
+                const ideResponse = await fetch('/oauth/health/vscode', {
                     method: 'GET',
                     signal: AbortSignal.timeout(5000)
                 });
@@ -918,7 +919,7 @@
 
             // Check Terminal health via our health endpoint
             try {
-                const terminalResponse = await fetch('/health/terminal', { 
+                const terminalResponse = await fetch('/oauth/health/terminal', {
                     method: 'GET',
                     signal: AbortSignal.timeout(5000)
                 });
@@ -929,7 +930,7 @@
 
             // Check VNC/Browser health via our health endpoint
             try {
-                const browserResponse = await fetch('/health/browser', { 
+                const browserResponse = await fetch('/oauth/health/browser', {
                     method: 'GET',
                     signal: AbortSignal.timeout(5000)
                 });
@@ -943,6 +944,12 @@
             const controls = document.getElementById('browser-controls');
             const isVisible = controls.style.display !== 'none';
             controls.style.display = isVisible ? 'none' : 'block';
+            if (!isVisible) {
+                // Scroll the controls into view when showing
+                setTimeout(() => {
+                    controls.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }, 100);
+            }
         }
 
         function showBrowserStatus(message, isError = false) {
@@ -1014,7 +1021,7 @@
         // GitHub configuration functions
         async function loadGitHubStatus() {
             try {
-                const response = await fetch('/api/github/status', {
+                const response = await fetch('/oauth/api/github/status', {
                     method: 'GET',
                     signal: AbortSignal.timeout(5000)
                 });
@@ -1089,7 +1096,7 @@
             }
 
             try {
-                const response = await fetch('/api/github/config', {
+                const response = await fetch('/oauth/api/github/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({name, email})
@@ -1123,7 +1130,7 @@
                 btn.disabled = true;
                 btn.textContent = 'Generating...';
 
-                const response = await fetch('/api/github/ssh/generate', {
+                const response = await fetch('/oauth/api/github/ssh/generate', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({email})
@@ -1158,7 +1165,7 @@
 
         async function checkGHAuth() {
             try {
-                const response = await fetch('/api/github/cli/complete-auth', {method: 'POST'});
+                const response = await fetch('/oauth/api/github/cli/complete-auth', {method: 'POST'});
                 if (response.ok) {
                     const data = await response.json();
                     if (data.authenticated) {

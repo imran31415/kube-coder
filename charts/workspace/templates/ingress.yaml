@@ -6,9 +6,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -22,6 +19,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -55,9 +55,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -70,6 +67,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -96,9 +96,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -113,6 +110,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -139,9 +139,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -158,6 +155,9 @@ metadata:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -184,9 +184,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -197,6 +194,9 @@ metadata:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:

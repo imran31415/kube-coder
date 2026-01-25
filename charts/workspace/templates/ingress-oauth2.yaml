@@ -7,9 +7,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -20,6 +17,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -45,18 +45,15 @@ spec:
             port:
               number: 6080
 ---
-# Separate ingress for VS Code with path rewriting
+# Ingress for dashboard API endpoints (metrics, github, health)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ws-{{ .Values.user.name }}-oauth2-vscode
+  name: ws-{{ .Values.user.name }}-oauth2-api
   namespace: {{ .Values.namespace }}
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -68,6 +65,64 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /oauth/(api/.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+      - path: /oauth/(metrics.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+      - path: /oauth/(health.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+---
+# Separate ingress for VS Code with path rewriting
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-oauth2-vscode
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -95,9 +150,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -108,6 +160,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -135,9 +190,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -149,6 +201,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -176,9 +231,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -192,6 +244,9 @@ metadata:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -219,9 +274,6 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
@@ -234,6 +286,9 @@ metadata:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:
@@ -251,4 +306,45 @@ spec:
             name: ws-{{ .Values.user.name }}
             port:
               number: 6081
+---
+# Separate ingress for Browser Controls with path rewriting
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-oauth2-browser
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,x-auth-request-access-token"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /oauth/browser/?(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
 {{- end }}
