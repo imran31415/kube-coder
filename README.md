@@ -2,6 +2,9 @@
 
 A production-ready Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides a complete development environment with VS Code IDE, terminal access, and remote browser capabilities, all protected by GitHub OAuth2 authentication.
 
+
+<img width="281" height="830" alt="image" src="https://github.com/user-attachments/assets/d94b1e19-f935-491f-8fec-239e77181392" />
+
 <img width="2720" height="1796" alt="image" src="https://github.com/user-attachments/assets/72ca8635-80c0-4ae2-b9ee-14ed918185eb" />
 
 ## ✨ Features
