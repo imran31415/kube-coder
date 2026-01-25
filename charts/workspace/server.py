@@ -328,10 +328,16 @@ Host github.com
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ["/", "/dashboard", "/dashboard/", "/oauth", "/oauth/"]:
+        # Normalize path - strip /oauth and /browser prefixes from rewrites
+        normalized_path = self.path.replace('/oauth', '').replace('/browser', '')
+        if normalized_path == '' or normalized_path == '/':
+            normalized_path = '/'
+
+        if normalized_path in ["/", "/dashboard", "/dashboard/"]:
             self.path = "/dashboard.html"
         elif self.path in ["/browser", "/browser/"]:
-            self.path = "/index.html"
+            # Legacy browser path - redirect to dashboard
+            self.path = "/dashboard.html"
         elif self.path == "/health":
             self.send_health_check()
             return

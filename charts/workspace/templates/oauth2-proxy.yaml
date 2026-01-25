@@ -117,15 +117,15 @@ metadata:
   labels:
     app: oauth2-proxy-{{ .Values.user.name }}
   annotations:
-    {{- if .Values.ingress.className }}
-    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
-    {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
     nginx.ingress.kubernetes.io/proxy-buffers-number: "8"
 spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
   - hosts:

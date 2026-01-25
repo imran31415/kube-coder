@@ -1,159 +1,75 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Browser Interface</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Interface - Redirecting...</title>
     <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            margin: 40px; 
-            background: #f5f5f5; 
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 20px;
         }
-        .container { 
-            max-width: 600px; 
-            margin: 0 auto; 
-            background: white; 
-            padding: 30px; 
-            border-radius: 8px; 
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
-        }
-        h1 { 
-            color: #333; 
-            text-align: center; 
-        }
-        button { 
-            background: #007cba; 
-            color: white; 
-            border: none; 
-            padding: 12px 24px; 
-            margin: 10px; 
-            border-radius: 4px; 
-            cursor: pointer; 
-            font-size: 16px; 
-            display: block;
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 500px;
             width: 100%;
+            text-align: center;
         }
-        button:hover { 
-            background: #005a8b; 
+        h1 { color: #333; margin-bottom: 20px; }
+        p { color: #666; line-height: 1.6; }
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #e9ecef;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
         }
-        .status { 
-            margin: 20px 0; 
-            padding: 10px; 
-            border-radius: 4px; 
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
-        .success { 
-            background: #d4edda; 
-            color: #155724; 
-            border: 1px solid #c3e6cb; 
+        .btn {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 20px;
         }
-        .error { 
-            background: #f8d7da; 
-            color: #721c24; 
-            border: 1px solid #f5c6cb; 
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
         }
     </style>
 </head>
 <body>
     <div class="container">
+        <div class="spinner"></div>
         <h1>🌐 Browser Interface</h1>
-        <p>Launch browser on the remote workspace:</p>
-        <button onclick="launchChrome()">Launch Browser</button>
-        <button onclick="openLocalhost()">Open localhost:8080 in Browser</button>
-        <button onclick="testChrome()">Test Browser Installation</button>
-        
-        <hr style="margin: 30px 0;">
-        <h2>📺 View Browser Screen</h2>
-        <p>After launching a browser, view it here:</p>
-        <button onclick="showVNCEmbed()">Show VNC Viewer</button>
-        <div id="vnc-container" style="display: none; margin-top: 20px; border: 2px solid #007cba; border-radius: 8px;">
-            <div style="background: #007cba; color: white; padding: 10px; font-weight: bold;">
-                Remote Desktop - Click and drag to interact
-                <button onclick="hideVNCEmbed()" style="float: right; background: white; color: #007cba; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">Hide</button>
-            </div>
-            <iframe id="vnc-frame" width="100%" height="600" frameborder="0" style="display: block;"></iframe>
-        </div>
-        <div id="status"></div>
+        <p>Redirecting to the secure dashboard...</p>
+        <p>If you are not redirected automatically, click below:</p>
+        <a href="/oauth/" class="btn">Go to Dashboard</a>
     </div>
-    
     <script>
-        function showStatus(message, isError = false) {
-            const status = document.getElementById('status');
-            status.innerHTML = message;
-            status.className = 'status ' + (isError ? 'error' : 'success');
-        }
-        
-        async function launchChrome() {
-            try {
-                showStatus('Launching Chrome...');
-                const response = await fetch('api/launch-chrome', { method: 'POST' });
-                const result = await response.text();
-                showStatus(result, !response.ok);
-            } catch (error) {
-                showStatus('Error: ' + error.message, true);
-            }
-        }
-        
-        async function openLocalhost() {
-            try {
-                showStatus('Opening localhost:8080 in Chrome...');
-                const response = await fetch('api/open-localhost', { method: 'POST' });
-                const result = await response.text();
-                showStatus(result, !response.ok);
-            } catch (error) {
-                showStatus('Error: ' + error.message, true);
-            }
-        }
-        
-        async function testChrome() {
-            try {
-                showStatus('Testing Chrome installation...');
-                const response = await fetch('api/test-chrome', { method: 'POST' });
-                const result = await response.text();
-                showStatus(result, !response.ok);
-            } catch (error) {
-                showStatus('Error: ' + error.message, true);
-            }
-        }
-        
-        function showVNCEmbed() {
-            showStatus('Loading VNC viewer...');
-            const container = document.getElementById('vnc-container');
-            const frame = document.getElementById('vnc-frame');
-            
-            // Use the current host and try different VNC endpoints
-            const host = window.location.hostname;
-            const port = window.location.port ? ':' + window.location.port : '';
-            
-            // Direct approach: Create a simple message about using the URL directly
-            const vncInfo = `
-                <div style="padding: 20px; text-align: center;">
-                    <h2>🎉 Browser is Running!</h2>
-                    <p><strong>Firefox browser is active with PID: 96</strong></p>
-                    <p>To view the remote desktop, open this URL in a new tab:</p>
-                    <div style="background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px; font-family: monospace;">
-                        https://${host}/vnc-direct/vnc.html
-                    </div>
-                    <p><small>Use the same username/password as this page</small></p>
-                    <p>The browser is running on the remote desktop. You can interact with it through the VNC viewer.</p>
-                </div>
-            `;
-            let vncUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(vncInfo);
-            
-            frame.src = vncUrl;
-            container.style.display = 'block';
-            showStatus('VNC viewer loaded. If you see a login screen, the VNC server is working!');
-        }
-        
-        function hideVNCEmbed() {
-            const container = document.getElementById('vnc-container');
-            const frame = document.getElementById('vnc-frame');
-            container.style.display = 'none';
-            frame.src = '';
-            showStatus('VNC viewer hidden.');
-        }
-        
-        function openVNC() {
-            showVNCEmbed();
-        }
+        // Redirect to the OAuth-protected dashboard
+        setTimeout(function() {
+            window.location.href = '/oauth/';
+        }, 1500);
     </script>
 </body>
 </html>
