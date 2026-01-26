@@ -2,6 +2,7 @@ suite: deployment tests
 templates:
   - templates/deployment.yaml
   - templates/browser-configmap.yaml
+  - templates/claude-configmap.yaml
 values:
   - test-values.yaml
 tests:
@@ -128,3 +129,26 @@ tests:
           path: spec.template.spec.imagePullSecrets
           content:
             name: regcred
+
+  - it: should mount the claude-config volume
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: claude-config
+            mountPath: /claude-config
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: claude-config
+            configMap:
+              name: claude-config-testuser
+              defaultMode: 292
+
+  - it: should copy CLAUDE.md during startup only if not exists
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "test -f /home/dev/CLAUDE.md \\|\\| cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md"
