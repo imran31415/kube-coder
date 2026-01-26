@@ -16,17 +16,17 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
     </td>
     <td align="center" width="25%">
       <img src="https://github.com/user-attachments/assets/34f1b356-22be-40da-bc99-c0a8a2a205a2" width="250" alt="Remote Browser" /><br/>
-        <strong>VS Code IDE</strong><br/>
+      <strong>VS Code IDE</strong><br/>
       <sub>Full-featured browser IDE with extensions and terminal access</sub>
     </td>
     <td align="center" width="25%">
       <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
-          <strong>Remote Browser</strong><br/>
+      <strong>Remote Browser</strong><br/>
       <sub>Full Firefox browser via VNC — test web apps from anywhere</sub>
     </td>
-  <td align="center" width="25%">
-      <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
-    <strong>TTYD terminal interface accessible from browser</strong><br/>
+    <td align="center" width="25%">
+      <img width="707" height="690" alt="TTYD with claude" src="https://github.com/user-attachments/assets/7c3aa084-c52f-4b17-b3b9-059390eeddf1" />
+      <strong>TTYD terminal interface accessible from browser</strong><br/>
       <sub>Claude built in with environment awareness </sub>
     </td>
     
