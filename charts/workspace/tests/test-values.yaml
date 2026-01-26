@@ -1,0 +1,45 @@
+namespace: test
+
+user:
+  name: testuser
+  pvcSize: 10Gi
+  host: test.example.com
+  env:
+    - name: GIT_USER_NAME
+      value: "Test User"
+    - name: GIT_USER_EMAIL
+      value: "test@example.com"
+
+image:
+  repository: test-registry/coder
+  tag: test
+  pullPolicy: IfNotPresent
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  auth:
+    type: basic
+    secretName: test-auth
+  tls:
+    enabled: true
+    secretName: test-tls
+    clusterIssuer: letsencrypt-staging
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+
+build:
+  mode: buildkit
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: test-registry/builds
+
+ssh:
+  enabled: false
+  port: 22

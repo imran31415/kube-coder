@@ -1,0 +1,130 @@
+suite: deployment tests
+templates:
+  - templates/deployment.yaml
+  - templates/browser-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should set the deployment name from user.name
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: ws-testuser
+
+  - it: should set the correct namespace
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: test
+
+  - it: should use Recreate strategy
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: should set the container image from values
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "test-registry/coder:test"
+
+  - it: should run as non-root user 1000
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 1000
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 1000
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 1000
+
+  - it: should expose all required ports
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: terminal
+            containerPort: 7681
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: browser
+            containerPort: 6080
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: vnc
+            containerPort: 6081
+
+  - it: should configure readiness probe on port 6080
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: 6080
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health
+
+  - it: should configure liveness probe on port 6080
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: 6080
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /health
+
+  - it: should mount the home PVC
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: home
+            mountPath: /home/dev
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: home
+            persistentVolumeClaim:
+              claimName: ws-testuser-home
+
+  - it: should set resource limits and requests
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: "100m"
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: "256Mi"
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: "1"
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: "1Gi"
+
+  - it: should include imagePullSecrets when pullSecretName is set
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.imagePullSecrets
+          content:
+            name: regcred
