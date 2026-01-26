@@ -1,0 +1,45 @@
+suite: ingress tests
+templates:
+  - templates/ingress.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should set ingressClassName from values
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+
+  - it: should not use deprecated ingress.class annotation
+    documentIndex: 0
+    asserts:
+      - isNull:
+          path: metadata.annotations["kubernetes.io/ingress.class"]
+
+  - it: should set the correct host
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: test.example.com
+
+  - it: should configure TLS when enabled
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.tls[0].hosts[0]
+          value: test.example.com
+      - equal:
+          path: spec.tls[0].secretName
+          value: test-tls
+
+  - it: should route root path to browser port 6080
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 6080

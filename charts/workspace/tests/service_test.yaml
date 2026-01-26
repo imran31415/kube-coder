@@ -1,0 +1,54 @@
+suite: service tests
+templates:
+  - templates/service.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should set the service name from user.name
+    asserts:
+      - equal:
+          path: metadata.name
+          value: ws-testuser
+
+  - it: should set the correct namespace
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: test
+
+  - it: should select pods with the correct label
+    asserts:
+      - equal:
+          path: spec.selector.app
+          value: ws-testuser
+
+  - it: should expose all four required ports
+    asserts:
+      - contains:
+          path: spec.ports
+          content:
+            name: http
+            port: 8080
+            targetPort: 8080
+          any: true
+      - contains:
+          path: spec.ports
+          content:
+            name: terminal
+            port: 7681
+            targetPort: 7681
+          any: true
+      - contains:
+          path: spec.ports
+          content:
+            name: browser
+            port: 6080
+            targetPort: 6080
+          any: true
+      - contains:
+          path: spec.ports
+          content:
+            name: vnc
+            port: 6081
+            targetPort: 6081
+          any: true

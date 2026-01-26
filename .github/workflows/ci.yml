@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  helm-lint:
+    name: Helm Lint & Template
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Lint base-infrastructure chart
+        run: helm lint charts/base-infrastructure/
+
+      - name: Lint workspace chart
+        run: helm lint charts/workspace/ -f charts/workspace/tests/test-values.yaml
+
+      - name: Template workspace chart (basic auth)
+        run: helm template test-ws charts/workspace/ -f charts/workspace/tests/test-values.yaml > /dev/null
+
+      - name: Template workspace chart (oauth2 auth)
+        run: |
+          helm template test-ws charts/workspace/ \
+            -f charts/workspace/tests/test-values.yaml \
+            --set ingress.auth.type=oauth2 \
+            --set oauth2.githubUsers=testuser \
+            --set oauth2.cookieSecret=test-secret \
+            --set oauth2.clientId=test-id \
+            --set oauth2.clientSecret=test-secret \
+            > /dev/null
+
+  helm-test:
+    name: Helm Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Install helm-unittest plugin
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git
+
+      - name: Run unit tests
+        run: helm unittest charts/workspace/
