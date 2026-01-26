@@ -9,30 +9,30 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 
 <table>
   <tr>
-    <td align="center" width="33%">
+    <td align="center" width="25%">
       <img src="https://github.com/user-attachments/assets/93ec2ac0-f75f-4d5e-99e0-069a70ba14c5" width="250" alt="Dashboard" /><br/>
       <strong>Dashboard</strong><br/>
       <sub>Clean workspace hub with system metrics, service health, and GitHub config</sub>
     </td>
-    <td align="center" width="33%">
+    <td align="center" width="25%">
       <img src="https://github.com/user-attachments/assets/34f1b356-22be-40da-bc99-c0a8a2a205a2" width="250" alt="Remote Browser" /><br/>
         <strong>VS Code IDE</strong><br/>
       <sub>Full-featured browser IDE with extensions and terminal access</sub>
     </td>
-    <td align="center" width="33%">
+    <td align="center" width="25%">
       <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
           <strong>Remote Browser</strong><br/>
       <sub>Full Firefox browser via VNC — test web apps from anywhere</sub>
-
     </td>
+  <td align="center" width="25%">
+      <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
+    <strong>TTYD terminal interface accessible from browser</strong><br/>
+      <sub>Claude built in with environment awareness </sub>
+    </td>
+    
   </tr>
 </table>
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/4e354a1c-c72f-4617-a95f-ed6273649a56" width="500" alt="System Monitoring" /><br/>
-    <strong>TTYD terminal interface accessible from browser</strong><br/>
-      <sub>Run `claude` or any terminal application! </sub>
-</p>
 
 ## Features
 
