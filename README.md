@@ -16,20 +16,22 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
     </td>
     <td align="center" width="33%">
       <img src="https://github.com/user-attachments/assets/34f1b356-22be-40da-bc99-c0a8a2a205a2" width="250" alt="Remote Browser" /><br/>
-      <strong>Remote Browser</strong><br/>
-      <sub>Full Firefox browser via VNC — test web apps from anywhere</sub>
+        <strong>VS Code IDE</strong><br/>
+      <sub>Full-featured browser IDE with extensions and terminal access</sub>
     </td>
     <td align="center" width="33%">
       <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
-      <strong>VS Code IDE</strong><br/>
-      <sub>Full-featured browser IDE with extensions and terminal access</sub>
+          <strong>Remote Browser</strong><br/>
+      <sub>Full Firefox browser via VNC — test web apps from anywhere</sub>
+
     </td>
   </tr>
 </table>
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/4e354a1c-c72f-4617-a95f-ed6273649a56" width="500" alt="System Monitoring" /><br/>
-  <sub>Real-time CPU, memory, and disk monitoring with alert thresholds</sub>
+    <strong>TTYD terminal interface accessible from browser</strong><br/>
+      <sub>Run `claude` or any terminal application! </sub>
 </p>
 
 ## Features
