@@ -25,7 +25,7 @@ This document describes the comprehensive architecture for the remote browser fu
                       │ HTTPS
 ┌─────────────────────▼───────────────────────────────────────┐
 │                    NGINX Ingress Controller                  │
-│  Routes: /browser, /vnc-direct/*, /websockify, /terminal    │
+│  Routes: /oauth/*, /browser, /vnc-direct/*, /websockify      │
 └─────────────────────┬───────────────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────────────┐
@@ -122,20 +122,30 @@ This document describes the comprehensive architecture for the remote browser fu
 - X11 libraries (`libxt6`)
 
 ### 6. Browser API Server
-**Purpose**: HTTP API for browser control
+**Purpose**: HTTP API for browser control, dashboard, system metrics, and GitHub configuration
 **Port**: `6080`
 **Language**: Python 3
 
 **Endpoints**:
-- `GET /browser` - Web interface
+- `GET /` or `/dashboard` - Main workspace dashboard (metrics, GitHub config, service links)
+- `GET /browser` - Legacy browser interface (redirects to dashboard)
+- `GET /health` - Overall health check (JSON)
+- `GET /health/vscode` - VS Code health check
+- `GET /health/terminal` - Terminal health check
+- `GET /health/browser` - VNC/browser health check
+- `GET /metrics` - System metrics (CPU, memory, disk) as JSON
+- `GET /api/github/status` - GitHub auth status (SSH, CLI, git config)
 - `POST /api/launch-chrome` - Launch browser
 - `POST /api/test-chrome` - Test installation
 - `POST /api/open-localhost` - Open localhost:8080
+- `POST /api/github/config` - Set git user.name/email
+- `POST /api/github/ssh/generate` - Generate SSH key
+- `POST /api/github/cli/complete-auth` - Check gh CLI auth status
 
 ## Technology Stack
 
 ### Container Base
-- **Base Image**: `registry.digitalocean.com/resourceloop/coder:devlaptop-v1.6.0`
+- **Base Image**: `registry.digitalocean.com/resourceloop/coder:devlaptop-v1.6.2-browser-stealth`
 - **OS**: Ubuntu Noble (24.04)
 - **Architecture**: linux/amd64
 
@@ -166,16 +176,17 @@ Web VNC:
 ```yaml
 Deployment:
   - Replicas: 1
-  - Strategy: RollingUpdate
+  - Strategy: Recreate
   
 Service:
   - Type: ClusterIP
   - Ports: 8080, 7681, 6080, 6081
   
 Ingress:
-  - Class: nginx
+  - ingressClassName: nginx
   - TLS: Enabled with cert-manager
   - Paths: /, /browser, /vnc-direct/*, /terminal
+  - OAuth2 paths: /oauth/*, /oauth/vscode/*, /oauth/terminal/*, /oauth/vnc-direct/*
   
 ConfigMap:
   - browser-config: HTML interface and Python server
@@ -191,7 +202,7 @@ PersistentVolumeClaim:
 ```bash
 1. Container Initialization
    ├── Create directories (/home/dev, ~/.config)
-   ├── Link shared data (SSH keys, git config)
+   ├── Link persistent credentials (~/.ssh, ~/.config/git, ~/.config/gh)
    └── Start code-server and ttyd
 
 2. Display Server Setup (3s delay)
@@ -237,13 +248,27 @@ PersistentVolumeClaim:
 ### Network Flow
 ```
 User Browser → HTTPS → Ingress Controller
-    ├── /browser/* → Port 6080 (Browser API)
+
+Basic Auth Routes:
+    ├── /             → Port 6080 (Dashboard)
+    ├── /browser/*    → Port 6080 (Browser API)
+    ├── /vscode       → Port 8080 (code-server)
+    ├── /terminal     → Port 7681 (ttyd)
     ├── /vnc-direct/* → Port 6081 (noVNC)
-    ├── /websockify → Port 6081 (WebSocket)
-    └── /terminal → Port 7681 (ttyd)
+    └── /websockify   → Port 6081 (WebSocket)
+
+OAuth2 Routes (recommended):
+    ├── /oauth/                → Port 6080 (Dashboard)
+    ├── /oauth/vscode/*        → Port 8080 (code-server)
+    ├── /oauth/terminal/*      → Port 7681 (ttyd)
+    ├── /oauth/vnc-direct/*    → Port 6081 (noVNC)
+    ├── /oauth/browser/*       → Port 6080 (Browser API)
+    ├── /oauth/api/*           → Port 6080 (GitHub/config APIs)
+    ├── /oauth/metrics*        → Port 6080 (System metrics)
+    └── /oauth/health/*        → Port 6080 (Health checks)
 
 Internal Container:
-    Port 6080 → Python HTTP Server
+    Port 6080 → Python HTTP Server (dashboard, APIs, health)
     Port 6081 → websockify → localhost:5900 → x11vnc
     Port 5900 → x11vnc → Display :99 → Xvfb
 ```
@@ -289,9 +314,10 @@ Internal Container:
 - **WebSocket Security**: Inherits HTTPS security
 
 ### Authentication
-- **Basic Auth**: Nginx ingress controller
-- **Exceptions**: VNC paths (WebSocket compatibility)
-- **Secret**: `api-basic-auth` in namespace
+- **Basic Auth**: Nginx ingress controller (legacy deployments)
+- **GitHub OAuth2**: OAuth2 Proxy via `/oauth2/` path (recommended). All `/oauth/*` paths are protected by OAuth2 with GitHub user authorization.
+- **Exceptions**: WebSocket paths rely on session/cookie auth for compatibility
+- **Secret**: `api-basic-auth` (basic) or `oauth2-proxy-secrets-{user}` (OAuth2)
 
 ### Process Isolation
 - **User**: Runs as non-root (UID 1000)
@@ -439,16 +465,24 @@ wget https://github.com/novnc/noVNC/archive/refs/tags/v1.5.0.tar.gz
 ```
 
 ### Health Checks
+The deployment uses HTTP-based probes against the Python dashboard server:
 ```yaml
-# Add to deployment.yaml
-livenessProbe:
-  exec:
-    command:
-    - bash
-    - -c
-    - "DISPLAY=:99 xdpyinfo >/dev/null 2>&1"
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 6080
+    scheme: HTTP
   initialDelaySeconds: 30
   periodSeconds: 10
+  timeoutSeconds: 5
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 6080
+    scheme: HTTP
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 10
 ```
 
 ## Future Enhancements

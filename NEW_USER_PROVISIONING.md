@@ -211,17 +211,19 @@ deploy-john-oauth2: ## Deploy john's workspace with OAuth2
 		--namespace $(NAMESPACE) --install --wait
 
 shell-john: ## Shell into john's pod
-	kubectl exec -it -n $(NAMESPACE) $$(kubectl get pods -n $(NAMESPACE) -l app=ws-john -o jsonpath='{.items[0].metadata.name}') -- bash
+	kubectl exec -it -n $(NAMESPACE) deployment/ws-john -c ide -- /bin/bash
 
 logs-john: ## View john's logs
-	kubectl logs -n $(NAMESPACE) -l app=ws-john -f
+	kubectl logs -f -n $(NAMESPACE) deployment/ws-john -c ide
 
 rollback-john: ## Rollback john's deployment
-	helm rollback john-workspace -n $(NAMESPACE)
+	helm rollback john-workspace --namespace $(NAMESPACE)
 
-status-john: ## Check john's deployment status
-	helm status john-workspace -n $(NAMESPACE)
-	kubectl get pods -n $(NAMESPACE) -l app=ws-john
+test-john: ## Test john's workspace
+	@kubectl exec -n $(NAMESPACE) deployment/ws-john -c ide -- node --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-john -c ide -- yarn --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-john -c ide -- gh --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-john -c ide -- code-server --version | head -1
 ```
 
 ## 🚀 Deployment Commands
@@ -291,15 +293,16 @@ kubectl get certificate -n coder | grep john
 ### 4. Access the Workspace
 
 #### Basic Authentication:
-- **VS Code IDE**: `https://john.dev.company.com/`
+- **Dashboard**: `https://john.dev.company.com/`
+- **VS Code IDE**: `https://john.dev.company.com/vscode`
 - **Terminal**: `https://john.dev.company.com/terminal`
 - **Browser**: `https://john.dev.company.com/browser`
 
-#### OAuth2 Authentication:
-- **Control Panel**: `https://john.dev.company.com/oauth`
-- **VS Code IDE**: Click button from control panel
-- **Terminal**: Click button from control panel
-- **Browser**: Click button from control panel
+#### OAuth2 Authentication (Recommended):
+- **Dashboard**: `https://john.dev.company.com/oauth/` — includes system metrics, GitHub configuration, and service links
+- **VS Code IDE**: `https://john.dev.company.com/oauth/vscode/`
+- **Terminal**: `https://john.dev.company.com/oauth/terminal`
+- **Browser Controls**: Click Browser card from dashboard
 
 ## 🔧 User Management Commands
 
@@ -308,10 +311,10 @@ kubectl get certificate -n coder | grep john
 helm status john-workspace -n coder
 
 # View user's logs
-kubectl logs -n coder -l app=ws-john -f
+kubectl logs -f -n coder deployment/ws-john -c ide
 
 # Shell into user's workspace
-kubectl exec -it -n coder $(kubectl get pods -n coder -l app=ws-john -o jsonpath='{.items[0].metadata.name}') -- bash
+kubectl exec -it -n coder deployment/ws-john -c ide -- /bin/bash
 
 # Restart user's workspace
 kubectl delete pod -n coder -l app=ws-john
@@ -373,9 +376,9 @@ kubectl delete pvc ws-john-home -n coder  # WARNING: Deletes user data
 kubectl get pods,pvc,ingress,certificate -n coder | grep john
 
 # Service connectivity
-kubectl exec -n coder -l app=ws-john -- curl -I http://localhost:8080
-kubectl exec -n coder -l app=ws-john -- curl -I http://localhost:7681
-kubectl exec -n coder -l app=ws-john -- curl -I http://localhost:6080
+kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:8080
+kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:7681
+kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:6080
 ```
 
 ## 🔄 User Lifecycle
