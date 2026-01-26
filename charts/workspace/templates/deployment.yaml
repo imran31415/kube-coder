@@ -18,6 +18,7 @@ spec:
         app: ws-{{ .Values.user.name }}
       annotations:
         checksum/browser-config: {{ include (print $.Template.BasePath "/browser-configmap.yaml") . | sha256sum }}
+        checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: ws-{{ .Values.user.name }}
       {{- if .Values.image.pullSecretName }}
@@ -44,6 +45,8 @@ spec:
             ln -sf /home/dev/.credentials/.ssh ~/.ssh &&
             ln -sf /home/dev/.credentials/.config/git ~/.gitconfig &&
             ln -sf /home/dev/.credentials/.config/gh ~/.config/gh &&
+            test -f /home/dev/CLAUDE.md || cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md &&
+            sudo npm install -g @anthropic-ai/claude-code@latest > /tmp/claude-update.log 2>&1 &&
             code-server --bind-addr 0.0.0.0:8080 --auth none /home/dev &
             ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev bash &
             export DISPLAY=:99 &&
@@ -136,6 +139,8 @@ spec:
           mountPath: /home/dev
         - name: browser-config
           mountPath: /browser-config
+        - name: claude-config
+          mountPath: /claude-config
         {{- if eq .Values.build.mode "buildkit" }}
         - name: docker-certs
           mountPath: /certs/client
@@ -178,6 +183,10 @@ spec:
         configMap:
           name: browser-config-{{ .Values.user.name }}
           defaultMode: 0755
+      - name: claude-config
+        configMap:
+          name: claude-config-{{ .Values.user.name }}
+          defaultMode: 0444
       - name: kaniko-wrapper
         configMap:
           name: kaniko-wrapper

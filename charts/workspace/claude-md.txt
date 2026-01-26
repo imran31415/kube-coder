@@ -1,0 +1,81 @@
+# Workspace Environment
+
+This is a Kubernetes-based development workspace running in an isolated container.
+
+## System
+
+- **OS:** Ubuntu 24.04 (container, not a full VM)
+- **User:** `dev` (uid/gid 1000), passwordless `sudo` available
+- **Shell:** bash
+- **Display:** Virtual X11 on `:99` (1280x720) — set `export DISPLAY=:99` for GUI apps
+
+## Storage
+
+- **`/home/dev`** — persistent volume (default 50Gi). Survives pod restarts. All project work belongs here.
+- **`/tmp`** — ephemeral. Lost on restart. Do not store anything important here.
+- **`~/.ssh`** — symlinked to `/home/dev/.credentials/.ssh` (persistent)
+- **`~/.gitconfig`** — symlinked to `/home/dev/.credentials/.config/git` (persistent)
+- **`~/.config/gh`** — symlinked to `/home/dev/.credentials/.config/gh` (persistent)
+
+## Runtimes & Languages
+
+| Runtime | Details |
+|---------|---------|
+| Node.js | 20.x with npm and Yarn 1.22.x |
+| Python | 3.12 with pip |
+| Go | 1.22 |
+| Java | OpenJDK 17 |
+
+## Build Tools
+
+- **make**, **gcc**, **build-essential**, **pkg-config**
+- **Docker CLI** — connects to a Docker-in-Docker sidecar at `tcp://localhost:2376` (TLS). Standard `docker build` and `docker run` work through this sidecar.
+- **`docker-buildx`** — BuildKit wrapper using the DinD sidecar
+- **`docker-build`** — Kaniko wrapper that creates Kubernetes Jobs for building container images. Usage: `docker-build -t <image:tag> [--file Dockerfile] [context]`
+
+Docker does NOT run natively. The CLI is pre-configured with `DOCKER_HOST`, `DOCKER_CERT_PATH`, and `DOCKER_TLS_VERIFY` to use the sidecar automatically.
+
+## Cloud & DevOps
+
+- **kubectl** — connected to the host Kubernetes cluster (namespace: `coder`)
+- **gh** — GitHub CLI. Authenticate with `gh auth login`
+- **git** — user name/email set via environment variables or `git config --global`
+
+## Utilities
+
+curl, wget, jq, tmux, vim, nano, mysql-client, zip, unzip, less, openssh
+
+## Browser (GUI)
+
+Firefox is available on the virtual display. Launch with:
+
+```bash
+export DISPLAY=:99
+firefox &
+```
+
+Access the browser visually through the workspace dashboard's VNC viewer.
+
+## Monitoring APIs
+
+Local HTTP endpoints on port 6080:
+
+```bash
+curl localhost:6080/health            # service health (VS Code, terminal, browser)
+curl localhost:6080/metrics           # CPU, memory, disk usage (JSON)
+curl localhost:6080/api/github/status # git config and GitHub auth status
+```
+
+## Key Constraints
+
+- **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl localhost:6080/metrics`.
+- **Ephemeral /tmp** — anything outside `/home/dev` is lost on pod restart.
+- **Package persistence** — `sudo apt-get install` works but packages are lost on restart. For persistent tools, install to `~/.local/bin` and add it to `PATH` in `~/.bashrc`.
+- **Network** — full internet access available. Outbound connections work normally.
+
+## Tips
+
+- Use `tmux` for long-running processes to avoid losing work if a terminal session drops.
+- The VS Code server runs on port 8080 (no auth — protected by ingress-level authentication).
+- SSH keys persist in `~/.ssh`. Generate with: `ssh-keygen -t ed25519`
+- To check what's running: `curl localhost:6080/health`

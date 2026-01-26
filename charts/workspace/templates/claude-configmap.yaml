@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-config-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+data:
+  CLAUDE.md: |
+{{ .Files.Get "claude-md.txt" | indent 4 }}
