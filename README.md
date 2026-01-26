@@ -1,19 +1,31 @@
 # Kube-Coder
 
-
 A Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides VS Code IDE, terminal access, and remote browser capabilities, protected by GitHub OAuth2 authentication.
 
-A clean user dashboard:
-<img width="401" height="809" alt="image" src="https://github.com/user-attachments/assets/93ec2ac0-f75f-4d5e-99e0-069a70ba14c5" />
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="https://github.com/user-attachments/assets/93ec2ac0-f75f-4d5e-99e0-069a70ba14c5" width="250" alt="Dashboard" /><br/>
+      <strong>Dashboard</strong><br/>
+      <sub>Clean workspace hub with system metrics, service health, and GitHub config</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://github.com/user-attachments/assets/34f1b356-22be-40da-bc99-c0a8a2a205a2" width="250" alt="Remote Browser" /><br/>
+      <strong>Remote Browser</strong><br/>
+      <sub>Full Firefox browser via VNC — test web apps from anywhere</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
+      <strong>VS Code IDE</strong><br/>
+      <sub>Full-featured browser IDE with extensions and terminal access</sub>
+    </td>
+  </tr>
+</table>
 
-Access browser/editor from anywhere
-<img width="685" height="407" alt="image" src="https://github.com/user-attachments/assets/34f1b356-22be-40da-bc99-c0a8a2a205a2" />
-
-<img width="601" height="173" alt="image" src="https://github.com/user-attachments/assets/4e354a1c-c72f-4617-a95f-ed6273649a56" />
-
-<img width="1279" height="793" alt="image" src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" />
-
-
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/4e354a1c-c72f-4617-a95f-ed6273649a56" width="500" alt="System Monitoring" /><br/>
+  <sub>Real-time CPU, memory, and disk monitoring with alert thresholds</sub>
+</p>
 
 ## Features
 
