@@ -58,7 +58,7 @@ jobs:
           version: v3.14.0
 
       - name: Install helm-unittest plugin
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v0.5.2
 
       - name: Run unit tests
         run: helm unittest charts/workspace/
