@@ -3,6 +3,7 @@ templates:
   - templates/deployment.yaml
   - templates/browser-configmap.yaml
   - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
 values:
   - test-values.yaml
 tests:
