@@ -490,6 +490,201 @@
             font-family: monospace;
         }
 
+        /* Claude Tasks Section */
+        .claude-tasks-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .claude-tasks-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .claude-tasks-header h3 {
+            color: #333;
+            margin: 0;
+            font-size: 1.1rem;
+        }
+
+        .tasks-count {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .task-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
+            text-align: left;
+        }
+
+        .task-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .task-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 12px;
+        }
+
+        .task-status.running {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .task-status.running .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+            animation: pulse 2s infinite;
+        }
+
+        .task-status.completed {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .task-status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .task-status.killed {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .task-time {
+            font-size: 0.75rem;
+            color: #888;
+        }
+
+        .task-prompt {
+            font-size: 0.9rem;
+            color: #444;
+            margin-bottom: 10px;
+            word-break: break-word;
+            line-height: 1.4;
+        }
+
+        .task-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .task-btn {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .task-btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .task-btn.attach {
+            background: linear-gradient(45deg, #2ECC40, #01FF70);
+            color: #1a3a1a;
+        }
+
+        .task-btn.attach:hover {
+            box-shadow: 0 3px 10px rgba(46, 204, 64, 0.3);
+        }
+
+        .task-btn.output {
+            background: #f0f0f0;
+            color: #555;
+        }
+
+        .task-btn.output:hover {
+            background: #e0e0e0;
+        }
+
+        .task-btn.kill {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .task-btn.kill:hover {
+            background: #f5c6cb;
+        }
+
+        .task-output {
+            margin-top: 10px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            display: none;
+        }
+
+        .task-output.visible {
+            display: block;
+        }
+
+        .tasks-empty {
+            text-align: center;
+            padding: 25px;
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .task-toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            z-index: 10000;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+
+        .task-toast.visible {
+            opacity: 1;
+        }
+
         /* Hide content until authenticated */
         .auth-required {
             display: none;
@@ -579,6 +774,18 @@
                 <iframe id="vnc-frame" class="vnc-frame"></iframe>
             </div>
         </div>
+
+        <div class="claude-tasks-section">
+            <div class="claude-tasks-header">
+                <h3>Claude Tasks</h3>
+                <span id="tasks-count" class="tasks-count" style="display: none;">0</span>
+            </div>
+            <div id="task-list" class="task-list">
+                <div class="tasks-empty">Loading tasks...</div>
+            </div>
+        </div>
+
+        <div id="task-toast" class="task-toast"></div>
 
         <div class="metrics-section">
             <h4 style="color: #333; text-align: center; margin: 0 0 10px 0; font-size: 0.95rem;">System Resources</h4>
@@ -747,6 +954,9 @@
 
             loadGitHubStatus();
             setInterval(loadGitHubStatus, 60000);
+
+            fetchClaudeTasks();
+            setInterval(fetchClaudeTasks, 10000);
         }
 
         function initializeCharts() {
@@ -1179,6 +1389,181 @@
             } catch (error) {
                 alert('Error checking authentication: ' + error.message);
             }
+        }
+
+        // ---- Claude Tasks ----
+        let claudeTasksCache = [];
+
+        async function fetchClaudeTasks() {
+            try {
+                const response = await fetch('/oauth/api/claude/tasks', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    claudeTasksCache = data.tasks || [];
+                    renderClaudeTasks(claudeTasksCache);
+                }
+            } catch (error) {
+                console.error('Failed to fetch Claude tasks:', error);
+            }
+        }
+
+        function renderClaudeTasks(tasks) {
+            const container = document.getElementById('task-list');
+            const countBadge = document.getElementById('tasks-count');
+            const runningCount = tasks.filter(t => t.status === 'running').length;
+
+            if (runningCount > 0) {
+                countBadge.textContent = runningCount + ' running';
+                countBadge.style.display = 'inline';
+            } else {
+                countBadge.style.display = 'none';
+            }
+
+            if (tasks.length === 0) {
+                container.innerHTML = '<div class="tasks-empty">No Claude tasks yet. Use the API or terminal to create tasks.</div>';
+                return;
+            }
+
+            container.innerHTML = tasks.map(task => {
+                const statusClass = task.status || 'unknown';
+                const statusLabel = task.status === 'running' ? '<span class="status-dot"></span> Running'
+                    : task.status === 'completed' ? 'Completed'
+                    : task.status === 'error' ? 'Error'
+                    : task.status === 'killed' ? 'Killed'
+                    : task.status;
+                const timeAgo = task.created_at ? formatTimeAgo(task.created_at) : '';
+                const prompt = escapeHtml(task.prompt || '(no prompt)');
+
+                let actions = '';
+                if (task.status === 'running') {
+                    actions += `<button class="task-btn attach" onclick="attachToTask('${task.task_id}')">Attach</button>`;
+                    actions += `<button class="task-btn kill" onclick="killTask('${task.task_id}')">Kill</button>`;
+                }
+                actions += `<button class="task-btn output" onclick="toggleTaskOutput('${task.task_id}')">Output</button>`;
+
+                return `
+                    <div class="task-card" id="task-card-${task.task_id}">
+                        <div class="task-card-header">
+                            <span class="task-status ${statusClass}">${statusLabel}</span>
+                            <span class="task-time">${timeAgo}</span>
+                        </div>
+                        <div class="task-prompt">${prompt}</div>
+                        <div class="task-actions">${actions}</div>
+                        <pre class="task-output" id="task-output-${task.task_id}"></pre>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function attachToTask(taskId) {
+            try {
+                // Tell the server to prepare the terminal for this session
+                const response = await fetch(`/oauth/api/claude/tasks/${taskId}/prepare-terminal`, {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (response.ok) {
+                    // Open terminal in a new tab — the wrapper script will auto-attach
+                    window.open('/oauth/terminal', '_blank');
+                } else {
+                    showTaskToast('Failed to prepare terminal session');
+                }
+            } catch (error) {
+                showTaskToast('Error: ' + error.message);
+            }
+        }
+
+        async function killTask(taskId) {
+            if (!confirm('Kill this Claude task?')) return;
+            try {
+                const response = await fetch(`/oauth/api/claude/tasks/${taskId}`, {
+                    method: 'DELETE',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (response.ok) {
+                    showTaskToast('Task killed');
+                    fetchClaudeTasks();
+                }
+            } catch (error) {
+                showTaskToast('Error: ' + error.message);
+            }
+        }
+
+        async function toggleTaskOutput(taskId) {
+            const el = document.getElementById('task-output-' + taskId);
+            if (!el) return;
+
+            if (el.classList.contains('visible')) {
+                el.classList.remove('visible');
+                return;
+            }
+
+            el.textContent = 'Loading...';
+            el.classList.add('visible');
+
+            try {
+                const response = await fetch(`/oauth/api/claude/tasks/${taskId}/output?tail=30`, {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(10000)
+                });
+                if (response.ok) {
+                    const text = await response.text();
+                    // Parse stream-json lines and extract assistant text
+                    const lines = text.trim().split('\n');
+                    let display = [];
+                    for (const line of lines) {
+                        try {
+                            const obj = JSON.parse(line);
+                            if (obj.type === 'assistant' && obj.message && obj.message.content) {
+                                for (const block of obj.message.content) {
+                                    if (block.type === 'text' && block.text) {
+                                        display.push(block.text);
+                                    }
+                                }
+                            } else if (obj.type === 'result' && obj.result) {
+                                display.push(obj.result);
+                            }
+                        } catch {
+                            // Not JSON or different format — show raw line
+                            if (line.trim() && !line.startsWith('{')) {
+                                display.push(line);
+                            }
+                        }
+                    }
+                    el.textContent = display.length > 0 ? display.join('\n') : '(no output yet)';
+                } else {
+                    el.textContent = '(failed to load output)';
+                }
+            } catch (error) {
+                el.textContent = '(error loading output)';
+            }
+        }
+
+        function formatTimeAgo(timestamp) {
+            const seconds = Math.floor(Date.now() / 1000 - timestamp);
+            if (seconds < 60) return seconds + 's ago';
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return minutes + 'm ago';
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return hours + 'h ago';
+            const days = Math.floor(hours / 24);
+            return days + 'd ago';
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function showTaskToast(message) {
+            const toast = document.getElementById('task-toast');
+            toast.textContent = message;
+            toast.classList.add('visible');
+            setTimeout(() => toast.classList.remove('visible'), 3000);
         }
 
         // Add keyboard shortcut for quick access

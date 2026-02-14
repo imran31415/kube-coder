@@ -64,3 +64,11 @@ ssh:
 # API key takes precedence over OAuth when set.
 claude:
   apiKey: ""
+
+# GitHub App authentication:
+#   Set via: helm upgrade ... -f secrets/imran/github-app.yaml
+github:
+  app:
+    appId: ""           # Set via secrets file
+    installationId: ""  # Set via secrets file
+    privateKey: ""      # Set via secrets file

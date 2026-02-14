@@ -60,6 +60,8 @@ deploy-imran: ## Deploy Imran's workspace
 	@echo "Deploying Imran's workspace..."
 	helm upgrade imran-workspace ./charts/workspace \
 		-f ./deployments/imran/values.yaml \
+		$(if $(wildcard ./secrets/imran/claude.yaml),-f ./secrets/imran/claude.yaml) \
+		$(if $(wildcard ./secrets/imran/github-app.yaml),-f ./secrets/imran/github-app.yaml) \
 		--namespace $(NAMESPACE) \
 		--install \
 		--wait

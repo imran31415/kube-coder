@@ -7,6 +7,7 @@ import json
 import time
 import re
 import secrets
+import threading
 import uuid
 import urllib.parse
 
@@ -381,6 +382,8 @@ class ClaudeTaskManager:
         if workdir is None:
             workdir = '/home/dev'
 
+        session_name = f'claude-{task_id}'
+
         meta = {
             'task_id': task_id,
             'session_id': session_id,
@@ -388,26 +391,25 @@ class ClaudeTaskManager:
             'workdir': workdir,
             'status': 'running',
             'created_at': time.time(),
-            'tmux_session': f'claude-{task_id}',
+            'tmux_session': session_name,
         }
 
         meta_path = os.path.join(task_dir, 'task.json')
         with open(meta_path, 'w') as f:
             json.dump(meta, f, indent=2)
 
-        output_path = os.path.join(task_dir, 'output.log')
+        # Write prompt to a file so we can paste it cleanly via tmux
+        prompt_file = os.path.join(task_dir, 'prompt.txt')
+        with open(prompt_file, 'w') as f:
+            f.write(prompt)
 
-        # Build the claude command
-        claude_cmd = f'claude -p {_shell_quote(prompt)} --verbose --output-format stream-json --session-id {_shell_quote(session_id)}'
-        # Wrap: run command, capture exit code, append marker, then exit tmux
-        shell_cmd = f'cd {_shell_quote(workdir)} && {{ {claude_cmd} 2>&1; echo "__CLAUDE_EXIT_CODE_$?__"; }} | tee {_shell_quote(output_path)}'
-
-        # Launch in a new tmux session
+        # Launch interactive claude in a tmux session
+        shell_cmd = f'cd {_shell_quote(workdir)} && claude'
         tmux_cmd = [
             'tmux', 'new-session', '-d',
-            '-s', f'claude-{task_id}',
+            '-s', session_name,
             '-x', '220', '-y', '50',
-            'bash', '-c', shell_cmd,
+            'bash', '-lc', shell_cmd,
         ]
 
         result = subprocess.run(tmux_cmd, capture_output=True, text=True)
@@ -417,6 +419,32 @@ class ClaudeTaskManager:
             with open(meta_path, 'w') as f:
                 json.dump(meta, f, indent=2)
             return meta
+
+        # Send the initial prompt to the interactive claude session after it starts
+        # Use tmux load-buffer + paste-buffer for clean multi-line handling
+        def send_prompt():
+            time.sleep(3)  # Wait for claude to initialize
+            try:
+                subprocess.run(
+                    ['tmux', 'load-buffer', '-b', f'prompt-{task_id}', prompt_file],
+                    capture_output=True, text=True, check=True,
+                )
+                subprocess.run(
+                    ['tmux', 'paste-buffer', '-b', f'prompt-{task_id}', '-t', session_name],
+                    capture_output=True, text=True, check=True,
+                )
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                    capture_output=True, text=True,
+                )
+                subprocess.run(
+                    ['tmux', 'delete-buffer', '-b', f'prompt-{task_id}'],
+                    capture_output=True, text=True,
+                )
+            except Exception as e:
+                print(f"[ClaudeTaskManager] Failed to send prompt: {e}")
+
+        threading.Thread(target=send_prompt, daemon=True).start()
 
         return meta
 
@@ -458,30 +486,50 @@ class ClaudeTaskManager:
             meta = json.load(f)
         ClaudeTaskManager._reconcile_status(meta, task_dir)
 
-        # Attach last 50 lines of output
-        output_path = os.path.join(task_dir, 'output.log')
+        # Get recent output from live tmux pane or fallback to log file
         recent_output = ''
-        if os.path.exists(output_path):
-            try:
-                with open(output_path, 'r', errors='replace') as f:
-                    lines = f.readlines()
-                    recent_output = ''.join(lines[-50:])
-            except OSError:
-                pass
+        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        result = subprocess.run(
+            ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-50'],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            recent_output = result.stdout
         meta['recent_output'] = recent_output
         return meta
 
     @staticmethod
     def get_task_output(task_id, tail=None):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
-        output_path = os.path.join(task_dir, 'output.log')
-        if not os.path.exists(output_path):
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
             return None
-        with open(output_path, 'r', errors='replace') as f:
+
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+
+        # For live sessions, capture the tmux pane content
+        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        result = subprocess.run(
+            ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-200'],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            output = result.stdout
             if tail:
-                lines = f.readlines()
-                return ''.join(lines[-tail:])
-            return f.read()
+                lines = output.split('\n')
+                return '\n'.join(lines[-tail:])
+            return output
+
+        # Fallback to output.log if session is gone
+        output_path = os.path.join(task_dir, 'output.log')
+        if os.path.exists(output_path):
+            with open(output_path, 'r', errors='replace') as f:
+                if tail:
+                    lines = f.readlines()
+                    return ''.join(lines[-tail:])
+                return f.read()
+        return '(no output available)'
 
     @staticmethod
     def send_followup(task_id, prompt):
@@ -494,37 +542,41 @@ class ClaudeTaskManager:
             meta = json.load(f)
 
         session_name = meta.get('tmux_session', f'claude-{task_id}')
-        workdir = meta.get('workdir', '/home/dev')
-        output_path = os.path.join(task_dir, 'output.log')
 
         # Check if tmux session is still alive
         check = subprocess.run(
             ['tmux', 'has-session', '-t', session_name],
             capture_output=True, text=True,
         )
-        session_alive = check.returncode == 0
+        if check.returncode != 0:
+            return None, 'Session is no longer running'
 
-        # Build resume command using session_id (UUID)
-        session_id = meta.get('session_id', task_id)
-        claude_cmd = f'claude -p {_shell_quote(prompt)} --verbose --output-format stream-json --resume {_shell_quote(session_id)}'
+        # Send the follow-up prompt into the interactive claude session
+        # Use load-buffer + paste-buffer for clean multi-line handling
+        prompt_file = os.path.join(task_dir, 'followup.txt')
+        with open(prompt_file, 'w') as f:
+            f.write(prompt)
 
-        if session_alive:
-            # Session still alive — send keys to queue a follow-up after current finishes
-            shell_cmd = f'{{ {claude_cmd} 2>&1; echo "__CLAUDE_EXIT_CODE_$?__"; }} | tee -a {_shell_quote(output_path)}'
+        try:
+            buf_name = f'followup-{task_id}'
             subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, shell_cmd, 'Enter'],
+                ['tmux', 'load-buffer', '-b', buf_name, prompt_file],
+                capture_output=True, text=True, check=True,
+            )
+            subprocess.run(
+                ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
+                capture_output=True, text=True, check=True,
+            )
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
                 capture_output=True, text=True,
             )
-        else:
-            # Session gone — create a new tmux session with --resume
-            shell_cmd = f'cd {_shell_quote(workdir)} && {{ {claude_cmd} 2>&1; echo "__CLAUDE_EXIT_CODE_$?__"; }} | tee -a {_shell_quote(output_path)}'
-            result = subprocess.run(
-                ['tmux', 'new-session', '-d', '-s', session_name, '-x', '220', '-y', '50',
-                 'bash', '-c', shell_cmd],
+            subprocess.run(
+                ['tmux', 'delete-buffer', '-b', buf_name],
                 capture_output=True, text=True,
             )
-            if result.returncode != 0:
-                return None, f'Failed to create tmux session: {result.stderr.strip()}'
+        except subprocess.CalledProcessError as e:
+            return None, f'Failed to send follow-up: {e}'
 
         # Update metadata
         meta['status'] = 'running'
@@ -577,18 +629,8 @@ class ClaudeTaskManager:
         if check.returncode == 0:
             return  # still running
 
-        # Session gone — determine completion status
-        output_path = os.path.join(task_dir, 'output.log')
-        exit_code = ClaudeTaskManager._check_completion(output_path)
-
-        if exit_code == 0:
-            meta['status'] = 'completed'
-        elif exit_code is not None:
-            meta['status'] = 'error'
-            meta['exit_code'] = exit_code
-        else:
-            meta['status'] = 'completed'
-
+        # Session gone — mark as completed
+        meta['status'] = 'completed'
         meta['finished_at'] = time.time()
 
         # Persist updated status
@@ -598,25 +640,6 @@ class ClaudeTaskManager:
                 json.dump(meta, f, indent=2)
         except OSError:
             pass
-
-    @staticmethod
-    def _check_completion(output_path):
-        """Look for __CLAUDE_EXIT_CODE_N__ marker at end of output file."""
-        if not os.path.exists(output_path):
-            return None
-        try:
-            with open(output_path, 'rb') as f:
-                # Read last 512 bytes
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 512))
-                tail = f.read().decode('utf-8', errors='replace')
-            match = re.search(r'__CLAUDE_EXIT_CODE_(\d+)__', tail)
-            if match:
-                return int(match.group(1))
-        except OSError:
-            pass
-        return None
 
 
 def _shell_quote(s):
@@ -852,6 +875,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         token = ClaudeTaskManager.regenerate_token()
         self.send_json({'token': token})
 
+    def handle_claude_prepare_terminal(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task_id = self._claude_task_id
+        task = ClaudeTaskManager.get_task(task_id)
+        if task is None:
+            self.send_json({'error': 'Task not found'}, 404)
+            return
+        session_name = task.get('tmux_session', f'claude-{task_id}')
+        try:
+            with open('/tmp/.claude-terminal-pending', 'w') as f:
+                f.write(session_name)
+            self.send_json({'ok': True, 'session': session_name})
+        except OSError as e:
+            self.send_json({'error': str(e)}, 500)
+
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
         host = self.headers.get('Host', 'localhost').split(':')[0]
@@ -988,6 +1028,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_followup()
+                    return
+                # /api/claude/tasks/{id}/prepare-terminal
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/prepare-terminal$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_prepare_terminal()
                     return
                 self.send_response(404)
                 self.end_headers()
