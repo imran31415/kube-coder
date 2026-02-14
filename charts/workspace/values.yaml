@@ -58,3 +58,11 @@ ssh:
 # If apiKey is set, it takes precedence over OAuth.
 claude:
   apiKey: ""
+
+# GitHub App configuration for automatic git/gh authentication
+# Provide credentials via a secrets file (e.g., secrets/<user>/github-app.yaml)
+github:
+  app:
+    appId: ""
+    installationId: ""
+    privateKey: ""

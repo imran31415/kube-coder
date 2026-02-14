@@ -1,0 +1,174 @@
+{{- if .Values.github.app.appId }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: github-app-script-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+data:
+  github-app-token.py: |
+    #!/usr/bin/env python3
+    """
+    GitHub App installation token generator.
+
+    Generates a JWT signed with RS256 (via openssl), exchanges it for a
+    short-lived installation access token, and configures git/gh CLI auth.
+
+    Modes:
+      --once    Run once and exit (for pod startup)
+      --daemon  Run in a loop, refreshing every 50 minutes
+    """
+
+    import base64
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    import urllib.request
+    import urllib.error
+
+
+    CREDENTIALS_DIR = "/home/dev/.credentials"
+    TOKEN_FILE = os.path.join(CREDENTIALS_DIR, ".github-token")
+    ENV_FILE = os.path.join(CREDENTIALS_DIR, ".github-env")
+    REFRESH_INTERVAL = 3000  # 50 minutes in seconds
+
+
+    def b64url(data: bytes) -> str:
+        """Base64url-encode without padding."""
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+    def generate_jwt(app_id: str, private_key: str) -> str:
+        """Generate a GitHub App JWT signed with RS256 using openssl."""
+        now = int(time.time())
+        header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        payload = b64url(json.dumps({
+            "iss": app_id,
+            "iat": now - 60,
+            "exp": now + 600,
+        }).encode())
+
+        signing_input = f"{header}.{payload}"
+
+        # Write private key to a temp file for openssl
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
+            f.write(private_key)
+            key_path = f.name
+
+        try:
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", key_path],
+                input=signing_input.encode(),
+                capture_output=True,
+                check=True,
+            )
+            signature = b64url(result.stdout)
+        finally:
+            os.unlink(key_path)
+
+        return f"{signing_input}.{signature}"
+
+
+    def get_installation_token(jwt: str, installation_id: str) -> str:
+        """Exchange JWT for a GitHub App installation access token."""
+        url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+        req = urllib.request.Request(
+            url,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {jwt}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+        return data["token"]
+
+
+    def write_credentials(token: str):
+        """Write token file and sourceable env file."""
+        os.makedirs(CREDENTIALS_DIR, exist_ok=True)
+
+        with open(TOKEN_FILE, "w") as f:
+            f.write(token)
+        os.chmod(TOKEN_FILE, 0o600)
+
+        env_content = f'export GITHUB_TOKEN="{token}"\nexport GH_TOKEN="{token}"\n'
+
+        with open(ENV_FILE, "w") as f:
+            f.write(env_content)
+        os.chmod(ENV_FILE, 0o600)
+
+        # Also update the profile hook so new shells (including tmux) pick up the token
+        profile_hook = "/home/dev/.profile.d-github-env"
+        try:
+            with open(profile_hook, "w") as f:
+                f.write(env_content)
+            os.chmod(profile_hook, 0o600)
+        except OSError:
+            pass
+
+
+    def configure_git(token: str):
+        """Configure git credential helper and gh CLI auth."""
+        helper = (
+            "!f() { "
+            'echo "protocol=https"; '
+            'echo "host=github.com"; '
+            'echo "username=x-access-token"; '
+            'echo "password=$(cat /home/dev/.credentials/.github-token)"; '
+            "}; f"
+        )
+        subprocess.run(
+            ["git", "config", "--global", "credential.helper", helper],
+            check=True,
+        )
+
+
+    def refresh_token(app_id: str, installation_id: str, private_key: str):
+        """Generate and install a fresh installation token."""
+        print(f"[github-app-token] Generating JWT for app {app_id}...")
+        jwt = generate_jwt(app_id, private_key)
+
+        print(f"[github-app-token] Requesting installation token for {installation_id}...")
+        token = get_installation_token(jwt, installation_id)
+
+        write_credentials(token)
+        configure_git(token)
+
+        print(f"[github-app-token] Token refreshed successfully.")
+
+
+    def main():
+        if len(sys.argv) != 2 or sys.argv[1] not in ("--once", "--daemon"):
+            print(f"Usage: {sys.argv[0]} --once|--daemon", file=sys.stderr)
+            sys.exit(1)
+
+        app_id = os.environ.get("GITHUB_APP_ID", "")
+        installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID", "")
+        private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY", "")
+
+        if not all([app_id, installation_id, private_key]):
+            print("[github-app-token] Missing required env vars, skipping.", file=sys.stderr)
+            sys.exit(1)
+
+        mode = sys.argv[1]
+
+        refresh_token(app_id, installation_id, private_key)
+
+        if mode == "--daemon":
+            print(f"[github-app-token] Daemon mode: refreshing every {REFRESH_INTERVAL}s")
+            while True:
+                time.sleep(REFRESH_INTERVAL)
+                try:
+                    refresh_token(app_id, installation_id, private_key)
+                except Exception as e:
+                    print(f"[github-app-token] Refresh failed: {e}", file=sys.stderr)
+
+
+    if __name__ == "__main__":
+        main()
+{{- end }}

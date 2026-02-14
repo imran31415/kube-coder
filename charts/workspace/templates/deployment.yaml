@@ -19,6 +19,10 @@ spec:
       annotations:
         checksum/browser-config: {{ include (print $.Template.BasePath "/browser-configmap.yaml") . | sha256sum }}
         checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
+        checksum/terminal-entry: {{ include (print $.Template.BasePath "/terminal-entry-configmap.yaml") . | sha256sum }}
+        {{- if .Values.github.app.appId }}
+        checksum/github-app-script: {{ include (print $.Template.BasePath "/github-app-token-refresh.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: ws-{{ .Values.user.name }}
       {{- if .Values.image.pullSecretName }}
@@ -43,12 +47,20 @@ spec:
             mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh &&
             chmod 700 /home/dev/.credentials/.ssh &&
             ln -sf /home/dev/.credentials/.ssh ~/.ssh &&
-            ln -sf /home/dev/.credentials/.config/git ~/.gitconfig &&
+            touch /home/dev/.credentials/.config/git/config &&
+            ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig &&
             ln -sf /home/dev/.credentials/.config/gh ~/.config/gh &&
             test -f /home/dev/CLAUDE.md || cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md &&
             sudo npm install -g @anthropic-ai/claude-code@latest > /tmp/claude-update.log 2>&1 &&
+            if [ -n "$GITHUB_APP_ID" ]; then
+              python3 /github-app/github-app-token.py --once &&
+              source /home/dev/.credentials/.github-env &&
+              cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env &&
+              grep -q 'profile.d-github-env' ~/.bashrc 2>/dev/null || echo '[ -f /home/dev/.profile.d-github-env ] && source /home/dev/.profile.d-github-env' >> ~/.bashrc &&
+              python3 /github-app/github-app-token.py --daemon &
+            fi &&
             code-server --bind-addr 0.0.0.0:8080 --auth none /home/dev &
-            ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev bash &
+            ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev /terminal-scripts/terminal-entry.sh &
             export DISPLAY=:99 &&
             rm -f /tmp/.X99-lock &&
             Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
@@ -114,6 +126,23 @@ spec:
               name: claude-secrets-{{ .Values.user.name }}
               key: anthropic-api-key
         {{- end }}
+        {{- if .Values.github.app.appId }}
+        - name: GITHUB_APP_ID
+          valueFrom:
+            secretKeyRef:
+              name: github-app-secrets-{{ .Values.user.name }}
+              key: app-id
+        - name: GITHUB_APP_INSTALLATION_ID
+          valueFrom:
+            secretKeyRef:
+              name: github-app-secrets-{{ .Values.user.name }}
+              key: installation-id
+        - name: GITHUB_APP_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: github-app-secrets-{{ .Values.user.name }}
+              key: private-key
+        {{- end }}
         ports:
         - name: http
           containerPort: 8080
@@ -148,6 +177,12 @@ spec:
           mountPath: /browser-config
         - name: claude-config
           mountPath: /claude-config
+        - name: terminal-scripts
+          mountPath: /terminal-scripts
+        {{- if .Values.github.app.appId }}
+        - name: github-app-script
+          mountPath: /github-app
+        {{- end }}
         {{- if eq .Values.build.mode "buildkit" }}
         - name: docker-certs
           mountPath: /certs/client
@@ -194,6 +229,16 @@ spec:
         configMap:
           name: claude-config-{{ .Values.user.name }}
           defaultMode: 0444
+      - name: terminal-scripts
+        configMap:
+          name: terminal-entry-{{ .Values.user.name }}
+          defaultMode: 0555
+      {{- if .Values.github.app.appId }}
+      - name: github-app-script
+        configMap:
+          name: github-app-script-{{ .Values.user.name }}
+          defaultMode: 0555
+      {{- end }}
       - name: kaniko-wrapper
         configMap:
           name: kaniko-wrapper

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: terminal-entry-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+data:
+  terminal-entry.sh: |
+    #!/bin/bash
+    PENDING_FILE="/tmp/.claude-terminal-pending"
+    if [ -f "$PENDING_FILE" ]; then
+        SESSION_NAME=$(cat "$PENDING_FILE")
+        rm -f "$PENDING_FILE"
+        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+            exec tmux attach-session -t "$SESSION_NAME"
+        fi
+    fi
+    exec bash -l

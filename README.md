@@ -5,7 +5,7 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
 
-A Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides VS Code IDE, terminal access, and remote browser capabilities, protected by GitHub OAuth2 authentication.
+A Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides VS Code IDE, terminal access, remote browser capabilities, and AI-powered Claude Code integration with remote task management -- all protected by GitHub OAuth2 authentication.
 
 <table>
   <tr>
@@ -29,7 +29,7 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
       <strong>TTYD terminal interface accessible from browser</strong><br/>
       <sub>Claude built in with environment awareness </sub>
     </td>
-    
+
   </tr>
 </table>
 
@@ -38,20 +38,27 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 
 ### Core Development Environment
 - **VS Code IDE** - Browser-based IDE with extensions support
-- **Terminal** - Full system access via browser
+- **Terminal** - Full system access via browser (ttyd)
 - **Remote Browser** - Firefox with VNC viewer for testing web apps
 - **System Monitoring** - Real-time CPU, memory, disk usage dashboard
 - **GitHub Integration** - Easy SSH key and git config setup from dashboard
 
+### Claude Code Integration
+- **Claude Code CLI** - AI-powered development assistant built-in
+- **Claude Task API** - Launch and manage Claude tasks remotely via REST API
+- **Claude Tasks Dashboard** - Monitor running tasks, view status, one-click attach to interactive sessions
+- **Remote Task Skill** - `/remote-task` Claude Code skill to manage tasks from your local terminal
+- **Interactive Sessions** - Attach to any running Claude session to approve permissions, provide input, or observe progress
+
 ### Security & Authentication
 - **GitHub OAuth2** - Secure authentication with configurable user authorization
+- **GitHub App Auth** - Automatic private repo access via GitHub App installation tokens (auto-refreshed every 50 minutes)
 - **HTTPS Everywhere** - Let's Encrypt certificates with automatic renewal
 - **Isolated Workspaces** - Complete isolation between user environments
 
 ### Development Stack
 - **Node.js 20 + Yarn** - Latest Node.js with Yarn package manager
 - **Container Builds** - Docker-in-Docker with BuildKit support
-- **Claude Code CLI** - AI-powered development assistant built-in
 - **Persistent Storage** - Dedicated storage that survives restarts
 
 ## Architecture
@@ -69,6 +76,7 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 │  • Independent Helm  │  │  • Independent Helm    │
 │  • Own PVC & secrets │  │  • Own PVC & secrets   │
 │  • Dedicated ingress │  │  • Dedicated ingress   │
+│  • Claude Task API   │  │  • Claude Task API     │
 └──────────────────────┘  └────────────────────────┘
 ```
 
@@ -90,7 +98,7 @@ kubectl create namespace coder
 # Deploy base infrastructure
 make deploy-base
 
-# Deploy a workspace
+# Deploy a workspace (auto-includes secrets if present)
 make deploy-imran
 ```
 
@@ -99,6 +107,38 @@ make deploy-imran
 - **Dashboard**: `https://username.yourdomain.com/oauth`
 - **VS Code**: `https://username.yourdomain.com/oauth/ide`
 - **Terminal**: `https://username.yourdomain.com/oauth/terminal`
+
+## Claude Task API
+
+Each workspace exposes a REST API for remotely launching and managing Claude Code tasks. Tasks run as interactive tmux sessions that users can attach to for approving permissions and providing input.
+
+See [docs/claude-task-api.md](./docs/claude-task-api.md) for full API documentation.
+
+### Quick Example
+
+```bash
+# Create a task
+curl -X POST https://imran.dev.archon.cx/api/claude/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Analyze the codebase and create a CLAUDE.md"}'
+
+# Check status
+curl https://imran.dev.archon.cx/api/claude/tasks \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### `/remote-task` Skill
+
+When working in this repo with Claude Code, use the `/remote-task` skill:
+
+```bash
+/remote-task analyze the codebase and create a CLAUDE.md   # Launch task
+/remote-task status                                         # List all tasks
+/remote-task output <TASK_ID>                              # View output
+/remote-task attach <TASK_ID>                              # Attach info
+/remote-task kill <TASK_ID>                                # Kill task
+```
 
 ## Pre-installed Stack
 
@@ -174,26 +214,72 @@ resources:
     memory: 5Gi
 ```
 
+### Secrets (gitignored)
+
+```yaml
+# secrets/username/claude.yaml — Anthropic API key (optional)
+claude:
+  apiKey: "sk-ant-api03-..."
+
+# secrets/username/github-app.yaml — GitHub App credentials (optional)
+github:
+  app:
+    appId: "1234567"
+    installationId: "12345678"
+    privateKey: |
+      -----BEGIN RSA PRIVATE KEY-----
+      ...
+      -----END RSA PRIVATE KEY-----
+```
+
 ## Project Structure
 
 ```
 charts/
-├── base-infrastructure/    # Shared ConfigMaps
-└── workspace/              # Workspace template
+├── base-infrastructure/       # Shared ConfigMaps
+└── workspace/                 # Workspace template
+    ├── dashboard.html         # Dashboard UI with Claude Tasks section
+    ├── server.py              # Python HTTP server (dashboard, APIs, task management)
     └── templates/
         ├── deployment.yaml
         ├── service.yaml
         ├── ingress.yaml
         ├── ingress-oauth2.yaml
+        ├── ingress-claude-api.yaml
         ├── oauth2-proxy.yaml
         ├── browser-configmap.yaml
+        ├── claude-configmap.yaml
+        ├── claude-secret.yaml
+        ├── terminal-entry-configmap.yaml
+        ├── github-app-secret.yaml
+        ├── github-app-token-refresh.yaml
         ├── pvc.yaml
         └── serviceaccount.yaml
 
 deployments/
-├── imran/values.yaml       # User-specific config
+├── imran/values.yaml          # User-specific config
 └── gerard/values.yaml
+
+secrets/                       # Gitignored
+├── imran/
+│   ├── claude.yaml            # Anthropic API key
+│   └── github-app.yaml        # GitHub App credentials
+└── gerard/
+
+.claude/
+└── skills/
+    └── remote-task/SKILL.md   # /remote-task skill for managing remote Claude tasks
+
+docs/
+├── claude-task-api.md         # Full Claude Task API documentation
+└── ...
 ```
+
+## Documentation
+
+- [Claude Task API](./docs/claude-task-api.md) - REST API for remote Claude task management
+- [Browser Architecture](./BROWSER_ARCHITECTURE.md) - Remote browser VNC architecture
+- [New User Provisioning](./NEW_USER_PROVISIONING.md) - Adding new workspace users
 
 ## Troubleshooting
 
@@ -212,15 +298,20 @@ make shell-imran
 
 # Certificate issues
 kubectl get certificate -n coder
+
+# Check Claude task sessions
+kubectl exec -n coder <pod> -c ide -- tmux list-sessions
 ```
 
 ## Security Features
 
 - **GitHub OAuth2** - Secure authentication with user authorization
+- **GitHub App tokens** - Short-lived installation tokens for private repo access (no long-lived PATs)
 - **TLS encryption** - All traffic encrypted with Let's Encrypt
 - **Workspace isolation** - Users cannot access each other's environments
 - **Non-root containers** - All processes run as uid/gid 1000
 - **Isolated storage** - Dedicated PVC per user
+- **Interactive permissions** - Claude Code runs with standard permission mode; users approve file writes
 
 ## License
 
