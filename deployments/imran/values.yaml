@@ -57,3 +57,10 @@ build:
 ssh:
   enabled: false
   port: 22
+
+# Claude Code authentication:
+#   Option A (subscription): Leave apiKey empty, run `make shell-imran && claude` once to OAuth login.
+#   Option B (API credits): Set via: helm upgrade ... -f secrets/imran/claude.yaml
+# API key takes precedence over OAuth when set.
+claude:
+  apiKey: ""

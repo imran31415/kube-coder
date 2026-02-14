@@ -66,6 +66,55 @@ curl localhost:6080/metrics           # CPU, memory, disk usage (JSON)
 curl localhost:6080/api/github/status # git config and GitHub auth status
 ```
 
+## Claude Task API
+
+HTTP API on port 6080 for remotely running Claude Code tasks in persistent tmux sessions. Supports two auth methods: OAuth2 (browser) or Bearer token (programmatic).
+
+### Get your API token
+
+From inside the pod:
+```bash
+cat ~/.claude-tasks/.api-token
+```
+
+Or via the browser (OAuth2 session):
+```bash
+curl localhost:6080/api/claude/auth/token
+```
+
+### Endpoints
+
+```bash
+# Create a task
+curl -X POST localhost:6080/api/claude/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "clone repo user/repo", "workdir": "/home/dev"}'
+
+# List all tasks
+curl -H "Authorization: Bearer $TOKEN" localhost:6080/api/claude/tasks
+
+# Get task detail + recent output
+curl -H "Authorization: Bearer $TOKEN" localhost:6080/api/claude/tasks/{id}
+
+# Get raw output (last N lines)
+curl -H "Authorization: Bearer $TOKEN" localhost:6080/api/claude/tasks/{id}/output?tail=100
+
+# Send follow-up prompt to existing task
+curl -X POST localhost:6080/api/claude/tasks/{id}/message \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "now create a README"}'
+
+# Kill a running task
+curl -X DELETE -H "Authorization: Bearer $TOKEN" localhost:6080/api/claude/tasks/{id}
+
+# Regenerate API token (OAuth2 only)
+curl -X POST localhost:6080/api/claude/auth/token/regenerate
+```
+
+Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t claude-{task_id}` to watch live. Task state persists in `~/.claude-tasks/`.
+
 ## Key Constraints
 
 - **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl localhost:6080/metrics`.

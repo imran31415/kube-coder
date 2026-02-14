@@ -6,6 +6,9 @@ import os
 import json
 import time
 import re
+import secrets
+import uuid
+import urllib.parse
 
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
@@ -326,6 +329,302 @@ Host github.com
         }
 
 
+class ClaudeTaskManager:
+    """Manages Claude Code tasks running in tmux sessions"""
+
+    TASKS_DIR = '/home/dev/.claude-tasks'
+    TOKEN_FILE = '/home/dev/.claude-tasks/.api-token'
+
+    @staticmethod
+    def ensure_tasks_dir():
+        os.makedirs(ClaudeTaskManager.TASKS_DIR, mode=0o700, exist_ok=True)
+
+    @staticmethod
+    def get_or_create_token():
+        ClaudeTaskManager.ensure_tasks_dir()
+        if os.path.exists(ClaudeTaskManager.TOKEN_FILE):
+            with open(ClaudeTaskManager.TOKEN_FILE, 'r') as f:
+                token = f.read().strip()
+                if token:
+                    return token
+        token = secrets.token_urlsafe(36)
+        with open(ClaudeTaskManager.TOKEN_FILE, 'w') as f:
+            f.write(token)
+        os.chmod(ClaudeTaskManager.TOKEN_FILE, 0o600)
+        return token
+
+    @staticmethod
+    def verify_token(token):
+        if not os.path.exists(ClaudeTaskManager.TOKEN_FILE):
+            return False
+        with open(ClaudeTaskManager.TOKEN_FILE, 'r') as f:
+            stored = f.read().strip()
+        return secrets.compare_digest(token, stored)
+
+    @staticmethod
+    def regenerate_token():
+        ClaudeTaskManager.ensure_tasks_dir()
+        token = secrets.token_urlsafe(36)
+        with open(ClaudeTaskManager.TOKEN_FILE, 'w') as f:
+            f.write(token)
+        os.chmod(ClaudeTaskManager.TOKEN_FILE, 0o600)
+        return token
+
+    @staticmethod
+    def create_task(prompt, workdir=None):
+        ClaudeTaskManager.ensure_tasks_dir()
+        task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
+        session_id = str(uuid.uuid4())
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        os.makedirs(task_dir, mode=0o700)
+
+        if workdir is None:
+            workdir = '/home/dev'
+
+        meta = {
+            'task_id': task_id,
+            'session_id': session_id,
+            'prompt': prompt,
+            'workdir': workdir,
+            'status': 'running',
+            'created_at': time.time(),
+            'tmux_session': f'claude-{task_id}',
+        }
+
+        meta_path = os.path.join(task_dir, 'task.json')
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+
+        output_path = os.path.join(task_dir, 'output.log')
+
+        # Build the claude command
+        claude_cmd = f'claude -p {_shell_quote(prompt)} --verbose --output-format stream-json --session-id {_shell_quote(session_id)}'
+        # Wrap: run command, capture exit code, append marker, then exit tmux
+        shell_cmd = f'cd {_shell_quote(workdir)} && {{ {claude_cmd} 2>&1; echo "__CLAUDE_EXIT_CODE_$?__"; }} | tee {_shell_quote(output_path)}'
+
+        # Launch in a new tmux session
+        tmux_cmd = [
+            'tmux', 'new-session', '-d',
+            '-s', f'claude-{task_id}',
+            '-x', '220', '-y', '50',
+            'bash', '-c', shell_cmd,
+        ]
+
+        result = subprocess.run(tmux_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            meta['status'] = 'error'
+            meta['error'] = result.stderr.strip()
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f, indent=2)
+            return meta
+
+        return meta
+
+    @staticmethod
+    def list_tasks():
+        ClaudeTaskManager.ensure_tasks_dir()
+        tasks = []
+        try:
+            entries = sorted(os.listdir(ClaudeTaskManager.TASKS_DIR), reverse=True)
+        except OSError:
+            return tasks
+
+        for entry in entries:
+            task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, entry)
+            meta_path = os.path.join(task_dir, 'task.json')
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+                ClaudeTaskManager._reconcile_status(meta, task_dir)
+                tasks.append({
+                    'task_id': meta.get('task_id', entry),
+                    'prompt': meta.get('prompt', '')[:120],
+                    'status': meta.get('status', 'unknown'),
+                    'created_at': meta.get('created_at'),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+        return tasks
+
+    @staticmethod
+    def get_task(task_id):
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            return None
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        ClaudeTaskManager._reconcile_status(meta, task_dir)
+
+        # Attach last 50 lines of output
+        output_path = os.path.join(task_dir, 'output.log')
+        recent_output = ''
+        if os.path.exists(output_path):
+            try:
+                with open(output_path, 'r', errors='replace') as f:
+                    lines = f.readlines()
+                    recent_output = ''.join(lines[-50:])
+            except OSError:
+                pass
+        meta['recent_output'] = recent_output
+        return meta
+
+    @staticmethod
+    def get_task_output(task_id, tail=None):
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        output_path = os.path.join(task_dir, 'output.log')
+        if not os.path.exists(output_path):
+            return None
+        with open(output_path, 'r', errors='replace') as f:
+            if tail:
+                lines = f.readlines()
+                return ''.join(lines[-tail:])
+            return f.read()
+
+    @staticmethod
+    def send_followup(task_id, prompt):
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            return None, 'Task not found'
+
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+
+        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        workdir = meta.get('workdir', '/home/dev')
+        output_path = os.path.join(task_dir, 'output.log')
+
+        # Check if tmux session is still alive
+        check = subprocess.run(
+            ['tmux', 'has-session', '-t', session_name],
+            capture_output=True, text=True,
+        )
+        session_alive = check.returncode == 0
+
+        # Build resume command using session_id (UUID)
+        session_id = meta.get('session_id', task_id)
+        claude_cmd = f'claude -p {_shell_quote(prompt)} --verbose --output-format stream-json --resume {_shell_quote(session_id)}'
+
+        if session_alive:
+            # Session still alive — send keys to queue a follow-up after current finishes
+            shell_cmd = f'{{ {claude_cmd} 2>&1; echo "__CLAUDE_EXIT_CODE_$?__"; }} | tee -a {_shell_quote(output_path)}'
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, shell_cmd, 'Enter'],
+                capture_output=True, text=True,
+            )
+        else:
+            # Session gone — create a new tmux session with --resume
+            shell_cmd = f'cd {_shell_quote(workdir)} && {{ {claude_cmd} 2>&1; echo "__CLAUDE_EXIT_CODE_$?__"; }} | tee -a {_shell_quote(output_path)}'
+            result = subprocess.run(
+                ['tmux', 'new-session', '-d', '-s', session_name, '-x', '220', '-y', '50',
+                 'bash', '-c', shell_cmd],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                return None, f'Failed to create tmux session: {result.stderr.strip()}'
+
+        # Update metadata
+        meta['status'] = 'running'
+        followups = meta.get('followups', [])
+        followups.append({'prompt': prompt, 'sent_at': time.time()})
+        meta['followups'] = followups
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+
+        return meta, None
+
+    @staticmethod
+    def delete_task(task_id):
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            return None
+
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+
+        session_name = meta.get('tmux_session', f'claude-{task_id}')
+
+        # Kill the tmux session if alive
+        subprocess.run(
+            ['tmux', 'kill-session', '-t', session_name],
+            capture_output=True, text=True,
+        )
+
+        meta['status'] = 'killed'
+        meta['killed_at'] = time.time()
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+        return meta
+
+    @staticmethod
+    def _reconcile_status(meta, task_dir):
+        """If task.json says running but tmux session is gone, update status."""
+        if meta.get('status') != 'running':
+            return
+
+        session_name = meta.get('tmux_session', '')
+        if not session_name:
+            return
+
+        check = subprocess.run(
+            ['tmux', 'has-session', '-t', session_name],
+            capture_output=True, text=True,
+        )
+        if check.returncode == 0:
+            return  # still running
+
+        # Session gone — determine completion status
+        output_path = os.path.join(task_dir, 'output.log')
+        exit_code = ClaudeTaskManager._check_completion(output_path)
+
+        if exit_code == 0:
+            meta['status'] = 'completed'
+        elif exit_code is not None:
+            meta['status'] = 'error'
+            meta['exit_code'] = exit_code
+        else:
+            meta['status'] = 'completed'
+
+        meta['finished_at'] = time.time()
+
+        # Persist updated status
+        meta_path = os.path.join(task_dir, 'task.json')
+        try:
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f, indent=2)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _check_completion(output_path):
+        """Look for __CLAUDE_EXIT_CODE_N__ marker at end of output file."""
+        if not os.path.exists(output_path):
+            return None
+        try:
+            with open(output_path, 'rb') as f:
+                # Read last 512 bytes
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 512))
+                tail = f.read().decode('utf-8', errors='replace')
+            match = re.search(r'__CLAUDE_EXIT_CODE_(\d+)__', tail)
+            if match:
+                return int(match.group(1))
+        except OSError:
+            pass
+        return None
+
+
+def _shell_quote(s):
+    """Quote a string for safe use in a shell command."""
+    import shlex
+    return shlex.quote(s)
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         # Normalize path - strip /oauth and /browser prefixes from rewrites
@@ -368,6 +667,28 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif self.path.startswith("/vnc/"):
             self.proxy_vnc_request()
             return
+
+        # --- Claude Task API (GET) ---
+        claude_path = normalized_path
+        if claude_path == '/api/claude/tasks':
+            self.handle_claude_list_tasks()
+            return
+        elif claude_path == '/api/claude/auth/token':
+            self.handle_claude_get_token()
+            return
+
+        # /api/claude/tasks/{id} and /api/claude/tasks/{id}/output
+        m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/output$', claude_path)
+        if m:
+            self._claude_task_id = m.group(1)
+            self.handle_claude_get_output()
+            return
+        m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', claude_path)
+        if m:
+            self._claude_task_id = m.group(1)
+            self.handle_claude_get_task()
+            return
+
         super().do_GET()
     
     def check_auth(self):
@@ -380,6 +701,157 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return True
         return False
     
+    # --- Claude Task API helpers ---
+
+    def check_claude_auth(self):
+        """Returns True if request is authenticated via OAuth2 headers OR valid bearer token."""
+        if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
+            return True
+        remote_user = self.headers.get('Remote-User', '')
+        if remote_user:
+            return True
+        auth_header = self.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:].strip()
+            return ClaudeTaskManager.verify_token(token)
+        return False
+
+    def check_oauth_only(self):
+        """Returns True only if request has OAuth2 proxy headers (not bearer token)."""
+        if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
+            return True
+        if self.headers.get('Remote-User', ''):
+            return True
+        return False
+
+    def send_json(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def read_json_body(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            return {}
+        body = self.rfile.read(content_length).decode('utf-8')
+        return json.loads(body) if body else {}
+
+    def do_DELETE(self):
+        try:
+            path = self.path.replace('/browser', '').replace('/oauth', '')
+            m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', path)
+            if m:
+                self._claude_task_id = m.group(1)
+                self.handle_claude_delete_task()
+                return
+            self.send_json({'error': 'Not found'}, 404)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    # --- Claude Task API handlers ---
+
+    def handle_claude_list_tasks(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        tasks = ClaudeTaskManager.list_tasks()
+        self.send_json({'tasks': tasks})
+
+    def handle_claude_get_task(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task = ClaudeTaskManager.get_task(self._claude_task_id)
+        if task is None:
+            self.send_json({'error': 'Task not found'}, 404)
+            return
+        self.send_json(task)
+
+    def handle_claude_get_output(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        # Parse ?tail=N from query string
+        tail = None
+        if '?' in self.path:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            tail_val = params.get('tail', [None])[0]
+            if tail_val and tail_val.isdigit():
+                tail = int(tail_val)
+        output = ClaudeTaskManager.get_task_output(self._claude_task_id, tail=tail)
+        if output is None:
+            self.send_json({'error': 'Task or output not found'}, 404)
+            return
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(output.encode('utf-8', errors='replace'))
+
+    def handle_claude_create_task(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            self.send_json({'error': 'prompt is required'}, 400)
+            return
+        workdir = data.get('workdir')
+        task = ClaudeTaskManager.create_task(prompt, workdir=workdir)
+        self.send_json(task, 201)
+
+    def handle_claude_followup(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            self.send_json({'error': 'prompt is required'}, 400)
+            return
+        task, err = ClaudeTaskManager.send_followup(self._claude_task_id, prompt)
+        if task is None:
+            self.send_json({'error': err or 'Task not found'}, 404)
+            return
+        self.send_json(task)
+
+    def handle_claude_delete_task(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task = ClaudeTaskManager.delete_task(self._claude_task_id)
+        if task is None:
+            self.send_json({'error': 'Task not found'}, 404)
+            return
+        self.send_json(task)
+
+    def handle_claude_get_token(self):
+        if not self.check_oauth_only():
+            self.send_json({'error': 'This endpoint requires OAuth2 authentication (browser session)'}, 401)
+            return
+        token = ClaudeTaskManager.get_or_create_token()
+        self.send_json({'token': token})
+
+    def handle_claude_regenerate_token(self):
+        if not self.check_oauth_only():
+            self.send_json({'error': 'This endpoint requires OAuth2 authentication (browser session)'}, 401)
+            return
+        token = ClaudeTaskManager.regenerate_token()
+        self.send_json({'token': token})
+
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
         host = self.headers.get('Host', 'localhost').split(':')[0]
@@ -505,7 +977,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_gh_login_instructions()
             elif path == "/api/github/cli/complete-auth":
                 self.handle_gh_check_auth()
+            # Claude Task API endpoints
+            elif path == "/api/claude/tasks":
+                self.handle_claude_create_task()
+            elif path == "/api/claude/auth/token/regenerate":
+                self.handle_claude_regenerate_token()
             else:
+                # /api/claude/tasks/{id}/message
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/message$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_followup()
+                    return
                 self.send_response(404)
                 self.end_headers()
                 self.wfile.write(f'API endpoint not found. Received: {self.path}'.encode())
@@ -531,7 +1014,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         browser_status = self.check_service_health('localhost', 6081)
         
         health_data = {
-            'status': 'healthy' if all([vscode_status, terminal_status, browser_status]) else 'degraded',
+            'status': 'healthy' if (terminal_status and browser_status) else 'degraded',
             'services': {
                 'vscode': {'status': 'up' if vscode_status else 'down', 'port': 8080},
                 'terminal': {'status': 'up' if terminal_status else 'down', 'port': 7681},
@@ -858,6 +1341,15 @@ if __name__ == "__main__":
     print("  POST /api/test-chrome   - Test Chrome installation")
     print("  POST /api/launch-firefox - Launch Chrome (legacy endpoint)")
     print("  POST /api/test-firefox   - Test Chrome (legacy endpoint)")
+    print("  --- Claude Task API ---")
+    print("  POST /api/claude/tasks              - Create new task")
+    print("  GET  /api/claude/tasks              - List all tasks")
+    print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
+    print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
+    print("  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
+    print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
+    print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
+    print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
     
     with socketserver.TCPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()
