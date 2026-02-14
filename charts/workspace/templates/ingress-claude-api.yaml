@@ -1,0 +1,40 @@
+{{- if eq .Values.ingress.auth.type "oauth2" }}
+# Ingress for Claude Task API - no OAuth2 proxy, uses Bearer token auth instead.
+# This allows programmatic access (curl, scripts) without a browser session.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-claude-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/rewrite-target: /api/claude/$1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /api/claude/(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+{{- end }}

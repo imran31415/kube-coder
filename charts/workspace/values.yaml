@@ -50,3 +50,11 @@ build:
 ssh:
   enabled: false
   port: 22
+
+# Claude Code configuration
+# Two auth methods are supported:
+#   1. OAuth (subscription): Leave apiKey empty, run `claude` in the pod once to login interactively.
+#   2. API key (pay-per-use): Set apiKey below or via --set claude.apiKey=sk-ant-...
+# If apiKey is set, it takes precedence over OAuth.
+claude:
+  apiKey: ""
