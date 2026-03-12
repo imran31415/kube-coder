@@ -65,7 +65,7 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 
 ```
 ┌─────────────────────────────────────────────────┐
-│             Base Infrastructure                  │
+│             Base Infrastructure                 │
 │  • Shared ConfigMaps (kaniko-wrapper, etc.)     │
 └─────────────────────────────────────────────────┘
                         │
