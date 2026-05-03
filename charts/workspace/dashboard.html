@@ -666,6 +666,97 @@
             font-size: 0.9rem;
         }
 
+        .new-task-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            font-size: 1.2rem;
+            line-height: 1;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .new-task-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 3px 10px rgba(102, 126, 234, 0.4);
+        }
+
+        .new-task-form {
+            display: none;
+            padding: 15px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
+            margin-bottom: 10px;
+        }
+
+        .new-task-form.visible {
+            display: block;
+        }
+
+        .new-task-input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-family: inherit;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        .new-task-input:focus {
+            border-color: #667eea;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        }
+
+        .new-task-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .new-task-submit {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            background: linear-gradient(45deg, #2ECC40, #01FF70);
+            color: #1a3a1a;
+            transition: all 0.2s ease;
+        }
+
+        .new-task-submit:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 3px 10px rgba(46, 204, 64, 0.3);
+        }
+
+        .new-task-cancel {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            background: #f0f0f0;
+            color: #555;
+            transition: all 0.2s ease;
+        }
+
+        .new-task-cancel:hover {
+            background: #e0e0e0;
+        }
+
         .task-toast {
             position: fixed;
             bottom: 20px;
@@ -778,7 +869,17 @@
         <div class="claude-tasks-section">
             <div class="claude-tasks-header">
                 <h3>Claude Tasks</h3>
-                <span id="tasks-count" class="tasks-count" style="display: none;">0</span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="tasks-count" class="tasks-count" style="display: none;">0</span>
+                    <button class="new-task-btn" onclick="toggleNewTaskForm()" title="New task">+</button>
+                </div>
+            </div>
+            <div id="new-task-form" class="new-task-form">
+                <textarea id="new-task-input" class="new-task-input" rows="3" placeholder="Describe the task for Claude..."></textarea>
+                <div class="new-task-actions">
+                    <button class="new-task-submit" onclick="submitNewTask()">Send Task</button>
+                    <button class="new-task-cancel" onclick="toggleNewTaskForm()">Cancel</button>
+                </div>
             </div>
             <div id="task-list" class="task-list">
                 <div class="tasks-empty">Loading tasks...</div>
@@ -1394,6 +1495,44 @@
         // ---- Claude Tasks ----
         let claudeTasksCache = [];
 
+        function toggleNewTaskForm() {
+            const form = document.getElementById('new-task-form');
+            const input = document.getElementById('new-task-input');
+            form.classList.toggle('visible');
+            if (form.classList.contains('visible')) {
+                input.focus();
+            } else {
+                input.value = '';
+            }
+        }
+
+        async function submitNewTask() {
+            const input = document.getElementById('new-task-input');
+            const text = input.value.trim();
+            if (!text) {
+                showTaskToast('Please enter a task description');
+                return;
+            }
+            try {
+                const response = await fetch('/oauth/api/claude/tasks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({prompt: text})
+                });
+                if (response.ok) {
+                    showTaskToast('Task created');
+                    input.value = '';
+                    document.getElementById('new-task-form').classList.remove('visible');
+                    fetchClaudeTasks();
+                } else {
+                    const data = await response.json().catch(() => ({}));
+                    showTaskToast('Failed to create task: ' + (data.error || response.statusText));
+                }
+            } catch (error) {
+                showTaskToast('Error: ' + error.message);
+            }
+        }
+
         async function fetchClaudeTasks() {
             try {
                 const response = await fetch('/oauth/api/claude/tasks', {
@@ -1423,7 +1562,7 @@
             }
 
             if (tasks.length === 0) {
-                container.innerHTML = '<div class="tasks-empty">No Claude tasks yet. Use the API or terminal to create tasks.</div>';
+                container.innerHTML = '<div class="tasks-empty">No Claude tasks yet. Click + to create one.</div>';
                 return;
             }
 
