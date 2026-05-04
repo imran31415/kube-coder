@@ -10,6 +10,7 @@ import secrets
 import threading
 import uuid
 import urllib.parse
+import fcntl
 
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
@@ -17,6 +18,18 @@ ALERT_THRESHOLDS = {
     'memory': {'warning': 80, 'critical': 95},
     'disk': {'warning': 80, 'critical': 90}
 }
+
+# Strip ANSI escape sequences (CSI, OSC, single-char) from terminal output
+# captured via `tmux pipe-pane`, so the dashboard chat view stays readable.
+_ANSI_RE = re.compile(
+    r'\x1b\[[0-9;?]*[ -/]*[@-~]'   # CSI
+    r'|\x1b\][^\x07]*\x07'          # OSC ... BEL
+    r'|\x1b[NOPYZ\\^_=>78<]'        # single-char escapes
+)
+
+
+def strip_ansi(text):
+    return _ANSI_RE.sub('', text)
 
 class MetricsCollector:
     """Collects system metrics from /proc filesystem and os.statvfs"""
@@ -420,6 +433,16 @@ class ClaudeTaskManager:
                 json.dump(meta, f, indent=2)
             return meta
 
+        # Mirror the tmux pane output to a log file so it survives session/pod restarts.
+        # `pipe-pane -o` toggles output piping; the appended `cat >> ...` keeps writing
+        # for the lifetime of the session.
+        output_log = os.path.join(task_dir, 'output.log')
+        subprocess.run(
+            ['tmux', 'pipe-pane', '-o', '-t', session_name,
+             f'cat >> {_shell_quote(output_log)}'],
+            capture_output=True, text=True,
+        )
+
         # Send the initial prompt to the interactive claude session after it starts
         # Use tmux load-buffer + paste-buffer for clean multi-line handling
         def send_prompt():
@@ -578,15 +601,18 @@ class ClaudeTaskManager:
         except subprocess.CalledProcessError as e:
             return None, f'Failed to send follow-up: {e}'
 
-        # Update metadata
-        meta['status'] = 'running'
-        followups = meta.get('followups', [])
-        followups.append({'prompt': prompt, 'sent_at': time.time()})
-        meta['followups'] = followups
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
+        # Update metadata under an exclusive lock so concurrent /message calls
+        # don't drop each other's appends to followups[].
+        sent_at = time.time()
 
-        return meta, None
+        def mutate(m):
+            m['status'] = 'running'
+            fps = m.get('followups', [])
+            fps.append({'prompt': prompt, 'sent_at': sent_at})
+            m['followups'] = fps
+
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        return updated, None
 
     @staticmethod
     def delete_task(task_id):
@@ -606,11 +632,42 @@ class ClaudeTaskManager:
             capture_output=True, text=True,
         )
 
-        meta['status'] = 'killed'
-        meta['killed_at'] = time.time()
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
-        return meta
+        killed_at = time.time()
+
+        def mutate(m):
+            m['status'] = 'killed'
+            m['killed_at'] = killed_at
+
+        return ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+
+    @staticmethod
+    def _atomic_update_meta(task_dir, mutate_fn):
+        """Atomically read-modify-write task.json under an exclusive flock.
+
+        mutate_fn(meta) may modify meta in place. Returning False skips the write
+        (used when the mutator decides the update is no longer needed after seeing
+        fresh state). Returns the post-mutation meta dict, or None if the task
+        directory is gone.
+        """
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            return None
+        lock_path = os.path.join(task_dir, '.meta.lock')
+        with open(lock_path, 'a') as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+            try:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+                should_write = mutate_fn(meta)
+                if should_write is False:
+                    return meta
+                tmp_path = meta_path + '.tmp'
+                with open(tmp_path, 'w') as f:
+                    json.dump(meta, f, indent=2)
+                os.rename(tmp_path, meta_path)
+                return meta
+            finally:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
 
     @staticmethod
     def _reconcile_status(meta, task_dir):
@@ -629,17 +686,19 @@ class ClaudeTaskManager:
         if check.returncode == 0:
             return  # still running
 
-        # Session gone — mark as completed
-        meta['status'] = 'completed'
-        meta['finished_at'] = time.time()
+        finished_at = time.time()
 
-        # Persist updated status
-        meta_path = os.path.join(task_dir, 'task.json')
-        try:
-            with open(meta_path, 'w') as f:
-                json.dump(meta, f, indent=2)
-        except OSError:
-            pass
+        def mutate(m):
+            # Re-check inside the lock; another reconcile may have run already.
+            if m.get('status') != 'running':
+                return False
+            m['status'] = 'completed'
+            m['finished_at'] = finished_at
+
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        if updated is not None:
+            meta['status'] = updated.get('status', meta.get('status'))
+            meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
 
 
 def _shell_quote(s):
@@ -692,7 +751,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # --- Claude Task API (GET) ---
-        claude_path = normalized_path
+        # Strip query string for path matching; handlers re-parse from self.path.
+        claude_path = normalized_path.split('?', 1)[0]
         if claude_path == '/api/claude/tasks':
             self.handle_claude_list_tasks()
             return
@@ -700,6 +760,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_claude_get_token()
             return
 
+        # /api/claude/tasks/{id}/stream — Server-Sent Events
+        m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/stream$', claude_path)
+        if m:
+            self._claude_task_id = m.group(1)
+            self.handle_claude_stream_output()
+            return
         # /api/claude/tasks/{id} and /api/claude/tasks/{id}/output
         m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/output$', claude_path)
         if m:
@@ -814,6 +880,142 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(output.encode('utf-8', errors='replace'))
+
+    def handle_claude_stream_output(self):
+        """Server-Sent Events stream of a task's rendered tmux output.
+
+        Polls `tmux capture-pane` every ~1.5s and emits the diff vs the previous
+        capture. We use capture-pane (not raw pipe-pane bytes) because claude-code
+        is an interactive TUI: it emits cursor-moves, \\r-redraws, and spinner
+        animations that look like garbage when streamed raw. tmux maintains the
+        rendered screen state, so capture-pane gives us clean text.
+
+        For completed tasks (tmux session gone) falls back to output.log.
+
+        Query params:
+          from=start (default) — send the current full capture once, then diffs.
+          from=live            — skip initial capture, only send what changes after.
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+
+        task_id = self._claude_task_id
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            self.send_json({'error': 'Task not found'}, 404)
+            return
+
+        from_param = 'start'
+        if '?' in self.path:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            from_param = params.get('from', ['start'])[0]
+
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            self.send_json({'error': 'Task metadata unreadable'}, 500)
+            return
+        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        output_log = os.path.join(task_dir, 'output.log')
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        # Tell ingress-nginx not to buffer — otherwise SSE chunks won't flush in real time.
+        self.send_header('X-Accel-Buffering', 'no')
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+
+        def write_raw(payload_bytes):
+            try:
+                self.wfile.write(payload_bytes)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
+
+        def write_sse(data):
+            # SSE framing: prefix every line with "data: ", terminate event with blank line.
+            lines = data.split('\n')
+            block = ''.join(f'data: {line}\n' for line in lines) + '\n'
+            return write_raw(block.encode('utf-8'))
+
+        def capture():
+            """Return the current pane content (with history), or fall back to
+            output.log if the tmux session is gone (task completed/killed)."""
+            r = subprocess.run(
+                ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-2000'],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0 and r.stdout:
+                return strip_ansi(r.stdout).rstrip('\n') + '\n'
+            if os.path.exists(output_log):
+                try:
+                    with open(output_log, 'r', errors='replace') as f:
+                        return strip_ansi(f.read()).rstrip('\n') + '\n'
+                except OSError:
+                    pass
+            return ''
+
+        last_capture = ''
+        if from_param == 'start':
+            initial = capture()
+            if initial:
+                if not write_sse(initial):
+                    return
+                last_capture = initial
+        else:
+            # Live mode: prime last_capture so we don't replay history.
+            last_capture = capture()
+
+        last_heartbeat = time.time()
+        last_change = time.time()
+        poll_interval = 1.5
+        heartbeat_interval = 15
+        idle_grace = 5  # seconds after task stops with no diff before we close
+
+        while True:
+            new_capture = capture()
+            if new_capture != last_capture:
+                if new_capture.startswith(last_capture):
+                    # Pure append — emit just the new tail.
+                    diff = new_capture[len(last_capture):]
+                elif last_capture.startswith(new_capture):
+                    # Capture shrank (rare; pane cleared). Wait for next snapshot.
+                    diff = ''
+                else:
+                    # History scrolled off / pane cleared. Send a marker plus the
+                    # new content so the user sees something without a giant replay.
+                    diff = '\n[output buffer rewound]\n' + new_capture
+                last_capture = new_capture
+                if diff:
+                    if not write_sse(diff):
+                        return
+                    last_change = time.time()
+                    last_heartbeat = last_change
+
+            if time.time() - last_heartbeat > heartbeat_interval:
+                if not write_raw(b': keep-alive\n\n'):
+                    return
+                last_heartbeat = time.time()
+
+            try:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+                ClaudeTaskManager._reconcile_status(meta, task_dir)
+                status = meta.get('status', 'unknown')
+            except (OSError, json.JSONDecodeError):
+                status = 'unknown'
+
+            if status != 'running' and time.time() - last_change > idle_grace:
+                write_raw(f'event: end\ndata: {status}\n\n'.encode('utf-8'))
+                return
+
+            time.sleep(poll_interval)
 
     def handle_claude_create_task(self):
         if not self.check_claude_auth():
@@ -1397,5 +1599,5 @@ if __name__ == "__main__":
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
     print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
     
-    with socketserver.TCPServer(("", 6080), BrowserHandler) as httpd:
+    with http.server.ThreadingHTTPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()

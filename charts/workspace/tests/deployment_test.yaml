@@ -4,6 +4,7 @@ templates:
   - templates/browser-configmap.yaml
   - templates/claude-configmap.yaml
   - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
 values:
   - test-values.yaml
 tests:
@@ -148,8 +149,31 @@ tests:
               defaultMode: 292
 
   - it: should copy CLAUDE.md during startup only if not exists
-    template: templates/deployment.yaml
+    template: templates/workspace-entrypoint-configmap.yaml
     asserts:
       - matchRegex:
-          path: spec.template.spec.containers[0].args[0]
+          path: data["start.sh"]
           pattern: "test -f /home/dev/CLAUDE.md \\|\\| cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md"
+
+  - it: should invoke the entrypoint script as the container command
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: ["/bin/bash", "-l", "/workspace-entrypoint/start.sh"]
+
+  - it: should mount the workspace-entrypoint configmap
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: workspace-entrypoint
+            mountPath: /workspace-entrypoint
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: workspace-entrypoint
+            configMap:
+              name: workspace-entrypoint-testuser
+              defaultMode: 365
