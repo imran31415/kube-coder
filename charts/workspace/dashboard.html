@@ -1898,7 +1898,14 @@
             }
 
             panel.classList.add('visible');
-            document.body.classList.add('chat-fullscreen');
+            // Only lock the dashboard scroll on touch viewports — there the
+            // panel is a fullscreen overlay so swipes should scroll the
+            // terminal, not the page underneath. On desktop the panel is
+            // inline in the page and locking body scroll would freeze the
+            // whole dashboard, which is what was happening.
+            if (window.matchMedia('(pointer: coarse)').matches) {
+                document.body.classList.add('chat-fullscreen');
+            }
             // Setting iframe.src triggers ttyd to start a new shell which
             // auto-attaches to the prepared tmux session. Trailing slash
             // matches the ingress's /oauth/terminal/?(.*) rewrite.
@@ -1908,6 +1915,8 @@
         function closeTaskChat(taskId) {
             const panel = document.getElementById('task-chat-' + taskId);
             if (panel) panel.classList.remove('visible');
+            // Always remove (idempotent) — covers the case of a viewport
+            // that switched between coarse/fine while the chat was open.
             document.body.classList.remove('chat-fullscreen');
             const iframe = document.getElementById('task-chat-iframe-' + taskId);
             if (iframe) iframe.src = 'about:blank';  // cuts the ttyd connection
