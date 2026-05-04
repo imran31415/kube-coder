@@ -756,8 +756,13 @@ class WorkspaceManager:
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        # Normalize path - strip /oauth and /browser prefixes from rewrites
-        normalized_path = self.path.replace('/oauth', '').replace('/browser', '')
+        # Normalize path: strip /oauth and /browser prefixes from ingress
+        # rewrites, AND strip the query string before matching routes.
+        # Without dropping the query string, deep-link URLs like
+        # /oauth/?task=<id>&chat=open never match the "/" dashboard route
+        # and fall through to the static-file 404.
+        path_no_query = self.path.split('?', 1)[0]
+        normalized_path = path_no_query.replace('/oauth', '').replace('/browser', '')
         if normalized_path == '' or normalized_path == '/':
             normalized_path = '/'
 
@@ -798,8 +803,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # --- Claude Task API (GET) ---
-        # Strip query string for path matching; handlers re-parse from self.path.
-        claude_path = normalized_path.split('?', 1)[0]
+        # Query string is already stripped at the top; handlers re-parse it from self.path when needed.
+        claude_path = normalized_path
         if claude_path == '/api/claude/tasks':
             self.handle_claude_list_tasks()
             return
