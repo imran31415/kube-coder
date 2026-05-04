@@ -7,6 +7,8 @@
 
 A Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides VS Code IDE, terminal access, remote browser capabilities, and AI-powered Claude Code integration with remote task management -- all protected by GitHub OAuth2 authentication.
 
+<img width="1229" height="714" alt="image" src="https://github.com/user-attachments/assets/14375966-f15d-49aa-86ee-9349802e0540" />
+
 <table>
   <tr>
     <td align="center" width="25%">
