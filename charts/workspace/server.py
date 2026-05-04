@@ -707,6 +707,53 @@ def _shell_quote(s):
     return shlex.quote(s)
 
 
+class WorkspaceManager:
+    """Lists candidate working directories under /home/dev for the
+    new-task picker. Skips hidden tooling dirs (.config, .credentials,
+    .claude-tasks, etc.) and obvious non-projects (node_modules, vendor)."""
+
+    HOME_DIR = '/home/dev'
+    PROJECT_MARKERS = (
+        'package.json', 'pyproject.toml', 'Cargo.toml',
+        'go.mod', 'Gemfile', 'Makefile', 'requirements.txt',
+    )
+    SKIP_NAMES = {'node_modules', 'vendor', 'target', 'dist', 'build', '__pycache__'}
+
+    @staticmethod
+    def list_dirs():
+        results = []
+        try:
+            entries = os.listdir(WorkspaceManager.HOME_DIR)
+        except OSError:
+            return results
+        for name in entries:
+            if name.startswith('.'):
+                continue
+            if name in WorkspaceManager.SKIP_NAMES:
+                continue
+            path = os.path.join(WorkspaceManager.HOME_DIR, name)
+            if not os.path.isdir(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                mtime = 0
+            is_git = os.path.isdir(os.path.join(path, '.git'))
+            has_project_marker = any(
+                os.path.exists(os.path.join(path, m))
+                for m in WorkspaceManager.PROJECT_MARKERS
+            )
+            results.append({
+                'path': path,
+                'label': name,
+                'is_git_repo': is_git,
+                'is_project': is_git or has_project_marker,
+                'mtime': mtime,
+            })
+        results.sort(key=lambda d: d['mtime'], reverse=True)
+        return results
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         # Normalize path - strip /oauth and /browser prefixes from rewrites
@@ -758,6 +805,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         elif claude_path == '/api/claude/auth/token':
             self.handle_claude_get_token()
+            return
+        elif claude_path == '/api/workspace/dirs':
+            self.handle_workspace_dirs()
             return
 
         # /api/claude/tasks/{id}/stream — Server-Sent Events
@@ -848,6 +898,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         tasks = ClaudeTaskManager.list_tasks()
         self.send_json({'tasks': tasks})
+
+    def handle_workspace_dirs(self):
+        """List candidate working directories under /home/dev for the
+        new-task picker. Reuses Claude auth (OAuth header OR bearer token)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'dirs': WorkspaceManager.list_dirs()})
 
     def handle_claude_get_task(self):
         if not self.check_claude_auth():

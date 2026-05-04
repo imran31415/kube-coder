@@ -6,6 +6,61 @@
     <title>Remote Development Workspace</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
+        /* ----- Theme tokens. Dark by default; light overrides via media query
+           below. Most colors come straight from GitHub's primer palette so
+           the dashboard reads as a developer tool, not a marketing page. ----- */
+        :root {
+            --bg-base: #0d1117;
+            --bg-elevated: #161b22;
+            --bg-hover: #1f242c;
+            --bg-input: #0d1117;
+            --bg-input-focus: #0d1117;
+            --border: #30363d;
+            --border-strong: #444c56;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-mute: #6e7681;
+            --accent-blue: #58a6ff;
+            --accent-blue-dim: rgba(88, 166, 255, 0.18);
+            --accent-green: #3fb950;
+            --accent-green-dim: rgba(63, 185, 80, 0.18);
+            --accent-purple: #a371f7;
+            --accent-orange: #f0883e;
+            --accent-red: #f85149;
+            --accent-red-dim: rgba(248, 81, 73, 0.16);
+            --accent-grey: #6e7681;
+            --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.18);
+            --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', 'Menlo', 'Consolas', monospace;
+            --font-system: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Roboto', sans-serif;
+            --radius: 8px;
+            --radius-lg: 12px;
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-base: #f6f8fa;
+                --bg-elevated: #ffffff;
+                --bg-hover: #eef1f4;
+                --bg-input: #ffffff;
+                --bg-input-focus: #ffffff;
+                --border: #d0d7de;
+                --border-strong: #afb8c1;
+                --text-primary: #1f2328;
+                --text-secondary: #59636e;
+                --text-mute: #818b98;
+                --accent-blue: #0969da;
+                --accent-blue-dim: rgba(9, 105, 218, 0.12);
+                --accent-green: #1f883d;
+                --accent-green-dim: rgba(31, 136, 61, 0.12);
+                --accent-purple: #8250df;
+                --accent-orange: #bc4c00;
+                --accent-red: #cf222e;
+                --accent-red-dim: rgba(207, 34, 46, 0.12);
+                --accent-grey: #59636e;
+                --shadow-card: 0 1px 0 rgba(31, 35, 40, 0.04), 0 4px 12px rgba(31, 35, 40, 0.06);
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,8 +68,12 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: var(--font-system);
+            color: var(--text-primary);
+            /* Dark base + a very subtle dotted grid so it doesn't feel flat. */
+            background:
+                radial-gradient(circle at 1px 1px, rgba(255,255,255,0.035) 1px, transparent 0) 0 0 / 24px 24px,
+                var(--bg-base);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -22,15 +81,24 @@
             padding: 20px;
         }
 
+        @media (prefers-color-scheme: light) {
+            body {
+                background:
+                    radial-gradient(circle at 1px 1px, rgba(31, 35, 40, 0.05) 1px, transparent 0) 0 0 / 24px 24px,
+                    var(--bg-base);
+            }
+        }
+
         .container {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
-            backdrop-filter: blur(10px);
-            padding: 40px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-card);
+            padding: 32px;
             max-width: 1200px;
             width: 100%;
-            text-align: center;
+            text-align: left;
+            color: var(--text-primary);
         }
 
         .header {
@@ -613,6 +681,53 @@
             margin-bottom: 8px;
         }
 
+        .task-card-header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .task-share-btn {
+            background: transparent;
+            border: 1px solid #ddd;
+            color: #888;
+            border-radius: 6px;
+            padding: 4px 6px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 0;
+            transition: all 0.15s ease;
+        }
+
+        .task-share-btn:hover {
+            color: #555;
+            border-color: #aaa;
+            background: #f6f6f6;
+        }
+
+        @media (pointer: coarse) {
+            .task-share-btn {
+                min-height: 32px;
+                min-width: 32px;
+                padding: 6px 8px;
+            }
+        }
+
+        /* Pulse a card after deep-link scroll-into-view so the user can spot
+           which one was just loaded. CSS-only animation; class added/removed
+           by applyDeepLink in JS. */
+        .task-card.task-card-highlight {
+            animation: task-card-highlight-pulse 2.2s ease-out;
+        }
+
+        @keyframes task-card-highlight-pulse {
+            0%   { box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.55); }
+            70%  { box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.18); }
+            100% { box-shadow: 0 0 0 0 rgba(102, 126, 234, 0); }
+        }
+
         .task-status {
             display: inline-flex;
             align-items: center;
@@ -873,6 +988,53 @@
             display: block;
         }
 
+        .new-task-workdir-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .new-task-workdir-label {
+            font-size: 0.85rem;
+            color: #666;
+            white-space: nowrap;
+        }
+
+        .new-task-workdir-select {
+            flex: 1;
+            min-width: 0;
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-family: inherit;
+            background: white;
+            color: #333;
+            cursor: pointer;
+        }
+
+        .new-task-workdir-select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .new-task-workdir-custom {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-family: 'Courier New', monospace;
+            margin-bottom: 8px;
+            box-sizing: border-box;
+        }
+
+        .new-task-workdir-custom:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
         .new-task-input {
             width: 100%;
             padding: 10px;
@@ -977,6 +1139,246 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* ========================================================
+         * Theme override layer.
+         *
+         * The original styles above were authored against a white,
+         * gradient-hero design. Rather than rewrite each rule, this
+         * block reuses the same selectors and overrides only the
+         * color/background/border properties using the CSS vars
+         * declared at the top — gives us a coherent dark theme
+         * (with auto light-mode fallback) in one place.
+         * ======================================================== */
+
+        /* Headings & subtitles */
+        .header h1 { color: var(--text-primary); letter-spacing: -0.02em; }
+        .header p,
+        .help-text { color: var(--text-secondary); }
+        h3, h4 { color: var(--text-primary); }
+
+        /* User info block */
+        .user-info {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--accent-blue);
+            border-radius: var(--radius);
+        }
+        .user-info strong { color: var(--text-primary); }
+
+        /* Service cards (VS Code / Terminal / Browser) */
+        .service-card {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: none;
+            transition: border-color 0.15s ease, transform 0.15s ease;
+        }
+        .service-card:hover {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 2px var(--accent-blue-dim);
+            transform: translateY(-2px);
+        }
+        .service-name { color: var(--text-primary); font-family: var(--font-mono); }
+        .service-description { color: var(--text-secondary); }
+
+        /* Health indicator dots — already small dots; just retune the colors */
+        .health-indicator { background: var(--accent-grey); }
+        .health-indicator.healthy { background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green-dim); }
+        .health-indicator.warning { background: var(--accent-orange); }
+        .health-indicator.error { background: var(--accent-red); }
+
+        /* Browser/VNC controls */
+        .browser-toggle {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+        .browser-toggle:hover { background: var(--bg-elevated); border-color: var(--border-strong); }
+        .browser-controls,
+        .browser-status {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+        }
+        .browser-btn {
+            background: var(--accent-blue);
+            color: var(--bg-base);
+            border: none;
+            font-weight: 600;
+        }
+        .browser-btn:hover { background: var(--accent-blue); filter: brightness(1.1); box-shadow: 0 0 0 2px var(--accent-blue-dim); }
+        .vnc-container { background: var(--bg-elevated); border: 1px solid var(--border); }
+        .vnc-header { background: var(--bg-hover); color: var(--text-primary); border-bottom: 1px solid var(--border); }
+        .vnc-close { color: var(--text-secondary); border: 1px solid var(--border); background: transparent; }
+        .vnc-close:hover { color: var(--text-primary); border-color: var(--border-strong); background: var(--bg-hover); }
+
+        /* Metrics & alerts */
+        .metrics-section { border-top: 1px solid var(--border); }
+        .metric-card {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .metric-info h4 { color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; }
+        .metric-value { font-family: var(--font-mono); }
+        .metric-value.normal   { color: var(--accent-green); }
+        .metric-value.warning  { color: var(--accent-orange); }
+        .metric-value.critical { color: var(--accent-red); }
+        .metric-bar { background: var(--bg-base); border: 1px solid var(--border); }
+        .metric-bar-fill.normal   { background: var(--accent-green); }
+        .metric-bar-fill.warning  { background: var(--accent-orange); }
+        .metric-bar-fill.critical { background: var(--accent-red); }
+        .metric-label { color: var(--text-secondary); }
+        .alert-banner {
+            background: var(--accent-red-dim);
+            border: 1px solid var(--accent-red);
+            color: var(--text-primary);
+            border-radius: var(--radius);
+        }
+        .alert-banner.warning {
+            background: rgba(240, 136, 62, 0.12);
+            border-color: var(--accent-orange);
+        }
+
+        /* GitHub config panel */
+        .github-section { border-top: 1px solid var(--border); }
+        .github-status-summary { background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--radius); }
+        .config-panel {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .config-panel h4 { color: var(--text-primary); }
+        .form-group label { color: var(--text-secondary); }
+        .form-group input,
+        .pubkey-textarea {
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-family: var(--font-mono);
+        }
+        .form-group input:focus,
+        .pubkey-textarea:focus { border-color: var(--accent-blue); outline: none; box-shadow: 0 0 0 2px var(--accent-blue-dim); }
+        .config-btn {
+            background: var(--accent-blue);
+            color: var(--bg-base);
+            border: none;
+            font-weight: 600;
+            border-radius: var(--radius);
+        }
+        .config-btn:hover { filter: brightness(1.1); box-shadow: 0 0 0 2px var(--accent-blue-dim); }
+        .config-btn.secondary { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
+        .config-btn.secondary:hover { background: var(--bg-elevated); border-color: var(--border-strong); }
+        .gh-cli-instructions { background: var(--bg-base); border: 1px solid var(--border); color: var(--text-primary); border-radius: var(--radius); }
+        .gh-cli-instructions code { background: var(--bg-hover); color: var(--accent-purple); font-family: var(--font-mono); padding: 1px 6px; border-radius: 4px; }
+
+        /* Claude Tasks section */
+        .claude-tasks-section { border-top: 1px solid var(--border); }
+        .claude-tasks-header h3 { color: var(--text-primary); }
+        .tasks-count { background: var(--accent-green-dim); color: var(--accent-green); border: 1px solid var(--accent-green); border-radius: 999px; font-family: var(--font-mono); font-size: 0.75rem; padding: 2px 8px; }
+        .new-task-btn {
+            background: var(--accent-blue);
+            color: var(--bg-base);
+            border: none;
+            font-weight: 600;
+        }
+        .new-task-btn:hover { filter: brightness(1.1); box-shadow: 0 0 0 2px var(--accent-blue-dim); }
+
+        /* New-task form (incl. workdir picker added in Phase 4A) */
+        .new-task-form {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .new-task-workdir-label { color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.8rem; }
+        .new-task-workdir-select,
+        .new-task-workdir-custom,
+        .new-task-input {
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            font-family: var(--font-mono);
+            border-radius: var(--radius);
+        }
+        .new-task-workdir-select:focus,
+        .new-task-workdir-custom:focus,
+        .new-task-input:focus { border-color: var(--accent-blue); outline: none; box-shadow: 0 0 0 2px var(--accent-blue-dim); }
+        .new-task-submit { background: var(--accent-green); color: var(--bg-base); font-weight: 600; }
+        .new-task-submit:hover { filter: brightness(1.1); box-shadow: 0 0 0 2px var(--accent-green-dim); }
+        .new-task-cancel { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+        .new-task-cancel:hover { background: var(--bg-elevated); color: var(--text-primary); }
+
+        /* Task cards */
+        .task-card {
+            background: var(--bg-hover);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--text-primary);
+            box-shadow: none;
+        }
+        .task-card[data-status="running"] {
+            border-left: 3px solid var(--accent-green);
+        }
+        .task-card[data-status="error"] {
+            border-left: 3px solid var(--accent-red);
+        }
+        .task-prompt { color: var(--text-primary); font-family: var(--font-mono); font-size: 0.85rem; }
+        .task-time { color: var(--text-mute); font-family: var(--font-mono); }
+
+        /* Task status pills */
+        .task-status { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; }
+        .task-status.running   { background: var(--accent-green-dim); color: var(--accent-green); border: 1px solid var(--accent-green); }
+        .task-status.completed { background: var(--accent-blue-dim);  color: var(--accent-blue);  border: 1px solid var(--accent-blue); }
+        .task-status.error     { background: var(--accent-red-dim);   color: var(--accent-red);   border: 1px solid var(--accent-red); }
+        .task-status.killed    { background: rgba(110, 118, 129, 0.18); color: var(--text-secondary); border: 1px solid var(--border-strong); }
+        .task-status.running .status-dot { background: var(--accent-green); }
+
+        /* Task action buttons */
+        .task-btn { font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.02em; }
+        .task-btn.attach { background: var(--accent-green); color: var(--bg-base); border: none; }
+        .task-btn.attach:hover { filter: brightness(1.1); box-shadow: 0 0 0 2px var(--accent-green-dim); }
+        .task-btn.output { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
+        .task-btn.output:hover { background: var(--bg-elevated); border-color: var(--border-strong); }
+        .task-btn.kill   { background: var(--accent-red-dim); color: var(--accent-red); border: 1px solid var(--accent-red); }
+        .task-btn.kill:hover { background: var(--accent-red); color: var(--bg-base); }
+
+        /* Share link button (Phase 4B) */
+        .task-share-btn { background: transparent; color: var(--text-mute); border: 1px solid var(--border); }
+        .task-share-btn:hover { color: var(--accent-blue); border-color: var(--accent-blue); background: var(--accent-blue-dim); }
+
+        /* Highlight ring for deep-linked task — retuned to use the accent blue */
+        @keyframes task-card-highlight-pulse-themed {
+            0%   { box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.55); }
+            70%  { box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.18); }
+            100% { box-shadow: 0 0 0 0 rgba(88, 166, 255, 0); }
+        }
+        .task-card.task-card-highlight { animation: task-card-highlight-pulse-themed 2.2s ease-out; }
+
+        /* Empty state */
+        .tasks-empty { color: var(--text-mute); font-family: var(--font-mono); }
+
+        /* Toast */
+        .task-toast { background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius); }
+
+        /* Auth loading screen */
+        .auth-loading-text { color: var(--text-secondary); }
+        .auth-loading-spinner { border: 3px solid var(--border); border-top-color: var(--accent-blue); }
+
+        /* Mobile rules retune (phase 2 added these — keep behavior, retune colors) */
+        @media (max-width: 767px) {
+            body { padding: 0; }
+            .container {
+                background: var(--bg-base);
+                border: none;
+                border-radius: 0;
+                box-shadow: none;
+                padding: 16px 12px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1021,7 +1423,7 @@
         </div>
 
         <div id="browser-controls" class="browser-controls" style="display: none;">
-            <h4 style="margin-bottom: 15px; color: #333;">🌐 Browser Controls</h4>
+            <h4 style="margin-bottom: 15px; color: var(--text-primary);">Browser Controls</h4>
             <button class="browser-btn" onclick="launchBrowser()">Launch Browser</button>
             <button class="browser-btn" onclick="openLocalhost()">Open localhost:8080</button>
             <button class="browser-btn" onclick="testBrowser()">Test Installation</button>
@@ -1047,6 +1449,18 @@
                 </div>
             </div>
             <div id="new-task-form" class="new-task-form">
+                <div class="new-task-workdir-row">
+                    <label for="new-task-workdir" class="new-task-workdir-label">Working dir:</label>
+                    <select id="new-task-workdir" class="new-task-workdir-select"
+                            onchange="onWorkdirChange()">
+                        <option value="/home/dev">/home/dev</option>
+                        <option value="__custom__">Custom path…</option>
+                    </select>
+                </div>
+                <input type="text" id="new-task-workdir-custom" class="new-task-workdir-custom"
+                       placeholder="/absolute/path"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: none;">
                 <textarea id="new-task-input" class="new-task-input" rows="3" placeholder="Describe the task for Claude..."></textarea>
                 <div class="new-task-actions">
                     <button class="new-task-submit" onclick="submitNewTask()">Send Task</button>
@@ -1061,7 +1475,7 @@
         <div id="task-toast" class="task-toast"></div>
 
         <div class="metrics-section">
-            <h4 style="color: #333; text-align: center; margin: 0 0 10px 0; font-size: 0.95rem;">System Resources</h4>
+            <h4 style="color: var(--text-primary); text-align: center; margin: 0 0 10px 0; font-size: 0.95rem;">System Resources</h4>
 
             <div id="alert-banner" class="alert-banner">
                 <span id="alert-icon">&#x26A0;</span>
@@ -1105,8 +1519,8 @@
         </div>
 
         <div class="github-section">
-            <h3 style="color: #333; text-align: center; margin-bottom: 5px;">GitHub Configuration</h3>
-            <p style="color: #666; font-size: 0.9rem; text-align: center;">Configure Git and GitHub authentication</p>
+            <h3 style="color: var(--text-primary); text-align: center; margin-bottom: 5px;">GitHub Configuration</h3>
+            <p style="color: var(--text-secondary); font-size: 0.9rem; text-align: center;">Configure Git and GitHub authentication</p>
 
             <div id="github-status-banner" class="github-status">
                 <span id="github-status-icon">&#x1F512;</span>
@@ -1199,6 +1613,7 @@
 
         // Check authentication and initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
+            captureDeepLink();
             checkAuthentication();
         });
 
@@ -1675,15 +2090,71 @@
         // ---- Claude Tasks ----
         let claudeTasksCache = [];
 
+        // Cached so re-opening the form doesn't refetch.
+        let workdirOptionsCache = null;
+
+        async function loadWorkdirOptions() {
+            const select = document.getElementById('new-task-workdir');
+            if (!select) return;
+            if (workdirOptionsCache) return;  // already populated
+
+            try {
+                const resp = await fetch('/oauth/api/workspace/dirs', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (!resp.ok) return;  // server endpoint missing on old pods — keep defaults
+                const data = await resp.json();
+                workdirOptionsCache = data.dirs || [];
+            } catch {
+                return;  // offline or pre-Phase-4 pod — keep the static default
+            }
+
+            // Insert detected dirs between the default and the "Custom path…" option.
+            // Project-marker dirs (git repo, package.json, etc.) float to the top.
+            const customOption = select.querySelector('option[value="__custom__"]');
+            const projects = workdirOptionsCache.filter(d => d.is_project);
+            const others = workdirOptionsCache.filter(d => !d.is_project);
+
+            for (const dir of [...projects, ...others]) {
+                const opt = document.createElement('option');
+                opt.value = dir.path;
+                opt.textContent = dir.is_git_repo ? `${dir.label} ⎇` : dir.label;
+                select.insertBefore(opt, customOption);
+            }
+        }
+
+        function onWorkdirChange() {
+            const select = document.getElementById('new-task-workdir');
+            const custom = document.getElementById('new-task-workdir-custom');
+            if (select.value === '__custom__') {
+                custom.style.display = '';
+                custom.focus();
+            } else {
+                custom.style.display = 'none';
+            }
+        }
+
         function toggleNewTaskForm() {
             const form = document.getElementById('new-task-form');
             const input = document.getElementById('new-task-input');
             form.classList.toggle('visible');
             if (form.classList.contains('visible')) {
                 input.focus();
+                loadWorkdirOptions();  // populate picker on first open
             } else {
                 input.value = '';
             }
+        }
+
+        function getSelectedWorkdir() {
+            const select = document.getElementById('new-task-workdir');
+            const custom = document.getElementById('new-task-workdir-custom');
+            if (select.value === '__custom__') {
+                const v = (custom.value || '').trim();
+                return v || null;
+            }
+            return select.value;
         }
 
         async function submitNewTask() {
@@ -1693,15 +2164,21 @@
                 showTaskToast('Please enter a task description');
                 return;
             }
+            const workdir = getSelectedWorkdir();
+            if (workdir === null) {
+                showTaskToast('Please enter a custom path or pick a directory');
+                return;
+            }
             try {
                 const response = await fetch('/oauth/api/claude/tasks', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({prompt: text})
+                    body: JSON.stringify({prompt: text, workdir})
                 });
                 if (response.ok) {
-                    showTaskToast('Task created');
+                    showTaskToast('Task created in ' + workdir);
                     input.value = '';
+                    document.getElementById('new-task-workdir-custom').value = '';
                     document.getElementById('new-task-form').classList.remove('visible');
                     fetchClaudeTasks();
                 } else {
@@ -1723,6 +2200,9 @@
                     const data = await response.json();
                     claudeTasksCache = data.tasks || [];
                     renderClaudeTasks(claudeTasksCache);
+                    // First fetch resolved → the deep-linked task card now
+                    // exists in the DOM; consume any ?task=… from the URL.
+                    applyDeepLink();
                 }
             } catch (error) {
                 console.error('Failed to fetch Claude tasks:', error);
@@ -1755,11 +2235,21 @@
             }
             actions += `<button class="task-btn output" onclick="toggleTaskOutput('${task.task_id}')">Output</button>`;
 
+            const isRunning = task.status === 'running';
             return `
                 <div class="task-card" id="task-card-${task.task_id}" data-status="${statusClass}">
                     <div class="task-card-header">
                         <span class="task-status ${statusClass}">${statusLabelHtml(task.status)}</span>
-                        <span class="task-time">${timeAgo}</span>
+                        <div class="task-card-header-right">
+                            <button class="task-share-btn"
+                                    title="Copy link to this task"
+                                    onclick="copyTaskLink('${task.task_id}', ${isRunning})">
+                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                    <path fill="currentColor" d="M7.775 3.275a.75.75 0 0 0 1.06 1.06l1.25-1.25a2 2 0 1 1 2.83 2.83l-2.5 2.5a2 2 0 0 1-2.83 0 .75.75 0 0 0-1.06 1.06 3.5 3.5 0 0 0 4.95 0l2.5-2.5a3.5 3.5 0 0 0-4.95-4.95l-1.25 1.25Zm-4.69 9.64a2 2 0 0 1 0-2.83l2.5-2.5a2 2 0 0 1 2.83 0 .75.75 0 0 0 1.06-1.06 3.5 3.5 0 0 0-4.95 0l-2.5 2.5a3.5 3.5 0 0 0 4.95 4.95l1.25-1.25a.75.75 0 0 0-1.06-1.06l-1.25 1.25a2 2 0 0 1-2.83 0Z"/>
+                                </svg>
+                            </button>
+                            <span class="task-time">${timeAgo}</span>
+                        </div>
                     </div>
                     <div class="task-prompt">${prompt}</div>
                     <div class="task-actions">${actions}</div>
@@ -1869,16 +2359,14 @@
         // connection lifecycle).
         const taskChatStreams = {};
 
-        async function openTaskChat(taskId) {
+        // ----- Chat panel DOM ops, factored so popstate can reuse them
+        // without re-pushing URL state (which would loop the back button). -----
+
+        async function _openChatDomOnly(taskId) {
             const panel = document.getElementById('task-chat-' + taskId);
             const iframe = document.getElementById('task-chat-iframe-' + taskId);
-            if (!panel || !iframe) return;
-
-            // Toggle off if already open.
-            if (panel.classList.contains('visible')) {
-                closeTaskChat(taskId);
-                return;
-            }
+            if (!panel || !iframe) return false;
+            if (panel.classList.contains('visible')) return true;
 
             // Tell the server to flag this tmux session as the auto-attach
             // target for the next ttyd shell. terminal-entry.sh in the pod
@@ -1890,11 +2378,11 @@
                 });
                 if (!resp.ok) {
                     showTaskToast('Failed to prepare terminal session');
-                    return;
+                    return false;
                 }
             } catch (err) {
                 showTaskToast('Error preparing terminal: ' + (err.message || err));
-                return;
+                return false;
             }
 
             panel.classList.add('visible');
@@ -1902,7 +2390,7 @@
             // panel is a fullscreen overlay so swipes should scroll the
             // terminal, not the page underneath. On desktop the panel is
             // inline in the page and locking body scroll would freeze the
-            // whole dashboard, which is what was happening.
+            // whole dashboard.
             if (window.matchMedia('(pointer: coarse)').matches) {
                 document.body.classList.add('chat-fullscreen');
             }
@@ -1910,17 +2398,115 @@
             // auto-attaches to the prepared tmux session. Trailing slash
             // matches the ingress's /oauth/terminal/?(.*) rewrite.
             iframe.src = '/oauth/terminal/';
+            return true;
+        }
+
+        function _closeChatDomOnly(taskId) {
+            const panel = document.getElementById('task-chat-' + taskId);
+            if (panel) panel.classList.remove('visible');
+            // Idempotent — also covers viewport pointer-type changes while open.
+            document.body.classList.remove('chat-fullscreen');
+            const iframe = document.getElementById('task-chat-iframe-' + taskId);
+            if (iframe) iframe.src = 'about:blank';
+        }
+
+        // ----- User-facing toggles: do DOM work + push URL state. -----
+
+        async function openTaskChat(taskId) {
+            const panel = document.getElementById('task-chat-' + taskId);
+            if (panel && panel.classList.contains('visible')) {
+                closeTaskChat(taskId);
+                return;
+            }
+            const ok = await _openChatDomOnly(taskId);
+            if (ok) {
+                const p = new URLSearchParams();
+                p.set('task', taskId);
+                p.set('chat', 'open');
+                history.pushState({}, '', window.location.pathname + '?' + p.toString());
+            }
         }
 
         function closeTaskChat(taskId) {
-            const panel = document.getElementById('task-chat-' + taskId);
-            if (panel) panel.classList.remove('visible');
-            // Always remove (idempotent) — covers the case of a viewport
-            // that switched between coarse/fine while the chat was open.
-            document.body.classList.remove('chat-fullscreen');
-            const iframe = document.getElementById('task-chat-iframe-' + taskId);
-            if (iframe) iframe.src = 'about:blank';  // cuts the ttyd connection
+            _closeChatDomOnly(taskId);
+            history.pushState({}, '', window.location.pathname);
         }
+
+        // ----- Sharing: copies a deep link for the task to the clipboard. -----
+
+        async function copyTaskLink(taskId, isRunning) {
+            const p = new URLSearchParams();
+            p.set('task', taskId);
+            if (isRunning) p.set('chat', 'open');
+            const url = window.location.origin + window.location.pathname + '?' + p.toString();
+            try {
+                await navigator.clipboard.writeText(url);
+                showTaskToast('Link copied');
+            } catch {
+                // Clipboard API can fail without HTTPS or user gesture; fall back to prompt.
+                window.prompt('Copy this link:', url);
+            }
+        }
+
+        // ----- Deep-link bootstrap: applied once after the first task fetch
+        // resolves so the task DOM exists. Subsequent navigations go through
+        // the popstate listener below. -----
+
+        let pendingDeepLink = null;
+        let deepLinkApplied = false;
+
+        function captureDeepLink() {
+            const params = new URLSearchParams(window.location.search);
+            const taskId = params.get('task');
+            const chat = params.get('chat');
+            const newForm = params.get('new');
+            if (taskId || newForm) {
+                pendingDeepLink = {taskId, chat, newForm};
+            }
+        }
+
+        async function applyDeepLink() {
+            if (deepLinkApplied || !pendingDeepLink) return;
+            deepLinkApplied = true;
+            const {taskId, chat, newForm} = pendingDeepLink;
+            if (newForm === '1') {
+                const form = document.getElementById('new-task-form');
+                if (form && !form.classList.contains('visible')) {
+                    toggleNewTaskForm();
+                }
+            }
+            if (taskId) {
+                const card = document.getElementById('task-card-' + taskId);
+                if (card) {
+                    card.scrollIntoView({behavior: 'smooth', block: 'center'});
+                    card.classList.add('task-card-highlight');
+                    setTimeout(() => card.classList.remove('task-card-highlight'), 2200);
+                    if (chat === 'open' && card.dataset.status === 'running') {
+                        await _openChatDomOnly(taskId);
+                    }
+                }
+            }
+        }
+
+        // ----- popstate: reconcile DOM to URL when user hits back/forward.
+        // Avoids pushing more URL entries (would loop), so uses *DomOnly fns. -----
+
+        window.addEventListener('popstate', async function() {
+            const params = new URLSearchParams(window.location.search);
+            const wantChatFor = params.get('chat') === 'open' ? params.get('task') : null;
+            // Close any chat panels that don't match the URL.
+            document.querySelectorAll('.task-chat.visible').forEach(panel => {
+                const id = panel.id.replace('task-chat-', '');
+                if (id !== wantChatFor) _closeChatDomOnly(id);
+            });
+            // Open the desired one if not already open.
+            if (wantChatFor) {
+                const panel = document.getElementById('task-chat-' + wantChatFor);
+                if (panel && !panel.classList.contains('visible')) {
+                    await _openChatDomOnly(wantChatFor);
+                }
+            }
+        });
 
         async function attachToTask(taskId) {
             try {
