@@ -4,7 +4,7 @@
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
 IMAGE_NAME := devlaptop
-VERSION := v1.7.0
+VERSION := v1.7.1
 PLATFORM := linux/amd64
 NAMESPACE := coder
 

@@ -48,11 +48,18 @@ RUN ARCH=$(dpkg --print-architecture) \
 ARG CLAUDE_CODE_VERSION=2.1.126
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# Install ttyd for mobile-friendly terminal access
+# Install ttyd for mobile-friendly terminal access.
+# Pinned to a known-good version so transient 502s from GitHub's release CDN
+# don't break the build (we hit them repeatedly while bumping to v1.7.1).
+# To bump: update TTYD_VERSION, rebuild image.
+ARG TTYD_VERSION=1.7.7
 RUN apt-get update && apt-get install -y wget \
     && ARCH=$(dpkg --print-architecture) \
     && if [ "$ARCH" = "amd64" ]; then TTYD_ARCH="x86_64"; elif [ "$ARCH" = "arm64" ]; then TTYD_ARCH="aarch64"; else TTYD_ARCH="$ARCH"; fi \
-    && wget -O /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${TTYD_ARCH}" \
+    && wget --tries=5 --waitretry=10 --retry-connrefused \
+       --retry-on-http-error=429,500,502,503,504 \
+       -O /usr/local/bin/ttyd \
+       "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${TTYD_ARCH}" \
     && chmod +x /usr/local/bin/ttyd \
     && rm -rf /var/lib/apt/lists/*
 
@@ -63,11 +70,19 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install browser with noVNC for web access
-# `file` is included so the post-download tarball check below works — it was
-# previously implicit on the host but isn't part of any earlier layer.
+# Install browser with noVNC for web access.
+# `file` lets the post-download tarball check below work.
+# fluxbox is the X11 window manager driving the VNC viewer (without it the
+# remote desktop is just a black Xvfb canvas). The libgtk-3 / libdbus-glib /
+# libxt / libwayland packages are runtime deps for modern Firefox — without
+# them `firefox --version` fails with "libgtk-3.so.0: cannot open shared
+# object file". This used to be supplied by the layered v1.x.x-browser-stealth
+# image (browser-dockerfile/Dockerfile); folding it into the base avoids the
+# two-image pattern.
 RUN apt-get update && apt-get install -y \
     xvfb x11vnc novnc websockify wget file \
+    fluxbox xterm \
+    libgtk-3-0 libdbus-glib-1-2 libxt6 libwayland-client0 \
     && rm -rf /var/lib/apt/lists/* \
     && wget -O /tmp/firefox.tar.bz2 "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
     && file /tmp/firefox.tar.bz2 \
