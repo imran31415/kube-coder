@@ -731,7 +731,10 @@
             display: block;
         }
 
-        /* ----- Task chat panel (per-task SSE-fed conversation) ----- */
+        /* ----- Task chat panel: embeds ttyd via iframe so users get the same
+           full interactive terminal experience as Attach (numeric prompts,
+           option selection, scrollback, copy/paste) without leaving the
+           dashboard. ----- */
         .task-chat {
             display: none;
             margin-top: 12px;
@@ -776,91 +779,23 @@
             background: #333;
         }
 
-        .task-chat-output {
-            margin: 0;
-            padding: 10px 12px;
+        .task-chat-iframe {
+            flex: 1 1 auto;
+            width: 100%;
+            border: 0;
             background: #1e1e1e;
-            color: #d4d4d4;
-            font-family: 'Courier New', monospace;
-            font-size: 0.78rem;
-            line-height: 1.45;
-            min-height: 120px;
-            max-height: 360px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-break: break-word;
+            min-height: 420px;
         }
 
-        .task-chat-output .me {
-            color: #7ec699;
-            display: block;
-            margin: 6px 0 2px;
-        }
-
-        .task-chat-input-row {
-            display: flex;
-            gap: 8px;
-            padding: 8px;
-            background: #2b2b2b;
-            border-top: 1px solid #1e1e1e;
-        }
-
-        .task-chat-input {
-            flex: 1;
-            min-width: 0;
-            border-radius: 6px;
-            border: 1px solid #555;
-            padding: 8px 10px;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            font-family: inherit;
-            font-size: 0.85rem;
-            resize: none;
-            line-height: 1.3;
-        }
-
-        .task-chat-input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .task-chat-send {
-            background: linear-gradient(45deg, #667eea, #764ba2);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            padding: 0 16px;
-            font-weight: 600;
-            cursor: pointer;
-            min-height: 38px;
-            min-width: 64px;
-        }
-
-        .task-chat-send:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        /* On touch devices: comfortable target sizes, plus when the chat panel
-           is opened it goes full-screen so the user can focus on the
-           conversation without the dashboard scrolling underneath. */
+        /* On touch devices: thumb-sized targets and a fullscreen overlay so
+           the user can focus on the terminal without the dashboard underneath. */
         @media (pointer: coarse) {
-            .task-chat-output {
-                max-height: 50vh;
-                font-size: 0.85rem;
-            }
-            .task-chat-input {
-                font-size: 1rem;
-                padding: 10px 12px;
-            }
-            .task-chat-send,
             .task-chat-close {
                 min-height: 44px;
                 min-width: 44px;
                 padding: 0 16px;
             }
 
-            /* Fullscreen chat overlay on touch */
             .task-chat.visible {
                 position: fixed;
                 top: 0;
@@ -882,20 +817,16 @@
                 /* Honor the iPhone notch / status bar */
                 padding-top: max(12px, env(safe-area-inset-top));
             }
-            .task-chat.visible .task-chat-output {
-                flex: 1 1 auto;
-                max-height: none;
-                padding: 14px 16px;
-            }
-            .task-chat.visible .task-chat-input-row {
-                padding: 10px;
+            .task-chat.visible .task-chat-iframe {
+                height: 100%;
+                min-height: 0;
                 /* Honor the home-indicator gesture area */
-                padding-bottom: max(10px, env(safe-area-inset-bottom));
+                padding-bottom: env(safe-area-inset-bottom);
             }
         }
 
         /* Lock the dashboard scroll while the fullscreen chat is open so
-           swipes scroll the conversation, not the page underneath. */
+           swipes scroll the terminal, not the page underneath. */
         body.chat-fullscreen {
             overflow: hidden;
         }
@@ -1816,18 +1747,13 @@
                 actions += `<button class="task-btn attach" onclick="attachToTask('${task.task_id}')">Attach</button>`;
                 actions += `<button class="task-btn kill" onclick="killTask('${task.task_id}')">Kill</button>`;
             }
-            actions += `<button class="task-btn output" onclick="openTaskChat('${task.task_id}', ${task.status === 'running' ? 'true' : 'false'})">Chat</button>`;
+            // Only show the embedded-terminal "Chat" button for live tasks.
+            // On a completed/killed task the tmux session is gone, so attaching
+            // would land in a fresh bash shell. Use "Output" for past output.
+            if (task.status === 'running') {
+                actions += `<button class="task-btn output" onclick="openTaskChat('${task.task_id}')">Chat</button>`;
+            }
             actions += `<button class="task-btn output" onclick="toggleTaskOutput('${task.task_id}')">Output</button>`;
-
-            const chatInputRow = task.status === 'running' ? `
-                <div class="task-chat-input-row">
-                    <textarea class="task-chat-input" id="task-chat-input-${task.task_id}"
-                              placeholder="Send a follow-up… (Enter to send, Shift+Enter for newline)"
-                              rows="2"
-                              autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
-                    <button class="task-chat-send" onclick="sendTaskMessage('${task.task_id}')">Send</button>
-                </div>
-            ` : '';
 
             return `
                 <div class="task-card" id="task-card-${task.task_id}" data-status="${statusClass}">
@@ -1840,11 +1766,11 @@
                     <pre class="task-output" id="task-output-${task.task_id}"></pre>
                     <div class="task-chat" id="task-chat-${task.task_id}">
                         <div class="task-chat-header">
-                            <span>Chat with task</span>
+                            <span>Claude session</span>
                             <button class="task-chat-close" onclick="closeTaskChat('${task.task_id}')">Close</button>
                         </div>
-                        <pre class="task-chat-output" id="task-chat-output-${task.task_id}"></pre>
-                        ${chatInputRow}
+                        <iframe class="task-chat-iframe" id="task-chat-iframe-${task.task_id}"
+                                title="Task terminal"></iframe>
                     </div>
                 </div>
             `;
@@ -1869,12 +1795,11 @@
 
             // Keyed in-place reconcile. Wholesale innerHTML replacement (the
             // previous approach) destroyed any open chat panel on every 10s
-            // poll — closing the EventSource, wiping the textarea, and causing
-            // visible flicker. Instead: leave existing cards alone; only update
-            // the status badge + timestamp on cards where the status changed,
-            // and skip even that for cards with an open chat (don't disturb the
-            // user mid-conversation). Add new cards in API order, remove ones
-            // that vanished.
+            // poll, killing the embedded ttyd iframe and causing visible
+            // flicker. Instead: leave existing cards alone; only update the
+            // status badge + timestamp on cards where the status changed, and
+            // skip even that for cards with an open chat. Add new cards in
+            // API order, remove ones that vanished.
             const seenIds = new Set();
             let prevSibling = null;
 
@@ -1895,9 +1820,9 @@
                         container.insertBefore(card, container.firstChild);
                     }
                 } else {
-                    // Existing card. Don't touch if a chat is open — would close
-                    // the EventSource and lose user input. Otherwise update the
-                    // status badge + relative time without disturbing the rest.
+                    // Existing card. Don't touch if a chat is open — would
+                    // tear down the embedded ttyd iframe mid-session.
+                    // Otherwise update status badge + relative time in place.
                     const chatOpen = card.querySelector('.task-chat.visible');
                     const newStatus = task.status || 'unknown';
                     const oldStatus = card.dataset.status;
@@ -1925,8 +1850,7 @@
                 prevSibling = card;
             }
 
-            // Drop cards whose task_id no longer appears (and clean up any
-            // dangling EventSource for them).
+            // Drop cards whose task_id no longer appears.
             for (const card of Array.from(container.querySelectorAll('.task-card'))) {
                 const taskId = card.id.replace('task-card-', '');
                 if (!seenIds.has(taskId)) {
@@ -1939,110 +1863,54 @@
             }
         }
 
-        // Per-task EventSource registry so multiple chats can run concurrently.
+        // Reserved for any per-task client-side state that needs cleanup when
+        // a task disappears from the list. Kept around even though the chat
+        // panel itself is now stateless (ttyd iframe handles its own
+        // connection lifecycle).
         const taskChatStreams = {};
 
-        function openTaskChat(taskId, isRunning) {
+        async function openTaskChat(taskId) {
             const panel = document.getElementById('task-chat-' + taskId);
-            const out = document.getElementById('task-chat-output-' + taskId);
-            if (!panel || !out) return;
+            const iframe = document.getElementById('task-chat-iframe-' + taskId);
+            if (!panel || !iframe) return;
 
+            // Toggle off if already open.
             if (panel.classList.contains('visible')) {
                 closeTaskChat(taskId);
                 return;
             }
 
-            panel.classList.add('visible');
-            out.textContent = '';
-
-            // Replay history then continue live; SSE handler keeps tailing output.log.
-            const url = `/oauth/api/claude/tasks/${taskId}/stream?from=start`;
-            const es = new EventSource(url);
-            taskChatStreams[taskId] = es;
-
-            let pinnedToBottom = true;
-            out.addEventListener('scroll', () => {
-                pinnedToBottom = (out.scrollHeight - out.scrollTop - out.clientHeight) < 24;
-            });
-
-            es.onmessage = (ev) => {
-                out.appendChild(document.createTextNode(ev.data));
-                if (pinnedToBottom) out.scrollTop = out.scrollHeight;
-            };
-            es.addEventListener('end', () => {
-                const note = document.createElement('span');
-                note.style.color = '#888';
-                note.textContent = '\n[task ended]\n';
-                out.appendChild(note);
-                es.close();
-                delete taskChatStreams[taskId];
-                const inputRow = panel.querySelector('.task-chat-input-row');
-                if (inputRow) inputRow.style.display = 'none';
-            });
-            es.onerror = () => {
-                // Browser auto-reconnects EventSource; nothing to do here.
-            };
-
-            // Wire Enter-to-send (desktop) / explicit Send button (touch).
-            const ta = document.getElementById('task-chat-input-' + taskId);
-            if (ta && isRunning) {
-                const isTouch = window.matchMedia('(pointer: coarse)').matches;
-                if (!isTouch) {
-                    ta.addEventListener('keydown', (e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            sendTaskMessage(taskId);
-                        }
-                    });
+            // Tell the server to flag this tmux session as the auto-attach
+            // target for the next ttyd shell. terminal-entry.sh in the pod
+            // reads /tmp/.claude-terminal-pending and `tmux attach` to it.
+            try {
+                const resp = await fetch(`/oauth/api/claude/tasks/${taskId}/prepare-terminal`, {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (!resp.ok) {
+                    showTaskToast('Failed to prepare terminal session');
+                    return;
                 }
-                setTimeout(() => ta.focus(), 50);
+            } catch (err) {
+                showTaskToast('Error preparing terminal: ' + (err.message || err));
+                return;
             }
+
+            panel.classList.add('visible');
+            document.body.classList.add('chat-fullscreen');
+            // Setting iframe.src triggers ttyd to start a new shell which
+            // auto-attaches to the prepared tmux session. Trailing slash
+            // matches the ingress's /oauth/terminal/?(.*) rewrite.
+            iframe.src = '/oauth/terminal/';
         }
 
         function closeTaskChat(taskId) {
             const panel = document.getElementById('task-chat-' + taskId);
             if (panel) panel.classList.remove('visible');
-            const es = taskChatStreams[taskId];
-            if (es) {
-                es.close();
-                delete taskChatStreams[taskId];
-            }
-        }
-
-        async function sendTaskMessage(taskId) {
-            const ta = document.getElementById('task-chat-input-' + taskId);
-            const out = document.getElementById('task-chat-output-' + taskId);
-            if (!ta || !out) return;
-            const prompt = ta.value;
-            if (!prompt.trim()) return;
-
-            // Echo locally so the user sees their message immediately.
-            const echo = document.createElement('span');
-            echo.className = 'me';
-            echo.textContent = '> ' + prompt + '\n';
-            out.appendChild(echo);
-            out.scrollTop = out.scrollHeight;
-            ta.value = '';
-
-            try {
-                const resp = await fetch(`/oauth/api/claude/tasks/${taskId}/message`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({prompt}),
-                    signal: AbortSignal.timeout(10000)
-                });
-                if (!resp.ok) {
-                    const note = document.createElement('span');
-                    note.style.color = '#e57373';
-                    note.textContent = '[send failed]\n';
-                    out.appendChild(note);
-                }
-            } catch (err) {
-                const note = document.createElement('span');
-                note.style.color = '#e57373';
-                note.textContent = '[send error: ' + (err.message || err) + ']\n';
-                out.appendChild(note);
-            }
+            document.body.classList.remove('chat-fullscreen');
+            const iframe = document.getElementById('task-chat-iframe-' + taskId);
+            if (iframe) iframe.src = 'about:blank';  // cuts the ttyd connection
         }
 
         async function attachToTask(taskId) {
