@@ -43,7 +43,10 @@ RUN ARCH=$(dpkg --print-architecture) \
 
 # Claude Code CLI (terminal assistant). Bring your own API key (or Bedrock/Vertex).
 # https://docs.anthropic.com/en/docs/claude-code/setup
-RUN npm install -g @anthropic-ai/claude-code
+# Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
+# rebuild the image (`make push`), and roll out the new image tag via Helm.
+ARG CLAUDE_CODE_VERSION=2.1.126
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Install ttyd for mobile-friendly terminal access
 RUN apt-get update && apt-get install -y wget \
@@ -61,8 +64,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
     && rm -rf /var/lib/apt/lists/*
 
 # Install browser with noVNC for web access
+# `file` is included so the post-download tarball check below works — it was
+# previously implicit on the host but isn't part of any earlier layer.
 RUN apt-get update && apt-get install -y \
-    xvfb x11vnc novnc websockify wget \
+    xvfb x11vnc novnc websockify wget file \
     && rm -rf /var/lib/apt/lists/* \
     && wget -O /tmp/firefox.tar.bz2 "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
     && file /tmp/firefox.tar.bz2 \

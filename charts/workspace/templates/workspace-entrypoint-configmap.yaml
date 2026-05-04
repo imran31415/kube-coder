@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-entrypoint-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+data:
+  start.sh: |
+    #!/bin/bash
+    # Workspace pod entrypoint. Runs all in-pod services (code-server, ttyd,
+    # Xvfb/x11vnc/websockify, browser/Claude API server) and supervises them
+    # in a watchdog loop. Mirrors the inline script that previously lived in
+    # deployment.yaml — extracted here so it's editable as a real shell script.
+    set -o pipefail
+
+    log_stage() { echo "[stage] $*" >&2; }
+
+    # Forward SIGTERM/SIGINT to in-pod services so tmux sessions and the
+    # browser server flush gracefully on pod terminate.
+    on_term() {
+      log_stage "SIGTERM received, killing tmux server and child services"
+      tmux kill-server 2>/dev/null || true
+      pkill -TERM -f "code-server" 2>/dev/null || true
+      pkill -TERM -f "ttyd" 2>/dev/null || true
+      pkill -TERM -f "websockify" 2>/dev/null || true
+      pkill -TERM -f "python3 server.py" 2>/dev/null || true
+      exit 0
+    }
+    trap on_term TERM INT
+
+    log_stage "preparing home and credential directories"
+    cd /home/dev
+    mkdir -p /home/dev/.local/share/code-server/extensions
+    mkdir -p ~/.config ~/.config/git ~/.config/gh
+    mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh
+    chmod 700 /home/dev/.credentials/.ssh
+    ln -sf /home/dev/.credentials/.ssh ~/.ssh
+    touch /home/dev/.credentials/.config/git/config
+    ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
+    ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
+    test -f /home/dev/CLAUDE.md || cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
+
+    if [ -n "$GITHUB_APP_ID" ]; then
+      log_stage "minting initial GitHub App token and starting refresh daemon"
+      python3 /github-app/github-app-token.py --once
+      # shellcheck disable=SC1091
+      source /home/dev/.credentials/.github-env
+      cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env
+      grep -q 'profile.d-github-env' ~/.bashrc 2>/dev/null \
+        || echo '[ -f /home/dev/.profile.d-github-env ] && source /home/dev/.profile.d-github-env' >> ~/.bashrc
+      python3 /github-app/github-app-token.py --daemon &
+    fi
+
+    log_stage "starting code-server"
+    code-server --bind-addr 0.0.0.0:8080 --auth none \
+      --user-data-dir /home/dev/.local/share/code-server \
+      --extensions-dir /home/dev/.local/share/code-server/extensions \
+      /home/dev > /tmp/code-server.log 2>&1 &
+
+    log_stage "starting ttyd"
+    ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
+      /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
+
+    log_stage "starting Xvfb / fluxbox / x11vnc"
+    export DISPLAY=:99
+    rm -f /tmp/.X99-lock
+    Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
+    sleep 3
+    DISPLAY=:99 setxkbmap us
+    DISPLAY=:99 fluxbox &
+    sleep 1
+    x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat \
+      -cursor -cursorpos -24to32 -nobell -noipv6 &
+    sleep 2
+
+    log_stage "waiting for VNC port 5900"
+    for i in {1..30}; do
+      netstat -tln 2>/dev/null | grep -q :5900 && break
+      sleep 1
+    done
+
+    log_stage "starting websockify (noVNC from image at /usr/share/novnc)"
+    pkill -f websockify || true
+    sleep 1
+    websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
+      > /tmp/websockify.log 2>&1 &
+    sleep 2
+
+    log_stage "starting browser/Claude API server on :6080"
+    mkdir -p /tmp/browser
+    cp /browser-config/* /tmp/browser/
+    cd /tmp/browser
+    python3 server.py &
+
+    log_stage "all services launched, entering supervision loop"
+    while true; do
+      sleep 30
+      if ! pgrep -f "python3 server.py" > /dev/null; then
+        log_stage "restarting browser server"
+        ( cd /tmp/browser && python3 server.py & )
+      fi
+      if ! netstat -tln 2>/dev/null | grep -q :8080; then
+        log_stage "restarting code-server"
+        code-server --bind-addr 0.0.0.0:8080 --auth none \
+          --user-data-dir /home/dev/.local/share/code-server \
+          --extensions-dir /home/dev/.local/share/code-server/extensions \
+          /home/dev >> /tmp/code-server.log 2>&1 &
+      fi
+      if ! netstat -tln 2>/dev/null | grep -q :7681; then
+        log_stage "restarting ttyd"
+        ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
+          /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
+      fi
+      if ! netstat -tln 2>/dev/null | grep -q :6081; then
+        log_stage "restarting websockify"
+        pkill -f websockify || true
+        sleep 1
+        websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
+          >> /tmp/websockify.log 2>&1 &
+      fi
+    done
