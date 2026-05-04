@@ -10,7 +10,8 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 <table>
   <tr>
     <td align="center" width="25%">
-      <img src="https://github.com/user-attachments/assets/93ec2ac0-f75f-4d5e-99e0-069a70ba14c5" width="250" alt="Dashboard" /><br/>
+      <img width="1509" height="908" alt="image" src="https://github.com/user-attachments/assets/6f871a1c-cc5f-43f2-8574-f7cfa33b67f6" />
+
       <strong>Dashboard</strong><br/>
       <sub>Clean workspace hub with system metrics, service health, and GitHub config</sub>
     </td>
