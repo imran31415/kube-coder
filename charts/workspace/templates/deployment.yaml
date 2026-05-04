@@ -42,7 +42,7 @@ spec:
         args:
           - >
             cd /home/dev &&
-            mkdir -p ~/.local/share/code-server &&
+            mkdir -p /home/dev/.local/share/code-server/extensions &&
             mkdir -p ~/.config ~/.config/git ~/.config/gh &&
             mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh &&
             chmod 700 /home/dev/.credentials/.ssh &&
@@ -59,8 +59,8 @@ spec:
               grep -q 'profile.d-github-env' ~/.bashrc 2>/dev/null || echo '[ -f /home/dev/.profile.d-github-env ] && source /home/dev/.profile.d-github-env' >> ~/.bashrc &&
               python3 /github-app/github-app-token.py --daemon &
             fi &&
-            code-server --bind-addr 0.0.0.0:8080 --auth none /home/dev &
-            ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev /terminal-scripts/terminal-entry.sh &
+            code-server --bind-addr 0.0.0.0:8080 --auth none --user-data-dir /home/dev/.local/share/code-server --extensions-dir /home/dev/.local/share/code-server/extensions /home/dev > /tmp/code-server.log 2>&1 &
+            ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
             export DISPLAY=:99 &&
             rm -f /tmp/.X99-lock &&
             Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
@@ -96,6 +96,14 @@ spec:
               if ! pgrep -f "python3 server.py" > /dev/null; then
                 echo "Restarting browser server...";
                 cd /tmp/browser && python3 server.py &
+              fi;
+              if ! netstat -tln 2>/dev/null | grep :8080 > /dev/null; then
+                echo "code-server not listening, restarting...";
+                code-server --bind-addr 0.0.0.0:8080 --auth none --user-data-dir /home/dev/.local/share/code-server --extensions-dir /home/dev/.local/share/code-server/extensions /home/dev >> /tmp/code-server.log 2>&1 &
+              fi;
+              if ! netstat -tln 2>/dev/null | grep :7681 > /dev/null; then
+                echo "ttyd not listening, restarting...";
+                ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
               fi;
               if ! netstat -tln 2>/dev/null | grep :6081 > /dev/null; then
                 echo "Websockify not listening, restarting...";
