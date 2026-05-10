@@ -290,6 +290,13 @@
         .task-row-source {
             color: var(--accent-purple); font-weight: 500;
         }
+        .task-row-kind {
+            display: inline-block; padding: 0 5px; border-radius: 3px;
+            background: var(--bg-hover); color: var(--text-secondary);
+            font-family: var(--font-mono); font-size: 9px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            margin-right: 6px; flex-shrink: 0;
+        }
         .task-empty {
             padding: 32px 16px; text-align: center;
             color: var(--text-mute); font-size: 12px; font-family: var(--font-mono);
@@ -793,9 +800,9 @@
                 <a class="tool" href="/oauth/vscode/?folder=/home/dev" target="_blank" title="Open VS Code">
                     <span class="ind" id="ide-health"></span><span>VS Code</span>
                 </a>
-                <a class="tool" href="/oauth/terminal" target="_blank" title="Open terminal">
+                <button class="tool" onclick="openTerminal()" title="Open terminal (registered as a task)">
                     <span class="ind" id="terminal-health"></span><span>Terminal</span>
-                </a>
+                </button>
                 <button class="tool" onclick="openDrawer('browser')" title="Browser controls">
                     <span class="ind" id="browser-health"></span><span>Browser</span>
                 </button>
@@ -1801,10 +1808,13 @@ function updateTaskRow(row, t) {
     const sourceHtml = t.source
         ? `<span class="task-row-source">${escapeHtml(t.source)}</span><span class="sep">·</span>`
         : '';
+    const kindHtml = t.kind === 'terminal'
+        ? `<span class="task-row-kind" title="Plain shell session">term</span>`
+        : '';
     row.innerHTML = `
         <div class="task-row-line1">
             <span class="task-dot ${status}"></span>
-            <span class="task-row-prompt">${escapeHtml(t.prompt || '(no prompt)')}</span>
+            ${kindHtml}<span class="task-row-prompt">${escapeHtml(t.prompt || '(no prompt)')}</span>
         </div>
         <div class="task-row-line2">
             ${sourceHtml}<span>${escapeHtml(time)}</span>
@@ -2049,6 +2059,36 @@ async function openChatForCurrent() {
 function closeChatIframe() {
     const iframe = document.getElementById('chat-iframe');
     if (iframe.src && iframe.src !== 'about:blank') iframe.src = 'about:blank';
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Terminal launcher — registers a plain-bash task before opening ttyd,
+ * so the session shows up in the task list and can be re-attached if
+ * the original tab is closed.
+ * ═════════════════════════════════════════════════════════════════ */
+async function openTerminal() {
+    let task = null;
+    try {
+        const r = await fetch('/oauth/api/claude/tasks/terminal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+            signal: AbortSignal.timeout(5000),
+        });
+        if (r.ok) task = await r.json();
+    } catch (e) { /* fall through — still open the terminal */ }
+
+    const isTouch = window.matchMedia('(pointer: coarse)').matches;
+    if (isTouch) window.location.href = '/oauth/terminal/';
+    else window.open('/oauth/terminal/', '_blank');
+
+    // Surface the new task in the list right away.
+    fetchClaudeTasks().then(() => {
+        if (task && task.task_id) {
+            const row = document.getElementById('task-row-' + task.task_id);
+            if (row) row.classList.add('highlight');
+        }
+    });
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -2822,7 +2862,7 @@ function bindKeyboard() {
         // Ctrl+`: terminal
         if (e.ctrlKey && e.key === '`') {
             e.preventDefault();
-            window.open('/oauth/terminal', '_blank');
+            openTerminal();
             return;
         }
         // Escape: close drawer or any visible form (works everywhere)
