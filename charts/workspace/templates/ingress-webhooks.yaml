@@ -1,0 +1,51 @@
+{{- if eq .Values.ingress.auth.type "oauth2" }}
+# Ingress for the inbound webhook receiver. Like ingress-claude-api.yaml this
+# bypasses the OAuth2 proxy because external senders (GitHub, Stripe, ntfy,
+# etc.) can't carry an OAuth session — they authenticate via HMAC of the body
+# verified inside the workspace pod.
+#
+# IMPORTANT: only the receiver path (/api/webhooks/<id>) is exposed here.
+# The CRUD paths (/api/webhooks alone, GET/DELETE on /api/webhooks/<id>) stay
+# behind OAuth via ingress-oauth2.yaml's /oauth/(api/.*) rule. The two ingresses
+# coexist because the path regex below requires a trailing /<id>, so a bare
+# GET /api/webhooks won't match here.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-webhooks
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/rewrite-target: /api/webhooks/$1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # 1 MiB cap mirrors the in-pod content-length check in WebhookManager.
+    # nginx default is 1m anyway, but spelled out here so a future bump is intentional.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /api/webhooks/([a-zA-Z0-9_-]+)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+{{- end }}

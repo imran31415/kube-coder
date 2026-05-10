@@ -5,6 +5,10 @@
 .idea/
 .vscode/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Secrets - never commit these!
 secrets/
 *.secret

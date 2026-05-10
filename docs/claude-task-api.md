@@ -209,6 +209,9 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 |---|---|---|---|
 | `prompt` | string | Yes | The prompt to send to Claude Code. |
 | `workdir` | string | No | Working directory for the task. Defaults to `/home/dev`. |
+| `response_url` | string | No | Where to POST the task's terminal state when it reaches `completed` / `error` / `killed`. Must be `http(s)`. See [Completion hooks](#completion-hooks-response_url). |
+| `response_secret` | string | No | If set, the completion-hook POST is signed with HMAC-SHA256 in `X-Kube-Coder-Signature-256: sha256=<hex>`. |
+| `source` | string | No | Free-form provenance string surfaced on the dashboard (`webhook:<id>`, `cron:<id>`, etc.). Webhook and cron receivers set this automatically. |
 
 **Response (201 Created):**
 
@@ -751,3 +754,144 @@ The Python server (`server.py`) runs in the foreground inside the pod. Its logs 
 ```bash
 kubectl logs $(kubectl get pod -n coder -l app=ws-{user} -o name) -n coder -c ide
 ```
+
+## Completion hooks (`response_url`)
+
+When `response_url` is supplied on task creation, the server POSTs the task's
+terminal state to that URL once it transitions out of `running`. The body is JSON:
+
+```json
+{
+  "task_id": "1707000000-a1b2c3d4",
+  "status": "completed",
+  "prompt": "...",
+  "workdir": "/home/dev/myproject",
+  "source": "webhook:gh-pr",
+  "created_at": 1707000000.123,
+  "finished_at": 1707000045.678,
+  "output": "<last 200 lines of tmux pane>"
+}
+```
+
+If `response_secret` was set, the request carries an HMAC-SHA256 digest of the
+body in `X-Kube-Coder-Signature-256: sha256=<hex>` — verify it the same way
+you'd verify a GitHub webhook.
+
+**Delivery semantics**: at-most-once. `hook_fired_at` is set under the
+task-meta lock before firing, so a second reconcile won't re-send. Network
+failures are logged to the pod's stderr but not retried — if you need
+at-least-once delivery, queue at your side.
+
+**URL constraints**: scheme must be `http` or `https`; other schemes
+(`file://`, `gopher://`, `ftp://`, `javascript:`) are rejected at create time.
+
+## Webhooks API
+
+Inbound HTTP triggers that spawn a Claude task. Full end-user walkthrough is in the
+[Triggers section of README.md](../README.md#triggers-webhooks--crons--completion-hooks);
+this is the API reference.
+
+### Create
+
+**`POST /oauth/api/webhooks`** (OAuth or bearer)
+
+```json
+{
+  "id": "github-pr-review",
+  "prompt_template": "Review {{ payload.pull_request.html_url }}",
+  "workdir": "/home/dev/myproject",
+  "interpolate_mode": "interpolate",
+  "provider": "github",
+  "response_url": "https://...",
+  "response_secret": "..."
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | `[a-zA-Z0-9_-]{1,64}` |
+| `prompt_template` | yes | Supports `{{ payload.path.to.field }}` |
+| `interpolate_mode` | no | `attach` (default, safe) or `interpolate` |
+| `provider` | no | `generic` (default), `github`, `slack`, `stripe` |
+| `signature_header` | no | Per-provider default if omitted |
+| `signature_algo` | no | `sha256` (default) or `sha1` (generic/github only) |
+| `hmac_secret` | no | Auto-minted on create if absent; returned **once** as `hmac_secret_once` |
+| `workdir` | no | Defaults to `/home/dev` |
+| `response_url` / `response_secret` | no | Forwarded to the spawned task |
+
+### Other endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/oauth/api/webhooks` | List (secrets stripped) |
+| `GET` | `/oauth/api/webhooks/{id}` | Get one |
+| `DELETE` | `/oauth/api/webhooks/{id}` | Delete |
+| `POST` | `/oauth/api/webhooks/{id}/test` | Fire as if a real call arrived; bypasses HMAC. Body: `{"payload": {...}}` |
+| `POST` | `/api/webhooks/{id}` | **Inbound receiver** — HMAC-authed, no OAuth. Per-provider signature scheme. |
+
+The receiver returns:
+- `202` with `{task_id, webhook_id, status}` on success
+- `404` for both unknown id and bad signature (identical response to avoid id-enumeration)
+- `409` for a replay (identical signed body within the 5-minute window)
+- `413` for payloads >1 MiB
+
+### Provider signature reference
+
+| Provider | Header(s) read | Signed string |
+|---|---|---|
+| `generic` / `github` | `X-Hub-Signature-256` (or custom) | `body` |
+| `slack` | `X-Slack-Signature`, `X-Slack-Request-Timestamp` | `v0:<ts>:<body>` |
+| `stripe` | `Stripe-Signature` (parses `t=` + `v1=…`) | `<ts>.<body>` |
+
+Slack and Stripe also require the timestamp to be within ±5 minutes of the
+pod clock.
+
+## Crons API
+
+Scheduled triggers backed by a Kubernetes `CronJob` + `Secret` named
+`cron-<user>-<id>`. Each cron has a `fire_token` mounted into the cron-fire
+pod via the Secret; the receiver checks it constant-time.
+
+### Create
+
+**`POST /oauth/api/crons`** (OAuth or bearer)
+
+```json
+{
+  "id": "daily-status",
+  "schedule": "0 9 * * 1-5",
+  "timezone": "America/Los_Angeles",
+  "prompt_template": "Summarize yesterdays git activity",
+  "workdir": "/home/dev",
+  "payload": {"team": "platform"},
+  "interpolate_mode": "attach",
+  "response_url": "https://hooks.slack.com/..."
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | yes | `[a-z0-9-]{1,40}` (k8s name constraint) |
+| `schedule` | yes | 5-field cron (`0 9 * * *`) or `@daily`/`@hourly`/etc. Strictly validated (`[0-9*/,-]+` per field) before YAML-templating into the CronJob. |
+| `timezone` | no | IANA name; strictly validated (`[A-Za-z0-9_/+\-]+`). Default `UTC`. |
+| `prompt_template` | yes | Same templating as webhooks |
+| `payload` | no | Static JSON object/array; populates `{{ payload.x.y }}` in the template |
+| `interpolate_mode` | no | `attach` or `interpolate` |
+| `suspended` | no | Create suspended (default false) |
+| `response_url` / `response_secret` | no | Forwarded to the spawned task |
+
+The auto-minted `fire_token` is **not** returned in the response; you'd only
+need it directly if hand-editing the CronJob.
+
+### Other endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/oauth/api/crons` | List with k8s status (`k8s_suspended`, `k8s_last_schedule_time`, `k8s_active`) |
+| `GET` | `/oauth/api/crons/{id}` | Get one + k8s status |
+| `DELETE` | `/oauth/api/crons/{id}` | Delete config, CronJob, and Secret |
+| `POST` | `/oauth/api/crons/{id}/suspend` | `spec.suspend: true` on the CronJob |
+| `POST` | `/oauth/api/crons/{id}/resume` | `spec.suspend: false` |
+| `POST` | `/oauth/api/crons/{id}/run` | `kubectl create job --from=cronjob/...` — fires once immediately |
+| `POST` | `/oauth/api/crons/{id}/rotate-token` | Mint new `fire_token`, re-apply Secret; returns it once as `fire_token_once` |
+| `POST` | `/api/triggers/cron-fire/{id}` | **Internal receiver** — called by the cron pod's curl. Bearer = `fire_token`. |

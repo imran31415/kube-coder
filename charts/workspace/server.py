@@ -3,13 +3,19 @@ import http.server
 import socketserver
 import subprocess
 import os
+import sys
 import json
 import time
 import re
+import base64
+import collections
+import hmac
+import hashlib
 import secrets
 import threading
 import uuid
 import urllib.parse
+import urllib.request
 import fcntl
 
 # Alert thresholds for metrics
@@ -385,7 +391,7 @@ class ClaudeTaskManager:
         return token
 
     @staticmethod
-    def create_task(prompt, workdir=None):
+    def create_task(prompt, workdir=None, response_url=None, response_secret=None, source=None):
         ClaudeTaskManager.ensure_tasks_dir()
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
         session_id = str(uuid.uuid4())
@@ -406,6 +412,18 @@ class ClaudeTaskManager:
             'created_at': time.time(),
             'tmux_session': session_name,
         }
+        # Optional completion-hook fields. When response_url is set, the server
+        # POSTs the final task state (status + tail output) to that URL once the
+        # task reaches a terminal state. response_secret, if present, is used to
+        # HMAC-SHA256-sign the body (X-Kube-Coder-Signature-256: sha256=...).
+        # `source` is a free-form string ('webhook:<id>', 'cron:<id>', etc.)
+        # used by the dashboard to badge triggered tasks.
+        if response_url:
+            meta['response_url'] = response_url
+        if response_secret:
+            meta['response_secret'] = response_secret
+        if source:
+            meta['source'] = source
 
         meta_path = os.path.join(task_dir, 'task.json')
         with open(meta_path, 'w') as f:
@@ -494,6 +512,7 @@ class ClaudeTaskManager:
                     'prompt': meta.get('prompt', '')[:120],
                     'status': meta.get('status', 'unknown'),
                     'created_at': meta.get('created_at'),
+                    'source': meta.get('source'),
                 })
             except (json.JSONDecodeError, OSError):
                 continue
@@ -633,12 +652,20 @@ class ClaudeTaskManager:
         )
 
         killed_at = time.time()
+        fire_hook = False
 
         def mutate(m):
+            nonlocal fire_hook
             m['status'] = 'killed'
             m['killed_at'] = killed_at
+            if m.get('response_url') and not m.get('hook_fired_at'):
+                m['hook_fired_at'] = killed_at
+                fire_hook = True
 
-        return ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        if updated is not None and fire_hook:
+            ClaudeTaskManager._fire_completion_hook(updated)
+        return updated
 
     @staticmethod
     def _atomic_update_meta(task_dir, mutate_fn):
@@ -670,6 +697,73 @@ class ClaudeTaskManager:
                 fcntl.flock(lockf, fcntl.LOCK_UN)
 
     @staticmethod
+    def _is_safe_response_url(url):
+        """Allow only http(s) URLs. Reject file://, gopher://, etc. — these
+        scheme handlers turn urlopen() into an SSRF / local-file primitive.
+        urllib accepts them by default, so we have to gate explicitly."""
+        if not url or not isinstance(url, str):
+            return False
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except (ValueError, TypeError):
+            return False
+        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
+
+    @staticmethod
+    def _fire_completion_hook(meta):
+        """POST the task's terminal state to meta['response_url'] in a daemon thread.
+
+        Idempotent: callers set meta['hook_fired_at'] under the meta lock before
+        invoking this, so duplicate transitions (e.g. concurrent reconciles) don't
+        re-send. If response_secret is set, the body is signed with HMAC-SHA256
+        and the digest goes in X-Kube-Coder-Signature-256: sha256=<hex>.
+
+        Network failures are logged and swallowed — the task itself is unaffected.
+        Retries are intentionally not implemented here; if callers need at-least-once
+        delivery they should layer their own queue on top.
+        """
+        url = meta.get('response_url')
+        if not ClaudeTaskManager._is_safe_response_url(url):
+            if url:
+                print(f'[completion-hook] task={meta.get("task_id")} skipped: unsafe URL scheme', file=sys.stderr)
+            return
+        try:
+            tail_output = ClaudeTaskManager.get_task_output(meta.get('task_id', ''), tail=200) or ''
+        except Exception:
+            tail_output = ''
+        payload = {
+            'task_id': meta.get('task_id'),
+            'status': meta.get('status'),
+            'prompt': meta.get('prompt'),
+            'workdir': meta.get('workdir'),
+            'source': meta.get('source'),
+            'created_at': meta.get('created_at'),
+            'finished_at': meta.get('finished_at') or meta.get('killed_at'),
+            'output': tail_output,
+        }
+        body = json.dumps(payload).encode('utf-8')
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'kube-coder-completion-hook/1.0',
+        }
+        secret = meta.get('response_secret')
+        if secret:
+            sig = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
+            headers['X-Kube-Coder-Signature-256'] = f'sha256={sig}'
+
+        task_id = meta.get('task_id', '?')
+
+        def _send():
+            try:
+                req = urllib.request.Request(url, data=body, headers=headers, method='POST')
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    print(f'[completion-hook] task={task_id} -> {url} ({resp.status})')
+            except Exception as e:
+                print(f'[completion-hook] task={task_id} -> {url} FAILED: {e}', file=sys.stderr)
+
+        threading.Thread(target=_send, daemon=True).start()
+
+    @staticmethod
     def _reconcile_status(meta, task_dir):
         """If task.json says running but tmux session is gone, update status."""
         if meta.get('status') != 'running':
@@ -687,18 +781,29 @@ class ClaudeTaskManager:
             return  # still running
 
         finished_at = time.time()
+        fire_hook = False
 
         def mutate(m):
+            nonlocal fire_hook
             # Re-check inside the lock; another reconcile may have run already.
             if m.get('status') != 'running':
                 return False
             m['status'] = 'completed'
             m['finished_at'] = finished_at
+            # Decide-and-mark-fired atomically. If we mark hook_fired_at here, a
+            # concurrent reconciler reading the same task.json will see it and
+            # skip firing — so we get at-most-once delivery without needing a
+            # second lock acquire.
+            if m.get('response_url') and not m.get('hook_fired_at'):
+                m['hook_fired_at'] = finished_at
+                fire_hook = True
 
         updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
         if updated is not None:
             meta['status'] = updated.get('status', meta.get('status'))
             meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
+            if fire_hook:
+                ClaudeTaskManager._fire_completion_hook(updated)
 
 
 def _shell_quote(s):
@@ -752,6 +857,810 @@ class WorkspaceManager:
             })
         results.sort(key=lambda d: d['mtime'], reverse=True)
         return results
+
+
+class _ReplayCache:
+    """Bounded LRU+TTL set of (webhook_id, body_sha256) keys for replay
+    protection. In-memory only — fine for a single-pod workspace; if we ever
+    horizontal-scale the IDE pod, this moves to Redis.
+
+    The size cap (default 1024) protects against memory growth under a flood
+    of distinct payloads; the TTL (default 5 min) is the replay window. A key
+    is rejected if seen before its TTL expires."""
+
+    def __init__(self, capacity=1024, ttl_seconds=300, clock=time.time):
+        self._cap = capacity
+        self._ttl = ttl_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        # OrderedDict so we can evict oldest via popitem(last=False).
+        self._seen = collections.OrderedDict()
+
+    def check_and_record(self, key):
+        """Return True if this key is fresh (record it); False if it's a replay
+        within the TTL window."""
+        now = self._clock()
+        with self._lock:
+            # Lazy TTL eviction at the head; OrderedDict is insertion-ordered.
+            while self._seen:
+                k, ts = next(iter(self._seen.items()))
+                if now - ts > self._ttl:
+                    self._seen.popitem(last=False)
+                else:
+                    break
+            if key in self._seen:
+                # Refresh position to LRU-end so an actively-replayed key stays hot
+                # (and continues to be rejected) instead of aging out.
+                self._seen.move_to_end(key)
+                self._seen[key] = now
+                return False
+            self._seen[key] = now
+            # Size cap — drop oldest after insert
+            while len(self._seen) > self._cap:
+                self._seen.popitem(last=False)
+            return True
+
+
+class WebhookManager:
+    """Inbound HTTP webhooks that spawn Claude tasks.
+
+    A webhook config is a JSON file at /home/dev/.claude-triggers/webhooks/<id>.json:
+
+        {
+          "id":               "github-pr-review",
+          "prompt_template":  "Review the PR titled '{{ payload.pull_request.title }}'",
+          "workdir":          "/home/dev/myproject",
+          "interpolate_mode": "attach",     // "attach" (default, safe) or "interpolate"
+          "hmac_secret":      "<random>",   // optional but recommended
+          "signature_header": "X-Hub-Signature-256",  // header name to verify
+          "signature_algo":   "sha256",     // sha256 (default) or sha1
+          "response_url":     "https://...", // optional — POST task result back here
+          "response_secret":  "...",         // optional HMAC for the response POST
+          "created_at":       <epoch>
+        }
+
+    The receiver endpoint POST /api/webhooks/<id> is unauthenticated by bearer
+    token on purpose — it's meant to be called by external services (GitHub,
+    Stripe, Slack, etc.). Auth is via HMAC of the raw body against hmac_secret.
+    If hmac_secret is omitted, the webhook is open — only do that for testing.
+    """
+
+    WEBHOOKS_DIR = '/home/dev/.claude-triggers/webhooks'
+    _ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+    _INTERP_RE = re.compile(r'\{\{\s*payload((?:\.[\w]+)*)\s*\}\}')
+    PROVIDERS = ('generic', 'github', 'slack', 'stripe')
+    # Module-level so the cache survives across requests (each request gets a
+    # fresh handler instance). 5-minute window matches Slack/Stripe convention.
+    REPLAY_CACHE = _ReplayCache(capacity=1024, ttl_seconds=300)
+    # Tolerated clock skew for providers that sign a timestamp (Slack, Stripe).
+    # Matches Slack's documented 5-minute drift allowance.
+    TIMESTAMP_TOLERANCE = 300
+
+    @staticmethod
+    def ensure_dir():
+        os.makedirs(WebhookManager.WEBHOOKS_DIR, mode=0o700, exist_ok=True)
+
+    @staticmethod
+    def _config_path(webhook_id):
+        return os.path.join(WebhookManager.WEBHOOKS_DIR, f'{webhook_id}.json')
+
+    @staticmethod
+    def valid_id(webhook_id):
+        return bool(webhook_id) and bool(WebhookManager._ID_RE.match(webhook_id))
+
+    @staticmethod
+    def list_webhooks():
+        WebhookManager.ensure_dir()
+        out = []
+        try:
+            entries = sorted(os.listdir(WebhookManager.WEBHOOKS_DIR))
+        except OSError:
+            return out
+        for name in entries:
+            if not name.endswith('.json'):
+                continue
+            path = os.path.join(WebhookManager.WEBHOOKS_DIR, name)
+            try:
+                with open(path) as f:
+                    cfg = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            out.append(WebhookManager._public_view(cfg))
+        return out
+
+    @staticmethod
+    def get_webhook(webhook_id, include_secrets=False):
+        if not WebhookManager.valid_id(webhook_id):
+            return None
+        try:
+            with open(WebhookManager._config_path(webhook_id)) as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        return cfg if include_secrets else WebhookManager._public_view(cfg)
+
+    @staticmethod
+    def _public_view(cfg):
+        """Return a copy of the config safe to expose over the dashboard API:
+        secret material is replaced with a boolean indicator so the UI can
+        show 'configured' without revealing the value."""
+        view = dict(cfg)
+        for k in ('hmac_secret', 'response_secret'):
+            if view.get(k):
+                view[k + '_set'] = True
+                view.pop(k)
+        return view
+
+    @staticmethod
+    def create_or_update(data, existing_id=None):
+        """Validate and persist a webhook config. Returns (cfg, error_str)."""
+        WebhookManager.ensure_dir()
+        webhook_id = existing_id or data.get('id', '')
+        if not WebhookManager.valid_id(webhook_id):
+            return None, 'invalid id (1-64 chars, [a-zA-Z0-9_-])'
+        prompt_template = (data.get('prompt_template') or '').strip()
+        if not prompt_template:
+            return None, 'prompt_template is required'
+
+        mode = data.get('interpolate_mode', 'attach')
+        if mode not in ('attach', 'interpolate'):
+            return None, "interpolate_mode must be 'attach' or 'interpolate'"
+
+        algo = data.get('signature_algo', 'sha256')
+        if algo not in ('sha256', 'sha1'):
+            return None, "signature_algo must be 'sha256' or 'sha1'"
+
+        provider = data.get('provider', 'generic')
+        if provider not in WebhookManager.PROVIDERS:
+            return None, f'provider must be one of {WebhookManager.PROVIDERS}'
+
+        response_url = data.get('response_url')
+        if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
+            return None, 'response_url must be http(s)'
+
+        # Default signature_header by provider. Users can override, but the
+        # defaults match what each platform documents so most setups are
+        # zero-config.
+        default_header = {
+            'github': 'X-Hub-Signature-256',
+            'slack': 'X-Slack-Signature',
+            'stripe': 'Stripe-Signature',
+            'generic': 'X-Hub-Signature-256',
+        }[provider]
+        cfg = {
+            'id': webhook_id,
+            'prompt_template': prompt_template,
+            'workdir': data.get('workdir') or '/home/dev',
+            'interpolate_mode': mode,
+            'provider': provider,
+            'signature_header': data.get('signature_header') or default_header,
+            'signature_algo': algo,
+            'created_at': time.time(),
+        }
+        # Optional secret-bearing fields. Auto-mint hmac_secret on create if
+        # caller didn't provide one — never want to silently land an open webhook.
+        if data.get('hmac_secret'):
+            cfg['hmac_secret'] = data['hmac_secret']
+        elif not existing_id:
+            cfg['hmac_secret'] = secrets.token_urlsafe(32)
+        if data.get('response_url'):
+            cfg['response_url'] = data['response_url']
+        if data.get('response_secret'):
+            cfg['response_secret'] = data['response_secret']
+
+        # Preserve created_at on update
+        if existing_id:
+            prior = WebhookManager.get_webhook(existing_id, include_secrets=True) or {}
+            if prior.get('created_at'):
+                cfg['created_at'] = prior['created_at']
+            # If caller didn't pass hmac_secret on update, keep the prior one.
+            if 'hmac_secret' not in cfg and prior.get('hmac_secret'):
+                cfg['hmac_secret'] = prior['hmac_secret']
+
+        path = WebhookManager._config_path(webhook_id)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, path)
+        return cfg, None
+
+    @staticmethod
+    def delete(webhook_id):
+        if not WebhookManager.valid_id(webhook_id):
+            return False
+        path = WebhookManager._config_path(webhook_id)
+        try:
+            os.remove(path)
+            return True
+        except FileNotFoundError:
+            return False
+
+    @staticmethod
+    def verify_signature(cfg, raw_body, headers):
+        """Provider-aware signature verification.
+
+        ``headers`` accepts either:
+          * a dict-like with case-insensitive ``.get(name, default)`` — typically
+            ``BaseHTTPRequestHandler.headers``. Required for Slack/Stripe which
+            read multiple headers.
+          * a plain string, treated as the value of ``cfg['signature_header']``.
+            Kept as a backwards-compat path for the original generic-HMAC tests
+            and for callers that already extracted the one header they need.
+
+        If the webhook has no ``hmac_secret`` configured, returns True (open
+        mode — only intended for dev/testing; create() auto-mints one to
+        discourage this in production).
+        """
+        secret = cfg.get('hmac_secret')
+        if not secret:
+            return True
+
+        provider = cfg.get('provider', 'generic')
+
+        # Normalize headers into a uniform `get(name, default)`. For the str
+        # form (or None for "no header sent"), only the configured
+        # signature_header resolves; everything else returns ''.
+        if headers is None or isinstance(headers, str):
+            target = (cfg.get('signature_header') or '').lower()
+            value = headers or ''
+
+            def _get(name, default=''):
+                return value if name.lower() == target else default
+        else:
+            def _get(name, default=''):
+                v = headers.get(name, default)
+                return v if v is not None else default
+
+        if provider == 'slack':
+            return WebhookManager._verify_slack(secret, raw_body, _get)
+        if provider == 'stripe':
+            return WebhookManager._verify_stripe(secret, raw_body, _get)
+        # 'generic' and 'github' use the same shape: hex HMAC, optional
+        # algo-prefix, configured header name.
+        return WebhookManager._verify_generic(cfg, secret, raw_body, _get)
+
+    @staticmethod
+    def _verify_generic(cfg, secret, raw_body, get_header):
+        """HMAC of body in the configured header, prefixed 'sha256=' or 'sha1='
+        (GitHub style) or bare hex. Constant-time compare."""
+        header_name = cfg.get('signature_header', 'X-Hub-Signature-256')
+        provided = get_header(header_name, '')
+        if not provided:
+            return False
+        algo = cfg.get('signature_algo', 'sha256')
+        hasher = hashlib.sha256 if algo == 'sha256' else hashlib.sha1
+        expected = hmac.new(secret.encode('utf-8'), raw_body, hasher).hexdigest()
+        provided = provided.strip()
+        if '=' in provided:
+            _, _, provided = provided.partition('=')
+        try:
+            return hmac.compare_digest(expected, provided.strip())
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _verify_slack(secret, raw_body, get_header):
+        """Slack signs ``v0:<ts>:<body>`` with HMAC-SHA256, hex result in
+        ``X-Slack-Signature`` as ``v0=<hex>``. Timestamp is in
+        ``X-Slack-Request-Timestamp`` and must be within ±5 minutes to thwart
+        offline replay of captured requests."""
+        sig = (get_header('X-Slack-Signature', '') or '').strip()
+        ts = (get_header('X-Slack-Request-Timestamp', '') or '').strip()
+        if not sig.startswith('v0=') or not ts:
+            return False
+        try:
+            ts_int = int(ts)
+        except ValueError:
+            return False
+        if abs(time.time() - ts_int) > WebhookManager.TIMESTAMP_TOLERANCE:
+            return False
+        base = f'v0:{ts}:'.encode('utf-8') + raw_body
+        expected = 'v0=' + hmac.new(secret.encode('utf-8'), base, hashlib.sha256).hexdigest()
+        try:
+            return hmac.compare_digest(expected, sig)
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _verify_stripe(secret, raw_body, get_header):
+        """Stripe signs ``<ts>.<body>`` with HMAC-SHA256. The header
+        ``Stripe-Signature`` is a comma-separated list of ``k=v`` pairs:
+        ``t=<unix>,v1=<hex>,v0=<hex>``. We accept any v1 that matches; if a
+        request has multiple v1 entries (during a secret rotation window),
+        Stripe sends both and the receiver should accept either."""
+        header = get_header('Stripe-Signature', '') or ''
+        if not header:
+            return False
+        pairs = {}
+        v1s = []
+        for part in header.split(','):
+            if '=' not in part:
+                continue
+            k, _, v = part.partition('=')
+            k, v = k.strip(), v.strip()
+            if k == 'v1':
+                v1s.append(v)
+            else:
+                pairs[k] = v
+        ts = pairs.get('t')
+        if not ts or not v1s:
+            return False
+        try:
+            ts_int = int(ts)
+        except ValueError:
+            return False
+        if abs(time.time() - ts_int) > WebhookManager.TIMESTAMP_TOLERANCE:
+            return False
+        base = f'{ts}.'.encode('utf-8') + raw_body
+        expected = hmac.new(secret.encode('utf-8'), base, hashlib.sha256).hexdigest()
+        return any(
+            hmac.compare_digest(expected, v) for v in v1s
+        )
+
+    @staticmethod
+    def render_prompt(cfg, payload):
+        """Apply the prompt template to the inbound payload.
+
+        Two modes, chosen by the config:
+          * 'attach' (default, safe): prompt = template + fenced JSON of payload.
+            No interpolation, so payload contents can't smuggle instructions
+            into the rendered prompt — they appear as data in a code fence.
+          * 'interpolate': substitute {{ payload.x.y }} references with the
+            matching JSON value. Caller-controlled values land verbatim in the
+            instruction line — only use when the payload source is trusted.
+        """
+        template = cfg.get('prompt_template', '')
+        mode = cfg.get('interpolate_mode', 'attach')
+        if mode == 'interpolate':
+            return WebhookManager._INTERP_RE.sub(
+                lambda m: WebhookManager._lookup(payload, m.group(1)),
+                template,
+            )
+        # attach mode
+        try:
+            pretty = json.dumps(payload, indent=2, default=str)
+        except (TypeError, ValueError):
+            pretty = repr(payload)
+        return f'{template}\n\nWebhook payload:\n```json\n{pretty}\n```'
+
+    @staticmethod
+    def _lookup(payload, dotted):
+        """Resolve a '.a.b.c' path against payload (dict-only). Returns '' if
+        any segment is missing or the payload isn't traversable. Stringifies
+        non-string leaves so the substitution always produces a string."""
+        cur = payload
+        # dotted is e.g. ".pull_request.title" — leading dot, may be empty
+        parts = [p for p in dotted.split('.') if p]
+        for p in parts:
+            if isinstance(cur, dict) and p in cur:
+                cur = cur[p]
+            else:
+                return ''
+        if cur is None:
+            return ''
+        if isinstance(cur, (str, int, float, bool)):
+            return str(cur)
+        try:
+            return json.dumps(cur, default=str)
+        except (TypeError, ValueError):
+            return ''
+
+
+class CronManager:
+    """Scheduled triggers backed by Kubernetes CronJob objects.
+
+    Each cron has TWO pieces of state:
+      * Local config JSON at /home/dev/.claude-triggers/crons/<id>.json
+        (prompt_template, payload, response_url, fire_token, …)
+      * A Kubernetes CronJob named cron-<user>-<id> + a matching Secret
+        cron-<user>-<id>-token with the bearer the CronJob uses to call back.
+
+    Why CronJob rather than an in-pod scheduler thread:
+      * Native suspend/resume via `spec.suspend`
+      * Native run-history via successful/failedJobsHistoryLimit
+      * `kubectl get cronjobs -n coder` lists everything
+      * Schedule fires even if the IDE pod is briefly down (the CronJob's
+        curl will retry per the Job's backoffLimit)
+
+    The CronJob's container is just curlimages/curl POSTing to the workspace
+    service. The IDE pod is the actual executor; the CronJob is the timer.
+    """
+
+    CRONS_DIR = '/home/dev/.claude-triggers/crons'
+    NAMESPACE_FILE = '/var/run/secrets/kubernetes.io/serviceaccount/namespace'
+    _ID_RE = re.compile(r'^[a-z0-9-]{1,40}$')  # tighter than webhooks because used in k8s names
+    # Cron schedule: 5 space-separated fields restricted to characters that
+    # appear in real cron expressions (digits, *, /, -, ,). Restricting the
+    # character class — vs. \S+ — closes off YAML injection via quote chars,
+    # since the schedule is interpolated into the kubectl-apply manifest.
+    _CRON_FIELD = r'[0-9*/,-]+'
+    _SCHEDULE_RE = re.compile(
+        r'^@(yearly|annually|monthly|weekly|daily|hourly)$|'
+        r'^' + r'\s+'.join([_CRON_FIELD] * 5) + r'$')
+    # IANA timezone names: letters, digits, _, /, +, -. Same anti-injection
+    # reasoning as the schedule above.
+    _TIMEZONE_RE = re.compile(r'^[A-Za-z0-9_/+\-]{1,64}$')
+
+    @staticmethod
+    def ensure_dir():
+        os.makedirs(CronManager.CRONS_DIR, mode=0o700, exist_ok=True)
+
+    @staticmethod
+    def _config_path(cron_id):
+        return os.path.join(CronManager.CRONS_DIR, f'{cron_id}.json')
+
+    @staticmethod
+    def valid_id(cron_id):
+        return bool(cron_id) and bool(CronManager._ID_RE.match(cron_id))
+
+    @staticmethod
+    def detect_user():
+        """Derive the workspace username from the pod hostname.
+        Pods are named ws-<user>-<podhash>; the kaniko wrapper does the same.
+        Falls back to env var WORKSPACE_USER if hostname doesn't match."""
+        host = os.uname().nodename
+        m = re.match(r'^ws-([a-z0-9-]+?)-[a-z0-9]+$', host)
+        if m:
+            return m.group(1)
+        return os.environ.get('WORKSPACE_USER', 'unknown')
+
+    @staticmethod
+    def detect_namespace():
+        try:
+            with open(CronManager.NAMESPACE_FILE) as f:
+                return f.read().strip()
+        except OSError:
+            return os.environ.get('POD_NAMESPACE', 'coder')
+
+    @staticmethod
+    def k8s_object_name(cron_id):
+        """Stable name for both the CronJob and its companion Secret.
+        Length-limited because k8s caps object names at 253 but Job names
+        get a suffix appended at trigger time (~63 chars practical max)."""
+        user = CronManager.detect_user()
+        return f'cron-{user}-{cron_id}'[:50]
+
+    @staticmethod
+    def list_crons():
+        CronManager.ensure_dir()
+        out = []
+        try:
+            entries = sorted(os.listdir(CronManager.CRONS_DIR))
+        except OSError:
+            return out
+        for name in entries:
+            if not name.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(CronManager.CRONS_DIR, name)) as f:
+                    cfg = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            out.append(CronManager._public_view(cfg))
+        return out
+
+    @staticmethod
+    def get_cron(cron_id, include_secrets=False):
+        if not CronManager.valid_id(cron_id):
+            return None
+        try:
+            with open(CronManager._config_path(cron_id)) as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        return cfg if include_secrets else CronManager._public_view(cfg)
+
+    @staticmethod
+    def _public_view(cfg):
+        view = dict(cfg)
+        for k in ('fire_token', 'response_secret'):
+            if view.get(k):
+                view[k + '_set'] = True
+                view.pop(k)
+        return view
+
+    @staticmethod
+    def create_or_update(data, existing_id=None):
+        CronManager.ensure_dir()
+        cron_id = existing_id or data.get('id', '')
+        if not CronManager.valid_id(cron_id):
+            return None, 'invalid id (1-40 chars, [a-z0-9-])'
+
+        schedule = (data.get('schedule') or '').strip()
+        if not CronManager._SCHEDULE_RE.match(schedule):
+            return None, 'invalid schedule (5-field cron or @daily/@hourly/etc)'
+
+        timezone = (data.get('timezone') or 'UTC').strip()
+        if not CronManager._TIMEZONE_RE.match(timezone):
+            return None, 'invalid timezone (IANA name like UTC or America/Los_Angeles)'
+
+        prompt_template = (data.get('prompt_template') or '').strip()
+        if not prompt_template:
+            return None, 'prompt_template is required'
+
+        mode = data.get('interpolate_mode', 'attach')
+        if mode not in ('attach', 'interpolate'):
+            return None, "interpolate_mode must be 'attach' or 'interpolate'"
+
+        payload = data.get('payload')
+        if payload is not None and not isinstance(payload, (dict, list)):
+            return None, 'payload must be a JSON object or array'
+
+        response_url = data.get('response_url')
+        if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
+            return None, 'response_url must be http(s)'
+
+        cfg = {
+            'id': cron_id,
+            'schedule': schedule,
+            'prompt_template': prompt_template,
+            'workdir': data.get('workdir') or '/home/dev',
+            'payload': payload if payload is not None else {},
+            'interpolate_mode': mode,
+            'timezone': timezone,
+            'suspended': bool(data.get('suspended', False)),
+            'created_at': time.time(),
+        }
+        if data.get('response_url'):
+            cfg['response_url'] = data['response_url']
+        if data.get('response_secret'):
+            cfg['response_secret'] = data['response_secret']
+
+        # Preserve created_at + fire_token across update
+        prior = None
+        if existing_id:
+            prior = CronManager.get_cron(existing_id, include_secrets=True) or {}
+            if prior.get('created_at'):
+                cfg['created_at'] = prior['created_at']
+            if prior.get('fire_token'):
+                cfg['fire_token'] = prior['fire_token']
+
+        # Mint the fire_token on first create; the CronJob pod uses it to auth
+        # back into the workspace service.
+        if not cfg.get('fire_token'):
+            cfg['fire_token'] = secrets.token_urlsafe(32)
+
+        # Persist local config
+        path = CronManager._config_path(cron_id)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, path)
+
+        # Apply (or re-apply) the K8s CronJob + Secret. If this fails, the
+        # local config still lives — the user can re-apply by editing.
+        try:
+            CronManager._apply_k8s(cfg)
+        except Exception as e:
+            return cfg, f'config saved but kubectl apply failed: {e}'
+
+        return cfg, None
+
+    @staticmethod
+    def delete(cron_id):
+        if not CronManager.valid_id(cron_id):
+            return False
+        # Best-effort: tear down k8s objects even if local config is gone
+        name = CronManager.k8s_object_name(cron_id)
+        ns = CronManager.detect_namespace()
+        for kind in ('cronjob', 'secret'):
+            subprocess.run(
+                ['kubectl', 'delete', kind, name, '-n', ns, '--ignore-not-found'],
+                capture_output=True, text=True, timeout=30,
+            )
+        try:
+            os.remove(CronManager._config_path(cron_id))
+            return True
+        except FileNotFoundError:
+            # Still report success if we cleaned up k8s objects above
+            return False
+
+    @staticmethod
+    def set_suspended(cron_id, suspended):
+        cfg = CronManager.get_cron(cron_id, include_secrets=True)
+        if cfg is None:
+            return None
+        cfg['suspended'] = bool(suspended)
+        path = CronManager._config_path(cron_id)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, path)
+
+        # Patch the CronJob's spec.suspend in place — cheaper than full re-apply.
+        name = CronManager.k8s_object_name(cron_id)
+        ns = CronManager.detect_namespace()
+        patch = json.dumps({'spec': {'suspend': bool(suspended)}})
+        subprocess.run(
+            ['kubectl', 'patch', 'cronjob', name, '-n', ns, '--type=merge', '-p', patch],
+            capture_output=True, text=True, timeout=30,
+        )
+        return cfg
+
+    @staticmethod
+    def rotate_token(cron_id):
+        """Mint a fresh fire_token and re-apply the companion Secret.
+
+        The CronJob references the Secret by name, so the next pod that
+        spawns reads the new token. In-flight jobs that were already pulled
+        from the API will fail their next call (intended — that's the
+        rotation point). Returns (cfg, new_token) or (None, None) if the
+        cron doesn't exist or the k8s apply failed."""
+        cfg = CronManager.get_cron(cron_id, include_secrets=True)
+        if cfg is None:
+            return None, None
+        new_token = secrets.token_urlsafe(32)
+        cfg['fire_token'] = new_token
+        cfg['fire_token_rotated_at'] = time.time()
+
+        path = CronManager._config_path(cron_id)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, path)
+
+        try:
+            CronManager._apply_k8s(cfg)
+        except Exception as e:
+            # The local config has already been written with the new token;
+            # roll it back so we don't desync from the k8s Secret. Surface
+            # the underlying error to the caller.
+            cfg['fire_token'] = cfg.get('fire_token')  # no-op; just for clarity
+            print(f'[cron] rotate-token kubectl apply failed for {cron_id}: {e}', file=sys.stderr)
+            return None, None
+        return cfg, new_token
+
+    @staticmethod
+    def run_now(cron_id):
+        """Create a one-shot Job from the cron's CronJob — same effect as if
+        the schedule had just fired."""
+        if not CronManager.valid_id(cron_id):
+            return False, 'invalid id'
+        name = CronManager.k8s_object_name(cron_id)
+        ns = CronManager.detect_namespace()
+        # Suffix with timestamp so repeated 'run now' clicks don't collide
+        job_name = f"{name}-manual-{int(time.time())}"[:50]
+        r = subprocess.run(
+            ['kubectl', 'create', 'job', job_name,
+             '--from', f'cronjob/{name}', '-n', ns],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False, r.stderr.strip() or 'kubectl create failed'
+        return True, job_name
+
+    @staticmethod
+    def kubectl_status(cron_id):
+        """Return k8s-side state for a cron: suspended flag, last-schedule-time,
+        next-schedule-time. Returns {} if the CronJob isn't found or kubectl
+        isn't available — never raises, so the dashboard stays usable."""
+        if not CronManager.valid_id(cron_id):
+            return {}
+        name = CronManager.k8s_object_name(cron_id)
+        ns = CronManager.detect_namespace()
+        r = subprocess.run(
+            ['kubectl', 'get', 'cronjob', name, '-n', ns, '-o', 'json'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            return {}
+        try:
+            obj = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return {}
+        spec = obj.get('spec', {}) or {}
+        status = obj.get('status', {}) or {}
+        return {
+            'k8s_suspended': bool(spec.get('suspend', False)),
+            'k8s_schedule': spec.get('schedule'),
+            'k8s_last_schedule_time': status.get('lastScheduleTime'),
+            'k8s_active': len(status.get('active', []) or []),
+        }
+
+    @staticmethod
+    def render_prompt(cfg):
+        """Cron's payload field plays the role of the inbound payload for
+        webhooks — same rendering pipeline."""
+        return WebhookManager.render_prompt(cfg, cfg.get('payload') or {})
+
+    @staticmethod
+    def _apply_k8s(cfg):
+        """kubectl apply -f - for the Secret + CronJob. Raises on failure.
+        Re-applies are safe (server-side merge semantics).
+
+        The Secret holds the fire_token and is mounted as an env var into the
+        curl pod. We intentionally do NOT pass the token via command-line args
+        (would leak in `ps`) or via the URL (would leak in nginx access logs)."""
+        name = CronManager.k8s_object_name(cfg['id'])
+        ns = CronManager.detect_namespace()
+        user = CronManager.detect_user()
+        # base64 the token for the Secret (kubectl apply requires base64 for `data:`)
+        token_b64 = base64.b64encode(cfg['fire_token'].encode('utf-8')).decode('ascii')
+
+        # The receiver URL: in-cluster service DNS. Using cluster.local is the
+        # safe default; if the cluster uses a different DNS suffix, override
+        # via the WORKSPACE_INTERNAL_URL env var.
+        internal_url = os.environ.get(
+            'WORKSPACE_INTERNAL_URL',
+            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
+        )
+
+        manifest = f"""
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {name}
+  namespace: {ns}
+  labels:
+    app: kube-coder-cron
+    workspace-user: {user}
+    cron-id: {cfg['id']}
+type: Opaque
+data:
+  token: {token_b64}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {name}
+  namespace: {ns}
+  labels:
+    app: kube-coder-cron
+    workspace-user: {user}
+    cron-id: {cfg['id']}
+spec:
+  schedule: "{cfg['schedule']}"
+  timeZone: "{cfg.get('timezone', 'UTC')}"
+  suspend: {str(cfg.get('suspended', False)).lower()}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: trigger
+            image: curlimages/curl:8.10.1
+            command: ["/bin/sh", "-c"]
+            args:
+            - 'curl -fsS --max-time 30 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{{}}" "{internal_url}/api/triggers/cron-fire/{cfg['id']}"'
+            env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {name}
+                  key: token
+"""
+        r = subprocess.run(
+            ['kubectl', 'apply', '-f', '-'],
+            input=manifest, capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or 'kubectl apply failed')
+
+    @staticmethod
+    def verify_fire_token(cron_id, provided):
+        """Constant-time compare an inbound bearer token against the cron's
+        fire_token. False on any mismatch or unknown id."""
+        cfg = CronManager.get_cron(cron_id, include_secrets=True)
+        if cfg is None:
+            return False, None
+        expected = cfg.get('fire_token') or ''
+        if not provided or not expected:
+            return False, None
+        try:
+            ok = hmac.compare_digest(expected, provided)
+        except (TypeError, ValueError):
+            ok = False
+        return ok, cfg
 
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
@@ -833,6 +1742,26 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_claude_get_task()
             return
 
+        # --- Webhook CRUD (dashboard) ---
+        if claude_path == '/api/webhooks':
+            self.handle_webhook_list()
+            return
+        m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', claude_path)
+        if m:
+            self._webhook_id = m.group(1)
+            self.handle_webhook_get()
+            return
+
+        # --- Cron CRUD (dashboard) ---
+        if claude_path == '/api/crons':
+            self.handle_cron_list()
+            return
+        m = re.match(r'^/api/crons/([a-z0-9-]+)$', claude_path)
+        if m:
+            self._cron_id = m.group(1)
+            self.handle_cron_get()
+            return
+
         super().do_GET()
     
     def check_auth(self):
@@ -890,6 +1819,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._claude_task_id = m.group(1)
                 self.handle_claude_delete_task()
+                return
+            m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', path)
+            if m:
+                self._webhook_id = m.group(1)
+                self.handle_webhook_delete()
+                return
+            m = re.match(r'^/api/crons/([a-z0-9-]+)$', path)
+            if m:
+                self._cron_id = m.group(1)
+                self.handle_cron_delete()
                 return
             self.send_json({'error': 'Not found'}, 404)
         except Exception as e:
@@ -1094,7 +2033,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'prompt is required'}, 400)
             return
         workdir = data.get('workdir')
-        task = ClaudeTaskManager.create_task(prompt, workdir=workdir)
+        response_url = data.get('response_url') or None
+        response_secret = data.get('response_secret') or None
+        source = data.get('source') or None
+        if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
+            self.send_json({'error': 'response_url must be http(s)'}, 400)
+            return
+        task = ClaudeTaskManager.create_task(
+            prompt,
+            workdir=workdir,
+            response_url=response_url,
+            response_secret=response_secret,
+            source=source,
+        )
         self.send_json(task, 201)
 
     def handle_claude_followup(self):
@@ -1156,6 +2107,273 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'ok': True, 'session': session_name})
         except OSError as e:
             self.send_json({'error': str(e)}, 500)
+
+    # --- Webhook handlers ---
+    # CRUD endpoints (list/get/create/delete) reuse check_claude_auth — they
+    # manage webhook *configs* and require the same trust as creating tasks.
+    # The receiver endpoint (handle_webhook_receive) is intentionally NOT
+    # behind that auth: external services authenticate via HMAC of the body.
+
+    def handle_webhook_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        # Public view — secrets are stripped out by WebhookManager._public_view
+        self.send_json({'webhooks': WebhookManager.list_webhooks()})
+
+    def handle_webhook_get(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        cfg = WebhookManager.get_webhook(self._webhook_id)
+        if cfg is None:
+            self.send_json({'error': 'Webhook not found'}, 404)
+            return
+        # Include the receive URL so the dashboard can render a copy button.
+        cfg['receive_url'] = self._build_receive_url(self._webhook_id)
+        self.send_json(cfg)
+
+    def handle_webhook_create(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        cfg, err = WebhookManager.create_or_update(data)
+        if err:
+            self.send_json({'error': err}, 400)
+            return
+        # On create we surface the hmac_secret ONCE so the user can copy it
+        # into the upstream service (GitHub/Stripe/etc.). After this, it's
+        # only ever returned as hmac_secret_set: true.
+        response = WebhookManager._public_view(cfg)
+        if cfg.get('hmac_secret'):
+            response['hmac_secret_once'] = cfg['hmac_secret']
+        response['receive_url'] = self._build_receive_url(cfg['id'])
+        self.send_json(response, 201)
+
+    def handle_webhook_delete(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        ok = WebhookManager.delete(self._webhook_id)
+        if not ok:
+            self.send_json({'error': 'Webhook not found'}, 404)
+            return
+        self.send_json({'ok': True})
+
+    def handle_webhook_receive(self):
+        """Inbound receiver. Auth via HMAC of the raw body — NO bearer token.
+        Triggers a Claude task and returns the task_id."""
+        cfg = WebhookManager.get_webhook(self._webhook_id, include_secrets=True)
+        if cfg is None:
+            # Don't leak existence: same response as a real auth failure.
+            self.send_json({'error': 'Not found or unauthorized'}, 404)
+            return
+
+        # Read the raw body for HMAC verification BEFORE JSON parsing.
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length < 0 or content_length > 1 * 1024 * 1024:  # 1 MiB cap
+            self.send_json({'error': 'payload too large'}, 413)
+            return
+        raw_body = self.rfile.read(content_length) if content_length else b''
+
+        # Pass full headers — Slack/Stripe verifiers read multiple of them
+        # (e.g. X-Slack-Request-Timestamp alongside X-Slack-Signature).
+        if not WebhookManager.verify_signature(cfg, raw_body, self.headers):
+            # Same shape as the not-found response to avoid leaking which is which.
+            self.send_json({'error': 'Not found or unauthorized'}, 404)
+            return
+
+        # Replay protection: reject identical signed bodies seen within the
+        # 5-minute window. Provider-level timestamp checks (Slack/Stripe) and
+        # this cache are belt-and-suspenders — Slack/Stripe alone allow up to
+        # 5 minutes of replay; this cache closes that window to "exactly once".
+        replay_key = (cfg['id'], hashlib.sha256(raw_body).hexdigest())
+        if not WebhookManager.REPLAY_CACHE.check_and_record(replay_key):
+            self.send_json({'error': 'duplicate request (replay)'}, 409)
+            return
+
+        try:
+            payload = json.loads(raw_body.decode('utf-8')) if raw_body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_json({'error': 'invalid JSON payload'}, 400)
+            return
+
+        self._fire_webhook(cfg, payload, status=202)
+
+    def handle_webhook_test(self):
+        """Dashboard 'Test' button: fire as if a real call came in, but with
+        bearer auth instead of HMAC. Payload comes from the JSON body."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        cfg = WebhookManager.get_webhook(self._webhook_id, include_secrets=True)
+        if cfg is None:
+            self.send_json({'error': 'Webhook not found'}, 404)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        payload = data.get('payload', {}) if isinstance(data, dict) else {}
+        self._fire_webhook(cfg, payload, status=202)
+
+    def _fire_webhook(self, cfg, payload, status=202):
+        prompt = WebhookManager.render_prompt(cfg, payload)
+        task = ClaudeTaskManager.create_task(
+            prompt,
+            workdir=cfg.get('workdir') or '/home/dev',
+            response_url=cfg.get('response_url'),
+            response_secret=cfg.get('response_secret'),
+            source=f"webhook:{cfg['id']}",
+        )
+        self.send_json({
+            'task_id': task['task_id'],
+            'webhook_id': cfg['id'],
+            'status': task['status'],
+        }, status)
+
+    def _build_receive_url(self, webhook_id):
+        """Construct the public URL the upstream service should POST to.
+        Uses the Host header; ingress strips /oauth so we don't prepend it."""
+        host = self.headers.get('Host', '')
+        proto = self.headers.get('X-Forwarded-Proto', 'https')
+        if not host:
+            return f'/api/webhooks/{webhook_id}'
+        return f'{proto}://{host}/api/webhooks/{webhook_id}'
+
+    # --- Cron handlers ---
+    # CRUD uses check_claude_auth (dashboard / scripts). The cron-fire receiver
+    # uses the per-cron fire_token instead — k8s CronJob pods are not part of
+    # the OAuth session.
+
+    def handle_cron_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        crons = CronManager.list_crons()
+        # Decorate with k8s status — best-effort, won't fail the request.
+        for c in crons:
+            try:
+                c.update(CronManager.kubectl_status(c['id']))
+            except Exception:
+                pass
+        self.send_json({'crons': crons})
+
+    def handle_cron_get(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        cfg = CronManager.get_cron(self._cron_id)
+        if cfg is None:
+            self.send_json({'error': 'Cron not found'}, 404)
+            return
+        cfg.update(CronManager.kubectl_status(self._cron_id))
+        self.send_json(cfg)
+
+    def handle_cron_create(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        cfg, err = CronManager.create_or_update(data)
+        # err may be a "soft" error (k8s apply failed but config saved); still 4xx.
+        if cfg is None:
+            self.send_json({'error': err}, 400)
+            return
+        response = CronManager._public_view(cfg)
+        if err:
+            response['warning'] = err
+            self.send_json(response, 202)
+            return
+        self.send_json(response, 201)
+
+    def handle_cron_delete(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        ok = CronManager.delete(self._cron_id)
+        if not ok:
+            self.send_json({'error': 'Cron not found'}, 404)
+            return
+        self.send_json({'ok': True})
+
+    def handle_cron_action(self):
+        """suspend / resume / run — dashboard buttons."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        action = self._cron_action
+        if action == 'suspend':
+            cfg = CronManager.set_suspended(self._cron_id, True)
+            if cfg is None:
+                self.send_json({'error': 'Cron not found'}, 404)
+                return
+            self.send_json(CronManager._public_view(cfg))
+        elif action == 'resume':
+            cfg = CronManager.set_suspended(self._cron_id, False)
+            if cfg is None:
+                self.send_json({'error': 'Cron not found'}, 404)
+                return
+            self.send_json(CronManager._public_view(cfg))
+        elif action == 'run':
+            ok, info = CronManager.run_now(self._cron_id)
+            if not ok:
+                self.send_json({'error': info}, 500)
+                return
+            self.send_json({'ok': True, 'job': info})
+        elif action == 'rotate-token':
+            cfg, new_token = CronManager.rotate_token(self._cron_id)
+            if cfg is None:
+                self.send_json({'error': 'rotate failed (see pod logs)'}, 500)
+                return
+            response = CronManager._public_view(cfg)
+            # One-time reveal of the new token, matching webhook secret-reveal UX
+            response['fire_token_once'] = new_token
+            self.send_json(response)
+        else:
+            self.send_json({'error': 'unknown action'}, 400)
+
+    def handle_cron_fire(self):
+        """Receiver called by the k8s CronJob pod with the per-cron fire_token.
+        Renders the cron's prompt template against its static payload and
+        spawns a Claude task. Never touches OAuth headers — this is an
+        internal-cluster call."""
+        auth = self.headers.get('Authorization', '')
+        token = auth[7:].strip() if auth.startswith('Bearer ') else ''
+        ok, cfg = CronManager.verify_fire_token(self._cron_id, token)
+        if not ok or cfg is None:
+            # Don't leak existence; same response for unknown id vs bad token.
+            self.send_json({'error': 'Not found or unauthorized'}, 404)
+            return
+        # Refuse to spawn tasks for suspended crons. Belt-and-suspenders: the
+        # CronJob shouldn't fire when suspended, but if someone hits this
+        # endpoint manually we want the suspend flag to be authoritative.
+        if cfg.get('suspended'):
+            self.send_json({'error': 'cron is suspended'}, 409)
+            return
+        prompt = CronManager.render_prompt(cfg)
+        task = ClaudeTaskManager.create_task(
+            prompt,
+            workdir=cfg.get('workdir') or '/home/dev',
+            response_url=cfg.get('response_url'),
+            response_secret=cfg.get('response_secret'),
+            source=f"cron:{cfg['id']}",
+        )
+        self.send_json({
+            'task_id': task['task_id'],
+            'cron_id': cfg['id'],
+            'status': task['status'],
+        }, 202)
 
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
@@ -1287,6 +2505,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_claude_create_task()
             elif path == "/api/claude/auth/token/regenerate":
                 self.handle_claude_regenerate_token()
+            # Webhook CRUD (dashboard)
+            elif path == "/api/webhooks":
+                self.handle_webhook_create()
+            # Cron CRUD (dashboard)
+            elif path == "/api/crons":
+                self.handle_cron_create()
             else:
                 # /api/claude/tasks/{id}/message
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/message$', path)
@@ -1299,6 +2523,33 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_prepare_terminal()
+                    return
+                # /api/webhooks/{id}/test — fire as if from outside (dashboard)
+                m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)/test$', path)
+                if m:
+                    self._webhook_id = m.group(1)
+                    self.handle_webhook_test()
+                    return
+                # /api/webhooks/{id} — inbound receiver, HMAC-authed, NOT bearer.
+                # Must come AFTER /test so /test is matched first.
+                m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', path)
+                if m:
+                    self._webhook_id = m.group(1)
+                    self.handle_webhook_receive()
+                    return
+                # Cron suspend/resume/run-now/rotate-token
+                m = re.match(r'^/api/crons/([a-z0-9-]+)/(suspend|resume|run|rotate-token)$', path)
+                if m:
+                    self._cron_id = m.group(1)
+                    self._cron_action = m.group(2)
+                    self.handle_cron_action()
+                    return
+                # /api/triggers/cron-fire/{id} — receiver called by the
+                # CronJob's curl pod. Bearer auth (fire_token), NOT OAuth.
+                m = re.match(r'^/api/triggers/cron-fire/([a-z0-9-]+)$', path)
+                if m:
+                    self._cron_id = m.group(1)
+                    self.handle_cron_fire()
                     return
                 self.send_response(404)
                 self.end_headers()

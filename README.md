@@ -49,6 +49,9 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 - **Claude Tasks Dashboard** - Monitor running tasks, view status, one-click attach to interactive sessions
 - **Remote Task Skill** - `/remote-task` Claude Code skill to manage tasks from your local terminal
 - **Interactive Sessions** - Attach to any running Claude session to approve permissions, provide input, or observe progress
+- **Completion hooks** - Tasks can `POST` their final state to a `response_url` with optional HMAC signing
+- **Webhooks** - Inbound HTTP triggers that spawn Claude tasks; native verifiers for GitHub, Slack, Stripe, plus a generic mode
+- **Crons** - Scheduled triggers backed by real Kubernetes `CronJob` objects, with suspend/resume/run-now and token rotation from the dashboard
 
 ### Security & Authentication
 - **GitHub OAuth2** - Secure authentication with configurable user authorization
@@ -139,6 +142,233 @@ When working in this repo with Claude Code, use the `/remote-task` skill:
 /remote-task attach <TASK_ID>                              # Attach info
 /remote-task kill <TASK_ID>                                # Kill task
 ```
+
+## Triggers: Webhooks + Crons + Completion Hooks
+
+Once a workspace is deployed, you can drive it from outside via three composable
+primitives — all backed by the same `ClaudeTaskManager` and visible on the
+dashboard.
+
+### 1. Completion hooks (foundational)
+
+Every `POST /api/claude/tasks` accepts two optional fields:
+
+| Field | Purpose |
+|---|---|
+| `response_url` | Where to `POST` the task's final state when it reaches `completed` / `error` / `killed`. Must be `http(s)`. |
+| `response_secret` | Optional HMAC-SHA256 key. If set, requests carry `X-Kube-Coder-Signature-256: sha256=<hex>` over the body. |
+
+```bash
+curl -X POST https://$WORKSPACE/api/claude/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Run the test suite and report failures",
+    "response_url": "https://hooks.slack.com/services/...",
+    "response_secret": "shared-secret"
+  }'
+```
+
+When the task ends, the workspace POSTs `{task_id, status, prompt, workdir,
+source, output (tail 200 lines), ...}` to your URL. Delivery is at-most-once
+(`hook_fired_at` is set under a meta lock before firing); on network failure
+the error is logged and not retried — layer your own queue if you need
+at-least-once.
+
+### 2. Webhooks (inbound triggers)
+
+A webhook is a config that turns an inbound `POST` into a Claude task. Each
+webhook gets a stable URL: `https://$WORKSPACE/api/webhooks/<id>`. Configure
+them from the **Webhooks** panel on the dashboard or via the API:
+
+```bash
+curl -X POST https://$WORKSPACE/oauth/api/webhooks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "github-pr-review",
+    "provider": "github",
+    "prompt_template": "Review the PR at {{ payload.pull_request.html_url }}.",
+    "workdir": "/home/dev/myproject",
+    "interpolate_mode": "interpolate"
+  }'
+```
+
+The server auto-mints an `hmac_secret` and **returns it exactly once** in
+the response (or via the dashboard's "Save this secret now" banner). Paste it
+into GitHub's webhook config alongside the URL.
+
+#### Providers
+
+| `provider` | Signature header | Format | Notes |
+|---|---|---|---|
+| `github` (default) | `X-Hub-Signature-256` | `sha256=<hex>` of body | Works out of the box with GitHub repo/org webhooks. |
+| `slack` | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | `v0=<hex>` of `v0:<ts>:<body>` | Timestamp must be within ±5 min of pod clock. |
+| `stripe` | `Stripe-Signature` | `t=<unix>,v1=<hex>` of `<ts>.<body>` | Accepts multiple `v1=` entries (for Stripe's key-rotation window). Timestamp within ±5 min. |
+| `generic` | `X-Hub-Signature-256` (or `signature_header` you set) | `sha256=<hex>` or bare hex of body | Anything that signs the body with HMAC-SHA256. |
+
+All verifiers use `hmac.compare_digest` (constant-time) and reject when the
+secret isn't set the way the provider expects.
+
+#### Prompt templates: `attach` vs `interpolate`
+
+Templates use `{{ payload.path.to.field }}` syntax. The mode controls what
+happens to the payload:
+
+- **`attach` (default, safe)** — the template is the literal instruction; the
+  full payload is appended as a fenced ```` ```json ```` block. Sender-controlled
+  data can't drive Claude because it appears as data, not instructions.
+- **`interpolate`** — `{{ payload.x.y }}` is substituted with the matching JSON
+  value. Pick this when you trust the sender (GitHub for your own repos, your
+  own internal service, etc.). Hostile values land verbatim in the prompt.
+
+#### Replay protection
+
+The receiver maintains an in-memory `(webhook_id, sha256(body))` cache with a
+5-minute TTL. A second request with the same body inside the window returns
+**409 Conflict**. Combined with the per-provider timestamp checks (Slack /
+Stripe), this closes both offline-replay and intra-window replay.
+
+#### Testing without an external sender
+
+Each webhook has a **Test fire** button on the dashboard (and `POST
+/oauth/api/webhooks/<id>/test` with `{"payload": {...}}` over OAuth/bearer
+auth). The test path bypasses HMAC verification — same effect as if a real
+signed request had arrived.
+
+### 3. Crons (scheduled triggers)
+
+A cron is a config plus a real Kubernetes `CronJob` named
+`cron-<user>-<id>`. The CronJob's container is just `curlimages/curl`
+POSTing to the workspace's internal service URL — the IDE pod is still the
+executor. Schedules use standard cron syntax (`0 9 * * *`) or `@daily` /
+`@hourly` / etc.
+
+```bash
+curl -X POST https://$WORKSPACE/oauth/api/crons \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "daily-status",
+    "schedule": "0 9 * * 1-5",
+    "timezone": "America/Los_Angeles",
+    "prompt_template": "Summarize yesterdays git commits across all repos in /home/dev",
+    "workdir": "/home/dev"
+  }'
+```
+
+The cron's `payload` field plays the same role as a webhook's inbound payload
+— you can pre-populate static data the template uses:
+
+```json
+{
+  "id": "weekly-deps",
+  "schedule": "0 9 * * 1",
+  "prompt_template": "Audit dependencies in {{ payload.repos }} for CVEs",
+  "payload": {"repos": "/home/dev/api,/home/dev/web"}
+}
+```
+
+#### Managing a cron
+
+| Action | Endpoint | Dashboard |
+|---|---|---|
+| Pause | `POST /api/crons/<id>/suspend` | **Suspend** button |
+| Resume | `POST /api/crons/<id>/resume` | **Resume** button |
+| Fire manually | `POST /api/crons/<id>/run` | **Run now** button |
+| Rotate the fire token | `POST /api/crons/<id>/rotate-token` | **Rotate token** button |
+| Delete (cleans up CronJob + Secret) | `DELETE /api/crons/<id>` | **Delete** button |
+
+Suspend flips `spec.suspend: true` on the CronJob — `kubectl get cronjobs -n
+coder` shows it. Run now does `kubectl create job --from=cronjob/<name>`.
+
+#### Token rotation
+
+Each cron has a `fire_token` stored in a Kubernetes `Secret` and mounted as an
+env var into the curl pod. Rotation mints a fresh token, persists it, and
+re-applies the Secret in place — in-flight pods using the old token fail
+immediately (intended), and the next scheduled fire picks up the new token.
+The new token is returned **exactly once** in the response.
+
+### Triggers + tasks at a glance
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  External sender (GitHub, Slack, Stripe, custom curl, k8s     │
+│  CronJob pod, …)                                              │
+└──────────────────────────────────┬─────────────────────────────┘
+                                   │  HTTPS, body signed
+                                   ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Ingress (TLS + nginx)                                         │
+│    /api/webhooks/<id>      → no OAuth (HMAC verified in pod)   │
+│    /api/triggers/cron-fire → in-cluster only (bearer token)    │
+│    /oauth/api/{webhooks,crons,claude/tasks}  → OAuth gate      │
+└──────────────────────────────────┬─────────────────────────────┘
+                                   ▼
+┌────────────────────────────────────────────────────────────────┐
+│  server.py (workspace pod, port 6080)                          │
+│    WebhookManager       — config CRUD, HMAC verify, replay     │
+│    CronManager          — CronJob+Secret apply, suspend, run   │
+│    ClaudeTaskManager    — spawns tmux session, fires response  │
+└──────────────────────────────────┬─────────────────────────────┘
+                                   ▼
+┌────────────────────────────────────────────────────────────────┐
+│  tmux session  →  claude (interactive)  →  writes/commits      │
+└──────────────────────────────────┬─────────────────────────────┘
+                                   ▼     (if response_url set)
+┌────────────────────────────────────────────────────────────────┐
+│  HMAC-signed POST  to your callback URL with task output       │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### End-to-end example: GitHub PR → review → comment
+
+1. Create a webhook on the workspace, provider `github`, mode `interpolate`:
+   ```bash
+   curl -X POST https://imran.dev.scalebase.io/oauth/api/webhooks \
+     -H "Content-Type: application/json" \
+     -d '{
+       "id": "pr-review",
+       "provider": "github",
+       "prompt_template": "Review the PR at {{ payload.pull_request.html_url }} and post a comment with your findings using `gh pr comment`.",
+       "interpolate_mode": "interpolate",
+       "workdir": "/home/dev/myproject"
+     }'
+   ```
+2. Copy the returned `hmac_secret_once` value.
+3. In GitHub → repo Settings → Webhooks → Add webhook:
+   - **Payload URL**: `https://imran.dev.scalebase.io/api/webhooks/pr-review`
+   - **Content type**: `application/json`
+   - **Secret**: paste the secret
+   - **Events**: "Pull requests"
+4. Open a PR. The workspace receives the webhook, verifies the HMAC, spawns
+   a Claude task with the rendered prompt, and (because of `gh pr comment`)
+   posts the review back to GitHub. Watch progress on the **Claude Tasks**
+   panel of the dashboard — the task card carries a `from webhook:pr-review`
+   badge.
+
+### Configuration files (advanced)
+
+Triggers persist as JSON on the workspace PVC at `0600`:
+- `/home/dev/.claude-triggers/webhooks/<id>.json`
+- `/home/dev/.claude-triggers/crons/<id>.json`
+
+You can edit them directly if you prefer — the dashboard re-reads on every
+GET. For crons, hand-editing the schedule won't re-apply the K8s CronJob; use
+the API or delete+recreate.
+
+### Security notes (brief)
+
+- All secrets (`hmac_secret`, `response_secret`, `fire_token`) are stored
+  `0600` on the per-user PVC and never appear in list-endpoint responses
+  (only `*_set: true` flags do).
+- The cron fire token is also stored in a Kubernetes `Secret` and mounted
+  as an env var (never in `args` or the URL — `ps` and access logs stay clean).
+- The cron `schedule` / `timezone` fields are strictly regex-validated before
+  being interpolated into the kubectl-apply manifest.
+- `response_url` is rejected unless the scheme is `http` or `https` — closes
+  off `file://` / `gopher://` as SSRF / local-file primitives via `urlopen`.
+
+Full reference: [docs/claude-task-api.md](./docs/claude-task-api.md).
 
 ## Pre-installed Stack
 
