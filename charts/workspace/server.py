@@ -490,6 +490,65 @@ class ClaudeTaskManager:
         return meta
 
     @staticmethod
+    def create_terminal_task(workdir=None):
+        """Create a task that runs an interactive bash session under tmux.
+
+        Mirrors create_task() but skips launching claude and pasting a prompt —
+        useful so the dashboard's Terminal button leaves a row in the task
+        list that can be re-attached later, even if the original browser tab
+        is closed.
+        """
+        ClaudeTaskManager.ensure_tasks_dir()
+        task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
+        session_id = str(uuid.uuid4())
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        os.makedirs(task_dir, mode=0o700)
+
+        if workdir is None:
+            workdir = '/home/dev'
+
+        session_name = f'claude-{task_id}'
+
+        meta = {
+            'task_id': task_id,
+            'session_id': session_id,
+            'kind': 'terminal',
+            'prompt': f'Terminal · {workdir}',
+            'workdir': workdir,
+            'status': 'running',
+            'created_at': time.time(),
+            'tmux_session': session_name,
+        }
+
+        meta_path = os.path.join(task_dir, 'task.json')
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+
+        shell_cmd = f'cd {_shell_quote(workdir)} && exec bash -l'
+        tmux_cmd = [
+            'tmux', 'new-session', '-d',
+            '-s', session_name,
+            '-x', '220', '-y', '50',
+            'bash', '-lc', shell_cmd,
+        ]
+        result = subprocess.run(tmux_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            meta['status'] = 'error'
+            meta['error'] = result.stderr.strip()
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f, indent=2)
+            return meta
+
+        output_log = os.path.join(task_dir, 'output.log')
+        subprocess.run(
+            ['tmux', 'pipe-pane', '-o', '-t', session_name,
+             f'cat >> {_shell_quote(output_log)}'],
+            capture_output=True, text=True,
+        )
+
+        return meta
+
+    @staticmethod
     def list_tasks():
         ClaudeTaskManager.ensure_tasks_dir()
         tasks = []
@@ -513,6 +572,7 @@ class ClaudeTaskManager:
                     'status': meta.get('status', 'unknown'),
                     'created_at': meta.get('created_at'),
                     'source': meta.get('source'),
+                    'kind': meta.get('kind', 'claude'),
                 })
             except (json.JSONDecodeError, OSError):
                 continue
@@ -2048,6 +2108,30 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         )
         self.send_json(task, 201)
 
+    def handle_claude_create_terminal_task(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        # Body is optional — accept {} or no body at all.
+        workdir = None
+        try:
+            data = self.read_json_body()
+            if isinstance(data, dict):
+                workdir = data.get('workdir') or None
+        except (json.JSONDecodeError, ValueError):
+            pass
+        task = ClaudeTaskManager.create_terminal_task(workdir=workdir)
+        # Pre-arm the ttyd entry script so the next /oauth/terminal/ load
+        # attaches to this session instead of dropping to a fresh bash.
+        if task.get('status') != 'error':
+            session_name = task.get('tmux_session', '')
+            try:
+                with open('/tmp/.claude-terminal-pending', 'w') as f:
+                    f.write(session_name)
+            except OSError:
+                pass
+        self.send_json(task, 201)
+
     def handle_claude_followup(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -2503,6 +2587,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Claude Task API endpoints
             elif path == "/api/claude/tasks":
                 self.handle_claude_create_task()
+            elif path == "/api/claude/tasks/terminal":
+                self.handle_claude_create_terminal_task()
             elif path == "/api/claude/auth/token/regenerate":
                 self.handle_claude_regenerate_token()
             # Webhook CRUD (dashboard)
@@ -2905,6 +2991,7 @@ if __name__ == "__main__":
     print("  POST /api/test-firefox   - Test Chrome (legacy endpoint)")
     print("  --- Claude Task API ---")
     print("  POST /api/claude/tasks              - Create new task")
+    print("  POST /api/claude/tasks/terminal     - Create plain-bash terminal task")
     print("  GET  /api/claude/tasks              - List all tasks")
     print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
     print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
