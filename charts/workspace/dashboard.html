@@ -953,6 +953,49 @@
             font-size: 0.9rem;
         }
 
+        /* Source badge on Task cards: shown when a task was created by a
+           webhook or cron trigger (e.g. "from webhook:gh-pr"). Subtle so it
+           doesn't fight the status badge for attention. */
+        .task-source {
+            display: inline-block;
+            padding: 2px 8px;
+            font-size: 0.7rem;
+            font-family: monospace;
+            color: #6b7280;
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+        }
+
+        /* Webhook "receive URL" + secret reveal styling. Reuses .task-card. */
+        .webhook-meta {
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #555;
+            background: #f8f9fa;
+            padding: 6px 10px;
+            border-radius: 6px;
+            margin: 6px 0;
+            word-break: break-all;
+        }
+        .webhook-meta strong { color: #333; }
+        .webhook-secret-once {
+            background: #fff7e6;
+            border: 1px solid #ffd591;
+            color: #874d00;
+            padding: 8px 10px;
+            border-radius: 6px;
+            margin: 6px 0;
+            font-size: 0.85rem;
+        }
+        .webhook-secret-once code {
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            word-break: break-all;
+        }
+
         .new-task-btn {
             width: 28px;
             height: 28px;
@@ -1472,6 +1515,84 @@
             </div>
         </div>
 
+        <!-- Webhooks section. CRUD UI for inbound triggers that spawn a
+             Claude task when an external service POSTs to /api/webhooks/<id>.
+             Reuses .claude-tasks-section / .task-card styling for visual
+             continuity with the Tasks panel above. -->
+        <div class="claude-tasks-section" id="webhooks-section">
+            <div class="claude-tasks-header">
+                <h3>Webhooks</h3>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="webhooks-count" class="tasks-count" style="display: none;">0</span>
+                    <button class="new-task-btn" onclick="toggleNewWebhookForm()" title="New webhook">+</button>
+                </div>
+            </div>
+            <div id="new-webhook-form" class="new-task-form">
+                <input type="text" id="new-webhook-id" class="new-task-workdir-custom"
+                       placeholder="webhook id (e.g. github-pr-review)"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: block; margin-bottom: 8px;">
+                <textarea id="new-webhook-template" class="new-task-input" rows="3"
+                          placeholder="Prompt template. In 'attach' mode (default) the JSON payload is appended as a code fence — safe against prompt injection. In 'interpolate' mode, {{ payload.x.y }} gets substituted."></textarea>
+                <input type="text" id="new-webhook-workdir" class="new-task-workdir-custom"
+                       placeholder="workdir (default /home/dev)"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: block; margin: 8px 0;">
+                <div style="display: flex; gap: 8px; margin-bottom: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+                    <label><input type="radio" name="new-webhook-mode" value="attach" checked> attach (safe)</label>
+                    <label><input type="radio" name="new-webhook-mode" value="interpolate"> interpolate (trusted senders)</label>
+                </div>
+                <div class="new-task-actions">
+                    <button class="new-task-submit" onclick="submitNewWebhook()">Create</button>
+                    <button class="new-task-cancel" onclick="toggleNewWebhookForm()">Cancel</button>
+                </div>
+            </div>
+            <div id="webhook-list" class="task-list">
+                <div class="tasks-empty">Loading webhooks…</div>
+            </div>
+        </div>
+
+        <!-- Crons section. Each cron is backed by a real Kubernetes CronJob
+             (k8s manages the schedule) — the IDE pod just stores the recipe
+             and serves the /api/triggers/cron-fire/<id> endpoint that the
+             CronJob's curl pod hits on each tick. -->
+        <div class="claude-tasks-section" id="crons-section">
+            <div class="claude-tasks-header">
+                <h3>Crons</h3>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="crons-count" class="tasks-count" style="display: none;">0</span>
+                    <button class="new-task-btn" onclick="toggleNewCronForm()" title="New cron">+</button>
+                </div>
+            </div>
+            <div id="new-cron-form" class="new-task-form">
+                <input type="text" id="new-cron-id" class="new-task-workdir-custom"
+                       placeholder="cron id (lowercase, e.g. daily-report)"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: block; margin-bottom: 8px;">
+                <input type="text" id="new-cron-schedule" class="new-task-workdir-custom"
+                       placeholder='cron schedule, e.g. "0 9 * * *" or "@daily"'
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: block; margin-bottom: 8px;">
+                <input type="text" id="new-cron-timezone" class="new-task-workdir-custom"
+                       placeholder="timezone (default UTC)"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: block; margin-bottom: 8px;">
+                <textarea id="new-cron-template" class="new-task-input" rows="3"
+                          placeholder="Prompt template. The cron's static 'payload' field plays the same role as the inbound payload for webhooks."></textarea>
+                <input type="text" id="new-cron-workdir" class="new-task-workdir-custom"
+                       placeholder="workdir (default /home/dev)"
+                       autocomplete="off" autocapitalize="off" spellcheck="false"
+                       style="display: block; margin: 8px 0;">
+                <div class="new-task-actions">
+                    <button class="new-task-submit" onclick="submitNewCron()">Create</button>
+                    <button class="new-task-cancel" onclick="toggleNewCronForm()">Cancel</button>
+                </div>
+            </div>
+            <div id="cron-list" class="task-list">
+                <div class="tasks-empty">Loading crons…</div>
+            </div>
+        </div>
+
         <div id="task-toast" class="task-toast"></div>
 
         <div class="metrics-section">
@@ -1648,6 +1769,15 @@
 
             fetchClaudeTasks();
             setInterval(fetchClaudeTasks, 10000);
+
+            // Webhooks: configs only change on user action, so no polling.
+            // Refetch happens after create/delete/test in the handlers themselves.
+            fetchWebhooks();
+
+            // Crons: refresh on a 30s cadence so the K8s lastScheduleTime
+            // surfaced from kubectl-get updates without a page reload.
+            fetchCrons();
+            setInterval(fetchCrons, 30000);
         }
 
         function initializeCharts() {
@@ -2221,6 +2351,12 @@
             const statusClass = task.status || 'unknown';
             const timeAgo = task.created_at ? formatTimeAgo(task.created_at) : '';
             const prompt = escapeHtml(task.prompt || '(no prompt)');
+            // Tasks created from a webhook or cron carry a source string like
+            // 'webhook:gh-pr' or 'cron:daily-status'. Surface it as a small
+            // badge so the user knows where the task came from.
+            const sourceBadge = task.source
+                ? `<span class="task-source">from ${escapeHtml(task.source)}</span>`
+                : '';
 
             let actions = '';
             if (task.status === 'running') {
@@ -2239,7 +2375,10 @@
             return `
                 <div class="task-card" id="task-card-${task.task_id}" data-status="${statusClass}">
                     <div class="task-card-header">
-                        <span class="task-status ${statusClass}">${statusLabelHtml(task.status)}</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="task-status ${statusClass}">${statusLabelHtml(task.status)}</span>
+                            ${sourceBadge}
+                        </div>
                         <div class="task-card-header-right">
                             <button class="task-share-btn"
                                     title="Copy link to this task"
@@ -2634,6 +2773,385 @@
                 toggleBrowserControls();
             }
         });
+
+        // ---- Webhooks ----
+        // The webhook list isn't polled — configs only change on user action.
+        // After mutating operations (create / delete / test) we call fetchWebhooks()
+        // directly to refresh the cards.
+
+        function toggleNewWebhookForm() {
+            const form = document.getElementById('new-webhook-form');
+            form.classList.toggle('visible');
+            if (form.classList.contains('visible')) {
+                document.getElementById('new-webhook-id').focus();
+            } else {
+                document.getElementById('new-webhook-id').value = '';
+                document.getElementById('new-webhook-template').value = '';
+                document.getElementById('new-webhook-workdir').value = '';
+            }
+        }
+
+        async function fetchWebhooks() {
+            try {
+                const resp = await fetch('/oauth/api/webhooks', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000),
+                });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                renderWebhooks(data.webhooks || []);
+            } catch (e) {
+                console.error('Failed to fetch webhooks:', e);
+            }
+        }
+
+        function renderWebhooks(webhooks) {
+            const container = document.getElementById('webhook-list');
+            const countBadge = document.getElementById('webhooks-count');
+            if (webhooks.length === 0) {
+                container.innerHTML = '<div class="tasks-empty">No webhooks yet. Click + to create one.</div>';
+                countBadge.style.display = 'none';
+                return;
+            }
+            countBadge.textContent = String(webhooks.length);
+            countBadge.style.display = 'inline';
+
+            container.innerHTML = webhooks.map(wh => buildWebhookCardHTML(wh)).join('');
+        }
+
+        function buildWebhookCardHTML(wh) {
+            // host known from window.location, so we can render the receive URL
+            // even when the GET /api/webhooks/<id> hasn't been called (which is
+            // what returns it server-side). Easier than another roundtrip.
+            const receiveUrl = `${window.location.origin}/api/webhooks/${wh.id}`;
+            const hasSecret = wh.hmac_secret_set
+                ? '<span style="color:#10b981;">✓ HMAC secret configured</span>'
+                : '<span style="color:#ef4444;">⚠ no HMAC secret — open webhook</span>';
+            const created = wh.created_at ? formatTimeAgo(wh.created_at) : '';
+            return `
+                <div class="task-card" id="webhook-card-${escapeHtml(wh.id)}">
+                    <div class="task-card-header">
+                        <span class="task-status completed">webhook</span>
+                        <span class="task-time">${created}</span>
+                    </div>
+                    <div class="task-prompt"><strong>${escapeHtml(wh.id)}</strong>: ${escapeHtml((wh.prompt_template || '').slice(0, 200))}</div>
+                    <div class="webhook-meta">
+                        <strong>POST</strong> ${escapeHtml(receiveUrl)}<br>
+                        mode: ${escapeHtml(wh.interpolate_mode || 'attach')} ·
+                        ${hasSecret}
+                    </div>
+                    <div class="task-actions">
+                        <button class="task-btn output" onclick="copyWebhookUrl('${escapeHtml(wh.id)}')">Copy URL</button>
+                        <button class="task-btn output" onclick="testWebhook('${escapeHtml(wh.id)}')">Test fire</button>
+                        <button class="task-btn kill" onclick="deleteWebhook('${escapeHtml(wh.id)}')">Delete</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitNewWebhook() {
+            const id = document.getElementById('new-webhook-id').value.trim();
+            const template = document.getElementById('new-webhook-template').value.trim();
+            const workdir = document.getElementById('new-webhook-workdir').value.trim();
+            const modeEl = document.querySelector('input[name="new-webhook-mode"]:checked');
+            const mode = modeEl ? modeEl.value : 'attach';
+            if (!id || !template) {
+                showTaskToast('id and prompt template are required');
+                return;
+            }
+            try {
+                const resp = await fetch('/oauth/api/webhooks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        id, prompt_template: template,
+                        workdir: workdir || undefined,
+                        interpolate_mode: mode,
+                    }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                // Surface the auto-minted hmac_secret ONCE — after this it can't be
+                // retrieved from the server. Block-modal-style reveal.
+                if (data.hmac_secret_once) {
+                    showSecretOnce(data.hmac_secret_once, data.receive_url);
+                } else {
+                    showTaskToast('Webhook ' + id + ' created');
+                }
+                toggleNewWebhookForm();
+                fetchWebhooks();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        async function deleteWebhook(id) {
+            if (!confirm(`Delete webhook "${id}"? This cannot be undone.`)) return;
+            try {
+                const resp = await fetch(`/oauth/api/webhooks/${encodeURIComponent(id)}`, {
+                    method: 'DELETE',
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                showTaskToast('Webhook deleted');
+                fetchWebhooks();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        async function testWebhook(id) {
+            const sample = prompt('Test payload JSON (leave empty for {}):', '{}');
+            if (sample === null) return;
+            let payload;
+            try {
+                payload = sample ? JSON.parse(sample) : {};
+            } catch (e) {
+                showTaskToast('Invalid JSON payload');
+                return;
+            }
+            try {
+                const resp = await fetch(`/oauth/api/webhooks/${encodeURIComponent(id)}/test`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({payload}),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                showTaskToast('Fired — task ' + (data.task_id || '?'));
+                // The new task will appear on the next Tasks poll.
+                fetchClaudeTasks();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        function copyWebhookUrl(id) {
+            const url = `${window.location.origin}/api/webhooks/${id}`;
+            navigator.clipboard.writeText(url).then(
+                () => showTaskToast('URL copied'),
+                () => showTaskToast('Copy failed — URL: ' + url),
+            );
+        }
+
+        function showSecretOnce(secret, receiveUrl) {
+            // The server returns the auto-minted hmac_secret exactly once on
+            // create. Show it in a persistent banner above the list so the user
+            // can copy it into the upstream service before navigating away.
+            const container = document.getElementById('webhook-list');
+            const div = document.createElement('div');
+            div.className = 'webhook-secret-once';
+            div.innerHTML = `
+                <strong>Save this secret now — it won't be shown again.</strong><br>
+                HMAC secret: <code>${escapeHtml(secret)}</code><br>
+                Receive URL: <code>${escapeHtml(receiveUrl || '')}</code>
+                <button class="task-btn output" style="margin-top: 6px;"
+                        onclick="this.parentElement.remove()">Dismiss</button>
+            `;
+            container.parentElement.insertBefore(div, container);
+        }
+
+        // ---- Crons ----
+        function toggleNewCronForm() {
+            const form = document.getElementById('new-cron-form');
+            form.classList.toggle('visible');
+            if (form.classList.contains('visible')) {
+                document.getElementById('new-cron-id').focus();
+            } else {
+                ['new-cron-id', 'new-cron-schedule', 'new-cron-timezone',
+                 'new-cron-template', 'new-cron-workdir'].forEach(
+                    id => { document.getElementById(id).value = ''; });
+            }
+        }
+
+        async function fetchCrons() {
+            try {
+                const resp = await fetch('/oauth/api/crons', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(8000),
+                });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                renderCrons(data.crons || []);
+            } catch (e) {
+                console.error('Failed to fetch crons:', e);
+            }
+        }
+
+        function renderCrons(crons) {
+            const container = document.getElementById('cron-list');
+            const countBadge = document.getElementById('crons-count');
+            if (crons.length === 0) {
+                container.innerHTML = '<div class="tasks-empty">No crons yet. Click + to create one.</div>';
+                countBadge.style.display = 'none';
+                return;
+            }
+            countBadge.textContent = String(crons.length);
+            countBadge.style.display = 'inline';
+            container.innerHTML = crons.map(buildCronCardHTML).join('');
+        }
+
+        function buildCronCardHTML(cron) {
+            const suspended = cron.suspended || cron.k8s_suspended;
+            const statusClass = suspended ? 'killed' : 'completed';
+            const statusLabel = suspended ? 'suspended' : 'active';
+            const lastFire = cron.k8s_last_schedule_time
+                ? `last fired: ${escapeHtml(cron.k8s_last_schedule_time)}`
+                : 'not fired yet';
+            const toggleAction = suspended ? 'resume' : 'suspend';
+            const toggleLabel = suspended ? 'Resume' : 'Suspend';
+            return `
+                <div class="task-card" id="cron-card-${escapeHtml(cron.id)}">
+                    <div class="task-card-header">
+                        <span class="task-status ${statusClass}">${statusLabel}</span>
+                        <span class="task-time">${escapeHtml(cron.schedule || '')} (${escapeHtml(cron.timezone || 'UTC')})</span>
+                    </div>
+                    <div class="task-prompt"><strong>${escapeHtml(cron.id)}</strong>: ${escapeHtml((cron.prompt_template || '').slice(0, 200))}</div>
+                    <div class="webhook-meta">${lastFire}</div>
+                    <div class="task-actions">
+                        <button class="task-btn output" onclick="runCronNow('${escapeHtml(cron.id)}')">Run now</button>
+                        <button class="task-btn output" onclick="toggleCronSuspend('${escapeHtml(cron.id)}', '${toggleAction}')">${toggleLabel}</button>
+                        <button class="task-btn output" onclick="rotateCronToken('${escapeHtml(cron.id)}')">Rotate token</button>
+                        <button class="task-btn kill" onclick="deleteCron('${escapeHtml(cron.id)}')">Delete</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitNewCron() {
+            const id = document.getElementById('new-cron-id').value.trim();
+            const schedule = document.getElementById('new-cron-schedule').value.trim();
+            const timezone = document.getElementById('new-cron-timezone').value.trim();
+            const template = document.getElementById('new-cron-template').value.trim();
+            const workdir = document.getElementById('new-cron-workdir').value.trim();
+            if (!id || !schedule || !template) {
+                showTaskToast('id, schedule, and prompt template are required');
+                return;
+            }
+            try {
+                const resp = await fetch('/oauth/api/crons', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        id, schedule, prompt_template: template,
+                        timezone: timezone || undefined,
+                        workdir: workdir || undefined,
+                    }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok && resp.status !== 202) {
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                if (data.warning) {
+                    showTaskToast('Created with warning: ' + data.warning);
+                } else {
+                    showTaskToast('Cron ' + id + ' created');
+                }
+                toggleNewCronForm();
+                fetchCrons();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        async function deleteCron(id) {
+            if (!confirm(`Delete cron "${id}"? This removes the Kubernetes CronJob too.`)) return;
+            try {
+                const resp = await fetch(`/oauth/api/crons/${encodeURIComponent(id)}`, {
+                    method: 'DELETE',
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                showTaskToast('Cron deleted');
+                fetchCrons();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        async function toggleCronSuspend(id, action) {
+            try {
+                const resp = await fetch(`/oauth/api/crons/${encodeURIComponent(id)}/${action}`, {
+                    method: 'POST',
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                showTaskToast(action === 'suspend' ? 'Suspended' : 'Resumed');
+                fetchCrons();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        async function rotateCronToken(id) {
+            if (!confirm(`Rotate fire_token for cron "${id}"? The old token stops working immediately.`)) return;
+            try {
+                const resp = await fetch(`/oauth/api/crons/${encodeURIComponent(id)}/rotate-token`, {
+                    method: 'POST',
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                if (data.fire_token_once) {
+                    showCronTokenOnce(id, data.fire_token_once);
+                }
+                fetchCrons();
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
+
+        function showCronTokenOnce(cronId, token) {
+            const container = document.getElementById('cron-list');
+            const div = document.createElement('div');
+            div.className = 'webhook-secret-once';
+            div.innerHTML = `
+                <strong>New fire_token for ${escapeHtml(cronId)} — won't be shown again.</strong><br>
+                Token: <code>${escapeHtml(token)}</code><br>
+                The Kubernetes Secret was updated automatically; the next scheduled
+                fire will use this token.
+                <button class="task-btn output" style="margin-top: 6px;"
+                        onclick="this.parentElement.remove()">Dismiss</button>
+            `;
+            container.parentElement.insertBefore(div, container);
+        }
+
+        async function runCronNow(id) {
+            try {
+                const resp = await fetch(`/oauth/api/crons/${encodeURIComponent(id)}/run`, {
+                    method: 'POST',
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    showTaskToast('Failed: ' + (data.error || resp.statusText));
+                    return;
+                }
+                showTaskToast('Triggered — job ' + (data.job || '?'));
+                // Cron-fire pod will hit /api/triggers/cron-fire/<id>, which
+                // creates a task; refresh the Tasks list to show it.
+                setTimeout(fetchClaudeTasks, 4000);
+            } catch (e) {
+                showTaskToast('Error: ' + e.message);
+            }
+        }
     </script>
 </body>
 </html>
