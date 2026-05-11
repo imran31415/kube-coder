@@ -18,6 +18,26 @@ import urllib.parse
 import urllib.request
 import fcntl
 
+# Persistent memory subsystem — shared with mcp_memory.py via the colocated
+# `memory` package. Importable because the workspace-entrypoint copies the
+# package next to server.py at /tmp/browser/.
+try:
+    from memory.manager import (
+        MemoryManager,
+        MemoryError as MemError,
+        NotFound as MemNotFound,
+        Conflict as MemConflict,
+        ValidationError as MemValidationError,
+    )
+    from memory.sync import ClaudeMemorySyncer
+    _MEMORY_AVAILABLE = True
+except Exception as _mem_import_err:  # broken install shouldn't crash the server
+    MemoryManager = None  # type: ignore
+    ClaudeMemorySyncer = None  # type: ignore
+    MemError = MemNotFound = MemConflict = MemValidationError = Exception  # type: ignore
+    _MEMORY_AVAILABLE = False
+    print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
+
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
@@ -391,7 +411,8 @@ class ClaudeTaskManager:
         return token
 
     @staticmethod
-    def create_task(prompt, workdir=None, response_url=None, response_secret=None, source=None):
+    def create_task(prompt, workdir=None, response_url=None, response_secret=None,
+                    source=None, disable_memory_injection=False):
         ClaudeTaskManager.ensure_tasks_dir()
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
         session_id = str(uuid.uuid4())
@@ -403,6 +424,22 @@ class ClaudeTaskManager:
 
         session_name = f'claude-{task_id}'
 
+        # ── Memory auto-injection ─────────────────────────────────────────
+        # Compute a <workspace_memories> block from top-K relevant memories
+        # and prepend it to the actually-pasted prompt. The block is wrapped
+        # in tags so Claude can clearly distinguish prior context from the
+        # user's current message. See plan §Auto-injection.
+        injected_memories = []
+        injection_block = ''
+        if _MEMORY_AVAILABLE and not disable_memory_injection:
+            try:
+                injected_memories = MemoryManager.top_for_prompt(prompt or '')
+                injection_block = MemoryManager.format_injection_block(injected_memories)
+            except Exception as e:  # never fail task creation on memory errors
+                print(f'[memory] auto-inject failed: {e}', file=sys.stderr)
+                injected_memories = []
+                injection_block = ''
+
         meta = {
             'task_id': task_id,
             'session_id': session_id,
@@ -411,7 +448,13 @@ class ClaudeTaskManager:
             'status': 'running',
             'created_at': time.time(),
             'tmux_session': session_name,
+            'memory_injected': [
+                {'namespace': m.get('namespace'), 'key': m.get('key')}
+                for m in injected_memories
+            ],
         }
+        if disable_memory_injection:
+            meta['memory_injection_disabled'] = True
         # Optional completion-hook fields. When response_url is set, the server
         # POSTs the final task state (status + tail output) to that URL once the
         # task reaches a terminal state. response_secret, if present, is used to
@@ -429,17 +472,34 @@ class ClaudeTaskManager:
         with open(meta_path, 'w') as f:
             json.dump(meta, f, indent=2)
 
-        # Write prompt to a file so we can paste it cleanly via tmux
+        # Write prompt to a file so we can paste it cleanly via tmux. We
+        # prepend the memory-injection block here so the model sees prior
+        # context before the user's actual request.
         prompt_file = os.path.join(task_dir, 'prompt.txt')
         with open(prompt_file, 'w') as f:
+            f.write(injection_block)
             f.write(prompt)
 
-        # Launch interactive claude in a tmux session
+        # Log read-access for every auto-injected memory (best-effort).
+        if injected_memories and _MEMORY_AVAILABLE:
+            for m in injected_memories:
+                try:
+                    MemoryManager.log_ref(
+                        namespace=m['namespace'], key=m['key'],
+                        ref_kind='task', ref_id=task_id, access_kind='read',
+                    )
+                except Exception:
+                    pass
+
+        # Launch interactive claude in a tmux session. We export KC_TASK_ID
+        # into the session env so the MCP memory server (spawned by claude
+        # inside this session) can attribute writes to this task.
         shell_cmd = f'cd {_shell_quote(workdir)} && claude'
         tmux_cmd = [
             'tmux', 'new-session', '-d',
             '-s', session_name,
             '-x', '220', '-y', '50',
+            '-e', f'KC_TASK_ID={task_id}',
             'bash', '-lc', shell_cmd,
         ]
 
@@ -573,6 +633,9 @@ class ClaudeTaskManager:
                     'created_at': meta.get('created_at'),
                     'source': meta.get('source'),
                     'kind': meta.get('kind', 'claude'),
+                    'memory_injected': meta.get('memory_injected', []),
+                    'memory_injection_disabled':
+                        bool(meta.get('memory_injection_disabled')),
                 })
             except (json.JSONDecodeError, OSError):
                 continue
@@ -1822,6 +1885,33 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_cron_get()
             return
 
+        # --- Memory API (dashboard surface; backs the Memory tab) ---
+        # Parse the query string once so list/search can use it.
+        query_string = self.path.split('?', 1)[1] if '?' in self.path else ''
+        memory_query = urllib.parse.parse_qs(query_string)
+        if claude_path == '/api/memory':
+            self.handle_memory_list(memory_query)
+            return
+        if claude_path == '/api/memory/stats':
+            self.handle_memory_stats()
+            return
+        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/history$', claude_path)
+        if m:
+            self.handle_memory_history(m.group(1), m.group(2))
+            return
+        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/refs$', claude_path)
+        if m:
+            self.handle_memory_refs(m.group(1), m.group(2))
+            return
+        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/neighbors$', claude_path)
+        if m:
+            self.handle_memory_neighbors(m.group(1), m.group(2), memory_query)
+            return
+        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)$', claude_path)
+        if m:
+            self.handle_memory_get(m.group(1), m.group(2))
+            return
+
         super().do_GET()
     
     def check_auth(self):
@@ -1889,6 +1979,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._cron_id = m.group(1)
                 self.handle_cron_delete()
+                return
+            m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations/(\d+)$', path)
+            if m:
+                self.handle_memory_unlink(m.group(1), m.group(2), int(m.group(3)))
+                return
+            m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)$', path)
+            if m:
+                self.handle_memory_delete(m.group(1), m.group(2))
                 return
             self.send_json({'error': 'Not found'}, 404)
         except Exception as e:
@@ -2096,6 +2194,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         response_url = data.get('response_url') or None
         response_secret = data.get('response_secret') or None
         source = data.get('source') or None
+        disable_memory_injection = bool(data.get('disable_memory_injection'))
         if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
             self.send_json({'error': 'response_url must be http(s)'}, 400)
             return
@@ -2105,6 +2204,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_url=response_url,
             response_secret=response_secret,
             source=source,
+            disable_memory_injection=disable_memory_injection,
         )
         self.send_json(task, 201)
 
@@ -2459,6 +2559,283 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'status': task['status'],
         }, 202)
 
+    # --- Memory API handlers ---------------------------------------------
+    # The dashboard's Memory tab consumes these endpoints. They mirror the
+    # MCP tool surface (mcp_memory.py) so the dashboard and Claude share a
+    # single SQLite store with consistent semantics.
+
+    def _memory_unavailable(self):
+        if _MEMORY_AVAILABLE:
+            return False
+        self.send_json({
+            'error': 'memory subsystem unavailable',
+            'detail': 'memory.manager failed to import; check server logs',
+        }, 503)
+        return True
+
+    def _memory_actor(self):
+        """Derive a stable `source` string for memory writes."""
+        email = self.headers.get('X-Auth-Request-Email') or ''
+        if email:
+            return f'dashboard:{email}'
+        user = self.headers.get('X-Auth-Request-User') or self.headers.get('Remote-User') or ''
+        if user:
+            return f'dashboard:{user}'
+        auth_header = self.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            tok = auth_header[7:].strip()
+            fp = hashlib.sha256(tok.encode()).hexdigest()[:8]
+            return f'api:{fp}'
+        return 'unknown'
+
+    def _memory_error(self, e):
+        if isinstance(e, MemNotFound):
+            self.send_json({'error': str(e), 'code': 'not_found'}, 404)
+            return
+        if isinstance(e, MemConflict):
+            self.send_json({'error': str(e), 'code': 'conflict'}, 409)
+            return
+        if isinstance(e, MemValidationError):
+            self.send_json({'error': str(e), 'code': 'validation'}, 400)
+            return
+        if isinstance(e, MemError):
+            self.send_json({'error': str(e), 'code': e.code}, 400)
+            return
+        print(f'[memory] internal error: {e}', file=sys.stderr)
+        self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
+    def handle_memory_list(self, query):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            rows = MemoryManager.list(
+                namespace=(query.get('namespace') or [None])[0],
+                kind=(query.get('kind') or [None])[0],
+                q=(query.get('q') or [None])[0],
+                limit=int((query.get('limit') or ['500'])[0]),
+            )
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'memories': rows, 'count': len(rows)})
+
+    def handle_memory_get(self, namespace, key):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            row = MemoryManager.get(namespace=namespace, key=key)
+        except Exception as e:
+            self._memory_error(e); return
+        if row is None:
+            self.send_json({'error': 'not found', 'code': 'not_found'}, 404)
+            return
+        # Log read access.
+        try:
+            actor = self._memory_actor()
+            kind = actor.split(':', 1)[0]
+            ident = actor.split(':', 1)[1] if ':' in actor else actor
+            MemoryManager.log_ref(
+                namespace=namespace, key=key,
+                ref_kind=kind if kind in ('dashboard', 'api', 'cron', 'task') else 'api',
+                ref_id=ident, access_kind='read',
+            )
+        except Exception:
+            pass
+        self.send_json({'memory': row})
+
+    def handle_memory_history(self, namespace, key):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            rows = MemoryManager.history(namespace=namespace, key=key)
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'revisions': rows, 'count': len(rows)})
+
+    def handle_memory_refs(self, namespace, key):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            rows = MemoryManager.refs(namespace=namespace, key=key)
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'refs': rows, 'count': len(rows)})
+
+    def handle_memory_neighbors(self, namespace, key, query):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        depth = int((query.get('depth') or ['1'])[0])
+        kinds = query.get('kind') or query.get('kinds') or None
+        try:
+            rows = MemoryManager.neighbors(
+                namespace=namespace, key=key, depth=depth,
+                kinds=kinds,
+            )
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'neighbors': rows, 'count': len(rows)})
+
+    def handle_memory_stats(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            stats = MemoryManager.stats()
+            # Surface syncer status so the dashboard can show "last
+            # imported N from Claude's auto-memory · X minutes ago".
+            try:
+                stats['claude_sync'] = ClaudeMemorySyncer.status()
+            except Exception:
+                pass
+            self.send_json(stats)
+        except Exception as e:
+            self._memory_error(e)
+
+    def handle_memory_sync_claude(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            res = ClaudeMemorySyncer.trigger_sync()
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'status': 'ok', 'result': res})
+
+    def handle_memory_upsert(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not isinstance(data, dict):
+            self.send_json({'error': 'body must be an object'}, 400)
+            return
+        try:
+            row = MemoryManager.upsert(
+                namespace=data.get('namespace', ''),
+                key=data.get('key', ''),
+                value=data.get('value', ''),
+                kind=data.get('kind', 'semantic'),
+                tags=data.get('tags', '') or '',
+                importance=float(data.get('importance', 0.5)),
+                confidence=float(data.get('confidence', 1.0)),
+                source=self._memory_actor(),
+                expires_at=data.get('expires_at'),
+            )
+        except Exception as e:
+            self._memory_error(e); return
+        try:
+            actor = self._memory_actor()
+            kind = actor.split(':', 1)[0]
+            ident = actor.split(':', 1)[1] if ':' in actor else actor
+            MemoryManager.log_ref(
+                namespace=row['namespace'], key=row['key'],
+                ref_kind=kind if kind in ('dashboard', 'api') else 'api',
+                ref_id=ident, access_kind='write',
+            )
+        except Exception:
+            pass
+        self.send_json({'memory': row}, 200)
+
+    def handle_memory_delete(self, namespace, key):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            row = MemoryManager.soft_delete(
+                namespace=namespace, key=key,
+                source=self._memory_actor(),
+            )
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'memory': row, 'deleted': True})
+
+    def handle_memory_link(self, namespace, key):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not isinstance(data, dict):
+            self.send_json({'error': 'body must be an object'}, 400)
+            return
+        try:
+            rel = MemoryManager.link(
+                src_namespace=namespace, src_key=key,
+                dst_namespace=data.get('dst_namespace', ''),
+                dst_key=data.get('dst_key', ''),
+                kind=data.get('kind', 'related-to'),
+                weight=float(data.get('weight', 1.0)),
+                created_by=self._memory_actor(),
+            )
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'relation': rel}, 201)
+
+    def handle_memory_unlink(self, namespace, key, relation_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        # Direct SQL: the manager doesn't expose unlink yet because Phase 1
+        # MCP tool surface doesn't need it. Dashboard only.
+        try:
+            with MemoryManager.store().tx() as c:
+                cur = c.execute(
+                    'DELETE FROM relations WHERE id=? AND src_id IN ('
+                    '  SELECT id FROM memories WHERE namespace=? AND key=?'
+                    ')',
+                    (relation_id, namespace, key),
+                )
+                deleted = cur.rowcount
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'deleted': deleted}, 200 if deleted else 404)
+
+    def handle_memory_consolidate(self):
+        """Phase 1 stub. Returns 202 with a no-op so the dashboard button can
+        be wired ahead of Phase 3 landing the real worker."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        self.send_json({
+            'status': 'queued',
+            'detail': 'consolidation worker activates in Phase 3',
+        }, 202)
+
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
         host = self.headers.get('Host', 'localhost').split(':')[0]
@@ -2597,6 +2974,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Cron CRUD (dashboard)
             elif path == "/api/crons":
                 self.handle_cron_create()
+            # Memory API (dashboard surface; mirrored by MCP)
+            elif path == "/api/memory":
+                self.handle_memory_upsert()
+            elif path == "/api/memory/_consolidate":
+                self.handle_memory_consolidate()
+            elif path == "/api/memory/_sync_claude":
+                self.handle_memory_sync_claude()
             else:
                 # /api/claude/tasks/{id}/message
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/message$', path)
@@ -2636,6 +3020,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._cron_id = m.group(1)
                     self.handle_cron_fire()
+                    return
+                # Memory: relations endpoint takes a (ns, key) pair.
+                m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations$', path)
+                if m:
+                    self.handle_memory_link(m.group(1), m.group(2))
                     return
                 self.send_response(404)
                 self.end_headers()
@@ -2980,7 +3369,26 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     # Change to the directory containing our files
     os.chdir('/tmp/browser')
-    
+
+    # Initialize the persistent-memory subsystem (runs migrations, opens DB).
+    # Failure here is non-fatal: the rest of the server keeps working, and
+    # /api/memory* returns 503 until the import error is fixed.
+    if _MEMORY_AVAILABLE:
+        try:
+            MemoryManager.store()
+            print(f'[memory] initialized at /home/dev/.claude-memory/memory.db')
+        except Exception as e:
+            print(f'[memory] init failed: {e}', file=sys.stderr)
+        # Start background sync of Claude Code's native auto-memory files
+        # (~/.claude/projects/*/memory/*.md) into the SQLite store so they
+        # appear in the dashboard alongside dashboard- and MCP-authored
+        # entries. One-way, idempotent, skips unchanged via mtime tag.
+        try:
+            ClaudeMemorySyncer.start(interval_seconds=60)
+            print('[memory] claude-auto-memory syncer started (60s)')
+        except Exception as e:
+            print(f'[memory] syncer start failed: {e}', file=sys.stderr)
+
     print("Starting Browser API Server on port 6080...")
     print("Available endpoints:")
     print("  GET  /           - Browser interface")
@@ -2999,6 +3407,16 @@ if __name__ == "__main__":
     print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
     print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
-    
+    print("  --- Memory API (Phase 1) ---")
+    print("  GET    /api/memory                       - List/search memories")
+    print("  POST   /api/memory                       - Upsert a memory")
+    print("  GET    /api/memory/{ns}/{key}            - Get one memory")
+    print("  DELETE /api/memory/{ns}/{key}            - Soft-delete a memory")
+    print("  GET    /api/memory/{ns}/{key}/history    - Revisions")
+    print("  GET    /api/memory/{ns}/{key}/refs       - Access log")
+    print("  GET    /api/memory/{ns}/{key}/neighbors  - Graph walk")
+    print("  POST   /api/memory/{ns}/{key}/relations  - Create relation")
+    print("  GET    /api/memory/stats                 - Counts + health")
+
     with http.server.ThreadingHTTPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()

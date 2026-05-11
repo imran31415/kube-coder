@@ -297,6 +297,13 @@
             text-transform: uppercase; letter-spacing: 0.5px;
             margin-right: 6px; flex-shrink: 0;
         }
+        .memory-row-kind {
+            display: inline-block; padding: 0 5px; border-radius: 3px;
+            background: var(--bg-hover); color: var(--accent-blue);
+            font-family: var(--font-mono); font-size: 9px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            margin-right: 6px; flex-shrink: 0; font-weight: 600;
+        }
         .task-empty {
             padding: 32px 16px; text-align: center;
             color: var(--text-mute); font-size: 12px; font-family: var(--font-mono);
@@ -376,6 +383,67 @@
         }
         .new-task-form .actions {
             display: flex; gap: 6px; justify-content: flex-end;
+        }
+        .task-form-toggle {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 11px; color: var(--text-mute);
+            font-family: var(--font-mono);
+        }
+        .task-form-toggle label {
+            display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+            user-select: none;
+        }
+        .task-form-toggle input[type=checkbox] {
+            margin: 0; accent-color: var(--accent-blue);
+        }
+        .task-form-link {
+            color: var(--accent-blue); cursor: pointer; opacity: 0.85;
+            margin-left: auto;
+        }
+        .task-form-link:hover { opacity: 1; text-decoration: underline; }
+        .memory-preview {
+            font-family: var(--font-mono); font-size: 11px;
+            background: var(--bg-base); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 8px 10px;
+            color: var(--text-secondary); max-height: 140px; overflow-y: auto;
+            line-height: 1.5;
+        }
+        .memory-preview .mp-item {
+            padding: 4px 0; border-bottom: 1px dashed var(--border);
+        }
+        .memory-preview .mp-item:last-child { border-bottom: none; }
+        .memory-preview .mp-key {
+            color: var(--accent-purple); font-weight: 600; margin-right: 6px;
+        }
+        .memory-preview .mp-empty {
+            color: var(--text-mute); font-style: italic;
+        }
+        .task-memory-pill {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 2px 7px; border-radius: 10px;
+            background: var(--bg-hover); color: var(--accent-purple);
+            font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.04em;
+            cursor: help;
+        }
+        .task-memory-list {
+            margin-top: 12px; padding: 10px 12px;
+            background: var(--bg-base); border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .task-memory-list h4 {
+            font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--text-mute); font-family: var(--font-mono);
+            margin: 0 0 6px 0; font-weight: 600;
+        }
+        .task-memory-list .tml-item {
+            font-family: var(--font-mono); font-size: 12px;
+            padding: 3px 0; cursor: pointer;
+            color: var(--text-secondary);
+        }
+        .task-memory-list .tml-item:hover { color: var(--accent-blue); }
+        .task-memory-list .tml-key {
+            color: var(--accent-purple); font-weight: 600;
         }
         .form-btn {
             padding: 5px 12px; border-radius: var(--radius); font-size: 12px;
@@ -475,6 +543,13 @@
         .tab-btn:hover { color: var(--text-primary); }
         .tab-btn.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
         .tab-btn .count { font-size: 10px; opacity: 0.7; margin-left: 4px; }
+        /* Deprioritized tabs (e.g. raw Output) — pushed right, dimmed,
+           still clickable. Becomes fully visible when active. */
+        .tab-btn-muted {
+            margin-left: auto; opacity: 0.55; font-size: 11px;
+        }
+        .tab-btn-muted:hover { opacity: 0.9; }
+        .tab-btn-muted.active { opacity: 1; }
 
         .tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
         .tab-panel.active { display: flex; }
@@ -847,6 +922,14 @@
                                style="display: none;">
                         <textarea id="new-task-input" rows="4"
                                   placeholder="Describe the task for Claude... (Ctrl+Enter to send)"></textarea>
+                        <div class="task-form-toggle" title="Auto-prefix the prompt with the top-K relevant memories from the workspace memory store. Uncheck for a clean context.">
+                            <label>
+                                <input type="checkbox" id="new-task-no-inject">
+                                <span>Don't inject memories</span>
+                            </label>
+                            <a class="task-form-link" id="memory-preview-link" onclick="toggleMemoryPreview()">preview</a>
+                        </div>
+                        <div id="memory-preview" class="memory-preview" style="display:none;"></div>
                         <div class="actions">
                             <button class="form-btn secondary" onclick="toggleNewTaskForm()">Cancel</button>
                             <button class="form-btn primary" onclick="submitNewTask()">Send</button>
@@ -874,8 +957,14 @@
                 <div class="rail-view" id="rail-memory">
                     <div class="rail-head">
                         <h2>Memory <span class="counts" id="memory-counts">— · —</span></h2>
+                        <button class="new-btn" onclick="syncClaudeMemory()"
+                                title="Pull Claude's native auto-memory files into this store"
+                                style="background:transparent;color:var(--accent-blue);border:1px solid var(--border);margin-right:4px;">
+                            sync
+                        </button>
                         <button class="new-btn" onclick="toggleNewMemoryForm()">New</button>
                     </div>
+                    <div id="memory-sync-status" style="padding:4px 12px;font-family:var(--font-mono);font-size:10px;color:var(--text-mute);"></div>
 
                     <div id="new-memory-form" class="new-task-form">
                         <div class="row">
@@ -977,6 +1066,7 @@
                                 <span class="meta-tag" id="d-time">—</span>
                                 <span class="meta-tag source" id="d-source" style="display:none;"></span>
                                 <span class="meta-tag path" id="d-workdir" style="display:none;"></span>
+                                <span class="task-memory-pill" id="d-memory" style="display:none;" title="Memories auto-injected">mem</span>
                             </div>
                             <div class="detail-prompt" id="d-prompt">—</div>
                         </div>
@@ -988,12 +1078,12 @@
                     </div>
 
                     <div class="detail-tabs">
-                        <button class="tab-btn active" data-tab="output" onclick="setTab('output')">Output</button>
-                        <button class="tab-btn" data-tab="chat" onclick="setTab('chat')">Chat</button>
+                        <button class="tab-btn active" data-tab="chat" onclick="setTab('chat')">Chat</button>
                         <button class="tab-btn" data-tab="info" onclick="setTab('info')">Info</button>
+                        <button class="tab-btn tab-btn-muted" data-tab="output" onclick="setTab('output')" title="Raw tmux output (for completed/killed tasks or debugging)">Output</button>
                     </div>
 
-                    <div class="tab-panel active" id="tab-output">
+                    <div class="tab-panel" id="tab-output">
                         <div class="output-toolbar">
                             <span id="output-status">—</span>
                             <span class="spacer"></span>
@@ -1004,7 +1094,7 @@
                         <pre class="output-box" id="output-box"><span class="output-placeholder">(no task selected)</span></pre>
                     </div>
 
-                    <div class="tab-panel" id="tab-chat">
+                    <div class="tab-panel active" id="tab-chat">
                         <div class="chat-iframe-wrap">
                             <iframe class="chat-iframe" id="chat-iframe" title="Claude terminal"></iframe>
                         </div>
@@ -1248,7 +1338,7 @@ const STATE = {
     filter: 'all',
     search: '',
     autoRefresh: true,
-    activeTab: 'output',
+    activeTab: 'chat',
     workdirOptionsLoaded: false,
     // Memory state. Memory is the planned persistent agent state — see the
     // architecture comment near fetchMemories() for the full design.
@@ -1428,7 +1518,44 @@ async function fetchMemories() {
             if (m && !STATE.memoryDirty) renderMemoryDetail(m);
         }
         updateRailCounts();
+        refreshSyncStatus();  // best-effort, fire-and-forget
     } catch (e) { /* offline or backend not built */ }
+}
+
+async function refreshSyncStatus() {
+    const el = document.getElementById('memory-sync-status');
+    if (!el) return;
+    try {
+        const r = await fetch(MEMORY_API + '/stats', { signal: AbortSignal.timeout(3000) });
+        if (!r.ok) { el.textContent = ''; return; }
+        const stats = await r.json();
+        const s = stats.claude_sync || {};
+        if (!s.running) {
+            el.innerHTML = '<span style="opacity:0.6;">sync idle</span>';
+            return;
+        }
+        const last = s.last_run_at ? formatTimeAgo(s.last_run_at) : 'never';
+        const r2 = s.last_result || {};
+        const detail = (r2.scanned != null)
+            ? `${r2.scanned} file${r2.scanned === 1 ? '' : 's'} · ${r2.changed || 0} changed`
+            : '';
+        el.innerHTML = `<span style="color:var(--accent-blue);">●</span> claude-auto sync · ${escapeHtml(last)} · ${escapeHtml(detail)}`;
+    } catch (e) { el.textContent = ''; }
+}
+
+async function syncClaudeMemory() {
+    const el = document.getElementById('memory-sync-status');
+    if (el) el.innerHTML = '<span style="opacity:0.7;">syncing…</span>';
+    try {
+        const r = await fetch(MEMORY_API + '/_sync_claude', {
+            method: 'POST', signal: AbortSignal.timeout(10000),
+        });
+        if (!r.ok) { toast('Sync failed: ' + r.statusText); return; }
+        const data = await r.json();
+        const res = data.result || {};
+        toast(`Synced · scanned ${res.scanned||0} · changed ${res.changed||0} · pruned ${res.pruned||0}`);
+        await fetchMemories();
+    } catch (e) { toast('Error: ' + e.message); }
 }
 
 function findMemory(id) {
@@ -1436,7 +1563,12 @@ function findMemory(id) {
 }
 
 function memoryId(m) {
-    return m.id || `${m.namespace}/${m.key}`;
+    // Always use the (namespace, key) form, not the SQLite int id. The
+    // numeric id changes across delete/recreate and breaks click-handler
+    // string compares (HTML interpolation stringifies it but findMemory
+    // compared `4 === '4'`). The (namespace, key) form is stable, URL-
+    // safe, and human-readable.
+    return `${m.namespace}/${m.key}`;
 }
 
 function renderMemoryList() {
@@ -1495,14 +1627,20 @@ function memoryRowHTML(m) {
     const selected = STATE.selectedMemoryId === id ? 'selected' : '';
     const valuePreview = (m.value || '').replace(/\s+/g, ' ').slice(0, 80);
     const tags = (m.tags || '').split(',').map(t => t.trim()).filter(Boolean);
-    const tagHtml = tags.slice(0, 2).map(t => `<span class="memory-row-tag">${escapeHtml(t)}</span>`).join(' ');
+    // Surface non-internal tags only (skip the mtime fingerprint).
+    const displayTags = tags.filter(t => !t.startsWith('mtime:'));
+    const tagHtml = displayTags.slice(0, 2).map(t => `<span class="memory-row-tag">${escapeHtml(t)}</span>`).join(' ');
+    const isAuto = tags.includes('claude-memory') || tags.includes('auto-imported');
+    const autoBadge = isAuto
+        ? '<span class="memory-row-kind" title="Auto-imported from Claude\'s native memory">auto</span>'
+        : '';
     const updated = m.updated_at ? formatTimeAgo(m.updated_at) : '';
     return `
         <div class="memory-row ${selected}" id="memory-row-${escapeAttr(id)}"
              data-memory-id="${escapeAttr(id)}"
              onclick="selectMemory('${escapeAttr(id)}')">
             <div class="memory-row-line1">
-                <span class="memory-row-key">${escapeHtml(m.key || '(no key)')}</span>
+                ${autoBadge}<span class="memory-row-key">${escapeHtml(m.key || '(no key)')}</span>
             </div>
             <div class="memory-row-line2">
                 <span>${escapeHtml(updated)}</span>
@@ -1514,7 +1652,9 @@ function memoryRowHTML(m) {
 }
 
 function selectMemory(id, opts = {}) {
-    if (STATE.memoryDirty && !confirm('Discard unsaved changes to this memory entry?')) return;
+    // Memory edits are explicitly saved via the Save button — switching
+    // away just discards the draft (no confirm prompt; users found it
+    // annoying when bouncing between tabs).
     STATE.selectedMemoryId = id;
     STATE.selectedId = null;
     STATE.memoryDirty = false;
@@ -1562,6 +1702,88 @@ function setMemoryTab(tab) {
     document.querySelectorAll('#detail-memory .tab-panel').forEach(p => {
         p.classList.toggle('active', p.id === map[tab]);
     });
+    if (tab === 'history') loadMemoryHistory();
+    else if (tab === 'refs') loadMemoryRefs();
+}
+
+async function loadMemoryHistory() {
+    const box = document.getElementById('memory-history');
+    if (!STATE.selectedMemoryId) {
+        box.innerHTML = '<span class="output-placeholder">Select a memory entry to see its history.</span>';
+        return;
+    }
+    const m = findMemory(STATE.selectedMemoryId);
+    if (!m) return;
+    box.innerHTML = '<span class="output-placeholder">Loading…</span>';
+    try {
+        const path = `${MEMORY_API}/${encodeURIComponent(m.namespace)}/${encodeURIComponent(m.key)}/history`;
+        const r = await fetch(path, { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) {
+            box.innerHTML = `<span class="output-placeholder">History unavailable (${r.status}).</span>`;
+            return;
+        }
+        const data = await r.json();
+        const revisions = data.revisions || [];
+        if (revisions.length === 0) {
+            box.innerHTML = '<span class="output-placeholder">No history yet.</span>';
+            return;
+        }
+        const html = revisions.map(rev => {
+            const when = rev.updated_at ? formatTimeAgo(rev.updated_at) : '';
+            const valuePreview = (rev.value || '').slice(0, 280);
+            return `<div style="border-bottom:1px solid var(--border); padding:10px 14px;">
+                <div style="display:flex; gap:10px; align-items:center; font-family:var(--font-mono); font-size:11px; color:var(--text-mute);">
+                    <span style="color:var(--accent-blue); font-weight:600;">v${rev.version}</span>
+                    <span style="padding:1px 5px; background:var(--bg-hover); border-radius:3px; text-transform:uppercase; font-size:9px;">${escapeHtml(rev.op)}</span>
+                    <span>${escapeHtml(when)}</span>
+                    <span style="opacity:0.6;">·</span>
+                    <span>${escapeHtml(rev.updated_by || '')}</span>
+                </div>
+                <pre style="margin-top:6px; white-space:pre-wrap; font-family:var(--font-mono); font-size:12px; color:var(--text-primary);">${escapeHtml(valuePreview)}</pre>
+            </div>`;
+        }).join('');
+        box.innerHTML = html;
+    } catch (e) {
+        box.innerHTML = `<span class="output-placeholder">Error: ${escapeHtml(e.message)}</span>`;
+    }
+}
+
+async function loadMemoryRefs() {
+    const box = document.getElementById('memory-refs');
+    if (!STATE.selectedMemoryId) {
+        box.innerHTML = '<span class="output-placeholder">Select a memory entry to see references.</span>';
+        return;
+    }
+    const m = findMemory(STATE.selectedMemoryId);
+    if (!m) return;
+    box.innerHTML = '<span class="output-placeholder">Loading…</span>';
+    try {
+        const path = `${MEMORY_API}/${encodeURIComponent(m.namespace)}/${encodeURIComponent(m.key)}/refs`;
+        const r = await fetch(path, { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) {
+            box.innerHTML = `<span class="output-placeholder">Refs unavailable (${r.status}).</span>`;
+            return;
+        }
+        const data = await r.json();
+        const refs = data.refs || [];
+        if (refs.length === 0) {
+            box.innerHTML = '<span class="output-placeholder">No reads or writes recorded yet.</span>';
+            return;
+        }
+        const html = refs.map(ref => {
+            const when = ref.at ? formatTimeAgo(ref.at) : '';
+            const color = ref.access_kind === 'write' ? 'var(--accent-green)' : 'var(--accent-blue)';
+            return `<div style="display:flex; gap:10px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--border); font-family:var(--font-mono); font-size:11px;">
+                <span style="color:${color}; text-transform:uppercase; font-weight:600; min-width:48px;">${escapeHtml(ref.access_kind)}</span>
+                <span style="padding:1px 5px; background:var(--bg-hover); border-radius:3px; text-transform:uppercase; font-size:9px;">${escapeHtml(ref.ref_kind)}</span>
+                <span style="color:var(--text-primary);">${escapeHtml(ref.ref_id)}</span>
+                <span style="margin-left:auto; color:var(--text-mute);">${escapeHtml(when)}</span>
+            </div>`;
+        }).join('');
+        box.innerHTML = html;
+    } catch (e) {
+        box.innerHTML = `<span class="output-placeholder">Error: ${escapeHtml(e.message)}</span>`;
+    }
 }
 
 function bindMemorySearch() {
@@ -1858,10 +2080,20 @@ function selectTask(taskId, opts = {}) {
     renderDetailHeader(t);
     renderInfoTab(t);
 
-    // Default to Output tab whenever we pick a new task.
-    setTab(STATE.activeTab || 'output');
-    if (STATE.activeTab === 'output') loadOutput(taskId);
-    if (STATE.activeTab === 'chat' && t.status === 'running') openChatForCurrent();
+    // Prefer Chat when the task is running (it's the primary interaction
+    // surface). For non-running tasks, fall back to Output since Chat
+    // needs an active tmux session. Info is sticky if the user is on it.
+    let tab;
+    if (STATE.activeTab === 'info') {
+        tab = 'info';
+    } else if (t.status === 'running') {
+        tab = 'chat';
+    } else {
+        tab = 'output';
+    }
+    setTab(tab);
+    if (tab === 'output') loadOutput(taskId);
+    if (tab === 'chat' && t.status === 'running') openChatForCurrent();
 
     // Mobile: slide the detail pane in.
     if (!opts.skipMobile && window.matchMedia('(max-width: 720px)').matches) {
@@ -1911,6 +2143,22 @@ function renderDetailHeader(t) {
         workdirEl.style.display = '';
     } else workdirEl.style.display = 'none';
 
+    // Memory pill: surfaces auto-injected memories. Click jumps to Info tab.
+    const memEl = document.getElementById('d-memory');
+    if (memEl) {
+        const n = (t.memory_injected || []).length;
+        if (n > 0) {
+            const keys = (t.memory_injected || [])
+                .map(m => `${m.namespace}.${m.key}`).join(', ');
+            memEl.textContent = `mem · ${n}`;
+            memEl.title = `${n} memor${n === 1 ? 'y' : 'ies'} auto-injected: ${keys}`;
+            memEl.onclick = () => setTab('info');
+            memEl.style.display = '';
+        } else {
+            memEl.style.display = 'none';
+        }
+    }
+
     document.getElementById('d-prompt').textContent = t.prompt || '(no prompt)';
 
     const isRunning = t.status === 'running';
@@ -1920,15 +2168,35 @@ function renderDetailHeader(t) {
 
 function renderInfoTab(t) {
     const grid = document.getElementById('info-grid');
+    const injected = Array.isArray(t.memory_injected) ? t.memory_injected : [];
+    let memoryDd;
+    if (t.memory_injection_disabled) {
+        memoryDd = '<span style="color:var(--text-mute);font-style:italic;">disabled for this task</span>';
+    } else if (injected.length === 0) {
+        memoryDd = '<span style="color:var(--text-mute);">none — no relevant memories matched</span>';
+    } else {
+        memoryDd = injected.map(m =>
+            `<a onclick="jumpToMemory('${escapeAttr(m.namespace)}','${escapeAttr(m.key)}')" `
+            + `style="cursor:pointer;color:var(--accent-purple);font-family:var(--font-mono);">`
+            + `${escapeHtml(m.namespace)}.${escapeHtml(m.key)}</a>`
+        ).join(' &nbsp; ');
+    }
     const rows = [
         ['Task ID', `<code>${escapeHtml(t.task_id || '')}</code>`],
         ['Status', escapeHtml(t.status || 'unknown')],
         ['Created', t.created_at ? new Date(t.created_at * 1000).toLocaleString() + ' (' + formatTimeAgo(t.created_at) + ')' : '—'],
         ['Source', t.source ? `<code>${escapeHtml(t.source)}</code>` : '—'],
+        ['Memory', memoryDd],
         ['Prompt', `<div style="white-space:pre-wrap;">${escapeHtml(t.prompt || '')}</div>`],
         ['Deep link', `<a onclick="copySelectedTaskLink()" style="cursor:pointer;">Copy link to this task</a>`],
     ];
     grid.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+// Helper: jump from the task Info pane to a referenced memory entry.
+function jumpToMemory(namespace, key) {
+    switchRail('memory');
+    selectMemory(`${namespace}/${key}`);
 }
 
 function setTab(tab) {
@@ -2197,18 +2465,23 @@ async function submitNewTask() {
     if (!text) { toast('Enter a task description'); return; }
     const workdir = getSelectedWorkdir();
     if (workdir === null) { toast('Enter a custom path or pick a directory'); return; }
+    const disable_memory_injection = !!document.getElementById('new-task-no-inject').checked;
     try {
         const r = await fetch('/oauth/api/claude/tasks', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ prompt: text, workdir }),
+            body: JSON.stringify({ prompt: text, workdir, disable_memory_injection }),
         });
         if (r.ok) {
             const data = await r.json().catch(() => ({}));
-            toast('Task created in ' + workdir);
+            const nMem = (data.memory_injected || []).length;
+            toast(nMem
+                ? `Task created (${nMem} memor${nMem === 1 ? 'y' : 'ies'} injected)`
+                : 'Task created in ' + workdir);
             input.value = '';
             document.getElementById('new-task-workdir-custom').value = '';
             document.getElementById('new-task-form').classList.remove('visible');
+            document.getElementById('memory-preview').style.display = 'none';
             await fetchClaudeTasks();
             // Select the new task immediately.
             if (data.task_id) selectTask(data.task_id);
@@ -2217,6 +2490,54 @@ async function submitNewTask() {
             toast('Failed: ' + (data.error || r.statusText));
         }
     } catch (e) { toast('Error: ' + e.message); }
+}
+
+// Memory preview: shows which memories would be auto-injected for the
+// current draft prompt. Honors the "Don't inject memories" checkbox so the
+// user can sanity-check the prefix before sending.
+async function toggleMemoryPreview() {
+    const box = document.getElementById('memory-preview');
+    if (box.style.display !== 'none') {
+        box.style.display = 'none';
+        return;
+    }
+    if (document.getElementById('new-task-no-inject').checked) {
+        box.innerHTML = '<span class="mp-empty">Auto-injection is off for this task.</span>';
+        box.style.display = 'block';
+        return;
+    }
+    const prompt = document.getElementById('new-task-input').value.trim();
+    if (!prompt) {
+        box.innerHTML = '<span class="mp-empty">Type a prompt first to see relevant memories.</span>';
+        box.style.display = 'block';
+        return;
+    }
+    box.innerHTML = '<span class="mp-empty">Searching…</span>';
+    box.style.display = 'block';
+    try {
+        const u = `${MEMORY_API}?q=${encodeURIComponent(prompt)}&limit=8`;
+        const r = await fetch(u, { signal: AbortSignal.timeout(4000) });
+        if (!r.ok) {
+            box.innerHTML = '<span class="mp-empty">Preview unavailable.</span>';
+            return;
+        }
+        const data = await r.json();
+        const mems = data.memories || [];
+        if (mems.length === 0) {
+            box.innerHTML = '<span class="mp-empty">No relevant memories — task starts with a clean context.</span>';
+            return;
+        }
+        const html = mems.slice(0, 8).map(m => {
+            const v = (m.value || '').replace(/\s+/g, ' ').slice(0, 100);
+            return `<div class="mp-item">
+                <span class="mp-key">${escapeHtml(m.namespace)}.${escapeHtml(m.key)}</span>
+                <span>${escapeHtml(v)}</span>
+            </div>`;
+        }).join('');
+        box.innerHTML = html;
+    } catch (e) {
+        box.innerHTML = '<span class="mp-empty">Error: ' + escapeHtml(e.message) + '</span>';
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════

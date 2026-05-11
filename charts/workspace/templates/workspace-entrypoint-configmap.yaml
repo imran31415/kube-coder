@@ -85,9 +85,42 @@ data:
       > /tmp/websockify.log 2>&1 &
     sleep 2
 
+    log_stage "preparing persistent memory subsystem"
+    # The memory subsystem ships its Python package as flat configmap keys
+    # (configmap keys cannot contain "/"). Unpack them into a real `memory/`
+    # tree next to server.py so `from memory.manager import ...` resolves.
+    mkdir -p /tmp/browser/memory /home/dev/.claude-memory/backups
+    chmod 700 /home/dev/.claude-memory
+    # Materialize package files (rename flat keys → real layout).
+    install -m 0644 /browser-config/memory__init__.py /tmp/browser/memory/__init__.py
+    install -m 0644 /browser-config/memory_store.py    /tmp/browser/memory/store.py
+    install -m 0644 /browser-config/memory_manager.py  /tmp/browser/memory/manager.py
+    install -m 0644 /browser-config/memory_sync.py     /tmp/browser/memory/sync.py
+    # Seed the per-user MCP server next to the SQLite file so claude config
+    # points at a PVC-backed path that survives configmap rotations.
+    install -m 0755 /browser-config/mcp_memory.py /home/dev/.claude-memory/mcp_memory.py
+    # The MCP server imports the same memory.* package; expose it alongside.
+    rm -rf /home/dev/.claude-memory/memory
+    mkdir -p /home/dev/.claude-memory/memory
+    install -m 0644 /tmp/browser/memory/__init__.py /home/dev/.claude-memory/memory/__init__.py
+    install -m 0644 /tmp/browser/memory/store.py    /home/dev/.claude-memory/memory/store.py
+    install -m 0644 /tmp/browser/memory/manager.py  /home/dev/.claude-memory/memory/manager.py
+    install -m 0644 /tmp/browser/memory/sync.py     /home/dev/.claude-memory/memory/sync.py
+    # Register the MCP server in the user's claude config (idempotent merge).
+    python3 /browser-config/seed_claude_config.py || \
+      log_stage "WARNING: seed_claude_config.py failed (memory MCP not registered)"
+
     log_stage "starting browser/Claude API server on :6080"
     mkdir -p /tmp/browser
-    cp /browser-config/* /tmp/browser/
+    # Copy everything except the flat memory_* / memory__init__.py keys —
+    # those are reassembled into /tmp/browser/memory/ above.
+    for f in /browser-config/*; do
+      base=$(basename "$f")
+      case "$base" in
+        memory_*|memory__init__.py) continue ;;
+      esac
+      cp "$f" /tmp/browser/
+    done
     cd /tmp/browser
     python3 server.py &
 

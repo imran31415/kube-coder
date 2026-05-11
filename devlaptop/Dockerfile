@@ -70,6 +70,24 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# sqlite-vec loadable extension — enables vector search inside SQLite for the
+# persistent-memory subsystem (Phase 2 activates this). Shipped as a single
+# .so so the dashboard + MCP memory server can `conn.load_extension('vec0')`.
+ARG SQLITE_VEC_VERSION=0.1.6
+RUN ARCH=$(dpkg --print-architecture) \
+ && case "$ARCH" in amd64) VEC_ARCH=x86_64 ;; arm64) VEC_ARCH=aarch64 ;; *) VEC_ARCH=$ARCH ;; esac \
+ && mkdir -p /usr/local/lib/sqlite-vec \
+ && curl -fsSL "https://github.com/asg017/sqlite-vec/releases/download/v${SQLITE_VEC_VERSION}/sqlite-vec-${SQLITE_VEC_VERSION}-loadable-linux-${VEC_ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/lib/sqlite-vec/ \
+ && ln -sf /usr/local/lib/sqlite-vec/vec0.so /usr/local/lib/vec0.so
+
+# Python deps for memory-system embeddings (Voyage AI / OpenAI) and HTTP
+# retries. Installed eagerly so Phase 2 activation needs only a value flip.
+# --break-system-packages is required on Ubuntu 24.04 (PEP 668).
+RUN pip3 install --break-system-packages --no-cache-dir \
+    voyageai==0.2.4 \
+    httpx==0.27.2
+
 # Install browser with noVNC for web access.
 # `file` lets the post-download tarball check below work.
 # fluxbox is the X11 window manager driving the VNC viewer (without it the

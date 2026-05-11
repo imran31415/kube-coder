@@ -59,6 +59,26 @@ ssh:
 claude:
   apiKey: ""
 
+# Persistent memory subsystem. SQLite-backed at /home/dev/.claude-memory/memory.db,
+# exposed to the dashboard at /api/memory and to claude via the `memory` MCP server.
+# Phase 1 ships with these defaults; phases 2-3 activate by flipping flags here.
+memory:
+  # Embedding provider for semantic recall. Phase 1 is "none" (FTS5 only).
+  # Set to "voyage" once VOYAGE_API_KEY is provided via a user secret.
+  embeddings:
+    provider: "none"        # one of: none | voyage | openai
+    model: ""               # leave blank -> provider default (voyage-3-lite)
+  # Auto-injection: prefix new task prompts with the top-K relevant memories.
+  inject:
+    enabled: true
+    topK: 8
+    minScore: 0.30
+    maxChars: 4096
+  # Background consolidation (dedupe + decay). Phase 3 activates this thread.
+  consolidation:
+    enabled: false
+    intervalHours: 6
+
 # GitHub App configuration for automatic git/gh authentication
 # Provide credentials via a secrets file (e.g., secrets/<user>/github-app.yaml)
 github:
