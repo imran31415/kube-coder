@@ -38,9 +38,25 @@ retries keep concurrent writes safe.
 |---|---|
 | `/home/dev/.claude-memory/memory.db` | The SQLite store. WAL-mode, future-proofed schema. |
 | `/home/dev/.claude-memory/mcp_memory.py` | Stdio MCP server invoked by `claude` per-session. |
+| `/home/dev/.claude-memory/memory_inject_hook.py` | `UserPromptSubmit` hook — fires on every interactive prompt and prepends a `<workspace_memories>` block. |
 | `/home/dev/.claude-memory/memory/` | Python package the MCP server imports (mirrors `/tmp/browser/memory/`). |
-| `~/.claude.json` | Has `mcpServers.memory` registered by the entrypoint. |
+| `~/.claude.json` | Has `mcpServers.memory` (plus `playwright`, `sequential-thinking`) registered by the entrypoint. |
+| `~/.claude/settings.json` | Has the `UserPromptSubmit` hook entry. |
 | `/api/memory*` on port 6080 | HTTP surface used by the dashboard. |
+
+### Default MCP servers seeded
+
+Every workspace pod boots with these MCP servers pre-registered in
+`~/.claude.json`:
+
+| Name | Purpose | Transport |
+|---|---|---|
+| `memory` | This document. SQLite-backed persistent K/V + graph + history. | stdio (`python3 mcp_memory.py`) |
+| `playwright` | Full browser automation (click, type, screenshot, eval). Uses Firefox (already in the image). First use auto-downloads browsers into `~/.cache/ms-playwright`. | stdio (`npx -y @playwright/mcp@latest`) |
+| `sequential-thinking` | Scratchpad `think` tool for explicit chain-of-thought during complex tasks. | stdio (`npx -y @modelcontextprotocol/server-sequential-thinking`) |
+
+To add more, edit `~/.claude.json` directly inside the workspace — the
+seeder only manages the keys above and leaves your additions alone.
 
 ### Schema (Phase 1)
 
@@ -97,13 +113,27 @@ Available tools: `memory_remember`, `memory_update`, `memory_recall`,
 `memory_search`, `memory_list`, `memory_link`, `memory_neighbors`,
 `memory_forget`, `memory_stats`.
 
-### Auto-injection
+### Auto-injection (two layers)
 
-When a new Claude task is created (via the dashboard's `New` button or
-`POST /api/claude/tasks`), the server picks the top-K (default 8) most
-relevant memories for the prompt and prefixes the pasted prompt with a
-`<workspace_memories>` block. Claude treats that block as authoritative
-prior context.
+The workspace makes memory feel "always on" via two complementary
+mechanisms:
+
+1. **Task-creation auto-inject.** When a Claude task is created via the
+   dashboard's `New` button or `POST /api/claude/tasks`, the server
+   picks the top-K (default 8) most relevant memories for the prompt
+   and prefixes the pasted prompt with a `<workspace_memories>` block.
+2. **Per-prompt hook** (`~/.claude/settings.json` → `UserPromptSubmit`).
+   Every prompt typed into an interactive `claude` session (terminal,
+   ttyd, or otherwise) is run through `memory_inject_hook.py`, which
+   queries `/api/memory?q=<prompt>` and emits the same
+   `<workspace_memories>` block as additional context.
+
+Together these cover every Claude invocation in the workspace — there
+is no path where memory is silent unless `tags` contains `secret`.
+
+Claude treats the injected block as authoritative prior context; per
+CLAUDE.md it must call `memory_search` before saying "I don't know"
+about anything that might be remembered.
 
 To **opt out for a specific task**:
 

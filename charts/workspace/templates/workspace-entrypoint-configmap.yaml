@@ -86,6 +86,48 @@ data:
     sleep 2
 
     log_stage "preparing persistent memory subsystem"
+    # Persist Claude Code's own file-based auto-memory across pod restarts
+    # by symlinking ~/.claude (ephemeral in /home/ubuntu or wherever $HOME
+    # points) to a PVC-backed directory under /home/dev/.claude. Without
+    # this, every restart wipes ~/.claude/projects/*/memory/*.md and the
+    # auto-sync prune step would soft-delete every imported entry.
+    TARGET=/home/dev/.claude
+    mkdir -p "$TARGET"
+    chmod 700 "$TARGET"
+    # If a previous deploy mis-symlinked $TARGET to itself, repair it: a
+    # self-link is detectable as `readlink == basename` and yields the
+    # "too many levels of symbolic links" error on any access.
+    if [ -L "$TARGET" ]; then
+      LINK_DEST=$(readlink "$TARGET")
+      if [ "$LINK_DEST" = "$TARGET" ] || [ "$LINK_DEST" = ".claude" ]; then
+        rm -f "$TARGET"
+        mkdir -p "$TARGET"
+        chmod 700 "$TARGET"
+      fi
+    fi
+    # Symlink every other plausible $HOME/.claude → the PVC target so that
+    # whichever user actually runs `claude`, its file-based auto-memory
+    # writes land on the PVC.
+    for HOME_DIR in /home/ubuntu; do
+      [ -d "$HOME_DIR" ] || continue
+      LINK="$HOME_DIR/.claude"
+      # Don't try to symlink the target to itself.
+      [ "$LINK" = "$TARGET" ] && continue
+      # Already a correct symlink? leave it.
+      if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$TARGET" ]; then
+        continue
+      fi
+      # Existing directory (or stale symlink): merge contents into the
+      # PVC target (no-clobber preserves PVC as canonical), then replace.
+      if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+        cp -an "$LINK"/. "$TARGET"/ 2>/dev/null || true
+        rm -rf "$LINK"
+      elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+        rm -f "$LINK"
+      fi
+      ln -sfn "$TARGET" "$LINK" 2>/dev/null || true
+    done
+
     # The memory subsystem ships its Python package as flat configmap keys
     # (configmap keys cannot contain "/"). Unpack them into a real `memory/`
     # tree next to server.py so `from memory.manager import ...` resolves.
@@ -96,9 +138,11 @@ data:
     install -m 0644 /browser-config/memory_store.py    /tmp/browser/memory/store.py
     install -m 0644 /browser-config/memory_manager.py  /tmp/browser/memory/manager.py
     install -m 0644 /browser-config/memory_sync.py     /tmp/browser/memory/sync.py
-    # Seed the per-user MCP server next to the SQLite file so claude config
-    # points at a PVC-backed path that survives configmap rotations.
-    install -m 0755 /browser-config/mcp_memory.py /home/dev/.claude-memory/mcp_memory.py
+    # Seed the per-user MCP server + user-prompt-submit hook next to the
+    # SQLite file so claude config points at PVC-backed paths that survive
+    # configmap rotations.
+    install -m 0755 /browser-config/mcp_memory.py          /home/dev/.claude-memory/mcp_memory.py
+    install -m 0755 /browser-config/memory_inject_hook.py  /home/dev/.claude-memory/memory_inject_hook.py
     # The MCP server imports the same memory.* package; expose it alongside.
     rm -rf /home/dev/.claude-memory/memory
     mkdir -p /home/dev/.claude-memory/memory

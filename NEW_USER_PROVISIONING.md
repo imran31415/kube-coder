@@ -2,6 +2,82 @@
 
 This guide explains how to provision a new user workspace with OAuth2 authentication in the remote development environment.
 
+## TL;DR — generic per-user commands
+
+Every per-user command takes `USER=<name>` and auto-resolves the values
+file + secrets from one of two locations:
+
+| Location | When to use it | Committed? |
+|---|---|---|
+| `deployments/<user>/` + `secrets/<user>/`     | Workspaces visible in the public repo (placeholders only; real secrets stay in `secrets/`, which is gitignored). | values committed, secrets gitignored |
+| `users-private/<user>/` + `users-private/<user>/secrets/` | Private workspaces — neither values nor secrets are tracked. The whole `users-private/` tree is gitignored. | not committed |
+
+```bash
+make deploy   USER=chase    # helm upgrade --install (auto-includes secrets)
+make logs     USER=chase    # tail ws-chase logs
+make shell    USER=chase    # exec into the pod
+make test     USER=chase    # node/yarn/gh/code-server sanity check
+make rollback USER=chase    # helm rollback
+```
+
+`deploy-imran` / `deploy-gerard` / etc. still exist as legacy aliases —
+the generic `make deploy USER=<name>` is the preferred path for any new
+workspace.
+
+## Private workspaces (recommended for personal use)
+
+Three commands provision a new private workspace end-to-end:
+
+```bash
+make new-user      USER=<name>     # scaffold users-private/<name>/{values.yaml,secrets/oauth2.yaml}
+                                   # + generates a fresh cookieSecret
+                                   # + prints a setup checklist (OAuth app URLs, fields to edit)
+# … now edit the "CHANGE ME" lines and drop your OAuth client_secret
+#   into users-private/<name>/secrets/oauth2.yaml.
+make validate-user USER=<name>     # placeholder scan + DNS + cluster prereq check (fails non-zero on issues)
+make deploy        USER=<name>     # helm upgrade --install (validate-user runs automatically first)
+```
+
+What gets created under `users-private/<name>/`:
+
+```
+users-private/<name>/
+├── values.yaml          # CHANGE-ME-laden, cookieSecret pre-generated
+└── secrets/
+    └── oauth2.yaml      # holds the GitHub OAuth client secret
+```
+
+You can also drop optional secret-bearing files alongside `oauth2.yaml` —
+they're auto-included in the helm deploy:
+
+| File | Purpose |
+|---|---|
+| `oauth2.yaml`     | OAuth2 client secret (and overrides for other oauth2.* fields). |
+| `claude.yaml`     | Sets `claude.apiKey` for pay-per-use Claude API access. |
+| `github-app.yaml` | Sets `github.app.{appId,installationId,privateKey}` for private-repo access. |
+
+### Cluster pre-reqs the validator checks
+
+`make validate-user USER=<name>` exits non-zero unless all of:
+
+- `values.yaml` exists for the user (under `deployments/` or `users-private/`).
+- No `CHANGE ME` / `PLACEHOLDER` / `__TEMPLATE_TOKEN__` strings remain in the resolved files.
+- `cookieSecret` is at least 24 chars.
+- DNS for `user.host` resolves (best-effort warning if not).
+- `kubectl get ns <namespace>` succeeds.
+- `regcred` image-pull secret exists in that namespace.
+- `helm status base-infrastructure` succeeds.
+
+### Gitignored — by design
+
+The entire `users-private/` tree is excluded in `/.gitignore`. `git
+status` won't show any of it. If you want the configs versioned, point
+it at a separate private git repo:
+
+```bash
+cd users-private && git init && git remote add origin git@github.com:you/kube-coder-private.git
+```
+
 ## 📋 Prerequisites
 
 Before provisioning a new user, ensure you have:
