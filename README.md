@@ -156,6 +156,44 @@ When working in this repo with Claude Code, use the `/remote-task` skill:
 /remote-task kill <TASK_ID>                                # Kill task
 ```
 
+## Persistent Memory
+
+Each workspace ships with a **SQLite-backed memory store** shared between
+the dashboard's Memory tab and Claude Code (via MCP). Users can say
+*"remember I prefer Go"* and ask later *"what language do I prefer?"* —
+Claude reads the entry back without you re-supplying it. Memory survives
+across tasks, browser tabs, and pod restarts.
+
+Highlights:
+
+- 9 MCP tools (`memory_remember`, `memory_search`, `memory_recall`,
+  `memory_list`, `memory_link`, `memory_neighbors`, `memory_forget`,
+  `memory_update`, `memory_stats`) auto-registered in `~/.claude.json`.
+- **Auto-injection** at task start: the server prepends a
+  `<workspace_memories>` block with the top-K relevant entries so Claude
+  feels stateful without needing to call tools first. Per-task opt-out
+  checkbox in the new-task form.
+- **Claude-auto sync** (every 60 s): Claude Code's *native* file-based
+  memory (`~/.claude/projects/*/memory/*.md`) is one-way synced into
+  SQLite so it surfaces in the dashboard with an `auto` badge.
+- **Provenance** on every write (`task:<id>` / `dashboard:<email>` /
+  `cron:<id>` / `claude-auto:<path>`); full revision history; access log.
+- **Graph relations** between memories (Phase 3 surfaces them in the UI).
+
+See [docs/persistent-memory.md](./docs/persistent-memory.md) for the full
+walkthrough, HTTP API, schema, and **how to clear / reset / back up the
+database**.
+
+```bash
+# Quick API smoke test from inside a workspace pod
+TOK=$(cat /home/dev/.claude-tasks/.api-token)
+curl -X POST localhost:6080/api/memory \
+  -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" \
+  -d '{"namespace":"user","key":"editor","value":"neovim"}'
+
+curl localhost:6080/api/memory -H "Authorization: Bearer $TOK"
+```
+
 ## Triggers: Webhooks + Crons + Completion Hooks
 
 Once a workspace is deployed, you can drive it from outside via three composable
@@ -521,6 +559,7 @@ docs/
 ## Documentation
 
 - [Claude Task API](./docs/claude-task-api.md) - REST API for remote Claude task management
+- [Persistent Memory](./docs/persistent-memory.md) - SQLite-backed memory shared with Claude (MCP) + how to clear/reset
 - [Browser Architecture](./BROWSER_ARCHITECTURE.md) - Remote browser VNC architecture
 - [New User Provisioning](./NEW_USER_PROVISIONING.md) - Adding new workspace users
 

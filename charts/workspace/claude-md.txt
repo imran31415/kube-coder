@@ -128,3 +128,35 @@ Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t cla
 - The VS Code server runs on port 8080 (no auth — protected by ingress-level authentication).
 - SSH keys persist in `~/.ssh`. Generate with: `ssh-keygen -t ed25519`
 - To check what's running: `curl localhost:6080/health`
+
+## Persistent Memory (MCP)
+
+This workspace ships a persistent memory store backed by SQLite at
+`/home/dev/.claude-memory/memory.db` and exposed to you via MCP tools.
+Entries survive across tasks, browser tabs, and pod restarts, and are
+shared with the dashboard's Memory tab — the user can view and edit them.
+
+**When to use the memory tools:**
+
+- "remember X" / "note that" / "save this" → call `memory_remember`.
+  Pick a stable `namespace.key` (e.g. `user.preferences.editor`,
+  `project.kube-coder.deploy_cmd`).
+- "what did I tell you about X" / "do you remember" → call
+  `memory_search` with topic words; fall back to `memory_list` if
+  nothing matches.
+- "forget X" → confirm with the user, then call `memory_forget`.
+- Observed a stable preference the user did not explicitly ask to
+  save? Call `memory_remember` with `importance=0.7`. Keep values
+  concise (one fact per entry).
+
+**Namespaces:** `user.*` for personal facts, `project.<repo>.*` for
+project-scoped facts. Avoid `session.*` (reserved for future
+auto-pruning).
+
+**Memory injection:** at the start of new tasks, the workspace may
+prefix your prompt with a `<workspace_memories>` block containing the
+top-K relevant remembered entries. Treat that block as authoritative
+prior context; don't re-ask the user for facts already listed there.
+
+**Tagging:** tag sensitive entries with `secret` to opt them out of
+the auto-injection block (they remain readable via explicit tools).

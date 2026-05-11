@@ -10,3 +10,15 @@ data:
 {{ .Files.Get "index.html" | indent 4 }}
   server.py: |
 {{ .Files.Get "server.py" | indent 4 }}
+  mcp_memory.py: |
+{{ .Files.Get "mcp_memory.py" | indent 4 }}
+  seed_claude_config.py: |
+{{ .Files.Get "seed_claude_config.py" | indent 4 }}
+  memory__init__.py: |
+{{ .Files.Get "memory/__init__.py" | indent 4 }}
+  memory_store.py: |
+{{ .Files.Get "memory/store.py" | indent 4 }}
+  memory_manager.py: |
+{{ .Files.Get "memory/manager.py" | indent 4 }}
+  memory_sync.py: |
+{{ .Files.Get "memory/sync.py" | indent 4 }}
