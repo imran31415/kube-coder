@@ -71,7 +71,7 @@ fi
 if [ -f "$OAUTH_OUT" ]; then
   echo "[new-user] $OAUTH_OUT already exists — leaving it alone."
 else
-  substitute < "$TEMPLATE_DIR/secrets/oauth2.yaml.tmpl" > "$OAUTH_OUT"
+  substitute < "$TEMPLATE_DIR/oauth2-secrets.yaml.tmpl" > "$OAUTH_OUT"
   echo "[new-user] wrote $OAUTH_OUT"
 fi
 
