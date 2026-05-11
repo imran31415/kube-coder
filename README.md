@@ -1,6 +1,6 @@
 # Kube-Coder
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+icense: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
@@ -33,6 +33,19 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
   </tr>
 </table>
 
+## Update 5/10: Updated UX and Cron Job/Webhook adapters
+
+- Updated UI/UX for the dashboard.
+- Webhook adapters
+- Cron Job adapters
+- Overall improved UX especially on mobile.
+
+<img width="1512" height="862" alt="image" src="https://github.com/user-attachments/assets/309f350c-0545-42c8-a78f-9ed254cfb765" />
+
+
+
+
+[![L
 
 ## Features
 
