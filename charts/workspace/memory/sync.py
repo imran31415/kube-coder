@@ -230,10 +230,20 @@ def _sync_one(file_path: str) -> Tuple[str, str, bool]:
 
 
 def sync_once(roots: Iterable[str] = DEFAULT_SCAN_ROOTS) -> Dict[str, int]:
-    """One pass over the filesystem. Returns counters for logging/stats."""
+    """One pass over the filesystem. Returns counters for logging/stats.
+
+    Prune is *scoped* to scan-roots that returned at least one file this
+    pass. This is critical: if `/home/ubuntu/.claude/` is gone after a pod
+    restart (because it was ephemeral and Claude hasn't run yet), we must
+    NOT treat that as "every previously-imported entry was deleted".
+    Otherwise a single pod restart wipes the imported corpus.
+    """
     scanned = 0
     changed = 0
     seen_keys: List[Tuple[str, str]] = []
+    # Track which scan-roots actually surfaced files this pass. Only entries
+    # whose source path starts with a hit-root are eligible for prune.
+    roots_with_hits: List[str] = []
     for p in _iter_memory_files(roots):
         scanned += 1
         ns, key, did = _sync_one(p)
@@ -241,24 +251,43 @@ def sync_once(roots: Iterable[str] = DEFAULT_SCAN_ROOTS) -> Dict[str, int]:
             seen_keys.append((ns, key))
             if did:
                 changed += 1
+            # Remember the originating scan root for this file so we only
+            # prune entries whose origin we just verified is reachable.
+            for r in roots:
+                if r and p.startswith(r.rstrip('/') + '/'):
+                    if r not in roots_with_hits:
+                        roots_with_hits.append(r)
+                    break
 
-    # Soft-delete entries whose source file disappeared (only entries with
-    # the claude-memory tag are touched; user-authored entries are untouched).
     seen_set = {(n, k) for n, k in seen_keys}
     pruned = 0
+    if not roots_with_hits:
+        # Defensive: every scan root produced zero files. This is the
+        # post-pod-restart shape when ~/.claude lives on ephemeral storage.
+        # Skipping prune preserves the imported corpus until Claude
+        # repopulates its files.
+        return {'scanned': scanned, 'changed': changed, 'pruned': 0,
+                'prune_skipped': True}
     try:
-        # Scan the full set of claude.* namespaces.
         candidates = MemoryManager.list(limit=2000)
         for row in candidates:
             tags = row.get('tags', '')
             if 'claude-memory' not in tags:
                 continue
-            if (row['namespace'], row['key']) not in seen_set:
-                MemoryManager.soft_delete(
-                    namespace=row['namespace'], key=row['key'],
-                    source='claude-auto:removed',
-                )
-                pruned += 1
+            if (row['namespace'], row['key']) in seen_set:
+                continue
+            # Only prune if this entry's source path lives under a root
+            # that produced files in this pass — otherwise its absence
+            # may be a missing-mount issue, not a genuine deletion.
+            source_path = (row.get('source') or '').removeprefix('claude-auto:')
+            if not any(source_path.startswith(r.rstrip('/') + '/')
+                       for r in roots_with_hits):
+                continue
+            MemoryManager.soft_delete(
+                namespace=row['namespace'], key=row['key'],
+                source='claude-auto:removed',
+            )
+            pruned += 1
     except Exception as e:
         print(f'[memory.sync] prune phase failed: {e}', file=sys.stderr)
 

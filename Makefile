@@ -1,5 +1,27 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard
+.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user
+
+# =============================================================================
+# Generic per-user helpers
+# =============================================================================
+# Resolve a user's values directory in this order:
+#   1. deployments/<user>/         (public, committed)
+#   2. users-private/<user>/       (gitignored, private)
+# Same lookup applies to its secrets dir. All *.yaml files in the secrets
+# dir (claude.yaml, github-app.yaml, oauth2.yaml, …) are auto-included.
+#
+# Usage:
+#   make deploy   USER=chase
+#   make logs     USER=chase
+#   make shell    USER=chase
+#   make test     USER=chase
+#   make rollback USER=chase
+
+user_dir = $(firstword $(wildcard ./deployments/$(1) ./users-private/$(1)))
+values_file = $(call user_dir,$(1))/values.yaml
+secrets_dir = $(firstword $(wildcard ./secrets/$(1) ./users-private/$(1)/secrets))
+# Build a `-f path` arg for every *.yaml inside the resolved secrets dir.
+secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
@@ -138,3 +160,47 @@ shell-imran: ## Shell into Imran's workspace
 
 shell-gerard: ## Shell into Gerard's workspace
 	kubectl exec -it -n $(NAMESPACE) deployment/ws-gerard -c ide -- /bin/bash
+
+# =============================================================================
+# Generic per-user targets (USER=<name>)
+# =============================================================================
+
+# Internal: fail fast with a helpful message if USER isn't set.
+require-user:
+	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make deploy USER=chase)"; exit 1; fi
+	@if [ -z "$(call user_dir,$(USER))" ]; then \
+	  echo "ERROR: no values.yaml for '$(USER)' under deployments/ or users-private/"; exit 1; fi
+
+new-user: ## Scaffold a private workspace (USER=<name>); generates values.yaml + cookieSecret + checklist
+	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make new-user USER=chase)"; exit 1; fi
+	@./scripts/new-user.sh $(USER)
+
+validate-user: ## Pre-deploy sanity check (USER=<name>); placeholders, DNS, cluster prereqs
+	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make validate-user USER=chase)"; exit 1; fi
+	@./scripts/validate-user.sh $(USER)
+
+deploy: require-user validate-user ## Deploy any user's workspace (USER=<name>); auto-finds values.yaml + secrets
+	@echo "Deploying $(USER)'s workspace from $(call values_file,$(USER))..."
+	helm upgrade $(USER)-workspace ./charts/workspace \
+		-f $(call values_file,$(USER)) \
+		$(call secret_flags,$(USER)) \
+		--namespace $(NAMESPACE) \
+		--install \
+		--wait \
+		--timeout 8m
+
+logs: require-user ## Tail logs for any user's workspace (USER=<name>)
+	kubectl logs -f -n $(NAMESPACE) deployment/ws-$(USER) -c ide
+
+shell: require-user ## Shell into any user's workspace (USER=<name>)
+	kubectl exec -it -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- /bin/bash
+
+test: require-user ## Sanity-test any user's workspace (USER=<name>)
+	@echo "Testing $(USER)'s workspace..."
+	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- node --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- yarn --version
+	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- gh --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- code-server --version | head -1
+
+rollback: require-user ## Rollback any user's workspace (USER=<name>)
+	helm rollback $(USER)-workspace --namespace $(NAMESPACE)

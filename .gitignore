@@ -13,3 +13,9 @@ __pycache__/
 secrets/
 *.secret
 *.key
+
+# Private per-user workspaces (chart values + secrets for workspaces that
+# don't need to be exposed in the public repo). Each subdir mirrors the
+# `deployments/<user>/` + `secrets/<user>/` shape but everything stays out
+# of git. See NEW_USER_PROVISIONING.md → "Private workspaces".
+users-private/

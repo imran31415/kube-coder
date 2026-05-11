@@ -129,34 +129,55 @@ Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t cla
 - SSH keys persist in `~/.ssh`. Generate with: `ssh-keygen -t ed25519`
 - To check what's running: `curl localhost:6080/health`
 
-## Persistent Memory (MCP)
+## Persistent Memory (MCP) — check FIRST, never guess
 
 This workspace ships a persistent memory store backed by SQLite at
 `/home/dev/.claude-memory/memory.db` and exposed to you via MCP tools.
 Entries survive across tasks, browser tabs, and pod restarts, and are
 shared with the dashboard's Memory tab — the user can view and edit them.
 
-**When to use the memory tools:**
+### Default behavior: ALWAYS check memory before saying "I don't know"
+
+A `<workspace_memories>` block is automatically prepended to every user
+prompt with the top-K relevant entries (via a `UserPromptSubmit` hook).
+**Read that block before composing your reply.**
+
+If the user asks anything about themselves, their preferences, this
+project, or anything they may have previously mentioned — and the
+auto-injected block does not contain the answer — **call `memory_search`
+BEFORE responding with "I don't know" / "I don't have that information"
+/ "you haven't told me"**. Treat memory as authoritative; never claim
+ignorance without checking.
+
+Common triggers requiring an explicit `memory_search` call:
+- "what is my name / email / role / language / editor / …"
+- "what do I prefer for X"
+- "do you remember when / what about / did I tell you …"
+- "what's our convention for X" / "how do we deploy this project"
+
+Only say "I don't know" *after* the auto-injection block and a
+deliberate `memory_search` both come up empty. Then ask the user — and
+when they answer, immediately call `memory_remember` so the next session
+has it.
+
+### Writing memory
 
 - "remember X" / "note that" / "save this" → call `memory_remember`.
   Pick a stable `namespace.key` (e.g. `user.preferences.editor`,
   `project.kube-coder.deploy_cmd`).
-- "what did I tell you about X" / "do you remember" → call
-  `memory_search` with topic words; fall back to `memory_list` if
-  nothing matches.
-- "forget X" → confirm with the user, then call `memory_forget`.
 - Observed a stable preference the user did not explicitly ask to
   save? Call `memory_remember` with `importance=0.7`. Keep values
   concise (one fact per entry).
+- "forget X" → confirm with the user, then call `memory_forget`.
 
-**Namespaces:** `user.*` for personal facts, `project.<repo>.*` for
-project-scoped facts. Avoid `session.*` (reserved for future
-auto-pruning).
+### Namespaces
 
-**Memory injection:** at the start of new tasks, the workspace may
-prefix your prompt with a `<workspace_memories>` block containing the
-top-K relevant remembered entries. Treat that block as authoritative
-prior context; don't re-ask the user for facts already listed there.
+- `user.*` — personal facts (name, email, preferences, working style).
+- `project.<repo>.*` — facts about a specific project.
+- Avoid `session.*` (reserved for future auto-pruning).
 
-**Tagging:** tag sensitive entries with `secret` to opt them out of
-the auto-injection block (they remain readable via explicit tools).
+### Tagging
+
+Tag sensitive entries with `secret` to opt them out of the
+auto-injection block. They remain readable via explicit tool calls but
+won't leak into every prompt.
