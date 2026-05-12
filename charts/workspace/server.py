@@ -628,6 +628,7 @@ class ClaudeTaskManager:
                 ClaudeTaskManager._reconcile_status(meta, task_dir)
                 tasks.append({
                     'task_id': meta.get('task_id', entry),
+                    'name': meta.get('name'),
                     'prompt': meta.get('prompt', '')[:120],
                     'status': meta.get('status', 'unknown'),
                     'created_at': meta.get('created_at'),
@@ -789,6 +790,43 @@ class ClaudeTaskManager:
         if updated is not None and fire_hook:
             ClaudeTaskManager._fire_completion_hook(updated)
         return updated
+
+    @staticmethod
+    def rename_task(task_id, body):
+        """Rename a task. Returns (meta, error).
+
+        Empty/whitespace-only name clears the field. Cap 100 chars after
+        stripping control characters.
+        """
+        if 'name' not in body:
+            return None, 'name field required'
+        raw = body['name']
+        if not isinstance(raw, str):
+            return None, 'name must be a string'
+        cleaned = ''.join(
+            ch for ch in raw if ch == ' ' or ch.isprintable()
+        ).strip()
+        if len(cleaned) > 100:
+            return None, 'name too long (max 100)'
+
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        if not os.path.isdir(task_dir):
+            return None, 'not_found'
+
+        renamed_at = time.time()
+
+        def mutate(m):
+            if cleaned:
+                m['name'] = cleaned
+                m['renamed_at'] = renamed_at
+            else:
+                m.pop('name', None)
+                m.pop('renamed_at', None)
+
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        if updated is None:
+            return None, 'not_found'
+        return updated, None
 
     @staticmethod
     def _atomic_update_meta(task_dir, mutate_fn):
@@ -2251,6 +2289,25 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json(task)
 
+    def handle_claude_rename_task(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not isinstance(data, dict):
+            self.send_json({'error': 'Body must be a JSON object'}, 400)
+            return
+        meta, err = ClaudeTaskManager.rename_task(self._claude_task_id, data)
+        if meta is None:
+            status = 404 if err == 'not_found' else 400
+            self.send_json({'error': err or 'Task not found'}, status)
+            return
+        self.send_json(meta)
+
     def handle_claude_delete_task(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -2988,6 +3045,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     self._claude_task_id = m.group(1)
                     self.handle_claude_followup()
                     return
+                # /api/claude/tasks/{id}/rename
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/rename$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_rename_task()
+                    return
                 # /api/claude/tasks/{id}/prepare-terminal
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/prepare-terminal$', path)
                 if m:
@@ -3404,6 +3467,7 @@ if __name__ == "__main__":
     print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
     print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
     print("  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
+    print("  POST /api/claude/tasks/{id}/rename  - Rename a task")
     print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
     print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")

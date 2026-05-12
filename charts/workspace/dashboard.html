@@ -1072,6 +1072,7 @@
                         </div>
                         <div class="detail-actions">
                             <button class="act-btn" id="d-share" onclick="copySelectedTaskLink()" title="Copy deep link">Share</button>
+                            <button class="act-btn" id="d-rename" onclick="renameSelectedTask()" title="Rename task">Rename</button>
                             <button class="act-btn primary" id="d-attach" onclick="attachSelectedTask()">Attach</button>
                             <button class="act-btn danger" id="d-kill" onclick="killSelectedTask()">Kill</button>
                         </div>
@@ -1966,6 +1967,7 @@ function renderTaskList() {
     if (STATE.search) {
         const q = STATE.search.toLowerCase();
         filtered = filtered.filter(t =>
+            (t.name || '').toLowerCase().includes(q) ||
             (t.prompt || '').toLowerCase().includes(q) ||
             (t.task_id || '').toLowerCase().includes(q) ||
             (t.source || '').toLowerCase().includes(q)
@@ -2033,10 +2035,11 @@ function updateTaskRow(row, t) {
     const kindHtml = t.kind === 'terminal'
         ? `<span class="task-row-kind" title="Plain shell session">term</span>`
         : '';
+    const label = t.name || t.prompt || '(no prompt)';
     row.innerHTML = `
         <div class="task-row-line1">
             <span class="task-dot ${status}"></span>
-            ${kindHtml}<span class="task-row-prompt">${escapeHtml(t.prompt || '(no prompt)')}</span>
+            ${kindHtml}<span class="task-row-prompt">${escapeHtml(label)}</span>
         </div>
         <div class="task-row-line2">
             ${sourceHtml}<span>${escapeHtml(time)}</span>
@@ -2381,6 +2384,31 @@ async function killSelectedTask() {
     try {
         const r = await fetch(`/oauth/api/claude/tasks/${encodeURIComponent(STATE.selectedId)}`, { method: 'DELETE' });
         if (r.ok) { toast('Task killed'); fetchClaudeTasks(); }
+    } catch (e) { toast('Error: ' + e.message); }
+}
+
+async function renameSelectedTask() {
+    if (!STATE.selectedId) return;
+    const t = STATE.tasks.find(x => x.task_id === STATE.selectedId);
+    const current = (t && t.name) || '';
+    const next = window.prompt('Rename task (blank to clear):', current);
+    if (next === null) return;
+    try {
+        const r = await fetch(
+            `/oauth/api/claude/tasks/${encodeURIComponent(STATE.selectedId)}/rename`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: next }),
+            }
+        );
+        if (r.ok) {
+            toast(next.trim() ? 'Renamed' : 'Name cleared');
+            fetchClaudeTasks();
+        } else {
+            const err = await r.json().catch(() => ({}));
+            toast('Rename failed: ' + (err.error || r.status));
+        }
     } catch (e) { toast('Error: ' + e.message); }
 }
 
