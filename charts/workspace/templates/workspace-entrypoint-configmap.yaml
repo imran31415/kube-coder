@@ -50,8 +50,28 @@ data:
       python3 /github-app/github-app-token.py --daemon &
     fi
 
+    log_stage "seeding default code-server settings (first run only)"
+    CS_USER_DIR=/home/dev/.local/share/code-server/User
+    mkdir -p "$CS_USER_DIR"
+    if [ ! -f "$CS_USER_DIR/settings.json" ]; then
+      cat > "$CS_USER_DIR/settings.json" <<'JSON'
+    {
+      "terminal.integrated.scrollback": 2000,
+      "files.watcherExclude": {
+        "**/node_modules/**": true,
+        "**/.git/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/.next/**": true,
+        "**/target/**": true
+      }
+    }
+    JSON
+    fi
+
     log_stage "starting code-server"
-    code-server --bind-addr 0.0.0.0:8080 --auth none \
+    NODE_OPTIONS="--max-old-space-size=1536" \
+      code-server --bind-addr 0.0.0.0:8080 --auth none \
       --user-data-dir /home/dev/.local/share/code-server \
       --extensions-dir /home/dev/.local/share/code-server/extensions \
       /home/dev > /tmp/code-server.log 2>&1 &
@@ -176,8 +196,11 @@ data:
         ( cd /tmp/browser && python3 server.py & )
       fi
       if ! netstat -tln 2>/dev/null | grep -q :8080; then
-        log_stage "restarting code-server"
-        code-server --bind-addr 0.0.0.0:8080 --auth none \
+        log_stage "restarting code-server (killing stale processes first)"
+        pkill -f "code-server" 2>/dev/null || true
+        sleep 1
+        NODE_OPTIONS="--max-old-space-size=1536" \
+          code-server --bind-addr 0.0.0.0:8080 --auth none \
           --user-data-dir /home/dev/.local/share/code-server \
           --extensions-dir /home/dev/.local/share/code-server/extensions \
           /home/dev >> /tmp/code-server.log 2>&1 &
