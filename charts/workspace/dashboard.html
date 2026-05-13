@@ -872,8 +872,8 @@
             <div class="topbar-spacer"></div>
 
             <div class="tools">
-                <a class="tool" href="/oauth/vscode/?folder=/home/dev" target="_blank" title="Open VS Code">
-                    <span class="ind" id="ide-health"></span><span>VS Code</span>
+                <a class="tool" href="zed://ssh-connect/ubuntu@localhost:2222//home/dev" target="_blank" title="Open in Zed (requires `kubectl port-forward -n coder svc/ws-demo 2222:22` running locally)">
+                    <span class="ind" id="ide-health"></span><span>Zed</span>
                 </a>
                 <button class="tool" onclick="openTerminal()" title="Open terminal (registered as a task)">
                     <span class="ind" id="terminal-health"></span><span>Terminal</span>
