@@ -44,6 +44,10 @@ data:
       || ssh-keygen -t ed25519 -N "" -f /home/dev/.ssh-host-keys/ssh_host_ed25519_key
     [ -f /home/dev/.ssh-host-keys/ssh_host_rsa_key ] \
       || ssh-keygen -t rsa -b 4096 -N "" -f /home/dev/.ssh-host-keys/ssh_host_rsa_key
+    # Pod fsGroup=1000 sets files to 0660 on the PVC; sshd refuses any
+    # private key readable by group/other. Tighten to 0600 explicitly.
+    chmod 0600 /home/dev/.ssh-host-keys/ssh_host_*_key
+    chmod 0644 /home/dev/.ssh-host-keys/ssh_host_*_key.pub
 
     # Materialize authorized_keys for the ubuntu user. The Secret is mounted
     # read-only at /etc/ssh/authorized_keys.secret; copy under AuthorizedKeysFile
@@ -52,8 +56,44 @@ data:
     cp /etc/ssh/authorized_keys.secret/authorized_keys /etc/ssh/authorized_keys.d/ubuntu
     chmod 0644 /etc/ssh/authorized_keys.d/ubuntu
 
-    # /run is sometimes a noexec tmpfs in the base image; ensure pidfile dir.
-    mkdir -p /run
+    # sshd refuses to start without /run/sshd for privilege separation.
+    mkdir -p /run/sshd
+    chmod 0755 /run/sshd
+
+    # The ubuntu user ships with a locked password ('!' in /etc/shadow);
+    # sshd refuses to authenticate locked accounts even via pubkey. Set
+    # the hash to '*' so password login remains impossible but pubkey
+    # auth is permitted.
+    usermod -p '*' ubuntu
+
+    # Mirror the ide container's credential layout into THIS container's
+    # /home/ubuntu so SSH sessions see PVC-backed ~/.gitconfig, ~/.ssh,
+    # and ~/.config/gh. Without this, gh tokens, git config, and
+    # known_hosts written via SSH would be lost on every pod restart
+    # (sidecar /home/ubuntu is ephemeral; only /home/dev persists).
+    mkdir -p /home/dev/.credentials/.ssh \
+             /home/dev/.credentials/.config/git \
+             /home/dev/.credentials/.config/gh
+    chmod 700 /home/dev/.credentials/.ssh
+    touch /home/dev/.credentials/.config/git/config
+
+    mkdir -p /home/ubuntu/.config
+    ln -sfn /home/dev/.credentials/.ssh         /home/ubuntu/.ssh
+    ln -sf  /home/dev/.credentials/.config/git/config /home/ubuntu/.gitconfig
+    ln -sfn /home/dev/.credentials/.config/gh   /home/ubuntu/.config/gh
+    chown -h ubuntu:ubuntu /home/ubuntu/.ssh /home/ubuntu/.gitconfig /home/ubuntu/.config/gh /home/ubuntu/.config 2>/dev/null || true
+
+    # When a GitHub App is configured, the ide container's token-refresh
+    # daemon writes a fresh GITHUB_TOKEN to /home/dev/.profile.d-github-env
+    # every ~hour. Source it from /etc/profile.d so SSH login shells
+    # automatically inherit the token (otherwise gh/git over HTTPS don't
+    # see it — that env block in deployment.yaml only injects into the
+    # ide container, not this sidecar).
+    cat > /etc/profile.d/github-app.sh <<'PROFILE'
+    # shellcheck disable=SC1091
+    [ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env
+    PROFILE
+    chmod 0644 /etc/profile.d/github-app.sh
 
     exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config_kube-coder
 {{- end }}

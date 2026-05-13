@@ -81,7 +81,7 @@ data:
     {{- end }}
 
     log_stage "starting ttyd"
-    ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
+    ttyd --port 7681 --interface 0.0.0.0 --writable --client-option disableLeaveAlert=true -w /home/dev \
       /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
 
     log_stage "starting Xvfb / fluxbox / x11vnc"
@@ -92,8 +92,12 @@ data:
     DISPLAY=:99 setxkbmap us
     DISPLAY=:99 fluxbox &
     sleep 1
+    # -ncache 10 -ncache_cr enables client-side pixel caching in noVNC,
+    # which reduces bandwidth and gives smoother window motion ("copyrect")
+    # at the cost of a wider-than-visible framebuffer (the cache sits
+    # off-screen below the visible area). noVNC handles it transparently.
     x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat \
-      -cursor -cursorpos -24to32 -nobell -noipv6 &
+      -cursor -cursorpos -24to32 -nobell -noipv6 -ncache 10 -ncache_cr &
     sleep 2
 
     log_stage "waiting for VNC port 5900"
@@ -253,7 +257,7 @@ data:
       {{- end }}
       if ! netstat -tln 2>/dev/null | grep -q :7681; then
         log_stage "restarting ttyd"
-        ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
+        ttyd --port 7681 --interface 0.0.0.0 --writable --client-option disableLeaveAlert=true -w /home/dev \
           /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
       fi
       if ! netstat -tln 2>/dev/null | grep -q :6081; then
