@@ -872,9 +872,9 @@
             <div class="topbar-spacer"></div>
 
             <div class="tools">
-                <button class="tool" onclick="connectZed()" title="Copy SSH connect string for Zed Remote SSH">
-                    <span class="ind" id="ide-health"></span><span>Zed</span>
-                </button>
+                <a class="tool" href="/oauth/vscode/?folder=/home/dev" target="_blank" title="Open VS Code">
+                    <span class="ind" id="ide-health"></span><span>VS Code</span>
+                </a>
                 <button class="tool" onclick="openTerminal()" title="Open terminal (registered as a task)">
                     <span class="ind" id="terminal-health"></span><span>Terminal</span>
                 </button>
@@ -2330,24 +2330,6 @@ async function openChatForCurrent() {
 function closeChatIframe() {
     const iframe = document.getElementById('chat-iframe');
     if (iframe.src && iframe.src !== 'about:blank') iframe.src = 'about:blank';
-}
-
-/* ════════════════════════════════════════════════════════════════════
- * Zed launcher — Zed's SSH remote-dev feature has no URI scheme we can
- * reliably trigger from a link, so we copy the connect string and toast
- * instructions. User pastes the host into Zed's "Connect to SSH Host"
- * dialog and opens /home/dev as the project root.
- * ═════════════════════════════════════════════════════════════════ */
-function connectZed() {
-    const host = 'ubuntu@localhost:2222';
-    const msg  = 'Copied "' + host + '". Start: kubectl port-forward -n coder svc/ws-' +
-                 (window.location.host.split('.')[0] || 'demo') +
-                 ' 2222:22 — then in Zed: Remote SSH → paste host → open /home/dev';
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(host).then(() => toast(msg), () => toast(msg));
-    } else {
-        toast(msg);
-    }
 }
 
 /* ════════════════════════════════════════════════════════════════════
