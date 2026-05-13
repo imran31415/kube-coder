@@ -3,11 +3,11 @@ kind: ConfigMap
 metadata:
   name: browser-config-{{ .Values.user.name }}
   namespace: {{ .Values.namespace }}
+# HTML/CSS/JS for the dashboard lives in browser-html-{{ .Values.user.name }}
+# (separate ConfigMap, not checksummed in the deployment) so dashboard-only
+# changes don't require a pod restart. Keep this ConfigMap to Python source
+# + supporting files — those DO need a restart when changed.
 data:
-  dashboard.html: |
-{{ .Files.Get "dashboard.html" | indent 4 }}
-  index.html: |
-{{ .Files.Get "index.html" | indent 4 }}
   server.py: |
 {{ .Files.Get "server.py" | indent 4 }}
   mcp_memory.py: |

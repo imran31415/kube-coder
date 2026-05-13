@@ -108,6 +108,8 @@ spec:
           mountPath: /home/dev
         - name: browser-config
           mountPath: /browser-config
+        - name: browser-html
+          mountPath: /browser-html
         - name: claude-config
           mountPath: /claude-config
         - name: terminal-scripts
@@ -160,6 +162,10 @@ spec:
         configMap:
           name: browser-config-{{ .Values.user.name }}
           defaultMode: 0755
+      - name: browser-html
+        configMap:
+          name: browser-html-{{ .Values.user.name }}
+          defaultMode: 0644
       - name: claude-config
         configMap:
           name: claude-config-{{ .Values.user.name }}

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: browser-html-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+# NOTE: this ConfigMap is intentionally NOT included in the deployment's
+# checksum annotations, so updates to HTML/CSS/JS propagate via kubelet's
+# ConfigMap sync without restarting the workspace pod. Edit-and-helm-upgrade
+# iteration on the dashboard lands in ~1 min, no pod restart.
+data:
+  dashboard.html: |
+{{ .Files.Get "dashboard.html" | indent 4 }}
+  index.html: |
+{{ .Files.Get "index.html" | indent 4 }}
