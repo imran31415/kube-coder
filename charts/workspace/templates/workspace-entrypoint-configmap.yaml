@@ -37,7 +37,13 @@ data:
     touch /home/dev/.credentials/.config/git/config
     ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
     ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
-    test -f /home/dev/CLAUDE.md || cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
+    # CLAUDE.md is chart-managed (describes the workspace environment to
+    # Claude). Always overwrite from the configmap so chart updates land
+    # — previously we preserved any existing file, which meant edits to
+    # claude-md.txt never reached workspaces with an established PVC.
+    # User-level notes belong in the persistent-memory subsystem, not
+    # here.
+    cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
 
     # Ensure the upstream kube-coder source is available at /home/dev/kube-coder
     # so Claude can introspect the workspace's own infrastructure and contribute
