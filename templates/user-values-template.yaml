@@ -44,11 +44,11 @@ oauth2:
 
 resources:
   requests:
-    cpu: "2"
-    memory: 3Gi
+    cpu: "1"
+    memory: 2Gi
   limits:
-    cpu: "3"
-    memory: 5Gi
+    cpu: "2"
+    memory: 6Gi
 
 build:
   mode: buildkit
