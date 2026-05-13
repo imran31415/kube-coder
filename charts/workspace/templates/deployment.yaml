@@ -154,6 +154,36 @@ spec:
         - name: dind-storage
           mountPath: /var/lib/docker
         {{- end }}
+      {{- if .Values.ssh.enabled }}
+      - name: ssh-server
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        command: ["/bin/bash", "/ssh-server-config/entrypoint.sh"]
+        ports:
+        - containerPort: {{ .Values.ssh.port }}
+          name: ssh
+        volumeMounts:
+        - name: home
+          mountPath: /home/dev
+        - name: ssh-server-config
+          mountPath: /ssh-server-config
+        - name: ssh-server-config
+          mountPath: /etc/ssh/sshd_config_kube-coder
+          subPath: sshd_config
+        - name: ssh-authorized-keys
+          mountPath: /etc/ssh/authorized_keys.secret
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      {{- end }}
       volumes:
       - name: home
         persistentVolumeClaim:
@@ -197,4 +227,14 @@ spec:
         emptyDir: {}
       - name: dind-storage
         emptyDir: {}
+      {{- end }}
+      {{- if .Values.ssh.enabled }}
+      - name: ssh-server-config
+        configMap:
+          name: ssh-server-{{ .Values.user.name }}
+          defaultMode: 0555
+      - name: ssh-authorized-keys
+        secret:
+          secretName: ssh-authorized-keys-{{ .Values.user.name }}
+          defaultMode: 0444
       {{- end }}

@@ -1,0 +1,59 @@
+{{- if .Values.ssh.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssh-server-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+data:
+  sshd_config: |
+    # Workspace sshd. Runs in the ssh-server sidecar (root), accepts pubkey
+    # logins as the `ubuntu` user (UID 1000) — matches the main ide
+    # container's UID so files created via SSH have consistent ownership
+    # on the shared home PVC.
+    Port {{ .Values.ssh.port }}
+    HostKey /home/dev/.ssh-host-keys/ssh_host_ed25519_key
+    HostKey /home/dev/.ssh-host-keys/ssh_host_rsa_key
+    PidFile /run/sshd.pid
+    LogLevel INFO
+
+    PasswordAuthentication no
+    PubkeyAuthentication yes
+    PermitRootLogin no
+    AllowUsers ubuntu
+    AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
+
+    # Persist host keys + read root-owned authorized_keys file from /etc/ssh
+    # (mounted from Secret). StrictModes off because the home directory is
+    # PVC-shared and may have group-writable bits set by the ide container.
+    StrictModes no
+    UsePAM no
+    PrintMotd no
+    AcceptEnv LANG LC_*
+    Subsystem sftp /usr/lib/openssh/sftp-server
+  entrypoint.sh: |
+    #!/bin/bash
+    # ssh-server sidecar entrypoint. Generates host keys on first run
+    # (persisted on the home PVC so client fingerprints don't change
+    # across pod restarts), prepares the authorized_keys layout from the
+    # mounted Secret, then runs sshd in the foreground.
+    set -e
+
+    mkdir -p /home/dev/.ssh-host-keys
+    chmod 700 /home/dev/.ssh-host-keys
+    [ -f /home/dev/.ssh-host-keys/ssh_host_ed25519_key ] \
+      || ssh-keygen -t ed25519 -N "" -f /home/dev/.ssh-host-keys/ssh_host_ed25519_key
+    [ -f /home/dev/.ssh-host-keys/ssh_host_rsa_key ] \
+      || ssh-keygen -t rsa -b 4096 -N "" -f /home/dev/.ssh-host-keys/ssh_host_rsa_key
+
+    # Materialize authorized_keys for the ubuntu user. The Secret is mounted
+    # read-only at /etc/ssh/authorized_keys.secret; copy under AuthorizedKeysFile
+    # path so sshd can read with its own permissions.
+    mkdir -p /etc/ssh/authorized_keys.d
+    cp /etc/ssh/authorized_keys.secret/authorized_keys /etc/ssh/authorized_keys.d/ubuntu
+    chmod 0644 /etc/ssh/authorized_keys.d/ubuntu
+
+    # /run is sometimes a noexec tmpfs in the base image; ensure pidfile dir.
+    mkdir -p /run
+
+    exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config_kube-coder
+{{- end }}

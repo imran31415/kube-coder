@@ -50,6 +50,7 @@ data:
       python3 /github-app/github-app-token.py --daemon &
     fi
 
+    {{- if .Values.codeServer.enabled }}
     log_stage "seeding default code-server settings (first run only)"
     CS_USER_DIR=/home/dev/.local/share/code-server/User
     mkdir -p "$CS_USER_DIR"
@@ -75,6 +76,9 @@ data:
       --user-data-dir /home/dev/.local/share/code-server \
       --extensions-dir /home/dev/.local/share/code-server/extensions \
       /home/dev > /tmp/code-server.log 2>&1 &
+    {{- else }}
+    log_stage "code-server disabled (codeServer.enabled=false); skipping launch"
+    {{- end }}
 
     log_stage "starting ttyd"
     ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
@@ -235,6 +239,7 @@ data:
         log_stage "restarting browser server"
         ( cd /tmp/browser && python3 server.py & )
       fi
+      {{- if .Values.codeServer.enabled }}
       if ! netstat -tln 2>/dev/null | grep -q :8080; then
         log_stage "restarting code-server (killing stale processes first)"
         pkill -f "code-server" 2>/dev/null || true
@@ -245,6 +250,7 @@ data:
           --extensions-dir /home/dev/.local/share/code-server/extensions \
           /home/dev >> /tmp/code-server.log 2>&1 &
       fi
+      {{- end }}
       if ! netstat -tln 2>/dev/null | grep -q :7681; then
         log_stage "restarting ttyd"
         ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \

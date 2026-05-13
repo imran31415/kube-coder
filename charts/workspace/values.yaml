@@ -46,10 +46,25 @@ build:
   pushSecretName: regcred
   defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
 
-# SSH server configuration
+# SSH server configuration. When enabled, an `ssh-server` sidecar runs in
+# the workspace pod (root, port 22, shares the home PVC). Access via
+# `kubectl port-forward` for initial testing; add a Service of type
+# LoadBalancer or ingress TCP services for permanent external access.
 ssh:
   enabled: false
   port: 22
+  # Public keys allowed to log in as the `ubuntu` user. One key per line.
+  # Equivalent to ~/.ssh/authorized_keys content. Provide via secrets file
+  # for production; inline is fine for testing.
+  authorizedKeys: ""
+
+# code-server (VS Code in the browser) is on by default. Set enabled=false
+# to skip the launch entirely — useful for workspaces accessed via SSH
+# (Zed remote-dev, JetBrains Gateway, VS Code remote-ssh, etc.) where the
+# user's local editor connects directly and code-server's ~400MB baseline
+# is just wasted memory.
+codeServer:
+  enabled: true
 
 # Claude Code configuration
 # Two auth methods are supported:
