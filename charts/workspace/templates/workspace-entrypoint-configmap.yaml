@@ -39,6 +39,20 @@ data:
     ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
     test -f /home/dev/CLAUDE.md || cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
 
+    # Ensure the upstream kube-coder source is available at /home/dev/kube-coder
+    # so Claude can introspect the workspace's own infrastructure and contribute
+    # changes back via fork+PR (see CLAUDE.md "kube-coder source" section).
+    # Idempotent — skipped if .git already exists. Backgrounded so a slow/flaky
+    # clone never blocks pod readiness.
+    (
+      if [ ! -d /home/dev/kube-coder/.git ]; then
+        log_stage "cloning kube-coder source into /home/dev/kube-coder"
+        git clone https://github.com/imran31415/kube-coder.git /home/dev/kube-coder \
+          && log_stage "kube-coder source clone complete" \
+          || log_stage "WARNING: kube-coder clone failed (network?); will retry on next pod start"
+      fi
+    ) &
+
     if [ -n "$GITHUB_APP_ID" ]; then
       log_stage "minting initial GitHub App token and starting refresh daemon"
       python3 /github-app/github-app-token.py --once
