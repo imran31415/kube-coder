@@ -94,10 +94,19 @@ memory:
     enabled: false
     intervalHours: 6
 
-# GitHub App configuration for automatic git/gh authentication
-# Provide credentials via a secrets file (e.g., secrets/<user>/github-app.yaml)
+# GitHub App configuration for automatic git/gh authentication.
+# Two ways to supply credentials:
+#  (1) Inline via appId / installationId / privateKey (the chart creates a
+#      Secret named github-app-secrets-<user>). Provide secrets via a
+#      values overlay (e.g., secrets/<user>/github-app.yaml).
+#  (2) Reference an existing Secret in the same namespace via
+#      `existingSecretName`. The Secret must have keys: app-id,
+#      installation-id, private-key. Set `appId: "use-existing"` (or any
+#      non-empty placeholder) to flip the deployment env-var gate; the
+#      actual values come from the referenced Secret.
 github:
   app:
     appId: ""
     installationId: ""
     privateKey: ""
+    existingSecretName: ""

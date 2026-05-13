@@ -24,6 +24,9 @@ spec:
         {{- if .Values.github.app.appId }}
         checksum/github-app-script: {{ include (print $.Template.BasePath "/github-app-token-refresh.yaml") . | sha256sum }}
         {{- end }}
+        {{- if .Values.ssh.enabled }}
+        checksum/ssh-server: {{ include (print $.Template.BasePath "/ssh-server-configmap.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: ws-{{ .Values.user.name }}
       {{- if .Values.image.pullSecretName }}
@@ -63,17 +66,17 @@ spec:
         - name: GITHUB_APP_ID
           valueFrom:
             secretKeyRef:
-              name: github-app-secrets-{{ .Values.user.name }}
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: app-id
         - name: GITHUB_APP_INSTALLATION_ID
           valueFrom:
             secretKeyRef:
-              name: github-app-secrets-{{ .Values.user.name }}
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: installation-id
         - name: GITHUB_APP_PRIVATE_KEY
           valueFrom:
             secretKeyRef:
-              name: github-app-secrets-{{ .Values.user.name }}
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: private-key
         {{- end }}
         ports:
