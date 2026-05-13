@@ -189,8 +189,40 @@ data:
     python3 server.py &
 
     log_stage "all services launched, entering supervision loop"
+    tick=0
     while true; do
       sleep 30
+      tick=$((tick + 1))
+
+      # Every 5 min: snapshot top RSS processes for post-incident diagnosis.
+      # Rotates at ~1MB to keep PVC use bounded across long-lived pods.
+      if [ $((tick % 10)) -eq 0 ]; then
+        {
+          echo "=== $(date -u +%FT%TZ) memory snapshot ==="
+          ps -eo pid,ppid,rss,comm,args --sort=-rss 2>/dev/null | head -15
+          echo "--- cgroup memory.current ---"
+          cat /sys/fs/cgroup/memory.current 2>/dev/null \
+            || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null \
+            || echo "n/a"
+          echo
+        } >> /tmp/memory.log 2>&1
+        if [ "$(stat -c %s /tmp/memory.log 2>/dev/null || echo 0)" -gt 1048576 ]; then
+          tail -c 524288 /tmp/memory.log > /tmp/memory.log.tmp && mv /tmp/memory.log.tmp /tmp/memory.log
+        fi
+      fi
+
+      # Every 5 min: reap orphan chromium/headless_shell processes adopted by
+      # PID 1. Playwright MCP and similar tools can leak these when a claude
+      # session crashes without cleaning up its browser context.
+      if [ $((tick % 10)) -eq 0 ]; then
+        ps -eo pid,ppid,comm,args 2>/dev/null \
+          | awk '$2==1 && ($3 ~ /chrome|chromium|headless_shell/ || $0 ~ /--remote-debugging-port/) {print $1}' \
+          | while read -r orphan_pid; do
+              log_stage "reaping orphan browser PID $orphan_pid"
+              kill -TERM "$orphan_pid" 2>/dev/null || true
+            done
+      fi
+
       if ! pgrep -f "python3 server.py" > /dev/null; then
         log_stage "restarting browser server"
         ( cd /tmp/browser && python3 server.py & )
