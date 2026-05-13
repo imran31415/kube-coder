@@ -2319,7 +2319,15 @@ async function openChatForCurrent() {
         if (!r.ok) { toast('Failed to prepare terminal'); return; }
     } catch (e) { toast('Error preparing terminal'); return; }
     const iframe = document.getElementById('chat-iframe');
-    iframe.src = '/oauth/terminal/';
+    // Force reload even when the iframe already points at /oauth/terminal/.
+    // Windows Chromium/Edge frequently no-ops when iframe.src is reassigned
+    // to its current value, leaving the chat tab attached to a previous
+    // tmux session and "stuck" after switching tasks. Bouncing through
+    // about:blank + appending a cache-buster guarantees a fresh navigation.
+    iframe.src = 'about:blank';
+    requestAnimationFrame(() => {
+        iframe.src = '/oauth/terminal/?t=' + Date.now();
+    });
     // Push deep-link state with chat=open.
     const p = new URLSearchParams();
     p.set('task', STATE.selectedId);
