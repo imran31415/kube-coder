@@ -65,6 +65,7 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 - **Completion hooks** - Tasks can `POST` their final state to a `response_url` with optional HMAC signing
 - **Webhooks** - Inbound HTTP triggers that spawn Claude tasks; native verifiers for GitHub, Slack, Stripe, plus a generic mode
 - **Crons** - Scheduled triggers backed by real Kubernetes `CronJob` objects, with suspend/resume/run-now and token rotation from the dashboard
+- **Per-task assistant choice** *(opt-in)* - Claude Code is always available. Configure [OpenCode](https://opencode.ai) against an OpenRouter key and/or a custom OpenAI-compatible base URL (e.g. your own droplet); the dashboard's New Task form gains a dropdown to pick the assistant per session. Both backends can be enabled side-by-side. Default OSS deployment ships Claude-only — see `templates/assistant-secrets-template.yaml`.
 
 ### Security & Authentication
 - **GitHub OAuth2** - Secure authentication with configurable user authorization

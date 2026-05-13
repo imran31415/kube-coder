@@ -26,7 +26,7 @@ secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
 IMAGE_NAME := devlaptop
-VERSION := v1.8.0
+VERSION := v1.9.0-opencode
 PLATFORM := linux/amd64
 NAMESPACE := coder
 
