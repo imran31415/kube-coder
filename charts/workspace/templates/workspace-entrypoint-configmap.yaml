@@ -176,14 +176,22 @@ data:
 
     log_stage "starting browser/Claude API server on :6080"
     mkdir -p /tmp/browser
-    # Copy everything except the flat memory_* / memory__init__.py keys —
-    # those are reassembled into /tmp/browser/memory/ above.
+    # Copy Python sources (these need a pod restart to take effect).
+    # Skip the flat memory_* / memory__init__.py keys — reassembled above.
     for f in /browser-config/*; do
       base=$(basename "$f")
       case "$base" in
         memory_*|memory__init__.py) continue ;;
       esac
       cp "$f" /tmp/browser/
+    done
+    # Symlink HTML/CSS/JS from the separate (non-checksummed) browser-html
+    # ConfigMap so dashboard edits + helm-upgrade refresh without a pod
+    # restart. The kubelet syncs the new ConfigMap to /browser-html
+    # atomically; the symlinks here dereference to the fresh content on
+    # the next HTTP request.
+    for f in /browser-html/*; do
+      ln -sf "$f" "/tmp/browser/$(basename "$f")"
     done
     cd /tmp/browser
     python3 server.py &
