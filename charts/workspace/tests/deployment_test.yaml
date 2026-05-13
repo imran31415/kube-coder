@@ -148,12 +148,12 @@ tests:
               name: claude-config-testuser
               defaultMode: 292
 
-  - it: should copy CLAUDE.md during startup only if not exists
+  - it: should always overwrite CLAUDE.md from chart during startup
     template: templates/workspace-entrypoint-configmap.yaml
     asserts:
       - matchRegex:
           path: data["start.sh"]
-          pattern: "test -f /home/dev/CLAUDE.md \\|\\| cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md"
+          pattern: "cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md"
 
   - it: should invoke the entrypoint script as the container command
     template: templates/deployment.yaml
