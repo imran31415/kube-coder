@@ -579,29 +579,8 @@
         .output-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
         .output-placeholder { color: var(--text-mute); font-style: italic; }
 
-        .chat-iframe-wrap { flex: 1; background: #1e1e1e; min-height: 0; position: relative; }
+        .chat-iframe-wrap { flex: 1; background: #1e1e1e; min-height: 0; }
         .chat-iframe { width: 100%; height: 100%; border: none; }
-        .chat-ended {
-            position: absolute; inset: 0;
-            display: flex; align-items: center; justify-content: center;
-            background: #1e1e1e; padding: 24px;
-        }
-        .chat-ended-inner {
-            max-width: 480px; display: flex; flex-direction: column; gap: 14px;
-            text-align: center;
-        }
-        .chat-ended-title {
-            font-size: 16px; font-weight: 600; color: var(--text-primary);
-        }
-        .chat-ended-meta {
-            font-family: var(--font-mono); font-size: 12px;
-            color: var(--text-secondary); line-height: 1.7;
-            text-align: left; background: var(--bg-base);
-            border: 1px solid var(--border); border-radius: 4px;
-            padding: 10px 12px; word-break: break-word;
-        }
-        .chat-ended-meta .k { color: var(--text-mute); display: inline-block; min-width: 64px; }
-        .chat-ended-actions { display: flex; gap: 8px; justify-content: center; }
 
         .info-grid {
             padding: 16px; display: grid; grid-template-columns: 120px 1fr;
@@ -1125,15 +1104,6 @@
                     <div class="tab-panel active" id="tab-chat">
                         <div class="chat-iframe-wrap">
                             <iframe class="chat-iframe" id="chat-iframe" title="Claude terminal"></iframe>
-                            <div class="chat-ended" id="chat-ended" style="display:none;">
-                                <div class="chat-ended-inner">
-                                    <div class="chat-ended-title">This chat has ended</div>
-                                    <div class="chat-ended-meta" id="chat-ended-meta"></div>
-                                    <div class="chat-ended-actions">
-                                        <button class="act-btn" onclick="setTab('output')">View output</button>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                     </div>
 
@@ -2205,11 +2175,6 @@ function renderDetailHeader(t) {
     const isRunning = t.status === 'running';
     document.getElementById('d-attach').disabled = !isRunning;
     document.getElementById('d-kill').disabled = !isRunning;
-
-    // Keep the Chat panel in sync with the live task status so a running task
-    // that just got killed swaps to the "ended" overlay on the next poll
-    // instead of leaving the dead ttyd session up rendering garbage.
-    if (STATE.activeTab === 'chat') renderChatPanel(t);
 }
 
 function renderInfoTab(t) {
@@ -2350,12 +2315,11 @@ function toggleAutoRefresh() {
 async function openChatForCurrent() {
     if (!STATE.selectedId) return;
     const t = STATE.tasks.find(x => x.task_id === STATE.selectedId);
-    if (!t) return;
-    // For non-running tasks, show the "ended" overlay instead of attaching to
-    // a dead ttyd session (which renders garbled escape sequences). Stay on
-    // the Chat tab so the user can read the summary and click into Output.
-    if (t.status !== 'running') { renderChatPanel(t); return; }
-    renderChatPanel(t);
+    if (!t || t.status !== 'running') {
+        toast('Chat is only available for running tasks');
+        setTab('output');
+        return;
+    }
     try {
         const r = await fetch(`/oauth/api/claude/tasks/${encodeURIComponent(STATE.selectedId)}/prepare-terminal`, {
             method: 'POST', signal: AbortSignal.timeout(5000),
@@ -2382,36 +2346,6 @@ async function openChatForCurrent() {
 function closeChatIframe() {
     const iframe = document.getElementById('chat-iframe');
     if (iframe.src && iframe.src !== 'about:blank') iframe.src = 'about:blank';
-}
-
-// Swap between the live ttyd iframe and the "This chat has ended" overlay
-// based on task status. Safe to call repeatedly — only mutates iframe.src
-// when transitioning into the ended state, so it won't interrupt a live
-// session on every poll.
-function renderChatPanel(t) {
-    const ended = document.getElementById('chat-ended');
-    const iframe = document.getElementById('chat-iframe');
-    if (!ended || !iframe) return;
-    if (!t || t.status === 'running') {
-        ended.style.display = 'none';
-        iframe.style.display = '';
-        return;
-    }
-    if (iframe.src && iframe.src !== 'about:blank') iframe.src = 'about:blank';
-    iframe.style.display = 'none';
-    const meta = document.getElementById('chat-ended-meta');
-    const rows = [];
-    rows.push(`<div><span class="k">Status</span> ${escapeHtml(t.status || 'unknown')}</div>`);
-    if (t.finished_at) rows.push(`<div><span class="k">Ended</span> ${formatTimeAgo(t.finished_at)}</div>`);
-    else if (t.created_at) rows.push(`<div><span class="k">Created</span> ${formatTimeAgo(t.created_at)}</div>`);
-    if (t.workdir) rows.push(`<div><span class="k">Workdir</span> ${escapeHtml(t.workdir)}</div>`);
-    if (t.source) rows.push(`<div><span class="k">Source</span> ${escapeHtml(t.source)}</div>`);
-    if (t.prompt) {
-        const p = t.prompt.length > 160 ? t.prompt.slice(0, 160) + '…' : t.prompt;
-        rows.push(`<div><span class="k">Prompt</span> ${escapeHtml(p)}</div>`);
-    }
-    meta.innerHTML = rows.join('');
-    ended.style.display = 'flex';
 }
 
 /* ════════════════════════════════════════════════════════════════════
