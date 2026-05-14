@@ -174,6 +174,24 @@ spec:
         {{- end }}
         resources:
 {{ toYaml .Values.resources | indent 10 }}
+        # Container-level hardening for the user's IDE/desktop process. The
+        # pod-level securityContext already pins UID/GID 1000; this block
+        # additionally blocks privilege escalation, drops all Linux
+        # capabilities (none of code-server / ttyd / Xvfb / x11vnc /
+        # websockify / fluxbox / Claude / Playwright need any), and pins
+        # the runtime's default seccomp profile.
+        #
+        # Playwright's Firefox sandbox falls back to unprivileged
+        # user-namespaces on modern kernels (DOKS runs 6.1+); if a future
+        # workload needs CAP_SYS_CHROOT or CAP_SYS_ADMIN, add it back
+        # narrowly via `capabilities.add` rather than removing the drop.
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          seccompProfile:
+            type: RuntimeDefault
       {{- if eq .Values.build.mode "buildkit" }}
       - name: dind
         image: docker:27-dind
