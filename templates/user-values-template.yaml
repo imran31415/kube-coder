@@ -59,3 +59,20 @@ build:
 ssh:
   enabled: false
   port: 22
+
+# Optional alternate assistants. Claude Code is always available in the
+# dashboard. Each block below is independent — once you fill in either
+# `openrouter.apiKey` or `fallback.baseUrl` via a gitignored secrets file
+# (e.g. secrets/USERNAME_HERE/assistant.yaml), the dashboard's "New Task"
+# form gains a selector so you can pick the assistant per session.
+# Public-repo defaults leave both empty → Claude-only.
+assistant:
+  openrouter:
+    apiKey: ""                            # OPENROUTER_API_KEY (via secrets file)
+    model: "anthropic/claude-sonnet-4"
+  fallback:
+    baseUrl: ""                           # https://your-host/v1 (via secrets file)
+    apiKey: ""                            # optional bearer token (via secrets file)
+    model: "anthropic/claude-sonnet-4"
+    providerId: "kube-coder-fallback"
+    providerName: "Kube-Coder Fallback"
