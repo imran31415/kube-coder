@@ -39,9 +39,22 @@ resources:
     cpu: "2"
     memory: 6Gi
 
-# Build configuration
+# Build configuration.
+#
+#   mode: kaniko    (default, recommended)
+#     Image builds run as a one-shot Kaniko Job in the user's namespace,
+#     scheduled by the `docker-build` wrapper. No daemon, no privileged
+#     container. `docker run` and `docker buildx` are NOT available from
+#     the user's shell.
+#
+#   mode: buildkit
+#     Adds a `dind` sidecar to every workspace pod running with
+#     `privileged: true` + UID 0. This gives `docker buildx` and ad-hoc
+#     `docker run` from the user's shell, but a shell in either container
+#     can escape to the underlying node. On a shared multi-tenant cluster
+#     prefer `kaniko` unless `docker run` is required.
 build:
-  mode: buildkit
+  mode: kaniko
   kanikoImage: gcr.io/kaniko-project/executor:latest
   pushSecretName: regcred
   defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
@@ -119,12 +132,18 @@ memory:
 # Two ways to supply credentials:
 #  (1) Inline via appId / installationId / privateKey (the chart creates a
 #      Secret named github-app-secrets-<user>). Provide secrets via a
-#      values overlay (e.g., secrets/<user>/github-app.yaml).
+#      values overlay (e.g., secrets/<user>/github-app.yaml). RECOMMENDED.
 #  (2) Reference an existing Secret in the same namespace via
 #      `existingSecretName`. The Secret must have keys: app-id,
 #      installation-id, private-key. Set `appId: "use-existing"` (or any
 #      non-empty placeholder) to flip the deployment env-var gate; the
 #      actual values come from the referenced Secret.
+#
+# SECURITY: option (2) lets multiple workspaces share one GitHub App
+# private key. Anyone with shell access in a workspace can `cat` that
+# key and act as the App on every repo it's installed on. Use only for
+# workspaces operated by the same trusted principal — never to give
+# another developer a workspace pre-wired to your App.
 github:
   app:
     appId: ""

@@ -79,7 +79,12 @@ if [ ! -d "$CHART" ]; then
   fail "workspace chart missing at $CHART"
 else
   HELM_F=(-f "$VALUES")
-  for f in "${SECRET_FILES[@]}"; do HELM_F+=(-f "$f"); done
+  # Workspaces without any secrets/*.yaml (e.g. the sentinel `locked`
+  # workspace) leave SECRET_FILES empty; under `set -u`, expanding an
+  # empty array with [@] raises an error, so guard with :-.
+  for f in "${SECRET_FILES[@]:-}"; do
+    [ -n "$f" ] && HELM_F+=(-f "$f")
+  done
   RENDER_OUT=$(helm template validate-preview "$CHART" "${HELM_F[@]}" 2>&1)
   RENDER_RC=$?
   if [ "$RENDER_RC" -ne 0 ]; then
