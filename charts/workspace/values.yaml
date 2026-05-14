@@ -74,6 +74,27 @@ codeServer:
 claude:
   apiKey: ""
 
+# Optional alternate assistants. Claude Code is always available (above);
+# OpenCode (https://opencode.ai) becomes a *per-task* choice in the
+# dashboard whenever either of the blocks below is configured. Both blocks
+# are independent — set one, the other, or both. Real credentials should
+# come from a gitignored secrets file (e.g. secrets/<user>/assistant.yaml).
+# Public-repo defaults leave both empty, so the dashboard ships with
+# Claude-only behavior.
+assistant:
+  # OpenCode → OpenRouter (https://openrouter.ai)
+  openrouter:
+    apiKey: ""                            # OPENROUTER_API_KEY
+    model: "anthropic/claude-sonnet-4"
+  # OpenCode → any OpenAI-compatible endpoint
+  # (e.g. a private proxy running on your own Digital Ocean droplet)
+  fallback:
+    baseUrl: ""                           # e.g. https://llm.example.com/v1
+    apiKey: ""                            # optional bearer token
+    model: "anthropic/claude-sonnet-4"
+    providerId: "kube-coder-fallback"     # OpenCode provider id (free-form)
+    providerName: "Kube-Coder Fallback"
+
 # Persistent memory subsystem. SQLite-backed at /home/dev/.claude-memory/memory.db,
 # exposed to the dashboard at /api/memory and to claude via the `memory` MCP server.
 # Phase 1 ships with these defaults; phases 2-3 activate by flipping flags here.

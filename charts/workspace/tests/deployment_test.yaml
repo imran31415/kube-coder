@@ -5,6 +5,7 @@ templates:
   - templates/claude-configmap.yaml
   - templates/terminal-entry-configmap.yaml
   - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
 values:
   - test-values.yaml
 tests:

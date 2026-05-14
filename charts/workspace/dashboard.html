@@ -920,6 +920,12 @@
                         <input type="text" id="new-task-workdir-custom" placeholder="/absolute/path"
                                autocomplete="off" autocapitalize="off" spellcheck="false"
                                style="display: none;">
+                        <div class="row" id="new-task-assistant-row" style="display: none;">
+                            <select id="new-task-assistant" style="flex:1;"
+                                    title="Which AI coding assistant runs in this session">
+                                <option value="claude">Claude Code</option>
+                            </select>
+                        </div>
                         <textarea id="new-task-input" rows="4"
                                   placeholder="Describe the task for Claude... (Ctrl+Enter to send)"></textarea>
                         <div class="task-form-toggle" title="Auto-prefix the prompt with the top-K relevant memories from the workspace memory store. Uncheck for a clean context.">
@@ -1395,6 +1401,8 @@ function boot() {
     fetchWebhooks();
     fetchCrons();
     STATE.pollTimers.crons = setInterval(fetchCrons, 30000);
+
+    refreshAssistants();
 
     // Memory is fetched on demand the first time the user opens the Memory rail,
     // and refreshed on a slower cadence (memories change less than tasks).
@@ -2319,7 +2327,15 @@ async function openChatForCurrent() {
         if (!r.ok) { toast('Failed to prepare terminal'); return; }
     } catch (e) { toast('Error preparing terminal'); return; }
     const iframe = document.getElementById('chat-iframe');
-    iframe.src = '/oauth/terminal/';
+    // Force reload even when the iframe already points at /oauth/terminal/.
+    // Windows Chromium/Edge frequently no-ops when iframe.src is reassigned
+    // to its current value, leaving the chat tab attached to a previous
+    // tmux session and "stuck" after switching tasks. Bouncing through
+    // about:blank + appending a cache-buster guarantees a fresh navigation.
+    iframe.src = 'about:blank';
+    requestAnimationFrame(() => {
+        iframe.src = '/oauth/terminal/?t=' + Date.now();
+    });
     // Push deep-link state with chat=open.
     const p = new URLSearchParams();
     p.set('task', STATE.selectedId);
@@ -2471,6 +2487,7 @@ function toggleNewTaskForm() {
     form.classList.toggle('visible', willOpen);
     if (willOpen) {
         loadWorkdirOptions();
+        refreshAssistants();
         setTimeout(() => input.focus(), 50);
     } else {
         input.value = '';
@@ -2487,6 +2504,34 @@ function getSelectedWorkdir() {
     return sel.value;
 }
 
+// Fetched once on page load and refreshed each time the New Task form
+// opens. When only Claude is enabled (the open-source default), the row
+// stays hidden and the dashboard looks identical to before.
+let AVAILABLE_ASSISTANTS = [{id: 'claude', label: 'Claude Code', default: true}];
+
+async function refreshAssistants() {
+    try {
+        const r = await fetch('/oauth/api/claude/assistants');
+        if (!r.ok) return;
+        const data = await r.json();
+        if (Array.isArray(data.assistants) && data.assistants.length) {
+            AVAILABLE_ASSISTANTS = data.assistants;
+        }
+    } catch (e) { /* keep the safe default */ }
+    const row = document.getElementById('new-task-assistant-row');
+    const sel = document.getElementById('new-task-assistant');
+    if (!row || !sel) return;
+    sel.innerHTML = '';
+    AVAILABLE_ASSISTANTS.forEach(a => {
+        const o = document.createElement('option');
+        o.value = a.id;
+        o.textContent = a.label;
+        if (a.default) o.selected = true;
+        sel.appendChild(o);
+    });
+    row.style.display = AVAILABLE_ASSISTANTS.length > 1 ? 'flex' : 'none';
+}
+
 async function submitNewTask() {
     const input = document.getElementById('new-task-input');
     const text = input.value.trim();
@@ -2494,11 +2539,13 @@ async function submitNewTask() {
     const workdir = getSelectedWorkdir();
     if (workdir === null) { toast('Enter a custom path or pick a directory'); return; }
     const disable_memory_injection = !!document.getElementById('new-task-no-inject').checked;
+    const assistantEl = document.getElementById('new-task-assistant');
+    const assistant = assistantEl ? assistantEl.value : 'claude';
     try {
         const r = await fetch('/oauth/api/claude/tasks', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ prompt: text, workdir, disable_memory_injection }),
+            body: JSON.stringify({ prompt: text, workdir, disable_memory_injection, assistant }),
         });
         if (r.ok) {
             const data = await r.json().catch(() => ({}));
