@@ -46,7 +46,7 @@ data:
     # so Helm value changes flow through cleanly.
     if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ]; then
       log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
-      mkdir -p /home/dev/.config/opencode
+      mkdir -p $HOME/.config/opencode
       OPENROUTER_MODEL_DEFAULT="${KC_OPENROUTER_MODEL:-anthropic/claude-sonnet-4}"
       FALLBACK_MODEL_DEFAULT="${KC_FALLBACK_MODEL:-anthropic/claude-sonnet-4}"
       FALLBACK_PROVIDER_ID="${KC_FALLBACK_PROVIDER_ID:-kube-coder-fallback}"
@@ -56,7 +56,7 @@ data:
       # {env:VAR} must reach opencode unchanged, and (b) earlier comments
       # containing backticks were being command-substituted by bash and
       # corrupting the python stdin.
-      python3 - <<'PY' > /home/dev/.config/opencode/opencode.json
+      python3 - <<'PY' > $HOME/.config/opencode/opencode.json
     import json, os
     cfg = {"$schema": "https://opencode.ai/config.json"}
     provider = {}
