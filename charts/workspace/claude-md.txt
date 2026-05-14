@@ -129,6 +129,55 @@ Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t cla
 - SSH keys persist in `~/.ssh`. Generate with: `ssh-keygen -t ed25519`
 - To check what's running: `curl localhost:6080/health`
 
+## kube-coder Source (this workspace's blueprint)
+
+The infrastructure that runs this workspace lives at
+**https://github.com/imran31415/kube-coder**. A clone is provisioned
+automatically at **`/home/dev/kube-coder`** on every pod start.
+
+When the user asks about workspace behavior — startup scripts, the
+dashboard UI, chart templates (ingress / oauth2 / configmaps), the
+memory subsystem, the Claude task API, image build, etc. — **read the
+relevant file at `/home/dev/kube-coder/<path>` rather than guessing**.
+Useful entry points:
+
+- `charts/workspace/templates/workspace-entrypoint-configmap.yaml` —
+  the pod's start.sh (everything that runs at boot lives here)
+- `charts/workspace/dashboard.html` — dashboard UI (HTML/JS)
+- `charts/workspace/server.py` — dashboard backend + Claude Task API
+- `charts/workspace/values.yaml` — chart defaults (resources, ssh,
+  oauth2, codeServer.enabled, etc.)
+- `devlaptop/Dockerfile` — the image baked into every workspace
+
+### Contributing changes back (fork + PR)
+
+To propose a change to kube-coder itself (not your user-code in this
+workspace), use the fork+PR flow. From inside `/home/dev/kube-coder`:
+
+```bash
+# One-time: create a fork under YOUR GitHub account and add as a remote
+# named `fork`. `origin` stays pointed at the upstream so `git pull`
+# fetches the canonical main branch.
+gh repo fork --remote --remote-name fork
+
+# Per-change:
+git checkout -b descriptive-branch-name
+# … make edits …
+git commit -am "fix: short description"
+git push fork HEAD
+gh pr create --base main --repo imran31415/kube-coder
+```
+
+Authentication note: `gh repo fork` and `gh pr create` use whatever
+identity `gh auth status` reports. By default that's the workspace's
+GitHub App token (commits attributed to the bot account). To push as
+yourself instead, either run `gh auth login` once (token persists on
+the PVC at `~/.config/gh/`) or use SSH agent forwarding from your
+local machine when SSH'd in.
+
+**Do not `git push origin`** — `origin` is the upstream repo and the
+workspace's identity doesn't have write access there. Use `fork`.
+
 ## Persistent Memory (MCP) — check FIRST, never guess
 
 This workspace ships a persistent memory store backed by SQLite at
