@@ -108,6 +108,7 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 RUN apt-get update && apt-get install -y \
     xvfb x11vnc novnc websockify wget file \
     fluxbox xterm \
+    x11-xserver-utils \
     libgtk-3-0 libdbus-glib-1-2 libxt6 libwayland-client0 \
     && rm -rf /var/lib/apt/lists/* \
     && wget -O /tmp/firefox.tar.bz2 "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \

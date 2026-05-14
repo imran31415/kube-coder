@@ -12,7 +12,7 @@ user:
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.9.0-opencode
+  tag: devlaptop-v1.10.0-vnc-resize
   pullPolicy: Always
   pullSecretName: regcred
 
