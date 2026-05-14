@@ -51,20 +51,25 @@ data:
       FALLBACK_MODEL_DEFAULT="${KC_FALLBACK_MODEL:-anthropic/claude-sonnet-4}"
       FALLBACK_PROVIDER_ID="${KC_FALLBACK_PROVIDER_ID:-kube-coder-fallback}"
       FALLBACK_PROVIDER_NAME="${KC_FALLBACK_PROVIDER_NAME:-Kube-Coder Fallback}"
-      python3 - <<PY > /home/dev/.config/opencode/opencode.json
+      # NOTE: heredoc delimiter is single-quoted ('PY') so bash performs NO
+      # expansion on the body. Critical because (a) the literal token
+      # {env:VAR} must reach opencode unchanged, and (b) earlier comments
+      # containing backticks were being command-substituted by bash and
+      # corrupting the python stdin.
+      python3 - <<'PY' > /home/dev/.config/opencode/opencode.json
     import json, os
-    cfg = {"\$schema": "https://opencode.ai/config.json"}
+    cfg = {"$schema": "https://opencode.ai/config.json"}
     provider = {}
-    # OpenRouter is a first-class OpenCode provider — the CLI auto-discovers
-    # it from \$OPENROUTER_API_KEY in the pod env. We deliberately do NOT
-    # emit a stub block for it: any custom provider listed alongside an
-    # incomplete first-class one (no `npm` field) makes opencode's config
+    # OpenRouter is a first-class OpenCode provider -- the CLI auto-
+    # discovers it from $OPENROUTER_API_KEY in the pod env. We deliberately
+    # do NOT emit a stub block for it: any custom provider listed alongside
+    # an incomplete first-class entry (no npm field) makes opencodes config
     # loader silently drop the rest, including our fallback. The OpenRouter
     # model still surfaces to /api/claude/assistants via KC_OPENROUTER_MODEL.
     if os.environ.get("KC_FALLBACK_BASE_URL"):
         options = {"baseURL": os.environ["KC_FALLBACK_BASE_URL"]}
-        # Only declare apiKey when one is actually present. OpenCode silently
-        # disables the provider if `{env:VAR}` resolves to an empty string,
+        # Only declare apiKey when one is actually present. OpenCode
+        # silently disables the provider if the env-ref resolves to empty,
         # which made --model <id>/<model> fall back to OpenRouter without a
         # visible error. Open Ollama endpoints don't need a key at all.
         if os.environ.get("KC_FALLBACK_API_KEY"):
