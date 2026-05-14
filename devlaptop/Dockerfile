@@ -48,6 +48,14 @@ RUN ARCH=$(dpkg --print-architecture) \
 ARG CLAUDE_CODE_VERSION=2.1.126
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
+# OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
+# the chart's `assistant.provider` value (defaults to claude). Supports
+# OpenRouter directly and any OpenAI-compatible base URL (e.g. a self-hosted
+# proxy on a Digital Ocean droplet) via on-disk config written at pod start.
+# https://opencode.ai
+ARG OPENCODE_VERSION=1.14.49
+RUN npm install -g opencode-ai@${OPENCODE_VERSION}
+
 # Install ttyd for mobile-friendly terminal access.
 # Pinned to a known-good version so transient 502s from GitHub's release CDN
 # don't break the build (we hit them repeatedly while bumping to v1.7.1).

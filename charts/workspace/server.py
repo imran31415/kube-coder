@@ -410,10 +410,70 @@ class ClaudeTaskManager:
         os.chmod(ClaudeTaskManager.TOKEN_FILE, 0o600)
         return token
 
+    # ── Assistant selection ──────────────────────────────────────────────
+    # The dashboard offers a per-task choice between Claude Code (always on)
+    # and OpenCode targeting either OpenRouter or a custom OpenAI-compatible
+    # endpoint. The latter two are gated on env vars set by the Helm chart,
+    # so the public-repo default ships Claude-only and additional providers
+    # only appear once an operator wires creds in via a secrets file.
+    ASSISTANTS = {
+        'claude': {
+            'id': 'claude',
+            'label': 'Claude Code',
+        },
+        'opencode-openrouter': {
+            'id': 'opencode-openrouter',
+            'label': 'OpenCode · OpenRouter',
+        },
+        'opencode-fallback': {
+            'id': 'opencode-fallback',
+            'label': 'OpenCode · Fallback',
+        },
+    }
+
+    @staticmethod
+    def available_assistants():
+        out = [dict(ClaudeTaskManager.ASSISTANTS['claude'], default=True)]
+        if os.environ.get('OPENROUTER_API_KEY'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['opencode-openrouter'],
+                model=os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'),
+            ))
+        if os.environ.get('KC_FALLBACK_BASE_URL'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['opencode-fallback'],
+                label=os.environ.get('KC_FALLBACK_PROVIDER_NAME')
+                      or ClaudeTaskManager.ASSISTANTS['opencode-fallback']['label'],
+                model=os.environ.get('KC_FALLBACK_MODEL', 'anthropic/claude-sonnet-4'),
+            ))
+        return out
+
+    @staticmethod
+    def resolve_assistant(requested):
+        """Validate the caller's choice; fall back to claude on anything
+        unknown or disabled (the dashboard hides disabled options, but
+        webhooks/crons/CLI clients are free-form so we defend the boundary)."""
+        enabled = {a['id'] for a in ClaudeTaskManager.available_assistants()}
+        if requested and requested in enabled:
+            return requested
+        return 'claude'
+
+    @staticmethod
+    def assistant_command(assistant):
+        if assistant == 'opencode-openrouter':
+            model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
+            return f'opencode --model openrouter/{model}'
+        if assistant == 'opencode-fallback':
+            provider_id = os.environ.get('KC_FALLBACK_PROVIDER_ID', 'kube-coder-fallback')
+            model = os.environ.get('KC_FALLBACK_MODEL', 'anthropic/claude-sonnet-4')
+            return f'opencode --model {provider_id}/{model}'
+        return 'claude'
+
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
-                    source=None, disable_memory_injection=False):
+                    source=None, disable_memory_injection=False, assistant=None):
         ClaudeTaskManager.ensure_tasks_dir()
+        assistant = ClaudeTaskManager.resolve_assistant(assistant)
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
         session_id = str(uuid.uuid4())
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
@@ -448,6 +508,7 @@ class ClaudeTaskManager:
             'status': 'running',
             'created_at': time.time(),
             'tmux_session': session_name,
+            'assistant': assistant,
             'memory_injected': [
                 {'namespace': m.get('namespace'), 'key': m.get('key')}
                 for m in injected_memories
@@ -491,10 +552,15 @@ class ClaudeTaskManager:
                 except Exception:
                     pass
 
-        # Launch interactive claude in a tmux session. We export KC_TASK_ID
-        # into the session env so the MCP memory server (spawned by claude
-        # inside this session) can attribute writes to this task.
-        shell_cmd = f'cd {_shell_quote(workdir)} && claude'
+        # Launch the interactive assistant CLI in a tmux session. We export
+        # KC_TASK_ID into the session env so the MCP memory server (spawned
+        # by the assistant) can attribute writes to this task. The CLI is
+        # chosen per task: Claude Code by default; OpenCode (via OpenRouter
+        # or a custom fallback endpoint) when those providers are configured
+        # on the workspace and the caller passes the matching `assistant`
+        # value. See ClaudeTaskManager.assistant_command().
+        cli_cmd = ClaudeTaskManager.assistant_command(assistant)
+        shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
         tmux_cmd = [
             'tmux', 'new-session', '-d',
             '-s', session_name,
@@ -1881,6 +1947,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/claude/auth/token':
             self.handle_claude_get_token()
             return
+        elif claude_path == '/api/claude/assistants':
+            self.handle_claude_list_assistants()
+            return
         elif claude_path == '/api/workspace/dirs':
             self.handle_workspace_dirs()
             return
@@ -2233,6 +2302,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         response_secret = data.get('response_secret') or None
         source = data.get('source') or None
         disable_memory_injection = bool(data.get('disable_memory_injection'))
+        assistant = data.get('assistant') or None
         if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
             self.send_json({'error': 'response_url must be http(s)'}, 400)
             return
@@ -2243,6 +2313,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_secret=response_secret,
             source=source,
             disable_memory_injection=disable_memory_injection,
+            assistant=assistant,
         )
         self.send_json(task, 201)
 
@@ -2324,6 +2395,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         token = ClaudeTaskManager.get_or_create_token()
         self.send_json({'token': token})
+
+    def handle_claude_list_assistants(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'assistants': ClaudeTaskManager.available_assistants()})
 
     def handle_claude_regenerate_token(self):
         if not self.check_oauth_only():
@@ -3471,6 +3548,7 @@ if __name__ == "__main__":
     print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
     print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
+    print("  GET  /api/claude/assistants         - List enabled assistants")
     print("  --- Memory API (Phase 1) ---")
     print("  GET    /api/memory                       - List/search memories")
     print("  POST   /api/memory                       - Upsert a memory")

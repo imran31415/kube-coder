@@ -21,6 +21,9 @@ spec:
         checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
         checksum/terminal-entry: {{ include (print $.Template.BasePath "/terminal-entry-configmap.yaml") . | sha256sum }}
         checksum/workspace-entrypoint: {{ include (print $.Template.BasePath "/workspace-entrypoint-configmap.yaml") . | sha256sum }}
+        {{- if or .Values.assistant.openrouter.apiKey .Values.assistant.fallback.baseUrl }}
+        checksum/assistant-secret: {{ include (print $.Template.BasePath "/assistant-secret.yaml") . | sha256sum }}
+        {{- end }}
         {{- if .Values.github.app.appId }}
         checksum/github-app-script: {{ include (print $.Template.BasePath "/github-app-token-refresh.yaml") . | sha256sum }}
         {{- end }}
@@ -58,6 +61,33 @@ spec:
             secretKeyRef:
               name: claude-secrets-{{ .Values.user.name }}
               key: anthropic-api-key
+        {{- end }}
+        {{- if .Values.assistant.openrouter.apiKey }}
+        - name: OPENROUTER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: assistant-secrets-{{ .Values.user.name }}
+              key: openrouter-api-key
+        - name: KC_OPENROUTER_MODEL
+          value: {{ .Values.assistant.openrouter.model | quote }}
+        {{- end }}
+        {{- if .Values.assistant.fallback.baseUrl }}
+        - name: KC_FALLBACK_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: assistant-secrets-{{ .Values.user.name }}
+              key: fallback-base-url
+        - name: KC_FALLBACK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: assistant-secrets-{{ .Values.user.name }}
+              key: fallback-api-key
+        - name: KC_FALLBACK_MODEL
+          value: {{ .Values.assistant.fallback.model | quote }}
+        - name: KC_FALLBACK_PROVIDER_ID
+          value: {{ .Values.assistant.fallback.providerId | quote }}
+        - name: KC_FALLBACK_PROVIDER_NAME
+          value: {{ .Values.assistant.fallback.providerName | quote }}
         {{- end }}
         {{- if .Values.github.app.appId }}
         - name: GITHUB_APP_ID
