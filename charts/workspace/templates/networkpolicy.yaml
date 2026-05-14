@@ -1,0 +1,45 @@
+{{/*
+NetworkPolicy: restrict ingress to this workspace's pods.
+
+By default Kubernetes lets any pod in the cluster talk to any other pod.
+On a shared multi-tenant cluster that means a compromised pod in another
+namespace (resourceloop, scalebase, drinkq, …) can reach `ws-<user>:8080`
+directly and skip the oauth2-proxy. This policy denies all ingress to
+the workspace + oauth2-proxy pods except from the nginx ingress
+controller namespace, which is the only legitimate path.
+
+Same-namespace ingress is also denied: workspaces should never talk to
+each other inside the `coder` namespace. Each workspace's pods only need
+to reach the outside world (GitHub, registries, model providers) and
+their own sidecars on localhost — neither is affected by this policy.
+
+Egress is intentionally NOT restricted here. Tightening egress requires
+a per-cluster allowlist (kube-dns, kube-apiserver, registries, model
+providers, GitHub) and is best layered in a follow-up once traffic
+patterns are confirmed in prod. CNI is Cilium so adding egress rules
+later is straightforward.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ws-{{ .Values.user.name }}-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - ws-{{ .Values.user.name }}
+      {{- if eq .Values.ingress.auth.type "oauth2" }}
+      - oauth2-proxy-{{ .Values.user.name }}
+      {{- end }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
