@@ -6,6 +6,10 @@ metadata:
 data:
   terminal-entry.sh: |
     #!/bin/bash
+    # Cap Node heap to 2GB for claude CLI and any MCP child processes spawned
+    # from this shell. Without this, long-running claude sessions can grow
+    # past 2-3GB and combine with code-server to OOM the workspace cgroup.
+    export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
     PENDING_FILE="/tmp/.claude-terminal-pending"
     if [ -f "$PENDING_FILE" ]; then
         SESSION_NAME=$(cat "$PENDING_FILE")

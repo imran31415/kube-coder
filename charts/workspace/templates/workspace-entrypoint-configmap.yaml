@@ -37,7 +37,27 @@ data:
     touch /home/dev/.credentials/.config/git/config
     ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
     ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
-    test -f /home/dev/CLAUDE.md || cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
+    # CLAUDE.md is chart-managed (describes the workspace environment to
+    # Claude). Always overwrite from the configmap so chart updates land
+    # — previously we preserved any existing file, which meant edits to
+    # claude-md.txt never reached workspaces with an established PVC.
+    # User-level notes belong in the persistent-memory subsystem, not
+    # here.
+    cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
+
+    # Ensure the upstream kube-coder source is available at /home/dev/kube-coder
+    # so Claude can introspect the workspace's own infrastructure and contribute
+    # changes back via fork+PR (see CLAUDE.md "kube-coder source" section).
+    # Idempotent — skipped if .git already exists. Backgrounded so a slow/flaky
+    # clone never blocks pod readiness.
+    (
+      if [ ! -d /home/dev/kube-coder/.git ]; then
+        log_stage "cloning kube-coder source into /home/dev/kube-coder"
+        git clone https://github.com/imran31415/kube-coder.git /home/dev/kube-coder \
+          && log_stage "kube-coder source clone complete" \
+          || log_stage "WARNING: kube-coder clone failed (network?); will retry on next pod start"
+      fi
+    ) &
 
     # Render an OpenCode config file whenever at least one OpenCode-backed
     # provider has been configured (OpenRouter and/or Fallback). Claude
@@ -97,6 +117,7 @@ data:
       python3 /github-app/github-app-token.py --daemon &
     fi
 
+    {{- if .Values.codeServer.enabled }}
     log_stage "seeding default code-server settings (first run only)"
     CS_USER_DIR=/home/dev/.local/share/code-server/User
     mkdir -p "$CS_USER_DIR"
@@ -122,9 +143,12 @@ data:
       --user-data-dir /home/dev/.local/share/code-server \
       --extensions-dir /home/dev/.local/share/code-server/extensions \
       /home/dev > /tmp/code-server.log 2>&1 &
+    {{- else }}
+    log_stage "code-server disabled (codeServer.enabled=false); skipping launch"
+    {{- end }}
 
     log_stage "starting ttyd"
-    ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
+    ttyd --port 7681 --interface 0.0.0.0 --writable --client-option disableLeaveAlert=true -w /home/dev \
       /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
 
     log_stage "starting Xvfb / fluxbox / x11vnc"
@@ -135,8 +159,12 @@ data:
     DISPLAY=:99 setxkbmap us
     DISPLAY=:99 fluxbox &
     sleep 1
+    # -ncache 10 -ncache_cr enables client-side pixel caching in noVNC,
+    # which reduces bandwidth and gives smoother window motion ("copyrect")
+    # at the cost of a wider-than-visible framebuffer (the cache sits
+    # off-screen below the visible area). noVNC handles it transparently.
     x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat \
-      -cursor -cursorpos -24to32 -nobell -noipv6 &
+      -cursor -cursorpos -24to32 -nobell -noipv6 -ncache 10 -ncache_cr &
     sleep 2
 
     log_stage "waiting for VNC port 5900"
@@ -223,8 +251,8 @@ data:
 
     log_stage "starting browser/Claude API server on :6080"
     mkdir -p /tmp/browser
-    # Copy everything except the flat memory_* / memory__init__.py keys —
-    # those are reassembled into /tmp/browser/memory/ above.
+    # Copy Python sources (these need a pod restart to take effect).
+    # Skip the flat memory_* / memory__init__.py keys — reassembled above.
     for f in /browser-config/*; do
       base=$(basename "$f")
       case "$base" in
@@ -232,16 +260,57 @@ data:
       esac
       cp "$f" /tmp/browser/
     done
+    # Symlink HTML/CSS/JS from the separate (non-checksummed) browser-html
+    # ConfigMap so dashboard edits + helm-upgrade refresh without a pod
+    # restart. The kubelet syncs the new ConfigMap to /browser-html
+    # atomically; the symlinks here dereference to the fresh content on
+    # the next HTTP request.
+    for f in /browser-html/*; do
+      ln -sf "$f" "/tmp/browser/$(basename "$f")"
+    done
     cd /tmp/browser
     python3 server.py &
 
     log_stage "all services launched, entering supervision loop"
+    tick=0
     while true; do
       sleep 30
+      tick=$((tick + 1))
+
+      # Every 5 min: snapshot top RSS processes for post-incident diagnosis.
+      # Rotates at ~1MB to keep PVC use bounded across long-lived pods.
+      if [ $((tick % 10)) -eq 0 ]; then
+        {
+          echo "=== $(date -u +%FT%TZ) memory snapshot ==="
+          ps -eo pid,ppid,rss,comm,args --sort=-rss 2>/dev/null | head -15
+          echo "--- cgroup memory.current ---"
+          cat /sys/fs/cgroup/memory.current 2>/dev/null \
+            || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null \
+            || echo "n/a"
+          echo
+        } >> /tmp/memory.log 2>&1
+        if [ "$(stat -c %s /tmp/memory.log 2>/dev/null || echo 0)" -gt 1048576 ]; then
+          tail -c 524288 /tmp/memory.log > /tmp/memory.log.tmp && mv /tmp/memory.log.tmp /tmp/memory.log
+        fi
+      fi
+
+      # Every 5 min: reap orphan chromium/headless_shell processes adopted by
+      # PID 1. Playwright MCP and similar tools can leak these when a claude
+      # session crashes without cleaning up its browser context.
+      if [ $((tick % 10)) -eq 0 ]; then
+        ps -eo pid,ppid,comm,args 2>/dev/null \
+          | awk '$2==1 && ($3 ~ /chrome|chromium|headless_shell/ || $0 ~ /--remote-debugging-port/) {print $1}' \
+          | while read -r orphan_pid; do
+              log_stage "reaping orphan browser PID $orphan_pid"
+              kill -TERM "$orphan_pid" 2>/dev/null || true
+            done
+      fi
+
       if ! pgrep -f "python3 server.py" > /dev/null; then
         log_stage "restarting browser server"
         ( cd /tmp/browser && python3 server.py & )
       fi
+      {{- if .Values.codeServer.enabled }}
       if ! netstat -tln 2>/dev/null | grep -q :8080; then
         log_stage "restarting code-server (killing stale processes first)"
         pkill -f "code-server" 2>/dev/null || true
@@ -252,9 +321,10 @@ data:
           --extensions-dir /home/dev/.local/share/code-server/extensions \
           /home/dev >> /tmp/code-server.log 2>&1 &
       fi
+      {{- end }}
       if ! netstat -tln 2>/dev/null | grep -q :7681; then
         log_stage "restarting ttyd"
-        ttyd --port 7681 --interface 0.0.0.0 --writable -w /home/dev \
+        ttyd --port 7681 --interface 0.0.0.0 --writable --client-option disableLeaveAlert=true -w /home/dev \
           /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
       fi
       if ! netstat -tln 2>/dev/null | grep -q :6081; then

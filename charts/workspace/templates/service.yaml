@@ -25,3 +25,9 @@ spec:
     port: 6081
     targetPort: 6081
     protocol: TCP
+  {{- if .Values.ssh.enabled }}
+  - name: ssh
+    port: {{ .Values.ssh.port }}
+    targetPort: {{ .Values.ssh.port }}
+    protocol: TCP
+  {{- end }}
