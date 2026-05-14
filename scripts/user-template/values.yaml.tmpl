@@ -84,6 +84,9 @@ claude:
 
 # GitHub App for repo access:
 #   Drop credentials in users-private/__USER__/secrets/github-app.yaml.
+#   Each workspace gets its OWN GitHub App, not a shared one — anyone with
+#   shell in this workspace can read the private key. Do not point this at
+#   another user's App via `existingSecretName`.
 github:
   app:
     appId: ""
