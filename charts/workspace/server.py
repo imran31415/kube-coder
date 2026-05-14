@@ -1892,6 +1892,20 @@ spec:
 
 
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        # Force browsers (especially mobile Safari) to revalidate the
+        # dashboard on each visit. Without this, SimpleHTTPRequestHandler
+        # sends no Cache-Control and Safari can pin a stale dashboard.html
+        # for days, hiding chart updates behind a manual cache-clear.
+        # Only applied to HTML — JSON API endpoints already set their own
+        # Cache-Control before calling end_headers(), and static assets
+        # (JS/CSS/images) keep default browser heuristics.
+        path = (self.path or '').split('?', 1)[0].lower()
+        if path.endswith('.html'):
+            self.send_header('Cache-Control', 'no-cache, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+        super().end_headers()
+
     def do_GET(self):
         # Normalize path: strip /oauth and /browser prefixes from ingress
         # rewrites, AND strip the query string before matching routes.

@@ -78,23 +78,11 @@ deploy-base: ## Deploy base infrastructure
 		--install \
 		--wait
 
-deploy-imran: ## Deploy Imran's workspace
-	@echo "Deploying Imran's workspace..."
-	helm upgrade imran-workspace ./charts/workspace \
-		-f ./deployments/imran/values.yaml \
-		$(if $(wildcard ./secrets/imran/claude.yaml),-f ./secrets/imran/claude.yaml) \
-		$(if $(wildcard ./secrets/imran/github-app.yaml),-f ./secrets/imran/github-app.yaml) \
-		--namespace $(NAMESPACE) \
-		--install \
-		--wait
+deploy-imran: ## Deploy Imran's workspace (delegates to generic target so all secrets/*.yaml are picked up)
+	@$(MAKE) --no-print-directory deploy USER=imran
 
-deploy-gerard: ## Deploy Gerard's workspace
-	@echo "Deploying Gerard's workspace..."
-	helm upgrade gerard-workspace ./charts/workspace \
-		-f ./deployments/gerard/values.yaml \
-		--namespace $(NAMESPACE) \
-		--install \
-		--wait
+deploy-gerard: ## Deploy Gerard's workspace (delegates to generic target so all secrets/*.yaml are picked up)
+	@$(MAKE) --no-print-directory deploy USER=gerard
 
 deploy-all: deploy-base deploy-imran deploy-gerard ## Deploy all components
 

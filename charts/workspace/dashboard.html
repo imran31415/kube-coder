@@ -2091,16 +2091,21 @@ function selectTask(taskId, opts = {}) {
     renderDetailHeader(t);
     renderInfoTab(t);
 
-    // Prefer Chat when the task is running (it's the primary interaction
-    // surface). For non-running tasks, fall back to Output since Chat
-    // needs an active tmux session. Info is sticky if the user is on it.
+    // Prefer Chat when the task is running. For non-running tasks (completed/
+    // killed/etc.) we land on Info and skip the Output fetch — pulling stale
+    // transcripts on every selection was freezing the dashboard. The Output
+    // tab is still reachable via its button for explicit review.
+    // opts.preferChat bypasses the sticky-Info rule (used by newly created
+    // tasks, where the user just initiated work and expects the chat surface).
     let tab;
-    if (STATE.activeTab === 'info') {
+    if (opts.preferChat && t.status === 'running') {
+        tab = 'chat';
+    } else if (STATE.activeTab === 'info') {
         tab = 'info';
     } else if (t.status === 'running') {
         tab = 'chat';
     } else {
-        tab = 'output';
+        tab = 'info';
     }
     setTab(tab);
     if (tab === 'output') loadOutput(taskId);
@@ -2558,8 +2563,9 @@ async function submitNewTask() {
             document.getElementById('new-task-form').classList.remove('visible');
             document.getElementById('memory-preview').style.display = 'none';
             await fetchClaudeTasks();
-            // Select the new task immediately.
-            if (data.task_id) selectTask(data.task_id);
+            // Select the new task and jump straight to the chat surface,
+            // even if the user was parked on the Info tab.
+            if (data.task_id) selectTask(data.task_id, { preferChat: true });
         } else {
             const data = await r.json().catch(() => ({}));
             toast('Failed: ' + (data.error || r.statusText));
