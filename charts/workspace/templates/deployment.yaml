@@ -27,6 +27,9 @@ spec:
         {{- if .Values.github.app.appId }}
         checksum/github-app-script: {{ include (print $.Template.BasePath "/github-app-token-refresh.yaml") . | sha256sum }}
         {{- end }}
+        {{- if .Values.ssh.enabled }}
+        checksum/ssh-server: {{ include (print $.Template.BasePath "/ssh-server-configmap.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: ws-{{ .Values.user.name }}
       {{- if .Values.image.pullSecretName }}
@@ -93,17 +96,17 @@ spec:
         - name: GITHUB_APP_ID
           valueFrom:
             secretKeyRef:
-              name: github-app-secrets-{{ .Values.user.name }}
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: app-id
         - name: GITHUB_APP_INSTALLATION_ID
           valueFrom:
             secretKeyRef:
-              name: github-app-secrets-{{ .Values.user.name }}
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: installation-id
         - name: GITHUB_APP_PRIVATE_KEY
           valueFrom:
             secretKeyRef:
-              name: github-app-secrets-{{ .Values.user.name }}
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: private-key
         {{- end }}
         ports:
@@ -138,6 +141,8 @@ spec:
           mountPath: /home/dev
         - name: browser-config
           mountPath: /browser-config
+        - name: browser-html
+          mountPath: /browser-html
         - name: claude-config
           mountPath: /claude-config
         - name: terminal-scripts
@@ -182,6 +187,36 @@ spec:
         - name: dind-storage
           mountPath: /var/lib/docker
         {{- end }}
+      {{- if .Values.ssh.enabled }}
+      - name: ssh-server
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        command: ["/bin/bash", "/ssh-server-config/entrypoint.sh"]
+        ports:
+        - containerPort: {{ .Values.ssh.port }}
+          name: ssh
+        volumeMounts:
+        - name: home
+          mountPath: /home/dev
+        - name: ssh-server-config
+          mountPath: /ssh-server-config
+        - name: ssh-server-config
+          mountPath: /etc/ssh/sshd_config_kube-coder
+          subPath: sshd_config
+        - name: ssh-authorized-keys
+          mountPath: /etc/ssh/authorized_keys.secret
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      {{- end }}
       volumes:
       - name: home
         persistentVolumeClaim:
@@ -190,6 +225,10 @@ spec:
         configMap:
           name: browser-config-{{ .Values.user.name }}
           defaultMode: 0755
+      - name: browser-html
+        configMap:
+          name: browser-html-{{ .Values.user.name }}
+          defaultMode: 0644
       - name: claude-config
         configMap:
           name: claude-config-{{ .Values.user.name }}
@@ -221,4 +260,14 @@ spec:
         emptyDir: {}
       - name: dind-storage
         emptyDir: {}
+      {{- end }}
+      {{- if .Values.ssh.enabled }}
+      - name: ssh-server-config
+        configMap:
+          name: ssh-server-{{ .Values.user.name }}
+          defaultMode: 0555
+      - name: ssh-authorized-keys
+        secret:
+          secretName: ssh-authorized-keys-{{ .Values.user.name }}
+          defaultMode: 0444
       {{- end }}

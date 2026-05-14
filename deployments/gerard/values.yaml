@@ -28,11 +28,11 @@ ingress:
 
 resources:
   requests:
-    cpu: 200m
-    memory: 512Mi
+    cpu: "1"
+    memory: 2Gi
   limits:
     cpu: "2"
-    memory: 4Gi
+    memory: 6Gi
 
 build:
   mode: buildkit
