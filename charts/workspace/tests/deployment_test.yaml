@@ -226,7 +226,7 @@ tests:
           pattern: "writing OpenCode config"
       - matchRegex:
           path: data["start.sh"]
-          pattern: "/home/dev/.config/opencode/opencode.json"
+          pattern: "HOME/.config/opencode/opencode.json"
 
   - it: skips assistant-secret rendering when neither opencode provider is configured
     template: templates/assistant-secret.yaml
