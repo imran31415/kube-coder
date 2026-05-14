@@ -934,6 +934,14 @@
                     <button class="rail-tab" data-rail="triggers" onclick="switchRail('triggers')" role="tab">
                         Triggers <span class="rail-tab-count" id="rail-count-triggers">0</span>
                     </button>
+                    <button class="rail-tab" data-rail="routines" onclick="switchRail('routines')" role="tab"
+                            title="Scheduled work Claude has queued — surfaced from session transcripts.">
+                        Routines <span class="rail-tab-count" id="rail-count-routines">0</span>
+                    </button>
+                    <button class="rail-tab" data-rail="subagents" onclick="switchRail('subagents')" role="tab"
+                            title="Subagent (Agent tool) invocations across recent sessions, running and completed.">
+                        Subagents <span class="rail-tab-count" id="rail-count-subagents">0</span>
+                    </button>
                 </div>
 
                 <!-- ── Tasks rail ─────────────────────────────────────── -->
@@ -1084,6 +1092,58 @@
                         <div class="task-empty">Loading…</div>
                     </div>
                 </div>
+
+                <!-- ── Routines rail (scheduled work Claude has queued) ── -->
+                <!-- Sourced from ScheduleWakeup / Cron* tool uses found in -->
+                <!-- ~/.claude/projects/*/*.jsonl plus the Kairos watermark -->
+                <!-- in ~/.claude.json. Read-only view; users can't edit -->
+                <!-- routines from the dashboard (Claude authors them). -->
+                <div class="rail-view" id="rail-routines">
+                    <div class="rail-head">
+                        <h2>Routines <span class="counts" id="routine-counts">— · —</span></h2>
+                        <button class="new-btn" onclick="fetchRoutines()"
+                                title="Re-scan transcripts for routine activity"
+                                style="background:transparent;color:var(--accent-blue);border:1px solid var(--border);">
+                            refresh
+                        </button>
+                    </div>
+                    <div id="routine-watermark" style="padding:6px 12px;font-family:var(--font-mono);font-size:10px;color:var(--text-mute);border-bottom:1px solid var(--border);"></div>
+                    <div class="rail-search">
+                        <input type="search" id="routine-search" placeholder="Filter by prompt, tool, session…"
+                               autocomplete="off" autocapitalize="off" spellcheck="false">
+                    </div>
+                    <div id="routine-list" class="task-list">
+                        <div class="task-empty">Loading…</div>
+                    </div>
+                </div>
+
+                <!-- ── Subagents rail (Agent tool invocations) ─────────── -->
+                <!-- Live view: every Agent tool use in recent transcripts, -->
+                <!-- grouped by status. A subagent with no tool_result yet -->
+                <!-- is "running". -->
+                <div class="rail-view" id="rail-subagents">
+                    <div class="rail-head">
+                        <h2>Subagents <span class="counts" id="subagent-counts">— · —</span></h2>
+                        <button class="new-btn" onclick="fetchSubagents()"
+                                title="Re-scan transcripts for subagent activity"
+                                style="background:transparent;color:var(--accent-blue);border:1px solid var(--border);">
+                            refresh
+                        </button>
+                    </div>
+                    <div class="rail-filters">
+                        <button class="chip active" data-sa-filter="all" onclick="setSubagentFilter('all')">all <span class="chip-count" id="sa-cnt-all">0</span></button>
+                        <button class="chip" data-sa-filter="running" onclick="setSubagentFilter('running')">run <span class="chip-count" id="sa-cnt-running">0</span></button>
+                        <button class="chip" data-sa-filter="completed" onclick="setSubagentFilter('completed')">done <span class="chip-count" id="sa-cnt-completed">0</span></button>
+                        <button class="chip" data-sa-filter="error" onclick="setSubagentFilter('error')">err <span class="chip-count" id="sa-cnt-error">0</span></button>
+                    </div>
+                    <div class="rail-search">
+                        <input type="search" id="subagent-search" placeholder="Filter by description, type, session…"
+                               autocomplete="off" autocapitalize="off" spellcheck="false">
+                    </div>
+                    <div id="subagent-list" class="task-list">
+                        <div class="task-empty">Loading…</div>
+                    </div>
+                </div>
             </aside>
 
             <!-- Detail pane -->
@@ -1191,6 +1251,51 @@ Planned schema: each save creates a new revision with timestamp, source_task_id,
                         <pre class="output-box" id="memory-refs">
 <span class="output-placeholder">Tasks and crons that read or wrote this memory entry will appear here.
 Planned: server tracks {{ memory.ns.key }} references at task launch and emits links in both directions.</span></pre>
+                    </div>
+                </div>
+
+                <!-- Routine detail pane ── shown when a routine row is selected -->
+                <div class="detail-content" id="detail-routine">
+                    <div class="detail-head">
+                        <div class="detail-head-main">
+                            <div class="detail-meta">
+                                <span class="meta-tag source" id="r-tool">—</span>
+                                <span class="meta-tag" id="r-fires">—</span>
+                                <span class="meta-tag" id="r-last">—</span>
+                            </div>
+                            <div class="detail-prompt" id="r-reason" style="font-style:italic;">—</div>
+                        </div>
+                        <div class="detail-actions">
+                            <button class="act-btn" onclick="copyRoutinePrompt()" title="Copy routine prompt">Copy prompt</button>
+                        </div>
+                    </div>
+                    <div class="tab-panel active" style="flex-direction:column;padding:16px 20px;overflow-y:auto;">
+                        <div style="color:var(--text-mute);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Prompt Claude will resume with</div>
+                        <pre id="r-prompt" style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--font-mono);font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;line-height:1.55;margin-bottom:16px;"></pre>
+                        <dl class="info-grid" id="r-info-grid"></dl>
+                    </div>
+                </div>
+
+                <!-- Subagent detail pane ── shown when a subagent row is selected -->
+                <div class="detail-content" id="detail-subagent">
+                    <div class="detail-head">
+                        <div class="detail-head-main">
+                            <div class="detail-meta">
+                                <span class="status-pill" id="sa-status"><span class="dot"></span><span id="sa-status-label">—</span></span>
+                                <span class="meta-tag source" id="sa-type">—</span>
+                                <span class="meta-tag" id="sa-time">—</span>
+                                <span class="meta-tag" id="sa-session" style="display:none;"></span>
+                            </div>
+                            <div class="detail-prompt" id="sa-description">—</div>
+                        </div>
+                        <div class="detail-actions">
+                            <button class="act-btn" onclick="copySubagentPrompt()" title="Copy subagent prompt">Copy prompt</button>
+                        </div>
+                    </div>
+                    <div class="tab-panel active" style="flex-direction:column;padding:16px 20px;overflow-y:auto;">
+                        <div style="color:var(--text-mute);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Briefing prompt</div>
+                        <pre id="sa-prompt" style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--font-mono);font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;line-height:1.55;margin-bottom:16px;"></pre>
+                        <dl class="info-grid" id="sa-info-grid"></dl>
                     </div>
                 </div>
 
@@ -1388,6 +1493,16 @@ const STATE = {
     memoryFormat: 'text',        // 'text' | 'json' — JSON pretty-prints the editor on toggle.
     memoryDirty: false,          // true once the user edits the value textarea
     memoryBackendOk: null,       // null = unknown, true = API present, false = not built yet
+    // Routines + Subagents: read-only views over Claude's session transcripts.
+    // No editing — Claude authors routines, this rail just surfaces them.
+    routines: [],
+    routineWatermark: {},
+    routineSearch: '',
+    selectedRoutineId: null,
+    subagents: [],
+    subagentFilter: 'all',       // 'all' | 'running' | 'completed' | 'error'
+    subagentSearch: '',
+    selectedSubagentId: null,
     metricsHistory: { cpu: [], memory: [], disk: [], labels: [] },
     charts: { cpu: null, memory: null, disk: null, initialized: false },
     pendingDeepLink: null,
@@ -1442,8 +1557,18 @@ function boot() {
     fetchMemories();
     STATE.pollTimers.memory = setInterval(fetchMemories, 30000);
 
+    // Routines + subagents derive from transcripts on disk — cheap to poll
+    // (mtime-cached). Refresh frequently enough to feel live for running
+    // subagents but not so fast we hammer the disk.
+    fetchRoutines();
+    STATE.pollTimers.routines = setInterval(fetchRoutines, 30000);
+    fetchSubagents();
+    STATE.pollTimers.subagents = setInterval(fetchSubagents, 10000);
+
     bindSearch();
     bindMemorySearch();
+    bindRoutineSearch();
+    bindSubagentSearch();
     bindKeyboard();
 
     initializeCharts();
@@ -1459,7 +1584,7 @@ function boot() {
  *   - triggers: webhooks + crons that spawn tasks (inline cards, no detail)
  * ═════════════════════════════════════════════════════════════════ */
 function switchRail(name) {
-    if (!['tasks', 'memory', 'triggers'].includes(name)) return;
+    if (!['tasks', 'memory', 'triggers', 'routines', 'subagents'].includes(name)) return;
     STATE.activeRail = name;
     document.querySelectorAll('.rail-tab').forEach(t => {
         t.classList.toggle('active', t.dataset.rail === name);
@@ -1477,6 +1602,12 @@ function switchRail(name) {
         else showDetailEmpty('Select a memory entry to view or edit it');
     } else if (name === 'triggers') {
         showDetailPane('triggers-help');
+    } else if (name === 'routines') {
+        if (STATE.selectedRoutineId) showDetailPane('routine');
+        else showDetailEmpty('Select a routine to see its prompt and history');
+    } else if (name === 'subagents') {
+        if (STATE.selectedSubagentId) showDetailPane('subagent');
+        else showDetailEmpty('Select a subagent to see its briefing and status');
     }
 }
 
@@ -1489,6 +1620,12 @@ function updateRailCounts() {
     const wc = document.querySelectorAll('#webhook-list .compact-card').length;
     const cc = document.querySelectorAll('#cron-list .compact-card').length;
     document.getElementById('rail-count-triggers').textContent = wc + cc;
+    // Routines: total fires-aggregated. Subagents: show running·total when
+    // anything is in-flight, otherwise just total — same convention as tasks.
+    document.getElementById('rail-count-routines').textContent = STATE.routines.length;
+    const sa = STATE.subagents.length;
+    const sar = STATE.subagents.filter(x => x.status === 'running').length;
+    document.getElementById('rail-count-subagents').textContent = sar ? `${sar}·${sa}` : sa;
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -2156,15 +2293,16 @@ function selectTask(taskId, opts = {}) {
 // The detail pane has multiple stacked content panels (task, memory,
 // triggers-help) plus an empty state. showDetailPane swaps which is
 // visible; showDetailEmpty hides them all and shows the placeholder.
+const DETAIL_PANES = ['detail-task', 'detail-memory', 'detail-triggers-help', 'detail-routine', 'detail-subagent'];
 function showDetailPane(which) {
     document.getElementById('detail-empty').style.display = 'none';
-    ['detail-task', 'detail-memory', 'detail-triggers-help'].forEach(id => {
+    DETAIL_PANES.forEach(id => {
         document.getElementById(id).classList.toggle('visible', id === 'detail-' + which);
     });
 }
 
 function showDetailEmpty(label) {
-    ['detail-task', 'detail-memory', 'detail-triggers-help'].forEach(id => {
+    DETAIL_PANES.forEach(id => {
         document.getElementById(id).classList.remove('visible');
     });
     const empty = document.getElementById('detail-empty');
@@ -3424,6 +3562,310 @@ function escapeHtml(str) {
     const d = document.createElement('div');
     d.textContent = str == null ? '' : String(str);
     return d.innerHTML;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Routines + Subagents
+ *
+ * Both views are read-only derivations from Claude's session transcripts
+ * on disk (~/.claude/projects/*.jsonl). The server's transcript_scanner
+ * does the parsing; the dashboard just polls /api/routines and
+ * /api/subagents and renders rows that look like the Memory rail.
+ *
+ * Routines roll up all ScheduleWakeup / Cron* tool uses by prompt or
+ * cron id, so a routine that fired ten times shows once with fire_count=10.
+ * Subagents are listed flat — each Agent tool use is one row.
+ * ═════════════════════════════════════════════════════════════════ */
+
+function formatIsoTimeAgo(iso) {
+    if (!iso) return '—';
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return '—';
+    const secs = Math.floor((Date.now() - t) / 1000);
+    if (secs < 60) return secs + 's ago';
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.floor(hrs / 24) + 'd ago';
+}
+
+async function fetchRoutines() {
+    try {
+        const res = await fetch('/api/routines', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        STATE.routines = data.routines || [];
+        STATE.routineWatermark = data.watermark || {};
+        renderRoutineList();
+        renderRoutineWatermark(data.window_days);
+        // Refresh detail pane if the selected routine still exists.
+        if (STATE.activeRail === 'routines' && STATE.selectedRoutineId) {
+            const r = STATE.routines.find(x => x.id === STATE.selectedRoutineId);
+            if (r) renderRoutineDetail(r);
+        }
+        updateRailCounts();
+    } catch (_) { /* swallow — next poll retries */ }
+}
+
+function renderRoutineWatermark(windowDays) {
+    const el = document.getElementById('routine-watermark');
+    if (!el) return;
+    const w = STATE.routineWatermark || {};
+    const last = w.routine_fired_watermark;
+    const enabled = w.kairos_cron_enabled;
+    const parts = [];
+    parts.push(`window: ${windowDays || 7}d`);
+    parts.push(`kairos cron: <span style="color:${enabled ? 'var(--accent-green)' : 'var(--text-mute)'};">${enabled ? 'on' : 'off'}</span>`);
+    if (last) parts.push(`last fired: <span style="color:var(--text-primary);">${formatIsoTimeAgo(last)}</span>`);
+    el.innerHTML = parts.join(' · ');
+}
+
+function renderRoutineList() {
+    const list = document.getElementById('routine-list');
+    const counts = document.getElementById('routine-counts');
+    if (!list || !counts) return;
+    let rows = STATE.routines;
+    if (STATE.routineSearch) {
+        const q = STATE.routineSearch.toLowerCase();
+        rows = rows.filter(r =>
+            (r.prompt || '').toLowerCase().includes(q) ||
+            (r.tool || '').toLowerCase().includes(q) ||
+            (r.last_session_id || '').toLowerCase().includes(q) ||
+            (r.cron_id || '').toLowerCase().includes(q)
+        );
+    }
+    counts.innerHTML = `<b>${rows.length}</b><span style="opacity:0.5;">/${STATE.routines.length}</span>`;
+    if (rows.length === 0) {
+        if (STATE.routines.length === 0) {
+            list.innerHTML = `<div class="task-empty">No routines fired yet. Claude creates routines via <code>ScheduleWakeup</code> or <code>CronCreate</code> — they will appear here automatically.</div>`;
+        } else {
+            list.innerHTML = `<div class="task-empty">No routines match "<b>${escapeHtml(STATE.routineSearch)}</b>"</div>`;
+        }
+        return;
+    }
+    list.innerHTML = rows.map(routineRowHTML).join('');
+}
+
+function routineRowHTML(r) {
+    const selected = STATE.selectedRoutineId === r.id ? 'selected' : '';
+    const promptPreview = (r.prompt || r.reason || '(no prompt captured)').slice(0, 140);
+    const delay = r.delay_seconds ? `${r.delay_seconds}s delay` : '';
+    const cron = r.cron_expression ? `cron: ${r.cron_expression}` : '';
+    const cadence = delay || cron || r.tool;
+    return `
+        <div class="memory-row ${selected}" id="routine-row-${escapeAttr(r.id)}"
+             onclick="selectRoutine('${escapeAttr(r.id)}')">
+            <div class="memory-row-line1">
+                <span class="memory-row-kind">${escapeHtml(r.tool)}</span>
+                <span class="memory-row-key">${escapeHtml(cadence)}</span>
+            </div>
+            <div class="memory-row-line2">
+                <span>${escapeHtml(r.fire_count)} fire${r.fire_count === 1 ? '' : 's'}</span>
+                <span class="sep">·</span>
+                <span>last ${formatIsoTimeAgo(r.last_fired_at)}</span>
+            </div>
+            <div class="memory-row-preview">${escapeHtml(promptPreview)}</div>
+        </div>`;
+}
+
+function selectRoutine(id) {
+    STATE.selectedRoutineId = id;
+    document.querySelectorAll('#routine-list .memory-row').forEach(row => {
+        row.classList.toggle('selected', row.id === `routine-row-${id}`);
+    });
+    const r = STATE.routines.find(x => x.id === id);
+    if (!r) return;
+    renderRoutineDetail(r);
+    showDetailPane('routine');
+}
+
+function renderRoutineDetail(r) {
+    document.getElementById('r-tool').textContent = r.tool;
+    document.getElementById('r-fires').textContent = `${r.fire_count} fire${r.fire_count === 1 ? '' : 's'}`;
+    document.getElementById('r-last').textContent = `last ${formatIsoTimeAgo(r.last_fired_at)}`;
+    document.getElementById('r-reason').textContent = r.reason || '(no reason recorded)';
+    document.getElementById('r-prompt').textContent = r.prompt || '(no prompt captured)';
+    // Info grid: surface every interesting field non-destructively so power
+    // users can debug routine identity without leaving the dashboard.
+    const grid = document.getElementById('r-info-grid');
+    const rows = [
+        ['Routine id', r.id],
+        ['Tool', r.tool],
+        ['Fire count', r.fire_count],
+        ['First seen', r.first_seen_at || '—'],
+        ['Last fired', r.last_fired_at || '—'],
+        ['Last session', r.last_session_id || '—'],
+        ['Last project', r.last_project || '—'],
+        ['Delay (seconds)', r.delay_seconds ?? '—'],
+        ['Cron expression', r.cron_expression || '—'],
+        ['Cron id', r.cron_id || '—'],
+    ];
+    grid.innerHTML = rows.map(([k, v]) =>
+        `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`
+    ).join('');
+}
+
+function copyRoutinePrompt() {
+    const r = STATE.routines.find(x => x.id === STATE.selectedRoutineId);
+    if (!r) return;
+    navigator.clipboard.writeText(r.prompt || '').then(() => toast('Prompt copied'));
+}
+
+function bindRoutineSearch() {
+    const el = document.getElementById('routine-search');
+    if (!el) return;
+    el.addEventListener('input', e => {
+        STATE.routineSearch = e.target.value;
+        renderRoutineList();
+    });
+}
+
+// ── Subagents ─────────────────────────────────────────────────────────
+
+async function fetchSubagents() {
+    try {
+        const res = await fetch('/api/subagents', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        STATE.subagents = data.subagents || [];
+        renderSubagentList();
+        updateSubagentFilterCounts();
+        if (STATE.activeRail === 'subagents' && STATE.selectedSubagentId) {
+            const s = STATE.subagents.find(x => x.tool_use_id === STATE.selectedSubagentId);
+            if (s) renderSubagentDetail(s);
+        }
+        updateRailCounts();
+    } catch (_) { /* next poll retries */ }
+}
+
+function updateSubagentFilterCounts() {
+    const all = STATE.subagents.length;
+    const running = STATE.subagents.filter(s => s.status === 'running').length;
+    const completed = STATE.subagents.filter(s => s.status === 'completed').length;
+    const err = STATE.subagents.filter(s => s.status === 'error').length;
+    document.getElementById('sa-cnt-all').textContent = all;
+    document.getElementById('sa-cnt-running').textContent = running;
+    document.getElementById('sa-cnt-completed').textContent = completed;
+    document.getElementById('sa-cnt-error').textContent = err;
+}
+
+function setSubagentFilter(f) {
+    STATE.subagentFilter = f;
+    document.querySelectorAll('[data-sa-filter]').forEach(b => {
+        b.classList.toggle('active', b.dataset.saFilter === f);
+    });
+    renderSubagentList();
+}
+
+function renderSubagentList() {
+    const list = document.getElementById('subagent-list');
+    const counts = document.getElementById('subagent-counts');
+    if (!list || !counts) return;
+    let rows = STATE.subagents;
+    if (STATE.subagentFilter !== 'all') {
+        rows = rows.filter(s => s.status === STATE.subagentFilter);
+    }
+    if (STATE.subagentSearch) {
+        const q = STATE.subagentSearch.toLowerCase();
+        rows = rows.filter(s =>
+            (s.description || '').toLowerCase().includes(q) ||
+            (s.subagent_type || '').toLowerCase().includes(q) ||
+            (s.session_id || '').toLowerCase().includes(q) ||
+            (s.prompt || '').toLowerCase().includes(q)
+        );
+    }
+    counts.innerHTML = `<b>${rows.length}</b><span style="opacity:0.5;">/${STATE.subagents.length}</span>`;
+    if (rows.length === 0) {
+        if (STATE.subagents.length === 0) {
+            list.innerHTML = `<div class="task-empty">No subagent activity in the last week. Subagent invocations (the <code>Agent</code> tool) will show up here as they run.</div>`;
+        } else {
+            list.innerHTML = `<div class="task-empty">No subagents match the current filter.</div>`;
+        }
+        return;
+    }
+    list.innerHTML = rows.map(subagentRowHTML).join('');
+}
+
+function subagentRowHTML(s) {
+    const selected = STATE.selectedSubagentId === s.tool_use_id ? 'selected' : '';
+    const dotClass = s.status === 'running' ? 'running'
+                   : s.status === 'error' ? 'error'
+                   : 'completed';
+    const desc = s.description || s.prompt.slice(0, 80) || '(no description)';
+    return `
+        <div class="task-row ${selected}" data-status="${escapeAttr(s.status)}"
+             id="subagent-row-${escapeAttr(s.tool_use_id)}"
+             onclick="selectSubagent('${escapeAttr(s.tool_use_id)}')">
+            <div class="task-row-line1">
+                <span class="task-dot ${dotClass}"></span>
+                <span class="task-row-prompt">${escapeHtml(desc)}</span>
+            </div>
+            <div class="task-row-line2">
+                <span class="task-row-source">${escapeHtml(s.subagent_type)}</span>
+                <span class="sep">·</span>
+                <span>${escapeHtml(s.status)}</span>
+                <span class="sep">·</span>
+                <span>${formatIsoTimeAgo(s.timestamp)}</span>
+            </div>
+        </div>`;
+}
+
+function selectSubagent(id) {
+    STATE.selectedSubagentId = id;
+    document.querySelectorAll('#subagent-list .task-row').forEach(row => {
+        row.classList.toggle('selected', row.id === `subagent-row-${id}`);
+    });
+    const s = STATE.subagents.find(x => x.tool_use_id === id);
+    if (!s) return;
+    renderSubagentDetail(s);
+    showDetailPane('subagent');
+}
+
+function renderSubagentDetail(s) {
+    const statusEl = document.getElementById('sa-status');
+    statusEl.className = `status-pill ${s.status}`;
+    document.getElementById('sa-status-label').textContent = s.status;
+    document.getElementById('sa-type').textContent = s.subagent_type;
+    document.getElementById('sa-time').textContent = formatIsoTimeAgo(s.timestamp);
+    const sessEl = document.getElementById('sa-session');
+    if (s.session_id) {
+        sessEl.textContent = `session: ${s.session_id.slice(0, 8)}…`;
+        sessEl.style.display = '';
+    } else {
+        sessEl.style.display = 'none';
+    }
+    document.getElementById('sa-description').textContent = s.description || '(no description)';
+    document.getElementById('sa-prompt').textContent = s.prompt || '(no prompt captured)';
+    const grid = document.getElementById('sa-info-grid');
+    const rows = [
+        ['Status', s.status],
+        ['Subagent type', s.subagent_type],
+        ['Started', s.timestamp || '—'],
+        ['Ended', s.ended_at || (s.status === 'running' ? '(still running)' : '—')],
+        ['Tool', s.tool],
+        ['Session', s.session_id || '—'],
+        ['Project', s.project || '—'],
+        ['Tool use id', s.tool_use_id || '—'],
+    ];
+    grid.innerHTML = rows.map(([k, v]) =>
+        `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`
+    ).join('');
+}
+
+function copySubagentPrompt() {
+    const s = STATE.subagents.find(x => x.tool_use_id === STATE.selectedSubagentId);
+    if (!s) return;
+    navigator.clipboard.writeText(s.prompt || '').then(() => toast('Prompt copied'));
+}
+
+function bindSubagentSearch() {
+    const el = document.getElementById('subagent-search');
+    if (!el) return;
+    el.addEventListener('input', e => {
+        STATE.subagentSearch = e.target.value;
+        renderSubagentList();
+    });
 }
 
 let toastTimer = null;

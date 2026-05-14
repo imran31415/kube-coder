@@ -24,3 +24,5 @@ data:
 {{ .Files.Get "memory/manager.py" | indent 4 }}
   memory_sync.py: |
 {{ .Files.Get "memory/sync.py" | indent 4 }}
+  transcript_scanner.py: |
+{{ .Files.Get "transcript_scanner.py" | indent 4 }}

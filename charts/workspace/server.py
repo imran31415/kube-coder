@@ -38,6 +38,18 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
     _MEMORY_AVAILABLE = False
     print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
 
+# Read-only scanner over Claude's local session transcripts. Surfaces
+# routines (ScheduleWakeup / Cron* tool uses) and active subagents
+# (Agent tool uses) to the dashboard. No persistence — transcripts are
+# the source of truth.
+try:
+    import transcript_scanner
+    _TRANSCRIPTS_AVAILABLE = True
+except Exception as _ts_import_err:
+    transcript_scanner = None  # type: ignore
+    _TRANSCRIPTS_AVAILABLE = False
+    print(f'[transcripts] import failed: {_ts_import_err}', file=sys.stderr)
+
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
@@ -2034,6 +2046,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_memory_get(m.group(1), m.group(2))
             return
 
+        # --- Routines + Subagents (read-only views over Claude's transcripts) ---
+        if claude_path == '/api/routines':
+            self.handle_routines_list()
+            return
+        if claude_path == '/api/routines/stats':
+            self.handle_routines_stats()
+            return
+        if claude_path == '/api/subagents':
+            self.handle_subagents_list()
+            return
+
         super().do_GET()
     
     def check_auth(self):
@@ -2984,6 +3007,56 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'status': 'queued',
             'detail': 'consolidation worker activates in Phase 3',
         }, 202)
+
+    # ── Routines + Subagents (read-only views over local transcripts) ──
+    # These views derive entirely from ~/.claude/projects/*/*.jsonl plus
+    # ~/.claude.json. No write path — the dashboard surfaces what Claude
+    # has already done, it does not author routines.
+
+    def _transcripts_unavailable(self):
+        if _TRANSCRIPTS_AVAILABLE:
+            return False
+        self.send_json({
+            'error': 'transcript scanner unavailable',
+            'code': 'unavailable',
+        }, 503)
+        return True
+
+    def handle_routines_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._transcripts_unavailable():
+            return
+        try:
+            self.send_json(transcript_scanner.list_routines())
+        except Exception as e:
+            print(f'[routines] error: {e}', file=sys.stderr)
+            self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
+    def handle_routines_stats(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._transcripts_unavailable():
+            return
+        try:
+            self.send_json(transcript_scanner.stats())
+        except Exception as e:
+            print(f'[routines] stats error: {e}', file=sys.stderr)
+            self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
+    def handle_subagents_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._transcripts_unavailable():
+            return
+        try:
+            self.send_json(transcript_scanner.list_subagents())
+        except Exception as e:
+            print(f'[subagents] error: {e}', file=sys.stderr)
+            self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
