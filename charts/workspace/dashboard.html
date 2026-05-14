@@ -384,6 +384,34 @@
         .new-task-form .actions {
             display: flex; gap: 6px; justify-content: flex-end;
         }
+        .new-task-form .type-toggle {
+            display: flex; gap: 0; border: 1px solid var(--border);
+            border-radius: var(--radius); overflow: hidden;
+            font-family: var(--font-mono); font-size: 11px;
+        }
+        .new-task-form .type-toggle label {
+            flex: 1; text-align: center; padding: 6px 10px; cursor: pointer;
+            color: var(--text-secondary); transition: background 0.12s;
+            user-select: none;
+        }
+        .new-task-form .type-toggle input { display: none; }
+        .new-task-form .type-toggle label:hover { background: var(--bg-hover, var(--bg-input)); }
+        .new-task-form .type-toggle input:checked + span {
+            background: var(--accent-blue); color: white;
+            display: block; margin: -6px -10px; padding: 6px 10px;
+        }
+        .new-task-form .sched-block {
+            display: none; flex-direction: column; gap: 6px;
+            padding: 8px; border: 1px dashed var(--border); border-radius: var(--radius);
+            background: var(--bg-input);
+        }
+        .new-task-form .sched-block.visible { display: flex; }
+        .new-task-form .sched-block .sched-hint {
+            font-size: 10px; color: var(--text-mute); font-family: var(--font-mono);
+        }
+        .new-task-form .sched-block .sched-preview {
+            font-size: 11px; color: var(--accent-blue); font-family: var(--font-mono);
+        }
         .task-form-toggle {
             display: flex; align-items: center; gap: 10px;
             font-size: 11px; color: var(--text-mute);
@@ -582,6 +610,38 @@
         .chat-iframe-wrap { flex: 1; background: #1e1e1e; min-height: 0; }
         .chat-iframe { width: 100%; height: 100%; border: none; }
 
+        /* Preview tab: chat on the left, in-pod browser (via VNC) on the right. */
+        .preview-split { display: flex; flex: 1; min-height: 0; min-width: 0; }
+        .preview-split-left,
+        .preview-split-right {
+            flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column;
+        }
+        .preview-split-left { border-right: 1px solid var(--border); background: #1e1e1e; }
+        .preview-toolbar {
+            display: flex; gap: 6px; padding: 6px 8px; align-items: center;
+            background: var(--bg-elev); border-bottom: 1px solid var(--border);
+            font-family: var(--font-mono); font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .preview-toolbar input[type="number"] {
+            width: 80px; padding: 4px 6px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: var(--radius);
+            color: var(--text-primary); font-family: var(--font-mono); font-size: 11px;
+        }
+        .preview-toolbar input[type="number"]:focus {
+            outline: none; border-color: var(--accent-blue);
+            box-shadow: 0 0 0 2px var(--accent-blue-dim);
+        }
+        .preview-toolbar .spacer { flex: 1; }
+        .preview-vnc-frame { flex: 1; border: 0; background: #000; width: 100%; }
+        /* On narrow screens fall back to vertical stacking so neither pane
+           shrinks unusable. ~720px matches the mobile breakpoint used
+           elsewhere. */
+        @media (max-width: 900px) {
+            .preview-split { flex-direction: column; }
+            .preview-split-left { border-right: 0; border-bottom: 1px solid var(--border); min-height: 240px; }
+        }
+
         .info-grid {
             padding: 16px; display: grid; grid-template-columns: 120px 1fr;
             gap: 8px 16px; font-family: var(--font-mono); font-size: 12px;
@@ -624,6 +684,62 @@
         }
         .drawer-close:hover { background: var(--bg-hover); color: var(--text-primary); }
         .drawer-body { flex: 1; overflow-y: auto; padding: 16px; }
+
+        /* Files drawer */
+        .files-breadcrumb {
+            font-family: var(--font-mono); font-size: 11px; color: var(--text-mute);
+            margin: 4px 0 10px; word-break: break-all;
+        }
+        .files-breadcrumb a {
+            color: var(--accent-blue); cursor: pointer; text-decoration: none;
+        }
+        .files-breadcrumb a:hover { text-decoration: underline; }
+        .files-dropzone {
+            border: 1.5px dashed var(--border); border-radius: var(--radius);
+            padding: 18px 12px; text-align: center; color: var(--text-secondary);
+            background: var(--bg-input); cursor: pointer;
+            transition: background 0.12s, border-color 0.12s;
+        }
+        .files-dropzone.dragover {
+            border-color: var(--accent-blue); background: var(--accent-blue-dim);
+            color: var(--text-primary);
+        }
+        .files-dropzone-label { font-size: 12px; }
+        .files-dropzone-meta { font-size: 10px; color: var(--text-mute); margin-top: 4px; font-family: var(--font-mono); }
+        .files-pick-label span {
+            color: var(--accent-blue); text-decoration: underline; cursor: pointer;
+        }
+        .files-upload-log {
+            margin-top: 10px; display: flex; flex-direction: column; gap: 4px;
+            font-family: var(--font-mono); font-size: 11px;
+        }
+        .files-upload-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 4px 6px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: var(--radius);
+        }
+        .files-upload-row.ok { border-color: var(--accent-green); }
+        .files-upload-row.err { border-color: #b54a4a; }
+        .files-upload-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .files-upload-row .pct { color: var(--text-mute); }
+        .files-list-toolbar {
+            display: flex; gap: 6px; margin: 4px 0 8px;
+        }
+        .files-list {
+            display: flex; flex-direction: column; gap: 2px;
+            font-family: var(--font-mono); font-size: 12px;
+        }
+        .files-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 8px; border: 1px solid transparent; border-radius: var(--radius);
+            cursor: default;
+        }
+        .files-row.dir { cursor: pointer; }
+        .files-row.dir:hover { background: var(--bg-input); border-color: var(--border); }
+        .files-row .ico { width: 16px; text-align: center; color: var(--text-mute); }
+        .files-row.dir .ico { color: var(--accent-blue); }
+        .files-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .files-row .size { color: var(--text-mute); font-size: 10px; }
 
         .section {
             margin-bottom: 18px; padding-bottom: 18px;
@@ -914,6 +1030,9 @@
                 <button class="tool" onclick="openDrawer('browser')" title="Browser controls">
                     <span class="ind" id="browser-health"></span><span>Browser</span>
                 </button>
+                <button class="tool" onclick="openDrawer('files')" title="Upload files to /home/dev">
+                    <span>📁</span><span>Files</span>
+                </button>
                 <button class="tool icon" onclick="openDrawer('settings')" title="Settings: metrics, git, ssh">
                     <span>⚙</span><span id="settings-badge" class="badge" style="display:none;">!</span>
                 </button>
@@ -933,10 +1052,6 @@
                     </button>
                     <button class="rail-tab" data-rail="triggers" onclick="switchRail('triggers')" role="tab">
                         Triggers <span class="rail-tab-count" id="rail-count-triggers">0</span>
-                    </button>
-                    <button class="rail-tab" data-rail="routines" onclick="switchRail('routines')" role="tab"
-                            title="Scheduled work Claude has queued — surfaced from session transcripts.">
-                        Routines <span class="rail-tab-count" id="rail-count-routines">0</span>
                     </button>
                     <button class="rail-tab" data-rail="subagents" onclick="switchRail('subagents')" role="tab"
                             title="Subagent (Agent tool) invocations across recent sessions, running and completed.">
@@ -969,6 +1084,56 @@
                         </div>
                         <textarea id="new-task-input" rows="4"
                                   placeholder="Describe the task for Claude... (Ctrl+Enter to send)"></textarea>
+
+                        <div class="type-toggle" title="Live runs the task immediately. Scheduled creates a cron that runs the prompt on a recurring schedule.">
+                            <label>
+                                <input type="radio" name="new-task-type" value="live" checked onchange="onTaskTypeChange()">
+                                <span>● Live</span>
+                            </label>
+                            <label>
+                                <input type="radio" name="new-task-type" value="scheduled" onchange="onTaskTypeChange()">
+                                <span>◷ Scheduled</span>
+                            </label>
+                        </div>
+
+                        <div class="sched-block" id="new-task-sched-block">
+                            <div class="row">
+                                <select id="new-task-sched-freq" onchange="onSchedFreqChange()" style="flex:1;"
+                                        title="Pick how often the task should run">
+                                    <option value="5m">Every 5 minutes</option>
+                                    <option value="15m">Every 15 minutes</option>
+                                    <option value="30m">Every 30 minutes</option>
+                                    <option value="hourly">Every hour</option>
+                                    <option value="6h">Every 6 hours</option>
+                                    <option value="daily" selected>Daily at a time</option>
+                                    <option value="weekdays">Weekdays (Mon–Fri) at a time</option>
+                                    <option value="weekly">Weekly on a day at a time</option>
+                                </select>
+                            </div>
+                            <div class="row" id="new-task-sched-time-row">
+                                <input type="time" id="new-task-sched-time" value="09:00"
+                                       onchange="updateSchedPreview()"
+                                       title="Time of day (24h, UTC — the server runs crons in UTC)"
+                                       style="flex:1;">
+                            </div>
+                            <div class="row" id="new-task-sched-dow-row" style="display:none;">
+                                <select id="new-task-sched-dow" style="flex:1;" onchange="updateSchedPreview()">
+                                    <option value="1">Monday</option>
+                                    <option value="2">Tuesday</option>
+                                    <option value="3">Wednesday</option>
+                                    <option value="4">Thursday</option>
+                                    <option value="5">Friday</option>
+                                    <option value="6">Saturday</option>
+                                    <option value="0">Sunday</option>
+                                </select>
+                            </div>
+                            <input type="text" id="new-task-sched-name" placeholder="Name (optional — auto-generated)"
+                                   autocomplete="off" autocapitalize="off" spellcheck="false"
+                                   title="Lowercase letters, numbers, dashes; up to 40 chars.">
+                            <div class="sched-preview" id="new-task-sched-preview">Daily at 09:00 — <code>0 9 * * *</code></div>
+                            <div class="sched-hint">The prompt above becomes the cron's template. Manage scheduled runs from the Triggers rail.</div>
+                        </div>
+
                         <div class="task-form-toggle" title="Auto-prefix the prompt with the top-K relevant memories from the workspace memory store. Uncheck for a clean context.">
                             <label>
                                 <input type="checkbox" id="new-task-no-inject">
@@ -979,7 +1144,7 @@
                         <div id="memory-preview" class="memory-preview" style="display:none;"></div>
                         <div class="actions">
                             <button class="form-btn secondary" onclick="toggleNewTaskForm()">Cancel</button>
-                            <button class="form-btn primary" onclick="submitNewTask()">Send</button>
+                            <button class="form-btn primary" id="new-task-submit-btn" onclick="submitNewTask()">Send</button>
                         </div>
                     </div>
 
@@ -1070,49 +1235,11 @@
 
                     <div class="trigger-subhead" style="border-top: 1px solid var(--border); margin-top: 4px;">
                         <h3>Crons <span class="small-count" id="cron-count">(0)</span></h3>
-                        <button class="new-btn" onclick="toggleNewCronForm()">New</button>
-                    </div>
-                    <div class="inline-form" id="new-cron-form" style="margin: 0 12px 8px;">
-                        <input type="text" id="new-cron-id" placeholder="cron id (lowercase, e.g. daily-report)"
-                               autocomplete="off" autocapitalize="off" spellcheck="false">
-                        <input type="text" id="new-cron-schedule" placeholder='schedule, e.g. "0 9 * * *"'
-                               autocomplete="off" autocapitalize="off" spellcheck="false">
-                        <input type="text" id="new-cron-timezone" placeholder="timezone (default UTC)"
-                               autocomplete="off" autocapitalize="off" spellcheck="false">
-                        <textarea id="new-cron-template" rows="3"
-                                  placeholder='Prompt template. (Future) reference memory: {{ memory.github.watched_repos }}'></textarea>
-                        <input type="text" id="new-cron-workdir" placeholder="workdir (default /home/dev)"
-                               autocomplete="off" autocapitalize="off" spellcheck="false">
-                        <div class="actions" style="display:flex;gap:6px;justify-content:flex-end;">
-                            <button class="form-btn secondary" onclick="toggleNewCronForm()">Cancel</button>
-                            <button class="form-btn primary" onclick="submitNewCron()">Create</button>
-                        </div>
+                        <span style="font-size:10px;color:var(--text-mute);font-family:var(--font-mono);">
+                            create from Tasks → New → Scheduled
+                        </span>
                     </div>
                     <div id="cron-list" class="task-list" style="flex:1;padding:0 8px 8px;">
-                        <div class="task-empty">Loading…</div>
-                    </div>
-                </div>
-
-                <!-- ── Routines rail (scheduled work Claude has queued) ── -->
-                <!-- Sourced from ScheduleWakeup / Cron* tool uses found in -->
-                <!-- ~/.claude/projects/*/*.jsonl plus the Kairos watermark -->
-                <!-- in ~/.claude.json. Read-only view; users can't edit -->
-                <!-- routines from the dashboard (Claude authors them). -->
-                <div class="rail-view" id="rail-routines">
-                    <div class="rail-head">
-                        <h2>Routines <span class="counts" id="routine-counts">— · —</span></h2>
-                        <button class="new-btn" onclick="fetchRoutines()"
-                                title="Re-scan transcripts for routine activity"
-                                style="background:transparent;color:var(--accent-blue);border:1px solid var(--border);">
-                            refresh
-                        </button>
-                    </div>
-                    <div id="routine-watermark" style="padding:6px 12px;font-family:var(--font-mono);font-size:10px;color:var(--text-mute);border-bottom:1px solid var(--border);"></div>
-                    <div class="rail-search">
-                        <input type="search" id="routine-search" placeholder="Filter by prompt, tool, session…"
-                               autocomplete="off" autocapitalize="off" spellcheck="false">
-                    </div>
-                    <div id="routine-list" class="task-list">
                         <div class="task-empty">Loading…</div>
                     </div>
                 </div>
@@ -1179,6 +1306,7 @@
 
                     <div class="detail-tabs">
                         <button class="tab-btn active" data-tab="chat" onclick="setTab('chat')">Chat</button>
+                        <button class="tab-btn" data-tab="preview" onclick="setTab('preview')" title="Chat alongside a live browser preview of a localhost port running in the workspace">Preview</button>
                         <button class="tab-btn" data-tab="info" onclick="setTab('info')">Info</button>
                         <button class="tab-btn tab-btn-muted" data-tab="output" onclick="setTab('output')" title="Raw tmux output (for completed/killed tasks or debugging)">Output</button>
                     </div>
@@ -1197,6 +1325,29 @@
                     <div class="tab-panel active" id="tab-chat">
                         <div class="chat-iframe-wrap">
                             <iframe class="chat-iframe" id="chat-iframe" title="Claude terminal"></iframe>
+                        </div>
+                    </div>
+
+                    <div class="tab-panel" id="tab-preview">
+                        <div class="preview-split">
+                            <div class="preview-split-left">
+                                <iframe class="chat-iframe" id="preview-chat-iframe" title="Claude terminal (preview)"></iframe>
+                            </div>
+                            <div class="preview-split-right">
+                                <div class="preview-toolbar">
+                                    <span>localhost:</span>
+                                    <input type="number" id="preview-port" value="8080" min="1" max="65535"
+                                           onkeydown="if(event.key==='Enter'){event.preventDefault();openPreviewPort();}"
+                                           title="Localhost port the in-pod browser should display">
+                                    <button class="toolbar-btn" onclick="openPreviewPort()"
+                                            title="Point the in-pod browser at this port">Open</button>
+                                    <button class="toolbar-btn" onclick="refreshPreviewVnc()"
+                                            title="Re-attach the VNC viewer">Refresh</button>
+                                    <span class="spacer"></span>
+                                    <span id="preview-status">—</span>
+                                </div>
+                                <iframe class="preview-vnc-frame" id="preview-vnc-frame" title="In-pod browser via VNC"></iframe>
+                            </div>
                         </div>
                     </div>
 
@@ -1251,28 +1402,6 @@ Planned schema: each save creates a new revision with timestamp, source_task_id,
                         <pre class="output-box" id="memory-refs">
 <span class="output-placeholder">Tasks and crons that read or wrote this memory entry will appear here.
 Planned: server tracks {{ memory.ns.key }} references at task launch and emits links in both directions.</span></pre>
-                    </div>
-                </div>
-
-                <!-- Routine detail pane ── shown when a routine row is selected -->
-                <div class="detail-content" id="detail-routine">
-                    <div class="detail-head">
-                        <div class="detail-head-main">
-                            <div class="detail-meta">
-                                <span class="meta-tag source" id="r-tool">—</span>
-                                <span class="meta-tag" id="r-fires">—</span>
-                                <span class="meta-tag" id="r-last">—</span>
-                            </div>
-                            <div class="detail-prompt" id="r-reason" style="font-style:italic;">—</div>
-                        </div>
-                        <div class="detail-actions">
-                            <button class="act-btn" onclick="copyRoutinePrompt()" title="Copy routine prompt">Copy prompt</button>
-                        </div>
-                    </div>
-                    <div class="tab-panel active" style="flex-direction:column;padding:16px 20px;overflow-y:auto;">
-                        <div style="color:var(--text-mute);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Prompt Claude will resume with</div>
-                        <pre id="r-prompt" style="background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--font-mono);font-size:12px;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;line-height:1.55;margin-bottom:16px;"></pre>
-                        <dl class="info-grid" id="r-info-grid"></dl>
                     </div>
                 </div>
 
@@ -1469,6 +1598,49 @@ Planned: server tracks {{ memory.ns.key }} references at task launch and emits l
 
     <!-- Browser drawer is the same as settings (just opens with browser section scrolled into view) -->
 
+    <!-- ─── Files drawer ────────────────────────────────────────────── -->
+    <aside class="drawer" id="drawer-files">
+        <div class="drawer-head">
+            <h2>Files</h2>
+            <button class="drawer-close" onclick="closeDrawer()">×</button>
+        </div>
+        <div class="drawer-body">
+            <div class="section">
+                <h3>Upload to <code id="files-current-path-label">/home/dev</code></h3>
+                <div class="files-breadcrumb" id="files-breadcrumb"></div>
+
+                <div class="files-dropzone" id="files-dropzone"
+                     ondragover="onFilesDragOver(event)"
+                     ondragleave="onFilesDragLeave(event)"
+                     ondrop="onFilesDrop(event)">
+                    <div class="files-dropzone-label">
+                        Drop files here, or
+                        <label class="files-pick-label">
+                            <input type="file" id="files-picker" multiple
+                                   onchange="onFilesPicked(event)" style="display:none;">
+                            <span>pick files</span>
+                        </label>
+                    </div>
+                    <div class="files-dropzone-meta">Up to 200 MiB per file</div>
+                </div>
+
+                <div id="files-upload-log" class="files-upload-log"></div>
+            </div>
+
+            <div class="section">
+                <h3>Contents</h3>
+                <div class="files-list-toolbar">
+                    <button class="act-btn" onclick="filesGoUp()" id="files-up-btn">↑ Up</button>
+                    <button class="act-btn" onclick="refreshFiles()">Refresh</button>
+                    <button class="act-btn" onclick="promptNewSubfolder()">+ New folder</button>
+                </div>
+                <div id="files-list" class="files-list">
+                    <div class="task-empty">Loading…</div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
     <div id="toast" class="toast"></div>
 
 <script>
@@ -1493,12 +1665,8 @@ const STATE = {
     memoryFormat: 'text',        // 'text' | 'json' — JSON pretty-prints the editor on toggle.
     memoryDirty: false,          // true once the user edits the value textarea
     memoryBackendOk: null,       // null = unknown, true = API present, false = not built yet
-    // Routines + Subagents: read-only views over Claude's session transcripts.
-    // No editing — Claude authors routines, this rail just surfaces them.
-    routines: [],
-    routineWatermark: {},
-    routineSearch: '',
-    selectedRoutineId: null,
+    // Subagents: read-only view over Claude's session transcripts. No
+    // editing — Claude authors subagent runs, this rail just surfaces them.
     subagents: [],
     subagentFilter: 'all',       // 'all' | 'running' | 'completed' | 'error'
     subagentSearch: '',
@@ -1557,17 +1725,14 @@ function boot() {
     fetchMemories();
     STATE.pollTimers.memory = setInterval(fetchMemories, 30000);
 
-    // Routines + subagents derive from transcripts on disk — cheap to poll
-    // (mtime-cached). Refresh frequently enough to feel live for running
-    // subagents but not so fast we hammer the disk.
-    fetchRoutines();
-    STATE.pollTimers.routines = setInterval(fetchRoutines, 30000);
+    // Subagents derive from transcripts on disk — cheap to poll (mtime-cached).
+    // Refresh frequently enough to feel live for running subagents but not so
+    // fast we hammer the disk.
     fetchSubagents();
     STATE.pollTimers.subagents = setInterval(fetchSubagents, 10000);
 
     bindSearch();
     bindMemorySearch();
-    bindRoutineSearch();
     bindSubagentSearch();
     bindKeyboard();
 
@@ -1584,7 +1749,7 @@ function boot() {
  *   - triggers: webhooks + crons that spawn tasks (inline cards, no detail)
  * ═════════════════════════════════════════════════════════════════ */
 function switchRail(name) {
-    if (!['tasks', 'memory', 'triggers', 'routines', 'subagents'].includes(name)) return;
+    if (!['tasks', 'memory', 'triggers', 'subagents'].includes(name)) return;
     STATE.activeRail = name;
     document.querySelectorAll('.rail-tab').forEach(t => {
         t.classList.toggle('active', t.dataset.rail === name);
@@ -1602,9 +1767,6 @@ function switchRail(name) {
         else showDetailEmpty('Select a memory entry to view or edit it');
     } else if (name === 'triggers') {
         showDetailPane('triggers-help');
-    } else if (name === 'routines') {
-        if (STATE.selectedRoutineId) showDetailPane('routine');
-        else showDetailEmpty('Select a routine to see its prompt and history');
     } else if (name === 'subagents') {
         if (STATE.selectedSubagentId) showDetailPane('subagent');
         else showDetailEmpty('Select a subagent to see its briefing and status');
@@ -1620,9 +1782,8 @@ function updateRailCounts() {
     const wc = document.querySelectorAll('#webhook-list .compact-card').length;
     const cc = document.querySelectorAll('#cron-list .compact-card').length;
     document.getElementById('rail-count-triggers').textContent = wc + cc;
-    // Routines: total fires-aggregated. Subagents: show running·total when
-    // anything is in-flight, otherwise just total — same convention as tasks.
-    document.getElementById('rail-count-routines').textContent = STATE.routines.length;
+    // Subagents: show running·total when anything is in-flight, otherwise
+    // just total — same convention as tasks.
     const sa = STATE.subagents.length;
     const sar = STATE.subagents.filter(x => x.status === 'running').length;
     document.getElementById('rail-count-subagents').textContent = sar ? `${sar}·${sa}` : sa;
@@ -2293,7 +2454,7 @@ function selectTask(taskId, opts = {}) {
 // The detail pane has multiple stacked content panels (task, memory,
 // triggers-help) plus an empty state. showDetailPane swaps which is
 // visible; showDetailEmpty hides them all and shows the placeholder.
-const DETAIL_PANES = ['detail-task', 'detail-memory', 'detail-triggers-help', 'detail-routine', 'detail-subagent'];
+const DETAIL_PANES = ['detail-task', 'detail-memory', 'detail-triggers-help', 'detail-subagent'];
 function showDetailPane(which) {
     document.getElementById('detail-empty').style.display = 'none';
     DETAIL_PANES.forEach(id => {
@@ -2397,6 +2558,8 @@ function setTab(tab) {
     if (tab === 'output' && STATE.selectedId) loadOutput(STATE.selectedId);
     if (tab === 'chat' && STATE.selectedId) openChatForCurrent();
     else closeChatIframe();
+    if (tab === 'preview' && STATE.selectedId) openPreviewForCurrent();
+    else closePreviewIframes();
 }
 
 function closeDetailMobile() {
@@ -2522,6 +2685,83 @@ async function openChatForCurrent() {
 function closeChatIframe() {
     const iframe = document.getElementById('chat-iframe');
     if (iframe.src && iframe.src !== 'about:blank') iframe.src = 'about:blank';
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Preview tab — chat (ttyd) on the left, in-pod browser via VNC on the
+ * right. The user supplies a port; we ask the in-pod browser to navigate
+ * to localhost:<port> and re-attach the VNC viewer so the result shows
+ * up immediately. The dashboard never touches port forwarding — the
+ * "browser" doing the rendering is Chrome running on the pod's X server.
+ * ═════════════════════════════════════════════════════════════════ */
+async function openPreviewForCurrent() {
+    if (!STATE.selectedId) return;
+    const t = STATE.tasks.find(x => x.task_id === STATE.selectedId);
+    if (!t || t.status !== 'running') {
+        toast('Preview is only available for running tasks');
+        setTab('output');
+        return;
+    }
+    try {
+        const r = await fetch(`/oauth/api/claude/tasks/${encodeURIComponent(STATE.selectedId)}/prepare-terminal`, {
+            method: 'POST', signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) { toast('Failed to prepare terminal'); return; }
+    } catch (e) { toast('Error preparing terminal'); return; }
+    const cif = document.getElementById('preview-chat-iframe');
+    cif.src = 'about:blank';
+    requestAnimationFrame(() => { cif.src = '/oauth/terminal/?t=' + Date.now(); });
+    const vif = document.getElementById('preview-vnc-frame');
+    if (!vif.src || vif.src === 'about:blank' || vif.src.endsWith('about:blank')) {
+        // resize=scale downscales the whole X display to fit the iframe.
+        // Combined with the kiosk/app-mode Chrome launched by open-localhost,
+        // the in-pod browser is effectively all you see in this pane.
+        vif.src = '/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true';
+    }
+}
+
+function closePreviewIframes() {
+    const cif = document.getElementById('preview-chat-iframe');
+    if (cif && cif.src && cif.src !== 'about:blank') cif.src = 'about:blank';
+    const vif = document.getElementById('preview-vnc-frame');
+    if (vif && vif.src && vif.src !== 'about:blank') vif.src = 'about:blank';
+}
+
+async function openPreviewPort() {
+    const inp = document.getElementById('preview-port');
+    const port = parseInt(inp.value, 10);
+    if (!port || port < 1 || port > 65535) { toast('Enter a port 1–65535'); return; }
+    const status = document.getElementById('preview-status');
+    status.textContent = `→ localhost:${port}…`;
+    try {
+        const r = await fetch('/oauth/browser/api/open-localhost', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ port }),
+        });
+        if (!r.ok) {
+            status.textContent = 'open failed';
+            const d = await r.json().catch(() => ({}));
+            toast('Open failed: ' + (d.error || r.statusText));
+            return;
+        }
+        status.textContent = `→ localhost:${port}`;
+        refreshPreviewVnc();
+    } catch (e) {
+        status.textContent = 'error';
+        toast('Error: ' + e.message);
+    }
+}
+
+function refreshPreviewVnc() {
+    const vif = document.getElementById('preview-vnc-frame');
+    if (!vif) return;
+    // Bounce through about:blank so Chromium reliably reloads even when
+    // the URL is unchanged — same trick used by the chat iframe.
+    vif.src = 'about:blank';
+    requestAnimationFrame(() => {
+        vif.src = '/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=' + Date.now();
+    });
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -2664,6 +2904,10 @@ function toggleNewTaskForm() {
     if (willOpen) {
         loadWorkdirOptions();
         refreshAssistants();
+        // Reset task-type to live on each open so the form doesn't surprise
+        // users by remembering "Scheduled" from a previous session.
+        const liveRadio = document.querySelector('input[name="new-task-type"][value="live"]');
+        if (liveRadio) { liveRadio.checked = true; onTaskTypeChange(); }
         setTimeout(() => input.focus(), 50);
     } else {
         input.value = '';
@@ -2708,12 +2952,106 @@ async function refreshAssistants() {
     row.style.display = AVAILABLE_ASSISTANTS.length > 1 ? 'flex' : 'none';
 }
 
+// Task type / schedule helpers — keep cron syntax out of the user's way.
+// We build the cron expression from the friendly preset + time/day inputs
+// and POST to /oauth/api/crons. Live tasks keep their original path.
+function getNewTaskType() {
+    const el = document.querySelector('input[name="new-task-type"]:checked');
+    return el ? el.value : 'live';
+}
+
+function onTaskTypeChange() {
+    const type = getNewTaskType();
+    document.getElementById('new-task-sched-block').classList.toggle('visible', type === 'scheduled');
+    const btn = document.getElementById('new-task-submit-btn');
+    if (btn) btn.textContent = type === 'scheduled' ? 'Schedule' : 'Send';
+    if (type === 'scheduled') updateSchedPreview();
+}
+
+function onSchedFreqChange() {
+    const f = document.getElementById('new-task-sched-freq').value;
+    const needsTime = ['daily', 'weekdays', 'weekly'].includes(f);
+    document.getElementById('new-task-sched-time-row').style.display = needsTime ? '' : 'none';
+    document.getElementById('new-task-sched-dow-row').style.display = f === 'weekly' ? '' : 'none';
+    updateSchedPreview();
+}
+
+// Build a cron expression from the friendly inputs. Times are interpreted
+// in UTC (server default) — we surface that in the preview so there are
+// no surprises.
+function buildCronExpression() {
+    const f = document.getElementById('new-task-sched-freq').value;
+    const time = (document.getElementById('new-task-sched-time').value || '09:00').split(':');
+    const hh = parseInt(time[0], 10) || 0;
+    const mm = parseInt(time[1], 10) || 0;
+    const dow = document.getElementById('new-task-sched-dow').value;
+    switch (f) {
+        case '5m': return '*/5 * * * *';
+        case '15m': return '*/15 * * * *';
+        case '30m': return '*/30 * * * *';
+        case 'hourly': return '0 * * * *';
+        case '6h': return '0 */6 * * *';
+        case 'daily': return `${mm} ${hh} * * *`;
+        case 'weekdays': return `${mm} ${hh} * * 1-5`;
+        case 'weekly': return `${mm} ${hh} * * ${dow}`;
+    }
+    return '0 9 * * *';
+}
+
+function schedHumanLabel() {
+    const f = document.getElementById('new-task-sched-freq').value;
+    const time = document.getElementById('new-task-sched-time').value || '09:00';
+    const dowSel = document.getElementById('new-task-sched-dow');
+    const dowLabel = dowSel.options[dowSel.selectedIndex].textContent;
+    switch (f) {
+        case '5m': return 'Every 5 minutes';
+        case '15m': return 'Every 15 minutes';
+        case '30m': return 'Every 30 minutes';
+        case 'hourly': return 'Every hour';
+        case '6h': return 'Every 6 hours';
+        case 'daily': return `Daily at ${time} UTC`;
+        case 'weekdays': return `Weekdays at ${time} UTC`;
+        case 'weekly': return `Every ${dowLabel} at ${time} UTC`;
+    }
+    return '';
+}
+
+function updateSchedPreview() {
+    const el = document.getElementById('new-task-sched-preview');
+    if (!el) return;
+    el.innerHTML = `${escapeHtml(schedHumanLabel())} — <code>${escapeHtml(buildCronExpression())}</code>`;
+}
+
+// Slug a prompt into a valid cron id: lowercase, dashed, 40 chars max,
+// matches the server's ^[a-z0-9-]{1,40}$ rule. Falls back to a timestamp
+// suffix so two scheduled tasks made the same minute don't collide.
+function deriveCronId(prompt) {
+    let slug = (prompt || '').toLowerCase()
+        .replace(/[^a-z0-9\s-]+/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .slice(0, 6)
+        .join('-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    if (!slug) slug = 'task';
+    const suffix = Math.floor(Date.now() / 1000).toString(36).slice(-4);
+    const base = slug.slice(0, 40 - suffix.length - 1);
+    return `${base}-${suffix}`;
+}
+
 async function submitNewTask() {
     const input = document.getElementById('new-task-input');
     const text = input.value.trim();
     if (!text) { toast('Enter a task description'); return; }
     const workdir = getSelectedWorkdir();
     if (workdir === null) { toast('Enter a custom path or pick a directory'); return; }
+    const type = getNewTaskType();
+
+    if (type === 'scheduled') {
+        return submitScheduledTask(text, workdir, input);
+    }
+
     const disable_memory_injection = !!document.getElementById('new-task-no-inject').checked;
     const assistantEl = document.getElementById('new-task-assistant');
     const assistant = assistantEl ? assistantEl.value : 'claude';
@@ -2741,6 +3079,40 @@ async function submitNewTask() {
             const data = await r.json().catch(() => ({}));
             toast('Failed: ' + (data.error || r.statusText));
         }
+    } catch (e) { toast('Error: ' + e.message); }
+}
+
+async function submitScheduledTask(text, workdir, input) {
+    let id = (document.getElementById('new-task-sched-name').value || '').trim().toLowerCase();
+    if (id && !/^[a-z0-9-]{1,40}$/.test(id)) {
+        toast('Name must be lowercase letters/numbers/dashes, ≤40 chars');
+        return;
+    }
+    if (!id) id = deriveCronId(text);
+    const schedule = buildCronExpression();
+    try {
+        const r = await fetch('/oauth/api/crons', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                id, schedule, prompt_template: text,
+                workdir: workdir || undefined,
+            }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok && r.status !== 202) {
+            toast('Failed: ' + (data.error || r.statusText));
+            return;
+        }
+        toast(`Scheduled "${id}" — ${schedHumanLabel()}`);
+        input.value = '';
+        document.getElementById('new-task-sched-name').value = '';
+        document.getElementById('new-task-form').classList.remove('visible');
+        document.getElementById('new-task-sched-block').classList.remove('visible');
+        // Reset to "live" so the next open isn't sticky in scheduled mode.
+        const liveRadio = document.querySelector('input[name="new-task-type"][value="live"]');
+        if (liveRadio) { liveRadio.checked = true; onTaskTypeChange(); }
+        fetchCrons();
     } catch (e) { toast('Error: ' + e.message); }
 }
 
@@ -2907,17 +3279,8 @@ function copyWebhookUrl(id) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * Crons (in triggers drawer)
+ * Crons (managed from triggers rail; creation lives in the New Task form)
  * ═════════════════════════════════════════════════════════════════ */
-function toggleNewCronForm() {
-    const f = document.getElementById('new-cron-form');
-    const willOpen = !f.classList.contains('visible');
-    f.classList.toggle('visible', willOpen);
-    if (willOpen) setTimeout(() => document.getElementById('new-cron-id').focus(), 50);
-    else ['new-cron-id','new-cron-schedule','new-cron-timezone','new-cron-template','new-cron-workdir']
-        .forEach(id => document.getElementById(id).value = '');
-}
-
 async function fetchCrons() {
     try {
         const r = await fetch('/oauth/api/crons', { signal: AbortSignal.timeout(8000) });
@@ -2968,28 +3331,6 @@ function buildCronCardHTML(cron) {
             </div>
         </div>
     `;
-}
-
-async function submitNewCron() {
-    const id = document.getElementById('new-cron-id').value.trim();
-    const schedule = document.getElementById('new-cron-schedule').value.trim();
-    const timezone = document.getElementById('new-cron-timezone').value.trim();
-    const template = document.getElementById('new-cron-template').value.trim();
-    const workdir = document.getElementById('new-cron-workdir').value.trim();
-    if (!id || !schedule || !template) { toast('id, schedule, prompt required'); return; }
-    try {
-        const r = await fetch('/oauth/api/crons', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ id, schedule, prompt_template: template,
-                timezone: timezone || undefined, workdir: workdir || undefined }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok && r.status !== 202) { toast('Failed: ' + (data.error || r.statusText)); return; }
-        if (data.warning) toast('Created with warning: ' + data.warning);
-        else toast('Cron ' + id + ' created');
-        toggleNewCronForm();
-        fetchCrons();
-    } catch (e) { toast('Error: ' + e.message); }
 }
 
 async function deleteCron(id) {
@@ -3047,6 +3388,12 @@ function openDrawer(which) {
     closeDrawer();
     // 'triggers' used to point at a dedicated drawer — it now lives in the rail.
     if (which === 'triggers') { switchRail('triggers'); return; }
+    if (which === 'files') {
+        document.getElementById('drawer-files').classList.add('visible');
+        document.getElementById('scrim').classList.add('visible');
+        refreshFiles();
+        return;
+    }
     document.getElementById('drawer-settings').classList.add('visible');
     document.getElementById('scrim').classList.add('visible');
     if (which === 'browser') {
@@ -3061,6 +3408,211 @@ function openDrawer(which) {
 function closeDrawer() {
     document.querySelectorAll('.drawer').forEach(d => d.classList.remove('visible'));
     document.getElementById('scrim').classList.remove('visible');
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Files drawer — upload + browse under /home/dev
+ *
+ * Backend contract:
+ *   GET  /api/files/list?path=<rel>          → {path, entries: [{name,kind,size,mtime}]}
+ *   POST /api/files/upload                   → headers X-Dest-Path, X-Filename; raw body
+ *   POST /api/files/mkdir                    → JSON {path}
+ *
+ * All paths are relative to /home/dev. Traversal (..) is rejected server-side
+ * via realpath; the dashboard just keeps strings tidy.
+ * ═════════════════════════════════════════════════════════════════ */
+const FILES_STATE = { currentPath: '', entries: [] };
+
+function filesCurrentAbs() {
+    return FILES_STATE.currentPath
+        ? '/home/dev/' + FILES_STATE.currentPath
+        : '/home/dev';
+}
+
+async function refreshFiles() {
+    const list = document.getElementById('files-list');
+    list.innerHTML = '<div class="task-empty">Loading…</div>';
+    try {
+        const r = await fetch('/oauth/api/files/list?path=' + encodeURIComponent(FILES_STATE.currentPath),
+                              { credentials: 'include' });
+        if (!r.ok) {
+            const d = await r.json().catch(() => ({}));
+            list.innerHTML = `<div class="task-empty">${escapeHtml(d.error || r.statusText)}</div>`;
+            return;
+        }
+        const data = await r.json();
+        FILES_STATE.currentPath = data.path || '';
+        FILES_STATE.entries = data.entries || [];
+        renderFilesList();
+        renderFilesBreadcrumb();
+    } catch (e) {
+        list.innerHTML = `<div class="task-empty">Error: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderFilesBreadcrumb() {
+    const el = document.getElementById('files-breadcrumb');
+    const label = document.getElementById('files-current-path-label');
+    label.textContent = filesCurrentAbs();
+    const parts = FILES_STATE.currentPath ? FILES_STATE.currentPath.split('/') : [];
+    let acc = '';
+    const crumbs = [`<a onclick="filesNavigate('')">/home/dev</a>`];
+    for (const p of parts) {
+        acc = acc ? acc + '/' + p : p;
+        crumbs.push(`<span>/</span><a onclick="filesNavigate('${escapeAttr(acc)}')">${escapeHtml(p)}</a>`);
+    }
+    el.innerHTML = crumbs.join('');
+    document.getElementById('files-up-btn').disabled = !FILES_STATE.currentPath;
+}
+
+function renderFilesList() {
+    const list = document.getElementById('files-list');
+    if (!FILES_STATE.entries.length) {
+        list.innerHTML = '<div class="task-empty">Empty directory.</div>';
+        return;
+    }
+    list.innerHTML = FILES_STATE.entries.map(e => {
+        const ico = e.kind === 'dir' ? '📁' : fileIcon(e.name);
+        const size = e.kind === 'dir' ? '' : humanSize(e.size);
+        const onClick = e.kind === 'dir' ? `onclick="filesEnter('${escapeAttr(e.name)}')"` : '';
+        return `<div class="files-row ${e.kind}" ${onClick}>
+            <span class="ico">${ico}</span>
+            <span class="name">${escapeHtml(e.name)}</span>
+            <span class="size">${size}</span>
+        </div>`;
+    }).join('');
+}
+
+function fileIcon(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    if (['png','jpg','jpeg','gif','webp','svg','bmp','ico'].includes(ext)) return '🖼';
+    if (['md','txt','log'].includes(ext)) return '📄';
+    if (['json','yaml','yml','toml','xml'].includes(ext)) return '🧾';
+    if (['js','ts','tsx','jsx','py','go','rs','java','cpp','c','h','sh','rb'].includes(ext)) return '📜';
+    if (['zip','tar','gz','tgz','bz2','xz','7z'].includes(ext)) return '🗜';
+    if (['mp4','mov','avi','mkv','webm'].includes(ext)) return '🎬';
+    if (['mp3','wav','flac','ogg'].includes(ext)) return '🎵';
+    if (['pdf'].includes(ext)) return '📕';
+    return '📄';
+}
+
+function humanSize(n) {
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function filesNavigate(path) {
+    FILES_STATE.currentPath = path || '';
+    refreshFiles();
+}
+
+function filesEnter(name) {
+    const next = FILES_STATE.currentPath ? FILES_STATE.currentPath + '/' + name : name;
+    filesNavigate(next);
+}
+
+function filesGoUp() {
+    if (!FILES_STATE.currentPath) return;
+    const parts = FILES_STATE.currentPath.split('/');
+    parts.pop();
+    filesNavigate(parts.join('/'));
+}
+
+async function promptNewSubfolder() {
+    const name = (prompt('New folder name (created under ' + filesCurrentAbs() + '):') || '').trim();
+    if (!name) return;
+    if (/[\\/\x00]/.test(name) || name === '.' || name === '..') {
+        toast('Invalid folder name');
+        return;
+    }
+    const path = FILES_STATE.currentPath ? FILES_STATE.currentPath + '/' + name : name;
+    try {
+        const r = await fetch('/oauth/api/files/mkdir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok && r.status !== 201) { toast('Failed: ' + (d.error || r.statusText)); return; }
+        toast('Created ' + path);
+        refreshFiles();
+    } catch (e) { toast('Error: ' + e.message); }
+}
+
+// ── Drag-and-drop + picker ────────────────────────────────────────────
+function onFilesDragOver(e) {
+    e.preventDefault();
+    document.getElementById('files-dropzone').classList.add('dragover');
+}
+function onFilesDragLeave(e) {
+    document.getElementById('files-dropzone').classList.remove('dragover');
+}
+function onFilesDrop(e) {
+    e.preventDefault();
+    document.getElementById('files-dropzone').classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length) uploadFiles(files);
+}
+function onFilesPicked(e) {
+    const files = Array.from(e.target.files || []);
+    if (files.length) uploadFiles(files);
+    e.target.value = '';  // allow re-picking the same file
+}
+
+async function uploadFiles(files) {
+    const log = document.getElementById('files-upload-log');
+    // Upload sequentially — keeps the progress UI readable and avoids
+    // saturating the pod's network bandwidth with parallel large uploads.
+    for (const f of files) {
+        const row = document.createElement('div');
+        row.className = 'files-upload-row';
+        row.innerHTML = `<span class="name" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>
+                         <span class="size">${humanSize(f.size)}</span>
+                         <span class="pct">0%</span>`;
+        log.prepend(row);
+        try {
+            await uploadOneFile(f, FILES_STATE.currentPath, row);
+            row.classList.add('ok');
+            row.querySelector('.pct').textContent = '✓';
+        } catch (err) {
+            row.classList.add('err');
+            row.querySelector('.pct').textContent = '✗';
+            row.title = err.message;
+            toast(`Failed: ${f.name} — ${err.message}`);
+        }
+    }
+    refreshFiles();
+}
+
+function uploadOneFile(file, destPath, row) {
+    // XHR for progress events; fetch() still lacks an upload-progress API.
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/oauth/api/files/upload', true);
+        xhr.setRequestHeader('X-Dest-Path', destPath || '');
+        xhr.setRequestHeader('X-Filename', file.name);
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        xhr.upload.onprogress = (e) => {
+            if (!e.lengthComputable) return;
+            const pct = Math.round((e.loaded / e.total) * 100);
+            const pctEl = row.querySelector('.pct');
+            if (pctEl) pctEl.textContent = pct + '%';
+        };
+        xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                resolve();
+            } else {
+                let msg = xhr.statusText || ('status ' + xhr.status);
+                try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
+                reject(new Error(msg));
+            }
+        };
+        xhr.onerror = () => reject(new Error('network error'));
+        xhr.send(file);
+    });
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -3565,16 +4117,12 @@ function escapeHtml(str) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * Routines + Subagents
+ * Subagents
  *
- * Both views are read-only derivations from Claude's session transcripts
- * on disk (~/.claude/projects/*.jsonl). The server's transcript_scanner
- * does the parsing; the dashboard just polls /api/routines and
- * /api/subagents and renders rows that look like the Memory rail.
- *
- * Routines roll up all ScheduleWakeup / Cron* tool uses by prompt or
- * cron id, so a routine that fired ten times shows once with fire_count=10.
- * Subagents are listed flat — each Agent tool use is one row.
+ * Read-only derivation from Claude's session transcripts on disk
+ * (~/.claude/projects/*.jsonl). The server's transcript_scanner does the
+ * parsing; the dashboard polls /api/subagents and renders rows. Each
+ * Agent tool use is one row.
  * ═════════════════════════════════════════════════════════════════ */
 
 function formatIsoTimeAgo(iso) {
@@ -3590,138 +4138,7 @@ function formatIsoTimeAgo(iso) {
     return Math.floor(hrs / 24) + 'd ago';
 }
 
-async function fetchRoutines() {
-    try {
-        const res = await fetch('/api/routines', { credentials: 'include' });
-        if (!res.ok) return;
-        const data = await res.json();
-        STATE.routines = data.routines || [];
-        STATE.routineWatermark = data.watermark || {};
-        renderRoutineList();
-        renderRoutineWatermark(data.window_days);
-        // Refresh detail pane if the selected routine still exists.
-        if (STATE.activeRail === 'routines' && STATE.selectedRoutineId) {
-            const r = STATE.routines.find(x => x.id === STATE.selectedRoutineId);
-            if (r) renderRoutineDetail(r);
-        }
-        updateRailCounts();
-    } catch (_) { /* swallow — next poll retries */ }
-}
 
-function renderRoutineWatermark(windowDays) {
-    const el = document.getElementById('routine-watermark');
-    if (!el) return;
-    const w = STATE.routineWatermark || {};
-    const last = w.routine_fired_watermark;
-    const enabled = w.kairos_cron_enabled;
-    const parts = [];
-    parts.push(`window: ${windowDays || 7}d`);
-    parts.push(`kairos cron: <span style="color:${enabled ? 'var(--accent-green)' : 'var(--text-mute)'};">${enabled ? 'on' : 'off'}</span>`);
-    if (last) parts.push(`last fired: <span style="color:var(--text-primary);">${formatIsoTimeAgo(last)}</span>`);
-    el.innerHTML = parts.join(' · ');
-}
-
-function renderRoutineList() {
-    const list = document.getElementById('routine-list');
-    const counts = document.getElementById('routine-counts');
-    if (!list || !counts) return;
-    let rows = STATE.routines;
-    if (STATE.routineSearch) {
-        const q = STATE.routineSearch.toLowerCase();
-        rows = rows.filter(r =>
-            (r.prompt || '').toLowerCase().includes(q) ||
-            (r.tool || '').toLowerCase().includes(q) ||
-            (r.last_session_id || '').toLowerCase().includes(q) ||
-            (r.cron_id || '').toLowerCase().includes(q)
-        );
-    }
-    counts.innerHTML = `<b>${rows.length}</b><span style="opacity:0.5;">/${STATE.routines.length}</span>`;
-    if (rows.length === 0) {
-        if (STATE.routines.length === 0) {
-            list.innerHTML = `<div class="task-empty">No routines fired yet. Claude creates routines via <code>ScheduleWakeup</code> or <code>CronCreate</code> — they will appear here automatically.</div>`;
-        } else {
-            list.innerHTML = `<div class="task-empty">No routines match "<b>${escapeHtml(STATE.routineSearch)}</b>"</div>`;
-        }
-        return;
-    }
-    list.innerHTML = rows.map(routineRowHTML).join('');
-}
-
-function routineRowHTML(r) {
-    const selected = STATE.selectedRoutineId === r.id ? 'selected' : '';
-    const promptPreview = (r.prompt || r.reason || '(no prompt captured)').slice(0, 140);
-    const delay = r.delay_seconds ? `${r.delay_seconds}s delay` : '';
-    const cron = r.cron_expression ? `cron: ${r.cron_expression}` : '';
-    const cadence = delay || cron || r.tool;
-    return `
-        <div class="memory-row ${selected}" id="routine-row-${escapeAttr(r.id)}"
-             onclick="selectRoutine('${escapeAttr(r.id)}')">
-            <div class="memory-row-line1">
-                <span class="memory-row-kind">${escapeHtml(r.tool)}</span>
-                <span class="memory-row-key">${escapeHtml(cadence)}</span>
-            </div>
-            <div class="memory-row-line2">
-                <span>${escapeHtml(r.fire_count)} fire${r.fire_count === 1 ? '' : 's'}</span>
-                <span class="sep">·</span>
-                <span>last ${formatIsoTimeAgo(r.last_fired_at)}</span>
-            </div>
-            <div class="memory-row-preview">${escapeHtml(promptPreview)}</div>
-        </div>`;
-}
-
-function selectRoutine(id) {
-    STATE.selectedRoutineId = id;
-    document.querySelectorAll('#routine-list .memory-row').forEach(row => {
-        row.classList.toggle('selected', row.id === `routine-row-${id}`);
-    });
-    const r = STATE.routines.find(x => x.id === id);
-    if (!r) return;
-    renderRoutineDetail(r);
-    showDetailPane('routine');
-}
-
-function renderRoutineDetail(r) {
-    document.getElementById('r-tool').textContent = r.tool;
-    document.getElementById('r-fires').textContent = `${r.fire_count} fire${r.fire_count === 1 ? '' : 's'}`;
-    document.getElementById('r-last').textContent = `last ${formatIsoTimeAgo(r.last_fired_at)}`;
-    document.getElementById('r-reason').textContent = r.reason || '(no reason recorded)';
-    document.getElementById('r-prompt').textContent = r.prompt || '(no prompt captured)';
-    // Info grid: surface every interesting field non-destructively so power
-    // users can debug routine identity without leaving the dashboard.
-    const grid = document.getElementById('r-info-grid');
-    const rows = [
-        ['Routine id', r.id],
-        ['Tool', r.tool],
-        ['Fire count', r.fire_count],
-        ['First seen', r.first_seen_at || '—'],
-        ['Last fired', r.last_fired_at || '—'],
-        ['Last session', r.last_session_id || '—'],
-        ['Last project', r.last_project || '—'],
-        ['Delay (seconds)', r.delay_seconds ?? '—'],
-        ['Cron expression', r.cron_expression || '—'],
-        ['Cron id', r.cron_id || '—'],
-    ];
-    grid.innerHTML = rows.map(([k, v]) =>
-        `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`
-    ).join('');
-}
-
-function copyRoutinePrompt() {
-    const r = STATE.routines.find(x => x.id === STATE.selectedRoutineId);
-    if (!r) return;
-    navigator.clipboard.writeText(r.prompt || '').then(() => toast('Prompt copied'));
-}
-
-function bindRoutineSearch() {
-    const el = document.getElementById('routine-search');
-    if (!el) return;
-    el.addEventListener('input', e => {
-        STATE.routineSearch = e.target.value;
-        renderRoutineList();
-    });
-}
-
-// ── Subagents ─────────────────────────────────────────────────────────
 
 async function fetchSubagents() {
     try {

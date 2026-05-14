@@ -39,9 +39,8 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
     print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
 
 # Read-only scanner over Claude's local session transcripts. Surfaces
-# routines (ScheduleWakeup / Cron* tool uses) and active subagents
-# (Agent tool uses) to the dashboard. No persistence — transcripts are
-# the source of truth.
+# active subagents (Agent tool uses) to the dashboard. No persistence —
+# transcripts are the source of truth.
 try:
     import transcript_scanner
     _TRANSCRIPTS_AVAILABLE = True
@@ -441,6 +440,14 @@ class ClaudeTaskManager:
             'id': 'opencode-fallback',
             'label': 'OpenCode · Fallback',
         },
+        # Thin in-pod harness with a narrow 5-tool surface and an XML-aware
+        # parser, for cases where OpenCode + small Ollama models is unreliable
+        # (Qwen XML tool-call leakage, hallucinated tool names, etc.). Lives
+        # at /tmp/browser/harness.py — same configmap as server.py.
+        'kc-harness': {
+            'id': 'kc-harness',
+            'label': 'kc-harness (Ollama)',
+        },
     }
 
     @staticmethod
@@ -457,6 +464,13 @@ class ClaudeTaskManager:
                 label=os.environ.get('KC_FALLBACK_PROVIDER_NAME')
                       or ClaudeTaskManager.ASSISTANTS['opencode-fallback']['label'],
                 model=os.environ.get('KC_FALLBACK_MODEL', 'anthropic/claude-sonnet-4'),
+            ))
+            # kc-harness shares the Ollama endpoint configured for the
+            # fallback provider; expose it whenever that endpoint is set.
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['kc-harness'],
+                model=os.environ.get('KC_HARNESS_MODEL')
+                      or os.environ.get('KC_FALLBACK_MODEL', 'qwen3:32b-q4_K_M'),
             ))
         return out
 
@@ -479,6 +493,11 @@ class ClaudeTaskManager:
             provider_id = os.environ.get('KC_FALLBACK_PROVIDER_ID', 'kube-coder-fallback')
             model = os.environ.get('KC_FALLBACK_MODEL', 'anthropic/claude-sonnet-4')
             return f'opencode --model {provider_id}/{model}'
+        if assistant == 'kc-harness':
+            # Reads stdin (tmux paste) and emits dashboard JSONL events.
+            # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the
+            # default lives in harness.py.
+            return 'python3 /tmp/browser/harness.py'
         return 'claude'
 
     @staticmethod
@@ -2046,15 +2065,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_memory_get(m.group(1), m.group(2))
             return
 
-        # --- Routines + Subagents (read-only views over Claude's transcripts) ---
-        if claude_path == '/api/routines':
-            self.handle_routines_list()
-            return
-        if claude_path == '/api/routines/stats':
-            self.handle_routines_stats()
-            return
+        # --- Subagents (read-only view over Claude's transcripts) ---
         if claude_path == '/api/subagents':
             self.handle_subagents_list()
+            return
+
+        # --- File browser (lists /home/dev and child directories) ---
+        if claude_path == '/api/files/list':
+            self.handle_files_list()
             return
 
         super().do_GET()
@@ -3008,10 +3026,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'detail': 'consolidation worker activates in Phase 3',
         }, 202)
 
-    # ── Routines + Subagents (read-only views over local transcripts) ──
-    # These views derive entirely from ~/.claude/projects/*/*.jsonl plus
-    # ~/.claude.json. No write path — the dashboard surfaces what Claude
-    # has already done, it does not author routines.
+    # ── Subagents (read-only view over local transcripts) ──
+    # Derives entirely from ~/.claude/projects/*/*.jsonl. No write path —
+    # the dashboard surfaces what Claude has already done.
 
     def _transcripts_unavailable(self):
         if _TRANSCRIPTS_AVAILABLE:
@@ -3021,30 +3038,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'code': 'unavailable',
         }, 503)
         return True
-
-    def handle_routines_list(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._transcripts_unavailable():
-            return
-        try:
-            self.send_json(transcript_scanner.list_routines())
-        except Exception as e:
-            print(f'[routines] error: {e}', file=sys.stderr)
-            self.send_json({'error': str(e), 'code': 'internal'}, 500)
-
-    def handle_routines_stats(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._transcripts_unavailable():
-            return
-        try:
-            self.send_json(transcript_scanner.stats())
-        except Exception as e:
-            print(f'[routines] stats error: {e}', file=sys.stderr)
-            self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
     def handle_subagents_list(self):
         if not self.check_claude_auth():
@@ -3057,6 +3050,168 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             print(f'[subagents] error: {e}', file=sys.stderr)
             self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
+    # ── File upload + browse (rooted at /home/dev) ─────────────────────
+    # We deliberately keep these endpoints scoped to /home/dev with a
+    # realpath-based traversal check so a crafted X-Dest-Path can't escape
+    # the user's home directory (e.g. via ".." or absolute paths).
+    HOME_DEV = '/home/dev'
+    MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MiB
+
+    @classmethod
+    def _resolve_under_home_dev(cls, rel_path: str) -> str:
+        rel = (rel_path or '').strip()
+        # Treat leading slashes as relative to /home/dev — users naturally
+        # type "/screenshots" or "screenshots" interchangeably.
+        rel = rel.lstrip('/')
+        abs_path = os.path.realpath(os.path.join(cls.HOME_DEV, rel))
+        if abs_path != cls.HOME_DEV and not abs_path.startswith(cls.HOME_DEV + os.sep):
+            raise ValueError('path escapes /home/dev')
+        return abs_path
+
+    @staticmethod
+    def _safe_filename(name: str) -> bool:
+        if not name or name in ('.', '..'):
+            return False
+        if '/' in name or '\\' in name or '\x00' in name:
+            return False
+        if len(name) > 255:
+            return False
+        return True
+
+    def handle_files_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(qs)
+        rel_dir = (params.get('path', [''])[0] or '').strip()
+        try:
+            target = self._resolve_under_home_dev(rel_dir)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if not os.path.isdir(target):
+            self.send_json({'error': 'not a directory'}, 404)
+            return
+        entries = []
+        try:
+            for name in sorted(os.listdir(target), key=str.lower):
+                if name.startswith('.'):  # hide dotfiles
+                    continue
+                full = os.path.join(target, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                entries.append({
+                    'name': name,
+                    'kind': 'dir' if os.path.isdir(full) else 'file',
+                    'size': st.st_size,
+                    'mtime': int(st.st_mtime),
+                })
+        except OSError as e:
+            self.send_json({'error': f'list failed: {e}'}, 500)
+            return
+        # Surface dirs first so the UI can render a sensible tree.
+        entries.sort(key=lambda e: (0 if e['kind'] == 'dir' else 1, e['name'].lower()))
+        rel = os.path.relpath(target, self.HOME_DEV)
+        if rel == '.':
+            rel = ''
+        self.send_json({'path': rel, 'entries': entries})
+
+    def handle_file_upload(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        rel_dir = (self.headers.get('X-Dest-Path') or '').strip()
+        filename = (self.headers.get('X-Filename') or '').strip()
+        if not self._safe_filename(filename):
+            self.send_json({'error': 'invalid X-Filename header'}, 400)
+            return
+        try:
+            dest_dir = self._resolve_under_home_dev(rel_dir)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            self.send_json({'error': 'invalid Content-Length'}, 400)
+            return
+        if content_length <= 0:
+            self.send_json({'error': 'empty body'}, 400)
+            return
+        if content_length > self.MAX_UPLOAD_BYTES:
+            self.send_json({'error': f'file too large (max {self.MAX_UPLOAD_BYTES} bytes)'}, 413)
+            return
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError as e:
+            self.send_json({'error': f'mkdir failed: {e}'}, 500)
+            return
+        final_path = os.path.join(dest_dir, filename)
+        # Stream to disk in 64 KiB chunks so a 200 MiB upload doesn't have to
+        # fully buffer in memory before we touch the filesystem.
+        try:
+            with open(final_path, 'wb') as fh:
+                remaining = content_length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+        except OSError as e:
+            self.send_json({'error': f'write failed: {e}'}, 500)
+            return
+        try:
+            size = os.path.getsize(final_path)
+        except OSError:
+            size = 0
+        # Match perms to existing files in the target dir — workspace pods
+        # run as a non-root user, so this is mostly a safety net.
+        try:
+            os.chmod(final_path, 0o644)
+        except OSError:
+            pass
+        rel_out = os.path.relpath(final_path, self.HOME_DEV)
+        self.send_json({
+            'ok': True,
+            'path': rel_out,
+            'absolute_path': final_path,
+            'size': size,
+        }, 201)
+
+    def handle_file_mkdir(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(content_length).decode('utf-8') if content_length else '{}'
+            body = json.loads(raw) if raw else {}
+        except (ValueError, json.JSONDecodeError):
+            self.send_json({'error': 'invalid JSON body'}, 400)
+            return
+        rel_dir = (body.get('path') or '').strip()
+        if not rel_dir:
+            self.send_json({'error': 'path is required'}, 400)
+            return
+        try:
+            target = self._resolve_under_home_dev(rel_dir)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as e:
+            self.send_json({'error': f'mkdir failed: {e}'}, 500)
+            return
+        rel_out = os.path.relpath(target, self.HOME_DEV)
+        if rel_out == '.':
+            rel_out = ''
+        self.send_json({'ok': True, 'path': rel_out}, 201)
 
     def send_vnc_viewer(self):
         # Instead of embedding, redirect to the noVNC URL directly
@@ -3203,6 +3358,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_memory_consolidate()
             elif path == "/api/memory/_sync_claude":
                 self.handle_memory_sync_claude()
+            # File upload (raw body; X-Dest-Path + X-Filename headers)
+            elif path == "/api/files/upload":
+                self.handle_file_upload()
+            # mkdir under /home/dev (JSON body: {path})
+            elif path == "/api/files/mkdir":
+                self.handle_file_mkdir()
             else:
                 # /api/claude/tasks/{id}/message
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/message$', path)
@@ -3545,21 +3706,59 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     
     def open_localhost(self):
         try:
+            # Accept an optional {"port": <int>} JSON body so the dashboard's
+            # Preview pane can re-point the in-pod browser without a code change.
+            # Falls back to 8080 (the historical default) when nothing is sent.
+            port = 8080
+            try:
+                content_length = int(self.headers.get('Content-Length', 0) or 0)
+                if content_length:
+                    raw = self.rfile.read(content_length).decode('utf-8')
+                    body = json.loads(raw) if raw else {}
+                    if isinstance(body, dict) and 'port' in body:
+                        port = int(body['port'])
+            except (ValueError, json.JSONDecodeError):
+                self.send_error_response('Invalid JSON body — expected {"port": <int>}')
+                return
+            if not (1 <= port <= 65535):
+                self.send_error_response('port must be between 1 and 65535')
+                return
+
             env = os.environ.copy()
             env['DISPLAY'] = ':99'
-            
-            # Try different Chrome/Chromium locations
-            browser_commands = [
-                ('/usr/local/bin/browser', []),
-                ('/usr/bin/firefox-esr', ['--safe-mode']),
-                ('/usr/bin/firefox', ['--safe-mode']),
-                ('firefox-esr', ['--safe-mode']),
-                ('firefox', ['--safe-mode']),
-                ('chromium-browser', ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']),
-                ('/usr/bin/chromium-browser', ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']),
-                ('/usr/bin/google-chrome', ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+
+            url = f'http://localhost:{port}'
+
+            # Kill any prior browser so the dashboard's Preview pane shows only
+            # one window. We're inside a single-user pod so a broad pkill is OK.
+            subprocess.run(['pkill', '-f', 'chrome'], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            subprocess.run(['pkill', '-f', 'chromium'], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            subprocess.run(['pkill', '-f', 'firefox'], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+
+            # --app and --start-fullscreen together give a kiosk-like surface:
+            # no tabs, no URL bar, no window chrome — just the page. Combined
+            # with vnc.html?resize=scale on the dashboard side, the Preview
+            # pane ends up showing essentially only the browser content.
+            chrome_args = [
+                '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+                '--start-fullscreen', f'--app={url}',
             ]
-            
+
+            browser_commands = [
+                ('chromium-browser', chrome_args),
+                ('/usr/bin/chromium-browser', chrome_args),
+                ('/usr/bin/google-chrome', chrome_args),
+                ('/usr/local/bin/browser', []),
+                ('/usr/bin/firefox-esr', ['--safe-mode', '--kiosk', url]),
+                ('/usr/bin/firefox', ['--safe-mode', '--kiosk', url]),
+                ('firefox-esr', ['--safe-mode', '--kiosk', url]),
+                ('firefox', ['--safe-mode', '--kiosk', url]),
+            ]
+
             browser_cmd = None
             browser_args = []
             for cmd, args in browser_commands:
@@ -3567,28 +3766,32 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     browser_cmd = cmd
                     browser_args = args
                     break
-            
+
             if not browser_cmd:
                 self.send_error_response('No Chrome browser found. Download may have failed.')
                 return
-            
-            # Launch browser with localhost URL
-            cmd_list = [browser_cmd] + browser_args + ['--new-window', 'http://localhost:8080']
+
+            # If we fell through to /usr/local/bin/browser (no args defined),
+            # append the URL so it still navigates somewhere.
+            cmd_list = [browser_cmd] + browser_args
+            if browser_cmd == '/usr/local/bin/browser':
+                cmd_list.append(url)
+
             process = subprocess.Popen(
-                cmd_list, 
+                cmd_list,
                 env=env,
-                stdout=subprocess.DEVNULL, 
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            
+
             # Give it a moment to start
             time.sleep(1)
-            
+
             if process.poll() is None:  # Process is still running
-                self.send_success_response(f'✅ Chrome opened with localhost:8080 (PID: {process.pid})')
+                self.send_success_response(f'✅ Chrome opened with {url} (PID: {process.pid})')
             else:
                 self.send_error_response('Chrome process exited immediately')
-                
+
         except FileNotFoundError:
             self.send_error_response('Chrome not found. Please install Chrome first.')
         except Exception as e:
