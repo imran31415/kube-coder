@@ -59,6 +59,53 @@ data:
       fi
     ) &
 
+    # Render an OpenCode config file whenever at least one OpenCode-backed
+    # provider has been configured (OpenRouter and/or Fallback). Claude
+    # itself needs no on-disk config — it reads ANTHROPIC_API_KEY from env
+    # or OAuths interactively. The config is rewritten on every pod start
+    # so Helm value changes flow through cleanly.
+    if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ]; then
+      log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
+      mkdir -p /home/dev/.config/opencode
+      OPENROUTER_MODEL_DEFAULT="${KC_OPENROUTER_MODEL:-anthropic/claude-sonnet-4}"
+      FALLBACK_MODEL_DEFAULT="${KC_FALLBACK_MODEL:-anthropic/claude-sonnet-4}"
+      FALLBACK_PROVIDER_ID="${KC_FALLBACK_PROVIDER_ID:-kube-coder-fallback}"
+      FALLBACK_PROVIDER_NAME="${KC_FALLBACK_PROVIDER_NAME:-Kube-Coder Fallback}"
+      # NOTE: heredoc delimiter is single-quoted ('PY') so bash performs NO
+      # expansion on the body. Critical because (a) the literal token
+      # {env:VAR} must reach opencode unchanged, and (b) earlier comments
+      # containing backticks were being command-substituted by bash and
+      # corrupting the python stdin.
+      python3 - <<'PY' > /home/dev/.config/opencode/opencode.json
+    import json, os
+    cfg = {"$schema": "https://opencode.ai/config.json"}
+    provider = {}
+    # OpenRouter is a first-class OpenCode provider -- the CLI auto-
+    # discovers it from $OPENROUTER_API_KEY in the pod env. We deliberately
+    # do NOT emit a stub block for it: any custom provider listed alongside
+    # an incomplete first-class entry (no npm field) makes opencodes config
+    # loader silently drop the rest, including our fallback. The OpenRouter
+    # model still surfaces to /api/claude/assistants via KC_OPENROUTER_MODEL.
+    if os.environ.get("KC_FALLBACK_BASE_URL"):
+        options = {"baseURL": os.environ["KC_FALLBACK_BASE_URL"]}
+        # Only declare apiKey when one is actually present. OpenCode
+        # silently disables the provider if the env-ref resolves to empty,
+        # which made --model <id>/<model> fall back to OpenRouter without a
+        # visible error. Open Ollama endpoints don't need a key at all.
+        if os.environ.get("KC_FALLBACK_API_KEY"):
+            options["apiKey"] = "{env:KC_FALLBACK_API_KEY}"
+        provider[os.environ.get("KC_FALLBACK_PROVIDER_ID", "kube-coder-fallback")] = {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": os.environ.get("KC_FALLBACK_PROVIDER_NAME", "Kube-Coder Fallback"),
+            "options": options,
+            "models": {os.environ.get("KC_FALLBACK_MODEL", "anthropic/claude-sonnet-4"): {}},
+        }
+    if provider:
+        cfg["provider"] = provider
+    print(json.dumps(cfg, indent=2))
+    PY
+    fi
+
     if [ -n "$GITHUB_APP_ID" ]; then
       log_stage "minting initial GitHub App token and starting refresh daemon"
       python3 /github-app/github-app-token.py --once

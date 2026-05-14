@@ -65,6 +65,7 @@ A Helm chart for deploying secure, isolated development workspaces in Kubernetes
 - **Completion hooks** - Tasks can `POST` their final state to a `response_url` with optional HMAC signing
 - **Webhooks** - Inbound HTTP triggers that spawn Claude tasks; native verifiers for GitHub, Slack, Stripe, plus a generic mode
 - **Crons** - Scheduled triggers backed by real Kubernetes `CronJob` objects, with suspend/resume/run-now and token rotation from the dashboard
+- **Pluggable assistants** *(opt-in)* - Claude Code is always available; [OpenCode](https://opencode.ai) can be wired up alongside it against an OpenRouter key and/or a custom OpenAI-compatible endpoint (e.g. a private droplet running Ollama). When either is configured, the New Task form gains an assistant dropdown and the choice is persisted per task. See [Pluggable AI Assistants](#pluggable-ai-assistants) below.
 
 ### Security & Authentication
 - **GitHub OAuth2** - Secure authentication with configurable user authorization
@@ -421,6 +422,81 @@ the API or delete+recreate.
 
 Full reference: [docs/claude-task-api.md](./docs/claude-task-api.md).
 
+## Pluggable AI Assistants
+
+Each workspace ships with **Claude Code** as the default assistant. You can
+also wire up **[OpenCode](https://opencode.ai)** as a second assistant —
+either pointing at [OpenRouter](https://openrouter.ai) or at any
+OpenAI-compatible endpoint of your own (a private proxy, a GPU droplet
+running Ollama, an internal LLM gateway, etc.). Both backends can be
+enabled side-by-side; the dashboard's **New Task** form gains an assistant
+dropdown whenever more than one is configured, and the choice is persisted
+on the task so it survives reload and attach.
+
+Public-repo defaults leave OpenCode off, so OSS users get Claude-only
+behavior with no extra config.
+
+### Enabling OpenCode
+
+Both blocks are independent — fill one, the other, or both. Put real
+credentials in a gitignored secrets file:
+
+```yaml
+# secrets/<user>/assistant.yaml
+assistant:
+  # OpenCode → OpenRouter
+  openrouter:
+    apiKey: "sk-or-v1-..."                # https://openrouter.ai/keys
+    model: "anthropic/claude-sonnet-4"
+
+  # OpenCode → any OpenAI-compatible endpoint
+  fallback:
+    baseUrl: "https://llm.your-droplet.example/v1"
+    apiKey: ""                            # leave "" if the proxy is open
+    model: "anthropic/claude-sonnet-4"
+    providerId: "kube-coder-fallback"
+    providerName: "Kube-Coder Fallback"
+```
+
+Apply with:
+
+```bash
+helm upgrade ws-<user> charts/workspace \
+  -f deployments/<user>/values.yaml \
+  -f secrets/<user>/assistant.yaml
+```
+
+A starter is in [`templates/assistant-secrets-template.yaml`](./templates/assistant-secrets-template.yaml).
+
+### How resolution works
+
+- `GET /api/claude/assistants` reports which assistants the running pod has
+  wired up; the dashboard calls it to decide whether to render the dropdown.
+- `POST /api/claude/tasks` accepts an `assistant` field (`claude`,
+  `opencode-openrouter`, or `opencode-fallback`). Unknown or disabled values
+  fall back to `claude` rather than failing the request.
+- For OpenCode, the entrypoint writes `~/.config/opencode/opencode.json`
+  describing whichever provider(s) are configured. When the fallback
+  endpoint has no `apiKey`, no `apiKey` field is emitted — important for
+  open self-hosted proxies, which would otherwise be skipped in favor of
+  OpenRouter.
+
+### Choosing per task
+
+```bash
+# Pick OpenCode via OpenRouter for one task
+curl -X POST https://$WORKSPACE/api/claude/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Refactor the auth middleware",
+    "assistant": "opencode-openrouter"
+  }'
+```
+
+The selection is also surfaced on the Claude Tasks panel so you can tell at
+a glance which assistant ran each task.
+
 ## Pre-installed Stack
 
 | Category | Tools |
@@ -429,7 +505,7 @@ Full reference: [docs/claude-task-api.md](./docs/claude-task-api.md).
 | Package Managers | Yarn 1.22.22, npm, pip |
 | Build Tools | Docker CLI, docker-compose, make, gcc |
 | Cloud Tools | kubectl, GitHub CLI |
-| AI Assistant | Claude Code CLI |
+| AI Assistants | Claude Code CLI (default), OpenCode CLI (opt-in) |
 | Utilities | curl, jq, tmux, vim, nano |
 
 ## Commands
@@ -501,6 +577,17 @@ resources:
 # secrets/username/claude.yaml — Anthropic API key (optional)
 claude:
   apiKey: "sk-ant-api03-..."
+
+# secrets/username/assistant.yaml — enable OpenCode alongside Claude (optional)
+# Either block, or both. Leaving both empty keeps the workspace Claude-only.
+assistant:
+  openrouter:
+    apiKey: "sk-or-v1-..."
+    model: "anthropic/claude-sonnet-4"
+  fallback:
+    baseUrl: "https://llm.your-droplet.example/v1"
+    apiKey: ""
+    model: "anthropic/claude-sonnet-4"
 
 # secrets/username/github-app.yaml — GitHub App credentials (optional)
 github:

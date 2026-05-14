@@ -198,6 +198,114 @@ class CompletionHookTests(unittest.TestCase):
         self.assertIn('hook_fired_at', on_disk)
 
 
+class AssistantSelectionTests(unittest.TestCase):
+    """The dashboard offers a per-task pick between Claude Code and
+    OpenCode-backed providers. Availability is driven by env vars set by
+    the Helm chart, and a runtime resolver defends the boundary against
+    callers passing a disabled or unknown id."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='kctest-asst-')
+        self._orig_tasks_dir = server.ClaudeTaskManager.TASKS_DIR
+        self._orig_token_file = server.ClaudeTaskManager.TOKEN_FILE
+        server.ClaudeTaskManager.TASKS_DIR = self.tmpdir
+        server.ClaudeTaskManager.TOKEN_FILE = os.path.join(self.tmpdir, '.api-token')
+        # Defend against test interference: snapshot then clear the env vars
+        # the resolver looks at.
+        self._saved_env = {k: os.environ.pop(k) for k in (
+            'OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
+            'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
+            'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
+        ) if k in os.environ}
+
+    def tearDown(self):
+        server.ClaudeTaskManager.TASKS_DIR = self._orig_tasks_dir
+        server.ClaudeTaskManager.TOKEN_FILE = self._orig_token_file
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        # Restore env
+        for k in ('OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
+                  'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
+                  'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME'):
+            os.environ.pop(k, None)
+        os.environ.update(self._saved_env)
+
+    def test_default_only_lists_claude(self):
+        avail = server.ClaudeTaskManager.available_assistants()
+        self.assertEqual([a['id'] for a in avail], ['claude'])
+        self.assertTrue(avail[0]['default'])
+
+    def test_openrouter_listed_when_env_set(self):
+        os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'
+        os.environ['KC_OPENROUTER_MODEL'] = 'anthropic/claude-sonnet-4'
+        ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+        self.assertIn('opencode-openrouter', ids)
+
+    def test_fallback_listed_with_custom_label(self):
+        os.environ['KC_FALLBACK_BASE_URL'] = 'https://x.example/v1'
+        os.environ['KC_FALLBACK_PROVIDER_NAME'] = 'My Droplet'
+        match = [a for a in server.ClaudeTaskManager.available_assistants()
+                 if a['id'] == 'opencode-fallback']
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]['label'], 'My Droplet')
+
+    def test_resolve_unknown_falls_back_to_claude(self):
+        self.assertEqual(server.ClaudeTaskManager.resolve_assistant('garbage'), 'claude')
+        self.assertEqual(server.ClaudeTaskManager.resolve_assistant(None), 'claude')
+
+    def test_resolve_disabled_falls_back_to_claude(self):
+        # OPENROUTER_API_KEY not set, so opencode-openrouter is disabled.
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_assistant('opencode-openrouter'),
+            'claude',
+        )
+
+    def test_command_per_assistant(self):
+        os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'
+        os.environ['KC_OPENROUTER_MODEL'] = 'anthropic/claude-sonnet-4'
+        os.environ['KC_FALLBACK_BASE_URL'] = 'https://x.example/v1'
+        os.environ['KC_FALLBACK_MODEL'] = 'gpt-4o-mini'
+        os.environ['KC_FALLBACK_PROVIDER_ID'] = 'kube-coder-fallback'
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('claude'),
+            'claude',
+        )
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('opencode-openrouter'),
+            'opencode --model openrouter/anthropic/claude-sonnet-4',
+        )
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('opencode-fallback'),
+            'opencode --model kube-coder-fallback/gpt-4o-mini',
+        )
+
+    @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
+    def test_create_task_records_assistant_and_uses_cli(self, mock_run):
+        os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'
+        task = server.ClaudeTaskManager.create_task(
+            'hello', assistant='opencode-openrouter',
+        )
+        self.assertEqual(task['assistant'], 'opencode-openrouter')
+        # The very first subprocess.run call is the tmux new-session that
+        # carries the shell command we care about.
+        first_call = mock_run.call_args_list[0]
+        tmux_argv = first_call.args[0]
+        shell_cmd = tmux_argv[-1]  # last positional arg is the bash -lc string
+        self.assertIn('opencode --model openrouter/', shell_cmd)
+
+    @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
+    def test_create_task_with_disabled_assistant_falls_back_to_claude(self, mock_run):
+        # OPENROUTER_API_KEY is NOT set, so the request should silently
+        # downgrade to claude rather than launching an unconfigured CLI.
+        task = server.ClaudeTaskManager.create_task(
+            'hello', assistant='opencode-openrouter',
+        )
+        self.assertEqual(task['assistant'], 'claude')
+        first_call = mock_run.call_args_list[0]
+        shell_cmd = first_call.args[0][-1]
+        self.assertIn('&& claude', shell_cmd)
+
+
 class WebhookManagerTests(unittest.TestCase):
     """Tests for WebhookManager: config CRUD, HMAC verification, prompt rendering."""
 
