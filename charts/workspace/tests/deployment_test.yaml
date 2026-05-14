@@ -156,6 +156,101 @@ tests:
           path: data["start.sh"]
           pattern: "cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md"
 
+  - it: open-source defaults inject no assistant env vars
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: OPENROUTER_API_KEY
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_FALLBACK_BASE_URL
+
+  - it: injects OpenRouter env when openrouter.apiKey is set
+    template: templates/deployment.yaml
+    set:
+      assistant.openrouter.apiKey: sk-or-test
+      assistant.openrouter.model: anthropic/claude-sonnet-4
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENROUTER_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: assistant-secrets-testuser
+                key: openrouter-api-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_OPENROUTER_MODEL
+            value: "anthropic/claude-sonnet-4"
+
+  - it: injects fallback env when fallback.baseUrl is set
+    template: templates/deployment.yaml
+    set:
+      assistant.fallback.baseUrl: https://llm.example.com/v1
+      assistant.fallback.apiKey: bearer-test
+      assistant.fallback.model: anthropic/claude-sonnet-4
+      assistant.fallback.providerId: kube-coder-fallback
+      assistant.fallback.providerName: Kube-Coder Fallback
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_FALLBACK_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: assistant-secrets-testuser
+                key: fallback-base-url
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_FALLBACK_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: assistant-secrets-testuser
+                key: fallback-api-key
+
+  - it: writes opencode config in the entrypoint when any opencode provider is set
+    template: templates/workspace-entrypoint-configmap.yaml
+    set:
+      assistant.openrouter.apiKey: sk-or-test
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "writing OpenCode config"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "HOME/.config/opencode/opencode.json"
+
+  - it: skips assistant-secret rendering when neither opencode provider is configured
+    template: templates/assistant-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders assistant-secret with both keys when both providers are set
+    template: templates/assistant-secret.yaml
+    set:
+      assistant.openrouter.apiKey: sk-or-test
+      assistant.fallback.baseUrl: https://llm.example.com/v1
+      assistant.fallback.apiKey: bearer-test
+    asserts:
+      - equal:
+          path: stringData["openrouter-api-key"]
+          value: "sk-or-test"
+      - equal:
+          path: stringData["fallback-base-url"]
+          value: "https://llm.example.com/v1"
+      - equal:
+          path: stringData["fallback-api-key"]
+          value: "bearer-test"
+
   - it: should invoke the entrypoint script as the container command
     template: templates/deployment.yaml
     asserts:
