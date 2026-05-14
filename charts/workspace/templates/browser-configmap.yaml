@@ -10,6 +10,10 @@ metadata:
 data:
   server.py: |
 {{ .Files.Get "server.py" | indent 4 }}
+  harness.py: |
+{{ .Files.Get "harness.py" | indent 4 }}
+  harness_test.py: |
+{{ .Files.Get "harness_test.py" | indent 4 }}
   mcp_memory.py: |
 {{ .Files.Get "mcp_memory.py" | indent 4 }}
   memory_inject_hook.py: |
