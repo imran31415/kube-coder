@@ -698,6 +698,7 @@ class ClaudeTaskManager:
                     'prompt': meta.get('prompt', '')[:120],
                     'status': meta.get('status', 'unknown'),
                     'created_at': meta.get('created_at'),
+                    'finished_at': meta.get('finished_at') or meta.get('killed_at'),
                     'source': meta.get('source'),
                     'kind': meta.get('kind', 'claude'),
                     'memory_injected': meta.get('memory_injected', []),
