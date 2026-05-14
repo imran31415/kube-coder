@@ -176,17 +176,55 @@ data:
     log_stage "starting Xvfb / fluxbox / x11vnc"
     export DISPLAY=:99
     rm -f /tmp/.X99-lock
-    Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
+    # The initial -screen geometry sets the MAX framebuffer Xvfb can ever
+    # render; xrandr can switch to smaller modes within this allocation but
+    # not larger. We size the framebuffer to fit a 1080p landscape monitor
+    # AND a tall mobile portrait (e.g. iPhone 15 Pro Max 430x932 zoomed),
+    # then immediately switch to 1280x720 as the visible default.
+    Xvfb :99 -screen 0 1920x1280x24 +extension RANDR &
     sleep 3
     DISPLAY=:99 setxkbmap us
     DISPLAY=:99 fluxbox &
     sleep 1
+
+    # Register the common screen sizes noVNC clients may request via the
+    # ExtendedDesktopSize protocol (resize=remote). Without these, x11vnc's
+    # -xrandr handler has no matching mode to switch to and silently keeps
+    # the old size. We use synthetic modelines (Xvfb ignores real pixel
+    # timings) instead of `cvt`, which isn't shipped in x11-xserver-utils.
+    # The output name comes from xrandr itself ("screen" on Xvfb 21.x).
+    if command -v xrandr >/dev/null 2>&1; then
+      OUTPUT_NAME=$(DISPLAY=:99 xrandr 2>/dev/null | awk '/ connected/{print $1; exit}')
+      OUTPUT_NAME=${OUTPUT_NAME:-screen}
+      register_mode() {
+        local W=$1 H=$2 NAME="${1}x${2}" CLK
+        CLK=$(( W * H / 16384 + 25 ))
+        DISPLAY=:99 xrandr --newmode "$NAME" "$CLK" \
+          "$W" "$((W+16))" "$((W+32))" "$((W+64))" \
+          "$H" "$((H+1))"  "$((H+3))"  "$((H+10))" \
+          -HSync -VSync 2>/dev/null || true
+        DISPLAY=:99 xrandr --addmode "$OUTPUT_NAME" "$NAME" 2>/dev/null || true
+      }
+      for mode in \
+          "1280 720" "1920 1080" "1366 768" "1024 768" \
+          "390 844" "844 390" "393 852" "852 393" "430 932" "932 430" \
+          "768 1024" "1024 1366" "414 896" "896 414"; do
+        # shellcheck disable=SC2086
+        register_mode $mode
+      done
+      DISPLAY=:99 xrandr --output "$OUTPUT_NAME" --mode 1280x720 2>/dev/null || true
+    fi
+
     # -ncache 10 -ncache_cr enables client-side pixel caching in noVNC,
     # which reduces bandwidth and gives smoother window motion ("copyrect")
     # at the cost of a wider-than-visible framebuffer (the cache sits
     # off-screen below the visible area). noVNC handles it transparently.
+    # -xrandr resize lets remote clients trigger a framebuffer resize via
+    # the ExtendedDesktopSize message — x11vnc applies it through xrandr,
+    # so mobile devices get a portrait framebuffer instead of a letterbox.
     x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat \
-      -cursor -cursorpos -24to32 -nobell -noipv6 -ncache 10 -ncache_cr &
+      -cursor -cursorpos -24to32 -nobell -noipv6 -ncache 10 -ncache_cr \
+      -xrandr resize &
     sleep 2
 
     log_stage "waiting for VNC port 5900"
