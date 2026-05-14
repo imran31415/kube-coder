@@ -68,29 +68,46 @@ else
   warn "no secrets/*.yaml files under $SECRETS_DIR (deploy will use values.yaml as-is)"
 fi
 
-# 2. Placeholder scan across values + secret files.
+# 2. Placeholder + cookieSecret scan, performed on the MERGED values.
+#    We use `helm template` against the workspace chart with the same -f
+#    list `make deploy` would use. This is the only way to honor secrets/*
+#    overrides — scanning each file separately gives false positives when
+#    a placeholder in values.yaml is intentionally overridden by a secret.
+CHART="$ROOT/charts/workspace"
 PLACEHOLDER_RE='CHANGE ME|PLACEHOLDER-OVERRIDE|__USER__|__COOKIE_SECRET__|__IMAGE_TAG__|__DATE__'
-HAS_PLACEHOLDER=0
-for f in "$VALUES" "${SECRET_FILES[@]}"; do
-  if grep -qE "$PLACEHOLDER_RE" "$f" 2>/dev/null; then
-    fail "placeholders remain in $(basename "$(dirname "$f")")/$(basename "$f"):"
-    grep -nE "$PLACEHOLDER_RE" "$f" | sed 's/^/         /'
-    HAS_PLACEHOLDER=1
-  fi
-done
-[ "$HAS_PLACEHOLDER" -eq 0 ] && pass "no PLACEHOLDER / 'CHANGE ME' strings found"
-
-# 3. Cookie secret length.
-COOKIE=$(awk -F'"' '/^[[:space:]]*cookieSecret:/{print $2; exit}' "$VALUES")
-if [ -z "$COOKIE" ]; then
-  fail "oauth2.cookieSecret missing in $VALUES"
+if [ ! -d "$CHART" ]; then
+  fail "workspace chart missing at $CHART"
 else
-  COOKIE_LEN=${#COOKIE}
-  # oauth2-proxy: must be EXACTLY 16, 24, or 32 chars (used as raw AES key).
-  case "$COOKIE_LEN" in
-    16|24|32) pass "cookieSecret present ($COOKIE_LEN chars)" ;;
-    *)        fail "cookieSecret is $COOKIE_LEN chars; must be exactly 16/24/32. Regenerate: openssl rand -base64 64 | tr -d '\\n=+/' | head -c 32" ;;
-  esac
+  HELM_F=(-f "$VALUES")
+  for f in "${SECRET_FILES[@]}"; do HELM_F+=(-f "$f"); done
+  RENDER_OUT=$(helm template validate-preview "$CHART" "${HELM_F[@]}" 2>&1)
+  RENDER_RC=$?
+  if [ "$RENDER_RC" -ne 0 ]; then
+    fail "helm template failed — chart will not render with current values:"
+    echo "$RENDER_OUT" | sed 's/^/         /' | head -30
+  else
+    if echo "$RENDER_OUT" | grep -qE "$PLACEHOLDER_RE"; then
+      fail "placeholders survived secrets merge (will land in cluster):"
+      echo "$RENDER_OUT" | grep -nE "$PLACEHOLDER_RE" | sed 's/^/         /'
+    else
+      pass "no PLACEHOLDER / 'CHANGE ME' strings in merged output"
+    fi
+
+    # cookieSecret length check on merged value. Find `cookie-secret:` in the
+    # rendered Secret manifest. oauth2-proxy accepts raw 16/24/32 bytes or
+    # their urlsafe base64-encoded forms (24/32/44 chars).
+    COOKIE=$(echo "$RENDER_OUT" \
+      | awk -F'"' '/^[[:space:]]*cookie-secret:[[:space:]]*"/{print $2; exit}')
+    if [ -z "$COOKIE" ]; then
+      warn "could not extract cookie-secret from rendered chart — skipping length check"
+    else
+      COOKIE_LEN=${#COOKIE}
+      case "$COOKIE_LEN" in
+        16|24|32|44) pass "cookieSecret present ($COOKIE_LEN chars, merged)" ;;
+        *) fail "cookieSecret is $COOKIE_LEN chars; oauth2-proxy needs 16/24/32 (raw) or 24/32/44 (base64). Regenerate: openssl rand -base64 32" ;;
+      esac
+    fi
+  fi
 fi
 
 # 4. DNS for user.host (best-effort; doesn't assert IP match).

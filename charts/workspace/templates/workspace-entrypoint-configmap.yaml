@@ -98,7 +98,11 @@ data:
             "npm": "@ai-sdk/openai-compatible",
             "name": os.environ.get("KC_FALLBACK_PROVIDER_NAME", "Kube-Coder Fallback"),
             "options": options,
-            "models": {os.environ.get("KC_FALLBACK_MODEL", "anthropic/claude-sonnet-4"): {}},
+            # tool_call: true is required — OpenCode silently disables tool
+            # advertising for custom-provider models that don't declare it,
+            # which makes the model say "there is no function to run X" and
+            # hallucinate webfetch-style replies instead of using bash/edit.
+            "models": {os.environ.get("KC_FALLBACK_MODEL", "anthropic/claude-sonnet-4"): {"tool_call": True}},
         }
     if provider:
         cfg["provider"] = provider
@@ -112,8 +116,26 @@ data:
       # shellcheck disable=SC1091
       source /home/dev/.credentials/.github-env
       cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env
-      grep -q 'profile.d-github-env' ~/.bashrc 2>/dev/null \
-        || echo '[ -f /home/dev/.profile.d-github-env ] && source /home/dev/.profile.d-github-env' >> ~/.bashrc
+
+      # Make GH_TOKEN/GITHUB_TOKEN visible to EVERY shell in the pod —
+      # not just interactive bash. The previous "append to ~/.bashrc"
+      # approach silently failed for:
+      #   • `bash -c '…'`         — non-interactive, .bashrc returns early
+      #   • scripts and hooks     — same as above
+      #   • `gh auth git-credential` invoked by Git's credential helper
+      # We wire three sources so every shell flavour finds it:
+      #   1. /etc/profile.d/00-github-env.sh   → login shells
+      #   2. /etc/bash.bashrc                  → interactive non-login bash
+      #   3. BASH_ENV (set on the container)   → non-interactive bash
+      # The shipped file always reads /home/dev/.profile.d-github-env so the
+      # daemon's in-place rewrites are picked up without restart.
+      GH_SRC_LINE='[ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env'
+      echo "$GH_SRC_LINE" | sudo tee /etc/profile.d/00-github-env.sh > /dev/null
+      sudo chmod 0644 /etc/profile.d/00-github-env.sh
+      if ! sudo grep -qF '/home/dev/.profile.d-github-env' /etc/bash.bashrc 2>/dev/null; then
+        echo "$GH_SRC_LINE" | sudo tee -a /etc/bash.bashrc > /dev/null
+      fi
+
       python3 /github-app/github-app-token.py --daemon &
     fi
 
