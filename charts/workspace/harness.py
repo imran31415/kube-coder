@@ -48,8 +48,8 @@ WORKDIR = os.environ.get("PWD") or os.getcwd()
 
 def pick_model():
     """Per-harness override > shared opencode fallback > hardcoded default.
-    Letting both opencode-fallback and kc-harness coexist with different
-    models on the same droplet was a deliberate design choice."""
+    KC_HARNESS_MODEL is a per-harness override so kc-harness can run on
+    a different Ollama model than other clients sharing the same endpoint."""
     return (
         os.environ.get("KC_HARNESS_MODEL")
         or os.environ.get("KC_FALLBACK_MODEL")
@@ -75,6 +75,41 @@ def pick_api_key():
 # Keep emit_* writes line-buffered (flush=True) so tmux pipe-pane mirrors
 # them to output.log incrementally and the dashboard Output tab updates
 # in near real time.
+#
+# Each emit_* helper prints two things to stdout:
+#   1. A JSONL event (consumed by the dashboard's formatStreamJsonOutput).
+#   2. A human-readable, ANSI-decorated line for the live tmux pane that
+#      the dashboard's Chat tab renders via ttyd. Without the second line
+#      the Chat tab looks like a JSON dump; with it, it reads like a TUI.
+# The dashboard parser ignores anything that doesn't start with `{`, so
+# the pretty lines don't appear in the structured Output tab.
+
+# ANSI colour helpers. We never disable them — the tmux pane is always a
+# real TTY (ttyd → bash → harness), and the dashboard's Output tab strips
+# ANSI elsewhere before rendering.
+_C_DIM   = "\033[2m"
+_C_BOLD  = "\033[1m"
+_C_USER  = "\033[36;1m"   # bright cyan
+_C_TOOL  = "\033[33;1m"   # bright yellow
+_C_DONE  = "\033[32;1m"   # bright green
+_C_ERR   = "\033[31;1m"   # bright red
+_C_RESET = "\033[0m"
+
+
+def _short(s: str, limit: int = 600) -> str:
+    s = s.rstrip("\n")
+    if len(s) > limit:
+        return s[:limit] + f"…[+{len(s) - limit}b]"
+    return s
+
+
+def _pretty(line: str):
+    """Pretty-print a line for the Chat tab. Goes to stdout so it lands
+    in the same pane as the JSONL events; the prefix `{` is never used so
+    the dashboard parser's JSON-only filter ignores it cleanly."""
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
 
 def emit_event(event: dict):
     sys.stdout.write(json.dumps(event) + "\n")
@@ -83,26 +118,38 @@ def emit_event(event: dict):
 
 def emit_user_text(text: str):
     emit_event({"type": "user", "message": {"content": [{"type": "text", "text": text}]}})
+    _pretty(f"\n{_C_USER}▷ you{_C_RESET}  {text.strip()}")
 
 
 def emit_assistant_text(text: str):
     emit_event({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+    if text.strip():
+        _pretty(f"{_C_BOLD}◇ assistant{_C_RESET}  {text.strip()}")
 
 
 def emit_tool_use(name: str, args: dict):
     emit_event({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": name, "input": args},
     ]}})
+    args_short = json.dumps(args, ensure_ascii=False)
+    _pretty(f"{_C_TOOL}⚒ {name}{_C_RESET}  {_C_DIM}{_short(args_short, 240)}{_C_RESET}")
 
 
 def emit_tool_result(name: str, result: str):
     emit_event({"type": "user", "message": {"content": [
         {"type": "tool_result", "name": name, "content": result},
     ]}})
+    is_err = result.startswith("ERROR")
+    colour = _C_ERR if is_err else _C_DIM
+    body = _short(result, 600)
+    indented = body.replace("\n", "\n   ")
+    _pretty(f"{colour}↳ {indented}{_C_RESET}")
 
 
 def emit_final(text: str):
     emit_event({"type": "result", "result": text})
+    if text.strip():
+        _pretty(f"{_C_DONE}✓ {text.strip()}{_C_RESET}")
 
 
 # ───────────────────────── Tool implementations ─────────────────────────
@@ -508,7 +555,6 @@ def run_once(prompt: str, base_url: str, api_key: str, model: str, messages=None
 
         if not tool_calls:
             # No tool call → treat content as the final answer.
-            emit_assistant_text(content)
             emit_final(content)
             messages.append({"role": "assistant", "content": content})
             return messages
@@ -546,11 +592,19 @@ def run_once(prompt: str, base_url: str, api_key: str, model: str, messages=None
 
 
 REPL_BANNER_BOTTOM = (
-    "\n"
-    "─── kc-harness ────────────────────────────────────────────────────────\n"
-    "Type or paste your next prompt then wait. Ctrl-D / type `/exit` to quit.\n"
-    "──────────────────────────────────────────────────────────────────────\n"
+    f"\n{_C_DIM}─── kc-harness "
+    "──────────────────────────────────────────────────────"
+    f"\nNext prompt? (Ctrl-D / /exit to quit){_C_RESET}\n"
 )
+
+
+def _startup_banner(base_url: str, model: str) -> str:
+    return (
+        f"{_C_BOLD}╭─ kc-harness ─╮{_C_RESET}\n"
+        f"{_C_DIM}  endpoint  {_C_RESET}{base_url}\n"
+        f"{_C_DIM}  model     {_C_RESET}{model}\n"
+        f"{_C_DIM}  tools     {_C_RESET}{', '.join(TOOLS.keys())}\n"
+    )
 
 
 def main():
@@ -576,8 +630,11 @@ def main():
             sys.stderr.write(f"kc-harness: unknown arg {a!r}\n")
             return
 
-    sys.stderr.write(f"kc-harness → {base_url} model={model}\n")
-    sys.stderr.flush()
+    # Banner goes to stdout so the live tmux pane shows it. The JSONL
+    # parser ignores lines that don't start with `{`, so this stays out
+    # of the structured Output tab.
+    sys.stdout.write(_startup_banner(base_url, model))
+    sys.stdout.flush()
 
     if one_shot_prompt is not None:
         run_once(one_shot_prompt, base_url, api_key, model)

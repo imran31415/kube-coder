@@ -422,11 +422,13 @@ class ClaudeTaskManager:
         return token
 
     # ── Assistant selection ──────────────────────────────────────────────
-    # The dashboard offers a per-task choice between Claude Code (always on)
-    # and OpenCode targeting either OpenRouter or a custom OpenAI-compatible
-    # endpoint. The latter two are gated on env vars set by the Helm chart,
-    # so the public-repo default ships Claude-only and additional providers
-    # only appear once an operator wires creds in via a secrets file.
+    # Three assistant options surfaced in the dashboard dropdown:
+    #   1. Claude Code   — always available (anthropic-hosted)
+    #   2. OpenRouter    — OpenCode CLI proxied through OpenRouter
+    #   3. Opensource GPU — kc-harness against the configured Ollama endpoint
+    # The legacy `opencode-fallback` assistant was retired in favour of
+    # kc-harness: same endpoint, narrow tool surface, XML-aware parser, so
+    # small local models actually execute tools instead of describing them.
     ASSISTANTS = {
         'claude': {
             'id': 'claude',
@@ -434,19 +436,13 @@ class ClaudeTaskManager:
         },
         'opencode-openrouter': {
             'id': 'opencode-openrouter',
-            'label': 'OpenCode · OpenRouter',
+            'label': 'OpenRouter',
         },
-        'opencode-fallback': {
-            'id': 'opencode-fallback',
-            'label': 'OpenCode · Fallback',
-        },
-        # Thin in-pod harness with a narrow 5-tool surface and an XML-aware
-        # parser, for cases where OpenCode + small Ollama models is unreliable
-        # (Qwen XML tool-call leakage, hallucinated tool names, etc.). Lives
-        # at /tmp/browser/harness.py — same configmap as server.py.
+        # kc-harness — thin in-pod LLM tool-call loop at /tmp/browser/harness.py
+        # See charts/workspace/harness.py for the design rationale.
         'kc-harness': {
             'id': 'kc-harness',
-            'label': 'kc-harness (Ollama)',
+            'label': 'Opensource GPU',
         },
     }
 
@@ -459,14 +455,6 @@ class ClaudeTaskManager:
                 model=os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'),
             ))
         if os.environ.get('KC_FALLBACK_BASE_URL'):
-            out.append(dict(
-                ClaudeTaskManager.ASSISTANTS['opencode-fallback'],
-                label=os.environ.get('KC_FALLBACK_PROVIDER_NAME')
-                      or ClaudeTaskManager.ASSISTANTS['opencode-fallback']['label'],
-                model=os.environ.get('KC_FALLBACK_MODEL', 'anthropic/claude-sonnet-4'),
-            ))
-            # kc-harness shares the Ollama endpoint configured for the
-            # fallback provider; expose it whenever that endpoint is set.
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['kc-harness'],
                 model=os.environ.get('KC_HARNESS_MODEL')
@@ -489,10 +477,6 @@ class ClaudeTaskManager:
         if assistant == 'opencode-openrouter':
             model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
             return f'opencode --model openrouter/{model}'
-        if assistant == 'opencode-fallback':
-            provider_id = os.environ.get('KC_FALLBACK_PROVIDER_ID', 'kube-coder-fallback')
-            model = os.environ.get('KC_FALLBACK_MODEL', 'anthropic/claude-sonnet-4')
-            return f'opencode --model {provider_id}/{model}'
         if assistant == 'kc-harness':
             # Reads stdin (tmux paste) and emits dashboard JSONL events.
             # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the

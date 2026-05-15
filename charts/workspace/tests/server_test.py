@@ -241,13 +241,15 @@ class AssistantSelectionTests(unittest.TestCase):
         ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
         self.assertIn('opencode-openrouter', ids)
 
-    def test_fallback_listed_with_custom_label(self):
+    def test_kc_harness_listed_when_fallback_env_set(self):
+        # kc-harness is the third assistant; appears whenever an Ollama-style
+        # endpoint is wired via KC_FALLBACK_BASE_URL. Replaces the retired
+        # opencode-fallback option (same endpoint, narrower tool surface).
         os.environ['KC_FALLBACK_BASE_URL'] = 'https://x.example/v1'
-        os.environ['KC_FALLBACK_PROVIDER_NAME'] = 'My Droplet'
         match = [a for a in server.ClaudeTaskManager.available_assistants()
-                 if a['id'] == 'opencode-fallback']
+                 if a['id'] == 'kc-harness']
         self.assertEqual(len(match), 1)
-        self.assertEqual(match[0]['label'], 'My Droplet')
+        self.assertEqual(match[0]['label'], 'Opensource GPU')
 
     def test_resolve_unknown_falls_back_to_claude(self):
         self.assertEqual(server.ClaudeTaskManager.resolve_assistant('garbage'), 'claude')
@@ -264,8 +266,6 @@ class AssistantSelectionTests(unittest.TestCase):
         os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'
         os.environ['KC_OPENROUTER_MODEL'] = 'anthropic/claude-sonnet-4'
         os.environ['KC_FALLBACK_BASE_URL'] = 'https://x.example/v1'
-        os.environ['KC_FALLBACK_MODEL'] = 'gpt-4o-mini'
-        os.environ['KC_FALLBACK_PROVIDER_ID'] = 'kube-coder-fallback'
         self.assertEqual(
             server.ClaudeTaskManager.assistant_command('claude'),
             'claude',
@@ -275,8 +275,13 @@ class AssistantSelectionTests(unittest.TestCase):
             'opencode --model openrouter/anthropic/claude-sonnet-4',
         )
         self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('kc-harness'),
+            'python3 /tmp/browser/harness.py',
+        )
+        # The retired opencode-fallback id falls through to claude.
+        self.assertEqual(
             server.ClaudeTaskManager.assistant_command('opencode-fallback'),
-            'opencode --model kube-coder-fallback/gpt-4o-mini',
+            'claude',
         )
 
     @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
