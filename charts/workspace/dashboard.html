@@ -634,6 +634,46 @@
         }
         .preview-toolbar .spacer { flex: 1; }
         .preview-vnc-frame { flex: 1; border: 0; background: #000; width: 100%; }
+
+        /* Console rail-collapse — when the user is in Chat or Preview we
+           hide the left rail so the chat/preview surface gets the whole
+           viewport. A slim "show rail" handle stays anchored on the left
+           edge so the rail is one click away.
+
+           Implementation note: collapsing to a single 1fr column (instead
+           of "0 1fr" plus display:none on the rail) avoids a grid-auto-flow
+           gotcha where the detail pane would otherwise snap into the
+           zero-width first column. */
+        .console.rail-hidden { grid-template-columns: 1fr; }
+        .console.rail-hidden .rail { display: none; }
+        .rail-hide-btn {
+            margin-left: auto; padding: 0 8px; font-size: 14px;
+            color: var(--text-mute); border-radius: var(--radius);
+            line-height: 1; align-self: stretch;
+        }
+        .rail-hide-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .rail-show-handle {
+            position: absolute; left: 0; top: 50%;
+            transform: translateY(-50%);
+            width: 16px; height: 60px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border); border-left: 0;
+            border-radius: 0 6px 6px 0;
+            cursor: pointer; display: none;
+            align-items: center; justify-content: center;
+            color: var(--text-secondary);
+            font-size: 12px; z-index: 20;
+            transition: color 0.12s, background 0.12s;
+        }
+        .rail-show-handle:hover { color: var(--accent-blue); background: var(--bg-input); }
+        .console.rail-hidden .rail-show-handle { display: flex; }
+        @media (max-width: 720px) {
+            /* On mobile the rail already stacks above the detail pane, so
+               the collapse behavior doesn't apply — restore the rail and
+               hide the show-handle. */
+            .console.rail-hidden .rail { display: flex; }
+            .console.rail-hidden .rail-show-handle { display: none; }
+        }
         /* On narrow screens fall back to vertical stacking so neither pane
            shrinks unusable. ~720px matches the mobile breakpoint used
            elsewhere. */
@@ -1040,7 +1080,10 @@
         </header>
 
         <!-- ─── Console ─────────────────────────────────────────────── -->
-        <main class="console">
+        <main class="console" id="console" style="position:relative;">
+            <button class="rail-show-handle" id="rail-show-handle"
+                    onclick="setRailHidden(false, true)"
+                    title="Show rail">›</button>
             <!-- Left rail: tabbed master of three primary objects. -->
             <aside class="rail">
                 <div class="rail-tabs" role="tablist">
@@ -1057,6 +1100,8 @@
                             title="Subagent (Agent tool) invocations across recent sessions, running and completed.">
                         Subagents <span class="rail-tab-count" id="rail-count-subagents">0</span>
                     </button>
+                    <button class="rail-hide-btn" onclick="setRailHidden(true, true)"
+                            title="Hide sidebar (use › on the left edge to bring it back)">‹</button>
                 </div>
 
                 <!-- ── Tasks rail ─────────────────────────────────────── -->
@@ -1346,7 +1391,9 @@
                                     <span class="spacer"></span>
                                     <span id="preview-status">—</span>
                                 </div>
-                                <iframe class="preview-vnc-frame" id="preview-vnc-frame" title="In-pod browser via VNC"></iframe>
+                                <iframe class="preview-vnc-frame" id="preview-vnc-frame"
+                                        title="In-pod browser via VNC"
+                                        onload="onPreviewVncLoad()"></iframe>
                             </div>
                         </div>
                     </div>
@@ -2560,6 +2607,27 @@ function setTab(tab) {
     else closeChatIframe();
     if (tab === 'preview' && STATE.selectedId) openPreviewForCurrent();
     else closePreviewIframes();
+
+    // Chat / Preview want the full viewport; Info / Output benefit from
+    // seeing the task list. We only auto-hide when the user hasn't taken
+    // manual control of the rail this session, so an explicit "show rail"
+    // click sticks until the page is reloaded.
+    if (!STATE.railManuallyToggled) {
+        setRailHidden(tab === 'chat' || tab === 'preview', false);
+    }
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * Rail collapse: hide the left rail while in the Chat or Preview tab
+ * so the surface fills the viewport. The "›" handle on the left edge
+ * brings it back; clicking it is treated as a manual override that
+ * disables further auto-hide for this session.
+ * ─────────────────────────────────────────────────────────────────── */
+function setRailHidden(hidden, manual) {
+    const c = document.getElementById('console');
+    if (!c) return;
+    c.classList.toggle('rail-hidden', !!hidden);
+    if (manual) STATE.railManuallyToggled = true;
 }
 
 function closeDetailMobile() {
@@ -2762,6 +2830,28 @@ function refreshPreviewVnc() {
     requestAnimationFrame(() => {
         vif.src = '/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=' + Date.now();
     });
+}
+
+// Strip noVNC's slide-out control bar so it doesn't overlap the rendered
+// desktop in the Preview pane. The iframe is same-origin (proxied through
+// /vnc-direct/) so we can inject CSS directly. Wrapped in try/catch to
+// stay quiet if a future deploy makes the URL cross-origin.
+function onPreviewVncLoad() {
+    const vif = document.getElementById('preview-vnc-frame');
+    if (!vif) return;
+    try {
+        const doc = vif.contentDocument;
+        if (!doc || !doc.head) return;
+        const style = doc.createElement('style');
+        style.textContent = `
+            #noVNC_control_bar_anchor,
+            #noVNC_control_bar,
+            #noVNC_status,
+            #noVNC_center { display: none !important; }
+            #noVNC_container, body { background: #000 !important; }
+        `;
+        doc.head.appendChild(style);
+    } catch (_) { /* cross-origin — nothing we can do */ }
 }
 
 /* ════════════════════════════════════════════════════════════════════

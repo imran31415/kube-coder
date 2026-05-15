@@ -215,15 +215,18 @@ data:
       DISPLAY=:99 xrandr --output "$OUTPUT_NAME" --mode 1280x720 2>/dev/null || true
     fi
 
-    # -ncache 10 -ncache_cr enables client-side pixel caching in noVNC,
-    # which reduces bandwidth and gives smoother window motion ("copyrect")
-    # at the cost of a wider-than-visible framebuffer (the cache sits
-    # off-screen below the visible area). noVNC handles it transparently.
     # -xrandr resize lets remote clients trigger a framebuffer resize via
     # the ExtendedDesktopSize message — x11vnc applies it through xrandr,
     # so mobile devices get a portrait framebuffer instead of a letterbox.
+    #
+    # We deliberately do NOT enable -ncache here: while client-side pixel
+    # caching reduces bandwidth on window motion, x11vnc implements it by
+    # placing the cache *below* the visible framebuffer, doubling the
+    # reported canvas height. Combined with noVNC's resize=scale (used by
+    # the dashboard's Preview pane) this would scale the cache area into
+    # the iframe and shrink the visible desktop to a tiny strip at the top.
     x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat \
-      -cursor -cursorpos -24to32 -nobell -noipv6 -ncache 10 -ncache_cr \
+      -cursor -cursorpos -24to32 -nobell -noipv6 \
       -xrandr resize &
     sleep 2
 
