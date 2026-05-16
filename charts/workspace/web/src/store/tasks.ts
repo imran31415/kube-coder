@@ -24,13 +24,35 @@ export const selectedTaskLoading = signal(false);
 
 export const taskFilter = signal('');
 
+/** Status filter: 'running' shows only live tasks; 'all' shows everything. */
+export type TaskStatusFilter = 'running' | 'all';
+export const taskStatusFilter = signal<TaskStatusFilter>('running');
+
 export const filteredTasks = computed(() => {
   const needle = taskFilter.value.trim().toLowerCase();
-  if (!needle) return tasks.value;
-  return tasks.value.filter((t) => {
-    const hay = `${t.task_id} ${t.name ?? ''} ${t.prompt} ${t.source ?? ''} ${t.status}`.toLowerCase();
-    return hay.includes(needle);
-  });
+  // Auto-relax: if user picked 'running' but there are none, fall back to 'all'
+  // so the list isn't empty just because every task happens to be finished.
+  const runningCount = tasks.value.filter((t) => t.status === 'running').length;
+  const effectiveStatus =
+    taskStatusFilter.value === 'running' && runningCount === 0 ? 'all' : taskStatusFilter.value;
+
+  let list = tasks.value;
+  if (effectiveStatus === 'running') {
+    list = list.filter((t) => t.status === 'running');
+  }
+  if (needle) {
+    list = list.filter((t) => {
+      const hay = `${t.task_id} ${t.name ?? ''} ${t.prompt} ${t.source ?? ''} ${t.status}`.toLowerCase();
+      return hay.includes(needle);
+    });
+  }
+  return list;
+});
+
+/** True when the 'running' filter is currently being applied (after auto-relax). */
+export const taskStatusFilterEffective = computed<TaskStatusFilter>(() => {
+  const runningCount = tasks.value.filter((t) => t.status === 'running').length;
+  return taskStatusFilter.value === 'running' && runningCount === 0 ? 'all' : taskStatusFilter.value;
 });
 
 export const taskCounts = computed(() => {

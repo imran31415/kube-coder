@@ -1,17 +1,22 @@
 body {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
   background: var(--bg);
   color: var(--text);
   letter-spacing: -0.005em;
+  /* Geist defaults render beautifully; only enable tabular nums for code/data. */
+  font-feature-settings: 'ss01';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 @media (pointer: coarse) {
-  body { font-size: 14px; }
+  body { font-size: 15px; }
 }
 
-code, kbd, pre, samp { font-family: var(--font-mono); font-size: 12.5px; }
+code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
 
 ::selection { background: var(--accent-soft); color: var(--text); }
 

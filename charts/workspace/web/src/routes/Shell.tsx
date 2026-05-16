@@ -61,6 +61,7 @@ export function Shell() {
         open={sheetOpen.value === 'more'}
         onClose={() => (sheetOpen.value = null)}
         title="More"
+        initialSnap="full"
       >
         <MoreSheet />
       </BottomSheet>

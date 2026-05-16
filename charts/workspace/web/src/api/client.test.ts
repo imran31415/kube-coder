@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { api, apiGet, apiPost, ApiError } from './client';
+import { api, apiGet, apiPost, ApiError, withOauthPrefix } from './client';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -60,6 +60,28 @@ describe('api client', () => {
     expect(calledInit?.method).toBe('POST');
     expect(calledInit?.body).toBe(JSON.stringify({ hello: 'world' }));
     expect((calledInit?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
+  it('prepends /oauth to /api/* paths so oauth2 ingress headers are injected', async () => {
+    let url = '';
+    globalThis.fetch = vi.fn(async (u: string) => {
+      url = u;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({}),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    await apiGet('/api/claude/tasks');
+    expect(url).toBe('/oauth/api/claude/tasks');
+  });
+
+  it('withOauthPrefix is idempotent and leaves non-/api paths alone', () => {
+    expect(withOauthPrefix('/api/foo')).toBe('/oauth/api/foo');
+    expect(withOauthPrefix('/oauth/api/foo')).toBe('/oauth/api/foo');
+    expect(withOauthPrefix('/health')).toBe('/health');
+    expect(withOauthPrefix('https://example.com/api/x')).toBe('https://example.com/api/x');
   });
 
   it('throws ApiError with status + body on non-2xx', async () => {

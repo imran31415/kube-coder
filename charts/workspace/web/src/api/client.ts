@@ -2,10 +2,14 @@
  * Thin typed fetch wrapper. The Flask-ish server.py answers JSON for everything
  * under /api/* and uses non-2xx status codes for errors.
  *
- * Auth: in the workspace pod the OAuth2 ingress injects X-Auth-Request-* headers
- * — we just pass requests through, the browser sends them automatically.
- * For ad-hoc / programmatic use we can attach a Bearer token from
- * localStorage['kc.devToken']. The dev_server bypasses auth entirely.
+ * Auth: in production, the workspace ingress only injects X-Auth-Request-*
+ * headers for paths under /oauth/*. Routes that hit /api/foo directly skip
+ * oauth2 and arrive unauthenticated, so we prepend /oauth to every /api/ call
+ * via withOauthPrefix(). server.py strips the prefix (server.py:1931, 3381),
+ * so dev_server (which monkey-patches auth to always-true) is unaffected.
+ *
+ * For ad-hoc / programmatic use a Bearer token from localStorage['kc.devToken']
+ * is attached when present.
  */
 
 export class ApiError extends Error {
@@ -31,15 +35,29 @@ function devToken(): string | null {
   }
 }
 
+/**
+ * Prepend /oauth to /api/* paths so requests go through the auth-injecting
+ * ingress in production. Absolute URLs and already-prefixed paths pass through.
+ * Exported so raw fetch()/EventSource callers (files.ts, SSE in tasks.ts) can
+ * apply the same rule without duplicating the logic.
+ */
+export function withOauthPrefix(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith('/oauth/')) return path;
+  if (path.startsWith('/api/')) return `/oauth${path}`;
+  return path;
+}
+
 function buildUrl(path: string, query?: Options['query']): string {
-  if (!query) return path;
+  const prefixed = withOauthPrefix(path);
+  if (!query) return prefixed;
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) {
     if (v === undefined || v === null || v === '') continue;
     params.set(k, String(v));
   }
   const qs = params.toString();
-  return qs ? `${path}?${qs}` : path;
+  return qs ? `${prefixed}?${qs}` : prefixed;
 }
 
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<T> {

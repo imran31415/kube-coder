@@ -1,4 +1,4 @@
-import { apiGet } from './client';
+import { apiGet, withOauthPrefix } from './client';
 
 export interface FileEntry {
   name: string;
@@ -14,7 +14,7 @@ export interface FileListing {
 export const listFiles = (path = '') => apiGet<FileListing>('/api/files/list', { path });
 
 export async function uploadFile(file: File, destPath: string): Promise<void> {
-  const res = await fetch('/api/files/upload', {
+  const res = await fetch(withOauthPrefix('/api/files/upload'), {
     method: 'POST',
     headers: {
       'X-Dest-Path': destPath,
@@ -29,7 +29,7 @@ export async function uploadFile(file: File, destPath: string): Promise<void> {
 }
 
 export async function makeDirectory(path: string): Promise<void> {
-  const res = await fetch('/api/files/mkdir', {
+  const res = await fetch(withOauthPrefix('/api/files/mkdir'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),

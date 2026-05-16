@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiDelete } from './client';
+import { apiGet, apiPost, apiDelete, withOauthPrefix } from './client';
 
 export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown';
 export type TaskKind = 'claude' | 'terminal' | string;
@@ -17,8 +17,9 @@ export interface TaskSummary {
   finished_at: number | null;
   source: string | null;
   kind: TaskKind;
-  memory_injected: MemoryInjection[];
-  memory_injection_disabled: boolean;
+  /** Optional — bare terminal tasks (kind=='terminal') omit memory fields. */
+  memory_injected?: MemoryInjection[];
+  memory_injection_disabled?: boolean;
 }
 
 export interface TaskDetail extends TaskSummary {
@@ -71,6 +72,43 @@ export const renameTask = (id: string, name: string) =>
 
 export const killTask = (id: string) => apiDelete<{ ok: true }>(`/api/claude/tasks/${id}`);
 
+/**
+ * Wire the workspace's ttyd entrypoint to this task's tmux session before
+ * opening /oauth/terminal/. Without this, /oauth/terminal/ drops the user
+ * into a fresh bash shell instead of attaching to the task.
+ */
+export const prepareTerminal = (id: string) =>
+  apiPost<{ ok: true; tmux_session?: string }>(`/api/claude/tasks/${id}/prepare-terminal`, {});
+
+/** Absolute URL for the ttyd iframe; cache-busts on each open. */
+export const terminalUrl = () => `/oauth/terminal/?t=${Date.now()}`;
+
+/** Absolute URL for the embedded noVNC viewer. */
+export const vncUrl = () =>
+  `/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
+
+/**
+ * Tell the in-pod kiosk Chrome to navigate to localhost:<port>. The dashboard
+ * never touches port-forwarding — the in-pod browser is already on the X
+ * display, so noVNC immediately reflects the new page. See server.py:3769
+ * (open_localhost in server.py).
+ */
+export const openLocalhostPort = (port: number) =>
+  apiPost<{ ok: true } | { error: string }>('/api/open-localhost', { port });
+
+/** Spawn the in-pod kiosk Chrome (or fallback browser). See server.py:3718. */
+export const launchInPodBrowser = () =>
+  apiPost<{ ok: true } | { error: string }>('/api/launch-chrome', {});
+
+/**
+ * Register a plain-bash task before opening ttyd, so the bare terminal
+ * session shows up in the task list and can be re-attached if its tab is
+ * closed. See server.py:handle_claude_create_terminal_task (called by the
+ * legacy dashboard's openTerminal()).
+ */
+export const createTerminalTask = () =>
+  apiPost<TaskDetail>('/api/claude/tasks/terminal', {});
+
 export const listAssistants = () => apiGet<{ assistants: AssistantOption[] }>('/api/claude/assistants').then((r) => r.assistants);
 
 export const listWorkdirs = () => apiGet<{ dirs: WorkdirOption[] }>('/api/workspace/dirs').then((r) => r.dirs);
@@ -87,7 +125,7 @@ export function openTaskStream(
   onEnd?: (info: { status?: string }) => void,
   onError?: (err: Event) => void,
 ): EventSource {
-  const url = `/api/claude/tasks/${id}/stream?from=start`;
+  const url = withOauthPrefix(`/api/claude/tasks/${id}/stream?from=start`);
   const es = new EventSource(url);
   es.onmessage = (e) => {
     try {

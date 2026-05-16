@@ -8,6 +8,17 @@
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
+  min-width: 0;
+  overflow: hidden;
+}
+.brand, .topbar-search, .topbar-actions { min-width: 0; }
+.brand { flex-shrink: 0; }
+.topbar-search { min-width: 0; }
+.topbar-actions { flex-shrink: 0; }
+@media (max-width: 720px) {
+  .topbar { gap: var(--size-2); padding: 0 var(--size-2); }
+  .brand-tag { display: none; }
+  .brand-name { display: none; }
 }
 
 .brand { display: inline-flex; align-items: center; gap: 8px; }
@@ -61,18 +72,48 @@
   background: var(--surface);
 }
 
-.topbar-actions { display: inline-flex; align-items: center; gap: 4px; }
+.topbar-actions { display: inline-flex; align-items: center; gap: 6px; }
 .topbar-link {
   font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
-  padding: 4px 8px;
+  padding: 5px 10px;
   border-radius: var(--radius-sm);
-  transition: background var(--motion-fast), color var(--motion-fast);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  text-decoration: none;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
 }
 .topbar-link:hover { background: var(--surface-2); color: var(--text); }
 
+/* VS Code + New terminal — primary destinations, deserve more weight. */
+.topbar-link-strong {
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.topbar-link-strong:hover {
+  background: var(--surface-3);
+  border-color: var(--border-2);
+}
+
+@media (max-width: 880px) {
+  .topbar-link:not(.topbar-link-strong) { display: none; }
+}
 @media (max-width: 720px) {
   .topbar-kbd { display: none; }
   .topbar-search > span { font-size: 12px; }
-  .topbar-link { display: none; }
+  /* Only hide the non-strong (Legacy) link on phones — keep VS Code +
+     New terminal visible since they're primary destinations. */
+  .topbar-link:not(.topbar-link-strong) { display: none; }
+  .topbar-link-strong {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+}
+@media (max-width: 480px) {
+  /* Even tighter — strong links get icon-style treatment. */
+  .topbar-link-strong { padding: 4px 6px; font-size: 10.5px; }
 }

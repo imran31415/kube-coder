@@ -21,7 +21,10 @@ export type IconName =
   | 'kill'
   | 'github'
   | 'chevron-right'
+  | 'chevron-left'
   | 'chevron-down'
+  | 'fullscreen'
+  | 'fullscreen-exit'
   | 'inbox';
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -113,9 +116,24 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M8 5l5 5-5 5" />
     </>
   ),
+  'chevron-left': (
+    <>
+      <path d="M12 5l-5 5 5 5" />
+    </>
+  ),
   'chevron-down': (
     <>
       <path d="M5 8l5 5 5-5" />
+    </>
+  ),
+  fullscreen: (
+    <>
+      <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" />
+    </>
+  ),
+  'fullscreen-exit': (
+    <>
+      <path d="M7 3v4H3M13 3v4h4M7 17v-4H3M13 17v-4h4" />
     </>
   ),
   inbox: (

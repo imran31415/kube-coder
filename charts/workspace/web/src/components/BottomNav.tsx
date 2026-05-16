@@ -10,7 +10,7 @@ interface Slot {
 }
 
 const SLOTS: Slot[] = [
-  { path: '/tasks', title: 'Tasks', icon: 'tasks' },
+  { path: '/tasks', title: 'Build', icon: 'tasks' },
   { path: '/memory', title: 'Memory', icon: 'memory' },
   { path: '/triggers', title: 'Triggers', icon: 'triggers' },
 ];

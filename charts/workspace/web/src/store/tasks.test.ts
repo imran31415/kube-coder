@@ -4,6 +4,7 @@ import {
   selectedTask,
   selectedTaskId,
   taskFilter,
+  taskStatusFilter,
   filteredTasks,
   taskCounts,
   refreshTasks,
@@ -17,6 +18,9 @@ beforeEach(() => {
   selectedTaskId.value = null;
   selectedTask.value = null;
   taskFilter.value = '';
+  // Most store-level tests exercise the text filter alone — default the
+  // status filter to 'all' so killed/completed tasks aren't hidden.
+  taskStatusFilter.value = 'all';
 });
 afterEach(() => {
   globalThis.fetch = realFetch;

@@ -6,6 +6,8 @@ import {
   startTaskPolling,
   stopTaskPolling,
   taskFilter,
+  taskStatusFilter,
+  taskStatusFilterEffective,
   tasks,
   tasksError,
   tasksLastFetch,
@@ -57,6 +59,11 @@ export function TaskList() {
   const list = filteredTasks.value;
   const counts = taskCounts.value;
   const activeId = selectedTaskId.value;
+  const userChoice = taskStatusFilter.value;
+  const effective = taskStatusFilterEffective.value;
+  // We auto-relaxed if user picked 'running' but there are none.
+  const autoRelaxed = userChoice === 'running' && effective === 'all';
+  const pastCount = counts.completed + counts.error;
 
   function onRowClick(t: TaskSummary) {
     selectTask(t.task_id);
@@ -66,19 +73,41 @@ export function TaskList() {
   return (
     <section class="tl">
       <div class="tl-toolbar">
+        <div class="tl-seg" role="tablist" aria-label="Filter by status">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={userChoice === 'running'}
+            class={`tl-seg-item ${userChoice === 'running' ? 'tl-seg-item-active' : ''}`}
+            onClick={() => (taskStatusFilter.value = 'running')}
+            title="Show only tasks whose tmux session is alive"
+          >
+            Running <span class="tl-seg-count">{counts.running}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={userChoice === 'all'}
+            class={`tl-seg-item ${userChoice === 'all' ? 'tl-seg-item-active' : ''}`}
+            onClick={() => (taskStatusFilter.value = 'all')}
+            title="Show running + past (completed, killed, errored)"
+          >
+            All <span class="tl-seg-count">{counts.all}</span>
+          </button>
+        </div>
         <Input
           fullWidth
-          placeholder="Filter by name, prompt, or status…"
+          placeholder="Filter…"
           value={taskFilter.value}
           onInput={(e) => (taskFilter.value = (e.target as HTMLInputElement).value)}
-          aria-label="Filter tasks"
+          aria-label="Filter tasks by text"
         />
-        <div class="tl-counts" aria-label="Task counts">
-          <Pill tone="accent" mono>{counts.running} running</Pill>
-          <Pill tone="success" mono>{counts.completed} done</Pill>
-          {counts.error > 0 && <Pill tone="danger" mono>{counts.error} failed</Pill>}
-        </div>
       </div>
+      {autoRelaxed && (
+        <div class="tl-relaxed muted" role="status">
+          No running tasks — showing all {pastCount} past task{pastCount === 1 ? '' : 's'}.
+        </div>
+      )}
 
       {tasksError.value && (
         <div class="tl-error" role="alert">
@@ -125,8 +154,8 @@ export function TaskList() {
                   <span class="mono">{t.task_id.slice(0, 18)}</span>
                   {t.source && <span> · {t.source}</span>}
                   {t.kind && t.kind !== 'claude' && <span> · {t.kind}</span>}
-                  {t.memory_injected.length > 0 && (
-                    <span> · {t.memory_injected.length} mem</span>
+                  {(t.memory_injected?.length ?? 0) > 0 && (
+                    <span> · {t.memory_injected!.length} mem</span>
                   )}
                 </div>
               </button>

@@ -5,12 +5,69 @@
 
 .tl-toolbar {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--size-2);
-  flex-wrap: wrap;
 }
-.tl-toolbar .input { flex: 1 1 260px; min-width: 0; }
-.tl-counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.tl-toolbar .input { width: 100%; min-width: 0; }
+
+.tl-seg {
+  display: inline-flex;
+  align-self: stretch;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px;
+  gap: 2px;
+}
+.tl-seg-item {
+  flex: 1;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border: 0;
+  transition: background var(--motion-fast), color var(--motion-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.tl-seg-item:hover { color: var(--text); }
+.tl-seg-item-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
+.tl-seg-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.tl-seg-item-active .tl-seg-count {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tl-relaxed {
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
 
 .tl-error {
   border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
@@ -84,22 +141,130 @@
 
 .tl-foot { font-size: 11px; text-align: right; padding: 6px 4px; }
 
-/* Master/detail layout */
+/* Master/detail layout — detail pane must fill viewport so iframes have height.
+   Three layout modes:
+   - default          : master 280-360px + detail flex
+   - master-collapsed : master hidden, detail takes the full width
+   - fullscreen       : header hidden too, detail fills the route */
 .tasks-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
   gap: var(--size-4);
-  align-items: start;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
+.tasks-layout-master-collapsed,
+.tasks-layout-fullscreen {
+  grid-template-columns: 1fr;
 }
 @media (max-width: 960px) {
   .tasks-layout { grid-template-columns: 1fr; }
   .tasks-detail-pane { display: none; }
 }
-.tasks-master { min-width: 0; }
+.tasks-master {
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  display: flex;
+  flex-direction: column;
+}
+.tasks-master-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px var(--size-2) 6px;
+  margin-bottom: var(--size-2);
+  border-bottom: 1px solid var(--border);
+}
 .tasks-detail-pane {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  min-height: 360px;
+  min-height: 480px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.tasks-master-restore {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 64px;
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-top-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.tasks-master-restore:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-2);
+}
+
+/* Tasks is the workspace's IDE view — break out of the centered
+   max-width route container so the master/detail can fill the viewport.
+   Uses 100dvh (dynamic viewport) instead of 100vh so iOS Safari's
+   collapsing URL bar doesn't leave a dead zone at the bottom. */
+.route.route-tasks {
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  min-height: calc(100dvh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-h));
+  padding: var(--size-4);
+}
+@supports not (height: 100dvh) {
+  .route.route-tasks {
+    min-height: calc(100vh - var(--topbar-h));
+    height: calc(100vh - var(--topbar-h));
+  }
+}
+@media (max-width: 720px) {
+  .route.route-tasks {
+    padding: var(--size-3);
+    min-height: calc(100dvh - var(--topbar-h) - var(--bottomnav-h));
+    height: calc(100dvh - var(--topbar-h) - var(--bottomnav-h));
+  }
+  @supports not (height: 100dvh) {
+    .route.route-tasks {
+      min-height: calc(100vh - var(--topbar-h) - var(--bottomnav-h));
+      height: calc(100vh - var(--topbar-h) - var(--bottomnav-h));
+    }
+  }
+  /* Tighter route header on phones so the list gets maximum space. */
+  .route-tasks > .route-header {
+    padding-bottom: var(--size-2);
+    margin-bottom: var(--size-2);
+  }
+  .route-tasks .route-title { font-size: 18px; }
+  .route-tasks .route-subtitle { display: none; }
+}
+.route-tasks > .route-header { flex-shrink: 0; }
+
+/* Fullscreen mode (Preview tab) — escape the route container's padding
+   and topbar offset so the iframes fill the entire viewport. */
+.route-tasks-fullscreen {
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  min-height: 100vh;
+  padding: 0;
+  z-index: 50;
+  background: var(--bg);
+}
+.route-tasks-fullscreen .tasks-detail-pane {
+  border: 0;
+  border-radius: 0;
 }

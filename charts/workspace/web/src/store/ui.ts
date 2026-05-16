@@ -6,22 +6,32 @@ export type Density = 'comfortable' | 'compact';
 interface PersistedPrefs {
   theme: Theme;
   density: Density;
+  railCollapsed: boolean;
+  masterCollapsed: boolean;
 }
 
 const STORAGE_KEY = 'kube-coder.ui';
 
 function loadPrefs(): PersistedPrefs {
-  if (typeof localStorage === 'undefined') return { theme: 'system', density: 'comfortable' };
+  const fallback: PersistedPrefs = {
+    theme: 'system',
+    density: 'comfortable',
+    railCollapsed: false,
+    masterCollapsed: false,
+  };
+  if (typeof localStorage === 'undefined') return fallback;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { theme: 'system', density: 'comfortable' };
+    if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<PersistedPrefs>;
     return {
       theme: parsed.theme === 'dark' || parsed.theme === 'light' ? parsed.theme : 'system',
       density: parsed.density === 'compact' ? 'compact' : 'comfortable',
+      railCollapsed: parsed.railCollapsed === true,
+      masterCollapsed: parsed.masterCollapsed === true,
     };
   } catch {
-    return { theme: 'system', density: 'comfortable' };
+    return fallback;
   }
 }
 
@@ -29,6 +39,13 @@ const initial = loadPrefs();
 
 export const theme = signal<Theme>(initial.theme);
 export const density = signal<Density>(initial.density);
+
+/** Collapses the left navigation rail to an icon-only strip on desktop. */
+export const railCollapsed = signal<boolean>(initial.railCollapsed);
+/** Hides the master task list so the detail pane takes the full width. */
+export const masterCollapsed = signal<boolean>(initial.masterCollapsed);
+/** Transient — Preview tab full-screen mode. Not persisted; resets on reload. */
+export const previewFullscreen = signal<boolean>(false);
 
 // Overlay state — only one of {drawer, sheet, palette} should be visible at a time.
 export const drawerOpen = signal<DrawerKey | null>(null);
@@ -67,11 +84,16 @@ export function dismissToast(id: string) {
   toasts.value = toasts.value.filter((t) => t.id !== id);
 }
 
-// Persistence — single effect saves both fields when either changes.
+// Persistence — single effect saves all persisted fields when any change.
 if (typeof localStorage !== 'undefined') {
   effect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: theme.value, density: density.value }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        theme: theme.value,
+        density: density.value,
+        railCollapsed: railCollapsed.value,
+        masterCollapsed: masterCollapsed.value,
+      }));
     } catch {
       // localStorage may be unavailable (Safari private mode, quota); silently skip.
     }

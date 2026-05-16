@@ -1,6 +1,9 @@
 import { navigate } from '../../store/router';
 import { sheetOpen, theme } from '../../store/ui';
 import { Icon, type IconName } from '../../components/Icon';
+import { Button } from '../../components/primitives/Button';
+import { createTerminalTask, terminalUrl } from '../../api/tasks';
+import { refreshTasks } from '../../store/tasks';
 import './more.css';
 
 interface MoreEntry {
@@ -10,10 +13,48 @@ interface MoreEntry {
   hint?: string;
 }
 
+async function openNewTerminalMobile() {
+  const win = window.open('about:blank', '_blank');
+  if (win) win.opener = null;
+  try {
+    await createTerminalTask();
+    void refreshTasks();
+  } catch {
+    /* fall through, still open ttyd */
+  }
+  const url = terminalUrl();
+  if (win && !win.closed) win.location.replace(url);
+  else window.location.href = url;
+  sheetOpen.value = null;
+}
+
 export function MoreSheet() {
   const entries: MoreEntry[] = [
-    { label: 'Files', icon: 'files', onSelect: () => { navigate('/files'); sheetOpen.value = null; } },
-    { label: 'Settings', icon: 'settings', onSelect: () => { navigate('/settings'); sheetOpen.value = null; } },
+    {
+      label: 'New terminal',
+      icon: 'play',
+      onSelect: () => { void openNewTerminalMobile(); },
+      hint: 'Register a bash task and open ttyd in a new tab',
+    },
+    {
+      label: 'Open VS Code',
+      icon: 'files',
+      onSelect: () => {
+        window.open('/oauth/vscode/?folder=/home/dev', '_blank');
+        sheetOpen.value = null;
+      },
+      hint: 'code-server at /home/dev',
+    },
+    {
+      label: 'Files',
+      icon: 'files',
+      onSelect: () => { navigate('/files'); sheetOpen.value = null; },
+    },
+    {
+      label: 'Settings',
+      icon: 'settings',
+      onSelect: () => { navigate('/settings'); sheetOpen.value = null; },
+    },
     {
       label: theme.value === 'light' ? 'Switch to dark' : 'Switch to light',
       icon: theme.value === 'light' ? 'moon' : 'sun',
@@ -22,25 +63,33 @@ export function MoreSheet() {
         sheetOpen.value = null;
       },
     },
-    {
-      label: 'Open legacy dashboard',
-      icon: 'chevron-right',
-      onSelect: () => {
-        window.location.href = '/dashboard-legacy';
-      },
-    },
   ];
   return (
-    <ul class="more-list">
-      {entries.map((e) => (
-        <li key={e.label}>
-          <button class="more-item" onClick={e.onSelect}>
-            <span class="more-item-icon"><Icon name={e.icon} size={18} /></span>
-            <span class="more-item-label">{e.label}</span>
-            <span class="more-item-chev"><Icon name="chevron-right" size={14} /></span>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <div class="more">
+      <ul class="more-list">
+        {entries.map((e) => (
+          <li key={e.label}>
+            <button class="more-item" type="button" onClick={e.onSelect}>
+              <span class="more-item-icon"><Icon name={e.icon} size={18} /></span>
+              <div class="more-item-text">
+                <span class="more-item-label">{e.label}</span>
+                {e.hint && <span class="more-item-hint muted">{e.hint}</span>}
+              </div>
+              <span class="more-item-chev"><Icon name="chevron-right" size={14} /></span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div class="more-footer">
+        <Button
+          variant="secondary"
+          onClick={() => (sheetOpen.value = null)}
+          style={{ width: '100%' }}
+          title="Dismiss this menu"
+        >
+          <Icon name="close" size={14} /> Done
+        </Button>
+      </div>
+    </div>
   );
 }

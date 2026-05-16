@@ -1,687 +1,320 @@
-# Kube-Coder
+# kube-coder
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
 
-A Helm chart for deploying secure, isolated development workspaces in Kubernetes. Each workspace provides VS Code IDE, terminal access, remote browser capabilities, and AI-powered Claude Code integration with remote task management -- all protected by GitHub OAuth2 authentication.
+Per-user development workspaces on Kubernetes. Each pod packages **VS Code** in
+the browser, a **persistent tmux terminal**, a **Vite + Preact dashboard**, an
+**in-pod browser with noVNC**, and an interactive **Claude Code / OpenCode**
+assistant — all behind **GitHub OAuth2** at a per-user subdomain.
 
-<table>
-  <tr>
-    <td align="center" width="25%">
-      <img width="1509" height="908" alt="image" src="https://github.com/user-attachments/assets/6f871a1c-cc5f-43f2-8574-f7cfa33b67f6" />
-      <strong>Dashboard</strong><br/>
-      <sub>Clean workspace hub with system metrics, service health, and GitHub config</sub>
-    </td>
-    <td align="center" width="25%">
-      <img src="https://github.com/user-attachments/assets/34f1b356-22be-40da-bc99-c0a8a2a205a2" width="250" alt="Remote Browser" /><br/>
-      <strong>VS Code IDE</strong><br/>
-      <sub>Full-featured browser IDE with extensions and terminal access</sub>
-    </td>
-    <td align="center" width="25%">
-      <img src="https://github.com/user-attachments/assets/dcf81a8a-da6a-42c9-a738-c331cc8aa36d" width="250" alt="VS Code IDE" /><br/>
-      <strong>Remote Browser</strong><br/>
-      <sub>Full Firefox browser via VNC — test web apps from anywhere</sub>
-    </td>
-    <td align="center" width="25%">
-      <img width="707" height="690" alt="TTYD with claude" src="https://github.com/user-attachments/assets/7c3aa084-c52f-4b17-b3b9-059390eeddf1" />
-      <strong>TTYD terminal interface accessible from browser</strong><br/>
-      <sub>Claude built in with environment awareness </sub>
-    </td>
+> Built so a single Helm chart can host as many independent IDE pods as your
+> cluster has room for: separate namespace, ingress, persistent volume, and
+> assistant config per user.
 
-  </tr>
-</table>
+<!-- TODO: hero screenshot of the dashboard's Build view (terminal + preview split, metrics in topbar) -->
+<!-- ![Dashboard hero](docs/images/dashboard-hero.png) -->
 
-## Update 5/10: Updated UX and Cron Job/Webhook adapters
+---
 
-- Updated UI/UX for the dashboard.
-- Webhook adapters
-- Cron Job adapters
-- Overall improved UX especially on mobile.
+## What's in a workspace
 
-<img width="1512" height="862" alt="image" src="https://github.com/user-attachments/assets/309f350c-0545-42c8-a78f-9ed254cfb765" />
+| Surface | What you get | URL |
+|---|---|---|
+| **Dashboard SPA** | Vite + Preact app: Build sessions, Memory, Triggers, Files, Settings | `/` |
+| **Terminal** | ttyd-attached tmux, accessible from any browser | `/oauth/terminal/` |
+| **VS Code** | `code-server` at `/home/dev` | `/oauth/vscode/?folder=/home/dev` |
+| **In-pod browser** | Chrome on an X display, viewable via noVNC | `/oauth/vnc-direct/vnc.html` |
+| **Metrics + health** | Live CPU / Mem / Disk + service health | `/oauth/metrics`, `/oauth/health` |
+| **Assistant** | Claude Code (default) or OpenCode | per-task |
+| **Auth** | oauth2-proxy injects `X-Auth-Request-User` headers | every `/oauth/*` route |
 
+<!-- TODO: screenshot of the topbar showing CPU/MEM/DSK pills + VS Code / New terminal buttons -->
 
+---
 
+## Dashboard at a glance
 
-[![L
+The next-generation dashboard at `/` is a single-page Preact app. Key surfaces:
 
-## Features
+- **Build** — list of live + past Claude/OpenCode sessions on the left, a detail
+  pane on the right with tabs for **Terminal**, **Preview** (split: ttyd ┃
+  noVNC), **Send message** (chat-style mirror of the tmux pane), **Info**,
+  and **Subagents** (hidden when empty). Live sessions default to Terminal;
+  finished sessions hide interactive tabs and show a status banner.
+- **Memory** — persistent SQLite-backed memory + history + relations across
+  build sessions; mirrored over MCP for the assistant to read/write.
+- **Triggers** — webhooks + cron jobs that spawn build sessions on schedule
+  or HTTP POST.
+- **Files** — read the workspace PVC, upload, mkdir.
+- **Settings** — appearance, GitHub identity, browser/VNC controls, **system
+  metrics with bars + alerts + service health**.
 
-### Core Development Environment
-- **VS Code IDE** - Browser-based IDE with extensions support
-- **Terminal** - Full system access via browser (ttyd)
-- **Remote Browser** - Firefox with VNC viewer for testing web apps
-- **System Monitoring** - Real-time CPU, memory, disk usage dashboard
-- **GitHub Integration** - Easy SSH key and git config setup from dashboard
+<!-- TODO: side-by-side screenshots: Build list + Terminal tab, Preview split, Send message chat -->
 
-### Claude Code Integration
-- **Claude Code CLI** - AI-powered development assistant built-in
-- **Claude Task API** - Launch and manage Claude tasks remotely via REST API
-- **Claude Tasks Dashboard** - Monitor running tasks, view status, one-click attach to interactive sessions
-- **Remote Task Skill** - `/remote-task` Claude Code skill to manage tasks from your local terminal
-- **Interactive Sessions** - Attach to any running Claude session to approve permissions, provide input, or observe progress
-- **Completion hooks** - Tasks can `POST` their final state to a `response_url` with optional HMAC signing
-- **Webhooks** - Inbound HTTP triggers that spawn Claude tasks; native verifiers for GitHub, Slack, Stripe, plus a generic mode
-- **Crons** - Scheduled triggers backed by real Kubernetes `CronJob` objects, with suspend/resume/run-now and token rotation from the dashboard
-- **Pluggable assistants** *(opt-in)* - Claude Code is always available; [OpenCode](https://opencode.ai) can be wired up alongside it against an OpenRouter key and/or a custom OpenAI-compatible endpoint (e.g. a private droplet running Ollama). When either is configured, the New Task form gains an assistant dropdown and the choice is persisted per task. See [Pluggable AI Assistants](#pluggable-ai-assistants) below.
+### Mobile
 
-### Security & Authentication
-- **GitHub OAuth2** - Secure authentication with configurable user authorization
-- **GitHub App Auth** - Automatic private repo access via GitHub App installation tokens (auto-refreshed every 50 minutes)
-- **HTTPS Everywhere** - Let's Encrypt certificates with automatic renewal
-- **Isolated Workspaces** - Complete isolation between user environments
+The dashboard is fully responsive. Below 720px the Rail collapses into a
+BottomNav (Build / Memory / Triggers / More), the detail pane moves into a
+swipe-able bottom sheet, and the topbar slims to just brand + search + the
+two primary actions (VS Code, New terminal).
 
-### Development Stack
-- **Node.js 20 + Yarn** - Latest Node.js with Yarn package manager
-- **Container Builds** - Docker-in-Docker with BuildKit support
-- **Persistent Storage** - Dedicated storage that survives restarts
+<!-- TODO: mobile screenshot of Build list + BottomSheet with task detail -->
+
+---
+
+## Quick start
+
+### Prerequisites
+
+- Kubernetes 1.19+ with `kubectl` configured
+- Helm 3.0+
+- An nginx-ingress controller
+- A GitHub OAuth App (for oauth2-proxy)
+- A `regcred` image-pull Secret in the target namespace pointing at your
+  registry (we use `registry.digitalocean.com/<org>/<repo>`)
+
+### One-time: base infrastructure
+
+```bash
+make deploy-base                  # base-infrastructure helm release
+```
+
+### Onboard a user
+
+```bash
+# Copy the template and fill in DNS host + GitHub creds + assistant config
+cp -r deployments/imran deployments/<name>          # or users-private/<name>
+$EDITOR deployments/<name>/values.yaml
+
+# Pre-deploy sanity check (DNS, image pull, base release)
+make validate-user USER=<name>
+
+# Deploy the workspace
+make deploy USER=<name>
+
+# Tail logs / shell in / sanity-test
+make logs   USER=<name>
+make shell  USER=<name>
+make test   USER=<name>
+```
+
+The script `setup.sh` walks first-time users through GitHub OAuth, DNS, and
+Claude credentials interactively.
+
+---
+
+## Common commands
+
+```bash
+# Docker image
+make build                        # build for amd64 (loads into local Docker)
+make push                         # build + push (single buildx invocation)
+make clean                        # remove the local image tag
+
+# Per-user lifecycle
+make deploy   USER=<name>         # helm upgrade --install
+make ship     USER=<name>         # build + push + roll the pod
+make rollback USER=<name>         # helm rollback to previous revision
+make logs     USER=<name>         # tail pod logs
+make shell    USER=<name>         # exec into the IDE container
+make test     USER=<name>         # node/yarn/gh/code-server version check
+
+# Dashboard SPA
+make dashboard-web                # type-check + vite build → web/dist
+make dashboard-web-test           # vitest unit tests (~50 tests)
+make dashboard-web-install        # yarn install only
+make dashboard-web-clean          # rm -rf dist + node_modules
+
+# Tests across the repo
+make test-all-units               # SPA (vitest) + server.py (unittest)
+make python-tests                 # server.py only
+
+# Cluster status
+make status                       # helm + pod status
+```
+
+`make help` (or just `make`) lists everything with one-line descriptions.
+
+---
+
+## Build sessions (Claude / OpenCode)
+
+Each **build session** is an interactive Claude Code or OpenCode tmux
+session inside the workspace pod. Sessions are created via the dashboard
+("New build") or the JSON API and survive pod restarts; output is mirrored
+to a log file under `~/.kube-coder/tasks/<task_id>/`.
+
+The dashboard's **New build** flow is intentionally minimal — pick an
+assistant + working directory, give the session a memorable random name
+(e.g. `funny-kitty-37`), hit **Start build**, and you land directly in the
+live terminal. No prompt textarea: type your first prompt inside the
+session, the way you would in any REPL.
+
+### API
+
+```bash
+# POST /api/claude/tasks  (oauth2 headers OR Authorization: Bearer <token>)
+curl -s https://<user>.dev.example.com/oauth/api/claude/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "review this PR", "assistant": "claude"}'
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/claude/tasks` | Create a build (prompt optional) |
+| `POST /api/claude/tasks/terminal` | Register a bare-bash session |
+| `GET  /api/claude/tasks` | List sessions |
+| `GET  /api/claude/tasks/{id}` | Detail |
+| `GET  /api/claude/tasks/{id}/output` | Tail the tmux pane |
+| `GET  /api/claude/tasks/{id}/stream` | SSE live stream |
+| `POST /api/claude/tasks/{id}/message` | Send a follow-up prompt |
+| `POST /api/claude/tasks/{id}/prepare-terminal` | Wire ttyd to this session |
+| `POST /api/claude/tasks/{id}/rename` | Rename (display only) |
+| `DELETE /api/claude/tasks/{id}` | Kill the tmux session |
+
+### `/remote-task` Skill (Claude Code)
+
+```bash
+/remote-task --workspace imran --prompt "investigate flaky test in foo_test.py"
+```
+
+Sends the prompt to a remote workspace's `/api/claude/tasks` endpoint and
+streams the result back. Used to dispatch work to a stronger workspace from
+a lighter local one.
+
+---
+
+## Persistent memory
+
+Each workspace has a SQLite-backed memory store accessible via:
+
+- **Dashboard** → Memory route (CRUD with history + relations)
+- **MCP server** auto-spawned by Claude/OpenCode (read + write from inside
+  the assistant)
+- **REST** at `/api/memory`
+
+Memory records are auto-injected into new build prompts when relevant — the
+server runs a similarity search over namespace+key+value tags and prepends
+the top matches inside a `<workspace_memories>` block.
+
+<!-- TODO: screenshot of Memory route with history tab open -->
+
+---
+
+## Triggers — webhooks, crons, completion hooks
+
+Three ways to dispatch a build session without clicking "New build":
+
+1. **Completion hooks** — register a webhook URL on a session that fires
+   when the assistant finishes (status, output URL, summary).
+2. **Webhooks** — accept inbound POSTs; convert the body to a build prompt
+   using a template.
+3. **Crons** — UNIX cron expressions that POST to a webhook on schedule.
+
+All three live under `Triggers` in the dashboard. Mutual references between
+tasks and triggers are tracked in the memory store so you can see what
+fired what.
+
+<!-- TODO: screenshot of Triggers route with webhook + cron example -->
+
+---
+
+## Pluggable AI assistants
+
+Configure per-workspace via `assistant.provider` in values.yaml:
+
+- **`claude`** (default) — Anthropic Claude Code with your API key
+- **`opencode`** — OpenRouter or any OpenAI-compatible base URL via on-disk
+  config written at pod start
+
+Each build session picks its assistant at create-time; you can mix Claude
+and OpenCode sessions in the same workspace.
+
+---
+
+## Pre-installed stack
+
+| Component | Version |
+|---|---|
+| Node.js | 20 LTS |
+| `code-server` | 4.95.3 |
+| Claude Code CLI | 2.1.143 |
+| OpenCode CLI | 1.15.3 |
+| ttyd | 1.7.7 |
+| tmux, yarn, gh, jq, ripgrep, fzf | latest from Ubuntu |
+
+Bump versions in `devlaptop/Dockerfile` and run `make push` to rebuild.
+
+---
+
+## Repository layout
+
+```
+charts/
+├── base-infrastructure/   # ingress, oauth2-proxy, cert-manager bits
+└── workspace/             # per-user workspace chart
+    ├── server.py          # API + dashboard backend (tmux, memory, metrics)
+    └── web/               # Vite + Preact SPA (the dashboard at /)
+        ├── src/
+        │   ├── routes/    # /tasks, /memory, /triggers, /files, /settings
+        │   ├── components/  # Topbar, Rail, BottomSheet, Drawer, MetricsBar, …
+        │   ├── store/     # signals: tasks, ui, metrics, router
+        │   └── api/       # typed fetch wrappers (client.ts, tasks.ts, metrics.ts)
+        ├── scripts/shoot.mjs   # playwright screenshots
+        └── package.json   # node 20, yarn 1.22.x
+deployments/               # public per-user values.yaml + secrets
+users-private/             # gitignored per-user values.yaml + secrets
+devlaptop/Dockerfile       # workspace image (Vite SPA baked into /opt/dashboard-dist)
+secrets/                   # template + per-user secret YAMLs
+Makefile                   # all common commands (`make help`)
+```
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│             Base Infrastructure                 │
-│  • Shared ConfigMaps (kaniko-wrapper, etc.)     │
-└─────────────────────────────────────────────────┘
-                        │
-            ┌───────────┴───────────┐
-            │                       │
-┌───────────▼──────────┐  ┌─────────▼──────────────┐
-│   Imran Workspace    │  │   Gerard Workspace     │
-│  • Independent Helm  │  │  • Independent Helm    │
-│  • Own PVC & secrets │  │  • Own PVC & secrets   │
-│  • Dedicated ingress │  │  • Dedicated ingress   │
-│  • Claude Task API   │  │  • Claude Task API     │
-└──────────────────────┘  └────────────────────────┘
+   ┌──── browser ────┐
+   │                 │ ───► oauth2-proxy ───► nginx-ingress ───► ws-<user> Service
+   └────────────────┘                                                  │
+                                                                       ▼
+                                                        ┌── ws-<user> Pod ──┐
+                                                        │  server.py (8080) │
+                                                        │  code-server      │
+                                                        │  ttyd  (7681)     │
+                                                        │  novnc (6081)     │
+                                                        │  Chrome + Xvfb    │
+                                                        │  tmux sessions    │
+                                                        └───────────────────┘
 ```
 
-## Quick Start
+Per-user PVC mounted at `/home/dev` survives pod restarts; tmux sessions
+attached to it survive too, so an in-flight Claude build keeps running even
+if the dashboard tab is closed.
 
-### Prerequisites
-- Kubernetes cluster (1.19+)
-- Helm 3.0+
-- nginx ingress controller
-- cert-manager for HTTPS
-- GitHub OAuth App
+---
 
-### Deploy
+## Development
 
 ```bash
-# Create namespace
-kubectl create namespace coder
+# Run the SPA locally against a built dist with auth bypassed
+make dashboard-web
+DASHBOARD_DIST_DIR=$(pwd)/charts/workspace/web/dist \
+  python3 charts/workspace/web/dev_server.py
+# → http://127.0.0.1:7070
 
-# Deploy base infrastructure
-make deploy-base
-
-# Deploy a workspace (auto-includes secrets if present)
-make deploy-imran
+# Tests
+make test-all-units
 ```
 
-### Access (OAuth2)
+Pull requests welcome — please run `make dashboard-web-test` and
+`make python-tests` before opening a PR.
 
-- **Dashboard**: `https://username.yourdomain.com/oauth`
-- **VS Code**: `https://username.yourdomain.com/oauth/ide`
-- **Terminal**: `https://username.yourdomain.com/oauth/terminal`
-
-## Claude Task API
-
-Each workspace exposes a REST API for remotely launching and managing Claude Code tasks. Tasks run as interactive tmux sessions that users can attach to for approving permissions and providing input.
-
-See [docs/claude-task-api.md](./docs/claude-task-api.md) for full API documentation.
-
-### Quick Example
-
-```bash
-# Create a task
-curl -X POST https://imran.dev.archon.cx/api/claude/tasks \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Analyze the codebase and create a CLAUDE.md"}'
-
-# Check status
-curl https://imran.dev.archon.cx/api/claude/tasks \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### `/remote-task` Skill
-
-When working in this repo with Claude Code, use the `/remote-task` skill:
-
-```bash
-/remote-task analyze the codebase and create a CLAUDE.md   # Launch task
-/remote-task status                                         # List all tasks
-/remote-task output <TASK_ID>                              # View output
-/remote-task attach <TASK_ID>                              # Attach info
-/remote-task kill <TASK_ID>                                # Kill task
-```
-
-## Persistent Memory
-
-Each workspace ships with a **SQLite-backed memory store** shared between
-the dashboard's Memory tab and Claude Code (via MCP). Users can say
-*"remember I prefer Go"* and ask later *"what language do I prefer?"* —
-Claude reads the entry back without you re-supplying it. Memory survives
-across tasks, browser tabs, and pod restarts.
-
-Highlights:
-
-- 9 MCP tools (`memory_remember`, `memory_search`, `memory_recall`,
-  `memory_list`, `memory_link`, `memory_neighbors`, `memory_forget`,
-  `memory_update`, `memory_stats`) auto-registered in `~/.claude.json`.
-- **Auto-injection** at task start: the server prepends a
-  `<workspace_memories>` block with the top-K relevant entries so Claude
-  feels stateful without needing to call tools first. Per-task opt-out
-  checkbox in the new-task form.
-- **Claude-auto sync** (every 60 s): Claude Code's *native* file-based
-  memory (`~/.claude/projects/*/memory/*.md`) is one-way synced into
-  SQLite so it surfaces in the dashboard with an `auto` badge.
-- **Provenance** on every write (`task:<id>` / `dashboard:<email>` /
-  `cron:<id>` / `claude-auto:<path>`); full revision history; access log.
-- **Graph relations** between memories (Phase 3 surfaces them in the UI).
-
-See [docs/persistent-memory.md](./docs/persistent-memory.md) for the full
-walkthrough, HTTP API, schema, and **how to clear / reset / back up the
-database**.
-
-```bash
-# Quick API smoke test from inside a workspace pod
-TOK=$(cat /home/dev/.claude-tasks/.api-token)
-curl -X POST localhost:6080/api/memory \
-  -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" \
-  -d '{"namespace":"user","key":"editor","value":"neovim"}'
-
-curl localhost:6080/api/memory -H "Authorization: Bearer $TOK"
-```
-
-## Triggers: Webhooks + Crons + Completion Hooks
-
-Once a workspace is deployed, you can drive it from outside via three composable
-primitives — all backed by the same `ClaudeTaskManager` and visible on the
-dashboard.
-
-### 1. Completion hooks (foundational)
-
-Every `POST /api/claude/tasks` accepts two optional fields:
-
-| Field | Purpose |
-|---|---|
-| `response_url` | Where to `POST` the task's final state when it reaches `completed` / `error` / `killed`. Must be `http(s)`. |
-| `response_secret` | Optional HMAC-SHA256 key. If set, requests carry `X-Kube-Coder-Signature-256: sha256=<hex>` over the body. |
-
-```bash
-curl -X POST https://$WORKSPACE/api/claude/tasks \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Run the test suite and report failures",
-    "response_url": "https://hooks.slack.com/services/...",
-    "response_secret": "shared-secret"
-  }'
-```
-
-When the task ends, the workspace POSTs `{task_id, status, prompt, workdir,
-source, output (tail 200 lines), ...}` to your URL. Delivery is at-most-once
-(`hook_fired_at` is set under a meta lock before firing); on network failure
-the error is logged and not retried — layer your own queue if you need
-at-least-once.
-
-### 2. Webhooks (inbound triggers)
-
-A webhook is a config that turns an inbound `POST` into a Claude task. Each
-webhook gets a stable URL: `https://$WORKSPACE/api/webhooks/<id>`. Configure
-them from the **Webhooks** panel on the dashboard or via the API:
-
-```bash
-curl -X POST https://$WORKSPACE/oauth/api/webhooks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "github-pr-review",
-    "provider": "github",
-    "prompt_template": "Review the PR at {{ payload.pull_request.html_url }}.",
-    "workdir": "/home/dev/myproject",
-    "interpolate_mode": "interpolate"
-  }'
-```
-
-The server auto-mints an `hmac_secret` and **returns it exactly once** in
-the response (or via the dashboard's "Save this secret now" banner). Paste it
-into GitHub's webhook config alongside the URL.
-
-#### Providers
-
-| `provider` | Signature header | Format | Notes |
-|---|---|---|---|
-| `github` (default) | `X-Hub-Signature-256` | `sha256=<hex>` of body | Works out of the box with GitHub repo/org webhooks. |
-| `slack` | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | `v0=<hex>` of `v0:<ts>:<body>` | Timestamp must be within ±5 min of pod clock. |
-| `stripe` | `Stripe-Signature` | `t=<unix>,v1=<hex>` of `<ts>.<body>` | Accepts multiple `v1=` entries (for Stripe's key-rotation window). Timestamp within ±5 min. |
-| `generic` | `X-Hub-Signature-256` (or `signature_header` you set) | `sha256=<hex>` or bare hex of body | Anything that signs the body with HMAC-SHA256. |
-
-All verifiers use `hmac.compare_digest` (constant-time) and reject when the
-secret isn't set the way the provider expects.
-
-#### Prompt templates: `attach` vs `interpolate`
-
-Templates use `{{ payload.path.to.field }}` syntax. The mode controls what
-happens to the payload:
-
-- **`attach` (default, safe)** — the template is the literal instruction; the
-  full payload is appended as a fenced ```` ```json ```` block. Sender-controlled
-  data can't drive Claude because it appears as data, not instructions.
-- **`interpolate`** — `{{ payload.x.y }}` is substituted with the matching JSON
-  value. Pick this when you trust the sender (GitHub for your own repos, your
-  own internal service, etc.). Hostile values land verbatim in the prompt.
-
-#### Replay protection
-
-The receiver maintains an in-memory `(webhook_id, sha256(body))` cache with a
-5-minute TTL. A second request with the same body inside the window returns
-**409 Conflict**. Combined with the per-provider timestamp checks (Slack /
-Stripe), this closes both offline-replay and intra-window replay.
-
-#### Testing without an external sender
-
-Each webhook has a **Test fire** button on the dashboard (and `POST
-/oauth/api/webhooks/<id>/test` with `{"payload": {...}}` over OAuth/bearer
-auth). The test path bypasses HMAC verification — same effect as if a real
-signed request had arrived.
-
-### 3. Crons (scheduled triggers)
-
-A cron is a config plus a real Kubernetes `CronJob` named
-`cron-<user>-<id>`. The CronJob's container is just `curlimages/curl`
-POSTing to the workspace's internal service URL — the IDE pod is still the
-executor. Schedules use standard cron syntax (`0 9 * * *`) or `@daily` /
-`@hourly` / etc.
-
-```bash
-curl -X POST https://$WORKSPACE/oauth/api/crons \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "daily-status",
-    "schedule": "0 9 * * 1-5",
-    "timezone": "America/Los_Angeles",
-    "prompt_template": "Summarize yesterdays git commits across all repos in /home/dev",
-    "workdir": "/home/dev"
-  }'
-```
-
-The cron's `payload` field plays the same role as a webhook's inbound payload
-— you can pre-populate static data the template uses:
-
-```json
-{
-  "id": "weekly-deps",
-  "schedule": "0 9 * * 1",
-  "prompt_template": "Audit dependencies in {{ payload.repos }} for CVEs",
-  "payload": {"repos": "/home/dev/api,/home/dev/web"}
-}
-```
-
-#### Managing a cron
-
-| Action | Endpoint | Dashboard |
-|---|---|---|
-| Pause | `POST /api/crons/<id>/suspend` | **Suspend** button |
-| Resume | `POST /api/crons/<id>/resume` | **Resume** button |
-| Fire manually | `POST /api/crons/<id>/run` | **Run now** button |
-| Rotate the fire token | `POST /api/crons/<id>/rotate-token` | **Rotate token** button |
-| Delete (cleans up CronJob + Secret) | `DELETE /api/crons/<id>` | **Delete** button |
-
-Suspend flips `spec.suspend: true` on the CronJob — `kubectl get cronjobs -n
-coder` shows it. Run now does `kubectl create job --from=cronjob/<name>`.
-
-#### Token rotation
-
-Each cron has a `fire_token` stored in a Kubernetes `Secret` and mounted as an
-env var into the curl pod. Rotation mints a fresh token, persists it, and
-re-applies the Secret in place — in-flight pods using the old token fail
-immediately (intended), and the next scheduled fire picks up the new token.
-The new token is returned **exactly once** in the response.
-
-### Triggers + tasks at a glance
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│  External sender (GitHub, Slack, Stripe, custom curl, k8s     │
-│  CronJob pod, …)                                              │
-└──────────────────────────────────┬─────────────────────────────┘
-                                   │  HTTPS, body signed
-                                   ▼
-┌────────────────────────────────────────────────────────────────┐
-│  Ingress (TLS + nginx)                                         │
-│    /api/webhooks/<id>      → no OAuth (HMAC verified in pod)   │
-│    /api/triggers/cron-fire → in-cluster only (bearer token)    │
-│    /oauth/api/{webhooks,crons,claude/tasks}  → OAuth gate      │
-└──────────────────────────────────┬─────────────────────────────┘
-                                   ▼
-┌────────────────────────────────────────────────────────────────┐
-│  server.py (workspace pod, port 6080)                          │
-│    WebhookManager       — config CRUD, HMAC verify, replay     │
-│    CronManager          — CronJob+Secret apply, suspend, run   │
-│    ClaudeTaskManager    — spawns tmux session, fires response  │
-└──────────────────────────────────┬─────────────────────────────┘
-                                   ▼
-┌────────────────────────────────────────────────────────────────┐
-│  tmux session  →  claude (interactive)  →  writes/commits      │
-└──────────────────────────────────┬─────────────────────────────┘
-                                   ▼     (if response_url set)
-┌────────────────────────────────────────────────────────────────┐
-│  HMAC-signed POST  to your callback URL with task output       │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### End-to-end example: GitHub PR → review → comment
-
-1. Create a webhook on the workspace, provider `github`, mode `interpolate`:
-   ```bash
-   curl -X POST https://imran.dev.scalebase.io/oauth/api/webhooks \
-     -H "Content-Type: application/json" \
-     -d '{
-       "id": "pr-review",
-       "provider": "github",
-       "prompt_template": "Review the PR at {{ payload.pull_request.html_url }} and post a comment with your findings using `gh pr comment`.",
-       "interpolate_mode": "interpolate",
-       "workdir": "/home/dev/myproject"
-     }'
-   ```
-2. Copy the returned `hmac_secret_once` value.
-3. In GitHub → repo Settings → Webhooks → Add webhook:
-   - **Payload URL**: `https://imran.dev.scalebase.io/api/webhooks/pr-review`
-   - **Content type**: `application/json`
-   - **Secret**: paste the secret
-   - **Events**: "Pull requests"
-4. Open a PR. The workspace receives the webhook, verifies the HMAC, spawns
-   a Claude task with the rendered prompt, and (because of `gh pr comment`)
-   posts the review back to GitHub. Watch progress on the **Claude Tasks**
-   panel of the dashboard — the task card carries a `from webhook:pr-review`
-   badge.
-
-### Configuration files (advanced)
-
-Triggers persist as JSON on the workspace PVC at `0600`:
-- `/home/dev/.claude-triggers/webhooks/<id>.json`
-- `/home/dev/.claude-triggers/crons/<id>.json`
-
-You can edit them directly if you prefer — the dashboard re-reads on every
-GET. For crons, hand-editing the schedule won't re-apply the K8s CronJob; use
-the API or delete+recreate.
-
-### Security notes (brief)
-
-- All secrets (`hmac_secret`, `response_secret`, `fire_token`) are stored
-  `0600` on the per-user PVC and never appear in list-endpoint responses
-  (only `*_set: true` flags do).
-- The cron fire token is also stored in a Kubernetes `Secret` and mounted
-  as an env var (never in `args` or the URL — `ps` and access logs stay clean).
-- The cron `schedule` / `timezone` fields are strictly regex-validated before
-  being interpolated into the kubectl-apply manifest.
-- `response_url` is rejected unless the scheme is `http` or `https` — closes
-  off `file://` / `gopher://` as SSRF / local-file primitives via `urlopen`.
-
-Full reference: [docs/claude-task-api.md](./docs/claude-task-api.md).
-
-## Pluggable AI Assistants
-
-Each workspace ships with **Claude Code** as the default assistant. You can
-also wire up **[OpenCode](https://opencode.ai)** as a second assistant —
-either pointing at [OpenRouter](https://openrouter.ai) or at any
-OpenAI-compatible endpoint of your own (a private proxy, a GPU droplet
-running Ollama, an internal LLM gateway, etc.). Both backends can be
-enabled side-by-side; the dashboard's **New Task** form gains an assistant
-dropdown whenever more than one is configured, and the choice is persisted
-on the task so it survives reload and attach.
-
-Public-repo defaults leave OpenCode off, so OSS users get Claude-only
-behavior with no extra config.
-
-### Enabling OpenCode
-
-Both blocks are independent — fill one, the other, or both. Put real
-credentials in a gitignored secrets file:
-
-```yaml
-# secrets/<user>/assistant.yaml
-assistant:
-  # OpenCode → OpenRouter
-  openrouter:
-    apiKey: "sk-or-v1-..."                # https://openrouter.ai/keys
-    model: "anthropic/claude-sonnet-4"
-
-  # OpenCode → any OpenAI-compatible endpoint
-  fallback:
-    baseUrl: "https://llm.your-droplet.example/v1"
-    apiKey: ""                            # leave "" if the proxy is open
-    model: "anthropic/claude-sonnet-4"
-    providerId: "kube-coder-fallback"
-    providerName: "Kube-Coder Fallback"
-```
-
-Apply with:
-
-```bash
-helm upgrade ws-<user> charts/workspace \
-  -f deployments/<user>/values.yaml \
-  -f secrets/<user>/assistant.yaml
-```
-
-A starter is in [`templates/assistant-secrets-template.yaml`](./templates/assistant-secrets-template.yaml).
-
-### How resolution works
-
-- `GET /api/claude/assistants` reports which assistants the running pod has
-  wired up; the dashboard calls it to decide whether to render the dropdown.
-- `POST /api/claude/tasks` accepts an `assistant` field (`claude`,
-  `opencode-openrouter`, or `opencode-fallback`). Unknown or disabled values
-  fall back to `claude` rather than failing the request.
-- For OpenCode, the entrypoint writes `~/.config/opencode/opencode.json`
-  describing whichever provider(s) are configured. When the fallback
-  endpoint has no `apiKey`, no `apiKey` field is emitted — important for
-  open self-hosted proxies, which would otherwise be skipped in favor of
-  OpenRouter.
-
-### Choosing per task
-
-```bash
-# Pick OpenCode via OpenRouter for one task
-curl -X POST https://$WORKSPACE/api/claude/tasks \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Refactor the auth middleware",
-    "assistant": "opencode-openrouter"
-  }'
-```
-
-The selection is also surfaced on the Claude Tasks panel so you can tell at
-a glance which assistant ran each task.
-
-## Pre-installed Stack
-
-| Category | Tools |
-|----------|-------|
-| Runtime | Node.js 20.19.4, Python 3.12, Go 1.22 |
-| Package Managers | Yarn 1.22.22, npm, pip |
-| Build Tools | Docker CLI, docker-compose, make, gcc |
-| Cloud Tools | kubectl, GitHub CLI |
-| AI Assistants | Claude Code CLI (default), OpenCode CLI (opt-in) |
-| Utilities | curl, jq, tmux, vim, nano |
-
-## Commands
-
-```bash
-make help             # Show all commands
-make deploy-imran     # Deploy Imran's workspace
-make deploy-gerard    # Deploy Gerard's workspace
-make deploy-all       # Deploy everything
-make status           # Check deployment status
-make test-imran       # Test workspace setup
-make shell-imran      # Shell into workspace
-make logs-imran       # View logs
-make rollback-imran   # Rollback workspace
-make version          # Show versions and config
-```
-
-## Adding New Users
-
-See [NEW_USER_PROVISIONING.md](./NEW_USER_PROVISIONING.md) for details.
-
-```bash
-# Automated
-./scripts/provision-user.sh john john_doe "John Doe" john@company.com dev.company.com
-
-# Manual
-mkdir deployments/john
-cp templates/user-values-template.yaml deployments/john/values.yaml
-# Edit values, then deploy
-```
-
-## Configuration Reference
-
-### Workspace Values
-```yaml
-# deployments/username/values.yaml
-namespace: coder
-
-user:
-  name: username
-  pvcSize: 50Gi
-  host: username.dev.yourdomain.com
-  env:
-    - name: GIT_USER_NAME
-      value: "User Name"
-    - name: GIT_USER_EMAIL
-      value: "user@domain.com"
-
-image:
-  repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.6.2-browser-stealth
-  pullPolicy: Always
-
-oauth2:
-  githubUsers: "user1,user2"  # Authorized GitHub usernames
-
-resources:
-  requests:
-    cpu: "2"
-    memory: 3Gi
-  limits:
-    cpu: "3"
-    memory: 5Gi
-```
-
-### Secrets (gitignored)
-
-```yaml
-# secrets/username/claude.yaml — Anthropic API key (optional)
-claude:
-  apiKey: "sk-ant-api03-..."
-
-# secrets/username/assistant.yaml — enable OpenCode alongside Claude (optional)
-# Either block, or both. Leaving both empty keeps the workspace Claude-only.
-assistant:
-  openrouter:
-    apiKey: "sk-or-v1-..."
-    model: "anthropic/claude-sonnet-4"
-  fallback:
-    baseUrl: "https://llm.your-droplet.example/v1"
-    apiKey: ""
-    model: "anthropic/claude-sonnet-4"
-
-# secrets/username/github-app.yaml — GitHub App credentials (optional)
-github:
-  app:
-    appId: "1234567"
-    installationId: "12345678"
-    privateKey: |
-      -----BEGIN RSA PRIVATE KEY-----
-      ...
-      -----END RSA PRIVATE KEY-----
-```
-
-## Project Structure
-
-```
-charts/
-├── base-infrastructure/       # Shared ConfigMaps
-└── workspace/                 # Workspace template
-    ├── dashboard.html         # Dashboard UI with Claude Tasks section
-    ├── server.py              # Python HTTP server (dashboard, APIs, task management)
-    └── templates/
-        ├── deployment.yaml
-        ├── service.yaml
-        ├── ingress.yaml
-        ├── ingress-oauth2.yaml
-        ├── ingress-claude-api.yaml
-        ├── oauth2-proxy.yaml
-        ├── browser-configmap.yaml
-        ├── claude-configmap.yaml
-        ├── claude-secret.yaml
-        ├── terminal-entry-configmap.yaml
-        ├── github-app-secret.yaml
-        ├── github-app-token-refresh.yaml
-        ├── pvc.yaml
-        └── serviceaccount.yaml
-
-deployments/
-├── imran/values.yaml          # User-specific config
-└── gerard/values.yaml
-
-secrets/                       # Gitignored
-├── imran/
-│   ├── claude.yaml            # Anthropic API key
-│   └── github-app.yaml        # GitHub App credentials
-└── gerard/
-
-.claude/
-└── skills/
-    └── remote-task/SKILL.md   # /remote-task skill for managing remote Claude tasks
-
-docs/
-├── claude-task-api.md         # Full Claude Task API documentation
-└── ...
-```
-
-## Documentation
-
-- [Claude Task API](./docs/claude-task-api.md) - REST API for remote Claude task management
-- [Persistent Memory](./docs/persistent-memory.md) - SQLite-backed memory shared with Claude (MCP) + how to clear/reset
-- [Browser Architecture](./BROWSER_ARCHITECTURE.md) - Remote browser VNC architecture
-- [New User Provisioning](./NEW_USER_PROVISIONING.md) - Adding new workspace users
-
-## Troubleshooting
-
-```bash
-# Check pods
-kubectl get pods -n coder
-
-# Check logs
-make logs-imran
-
-# Test workspace
-make test-imran
-
-# Shell access
-make shell-imran
-
-# Certificate issues
-kubectl get certificate -n coder
-
-# Check Claude task sessions
-kubectl exec -n coder <pod> -c ide -- tmux list-sessions
-```
-
-## Security Features
-
-- **GitHub OAuth2** - Secure authentication with user authorization
-- **GitHub App tokens** - Short-lived installation tokens for private repo access (no long-lived PATs)
-- **TLS encryption** - All traffic encrypted with Let's Encrypt
-- **Workspace isolation** - Users cannot access each other's environments
-- **Non-root containers** - All processes run as uid/gid 1000
-- **Isolated storage** - Dedicated PVC per user
-- **Interactive permissions** - Claude Code runs with standard permission mode; users approve file writes
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -2,6 +2,8 @@ import { theme, density, type Theme, type Density, pushToast } from '../../store
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { GitSection } from './GitSection';
+import { BrowserSection } from './BrowserSection';
+import { MetricsSection } from './MetricsSection';
 import './settings.css';
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -66,7 +68,11 @@ export function SettingsRoute() {
         </div>
       </section>
 
+      <MetricsSection />
+
       <GitSection />
+
+      <BrowserSection />
 
       <section class="settings-section">
         <h2 class="settings-section-title">Diagnostics</h2>

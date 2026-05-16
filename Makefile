@@ -46,16 +46,21 @@ help: ## Show this help message
 # Docker Image
 # =============================================================================
 
-build: ## Build Docker image for amd64 architecture
+build: ## Build Docker image for amd64 architecture (loads into local Docker)
 	@echo "Building $(IMAGE) for $(PLATFORM)..."
 	docker buildx build \
 		--platform $(PLATFORM) \
 		-t $(IMAGE) \
 		-f devlaptop/Dockerfile \
+		--load \
 		.
 
-push: build ## Build and push Docker image
-	@echo "Pushing $(IMAGE)..."
+# `push` is *standalone* — it builds + pushes in a single buildx invocation.
+# We don't depend on `build` because that target hangs forever without an
+# output flag (no --load / --push). Buildkit's layer cache makes this a no-op
+# if `build` was just run.
+push: ## Build and push Docker image (single buildx invocation; cache shared with `build`)
+	@echo "Building + pushing $(IMAGE)..."
 	docker buildx build \
 		--platform $(PLATFORM) \
 		-t $(IMAGE) \
@@ -216,3 +221,43 @@ dashboard-web-clean: ## Remove SPA build artifacts
 
 python-tests: ## Run server.py unit + integration tests
 	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v
+
+test-all-units: dashboard-web-test python-tests ## Run SPA (Vitest) + server.py (unittest) tests
+
+# Full end-to-end deploy: image + chart + rolled pod.
+# Two delivery paths feed a pod and we need BOTH for any change:
+#   1. Docker image  (Dockerfile changes, SPA bundle in /opt/dashboard-dist,
+#                     Claude/OpenCode versions, base apt packages, …)
+#      → make push  (single buildx --push invocation)
+#   2. ConfigMap     (server.py, dashboard.html, claude-md.txt, harness.py,
+#                     workspace-entrypoint, …)
+#      → make deploy  (helm upgrade — the configmap checksum is annotated on
+#                      the deployment, so any change auto-rolls the pod)
+# We also force a rollout restart at the end: when only the image changed
+# (configmap unchanged), helm sees no diff and the pod wouldn't otherwise
+# restart, even with imagePullPolicy: Always.
+# Usage:  make ship USER=<name>
+ship: require-user push deploy ## Full deploy: build+push image, helm upgrade, force-roll the pod (USER=<name>)
+	@echo "Forcing rollout restart so $(USER)'s pod re-pulls the image..."
+	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
+	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+
+# Stop / start a workspace pod without touching the helm release. PVC + secrets +
+# ingress + cookieSecret all stay; just the pod is gone. Reversible.
+stop: require-user ## Scale a user's pod to 0 — turns off the workspace, preserves data (USER=<name>)
+	@echo "Scaling ws-$(USER) to 0 replicas (workspace is being turned off)..."
+	kubectl scale deployment/ws-$(USER) -n $(NAMESPACE) --replicas=0
+	kubectl get deployment/ws-$(USER) -n $(NAMESPACE)
+
+start: require-user ## Scale a user's pod back to 1 — turns on a previously stopped workspace (USER=<name>)
+	@echo "Scaling ws-$(USER) back to 1 replica..."
+	kubectl scale deployment/ws-$(USER) -n $(NAMESPACE) --replicas=1
+	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+
+# Just the configmap path — refreshes server.py + dashboard.html in the pod
+# without rebuilding the Docker image. Faster than `make ship` for backend
+# changes; doesn't pick up SPA/Dockerfile changes (use `ship` for those).
+ship-config: require-user deploy ## Helm upgrade only — for server.py / configmap changes (USER=<name>)
+	@echo "Forcing rollout in case the configmap checksum didn't change..."
+	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
+	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s

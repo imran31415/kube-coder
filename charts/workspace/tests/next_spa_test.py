@@ -1,13 +1,13 @@
-"""Integration tests for the /next SPA route added in Phase 0.
+"""Integration tests for the SPA routing in server.py.
 
 Boots a real ThreadingHTTPServer on a free port with DASHBOARD_DIST_DIR
 pointed at a temp directory shaped like a Vite build, then hits the route
 with urllib. Covers:
-  * /next and /next/ serve index.html
+  * /next and /next/ serve index.html (kept for back-compat)
   * Hashed /next/assets/* files are served with the immutable cache header
   * Unknown deep-link paths fall back to index.html (SPA history)
   * Path traversal attempts (/next/../foo) are rejected with 403
-  * The legacy `/` still serves dashboard.html (no regression)
+  * Bare `/` and top-level SPA routes (/tasks, /memory, …) all serve index
   * When the dist directory does not exist, /next returns a helpful 404
 
 Run with:
@@ -52,15 +52,12 @@ class NextSpaRouteTests(unittest.TestCase):
         with open(os.path.join(cls.dist_dir, 'assets', 'index-xyz789.css'), 'w') as f:
             f.write(':root { --bg: #0a0a0a; }')
 
-        # Stage a fake dashboard.html in the server cwd so legacy `/` works.
-        cls.legacy_cwd = os.path.join(cls.tmpdir, 'legacy_cwd')
-        os.makedirs(cls.legacy_cwd)
-        with open(os.path.join(cls.legacy_cwd, 'dashboard.html'), 'w') as f:
-            f.write('<!doctype html><title>legacy</title>')
-
+        # server.py only uses os.getcwd() for static files like favicon — the
+        # SPA itself comes from DASHBOARD_DIST_DIR, so just point cwd at the
+        # tmpdir (no legacy dashboard.html needed; that file was removed).
         os.environ['DASHBOARD_DIST_DIR'] = cls.dist_dir
         cls._cwd_save = os.getcwd()
-        os.chdir(cls.legacy_cwd)
+        os.chdir(cls.tmpdir)
 
         cls.port = _free_port()
         cls.httpd = http.server.ThreadingHTTPServer(
@@ -143,16 +140,16 @@ class NextSpaRouteTests(unittest.TestCase):
         # The handler also runs realpath; either way the response must not be 200.
         try:
             with urllib.request.urlopen(
-                f'http://127.0.0.1:{self.port}/next/%2E%2E/dashboard.html', timeout=5,
+                f'http://127.0.0.1:{self.port}/next/%2E%2E/secret', timeout=5,
             ) as r:
-                # If the server happens to serve it, body MUST NOT be legacy.
-                self.assertNotIn(b'legacy', r.read())
+                # Whatever it serves, it must not have escaped the dist dir.
+                self.assertNotIn(b'secret', r.read())
         except urllib.error.HTTPError as e:
             self.assertIn(e.code, (403, 404))
 
-    # --- After cutover: `/` serves the new SPA, legacy at /dashboard-legacy ---
+    # --- Root + top-level SPA routes all serve index.html ---
 
-    def test_root_now_serves_new_spa(self):
+    def test_root_serves_spa(self):
         status, _, body = self._get('/')
         self.assertEqual(status, 200)
         self.assertIn(b'<div id="app">', body)
@@ -162,11 +159,6 @@ class NextSpaRouteTests(unittest.TestCase):
             status, _, body = self._get(route)
             self.assertEqual(status, 200, msg=f'{route} returned {status}')
             self.assertIn(b'<div id="app">', body, msg=f'{route} did not serve SPA index.html')
-
-    def test_dashboard_legacy_serves_old_html(self):
-        status, _, body = self._get('/dashboard-legacy')
-        self.assertEqual(status, 200)
-        self.assertIn(b'legacy', body)
 
 
 class NextSpaMissingDistTests(unittest.TestCase):

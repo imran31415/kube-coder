@@ -1,4 +1,35 @@
+# Files helm should NOT bundle into the chart tarball — keeps the upgrade
+# payload under the 3 MiB API limit. Without these, the SPA's node_modules
+# blows up `helm upgrade` with "Request entity too large".
 tests/
 *.md
 .git
 .gitignore
+
+# Dashboard SPA source — only the *built* dist/ ends up in the image
+# (devlaptop/Dockerfile multi-stage). The chart itself doesn't need any of it.
+web/node_modules/
+web/dist/
+web/.vite/
+web/src/
+web/scripts/
+web/public/
+web/package.json
+web/package-lock.json
+web/yarn.lock
+web/yarn-error.log
+web/tsconfig.json
+web/vite.config.ts
+web/vitest.config.ts
+web/index.html
+web/README.md
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~

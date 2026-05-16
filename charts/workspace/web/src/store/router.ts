@@ -62,7 +62,7 @@ export interface RouteDef {
 }
 
 export const ROUTES: RouteDef[] = [
-  { path: '/tasks', title: 'Tasks' },
+  { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },
   { path: '/triggers', title: 'Triggers' },
   { path: '/files', title: 'Files' },

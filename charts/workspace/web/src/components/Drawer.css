@@ -24,8 +24,25 @@
   display: flex; align-items: center; justify-content: space-between;
   padding: var(--size-3) var(--size-4);
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .drawer-title { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.drawer-header .btn-icon {
+  /* Larger hit target + stronger contrast so the close affordance is obvious. */
+  width: 36px;
+  height: 36px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.drawer-header .btn-icon:hover {
+  background: var(--surface-3);
+  border-color: var(--border-2);
+  color: var(--text);
+}
 
 .drawer-body {
   flex: 1;

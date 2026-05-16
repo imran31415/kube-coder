@@ -143,7 +143,7 @@ Useful entry points:
 
 - `charts/workspace/templates/workspace-entrypoint-configmap.yaml` —
   the pod's start.sh (everything that runs at boot lives here)
-- `charts/workspace/dashboard.html` — dashboard UI (HTML/JS)
+- `charts/workspace/web/` — Vite + Preact dashboard SPA (the UI at /)
 - `charts/workspace/server.py` — dashboard backend + Claude Task API
 - `charts/workspace/values.yaml` — chart defaults (resources, ssh,
   oauth2, codeServer.enabled, etc.)

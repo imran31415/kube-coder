@@ -1,8 +1,8 @@
 """Local-only test harness that runs server.py's BrowserHandler on a chosen
 port with DASHBOARD_DIST_DIR pointed at this project's freshly-built dist/.
 
-Used to take Playwright screenshots of the new SPA without disturbing the
-real workspace dashboard on port 6080.
+Used to take Playwright screenshots of the SPA without disturbing the real
+workspace dashboard on port 6080.
 
 Run:
     python3 charts/workspace/web/dev_server.py [port]
@@ -29,15 +29,12 @@ server.BrowserHandler.check_oauth_only = lambda self: True
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 7070
 
 os.environ['DASHBOARD_DIST_DIR'] = DIST
-# server.py expects to run from a cwd that holds dashboard.html for the
-# legacy route. Point cwd at the workspace dir which has dashboard.html.
 os.chdir(WORKSPACE_DIR)
 
 print(f'[dev_server] DASHBOARD_DIST_DIR={DIST}')
 print(f'[dev_server] cwd={os.getcwd()}')
 print(f'[dev_server] listening on http://127.0.0.1:{PORT}')
-print(f'[dev_server] new dashboard: http://127.0.0.1:{PORT}/next/')
-print(f'[dev_server] legacy:        http://127.0.0.1:{PORT}/')
+print(f'[dev_server] dashboard SPA: http://127.0.0.1:{PORT}/')
 
 httpd = http.server.ThreadingHTTPServer(('127.0.0.1', PORT), server.BrowserHandler)
 try:
