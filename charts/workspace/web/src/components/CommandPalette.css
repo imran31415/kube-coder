@@ -1,0 +1,87 @@
+.palette-scrim {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; justify-content: center;
+  padding-top: 12vh;
+  animation: fade var(--motion-fast);
+}
+@media (max-width: 720px) {
+  .palette-scrim { padding-top: 0; }
+}
+
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+.palette {
+  width: min(560px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  max-height: 70vh;
+  display: flex; flex-direction: column;
+  animation: rise var(--motion-base);
+}
+@media (max-width: 720px) {
+  .palette {
+    width: 100vw; height: 100dvh; max-height: none;
+    border-radius: 0; border: 0;
+  }
+}
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+.palette-input-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-subtle);
+}
+.palette-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  font-size: 14px;
+}
+.palette-input::placeholder { color: var(--text-subtle); }
+
+.palette-kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-subtle);
+  border: 1px solid var(--border-2);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--surface);
+}
+
+.palette-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+
+.palette-group {
+  padding: 8px 14px 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-subtle);
+  font-weight: 600;
+}
+
+.palette-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  width: 100%;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.palette-row-label { flex: 1; color: var(--text); }
+.palette-row-hint { font-family: var(--font-mono); font-size: 11px; color: var(--text-subtle); }
+.palette-row-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.palette-row-active .palette-row-label { color: var(--accent); }
+
+.palette-empty { padding: 16px 14px; font-size: 13px; }

@@ -1,0 +1,75 @@
+.route-settings .settings-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--size-4) var(--size-5);
+  max-width: 720px;
+  margin: 0 auto var(--size-5);
+}
+.settings-section-title { font-size: 14px; font-weight: 600; margin-bottom: var(--size-2); }
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: var(--size-3);
+  padding: var(--size-3) 0;
+  border-top: 1px solid var(--border);
+}
+.settings-row:first-of-type { border-top: 0; }
+.settings-row-label { font-size: 13px; padding-top: 4px; }
+.settings-row-hint { font-size: 12px; padding-bottom: var(--size-1); }
+.settings-row-control { display: flex; align-items: center; gap: var(--size-2); }
+.settings-row-control-stack { flex-direction: column; align-items: stretch; gap: var(--size-2); }
+
+@media (max-width: 720px) {
+  .settings-row { grid-template-columns: 1fr; }
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px;
+  background: var(--surface-2);
+}
+.seg-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border-radius: 6px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.seg-item-active { background: var(--surface); color: var(--text); }
+
+.settings-radio {
+  display: flex; align-items: flex-start; gap: var(--size-2);
+  padding: var(--size-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: var(--surface-2);
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.settings-radio:hover { border-color: var(--border-2); }
+.settings-radio input { margin-top: 3px; accent-color: var(--accent); }
+.settings-radio-label { font-size: 13px; font-weight: 500; }
+.settings-radio-hint { font-size: 12px; }
+
+.settings-pubkey {
+  margin-top: var(--size-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--size-3);
+}
+.settings-pubkey summary { cursor: pointer; font-size: 12.5px; color: var(--text-muted); }
+.settings-pubkey pre {
+  margin: var(--size-2) 0;
+  padding: var(--size-2);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+  white-space: pre-wrap;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
