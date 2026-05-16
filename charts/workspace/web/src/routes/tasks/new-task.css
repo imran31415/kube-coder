@@ -1,0 +1,22 @@
+.ntf { display: flex; flex-direction: column; gap: var(--size-3); }
+.ntf-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--size-3); }
+@media (max-width: 600px) { .ntf-row { grid-template-columns: 1fr; } }
+
+.ntf-field { display: flex; flex-direction: column; gap: 6px; }
+.ntf-label { font-size: 11.5px; color: var(--text-muted); font-weight: 500; }
+.ntf-textarea, .ntf-select {
+  font: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  width: 100%;
+}
+.ntf-textarea { resize: vertical; min-height: 100px; }
+.ntf-textarea:focus, .ntf-select:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+
+.ntf-checkbox { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
+.ntf-checkbox input { accent-color: var(--accent); }
+
+.ntf-actions { display: flex; justify-content: flex-end; gap: var(--size-2); padding-top: var(--size-2); border-top: 1px solid var(--border); }

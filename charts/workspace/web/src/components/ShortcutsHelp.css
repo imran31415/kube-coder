@@ -1,0 +1,31 @@
+.sh-scrim {
+  position: fixed; inset: 0; z-index: 55;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  animation: fade var(--motion-fast);
+}
+.sh {
+  width: min(420px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+}
+.sh-header { display: flex; align-items: center; justify-content: space-between; padding: var(--size-3) var(--size-4); border-bottom: 1px solid var(--border); }
+.sh-title { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.sh-list { padding: var(--size-2); }
+.sh-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; font-size: 13px; }
+.sh-row + .sh-row { border-top: 1px solid var(--border); }
+.sh-label { color: var(--text-muted); }
+.sh-keys { display: inline-flex; gap: 4px; }
+.sh-kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: var(--surface-2);
+}

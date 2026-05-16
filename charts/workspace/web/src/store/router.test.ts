@@ -1,0 +1,60 @@
+import { describe, expect, it, beforeEach } from 'vitest';
+import { currentPath, navigate, normalize, matchRoute } from './router';
+
+beforeEach(() => {
+  window.history.replaceState({}, '', '/');
+  currentPath.value = '/';
+});
+
+describe('normalize()', () => {
+  it('strips /next prefix', () => {
+    expect(normalize('/next/tasks')).toBe('/tasks');
+    expect(normalize('/next/')).toBe('/');
+    expect(normalize('/next')).toBe('/');
+  });
+
+  it('strips /oauth/next prefix from ingress paths', () => {
+    expect(normalize('/oauth/next/memory')).toBe('/memory');
+    expect(normalize('/oauth/next')).toBe('/');
+  });
+
+  it('passes through unprefixed paths', () => {
+    expect(normalize('/tasks')).toBe('/tasks');
+    expect(normalize('/')).toBe('/');
+  });
+});
+
+describe('navigate()', () => {
+  it('updates currentPath and pushes history state', () => {
+    navigate('/memory');
+    expect(currentPath.value).toBe('/memory');
+    expect(window.location.pathname).toContain('/memory');
+  });
+
+  it('replaces history when replace=true', () => {
+    const startLen = window.history.length;
+    navigate('/tasks', true);
+    // history length should be unchanged after replaceState
+    expect(window.history.length).toBe(startLen);
+    expect(currentPath.value).toBe('/tasks');
+  });
+});
+
+describe('matchRoute()', () => {
+  it('matches an exact top-level route', () => {
+    expect(matchRoute('/memory').path).toBe('/memory');
+  });
+
+  it('falls back to /tasks for unknown routes', () => {
+    expect(matchRoute('/nonsense').path).toBe('/tasks');
+  });
+
+  it('treats nested paths as their top-level route (detail handled inside)', () => {
+    expect(matchRoute('/tasks/abc-123').path).toBe('/tasks');
+  });
+
+  it('treats `/` as the default Tasks route', () => {
+    expect(matchRoute('/').path).toBe('/tasks');
+    expect(matchRoute('').path).toBe('/tasks');
+  });
+});
