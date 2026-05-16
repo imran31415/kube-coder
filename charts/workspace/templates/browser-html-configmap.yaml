@@ -4,11 +4,13 @@ metadata:
   name: browser-html-{{ .Values.user.name }}
   namespace: {{ .Values.namespace }}
 # NOTE: this ConfigMap is intentionally NOT included in the deployment's
-# checksum annotations, so updates to HTML/CSS/JS propagate via kubelet's
-# ConfigMap sync without restarting the workspace pod. Edit-and-helm-upgrade
-# iteration on the dashboard lands in ~1 min, no pod restart.
+# checksum annotations, so updates to index.html propagate via kubelet's
+# ConfigMap sync without restarting the workspace pod.
+#
+# Only index.html lives here — the legacy dashboard.html was removed once
+# the Vite + Preact SPA reached parity (and beyond). The SPA itself is
+# baked into the image at /opt/dashboard-dist/ by the dashboard-builder
+# Docker stage; server.py serves it for /, /tasks, /memory, ….
 data:
-  dashboard.html: |
-{{ .Files.Get "dashboard.html" | indent 4 }}
   index.html: |
 {{ .Files.Get "index.html" | indent 4 }}

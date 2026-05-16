@@ -1,0 +1,54 @@
+.mbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.mbar-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: default;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.mbar-cell:hover { background: var(--surface); color: var(--text); }
+.mbar-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--text-subtle);
+}
+.mbar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-subtle);
+}
+.mbar-cell-loading .mbar-label { opacity: 0.5; }
+.mbar-cell-ok .mbar-dot     { background: var(--success); }
+.mbar-cell-warn .mbar-dot   { background: var(--warn); }
+.mbar-cell-danger {
+  color: var(--danger);
+}
+.mbar-cell-danger .mbar-dot { background: var(--danger); animation: mbar-pulse 1.5s ease-in-out infinite; }
+@keyframes mbar-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 720px) {
+  .mbar-label { display: none; }
+  .mbar-cell { padding: 3px 6px; }
+}
+@media (max-width: 480px) {
+  .mbar { display: none; }
+}

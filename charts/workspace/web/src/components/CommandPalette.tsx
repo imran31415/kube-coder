@@ -75,17 +75,6 @@ function staticActions(): PaletteEntry[] {
         theme.value = theme.value === 'light' ? 'dark' : 'light';
       },
     },
-    {
-      id: 'action:legacy',
-      group: 'Actions',
-      label: 'Open legacy dashboard',
-      hint: '/dashboard-legacy',
-      icon: 'chevron-right',
-      match: 'legacy dashboard old',
-      onSelect: () => {
-        window.location.href = '/dashboard-legacy';
-      },
-    },
   ];
   return [...routes, ...actions];
 }
@@ -95,7 +84,7 @@ function dataEntries(isMobile: boolean): PaletteEntry[] {
   for (const t of tasks.value.slice(0, 50)) {
     out.push({
       id: `task:${t.task_id}`,
-      group: 'Tasks',
+      group: 'Builds',
       label: t.name || t.prompt || '(unnamed)',
       hint: t.task_id.slice(0, 18),
       icon: 'tasks',

@@ -19,7 +19,7 @@ describe('CommandPalette', () => {
     render(<CommandPalette />);
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Search tasks, memories, triggers, actions…')).toBeInTheDocument();
-    expect(screen.getByText('Go to Tasks')).toBeInTheDocument();
+    expect(screen.getByText('Go to Build')).toBeInTheDocument();
   });
 
   it('filters entries as the user types', () => {
@@ -28,7 +28,7 @@ describe('CommandPalette', () => {
     const input = screen.getByPlaceholderText('Search tasks, memories, triggers, actions…') as HTMLInputElement;
     fireEvent.input(input, { target: { value: 'mem' } });
     // Memory should remain; Tasks should fall away.
-    expect(screen.queryByText('Go to Tasks')).toBeNull();
+    expect(screen.queryByText('Go to Build')).toBeNull();
     expect(screen.getByText('Go to Memory')).toBeInTheDocument();
   });
 

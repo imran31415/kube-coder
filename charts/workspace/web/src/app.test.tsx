@@ -15,12 +15,13 @@ beforeEach(() => {
 });
 
 describe('App shell', () => {
-  it('renders the brand, search trigger, and the default Tasks route', () => {
+  it('renders the brand, search trigger, and the default Build route', () => {
     render(<App />);
     expect(screen.getByText('kube-coder')).toBeInTheDocument();
     expect(screen.getByLabelText('Open command palette')).toBeInTheDocument();
-    // route-level heading
-    expect(screen.getByRole('heading', { level: 1, name: 'Tasks' })).toBeInTheDocument();
+    // route-level heading — the /tasks URL still resolves but its display
+    // label was renamed to "Build" alongside the new-build flow.
+    expect(screen.getByRole('heading', { level: 1, name: 'Build' })).toBeInTheDocument();
   });
 
   it('navigates between routes via the rail buttons', async () => {
@@ -43,6 +44,6 @@ describe('App shell', () => {
     // Signal-triggered re-render is async; wait for the dialog to appear.
     const dialog = await screen.findByRole('dialog', { name: 'Command palette' });
     expect(within(dialog).getByPlaceholderText('Search tasks, memories, triggers, actions…')).toBeInTheDocument();
-    expect(within(dialog).getByText('Go to Tasks')).toBeInTheDocument();
+    expect(within(dialog).getByText('Go to Build')).toBeInTheDocument();
   });
 });

@@ -1,16 +1,22 @@
 import { useEffect, useState } from 'preact/hooks';
-import { createTask } from '../../store/tasks';
+import { createTask, selectTask } from '../../store/tasks';
 import { listAssistants, listWorkdirs, type AssistantOption, type WorkdirOption } from '../../api/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Icon } from '../../components/Icon';
+import { randomBuildName } from '../../util/randomName';
 import './new-task.css';
 
+/**
+ * "New build" composer — intentionally minimal. The user gives the session a
+ * memorable name (defaults to e.g. funny-kitty-37) and we drop them straight
+ * into the live Claude/OpenCode terminal — they type their actual prompt
+ * there. Server.py allows an empty prompt for exactly this flow.
+ */
 export function NewTaskForm({ onClose }: { onClose: () => void }) {
-  const [prompt, setPrompt] = useState('');
+  const [name, setName] = useState(() => randomBuildName());
   const [workdir, setWorkdir] = useState('/home/dev');
   const [assistant, setAssistant] = useState('');
-  const [disableMem, setDisableMem] = useState(false);
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
   const [assistants, setAssistants] = useState<AssistantOption[]>([]);
   const [busy, setBusy] = useState(false);
@@ -26,31 +32,58 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
 
   async function onSubmit(e: Event) {
     e.preventDefault();
-    if (!prompt.trim()) return;
     setBusy(true);
+    // Empty prompt — the assistant boots into an interactive REPL; the
+    // user's first message is whatever they type in the terminal.
     const task = await createTask({
-      prompt: prompt.trim(),
+      prompt: '',
       workdir,
       assistant: assistant || undefined,
-      disable_memory_injection: disableMem,
+      disable_memory_injection: false,
     });
     setBusy(false);
-    if (task) onClose();
+    if (task && task.task_id) {
+      // If the server accepted no name, leave as-is; otherwise rename in the
+      // background (best-effort — failure is OK, the random name still shows).
+      if (name && name !== task.name) {
+        const { renameTask } = await import('../../api/tasks');
+        void renameTask(task.task_id, name).catch(() => undefined);
+      }
+      selectTask(task.task_id);
+      onClose();
+    }
+  }
+
+  function reroll() {
+    setName(randomBuildName());
   }
 
   return (
     <form class="ntf" onSubmit={onSubmit}>
       <label class="ntf-field">
-        <span class="ntf-label">Prompt</span>
-        <textarea
-          class="ntf-textarea"
-          placeholder="What should Claude do?"
-          value={prompt}
-          onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
-          rows={5}
-          required
+        <span class="ntf-label">
+          Build name
+          <button
+            type="button"
+            class="ntf-reroll"
+            onClick={reroll}
+            title="Generate a new random name"
+            aria-label="Generate a new random name"
+          >
+            ↻
+          </button>
+        </span>
+        <Input
+          fullWidth
+          value={name}
+          onInput={(e) => setName((e.target as HTMLInputElement).value)}
+          placeholder="funny-kitty-37"
           autoFocus
+          maxLength={64}
         />
+        <span class="ntf-hint muted">
+          Display only — pick anything memorable, or use the random suggestion.
+        </span>
       </label>
 
       <div class="ntf-row">
@@ -96,19 +129,15 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         </label>
       </div>
 
-      <label class="ntf-checkbox">
-        <input
-          type="checkbox"
-          checked={disableMem}
-          onChange={(e) => setDisableMem((e.target as HTMLInputElement).checked)}
-        />
-        <span>Don't inject persistent memory into this task's prompt</span>
-      </label>
+      <p class="ntf-note muted">
+        You'll be dropped straight into a live <strong>{assistant || 'claude'}</strong> terminal —
+        type your first prompt there.
+      </p>
 
       <div class="ntf-actions">
         <Button variant="ghost" onClick={onClose} type="button">Cancel</Button>
-        <Button variant="primary" type="submit" disabled={busy || !prompt.trim()}>
-          <Icon name="play" size={14} /> Create task
+        <Button variant="primary" type="submit" disabled={busy}>
+          <Icon name="play" size={14} /> {busy ? 'Starting…' : 'Start build'}
         </Button>
       </div>
     </form>

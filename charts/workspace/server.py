@@ -1910,8 +1910,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
         # dashboard on each visit. Without this, SimpleHTTPRequestHandler
-        # sends no Cache-Control and Safari can pin a stale dashboard.html
-        # for days, hiding chart updates behind a manual cache-clear.
+        # sends no Cache-Control and Safari can pin a stale SPA index.html
+        # for days, hiding bundle updates behind a manual cache-clear.
         # Only applied to HTML — JSON API endpoints already set their own
         # Cache-Control before calling end_headers(), and static assets
         # (JS/CSS/images) keep default browser heuristics.
@@ -1932,30 +1932,26 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if normalized_path == '' or normalized_path == '/':
             normalized_path = '/'
 
-        # SPA-style routes served by the new dashboard. /next/* is the
-        # explicit form (kept for backward compat after cutover) and the
-        # bare top-level routes (/, /tasks, /memory, …) all serve the same
-        # SPA index.html so client-side routing handles deep links.
+        # All SPA routes serve the new dashboard. /next/* is the explicit form
+        # (kept for backward compat after cutover) and the bare top-level
+        # routes (/, /tasks, /memory, …) all serve the same SPA index.html so
+        # client-side routing handles deep links. The legacy dashboard.html
+        # has been removed; if /opt/dashboard-dist is missing we return 503
+        # rather than fall back to anything stale.
         SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/settings'}
         first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
-        if normalized_path in ["/dashboard-legacy", "/dashboard-legacy/"]:
-            self.path = "/dashboard.html"
-        elif normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
+        if normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
             rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
             self.serve_next_spa(rel)
             return
-        elif normalized_path in ["/", "/dashboard", "/dashboard/"] or first_seg in SPA_TOP_LEVEL:
-            # New SPA at root. Falls back to legacy if /opt/dashboard-dist is
-            # missing (e.g. running an older image that never baked it).
-            import os.path as _osp
-            base = os.environ.get('DASHBOARD_DIST_DIR') or '/opt/dashboard-dist'
-            if _osp.isdir(base):
-                self.serve_next_spa('/')
-                return
-            self.path = "/dashboard.html"
-        elif self.path in ["/browser", "/browser/"]:
-            # Legacy browser path - redirect to dashboard
-            self.path = "/dashboard.html"
+        elif (
+            normalized_path in ["/", "/dashboard", "/dashboard/"]
+            or normalized_path in ["/browser", "/browser/"]
+            or first_seg in SPA_TOP_LEVEL
+        ):
+            # SPA at root. /dashboard and /browser kept for back-compat URLs.
+            self.serve_next_spa('/')
+            return
         elif self.path == "/health":
             self.send_health_check()
             return
@@ -2411,10 +2407,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
+        # Prompt is optional — the SPA's "Create build" flow drops the textarea
+        # and spawns an interactive Claude/OpenCode session the user can type
+        # into directly. Empty prompt → no-op Enter after the 3s assistant init.
         prompt = data.get('prompt', '').strip()
-        if not prompt:
-            self.send_json({'error': 'prompt is required'}, 400)
-            return
         workdir = data.get('workdir')
         response_url = data.get('response_url') or None
         response_secret = data.get('response_secret') or None

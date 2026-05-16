@@ -70,11 +70,11 @@ def pick_api_key():
 
 
 # ───────────────────────── JSONL events ─────────────────────────
-# Shape comes from dashboard.html:formatStreamJsonOutput (parses lines
-# with {type:"user"|"assistant"|"result", message.content[], or .result}).
-# Keep emit_* writes line-buffered (flush=True) so tmux pipe-pane mirrors
-# them to output.log incrementally and the dashboard Output tab updates
-# in near real time.
+# Shape: {type:"user"|"assistant"|"result", message.content[], or .result}.
+# Consumed by the SPA's terminal capture endpoint and by the JSONL parser
+# any downstream tools share. Keep emit_* writes line-buffered (flush=True)
+# so tmux pipe-pane mirrors them to output.log incrementally and the
+# dashboard updates in near real time.
 #
 # Each emit_* helper prints two things to stdout:
 #   1. A JSONL event (consumed by the dashboard's formatStreamJsonOutput).

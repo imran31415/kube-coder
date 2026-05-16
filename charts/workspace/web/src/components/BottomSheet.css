@@ -46,12 +46,27 @@
 
 .sheet-header-floating {
   position: absolute;
-  top: 4px;
+  top: 8px;
   right: 8px;
   background: transparent;
   border: 0;
   padding: 0;
-  z-index: 1;
+  z-index: 2;
+}
+
+.sheet-header .btn-icon,
+.sheet-header-floating .btn-icon {
+  /* Strong contrast so the close affordance is obvious on every screen. */
+  width: 40px;
+  height: 40px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.sheet-header .btn-icon:hover,
+.sheet-header-floating .btn-icon:hover {
+  background: var(--surface-3);
+  border-color: var(--border-2);
 }
 
 .sheet-body {

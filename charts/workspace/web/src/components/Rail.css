@@ -3,18 +3,33 @@
   flex: 0 0 var(--rail-w);
   padding: var(--size-3) var(--size-2);
   border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
   background: var(--surface);
   overflow-y: auto;
+  transition: width var(--motion-base), flex-basis var(--motion-base), padding var(--motion-base);
+}
+
+.rail-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
 }
 
 .rail-item {
-  display: flex; align-items: center; gap: var(--size-2);
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
   padding: 7px 10px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-size: 13px;
   text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
   transition: background var(--motion-fast), color var(--motion-fast);
 }
 .rail-item:hover { background: var(--surface-2); color: var(--text); }
@@ -25,7 +40,49 @@
 }
 .rail-item-active:hover { background: var(--accent-soft); color: var(--accent); }
 
+.rail-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rail-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  padding: 6px 10px;
+  margin-top: auto;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.rail-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border-2);
+}
+.rail-toggle-label { flex: 1; text-align: left; }
+
+/* Collapsed mode — icon-only strip, ~52px wide. */
+.rail-collapsed {
+  width: 52px;
+  flex-basis: 52px;
+  padding: var(--size-2) 6px;
+  align-items: stretch;
+}
+.rail-collapsed .rail-item {
+  justify-content: center;
+  padding: 10px 0;
+}
+.rail-collapsed .rail-item-label { display: none; }
+.rail-collapsed .rail-toggle {
+  justify-content: center;
+  padding: 10px 0;
+}
+.rail-collapsed .rail-toggle-label { display: none; }
+
 [data-density="compact"] .rail-item { padding: 5px 10px; }
+[data-density="compact"] .rail-collapsed .rail-item { padding: 8px 0; }
 
 @media (max-width: 720px) {
   .rail { display: none; }

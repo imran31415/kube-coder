@@ -5,6 +5,7 @@ import {
   tasks,
   selectedTaskId,
   taskFilter,
+  taskStatusFilter,
   tasksError,
   selectTask,
   stopTaskPolling,
@@ -33,6 +34,10 @@ beforeEach(() => {
   tasks.value = sample;
   selectedTaskId.value = null;
   taskFilter.value = '';
+  // Tests expect both the running 'aa' task AND the killed 'reddit' task to
+  // be visible — force the 'all' filter so the default 'running' filter
+  // doesn't hide past tasks.
+  taskStatusFilter.value = 'all';
   tasksError.value = null;
   globalThis.fetch = vi.fn(async () => ({
     ok: true, status: 200,
@@ -56,7 +61,7 @@ describe('TaskList', () => {
 
   it('filters rows when the user types in the filter input', async () => {
     const { container } = render(<TaskList />);
-    const input = container.querySelector('input[aria-label="Filter tasks"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Filter tasks by text"]') as HTMLInputElement;
     input.value = 'reddit';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(taskFilter.value).toBe('reddit');
@@ -68,11 +73,12 @@ describe('TaskList', () => {
     expect(screen.getByText(/reddit/i)).toBeInTheDocument();
   });
 
-  it('shows status counts', () => {
+  it('shows status counts on the segmented filter', () => {
     render(<TaskList />);
-    const counts = screen.getByLabelText('Task counts');
-    expect(within(counts).getByText(/1 running/)).toBeInTheDocument();
-    expect(within(counts).getByText(/1 failed/)).toBeInTheDocument();
+    const seg = screen.getByLabelText('Filter by status');
+    // The "Running" button shows its count badge; the "All" button shows total.
+    expect(within(seg).getByRole('tab', { name: /Running\s*1/ })).toBeInTheDocument();
+    expect(within(seg).getByRole('tab', { name: /All\s*2/ })).toBeInTheDocument();
   });
 
   it('clicking a row calls selectTask with the task id', () => {
@@ -83,9 +89,28 @@ describe('TaskList', () => {
     selectTask(null);
   });
 
+  it('defaults to showing only running tasks when there are any', async () => {
+    taskStatusFilter.value = 'running';
+    render(<TaskList />);
+    // Only the running 'aa' task should be visible by default.
+    expect(screen.getByText('aa')).toBeInTheDocument();
+    expect(screen.queryByText('login to reddit with playwrite mcp for me')).toBeNull();
+  });
+
+  it('auto-relaxes to all when filter is "running" but none exist', async () => {
+    // Replace sample with no-running tasks, keep filter at default 'running'.
+    tasks.value = [sample[1]]; // just the killed task
+    taskStatusFilter.value = 'running';
+    render(<TaskList />);
+    // The killed task should still appear because we auto-relax to 'all'.
+    expect(screen.getByText('login to reddit with playwrite mcp for me')).toBeInTheDocument();
+    // And the "no running" banner should explain why.
+    expect(screen.getByRole('status')).toHaveTextContent(/No running tasks/);
+  });
+
   it('renders an EmptyState when filter yields nothing', async () => {
     render(<TaskList />);
-    const input = document.querySelector('input[aria-label="Filter tasks"]') as HTMLInputElement;
+    const input = document.querySelector('input[aria-label="Filter tasks by text"]') as HTMLInputElement;
     input.value = 'noooo-match';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await screen.findByText('No matches');
