@@ -1392,8 +1392,7 @@
                                     <span id="preview-status">—</span>
                                 </div>
                                 <iframe class="preview-vnc-frame" id="preview-vnc-frame"
-                                        title="In-pod browser via VNC"
-                                        onload="onPreviewVncLoad()"></iframe>
+                                        title="In-pod browser via VNC"></iframe>
                             </div>
                         </div>
                     </div>
@@ -1785,6 +1784,14 @@ function boot() {
 
     initializeCharts();
     updateRailCounts();
+
+    // Bind the VNC preview iframe's load handler programmatically. An inline
+    // onload= attribute can fire before this script has been parsed (the
+    // iframe is declared ~1400 lines above the function), producing
+    // "onPreviewVncLoad is not defined" on the initial about:blank load and
+    // on subsequent src resets from closePreviewIframes().
+    const vif = document.getElementById('preview-vnc-frame');
+    if (vif) vif.addEventListener('load', onPreviewVncLoad);
 }
 
 /* ════════════════════════════════════════════════════════════════════
