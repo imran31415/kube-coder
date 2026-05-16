@@ -1,0 +1,19 @@
+.input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+  min-height: 32px;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+  width: auto;
+}
+.input::placeholder { color: var(--text-subtle); }
+.input:hover { border-color: var(--border-2); }
+.input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.input-full { width: 100%; }
+
+@media (pointer: coarse) {
+  .input { min-height: 44px; font-size: 14px; }
+}

@@ -1,0 +1,15 @@
+.more-list { display: flex; flex-direction: column; gap: 4px; }
+.more-item {
+  display: flex; align-items: center; gap: var(--size-3);
+  width: 100%;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-align: left;
+}
+.more-item:hover { background: var(--surface-3); }
+.more-item-icon { color: var(--text-muted); display: inline-flex; }
+.more-item-label { flex: 1; font-size: 14px; }
+.more-item-chev { color: var(--text-subtle); display: inline-flex; }

@@ -1,4 +1,22 @@
+# syntax=docker/dockerfile:1.7
 # devlaptop/Dockerfile
+#
+# Multi-stage:
+#   1. `dashboard-builder` — builds the next-generation dashboard SPA
+#      (charts/workspace/web/) with Vite. Heavy dev deps (~200MB) stay in
+#      this stage and never reach the final image.
+#   2. The main Ubuntu stage that runs in the workspace pod. It copies the
+#      built dist/ into /opt/dashboard-dist/, which server.py serves at /next.
+
+FROM node:20-bookworm-slim AS dashboard-builder
+WORKDIR /web
+# Copy package manifests first so dep-install layer is cacheable.
+COPY charts/workspace/web/package.json ./package.json
+COPY charts/workspace/web/yarn.lock* ./
+RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install; fi
+COPY charts/workspace/web/ ./
+RUN yarn build
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -117,9 +135,12 @@ RUN apt-get update && apt-get install -y \
     && ln -s /opt/firefox/firefox /usr/local/bin/firefox \
     && rm /tmp/firefox.tar.bz2
 
-# Create a simple script to start the browser service
-RUN mkdir -p /opt/browser && \
-    cat > /opt/browser/start-browser.sh << 'EOF'
+# Create a simple script to start the browser service.
+# Uses buildkit heredoc syntax (`RUN <<OUTER`) so the inner shell heredoc
+# isn't mistaken for new Dockerfile instructions during parse.
+RUN <<OUTER
+mkdir -p /opt/browser
+cat > /opt/browser/start-browser.sh <<'SCRIPT'
 #!/bin/bash
 # Start Xvfb
 Xvfb :99 -screen 0 1280x720x24 &
@@ -135,9 +156,14 @@ firefox &
 
 # Start websockify to serve noVNC
 websockify --web=/usr/share/novnc/ 6080 localhost:5900
-EOF
+SCRIPT
+chmod +x /opt/browser/start-browser.sh
+OUTER
 
-RUN chmod +x /opt/browser/start-browser.sh
+# Next-generation dashboard SPA (Vite + Preact). Built in the
+# dashboard-builder stage above; server.py serves it at /next during the
+# migration and at / once Phase 6 cuts over.
+COPY --from=dashboard-builder /web/dist /opt/dashboard-dist
 
 # Non-root dev user
 RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers

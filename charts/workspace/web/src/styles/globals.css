@@ -1,0 +1,25 @@
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+
+@media (pointer: coarse) {
+  body { font-size: 14px; }
+}
+
+code, kbd, pre, samp { font-family: var(--font-mono); font-size: 12.5px; }
+
+::selection { background: var(--accent-soft); color: var(--text); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
+
+.muted { color: var(--text-muted); }
+.subtle { color: var(--text-subtle); }
+.mono { font-family: var(--font-mono); }

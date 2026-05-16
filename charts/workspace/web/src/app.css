@@ -1,0 +1,32 @@
+.route {
+  padding: var(--size-5);
+  max-width: 1100px;
+  margin: 0 auto;
+}
+@media (max-width: 720px) {
+  .route { padding: var(--size-4); }
+}
+
+.route-header {
+  display: flex; flex-direction: column; gap: 4px;
+  padding-bottom: var(--size-4);
+  margin-bottom: var(--size-4);
+  border-bottom: 1px solid var(--border);
+}
+.route-title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.route-subtitle { font-size: 13px; }
+
+.route-header-with-action {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-3);
+}
+.route-header-with-action > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+@media (max-width: 600px) {
+  .route-header-with-action { flex-direction: column; align-items: stretch; }
+}
