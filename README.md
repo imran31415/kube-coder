@@ -14,8 +14,9 @@ assistant — all behind **GitHub OAuth2** at a per-user subdomain.
 > cluster has room for: separate namespace, ingress, persistent volume, and
 > assistant config per user.
 
-<!-- TODO: hero screenshot of the dashboard's Build view (terminal + preview split, metrics in topbar) -->
-<!-- ![Dashboard hero](docs/images/dashboard-hero.png) -->
+<img width="756" height="430" alt="image" src="https://github.com/user-attachments/assets/62c47c02-191a-48b7-97a3-8593188d1c0e" />
+<img width="150" height="390" alt="image" src="https://github.com/user-attachments/assets/588a0167-36d0-4c19-b84b-936846980e19" />
+
 
 ---
 
