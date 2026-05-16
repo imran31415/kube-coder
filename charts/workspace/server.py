@@ -1932,7 +1932,26 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if normalized_path == '' or normalized_path == '/':
             normalized_path = '/'
 
-        if normalized_path in ["/", "/dashboard", "/dashboard/"]:
+        # SPA-style routes served by the new dashboard. /next/* is the
+        # explicit form (kept for backward compat after cutover) and the
+        # bare top-level routes (/, /tasks, /memory, …) all serve the same
+        # SPA index.html so client-side routing handles deep links.
+        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/settings'}
+        first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
+        if normalized_path in ["/dashboard-legacy", "/dashboard-legacy/"]:
+            self.path = "/dashboard.html"
+        elif normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
+            rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
+            self.serve_next_spa(rel)
+            return
+        elif normalized_path in ["/", "/dashboard", "/dashboard/"] or first_seg in SPA_TOP_LEVEL:
+            # New SPA at root. Falls back to legacy if /opt/dashboard-dist is
+            # missing (e.g. running an older image that never baked it).
+            import os.path as _osp
+            base = os.environ.get('DASHBOARD_DIST_DIR') or '/opt/dashboard-dist'
+            if _osp.isdir(base):
+                self.serve_next_spa('/')
+                return
             self.path = "/dashboard.html"
         elif self.path in ["/browser", "/browser/"]:
             # Legacy browser path - redirect to dashboard
@@ -2060,7 +2079,66 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         super().do_GET()
-    
+
+    def serve_next_spa(self, rel_path):
+        """Serve the new Preact SPA built into /opt/dashboard-dist/.
+
+        rel_path is the path *after* /next (e.g. '' for /next, '/assets/x.js').
+        SPA history fallback: if the path has no extension and the file is
+        missing, fall back to index.html so client-routed deep links work
+        after a refresh.
+
+        DASHBOARD_DIST_DIR overrides the default location so tests + local
+        dev can point at charts/workspace/web/dist.
+        """
+        import mimetypes
+        base = os.environ.get('DASHBOARD_DIST_DIR') or '/opt/dashboard-dist'
+        if not os.path.isdir(base):
+            self.send_error(
+                404,
+                'New dashboard is not built. Run `yarn --cwd charts/workspace/web build` '
+                'or set DASHBOARD_DIST_DIR to a built dist/ directory.',
+            )
+            return
+        # Strip leading slash, decode percent-escapes, refuse traversal.
+        rel = urllib.parse.unquote(rel_path).lstrip('/')
+        if rel == '' or rel.endswith('/'):
+            rel = 'index.html'
+        target = os.path.normpath(os.path.join(base, rel))
+        base_real = os.path.realpath(base)
+        target_real = os.path.realpath(target)
+        if not (target_real == base_real or target_real.startswith(base_real + os.sep)):
+            self.send_error(403, 'Forbidden')
+            return
+        # History fallback for client-side routes: no extension + not found.
+        if not os.path.isfile(target_real) and '.' not in os.path.basename(target_real):
+            target_real = os.path.join(base_real, 'index.html')
+            rel = 'index.html'
+        if not os.path.isfile(target_real):
+            self.send_error(404, 'Not found')
+            return
+        ctype, _ = mimetypes.guess_type(target_real)
+        if ctype is None:
+            ctype = 'application/octet-stream'
+        try:
+            with open(target_real, 'rb') as fh:
+                body = fh.read()
+        except OSError as exc:
+            self.send_error(500, f'Read error: {exc}')
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        # Vite emits hashed filenames into /assets/, so those are safe to cache
+        # for a year. index.html and other top-level files must revalidate so
+        # deploys take effect on next request.
+        if rel.startswith('assets/'):
+            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+        else:
+            self.send_header('Cache-Control', 'no-cache, must-revalidate')
+        self.end_headers()
+        self.wfile.write(body)
+
     def check_auth(self):
         """Check if request has proper authentication headers"""
         auth_header = self.headers.get('Authorization', '')

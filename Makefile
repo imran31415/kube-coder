@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user
+.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests
 
 # =============================================================================
 # Generic per-user helpers
@@ -192,3 +192,27 @@ test: require-user ## Sanity-test any user's workspace (USER=<name>)
 
 rollback: require-user ## Rollback any user's workspace (USER=<name>)
 	helm rollback $(USER)-workspace --namespace $(NAMESPACE)
+
+# =============================================================================
+# Dashboard SPA (charts/workspace/web/)
+# =============================================================================
+
+WEB_DIR := charts/workspace/web
+
+dashboard-web-install: ## Install SPA deps (yarn 1.22.x, node 20)
+	cd $(WEB_DIR) && yarn install
+
+dashboard-web: dashboard-web-install ## Build the new dashboard SPA → charts/workspace/web/dist
+	cd $(WEB_DIR) && yarn build
+	@echo ""
+	@echo "Built dashboard SPA at $(WEB_DIR)/dist"
+	@echo "To preview locally: DASHBOARD_DIST_DIR=$(PWD)/$(WEB_DIR)/dist python3 charts/workspace/server.py"
+
+dashboard-web-test: dashboard-web-install ## Run SPA unit tests (Vitest)
+	cd $(WEB_DIR) && yarn test
+
+dashboard-web-clean: ## Remove SPA build artifacts
+	rm -rf $(WEB_DIR)/dist $(WEB_DIR)/node_modules
+
+python-tests: ## Run server.py unit + integration tests
+	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v

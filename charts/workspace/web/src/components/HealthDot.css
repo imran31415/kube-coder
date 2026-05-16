@@ -1,0 +1,16 @@
+.health-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px; height: 14px;
+  border-radius: var(--radius-pill);
+  cursor: help;
+}
+.health-dot-core {
+  width: 8px; height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--text-subtle);
+}
+.health-dot-healthy .health-dot-core { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent); }
+.health-dot-degraded .health-dot-core { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
+.health-dot-down .health-dot-core { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent); }

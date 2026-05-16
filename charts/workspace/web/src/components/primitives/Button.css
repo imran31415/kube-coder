@@ -1,0 +1,68 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform 80ms ease;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.btn:active:not(:disabled) { transform: translateY(0.5px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-sm { font-size: 12px; padding: 4px 10px; min-height: 28px; }
+.btn-md { font-size: 13px; padding: 6px 12px; min-height: 32px; }
+.btn-lg { font-size: 14px; padding: 8px 16px; min-height: 40px; }
+
+@media (pointer: coarse) {
+  .btn-sm { min-height: 36px; }
+  .btn-md { min-height: 44px; }
+  .btn-lg { min-height: 48px; }
+}
+
+.btn-icon { padding: 0; aspect-ratio: 1; }
+.btn-icon.btn-sm { width: 28px; }
+.btn-icon.btn-md { width: 32px; }
+.btn-icon.btn-lg { width: 40px; }
+@media (pointer: coarse) {
+  .btn-icon.btn-sm { width: 36px; }
+  .btn-icon.btn-md { width: 44px; }
+  .btn-icon.btn-lg { width: 48px; }
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent-strong);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+:root[data-theme="light"] .btn-primary:hover:not(:disabled) { color: #ffffff; }
+
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-2); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }

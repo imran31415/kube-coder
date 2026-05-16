@@ -1,0 +1,46 @@
+.ob-scrim {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--size-4);
+}
+.ob {
+  width: min(520px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  padding: var(--size-5);
+  display: flex; flex-direction: column; gap: var(--size-3);
+  animation: ob-rise var(--motion-base);
+}
+@keyframes ob-rise { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+.ob-header { display: flex; align-items: center; justify-content: space-between; }
+.ob-step { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+.ob-skip {
+  font-size: 11.5px; color: var(--text-subtle);
+  padding: 4px 8px; border-radius: var(--radius-sm);
+}
+.ob-skip:hover { color: var(--text); background: var(--surface-2); }
+.ob-title { font-size: 20px; font-weight: 600; letter-spacing: -0.015em; }
+.ob-body { display: flex; flex-direction: column; gap: var(--size-3); font-size: 13.5px; }
+.ob-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--size-2); }
+@media (max-width: 600px) { .ob-row { grid-template-columns: 1fr; } }
+.ob-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.ob-textarea {
+  font: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  min-height: 96px;
+}
+.ob-textarea:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.ob-footer { display: flex; justify-content: flex-end; gap: var(--size-2); }
+.ob-progress { display: flex; gap: 6px; justify-content: center; padding-top: var(--size-2); }
+.ob-bullet { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--border-2); }
+.ob-bullet-active { background: var(--accent); }
+.ob-bullet-done { background: var(--accent-strong); }
