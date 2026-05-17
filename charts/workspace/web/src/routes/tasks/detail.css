@@ -281,11 +281,22 @@
   max-height: 320px;
   overflow-y: auto;
 }
+/* Strong selector + explicit color on the actual <pre> so neither the
+   browser's `color-scheme: light` nor a UA stylesheet for <pre> wins. */
+.mc-bubble-assistant pre.mc-bubble-content,
 .mc-bubble-assistant .mc-bubble-content {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
 }
+/* Linkified URLs inside the bubble — readable in both modes. */
+.mc-bubble-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.mc-bubble-link:hover { color: var(--accent-strong); }
 
 .mc-composer {
   border-top: 1px solid var(--border);
@@ -294,6 +305,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--size-2);
+  flex-shrink: 0;
 }
 .mc-input {
   font: inherit;
