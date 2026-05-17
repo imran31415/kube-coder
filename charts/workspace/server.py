@@ -530,7 +530,9 @@ class ClaudeTaskManager:
     def assistant_command(assistant):
         if assistant == 'opencode-openrouter':
             model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
-            return f'opencode --model openrouter/{model}'
+            # Quote the model so a hostile env var can't break out of the
+            # `bash -lc` shell_cmd built downstream in create_task().
+            return f'opencode --model {_shell_quote(f"openrouter/{model}")}'
         if assistant == 'kc-harness':
             # Reads stdin (tmux paste) and emits dashboard JSONL events.
             # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the
@@ -3631,18 +3633,47 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(error_html.encode())
 
     def proxy_vnc_request(self):
-        # Proxy requests to the local noVNC server
+        # Proxy requests to the local noVNC server.
+        # Gate behind the same auth as the rest of the dashboard — the VNC
+        # iframe is loaded from an already-authenticated SPA page, so callers
+        # will always carry OAuth2 headers or a Bearer token.
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+
         import urllib.request
         import urllib.parse
+        vnc_url = None
         try:
-            # Remove /vnc/ from the path and proxy to localhost:6081
-            vnc_path = self.path[5:]  # Remove '/vnc/' prefix
-            vnc_url = f"http://localhost:6081/{vnc_path}"
-            
-            # Add query string if present
-            if '?' in self.path:
-                vnc_url = f"http://localhost:6081/{vnc_path}"
-            
+            # Split off path + query; reject anything with control characters
+            # before we paste it into a URL. self.path is attacker-controllable.
+            raw = self.path[5:]  # strip "/vnc/"
+            if any(ord(c) < 0x20 or c in ('\x7f',) for c in raw):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'invalid characters in path')
+                return
+            if '?' in raw:
+                path_part, query_part = raw.split('?', 1)
+            else:
+                path_part, query_part = raw, ''
+
+            # Normalize and confine: drop empty / "." / ".." segments so the
+            # caller cannot climb above /. The destination host is hardcoded
+            # to localhost:6081, but a normalized path keeps proxied requests
+            # to the shapes noVNC actually serves.
+            segments = [
+                seg for seg in path_part.split('/')
+                if seg and seg not in ('.', '..')
+            ]
+            safe_path = '/'.join(
+                urllib.parse.quote(urllib.parse.unquote(s), safe='') for s in segments
+            )
+            vnc_url = f"http://localhost:6081/{safe_path}"
+            if query_part:
+                vnc_url += f"?{query_part}"
+
             with urllib.request.urlopen(vnc_url) as response:
                 content = response.read()
                 content_type = response.headers.get('Content-Type', 'text/html')
@@ -3651,9 +3682,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
         except Exception as e:
-            # self.path is attacker-controllable; escape every interpolation
-            # so an upstream failure can't inject HTML.
-            safe_url = html.escape(vnc_url) if 'vnc_url' in locals() else 'N/A'
+            safe_url = html.escape(vnc_url) if vnc_url else 'N/A'
             error_html = f'''<!DOCTYPE html>
 <html>
 <head><title>VNC Proxy Error</title></head>
