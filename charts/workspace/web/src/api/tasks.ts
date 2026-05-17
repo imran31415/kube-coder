@@ -1,6 +1,6 @@
 import { apiGet, apiPost, apiDelete, withOauthPrefix } from './client';
 
-export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown';
+export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown' | 'waiting-for-input';
 export type TaskKind = 'claude' | 'terminal' | string;
 
 export interface MemoryInjection {
@@ -20,6 +20,10 @@ export interface TaskSummary {
   /** Optional — bare terminal tasks (kind=='terminal') omit memory fields. */
   memory_injected?: MemoryInjection[];
   memory_injection_disabled?: boolean;
+  /** Set when task is waiting for human input */
+  waiting_for_input?: boolean;
+  /** Last prompt or question that triggered waiting state */
+  last_input_prompt?: string;
 }
 
 export interface TaskDetail extends TaskSummary {

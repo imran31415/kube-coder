@@ -32,13 +32,13 @@ export const filteredTasks = computed(() => {
   const needle = taskFilter.value.trim().toLowerCase();
   // Auto-relax: if user picked 'running' but there are none, fall back to 'all'
   // so the list isn't empty just because every task happens to be finished.
-  const runningCount = tasks.value.filter((t) => t.status === 'running').length;
+  const runningCount = tasks.value.filter((t) => t.status === 'running' || t.status === 'waiting-for-input').length;
   const effectiveStatus =
     taskStatusFilter.value === 'running' && runningCount === 0 ? 'all' : taskStatusFilter.value;
 
   let list = tasks.value;
   if (effectiveStatus === 'running') {
-    list = list.filter((t) => t.status === 'running');
+    list = list.filter((t) => t.status === 'running' || t.status === 'waiting-for-input');
   }
   if (needle) {
     list = list.filter((t) => {
@@ -51,14 +51,14 @@ export const filteredTasks = computed(() => {
 
 /** True when the 'running' filter is currently being applied (after auto-relax). */
 export const taskStatusFilterEffective = computed<TaskStatusFilter>(() => {
-  const runningCount = tasks.value.filter((t) => t.status === 'running').length;
+  const runningCount = tasks.value.filter((t) => t.status === 'running' || t.status === 'waiting-for-input').length;
   return taskStatusFilter.value === 'running' && runningCount === 0 ? 'all' : taskStatusFilter.value;
 });
 
 export const taskCounts = computed(() => {
   const counts = { all: tasks.value.length, running: 0, completed: 0, error: 0 };
   for (const t of tasks.value) {
-    if (t.status === 'running') counts.running++;
+    if (t.status === 'running' || t.status === 'waiting-for-input') counts.running++;
     else if (t.status === 'completed') counts.completed++;
     else if (t.status === 'error' || t.status === 'killed') counts.error++;
   }
