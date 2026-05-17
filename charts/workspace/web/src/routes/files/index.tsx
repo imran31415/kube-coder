@@ -3,6 +3,7 @@ import { listFiles, makeDirectory, uploadFile, type FileEntry } from '../../api/
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
+import { MutatorOnly } from '../../components/MutatorOnly';
 import './files.css';
 
 function fmtSize(bytes: number): string {
@@ -91,17 +92,19 @@ export function FilesRoute() {
           <h1 class="route-title">Files</h1>
           <p class="route-subtitle muted">Browse /home/dev. Click a directory to enter, the breadcrumb to navigate back.</p>
         </div>
-        <div class="files-actions">
-          <Button variant="ghost" onClick={onMkdir} disabled={busy}>
-            <Icon name="plus" size={14} /> Folder
-          </Button>
-          <label class="files-upload">
-            <input type="file" onChange={onUpload} hidden />
-            <span class="btn btn-secondary btn-md">
-              <Icon name="plus" size={14} /> Upload
-            </span>
-          </label>
-        </div>
+        <MutatorOnly>
+          <div class="files-actions">
+            <Button variant="ghost" onClick={onMkdir} disabled={busy}>
+              <Icon name="plus" size={14} /> Folder
+            </Button>
+            <label class="files-upload">
+              <input type="file" onChange={onUpload} hidden />
+              <span class="btn btn-secondary btn-md">
+                <Icon name="plus" size={14} /> Upload
+              </span>
+            </label>
+          </div>
+        </MutatorOnly>
       </header>
 
       <nav class="files-crumbs mono">

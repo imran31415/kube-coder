@@ -4,6 +4,7 @@ import { Icon, type IconName } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
 import { createTerminalTask, terminalUrl } from '../../api/tasks';
 import { refreshTasks } from '../../store/tasks';
+import { serverMode } from '../../store/server-mode';
 import './more.css';
 
 interface MoreEntry {
@@ -29,7 +30,9 @@ async function openNewTerminalMobile() {
 }
 
 export function MoreSheet() {
-  const entries: MoreEntry[] = [
+  // Read-only public demo hides the two "open a new editor session" entries.
+  // Visitors can browse but not spawn new terminals / VS Code instances.
+  const mutatingEntries: MoreEntry[] = serverMode.value.readOnly ? [] : [
     {
       label: 'New terminal',
       icon: 'play',
@@ -45,6 +48,9 @@ export function MoreSheet() {
       },
       hint: 'code-server at /home/dev',
     },
+  ];
+  const entries: MoreEntry[] = [
+    ...mutatingEntries,
     {
       label: 'Files',
       icon: 'files',

@@ -18,3 +18,11 @@ export interface Metrics {
 
 export const getHealth = () => apiGet<Health>('/health');
 export const getMetrics = () => apiGet<Metrics>('/metrics');
+
+export interface ServerMode {
+  readOnly: boolean;
+  authed: boolean;
+  authMode: 'basic' | 'oauth2' | 'none' | string;
+}
+
+export const getMode = () => apiGet<ServerMode>('/api/mode');
