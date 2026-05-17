@@ -24,6 +24,7 @@ const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' 
   killed: 'warn',
   error: 'danger',
   unknown: 'neutral',
+  'waiting-for-input': 'warn',
 };
 
 const STATUS_HELP: Record<TaskStatus, string> = {
@@ -32,6 +33,7 @@ const STATUS_HELP: Record<TaskStatus, string> = {
   killed: 'Task was killed via the dashboard.',
   error: 'Task exited with an error code.',
   unknown: 'Status could not be determined.',
+  'waiting-for-input': 'Task is waiting for user input. Check the Terminal or Message tab to respond.',
 };
 
 type DetailTab = 'terminal' | 'preview' | 'message' | 'info' | 'subagents';

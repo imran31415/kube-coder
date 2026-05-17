@@ -69,6 +69,59 @@ _ANSI_RE = re.compile(
 def strip_ansi(text):
     return _ANSI_RE.sub('', text)
 
+
+def detect_waiting_for_input(output):
+    """Detect common patterns indicating waiting for human input.
+    
+    Returns:
+        tuple: (is_waiting, last_prompt_line)
+    """
+    if not output or not output.strip():
+        return False, ""
+    
+    lines = output.strip().split('\n')
+    if not lines:
+        return False, ""
+    
+    # Get the last few non-empty lines for pattern analysis
+    last_lines = []
+    for line in reversed(lines):
+        if line.strip():
+            last_lines.append(line.strip())
+        if len(last_lines) >= 3:  # Check last 3 non-empty lines
+            break
+    
+    if not last_lines:
+        return False, ""
+    
+    # Patterns that typically indicate waiting for input
+    waiting_patterns = [
+        r'.*[?]\s*$',                    # Questions ending with ?
+        r'.*>\s*$',                      # Shell-like prompts ending with >
+        r'.*:\s*$',                      # Prompts ending with :
+        r'.*Press\s+(any\s+)?key.*',     # "Press any key" messages
+        r'.*Enter\s+your\s+(choice|input|answer).*', # "Enter your choice"
+        r'.*Please\s+(provide|enter|type|input).*',  # "Please provide"
+        r'.*Waiting\s+for.*input.*',     # "Waiting for input"
+        r'.*Continue\?\s*(\(y/n\))?\s*$', # "Continue? (y/n)"
+        r'.*\(y/n\)\s*$',               # Simple (y/n) prompts
+        r'.*\[.*\]\?\s*$',              # Bracketed choice prompts like [y/N]?
+        r'.*\s+\$\s*$',                 # Command prompts ending with $
+        r'.*#\s*$',                     # Root prompts ending with #
+        r'.*Select\s+an?\s+option.*',   # "Select an option"
+        r'.*Choose\s+(from|an?).*',     # "Choose from" or "Choose an"
+        r'.*Which\s+.*\?.*',           # "Which option?" type questions
+    ]
+    
+    # Check each of the last few lines
+    for line in last_lines:
+        for pattern in waiting_patterns:
+            if re.search(pattern, line, re.IGNORECASE):
+                # Return the line that matched as the prompt
+                return True, line
+    
+    return False, ""
+
 class MetricsCollector:
     """Collects system metrics from /proc filesystem and os.statvfs"""
 
@@ -1009,8 +1062,12 @@ class ClaudeTaskManager:
 
     @staticmethod
     def _reconcile_status(meta, task_dir):
-        """If task.json says running but tmux session is gone, update status."""
-        if meta.get('status') != 'running':
+        """If task.json says running but tmux session is gone, update status.
+        Also check for waiting-for-input patterns in running tasks."""
+        current_status = meta.get('status', 'unknown')
+        
+        # If task is already finished, no need to check further
+        if current_status not in ('running', 'waiting-for-input'):
             return
 
         session_name = meta.get('tmux_session', '')
@@ -1021,33 +1078,79 @@ class ClaudeTaskManager:
             ['tmux', 'has-session', '-t', session_name],
             capture_output=True, text=True,
         )
-        if check.returncode == 0:
-            return  # still running
+        
+        # If tmux session is gone, mark as completed
+        if check.returncode != 0:
+            finished_at = time.time()
+            fire_hook = False
 
-        finished_at = time.time()
-        fire_hook = False
+            def mutate(m):
+                nonlocal fire_hook
+                # Re-check inside the lock; another reconcile may have run already.
+                if m.get('status') not in ('running', 'waiting-for-input'):
+                    return False
+                m['status'] = 'completed'
+                m['finished_at'] = finished_at
+                # Clear waiting state fields
+                m.pop('waiting_for_input', None)
+                m.pop('last_input_prompt', None)
+                # Decide-and-mark-fired atomically. If we mark hook_fired_at here, a
+                # concurrent reconciler reading the same task.json will see it and
+                # skip firing — so we get at-most-once delivery without needing a
+                # second lock acquire.
+                if m.get('response_url') and not m.get('hook_fired_at'):
+                    m['hook_fired_at'] = finished_at
+                    fire_hook = True
 
-        def mutate(m):
-            nonlocal fire_hook
-            # Re-check inside the lock; another reconcile may have run already.
-            if m.get('status') != 'running':
-                return False
-            m['status'] = 'completed'
-            m['finished_at'] = finished_at
-            # Decide-and-mark-fired atomically. If we mark hook_fired_at here, a
-            # concurrent reconciler reading the same task.json will see it and
-            # skip firing — so we get at-most-once delivery without needing a
-            # second lock acquire.
-            if m.get('response_url') and not m.get('hook_fired_at'):
-                m['hook_fired_at'] = finished_at
-                fire_hook = True
-
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-        if updated is not None:
-            meta['status'] = updated.get('status', meta.get('status'))
-            meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
-            if fire_hook:
-                ClaudeTaskManager._fire_completion_hook(updated)
+            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+            if updated is not None:
+                meta['status'] = updated.get('status', meta.get('status'))
+                meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
+                meta.pop('waiting_for_input', None)
+                meta.pop('last_input_prompt', None)
+                if fire_hook:
+                    ClaudeTaskManager._fire_completion_hook(updated)
+            return
+        
+        # Session is still running, check for waiting-for-input patterns
+        # Capture current output to analyze for waiting patterns
+        capture_cmd = subprocess.run(
+            ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-50'],  # Last 50 lines
+            capture_output=True, text=True,
+        )
+        
+        if capture_cmd.returncode == 0 and capture_cmd.stdout:
+            clean_output = strip_ansi(capture_cmd.stdout)
+            is_waiting, prompt_line = detect_waiting_for_input(clean_output)
+            
+            # Update status based on waiting detection
+            if is_waiting and current_status == 'running':
+                # Transition to waiting-for-input
+                def mutate(m):
+                    if m.get('status') == 'running':  # Double-check inside lock
+                        m['status'] = 'waiting-for-input'
+                        m['waiting_for_input'] = True
+                        m['last_input_prompt'] = prompt_line
+                
+                updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+                if updated is not None:
+                    meta['status'] = 'waiting-for-input'
+                    meta['waiting_for_input'] = True
+                    meta['last_input_prompt'] = prompt_line
+                    
+            elif not is_waiting and current_status == 'waiting-for-input':
+                # Transition back to running (user provided input or prompt cleared)
+                def mutate(m):
+                    if m.get('status') == 'waiting-for-input':  # Double-check inside lock
+                        m['status'] = 'running'
+                        m.pop('waiting_for_input', None)
+                        m.pop('last_input_prompt', None)
+                
+                updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+                if updated is not None:
+                    meta['status'] = 'running'
+                    meta.pop('waiting_for_input', None)
+                    meta.pop('last_input_prompt', None)
 
 
 def _shell_quote(s):
@@ -2535,7 +2638,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             except (OSError, json.JSONDecodeError):
                 status = 'unknown'
 
-            if status != 'running' and time.time() - last_change > idle_grace:
+            if status not in ('running', 'waiting-for-input') and time.time() - last_change > idle_grace:
                 write_raw(f'event: end\ndata: {status}\n\n'.encode('utf-8'))
                 return
 
