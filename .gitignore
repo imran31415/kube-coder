@@ -4,6 +4,7 @@
 *~
 .idea/
 .vscode/
+.claude/
 
 # Python bytecode
 __pycache__/

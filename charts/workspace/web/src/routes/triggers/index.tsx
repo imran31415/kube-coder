@@ -15,6 +15,7 @@ import { drawerOpen, type DrawerKey } from '../../store/ui';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { createCron, createWebhook, type Trigger, type TriggerKind } from '../../api/triggers';
 import { Button } from '../../components/primitives/Button';
+import { MutatorOnly } from '../../components/MutatorOnly';
 import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
@@ -43,9 +44,11 @@ export function TriggersRoute() {
             Webhooks and crons in one list. {triggers.value.length} trigger{triggers.value.length === 1 ? '' : 's'}.
           </p>
         </div>
-        <Button variant="primary" size="md" onClick={() => (drawerOpen.value = 'trigger-edit' as DrawerKey)}>
-          <Icon name="plus" size={14} /> New trigger
-        </Button>
+        <MutatorOnly>
+          <Button variant="primary" size="md" onClick={() => (drawerOpen.value = 'trigger-edit' as DrawerKey)}>
+            <Icon name="plus" size={14} /> New trigger
+          </Button>
+        </MutatorOnly>
       </header>
 
       <div class="trig-toolbar">
@@ -71,9 +74,11 @@ export function TriggersRoute() {
           }
           action={
             !triggerFilter.value && (
-              <Button variant="primary" onClick={() => (drawerOpen.value = 'trigger-edit' as DrawerKey)}>
-                <Icon name="plus" size={14} /> Create trigger
-              </Button>
+              <MutatorOnly>
+                <Button variant="primary" onClick={() => (drawerOpen.value = 'trigger-edit' as DrawerKey)}>
+                  <Icon name="plus" size={14} /> Create trigger
+                </Button>
+              </MutatorOnly>
             )
           }
         />
@@ -120,23 +125,25 @@ function TriggerRow({ t }: { t: Trigger }) {
         <span class="trig-row-id mono">{t.id}</span>
         {t.schedule && <span class="trig-row-sched mono">{t.schedule}</span>}
         <div class="trig-row-actions">
-          <Button size="sm" variant="ghost" onClick={() => fire(t)}>
-            <Icon name="play" size={12} /> Fire now
-          </Button>
-          {t.kind === 'cron' && (
-            <Button size="sm" variant="ghost" onClick={() => toggleSuspend(t)}>
-              {t.suspended ? 'Resume' : 'Pause'}
+          <MutatorOnly>
+            <Button size="sm" variant="ghost" onClick={() => fire(t)}>
+              <Icon name="play" size={12} /> Fire now
             </Button>
-          )}
-          <Button
-            size="sm"
-            variant="danger"
-            onClick={() => {
-              if (confirm(`Delete ${t.id}?`)) void removeTrigger(t);
-            }}
-          >
-            Delete
-          </Button>
+            {t.kind === 'cron' && (
+              <Button size="sm" variant="ghost" onClick={() => toggleSuspend(t)}>
+                {t.suspended ? 'Resume' : 'Pause'}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                if (confirm(`Delete ${t.id}?`)) void removeTrigger(t);
+              }}
+            >
+              Delete
+            </Button>
+          </MutatorOnly>
         </div>
       </div>
       <p class="trig-row-prompt muted">{t.prompt}</p>

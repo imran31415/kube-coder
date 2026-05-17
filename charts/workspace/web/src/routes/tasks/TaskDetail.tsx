@@ -16,6 +16,7 @@ import { SubagentsTab } from './SubagentsTab';
 import { MessageChat } from './MessageChat';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
+import { MutatorOnly } from '../../components/MutatorOnly';
 import type { TaskStatus } from '../../api/tasks';
 
 const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' | 'accent'> = {
@@ -244,28 +245,30 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
             >
               {copied ? 'Copied' : 'Copy link'}
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onRename}
-              disabled={busy}
-              title="Rename this task (display only — doesn't affect the tmux session)"
-            >
-              Rename
-            </Button>
-            <Button
-              size="sm"
-              variant={isLive ? 'danger' : 'ghost'}
-              onClick={onKill}
-              disabled={busy || !isLive}
-              title={
-                isLive
-                  ? 'Kill the tmux session (output is preserved)'
-                  : 'Already stopped'
-              }
-            >
-              <Icon name="kill" size={14} /> Kill
-            </Button>
+            <MutatorOnly>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onRename}
+                disabled={busy}
+                title="Rename this task (display only — doesn't affect the tmux session)"
+              >
+                Rename
+              </Button>
+              <Button
+                size="sm"
+                variant={isLive ? 'danger' : 'ghost'}
+                onClick={onKill}
+                disabled={busy || !isLive}
+                title={
+                  isLive
+                    ? 'Kill the tmux session (output is preserved)'
+                    : 'Already stopped'
+                }
+              >
+                <Icon name="kill" size={14} /> Kill
+              </Button>
+            </MutatorOnly>
             <Button
               size="sm"
               variant="ghost"
