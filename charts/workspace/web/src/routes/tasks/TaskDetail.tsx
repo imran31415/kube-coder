@@ -15,6 +15,7 @@ import { TerminalPane } from './TerminalPane';
 import { SubagentsTab } from './SubagentsTab';
 import { MessageChat } from './MessageChat';
 import { EmptyState } from '../../components/primitives/EmptyState';
+import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import type { TaskStatus } from '../../api/tasks';
 
 const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' | 'accent'> = {
@@ -58,6 +59,8 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [subagentsCount, setSubagentsCount] = useState<number>(0);
+  const [confirmKill, setConfirmKill] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
 
   // When the selected task CHANGES, snap to a sensible default tab:
   //   - live (running)  → Terminal (the user wants to watch it work)
@@ -127,22 +130,31 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
     );
   }
 
-  async function onKill() {
-    if (!confirm('Kill this task? Output is preserved.')) return;
+  function onKill() {
+    setConfirmKill(true);
+  }
+  async function confirmKillNow() {
+    setConfirmKill(false);
     setBusy(true);
     if (t) await killTask(t.task_id);
     setBusy(false);
   }
-  async function onRename() {
-    const name = prompt('New name:', t?.name ?? '');
-    if (name == null || !t) return;
+  function onRename() {
+    setRenameOpen(true);
+  }
+  async function confirmRename(name: string) {
+    setRenameOpen(false);
+    if (!t || !name) return;
     setBusy(true);
     await renameTask(t.task_id, name);
     setBusy(false);
   }
   async function onCopyLink() {
     if (!t) return;
-    const url = `${window.location.origin}/tasks?id=${encodeURIComponent(t.task_id)}`;
+    // Deep-link path — TasksRoute parses /tasks/<id> on load and re-attaches
+    // the terminal automatically. Drops the old `?id=` query form that nothing
+    // parsed (see planning doc, frontend obs. #2).
+    const url = `${window.location.origin}/tasks/${encodeURIComponent(t.task_id)}`;
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);
@@ -335,6 +347,25 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
           <SubagentsTab sessionId={sessionId} />
         )}
       </div>
+      <ConfirmDialog
+        open={confirmKill}
+        title="Kill this task?"
+        body="The tmux session will be terminated. Output and history are preserved — you just can't send any more messages or attach a terminal."
+        confirmLabel="Kill task"
+        destructive
+        onConfirm={confirmKillNow}
+        onCancel={() => setConfirmKill(false)}
+      />
+      <PromptDialog
+        open={renameOpen}
+        title="Rename task"
+        body="Pick a short, memorable name. The original task_id never changes."
+        initial={t?.name ?? ''}
+        placeholder="e.g. PR review #42"
+        confirmLabel="Save name"
+        onConfirm={confirmRename}
+        onCancel={() => setRenameOpen(false)}
+      />
     </article>
   );
 }

@@ -3,6 +3,7 @@ import { getTaskOutput, type TaskStatus } from '../../api/tasks';
 import { sendFollowup } from '../../store/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
+import { usePoll } from '../../hooks/usePoll';
 
 export interface MessageChatProps {
   taskId: string;
@@ -12,16 +13,17 @@ export interface MessageChatProps {
 }
 
 /**
- * Chat-style mirror of the task's tmux pane. The assistant bubble re-fetches
- * `/api/claude/tasks/{id}/output` (which capture-panes the live tmux session,
- * see server.py:760) every 3 seconds while mounted — independent of the
- * task's reported status, because status occasionally lags reality. Sending
- * a message triggers an immediate refetch so the assistant's reply appears
- * without waiting for the next poll tick.
+ * Chat-style mirror of the task's tmux pane. While the task is `running`
+ * the assistant bubble re-fetches `/api/claude/tasks/{id}/output` every
+ * 3 seconds; once the task reaches a terminal status the tmux pane is
+ * frozen so we fetch once more and then stop. Sending a message triggers
+ * an immediate refetch plus two short follow-ups so the assistant's reply
+ * appears without waiting for the next poll tick.
  */
 export function MessageChat({ taskId, status }: MessageChatProps) {
   const TAIL_LINES = 80;
   const POLL_MS = 3000;
+  const isRunning = status === 'running';
 
   const [latest, setLatest] = useState<string>('');
   const [loaded, setLoaded] = useState(false);
@@ -31,6 +33,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   const [sent, setSent] = useState<string[]>([]);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const cancelledRef = useRef(false);
+  const timersRef = useRef<number[]>([]);
 
   const fetchTail = useCallback(async () => {
     try {
@@ -49,12 +52,17 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     cancelledRef.current = false;
     setLoaded(false);
     void fetchTail();
-    const id = window.setInterval(fetchTail, POLL_MS);
     return () => {
       cancelledRef.current = true;
-      clearInterval(id);
+      // Cancel any pending follow-up refetches scheduled by onSend.
+      for (const t of timersRef.current) clearTimeout(t);
+      timersRef.current = [];
     };
   }, [fetchTail]);
+
+  // Live polling — only while the task is running, paused while the tab
+  // is hidden, backed off on consecutive errors.
+  usePoll(fetchTail, POLL_MS, { enabled: isRunning, pauseOnHidden: true });
 
   useEffect(() => {
     // Auto-scroll to bottom whenever new content lands.
@@ -74,10 +82,13 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
       await sendFollowup(taskId, text);
       // Refetch right away so the assistant's response appears without
       // waiting for the next poll tick. The assistant may take longer than
-      // 3s, so schedule a couple of follow-up refetches too.
+      // 3s, so schedule a couple of follow-up refetches too — tracked so
+      // they're cancelled if the component unmounts before they fire.
       await fetchTail();
-      window.setTimeout(() => void fetchTail(), 1500);
-      window.setTimeout(() => void fetchTail(), 4000);
+      timersRef.current.push(
+        window.setTimeout(() => void fetchTail(), 1500),
+        window.setTimeout(() => void fetchTail(), 4000),
+      );
     } finally {
       setBusy(false);
     }

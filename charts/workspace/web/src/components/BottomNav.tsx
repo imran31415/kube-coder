@@ -31,7 +31,7 @@ export function BottomNav() {
         </button>
       ))}
       <button
-        class={`bn-item ${active === '/files' || active === '/settings' ? 'bn-item-active' : ''}`}
+        class={`bn-item ${active === '/files' || active === '/settings' || active === '/docs' ? 'bn-item-active' : ''}`}
         onClick={() => (sheetOpen.value = 'more')}
         aria-label="More"
       >

@@ -1,7 +1,9 @@
+import { useEffect } from 'preact/hooks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { sheetOpen, drawerOpen, masterCollapsed, previewFullscreen } from '../../store/ui';
-import { selectTask } from '../../store/tasks';
+import { selectTask, selectedTaskId } from '../../store/tasks';
+import { currentPath, navigate, pathSuffix } from '../../store/router';
 import { TaskList } from './TaskList';
 import { TaskDetail } from './TaskDetail';
 import { NewTaskForm } from './NewTaskForm';
@@ -11,6 +13,21 @@ import { useIsMobile } from '../../hooks/useMediaQuery';
 
 export function TasksRoute() {
   const isMobile = useIsMobile();
+
+  // URL → selectedTaskId. `/tasks/abc` selects task abc; `/tasks` deselects.
+  // This is what makes a page reload restore the previously-open task (and the
+  // TerminalPane re-attaches automatically inside TaskDetail).
+  useEffect(() => {
+    // Take only the first sub-segment so a hypothetical /tasks/<id>/foo
+    // still selects <id> correctly.
+    const suffix = pathSuffix(currentPath.value).split('/')[0];
+    const target = suffix || null;
+    if (target !== selectedTaskId.value) selectTask(target);
+    // Also open the mobile detail sheet if landing on a deep link.
+    if (target && isMobile && sheetOpen.value !== 'task-detail') {
+      sheetOpen.value = 'task-detail';
+    }
+  }, [currentPath.value, isMobile]);
   const collapsedMaster = masterCollapsed.value;
   const fullscreen = previewFullscreen.value;
   // Compute the layout modifier as we have three states on desktop:
@@ -73,7 +90,7 @@ export function TasksRoute() {
                 <Icon name="chevron-right" size={14} />
               </button>
             )}
-            <TaskDetail onClose={() => selectTask(null)} />
+            <TaskDetail onClose={() => navigate('/tasks')} />
           </div>
         )}
       </div>
@@ -84,7 +101,7 @@ export function TasksRoute() {
         open={isMobile && sheetOpen.value === 'task-detail'}
         onClose={() => {
           sheetOpen.value = null;
-          selectTask(null);
+          navigate('/tasks');
         }}
         initialSnap="full"
       >

@@ -5,6 +5,7 @@ import { tasks, selectTask } from '../store/tasks';
 import { sheetOpen } from '../store/ui';
 import { memories, selectMemory, loadSelected } from '../store/memory';
 import { triggers, fire } from '../store/triggers';
+import { flatPages, loadManifest, manifest } from '../store/docs';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { Icon, type IconName } from './Icon';
@@ -126,6 +127,17 @@ function dataEntries(isMobile: boolean): PaletteEntry[] {
       },
     });
   }
+  for (const p of flatPages.value) {
+    out.push({
+      id: `docs:${p.id}`,
+      group: 'Docs',
+      label: p.title,
+      hint: p.section,
+      icon: 'docs',
+      match: `docs ${p.section} ${p.title}`.toLowerCase(),
+      onSelect: () => navigate(`/docs/${p.id}`),
+    });
+  }
   return out;
 }
 
@@ -141,7 +153,7 @@ export function CommandPalette() {
   const entries = useMemo(
     () => [...staticActions(), ...dataEntries(isMobile)],
     // Recompute when our live data signals change.
-    [tasks.value.length, memories.value.length, triggers.value.length, theme.value, isMobile],
+    [tasks.value.length, memories.value.length, triggers.value.length, flatPages.value.length, theme.value, isMobile],
   );
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -155,6 +167,9 @@ export function CommandPalette() {
       setActive(0);
       return;
     }
+    // Lazy-load docs manifest the first time the palette opens so doc
+    // entries appear without forcing the user to visit /docs first.
+    if (!manifest.value) void loadManifest();
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [open]);
 

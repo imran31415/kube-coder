@@ -1,0 +1,52 @@
+.cd-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.cd-dialog {
+  background: var(--surface);
+  color: var(--text, #e6e6ea);
+  border: 1px solid var(--border, #2a2a31);
+  border-radius: 10px;
+  padding: 20px 22px 18px;
+  width: min(420px, 92vw);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cd-title {
+  font-size: 16px;
+  margin: 0;
+  color: var(--text, #e6e6ea);
+  letter-spacing: -0.01em;
+}
+.cd-body {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-subtle, #9a9aa3);
+}
+.cd-input {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2a31);
+  background: var(--surface-2);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+.cd-input:focus-visible {
+  outline: 2px solid var(--accent, #6db9ff);
+  outline-offset: 1px;
+}
+.cd-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}

@@ -10,6 +10,7 @@ export type IconName =
   | 'triggers'
   | 'files'
   | 'settings'
+  | 'docs'
   | 'search'
   | 'more'
   | 'close'
@@ -55,6 +56,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <circle cx="10" cy="10" r="2.5" />
       <path d="M10 3v2M10 15v2M3 10h2M15 10h2M5 5l1.5 1.5M13.5 13.5L15 15M5 15l1.5-1.5M13.5 6.5L15 5" />
+    </>
+  ),
+  docs: (
+    <>
+      <path d="M4 3h7l3 3v11H4z" />
+      <path d="M11 3v3h3" />
+      <path d="M6 9h6M6 12h6M6 15h4" />
     </>
   ),
   search: (

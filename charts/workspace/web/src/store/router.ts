@@ -66,6 +66,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/memory', title: 'Memory' },
   { path: '/triggers', title: 'Triggers' },
   { path: '/files', title: 'Files' },
+  { path: '/docs', title: 'Docs' },
   { path: '/settings', title: 'Settings' },
 ];
 
@@ -74,4 +75,11 @@ export function matchRoute(path: string): RouteDef {
   if (path === '/' || path === '') return ROUTES[0];
   const top = '/' + path.split('/').filter(Boolean)[0];
   return ROUTES.find((r) => r.path === top) ?? ROUTES[0];
+}
+
+/** Everything after the matched top-level segment (no leading slash).
+ *  e.g. for `/docs/tasks-concepts` returns `tasks-concepts`. */
+export function pathSuffix(path: string): string {
+  const parts = (path || '/').split('/').filter(Boolean);
+  return parts.slice(1).join('/');
 }

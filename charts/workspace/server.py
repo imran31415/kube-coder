@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import http.server
 import socketserver
+import html
 import subprocess
 import os
 import sys
@@ -1906,6 +1907,136 @@ spec:
         return ok, cfg
 
 
+class DocsManager:
+    """Backs the /api/docs endpoints used by the in-app documentation site.
+
+    Source of truth is /home/dev/kube-coder/docs (cloned into every pod by
+    start.sh, see CLAUDE.md). The manifest at docs/_manifest.json declares
+    the nav tree; pages are plain markdown files. Per-file content is
+    mtime-cached so polling clients don't re-read disk every request.
+    """
+
+    DOCS_DIR = os.environ.get(
+        'DOCS_DIR', '/home/dev/kube-coder/docs'
+    )
+    # (path → (mtime, decoded_text)). Small enough that we never bother evicting.
+    _PAGE_CACHE: dict = {}
+    # Manifest is similarly mtime-cached.
+    _MANIFEST_CACHE: tuple = (0.0, None)
+
+    @classmethod
+    def _safe_join(cls, rel: str) -> str:
+        """Resolve `rel` under DOCS_DIR; raise on traversal."""
+        rel = (rel or '').lstrip('/')
+        # Reject backslashes and absolute drives outright — defensive only.
+        if '\x00' in rel or rel.startswith('..'):
+            raise ValueError('invalid path')
+        base = os.path.realpath(cls.DOCS_DIR)
+        target = os.path.realpath(os.path.join(base, rel))
+        if target != base and not target.startswith(base + os.sep):
+            raise ValueError('path escapes docs root')
+        return target
+
+    @classmethod
+    def load_manifest(cls) -> dict:
+        path = cls._safe_join('_manifest.json')
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return {'version': 1, 'sections': []}
+        cached_mtime, cached = cls._MANIFEST_CACHE
+        if cached and cached_mtime == mtime:
+            return cached
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        cls._MANIFEST_CACHE = (mtime, data)
+        return data
+
+    @classmethod
+    def index(cls) -> dict:
+        """Return the manifest plus a flat id→{title,file,summary,breadcrumbs} map."""
+        manifest = cls.load_manifest()
+        flat = {}
+        for sec in manifest.get('sections', []):
+            for page in sec.get('pages', []):
+                flat[page['id']] = {
+                    'id': page['id'],
+                    'title': page.get('title', page['id']),
+                    'file': page.get('file', ''),
+                    'summary': page.get('summary', ''),
+                    'section_id': sec.get('id'),
+                    'section_title': sec.get('title'),
+                }
+        return {'manifest': manifest, 'pages': flat}
+
+    @classmethod
+    def get_page(cls, page_id: str) -> dict:
+        index = cls.index()
+        meta = index['pages'].get(page_id)
+        if not meta:
+            raise KeyError(page_id)
+        path = cls._safe_join(meta['file'])
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            raise KeyError(page_id)
+        cached = cls._PAGE_CACHE.get(path)
+        if cached and cached[0] == mtime:
+            markdown = cached[1]
+        else:
+            with open(path, 'r', encoding='utf-8') as f:
+                markdown = f.read()
+            cls._PAGE_CACHE[path] = (mtime, markdown)
+        return {
+            'id': meta['id'],
+            'title': meta['title'],
+            'summary': meta['summary'],
+            'section_id': meta['section_id'],
+            'section_title': meta['section_title'],
+            'file': meta['file'],
+            'edited_at': mtime,
+            'markdown': markdown,
+        }
+
+    @classmethod
+    def search(cls, q: str, limit: int = 25) -> list:
+        """Substring + title-weighted search across all pages. Returns
+        [{id,title,snippet,score}] sorted by score desc. Cheap O(N*M) scan
+        — adequate for ~20 docs. Phase-6 work upgrades to SQLite FTS5."""
+        needle = (q or '').strip().lower()
+        if not needle:
+            return []
+        results = []
+        index = cls.index()
+        for page_id in index['pages']:
+            try:
+                page = cls.get_page(page_id)
+            except KeyError:
+                continue
+            title_l = page['title'].lower()
+            body_l = page['markdown'].lower()
+            score = 0
+            if needle in title_l:
+                score += 10
+            count = body_l.count(needle)
+            score += min(count, 20)  # diminishing returns
+            if score == 0:
+                continue
+            idx = body_l.find(needle)
+            start = max(0, idx - 60)
+            end = min(len(page['markdown']), idx + len(needle) + 80)
+            snippet = page['markdown'][start:end].strip()
+            results.append({
+                'id': page['id'],
+                'title': page['title'],
+                'section_title': page['section_title'],
+                'snippet': snippet,
+                'score': score,
+            })
+        results.sort(key=lambda r: r['score'], reverse=True)
+        return results[:limit]
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -1938,7 +2069,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # client-side routing handles deep links. The legacy dashboard.html
         # has been removed; if /opt/dashboard-dist is missing we return 503
         # rather than fall back to anything stale.
-        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/settings'}
+        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/docs', '/settings'}
         first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
         if normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
             rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
@@ -2067,6 +2198,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # --- Subagents (read-only view over Claude's transcripts) ---
         if claude_path == '/api/subagents':
             self.handle_subagents_list()
+            return
+
+        # --- Docs (in-app documentation site) ---
+        if claude_path == '/api/docs':
+            self.handle_docs_manifest()
+            return
+        if claude_path == '/api/docs/search':
+            self.handle_docs_search(memory_query)
+            return
+        m = re.match(r'^/api/docs/([a-zA-Z0-9_-]+)$', claude_path)
+        if m:
+            self.handle_docs_page(m.group(1))
             return
 
         # --- File browser (lists /home/dev and child directories) ---
@@ -3109,6 +3252,49 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             print(f'[subagents] error: {e}', file=sys.stderr)
             self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
+    # ── Docs (in-app documentation site) ────────────────────────────────
+    def handle_docs_manifest(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            manifest = DocsManager.load_manifest()
+            self.send_json(manifest)
+        except Exception as e:
+            print(f'[docs] manifest error: {e}', file=sys.stderr)
+            self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
+    def handle_docs_page(self, page_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            page = DocsManager.get_page(page_id)
+            self.send_json(page)
+        except KeyError:
+            self.send_json({'error': f'Unknown doc page: {page_id}'}, 404)
+        except Exception as e:
+            print(f'[docs] page {page_id} error: {e}', file=sys.stderr)
+            self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
+    def handle_docs_search(self, query):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        q = ''
+        try:
+            q = (query.get('q', [''])[0] or '').strip()
+            try:
+                limit = int(query.get('limit', ['25'])[0])
+            except (ValueError, TypeError):
+                limit = 25
+            limit = max(1, min(100, limit))
+            results = DocsManager.search(q, limit=limit)
+            self.send_json({'q': q, 'results': results})
+        except Exception as e:
+            print(f'[docs] search {q!r} error: {e}', file=sys.stderr)
+            self.send_json({'error': str(e), 'code': 'internal'}, 500)
+
     # ── File upload + browse (rooted at /home/dev) ─────────────────────
     # We deliberately keep these endpoints scoped to /home/dev with a
     # realpath-based traversal check so a crafted X-Dest-Path can't escape
@@ -3320,12 +3506,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
         except Exception as e:
+            # Escape so a crafted upstream error message can't inject HTML
+            # into this authenticated origin (reflected XSS).
             error_html = f'''<!DOCTYPE html>
 <html>
 <head><title>VNC Connection Error</title></head>
 <body>
     <h1>VNC Connection Error</h1>
-    <p>Unable to connect to VNC server: {str(e)}</p>
+    <p>Unable to connect to VNC server: {html.escape(str(e))}</p>
     <p><a href="/browser/">← Back to Browser Controls</a></p>
     <p>Make sure a browser is launched first, then try again.</p>
 </body>
@@ -3334,7 +3522,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(error_html.encode())
-    
+
     def proxy_vnc_request(self):
         # Proxy requests to the local noVNC server
         import urllib.request
@@ -3356,14 +3544,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
         except Exception as e:
+            # self.path is attacker-controllable; escape every interpolation
+            # so an upstream failure can't inject HTML.
+            safe_url = html.escape(vnc_url) if 'vnc_url' in locals() else 'N/A'
             error_html = f'''<!DOCTYPE html>
 <html>
 <head><title>VNC Proxy Error</title></head>
 <body>
     <h1>VNC Proxy Error</h1>
-    <p>Error accessing VNC: {str(e)}</p>
-    <p>Path: {self.path}</p>
-    <p>VNC URL: {vnc_url if 'vnc_url' in locals() else 'N/A'}</p>
+    <p>Error accessing VNC: {html.escape(str(e))}</p>
+    <p>Path: {html.escape(self.path)}</p>
+    <p>VNC URL: {safe_url}</p>
 </body>
 </html>'''
             self.send_response(500)
@@ -3589,6 +3780,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_ssh_generate(self):
         """Handle SSH key generation request"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
@@ -3609,6 +3803,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_git_config_post(self):
         """Handle git config update request"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
@@ -3638,6 +3835,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_gh_login_instructions(self):
         """Return instructions for gh CLI authentication"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         instructions = GitHubManager.start_device_flow()
 
         self.send_response(200)
@@ -3647,6 +3847,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_gh_check_auth(self):
         """Check if gh CLI authentication is complete"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         status = GitHubManager.get_gh_cli_status()
 
         self.send_response(200)
@@ -3666,6 +3869,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return False
     
     def test_chrome(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         try:
             # Test browser installation
             browser_paths = [
@@ -3712,6 +3918,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error_response(f'Test failed: {str(e)}')
     
     def launch_chrome(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         try:
             # Try different Chrome/Chromium locations
             browser_commands = [
@@ -3763,6 +3972,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error_response(f'Error launching Chrome: {str(e)}')
     
     def open_localhost(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         try:
             # Accept an optional {"port": <int>} JSON body so the dashboard's
             # Preview pane can re-point the in-pod browser without a code change.
