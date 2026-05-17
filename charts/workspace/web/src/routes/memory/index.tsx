@@ -28,11 +28,15 @@ import {
   type MemoryRecord,
   type MemoryUpsertInput,
 } from '../../api/memory';
+import { MemoryGraph } from './MemoryGraph';
 import './memory.css';
+
+type MemoryView = 'list' | 'graph';
 
 export function MemoryRoute() {
   const isMobile = useIsMobile();
   const [editing, setEditing] = useState<MemoryUpsertInput | null>(null);
+  const [view, setView] = useState<MemoryView>('list');
 
   useEffect(() => {
     startMemoryPolling(30000);
@@ -78,6 +82,7 @@ export function MemoryRoute() {
 
       <div class="mem-layout">
         <div class="mem-master">
+          <MemoryViewTabs view={view} onChange={setView} />
           <MemoryToolbar />
           {list.length === 0 ? (
             <EmptyState
@@ -96,8 +101,14 @@ export function MemoryRoute() {
                 )
               }
             />
-          ) : (
+          ) : view === 'list' ? (
             <MemoryList list={list} onRowClick={onRowClick} onEdit={onEdit} />
+          ) : (
+            <MemoryGraph
+              memories={list}
+              selectedId={selectedMemory.value?.id ?? null}
+              onSelect={onRowClick}
+            />
           )}
         </div>
         {!isMobile && (
@@ -165,6 +176,24 @@ export function MemoryRoute() {
           )}
         </BottomSheet>
       )}
+    </div>
+  );
+}
+
+function MemoryViewTabs({ view, onChange }: { view: MemoryView; onChange: (v: MemoryView) => void }) {
+  return (
+    <div class="mem-view-tabs" role="tablist" aria-label="Memory view">
+      {(['list', 'graph'] as MemoryView[]).map((v) => (
+        <button
+          key={v}
+          role="tab"
+          aria-selected={view === v}
+          class={`mem-view-tab ${view === v ? 'mem-view-tab-active' : ''}`}
+          onClick={() => onChange(v)}
+        >
+          {v === 'list' ? 'List' : 'Graph'}
+        </button>
+      ))}
     </div>
   );
 }
