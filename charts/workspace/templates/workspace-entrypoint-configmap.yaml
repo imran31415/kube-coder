@@ -52,6 +52,11 @@ data:
     # picks up new pages without a manual sync. Idempotent — clones if missing,
     # ff-only-pulls if present (skipped silently when there are local commits).
     # Backgrounded so a slow/flaky network never blocks pod readiness.
+    # Skipped entirely in READONLY_MODE — public-demo pods don't accept any
+    # mutations so a stale source tree is fine; the docs ship in the image.
+    if [ "${READONLY_MODE:-false}" = "true" ]; then
+      log_stage "READONLY_MODE — skipping kube-coder source clone/pull"
+    else
     (
       if [ ! -d /home/dev/kube-coder/.git ]; then
         log_stage "cloning kube-coder source into /home/dev/kube-coder"
@@ -65,6 +70,7 @@ data:
           || log_stage "NOTE: git pull skipped (local commits or offline); existing clone retained"
       fi
     ) &
+    fi
 
     # Render an OpenCode config file whenever at least one OpenCode-backed
     # provider has been configured (OpenRouter and/or Fallback). Claude

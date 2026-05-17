@@ -57,6 +57,28 @@ ALERT_THRESHOLDS = {
     'disk': {'warning': 80, 'critical': 90}
 }
 
+# Public-demo / read-only mode. Set from helm values via env vars on the
+# pod spec. READONLY_MODE gates every POST/DELETE/PUT in BrowserHandler;
+# AUTH_MODE='none' short-circuits check_claude_auth for deployments without
+# an oauth2-proxy in front. _check_safety_invariants() below refuses to
+# start if AUTH_MODE=none without READONLY_MODE=true — no unauthed writes.
+READONLY_MODE = os.environ.get('READONLY_MODE', 'false').lower() == 'true'
+AUTH_MODE = os.environ.get('AUTH_MODE', 'basic').lower()
+
+def _check_safety_invariants():
+    if AUTH_MODE == 'none' and not READONLY_MODE:
+        print(
+            '[server.py] FATAL: AUTH_MODE=none requires READONLY_MODE=true. '
+            'Refusing to start an unauthed, writable workspace.',
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if READONLY_MODE:
+        print('[server.py] READONLY_MODE active — mutating endpoints will 403.', file=sys.stderr)
+    if AUTH_MODE == 'none':
+        print('[server.py] AUTH_MODE=none — check_claude_auth short-circuits to True.', file=sys.stderr)
+_check_safety_invariants()
+
 # Strip ANSI escape sequences (CSI, OSC, single-char) from terminal output
 # captured via `tmux pipe-pane`, so the dashboard chat view stays readable.
 _ANSI_RE = re.compile(
@@ -2235,6 +2257,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # --- Claude Task API (GET) ---
         # Query string is already stripped at the top; handlers re-parse it from self.path when needed.
         claude_path = normalized_path
+        # /api/mode — public deployment-mode probe used by the SPA at boot to
+        # decide whether to hide mutation UI. Intentionally unauthenticated so
+        # the read-only public demo can fetch it without an auth proxy in
+        # front. Returns the two flags server.py was started with — never
+        # derived per-request, never user-controllable.
+        if claude_path == '/api/mode':
+            self.send_json({
+                'readOnly': READONLY_MODE,
+                'authed': AUTH_MODE != 'none',
+                'authMode': AUTH_MODE,
+            })
+            return
         if claude_path == '/api/claude/tasks':
             self.handle_claude_list_tasks()
             return
@@ -2409,7 +2443,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # --- Claude Task API helpers ---
 
     def check_claude_auth(self):
-        """Returns True if request is authenticated via OAuth2 headers OR valid bearer token."""
+        """Returns True if request is authenticated via OAuth2 headers OR valid bearer token.
+
+        Short-circuits to True when AUTH_MODE=none — the public-demo
+        deployment runs without an auth proxy in front of it. Guarded at
+        startup (see _check_safety_invariants below) so this combo is only
+        allowed when READONLY_MODE=true.
+        """
+        if AUTH_MODE == 'none':
+            return True
         if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
             return True
         remote_user = self.headers.get('Remote-User', '')
@@ -2444,7 +2486,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         body = self.rfile.read(content_length).decode('utf-8')
         return json.loads(body) if body else {}
 
+    def _readonly_block(self):
+        """Reject mutating requests when READONLY_MODE=true. Single chokepoint
+        called at the top of do_POST/do_DELETE/do_PUT so individual handlers
+        don't each need to remember to gate themselves."""
+        if not READONLY_MODE:
+            return False
+        self.send_json({
+            'error': 'This workspace is a read-only public demo. '
+                     'Sign in to a personal workspace at https://github.com/imran31415/kube-coder '
+                     'for full read-write access.',
+            'code': 'readonly',
+        }, 403)
+        return True
+
     def do_DELETE(self):
+        if self._readonly_block():
+            return
         try:
             path = self.path.replace('/browser', '').replace('/oauth', '')
             m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', path)
@@ -3707,6 +3765,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(error_html.encode())
     
     def do_POST(self):
+        if self._readonly_block():
+            return
         try:
             # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
             path = self.path.replace('/browser', '').replace('/oauth', '')

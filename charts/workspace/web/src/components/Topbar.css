@@ -89,6 +89,26 @@
 }
 
 .topbar-actions { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Read-only public-demo pill. Sits at the front of .topbar-actions; only
+   rendered when serverMode.readOnly is true (see MutatorOnly.tsx). */
+.readonly-pill {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .readonly-pill { font-size: 9.5px; padding: 1px 6px; }
+}
+
 .topbar-link {
   font-size: 12px;
   font-weight: 500;
