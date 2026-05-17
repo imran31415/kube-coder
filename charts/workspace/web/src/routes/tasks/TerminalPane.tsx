@@ -18,18 +18,33 @@ const LAST_PORT_KEY = 'kc.previewPort';
  * Code routinely print "open https://… to sign in" prompts — we promote
  * those URLs to tappable buttons above the iframe.
  *
- * The regex matches a conservative set of URL terminators (whitespace, quotes,
- * angle-brackets, parens, common punctuation that wouldn't appear in URLs)
- * and de-dupes while preserving insertion order so the most recent URL stays
- * at the top.
+ * Two-pass: tmux capture-pane hard-wraps long lines at the pane width (~220
+ * cols), splitting URLs across multiple lines. We first unwrap soft-wraps
+ * (newline sandwiched between URL-safe chars on both sides, no leading
+ * whitespace on the next line) so the URL regex can match the full thing.
+ * Then dedupe with insertion-order preservation; freshest URL goes first.
  */
+// Chars that can legitimately appear inside a URL (RFC 3986 unreserved +
+// reserved-but-common). If both sides of a newline are one of these AND the
+// next line has no leading space, it's almost certainly a soft-wrap.
+const URL_CHAR = "[A-Za-z0-9._~:/?#@!$&'*+,;=%-]";
+const SOFT_WRAP_RE = new RegExp(`(${URL_CHAR})\\n(${URL_CHAR})`, 'g');
 const URL_RE = /https?:\/\/[^\s<>"'`()\[\]{}]+[^\s<>"'`()\[\]{},.;:!?]/g;
+
 function extractUrls(text: string, max = 5): string[] {
   if (!text) return [];
+  // Unwrap soft-wrapped lines (URL fragments split by pane width).
+  let unwrapped = text;
+  // Multiple passes in case a single URL spans 3+ lines.
+  for (let i = 0; i < 4; i++) {
+    const next = unwrapped.replace(SOFT_WRAP_RE, '$1$2');
+    if (next === unwrapped) break;
+    unwrapped = next;
+  }
   const seen = new Set<string>();
   const out: string[] = [];
-  // Iterate from the bottom of the pane so the freshest URL surfaces first.
-  const lines = text.split('\n');
+  // Iterate from the bottom so the freshest URL surfaces first.
+  const lines = unwrapped.split('\n');
   for (let i = lines.length - 1; i >= 0 && out.length < max; i--) {
     const matches = lines[i].match(URL_RE);
     if (!matches) continue;

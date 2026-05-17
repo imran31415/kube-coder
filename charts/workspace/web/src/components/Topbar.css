@@ -121,15 +121,15 @@
 @media (max-width: 720px) {
   .topbar-kbd { display: none; }
   .topbar-search > span { font-size: 12px; }
-  /* Only hide the non-strong (Legacy) link on phones — keep VS Code +
-     New terminal visible since they're primary destinations. */
-  .topbar-link:not(.topbar-link-strong) { display: none; }
-  .topbar-link-strong {
-    padding: 4px 8px;
-    font-size: 11px;
-  }
+  /* Phones: hide MetricsBar + VS Code + New terminal from the topbar entirely.
+     They're all accessible via the BottomNav → More sheet, and stacking 5+
+     buttons in the topbar clipped them on narrow screens. Theme toggle stays
+     because it's a one-tap action with no good alternative location. */
+  .topbar-link { display: none; }
+  .mbar { display: none; }
 }
 @media (max-width: 480px) {
-  /* Even tighter — strong links get icon-style treatment. */
-  .topbar-link-strong { padding: 4px 6px; font-size: 10.5px; }
+  /* Even tighter: drop the brand-tag entirely (already hidden) and tighten
+     the search padding so the topbar doesn't feel cramped. */
+  .topbar-search { padding: 4px 8px; font-size: 12px; }
 }
