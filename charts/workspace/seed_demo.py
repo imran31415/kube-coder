@@ -348,7 +348,10 @@ def seed_tasks() -> int:
             'workdir': '/home/dev/kube-coder',
             'status': status,
             'created_at': ts,
-            'completed_at': ts + 90,
+            # Match server.py:list_tasks which reads 'finished_at' (formerly
+            # written as 'completed_at' here, which the list view ignored —
+            # demo tasks rendered with no finish time).
+            'finished_at': ts + 90,
             'tmux_session': f'claude-{task_id}',
             'assistant': assistant,
             'memory_injected': [],
