@@ -161,25 +161,24 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
 
   useEffect(() => {
     let cancelled = false;
-    // Force iframe through about:blank so the previous task's ttyd
-    // connection drops before we open a new one. Without this we'd
-    // sometimes land on the previous task's tmux pane (or a bare bash
-    // shell) until the user manually clicked the tab again.
-    setTermSrc('about:blank');
-    if (withVnc) setVncSrc('about:blank');
+    // Clear srcs so the previous task's iframe DOM goes away while we
+    // re-prepare. The iframe is also key'd on taskId so React/Preact
+    // forces a fresh DOM element when this resolves — no chance the new
+    // ttyd connection inherits the old WebSocket.
+    setTermSrc('');
+    setVncSrc('');
     setPhase('preparing');
     setErr('');
     prepareTerminal(taskId)
       .then(() => {
         if (cancelled) return;
-        // One animation frame after the POST resolves so the entry-file
-        // write has hit disk before ttyd reconnects.
-        requestAnimationFrame(() => {
-          if (cancelled) return;
-          setTermSrc(terminalUrl());
-          if (withVnc) setVncSrc(vncUrl());
-          setPhase('ready');
-        });
+        // Only now do we set the src — the iframe renders for the first
+        // time on this taskId with the prepare-terminal pending file
+        // already on disk. ttyd's entry script reads + consumes it
+        // before any concurrent connection can race us.
+        setTermSrc(terminalUrl());
+        if (withVnc) setVncSrc(vncUrl());
+        setPhase('ready');
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -376,19 +375,34 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         </div>
       )}
 
-      {phase !== 'error' && (
+      {phase === 'preparing' && (
+        <div class="term-pane-loading muted">
+          <span class="term-pane-loading-spinner" aria-hidden="true" />
+          Attaching to tmux session…
+        </div>
+      )}
+      {phase === 'ready' && (
         <div class={`term-pane-frames ${withVnc ? 'term-pane-frames-split' : ''}`}>
-          <iframe
-            class="term-pane-iframe"
-            src={termSrc || 'about:blank'}
-            title="Task terminal"
-            allow="clipboard-read; clipboard-write"
-          />
-          {withVnc && (
+          {/* key={taskId} → guarantees a fresh DOM iframe per task. Without
+              this, switching tasks would reuse the previous iframe element
+              and we'd race ttyd against a half-torn-down WebSocket. Only
+              render once the prepare-terminal POST has resolved (phase='ready')
+              so the entry script's pending-file read sees the right value. */}
+          {termSrc && (
             <iframe
+              key={`term-${taskId}-${termSrc}`}
+              class="term-pane-iframe"
+              src={termSrc}
+              title="Task terminal"
+              allow="clipboard-read; clipboard-write"
+            />
+          )}
+          {withVnc && vncSrc && (
+            <iframe
+              key={`vnc-${taskId}-${vncSrc}`}
               ref={vncRef}
               class="term-pane-iframe term-pane-iframe-vnc"
-              src={vncSrc || 'about:blank'}
+              src={vncSrc}
               title="Workspace browser (VNC)"
               allow="clipboard-read; clipboard-write"
             />
