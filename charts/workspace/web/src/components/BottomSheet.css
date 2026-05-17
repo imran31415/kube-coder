@@ -49,13 +49,16 @@
 .sheet-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 
 /* Folded handle+close row used when there's no title — saves ~50px of
-   vertical space on mobile by avoiding a stacked handle + header. */
+   vertical space on mobile by avoiding a stacked handle + header.
+   The grab is centered in the full row; the close X is positioned at the
+   right edge so the two controls don't share a tap zone. */
 .sheet-handlerow {
   position: relative;
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
   align-items: center;
-  padding: 4px var(--size-2) 4px;
+  justify-content: center;
+  min-height: 44px;
+  padding: 4px var(--size-2);
   flex-shrink: 0;
 }
 .sheet-handle-inline {
@@ -63,10 +66,17 @@
   background: transparent;
   cursor: grab;
   touch-action: none;
-  /* iOS minimum tap target is 44px; bump padding so the swipe-to-dismiss
-     gesture works reliably without hijacking neighboring controls. */
+  /* iOS minimum tap target is 44px; constrain width so the swipe-to-dismiss
+     gesture doesn't extend into the X's tap zone on the right. */
+  width: 120px;
   padding: 14px 0;
   display: flex; align-items: center; justify-content: center;
+}
+.sheet-handlerow > .btn-icon {
+  position: absolute;
+  right: var(--size-2);
+  top: 50%;
+  transform: translateY(-50%);
 }
 .sheet-handle-inline:active { cursor: grabbing; }
 
