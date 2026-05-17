@@ -67,6 +67,7 @@
   margin: var(--size-2) 0;
   padding: var(--size-2);
   background: var(--surface-2);
+  color: var(--text);
   border-radius: var(--radius-sm);
   word-break: break-all;
   white-space: pre-wrap;

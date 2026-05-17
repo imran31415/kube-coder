@@ -185,6 +185,7 @@
 }
 .docs-article-body pre {
   background: var(--surface-2);
+  color: var(--text);
   padding: 12px 14px;
   border-radius: var(--radius-sm, 6px);
   overflow-x: auto;

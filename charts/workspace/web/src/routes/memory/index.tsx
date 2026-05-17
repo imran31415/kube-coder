@@ -155,6 +155,10 @@ export function MemoryRoute() {
                 if (m) {
                   drawerOpen.value = null;
                   setEditing(null);
+                  // Mobile-only: the master/detail layout doesn't render on
+                  // phones, so we open the detail sheet so the user sees
+                  // what they just saved instead of landing on the list.
+                  sheetOpen.value = 'memory-detail';
                 }
               }}
             />

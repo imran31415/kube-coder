@@ -63,7 +63,9 @@
   background: transparent;
   cursor: grab;
   touch-action: none;
-  padding: 6px 0;
+  /* iOS minimum tap target is 44px; bump padding so the swipe-to-dismiss
+     gesture works reliably without hijacking neighboring controls. */
+  padding: 14px 0;
   display: flex; align-items: center; justify-content: center;
 }
 .sheet-handle-inline:active { cursor: grabbing; }
