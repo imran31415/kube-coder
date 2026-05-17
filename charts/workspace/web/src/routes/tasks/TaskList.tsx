@@ -30,6 +30,7 @@ const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' 
   killed: 'warn',
   error: 'danger',
   unknown: 'neutral',
+  'waiting-for-input': 'warn',
 };
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -38,6 +39,7 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   killed: 'killed',
   error: 'error',
   unknown: 'unknown',
+  'waiting-for-input': 'waiting',
 };
 
 function timeAgo(ts: number | null): string {
@@ -144,18 +146,31 @@ export function TaskList() {
           {list.map((t) => (
             <li key={t.task_id}>
               <button
-                class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''}`}
+                class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${t.status === 'waiting-for-input' ? 'tl-row-waiting' : ''}`}
                 onClick={() => onRowClick(t)}
                 aria-current={activeId === t.task_id ? 'true' : 'false'}
               >
                 <div class="tl-row-head">
-                  <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+                  <div class="tl-row-status-container">
+                    <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+                    {t.status === 'waiting-for-input' && (
+                      <span class="tl-waiting-indicator" title="Task is waiting for user input">
+                        ⏳
+                      </span>
+                    )}
+                  </div>
                   <span class="tl-row-title">{t.name || t.prompt || '(unnamed)'}</span>
                   <span class="tl-row-age" title={t.created_at ? new Date(t.created_at * 1000).toISOString() : ''}>
                     {timeAgo(t.created_at)}
                   </span>
                 </div>
                 {t.name && t.prompt && <div class="tl-row-sub muted">{t.prompt}</div>}
+                {t.status === 'waiting-for-input' && t.last_input_prompt && (
+                  <div class="tl-row-prompt">
+                    <span class="tl-row-prompt-label">Waiting for input:</span>
+                    <span class="tl-row-prompt-text">{t.last_input_prompt}</span>
+                  </div>
+                )}
                 <div class="tl-row-meta muted">
                   <span class="mono">{t.task_id.slice(0, 18)}</span>
                   {t.source && <span> · {t.source}</span>}
