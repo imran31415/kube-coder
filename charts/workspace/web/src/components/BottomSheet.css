@@ -48,22 +48,37 @@
 }
 .sheet-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 
-/* Title-less variant: header collapses to just the X aligned right. */
-.sheet-header-bare {
-  justify-content: flex-end;
+/* Folded handle+close row used when there's no title — saves ~50px of
+   vertical space on mobile by avoiding a stacked handle + header. */
+.sheet-handlerow {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
   padding: 4px var(--size-2) 4px;
-  border-bottom: 0;
+  flex-shrink: 0;
 }
+.sheet-handle-inline {
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  padding: 6px 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.sheet-handle-inline:active { cursor: grabbing; }
 
-.sheet-header .btn-icon {
+.sheet-header .btn-icon,
+.sheet-handlerow .btn-icon {
   /* Strong contrast so the close affordance is obvious on every screen. */
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--border);
 }
-.sheet-header .btn-icon:hover {
+.sheet-header .btn-icon:hover,
+.sheet-handlerow .btn-icon:hover {
   background: var(--surface-3);
   border-color: var(--border-2);
 }
@@ -72,4 +87,10 @@
   flex: 1;
   overflow-y: auto;
   padding: var(--size-4);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
+/* When the sheet has no title, the caller (e.g. TaskDetail) renders its
+   own header — strip the body padding so the two don't double up. */
+.sheet-body-flush { padding: 0; }

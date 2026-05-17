@@ -63,28 +63,50 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
         aria-hidden={!open}
         style={{ height: `${SNAP_PCT[snap]}vh` }}
       >
-        <button
-          type="button"
-          class="sheet-handle"
-          aria-label={snap === 'peek' ? 'Expand sheet' : 'Collapse sheet'}
-          onClick={() => setSnap((s) => (s === 'peek' ? 'full' : 'peek'))}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-        >
-          <span class="sheet-grab" />
-        </button>
-        {/* Always render a real (non-floating) header so the X has guaranteed
-            space at the top of the sheet — floating-position was getting
-            clipped by the iOS URL bar/notch on portrait phones. The header
-            is shorter when there's no title so we still maximize body area. */}
-        <div class={`sheet-header ${!title ? 'sheet-header-bare' : ''}`}>
-          {title && <h2 class="sheet-title">{title}</h2>}
-          <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close" title="Close">
-            <Icon name="close" />
-          </Button>
-        </div>
-        <div class="sheet-body">{children}</div>
+        {/* When there's no title, fold the drag handle and X into one row to
+            save ~50px of vertical space on mobile (was: handle + bare-header).
+            Titled sheets keep the separate handle + header for clearer hierarchy. */}
+        {title ? (
+          <>
+            <button
+              type="button"
+              class="sheet-handle"
+              aria-label={snap === 'peek' ? 'Expand sheet' : 'Collapse sheet'}
+              onClick={() => setSnap((s) => (s === 'peek' ? 'full' : 'peek'))}
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
+            >
+              <span class="sheet-grab" />
+            </button>
+            <div class="sheet-header">
+              <h2 class="sheet-title">{title}</h2>
+              <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close" title="Close">
+                <Icon name="close" />
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div
+            class="sheet-handlerow"
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+          >
+            <button
+              type="button"
+              class="sheet-handle sheet-handle-inline"
+              aria-label={snap === 'peek' ? 'Expand sheet' : 'Collapse sheet'}
+              onClick={() => setSnap((s) => (s === 'peek' ? 'full' : 'peek'))}
+            >
+              <span class="sheet-grab" />
+            </button>
+            <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close" title="Close">
+              <Icon name="close" />
+            </Button>
+          </div>
+        )}
+        <div class={`sheet-body ${!title ? 'sheet-body-flush' : ''}`}>{children}</div>
       </section>
     </>
   );
