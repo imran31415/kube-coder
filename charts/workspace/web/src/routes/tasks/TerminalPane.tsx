@@ -18,42 +18,66 @@ const LAST_PORT_KEY = 'kc.previewPort';
  * Code routinely print "open https://… to sign in" prompts — we promote
  * those URLs to tappable buttons above the iframe.
  *
- * Two-pass: tmux capture-pane hard-wraps long lines at the pane width (~220
- * cols), splitting URLs across multiple lines. We first unwrap soft-wraps
- * (newline sandwiched between URL-safe chars on both sides, no leading
- * whitespace on the next line) so the URL regex can match the full thing.
- * Then dedupe with insertion-order preservation; freshest URL goes first.
+ * Server-side calls `tmux capture-pane -J` so logical lines come back joined
+ * already, but we still defensively handle soft-wraps + \r line endings +
+ * stray ANSI fragments since the pre-`-J` deploys may still be in flight
+ * and the harness/output.log fallback path doesn't have that protection.
+ *
+ * Walk-forward parser: anchor at `https?://`, then greedily consume URL-safe
+ * chars, allowing newlines (optionally surrounded by whitespace) to bridge
+ * soft-wraps. Stops at the first hard delimiter or end of buffer.
  */
-// Chars that can legitimately appear inside a URL (RFC 3986 unreserved +
-// reserved-but-common). If both sides of a newline are one of these AND the
-// next line has no leading space, it's almost certainly a soft-wrap.
-const URL_CHAR = "[A-Za-z0-9._~:/?#@!$&'*+,;=%-]";
-const SOFT_WRAP_RE = new RegExp(`(${URL_CHAR})\\n(${URL_CHAR})`, 'g');
-const URL_RE = /https?:\/\/[^\s<>"'`()\[\]{}]+[^\s<>"'`()\[\]{},.;:!?]/g;
+const URL_CHAR_RE = /[A-Za-z0-9._~:/?#@!$&'*+,;=%-]/;
+const URL_ANCHOR_RE = /https?:\/\//g;
+const TRAILING_PUNCT = /[.,;:!?'"`)\]}>]+$/;
+const ANSI_RE = /\[[0-9;?]*[a-zA-Z]/g;
 
 function extractUrls(text: string, max = 5): string[] {
   if (!text) return [];
-  // Unwrap soft-wrapped lines (URL fragments split by pane width).
-  let unwrapped = text;
-  // Multiple passes in case a single URL spans 3+ lines.
-  for (let i = 0; i < 4; i++) {
-    const next = unwrapped.replace(SOFT_WRAP_RE, '$1$2');
-    if (next === unwrapped) break;
-    unwrapped = next;
-  }
+  // Normalize line endings + strip any ANSI escapes that leaked through.
+  const norm = text.replace(/\r\n?/g, '\n').replace(ANSI_RE, '');
   const seen = new Set<string>();
   const out: string[] = [];
-  // Iterate from the bottom so the freshest URL surfaces first.
-  const lines = unwrapped.split('\n');
-  for (let i = lines.length - 1; i >= 0 && out.length < max; i--) {
-    const matches = lines[i].match(URL_RE);
-    if (!matches) continue;
-    for (const u of matches) {
-      if (seen.has(u)) continue;
-      seen.add(u);
-      out.push(u);
-      if (out.length >= max) break;
+
+  let m: RegExpExecArray | null;
+  URL_ANCHOR_RE.lastIndex = 0;
+  const found: string[] = [];
+  while ((m = URL_ANCHOR_RE.exec(norm)) !== null) {
+    let i = m.index + m[0].length;
+    let url = m[0];
+    while (i < norm.length) {
+      const ch = norm[i];
+      if (ch === '\n') {
+        // Soft-wrap: peek past any whitespace on the next line. If the next
+        // non-space char is URL-safe, treat the wrap as join-back.
+        let j = i + 1;
+        while (j < norm.length && (norm[j] === ' ' || norm[j] === '\t')) j++;
+        if (j < norm.length && URL_CHAR_RE.test(norm[j])) {
+          i = j;
+          continue;
+        }
+        break;
+      }
+      // Plain whitespace inside a line is a hard URL terminator.
+      if (ch === ' ' || ch === '\t') break;
+      if (URL_CHAR_RE.test(ch)) {
+        url += ch;
+        i++;
+        continue;
+      }
+      break;
     }
+    // Strip trailing punctuation that's almost never part of a URL.
+    url = url.replace(TRAILING_PUNCT, '');
+    if (url.length > m[0].length + 3) found.push(url);
+  }
+
+  // Freshest URL first.
+  for (let i = found.length - 1; i >= 0 && out.length < max; i--) {
+    const u = found[i];
+    if (seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
   }
   return out;
 }
@@ -133,14 +157,25 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
 
   useEffect(() => {
     let cancelled = false;
+    // Force iframe through about:blank so the previous task's ttyd
+    // connection drops before we open a new one. Without this we'd
+    // sometimes land on the previous task's tmux pane (or a bare bash
+    // shell) until the user manually clicked the tab again.
+    setTermSrc('about:blank');
+    if (withVnc) setVncSrc('about:blank');
     setPhase('preparing');
     setErr('');
     prepareTerminal(taskId)
       .then(() => {
         if (cancelled) return;
-        setTermSrc(terminalUrl());
-        if (withVnc) setVncSrc(vncUrl());
-        setPhase('ready');
+        // One animation frame after the POST resolves so the entry-file
+        // write has hit disk before ttyd reconnects.
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          setTermSrc(terminalUrl());
+          if (withVnc) setVncSrc(vncUrl());
+          setPhase('ready');
+        });
       })
       .catch((e: unknown) => {
         if (cancelled) return;
