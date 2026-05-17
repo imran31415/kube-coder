@@ -545,3 +545,29 @@
   .term-pane-urls-link { padding: 10px 12px; min-height: 40px; }
   .term-pane-urls-copy { padding: 9px 12px; min-height: 40px; }
 }
+
+/* Terminal-pane loading state — shown only while prepareTerminal POST is
+   in flight. The iframe doesn't render until phase === 'ready' so the
+   user never sees a wrong-tmux-session flash. */
+.term-pane-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: var(--size-5);
+  font-size: 13px;
+  background: var(--bg);
+}
+.term-pane-loading-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border-2);
+  border-top-color: var(--accent);
+  animation: term-pane-spin 0.9s linear infinite;
+}
+@keyframes term-pane-spin {
+  to { transform: rotate(360deg); }
+}
