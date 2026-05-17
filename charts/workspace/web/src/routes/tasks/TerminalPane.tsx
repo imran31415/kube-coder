@@ -210,6 +210,36 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     requestAnimationFrame(() => setVncSrc(vncUrl()));
   }
 
+  /**
+   * Open this task's terminal in a new tab. The terminal-entry script is
+   * one-shot (reads `/tmp/.claude-terminal-pending` then deletes it), so
+   * the iframe in the current tab already consumed our previous prepare.
+   * We have to re-prepare for the new ttyd connection — otherwise the new
+   * tab falls through to a fresh bash shell.
+   *
+   * window.open() is called synchronously inside the click handler so
+   * popup blockers don't kill it; we navigate the pre-opened tab to the
+   * terminal URL once prepareTerminal() resolves. Drop 'noopener' so we
+   * can hold a reference to the new window, then null win.opener after
+   * navigating to preserve the same protection.
+   */
+  async function openTerminalInNewTab() {
+    const win = window.open('about:blank', '_blank');
+    if (win) win.opener = null;
+    try {
+      await prepareTerminal(taskId);
+    } catch {
+      /* fall through — still open the terminal so user sees an error */
+    }
+    const url = terminalUrl();
+    if (win && !win.closed) {
+      win.location.replace(url);
+    } else {
+      // Popup blocked: best we can do is open in the current tab.
+      window.location.href = url;
+    }
+  }
+
   async function openPort(e: Event) {
     e.preventDefault();
     const n = parseInt(port, 10);
@@ -283,8 +313,8 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         <Button
           size="sm"
           variant="ghost"
-          onClick={() => window.open(terminalUrl(), '_blank', 'noopener')}
-          title="Open the terminal in its own browser tab"
+          onClick={openTerminalInNewTab}
+          title="Open this task's terminal in its own browser tab"
         >
           New tab
         </Button>
