@@ -134,7 +134,11 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
       try {
         const r = await getTaskOutput(taskId, 60);
         if (cancelled) return;
-        setUrls(extractUrls(r.output ?? ''));
+        // Cap at 1 — the strip sits above the terminal iframe and a long
+        // list eats too much of the visible terminal area. Freshest URL
+        // wins (extractUrls iterates bottom-up), which is what the user
+        // needs for time-sensitive flows like Claude's oauth/authorize.
+        setUrls(extractUrls(r.output ?? '', 1));
       } catch {
         /* silent — keep last-good URLs */
       }
