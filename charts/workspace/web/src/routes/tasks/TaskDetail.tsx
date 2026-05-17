@@ -52,9 +52,19 @@ const TAB_HELP: Record<DetailTab, string> = {
   subagents: 'Sub-tasks spawned by Claude\'s Agent / Task tool.',
 };
 
+/**
+ * A task is "alive" — meaning its tmux session still exists and the user
+ * can interact with it — when it's either actively running OR paused
+ * waiting for human input. Both states need the Terminal/Preview/Message
+ * tabs (the user typically wants to respond to the prompt).
+ */
+function isAliveStatus(s: TaskStatus | undefined): boolean {
+  return s === 'running' || s === 'waiting-for-input';
+}
+
 export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const t = selectedTask.value;
-  const isLive = t?.status === 'running';
+  const isLive = isAliveStatus(t?.status);
   // Default tab depends on whether the task is alive — past tasks default to
   // Info because there's no tmux session to attach a terminal to.
   const [tab, setTab] = useState<DetailTab>(isLive ? 'terminal' : 'info');
@@ -75,7 +85,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   // the user off interactive tabs since the tmux session is gone.
   useEffect(() => {
     if (!t) return;
-    setTab(t.status === 'running' ? 'terminal' : 'info');
+    setTab(isAliveStatus(t.status) ? 'terminal' : 'info');
     // Reset only on task-id change so user keystrokes inside the same task
     // (status flips, etc.) don't yank them off the tab they're reading.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -83,7 +93,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
 
   useEffect(() => {
     if (!t) return;
-    const live = t.status === 'running';
+    const live = isAliveStatus(t.status);
     if (!live && (tab === 'terminal' || tab === 'preview' || tab === 'message')) {
       setTab('info');
     }
@@ -234,11 +244,11 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
             </Button>
             <Button
               size="sm"
-              variant={t.status === 'running' ? 'danger' : 'ghost'}
+              variant={isLive ? 'danger' : 'ghost'}
               onClick={onKill}
-              disabled={busy || t.status !== 'running'}
+              disabled={busy || !isLive}
               title={
-                t.status === 'running'
+                isLive
                   ? 'Kill the tmux session (output is preserved)'
                   : 'Already stopped'
               }
