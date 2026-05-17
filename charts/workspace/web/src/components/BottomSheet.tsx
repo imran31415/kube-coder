@@ -87,17 +87,19 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
             </div>
           </>
         ) : (
-          <div
-            class="sheet-handlerow"
-            onTouchStart={onTouchStart}
-            onTouchMove={onTouchMove}
-            onTouchEnd={onTouchEnd}
-          >
+          // Touch handlers live on the grab button ONLY — not the outer row.
+          // Otherwise a tap on the X picks up the natural finger drift, crosses
+          // the swipe-down threshold, and collapses the sheet to peek instead
+          // of firing the X's click — which reads to the user as "X doesn't work."
+          <div class="sheet-handlerow">
             <button
               type="button"
               class="sheet-handle sheet-handle-inline"
               aria-label={snap === 'peek' ? 'Expand sheet' : 'Collapse sheet'}
               onClick={() => setSnap((s) => (s === 'peek' ? 'full' : 'peek'))}
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
             >
               <span class="sheet-grab" />
             </button>
