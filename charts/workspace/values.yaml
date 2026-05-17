@@ -20,6 +20,10 @@ image:
   pullSecretName: regcred
 
 # Ingress configuration
+#   auth.type:
+#     "basic"  — http basic auth from .ingress.auth.secretName
+#     "oauth2" — oauth2-proxy in front of every /oauth/* path
+#     "none"   — bare TLS; anyone can hit it (use only with readOnly: true)
 ingress:
   className: nginx
   auth:
@@ -29,6 +33,16 @@ ingress:
     enabled: true
     secretName: ""
     clusterIssuer: letsencrypt-production
+
+# Read-only public demo mode. When true:
+#   - server.py rejects every POST/DELETE/PUT with 403 readonly
+#   - the dashboard SPA hides New/Edit/Delete/Kill/Rename/Send UI
+#   - the workspace pod boots with readOnlyRootFilesystem + tmpfs scratch
+#   - the kube-coder source clone is skipped (no writes)
+#   - the docker-in-docker sidecar is dropped
+# Hard-coupled to ingress.auth.type=none so we never accidentally expose a
+# mutable workspace without auth — server.py refuses to start in that combo.
+readOnly: false
 
 # Resource limits and requests
 resources:

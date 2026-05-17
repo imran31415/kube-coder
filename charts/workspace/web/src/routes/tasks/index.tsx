@@ -9,6 +9,7 @@ import { TaskDetail } from './TaskDetail';
 import { NewTaskForm } from './NewTaskForm';
 import { BottomSheet } from '../../components/BottomSheet';
 import { Drawer } from '../../components/Drawer';
+import { MutatorOnly } from '../../components/MutatorOnly';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 
 export function TasksRoute() {
@@ -47,9 +48,11 @@ export function TasksRoute() {
               Each build is a live Claude / OpenCode session in tmux. List refreshes every 10s.
             </p>
           </div>
-          <Button variant="primary" size="md" onClick={() => (drawerOpen.value = 'new-task')}>
-            <Icon name="plus" size={14} /> New build
-          </Button>
+          <MutatorOnly>
+            <Button variant="primary" size="md" onClick={() => (drawerOpen.value = 'new-task')}>
+              <Icon name="plus" size={14} /> New build
+            </Button>
+          </MutatorOnly>
         </header>
       )}
 

@@ -1,0 +1,57 @@
+{{- if eq .Values.ingress.auth.type "none" }}
+# Public-demo ingress: same path map as the oauth2 / oauth2-api ingresses,
+# but with NO auth annotations. Routes /oauth/* → backend with the rewrite
+# the SPA expects (withOauthPrefix prepends /oauth/ to every /api/* call).
+# Gated on auth.type=none and intended ONLY for readOnly:true deployments —
+# server.py refuses to start if those values disagree.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-public
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /oauth/(api/.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+      - path: /oauth/(metrics.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+      - path: /oauth/(health.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+{{- end }}

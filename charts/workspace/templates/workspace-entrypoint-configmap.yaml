@@ -52,6 +52,9 @@ data:
     # picks up new pages without a manual sync. Idempotent — clones if missing,
     # ff-only-pulls if present (skipped silently when there are local commits).
     # Backgrounded so a slow/flaky network never blocks pod readiness.
+    # Runs in READONLY_MODE too — the readonly gate is for *runtime* mutations
+    # from HTTP clients, not boot-time setup. The public demo needs the docs
+    # tree at /home/dev/kube-coder/docs/ to populate the in-app /docs route.
     (
       if [ ! -d /home/dev/kube-coder/.git ]; then
         log_stage "cloning kube-coder source into /home/dev/kube-coder"
@@ -339,6 +342,14 @@ data:
       ln -sf "$f" "/tmp/browser/$(basename "$f")"
     done
     cd /tmp/browser
+    # Public-demo seed. Idempotent (no-ops once stores have data) and gated
+    # on READONLY_MODE so it can never pollute a real workspace. Runs before
+    # server.py binds so visitors never see an empty Memory / Build page.
+    if [ "${READONLY_MODE:-false}" = "true" ]; then
+      log_stage "READONLY_MODE — running seed_demo.py to populate sample data"
+      READONLY_MODE=true python3 /tmp/browser/seed_demo.py \
+        2>&1 | sed 's/^/[seed_demo] /' || log_stage "WARNING: seed_demo.py exited non-zero"
+    fi
     python3 server.py &
 
     log_stage "all services launched, entering supervision loop"

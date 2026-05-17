@@ -115,6 +115,15 @@ spec:
               name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: private-key
         {{- end }}
+        # Read-only public demo gate. server.py reads READONLY_MODE at the
+        # request layer and refuses every POST/DELETE/PUT with 403. AUTH_MODE
+        # tells server.py to short-circuit check_claude_auth when the ingress
+        # itself is unauthed. server.py refuses to start if AUTH_MODE=none
+        # without READONLY_MODE=true (no unauthed writes, ever).
+        - name: READONLY_MODE
+          value: {{ .Values.readOnly | default false | quote }}
+        - name: AUTH_MODE
+          value: {{ .Values.ingress.auth.type | default "basic" | quote }}
         ports:
         - name: http
           containerPort: 8080

@@ -22,6 +22,7 @@ import { Icon } from '../../components/Icon';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { Drawer } from '../../components/Drawer';
 import { BottomSheet } from '../../components/BottomSheet';
+import { MutatorOnly } from '../../components/MutatorOnly';
 import {
   getMemoryHistory,
   getMemoryNeighbors,
@@ -75,9 +76,11 @@ export function MemoryRoute() {
             Facts that persist across sessions — {memories.value.length} entries, filterable by namespace and content.
           </p>
         </div>
-        <Button variant="primary" size="md" onClick={onNew}>
-          <Icon name="plus" size={14} /> New memory
-        </Button>
+        <MutatorOnly>
+          <Button variant="primary" size="md" onClick={onNew}>
+            <Icon name="plus" size={14} /> New memory
+          </Button>
+        </MutatorOnly>
       </header>
 
       <div class="mem-layout">
@@ -101,9 +104,11 @@ export function MemoryRoute() {
                   }
                   action={
                     !memoryFilter.value && !memoryNamespaceFacet.value && (
-                      <Button variant="primary" onClick={onNew}>
-                        <Icon name="plus" size={14} /> Create one
-                      </Button>
+                      <MutatorOnly>
+                        <Button variant="primary" onClick={onNew}>
+                          <Icon name="plus" size={14} /> Create one
+                        </Button>
+                      </MutatorOnly>
                     )
                   }
                 />
@@ -329,18 +334,20 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
           <Pill tone="neutral" mono>{m.kind}</Pill>
         </div>
         <div class="md-actions">
-          <Button size="sm" variant="ghost" onClick={() => onEdit(m)}>Edit</Button>
-          <Button
-            size="sm"
-            variant="danger"
-            onClick={() => {
-              if (confirm(`Delete ${m.namespace}.${m.key}? It will be soft-deleted and remain in history.`)) {
-                void removeMemory(m.namespace, m.key);
-              }
-            }}
-          >
-            Delete
-          </Button>
+          <MutatorOnly>
+            <Button size="sm" variant="ghost" onClick={() => onEdit(m)}>Edit</Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                if (confirm(`Delete ${m.namespace}.${m.key}? It will be soft-deleted and remain in history.`)) {
+                  void removeMemory(m.namespace, m.key);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </MutatorOnly>
         </div>
       </header>
       <div class="md-meta muted">

@@ -3,6 +3,7 @@ import { Button } from './primitives/Button';
 import { Icon } from './Icon';
 import { HealthDot } from './HealthDot';
 import { MetricsBar } from './MetricsBar';
+import { MutatorOnly, ReadOnlyPill } from './MutatorOnly';
 import { createTerminalTask, terminalUrl } from '../api/tasks';
 import { refreshTasks } from '../store/tasks';
 import { navigate } from '../store/router';
@@ -78,24 +79,27 @@ export function Topbar() {
         <kbd class="topbar-kbd">⌘K</kbd>
       </button>
       <div class="topbar-actions">
+        <ReadOnlyPill />
         <MetricsBar />
-        <a
-          class="topbar-link topbar-link-strong"
-          href="/oauth/vscode/?folder=/home/dev"
-          target="_blank"
-          rel="noopener"
-          title="Open VS Code (code-server) at /home/dev"
-        >
-          VS Code ↗
-        </a>
-        <button
-          type="button"
-          class="topbar-link topbar-link-strong"
-          onClick={openNewTerminal}
-          title="Register a plain-bash task and open ttyd in a new tab"
-        >
-          New terminal ↗
-        </button>
+        <MutatorOnly>
+          <a
+            class="topbar-link topbar-link-strong"
+            href="/oauth/vscode/?folder=/home/dev"
+            target="_blank"
+            rel="noopener"
+            title="Open VS Code (code-server) at /home/dev"
+          >
+            VS Code ↗
+          </a>
+          <button
+            type="button"
+            class="topbar-link topbar-link-strong"
+            onClick={openNewTerminal}
+            title="Register a plain-bash task and open ttyd in a new tab"
+          >
+            New terminal ↗
+          </button>
+        </MutatorOnly>
         <Button
           variant="ghost"
           size="sm"

@@ -5,6 +5,7 @@ import { sendFollowup } from '../../store/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { usePoll } from '../../hooks/usePoll';
+import { serverMode } from '../../store/server-mode';
 
 /**
  * Walk through a string of terminal output and wrap any http(s) URL in a
@@ -186,17 +187,19 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
         <textarea
           class="mc-input"
           placeholder={
-            isRunning
-              ? (status === 'waiting-for-input'
-                  ? 'Task is waiting for your input — reply here. (⌘/Ctrl+Enter to send)'
-                  : 'Reply to the assistant…  (⌘/Ctrl+Enter to send)')
-              : 'Task is no longer running; replies will be queued.'
+            serverMode.value.readOnly
+              ? 'Read-only public demo — sending follow-ups is disabled.'
+              : isRunning
+                ? (status === 'waiting-for-input'
+                    ? 'Task is waiting for your input — reply here. (⌘/Ctrl+Enter to send)'
+                    : 'Reply to the assistant…  (⌘/Ctrl+Enter to send)')
+                : 'Task is no longer running; replies will be queued.'
           }
           value={msg}
           onInput={(e) => setMsg((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKey}
           rows={3}
-          disabled={busy}
+          disabled={busy || serverMode.value.readOnly}
         />
         <div class="mc-composer-actions">
           <span class="muted mc-hint">
@@ -206,7 +209,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
             type="submit"
             variant="primary"
             size="sm"
-            disabled={busy || !msg.trim()}
+            disabled={busy || !msg.trim() || serverMode.value.readOnly}
             title="Send (⌘/Ctrl+Enter)"
           >
             <Icon name="play" size={12} /> Send

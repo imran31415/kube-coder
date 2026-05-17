@@ -48,6 +48,13 @@ spec:
             port:
               number: 8080
       {{- end }}
+{{- if ne .Values.ingress.auth.type "none" }}
+# /browser, /terminal, /vnc-direct, /websockify expose ttyd + VNC directly
+# (websocket → keystrokes → shell). With auth.type=none those ingresses
+# would hand any visitor an interactive terminal in the pod, regardless
+# of server.py's READONLY_MODE gate. Skip them entirely in public mode —
+# the dashboard SPA hides the corresponding entry points (see Topbar.tsx
+# and MoreSheet) so users won't see broken iframes.
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -216,3 +223,4 @@ spec:
             name: ws-{{ .Values.user.name }}
             port:
               number: 6081
+{{- end }}
