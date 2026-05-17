@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort } from '../../api/tasks';
+import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
 import { previewFullscreen } from '../../store/ui';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
@@ -11,6 +11,50 @@ export interface TerminalPaneProps {
 }
 
 const LAST_PORT_KEY = 'kc.previewPort';
+
+/**
+ * Pull HTTP(S) URLs out of the tmux pane text. Mobile users can't easily
+ * highlight + copy from inside the ttyd iframe, and assistants like Claude
+ * Code routinely print "open https://… to sign in" prompts — we promote
+ * those URLs to tappable buttons above the iframe.
+ *
+ * The regex matches a conservative set of URL terminators (whitespace, quotes,
+ * angle-brackets, parens, common punctuation that wouldn't appear in URLs)
+ * and de-dupes while preserving insertion order so the most recent URL stays
+ * at the top.
+ */
+const URL_RE = /https?:\/\/[^\s<>"'`()\[\]{}]+[^\s<>"'`()\[\]{},.;:!?]/g;
+function extractUrls(text: string, max = 5): string[] {
+  if (!text) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  // Iterate from the bottom of the pane so the freshest URL surfaces first.
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0 && out.length < max; i--) {
+    const matches = lines[i].match(URL_RE);
+    if (!matches) continue;
+    for (const u of matches) {
+      if (seen.has(u)) continue;
+      seen.add(u);
+      out.push(u);
+      if (out.length >= max) break;
+    }
+  }
+  return out;
+}
+
+function shortenUrl(u: string, max = 56): string {
+  if (u.length <= max) return u;
+  try {
+    const url = new URL(u);
+    const host = url.host;
+    const tail = u.slice(host.length + url.protocol.length + 2);
+    const cut = Math.max(8, max - host.length - 5);
+    return `${host}/…${tail.slice(-cut)}`;
+  } catch {
+    return u.slice(0, max - 1) + '…';
+  }
+}
 
 /**
  * Wires the workspace's shared ttyd entrypoint to this task's tmux session
@@ -38,6 +82,39 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const [portStatus, setPortStatus] = useState<string>('');
   const [portBusy, setPortBusy] = useState(false);
   const vncRef = useRef<HTMLIFrameElement | null>(null);
+
+  // Tappable URL strip — refreshed every ~4s from the task's tmux pane.
+  // Skipped in Preview (withVnc) mode since the VNC viewer is the primary
+  // surface there and the strip would feel redundant.
+  const [urls, setUrls] = useState<string[]>([]);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (withVnc) return;
+    let cancelled = false;
+    async function pull() {
+      try {
+        const r = await getTaskOutput(taskId, 60);
+        if (cancelled) return;
+        setUrls(extractUrls(r.output ?? ''));
+      } catch {
+        /* silent — keep last-good URLs */
+      }
+    }
+    void pull();
+    const id = window.setInterval(pull, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [taskId, withVnc]);
+
+  async function copyUrl(u: string) {
+    try {
+      await navigator.clipboard.writeText(u);
+      setCopiedUrl(u);
+      setTimeout(() => setCopiedUrl((cur) => (cur === u ? null : cur)), 1500);
+    } catch { /* clipboard unavailable */ }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -181,6 +258,37 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
           <div class="muted" style={{ marginTop: 4, fontSize: 12 }}>
             The task may have ended, or the workspace is missing the ttyd entrypoint.
           </div>
+        </div>
+      )}
+
+      {!withVnc && urls.length > 0 && (
+        <div class="term-pane-urls" aria-label="URLs detected in terminal output">
+          <span class="term-pane-urls-label muted">Links from terminal</span>
+          <ul class="term-pane-urls-list">
+            {urls.map((u) => (
+              <li key={u} class="term-pane-urls-item">
+                <a
+                  class="term-pane-urls-link"
+                  href={u}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={u}
+                >
+                  <Icon name="chevron-right" size={11} />
+                  <span class="mono">{shortenUrl(u)}</span>
+                </a>
+                <button
+                  type="button"
+                  class="term-pane-urls-copy"
+                  onClick={() => void copyUrl(u)}
+                  title="Copy URL to clipboard"
+                  aria-label={`Copy ${u}`}
+                >
+                  {copiedUrl === u ? 'copied' : 'copy'}
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
