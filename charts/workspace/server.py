@@ -2153,11 +2153,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # dashboard on each visit. Without this, SimpleHTTPRequestHandler
         # sends no Cache-Control and Safari can pin a stale SPA index.html
         # for days, hiding bundle updates behind a manual cache-clear.
-        # Only applied to HTML — JSON API endpoints already set their own
-        # Cache-Control before calling end_headers(), and static assets
-        # (JS/CSS/images) keep default browser heuristics.
+        # Applied to HTML AND to SPA routes (which don't end in .html but
+        # serve index.html via serve_next_spa) — the previous .html-only
+        # check missed /, /memory, /tasks etc., leading to users stuck on
+        # months-old bundles. Static hashed assets keep default heuristics.
         path = (self.path or '').split('?', 1)[0].lower()
-        if path.endswith('.html'):
+        is_html = path.endswith('.html')
+        is_spa_route = (
+            path in ('/', '/dashboard', '/dashboard/', '/browser', '/browser/', '/next', '/next/')
+            or path.startswith('/next/')
+            or any(path == r or path.startswith(r + '/')
+                   for r in ('/tasks', '/memory', '/triggers', '/files', '/docs', '/settings'))
+        )
+        if is_html or is_spa_route:
             self.send_header('Cache-Control', 'no-cache, must-revalidate')
             self.send_header('Pragma', 'no-cache')
         super().end_headers()

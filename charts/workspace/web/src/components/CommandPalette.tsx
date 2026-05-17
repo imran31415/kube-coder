@@ -102,9 +102,9 @@ function dataEntries(isMobile: boolean): PaletteEntry[] {
       id: `memory:${m.id}`,
       group: 'Memories',
       label: `${m.namespace}.${m.key}`,
-      hint: m.value.slice(0, 60),
+      hint: (m.value ?? '').slice(0, 60),
       icon: 'memory',
-      match: `memory ${m.namespace} ${m.key} ${m.value}`.toLowerCase(),
+      match: `memory ${m.namespace} ${m.key} ${m.value ?? ''}`.toLowerCase(),
       onSelect: () => {
         navigate('/memory');
         selectMemory(m);
