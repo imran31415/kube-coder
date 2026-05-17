@@ -20,6 +20,8 @@ data:
 {{ .Files.Get "memory_inject_hook.py" | indent 4 }}
   seed_claude_config.py: |
 {{ .Files.Get "seed_claude_config.py" | indent 4 }}
+  seed_demo.py: |
+{{ .Files.Get "seed_demo.py" | indent 4 }}
   memory__init__.py: |
 {{ .Files.Get "memory/__init__.py" | indent 4 }}
   memory_store.py: |
