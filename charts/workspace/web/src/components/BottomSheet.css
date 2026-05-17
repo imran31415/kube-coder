@@ -77,6 +77,11 @@
   right: var(--size-2);
   top: 50%;
   transform: translateY(-50%);
+  /* Above the grab button regardless of source order so touches always
+     hit the X, not the swipe-handle below it. */
+  z-index: 2;
+  pointer-events: auto;
+  touch-action: manipulation;
 }
 .sheet-handle-inline:active { cursor: grabbing; }
 

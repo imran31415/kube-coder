@@ -26,6 +26,17 @@
   border: 1px solid var(--border);
   margin-bottom: var(--size-2);
 }
+/* Tabs now live in the detail pane (the graph swaps with the detail view).
+   Give them their own padded header strip + make the active view fill. */
+.mem-detail-pane > .mem-view-tabs {
+  margin: var(--size-3) var(--size-3) 0;
+  align-self: flex-start;
+}
+.mem-detail-pane {
+  display: flex;
+  flex-direction: column;
+}
+.mem-detail-pane > :not(.mem-view-tabs) { flex: 1; min-height: 0; }
 .mem-view-tab {
   font-family: inherit;
   font-size: 12px;

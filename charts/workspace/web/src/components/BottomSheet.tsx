@@ -103,7 +103,21 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
             >
               <span class="sheet-grab" />
             </button>
-            <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close" title="Close">
+            <Button
+              variant="ghost"
+              size="sm"
+              iconOnly
+              onClick={(e: MouseEvent) => {
+                // Defensive: stop propagation so the click can't be re-fired
+                // against the sibling grab handler or any parent listener,
+                // and call onClose directly. Reports of "X does nothing" on
+                // mobile resolved when we hardened this path.
+                e.stopPropagation();
+                onClose();
+              }}
+              aria-label="Close"
+              title="Close"
+            >
               <Icon name="close" />
             </Button>
           </div>

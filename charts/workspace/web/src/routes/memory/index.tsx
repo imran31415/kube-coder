@@ -51,10 +51,10 @@ export function MemoryRoute() {
     setEditing({
       namespace: m.namespace,
       key: m.key,
-      value: m.value,
+      value: m.value ?? '',
       kind: m.kind,
       importance: m.importance,
-      tags: m.tags_list,
+      tags: m.tags_list ?? [],
     });
     drawerOpen.value = 'memory-edit' as DrawerKey;
   }
@@ -81,39 +81,60 @@ export function MemoryRoute() {
       </header>
 
       <div class="mem-layout">
+        {/* Master pane: on desktop always shows the searchable list. On
+            mobile the detail pane is hidden, so we also render the view
+            tabs HERE and let the Graph swap into the master (otherwise
+            mobile users had no way to reach the Graph at all). */}
         <div class="mem-master">
-          <MemoryViewTabs view={view} onChange={setView} />
-          <MemoryToolbar />
-          {list.length === 0 ? (
-            <EmptyState
-              icon={<Icon name="memory" size={24} />}
-              title={memoryFilter.value || memoryNamespaceFacet.value ? 'No matches' : 'No memories yet'}
-              description={
-                memoryFilter.value || memoryNamespaceFacet.value
-                  ? 'Try clearing the filter.'
-                  : 'Memories persist facts about you and your projects across Claude sessions.'
-              }
-              action={
-                !memoryFilter.value && !memoryNamespaceFacet.value && (
-                  <Button variant="primary" onClick={onNew}>
-                    <Icon name="plus" size={14} /> Create one
-                  </Button>
-                )
-              }
-            />
-          ) : view === 'list' ? (
-            <MemoryList list={list} onRowClick={onRowClick} onEdit={onEdit} />
+          {isMobile && <MemoryViewTabs view={view} onChange={setView} />}
+          {(!isMobile || view === 'list') ? (
+            <>
+              <MemoryToolbar />
+              {list.length === 0 ? (
+                <EmptyState
+                  icon={<Icon name="memory" size={24} />}
+                  title={memoryFilter.value || memoryNamespaceFacet.value ? 'No matches' : 'No memories yet'}
+                  description={
+                    memoryFilter.value || memoryNamespaceFacet.value
+                      ? 'Try clearing the filter.'
+                      : 'Memories persist facts about you and your projects across Claude sessions.'
+                  }
+                  action={
+                    !memoryFilter.value && !memoryNamespaceFacet.value && (
+                      <Button variant="primary" onClick={onNew}>
+                        <Icon name="plus" size={14} /> Create one
+                      </Button>
+                    )
+                  }
+                />
+              ) : (
+                <MemoryList list={list} onRowClick={onRowClick} onEdit={onEdit} />
+              )}
+            </>
           ) : (
             <MemoryGraph
               memories={list}
               selectedId={selectedMemory.value?.id ?? null}
-              onSelect={onRowClick}
+              onSelect={(m) => {
+                // On mobile, picking a node should open the detail sheet
+                // since the master is currently showing the graph itself.
+                onRowClick(m);
+              }}
             />
           )}
         </div>
         {!isMobile && (
           <div class="mem-detail-pane">
-            <MemoryDetail onEdit={onEdit} />
+            <MemoryViewTabs view={view} onChange={setView} />
+            {view === 'graph' ? (
+              <MemoryGraph
+                memories={list}
+                selectedId={selectedMemory.value?.id ?? null}
+                onSelect={onRowClick}
+              />
+            ) : (
+              <MemoryDetail onEdit={onEdit} />
+            )}
           </div>
         )}
       </div>
@@ -244,13 +265,13 @@ function MemoryList({ list, onRowClick }: { list: MemoryRecord[]; onRowClick: (m
                 <Pill tone="neutral" mono>{m.kind}</Pill>
                 <span class="mem-row-imp muted mono">{importance}%</span>
               </div>
-              <div class="mem-row-value muted">{m.value.slice(0, 180)}{m.value.length > 180 ? '…' : ''}</div>
-              {m.tags_list.length > 0 && (
+              <div class="mem-row-value muted">{(m.value ?? '').slice(0, 180)}{(m.value ?? '').length > 180 ? '…' : ''}</div>
+              {(m.tags_list?.length ?? 0) > 0 && (
                 <div class="mem-row-tags">
-                  {m.tags_list.slice(0, 4).map((t) => (
+                  {m.tags_list!.slice(0, 4).map((t) => (
                     <span class="mem-tag" key={t}>#{t}</span>
                   ))}
-                  {m.tags_list.length > 4 && <span class="muted">+{m.tags_list.length - 4}</span>}
+                  {m.tags_list!.length > 4 && <span class="muted">+{m.tags_list!.length - 4}</span>}
                 </div>
               )}
             </button>
@@ -323,8 +344,12 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
         </div>
       </header>
       <div class="md-meta muted">
-        importance {Math.round(m.importance * 100)}% · v{m.version} · {m.access_count} reads ·
-        updated {new Date(m.updated_at * 1000).toLocaleString()}
+        importance {typeof m.importance === 'number' ? `${Math.round(m.importance * 100)}%` : '—'}
+        {typeof m.version === 'number' ? ` · v${m.version}` : ''}
+        {typeof m.access_count === 'number' ? ` · ${m.access_count} reads` : ''}
+        {typeof m.updated_at === 'number'
+          ? ` · updated ${new Date(m.updated_at * 1000).toLocaleString()}`
+          : ''}
       </div>
       <nav class="md-tabs" role="tablist">
         {(['value', 'history', 'relations'] as MemTab[]).map((id) => (
@@ -341,10 +366,10 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
       </nav>
       {tab === 'value' && (
         <>
-          <pre class="md-value">{m.value}</pre>
-          {m.tags_list.length > 0 && (
+          <pre class="md-value">{m.value ?? ''}</pre>
+          {(m.tags_list?.length ?? 0) > 0 && (
             <div class="md-tags">
-              {m.tags_list.map((t) => (
+              {m.tags_list!.map((t) => (
                 <span key={t} class="mem-tag">#{t}</span>
               ))}
             </div>
@@ -366,7 +391,7 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
                     <Pill tone="neutral" mono>v{v.version}</Pill>
                     <span class="muted mono">{new Date(v.updated_at * 1000).toLocaleString()}</span>
                   </div>
-                  <pre class="md-history-value">{v.value.slice(0, 600)}{v.value.length > 600 ? '…' : ''}</pre>
+                  <pre class="md-history-value">{(v.value ?? '').slice(0, 600)}{(v.value ?? '').length > 600 ? '…' : ''}</pre>
                 </li>
               ))}
             </ol>
@@ -377,12 +402,12 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
         <div class="md-tab-body">
           {neighbors == null ? (
             <p class="muted">Loading…</p>
-          ) : neighbors.edges.length === 0 ? (
+          ) : (neighbors.edges?.length ?? 0) === 0 ? (
             <p class="muted">No relations recorded for this entry yet.</p>
           ) : (
             <ul class="md-relations">
-              {neighbors.edges.map((e) => {
-                const other = neighbors.nodes.find((n) => n.id === (e.from_id === m.id ? e.to_id : e.from_id));
+              {neighbors.edges!.map((e) => {
+                const other = (neighbors.nodes ?? []).find((n) => n.id === (e.from_id === m.id ? e.to_id : e.from_id));
                 return (
                   <li key={`${e.from_id}-${e.to_id}-${e.kind}`}>
                     <Pill tone="info" mono>{e.kind}</Pill>

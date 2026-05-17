@@ -1,4 +1,5 @@
 import { apiGet, apiPost, apiDelete, withOauthPrefix } from './client';
+import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
 
 export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown' | 'waiting-for-input';
 export type TaskKind = 'claude' | 'terminal' | string;
@@ -53,9 +54,11 @@ interface ListResponse {
   tasks: TaskSummary[];
 }
 
-export const listTasks = () => apiGet<ListResponse>('/api/claude/tasks').then((r) => r.tasks);
+export const listTasks = () =>
+  apiGet<ListResponse>('/api/claude/tasks').then((r) => safeArray(r.tasks).map(coerceTaskSummary));
 
-export const getTask = (id: string) => apiGet<TaskDetail>(`/api/claude/tasks/${id}`);
+export const getTask = (id: string) =>
+  apiGet<TaskDetail>(`/api/claude/tasks/${id}`).then(coerceTaskDetail);
 
 export const getTaskOutput = (id: string, tail?: number) =>
   apiGet<{ output: string }>(`/api/claude/tasks/${id}/output`, tail ? { tail } : undefined);

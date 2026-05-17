@@ -64,8 +64,17 @@ export async function loadSelected(ns: string, key: string): Promise<void> {
   selectedMemoryLoading.value = true;
   try {
     const m = await getMemory(ns, key);
-    selectedMemory.value = m;
-    selectedMemoryId.value = m.id;
+    // Only overwrite if the detail response is a real record (has the
+    // identifying fields). If the server returns garbage or a partial
+    // object, keep whatever selectMemory() set from the list row instead
+    // — that data is always full per the list endpoint.
+    if (m && m.id != null && m.namespace && m.key) {
+      selectedMemory.value = m;
+      selectedMemoryId.value = m.id;
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn('[memory] getMemory returned partial response; keeping list-row data', m);
+    }
   } catch (err) {
     pushToast(err instanceof Error ? err.message : 'Memory load failed', { kind: 'danger' });
   } finally {
