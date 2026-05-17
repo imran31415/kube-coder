@@ -48,14 +48,21 @@ data:
     # Ensure the upstream kube-coder source is available at /home/dev/kube-coder
     # so Claude can introspect the workspace's own infrastructure and contribute
     # changes back via fork+PR (see CLAUDE.md "kube-coder source" section).
-    # Idempotent — skipped if .git already exists. Backgrounded so a slow/flaky
-    # clone never blocks pod readiness.
+    # Also keeps /home/dev/kube-coder/docs current so the in-app Docs site
+    # picks up new pages without a manual sync. Idempotent — clones if missing,
+    # ff-only-pulls if present (skipped silently when there are local commits).
+    # Backgrounded so a slow/flaky network never blocks pod readiness.
     (
       if [ ! -d /home/dev/kube-coder/.git ]; then
         log_stage "cloning kube-coder source into /home/dev/kube-coder"
         git clone https://github.com/imran31415/kube-coder.git /home/dev/kube-coder \
           && log_stage "kube-coder source clone complete" \
           || log_stage "WARNING: kube-coder clone failed (network?); will retry on next pod start"
+      else
+        log_stage "refreshing kube-coder source (git pull --ff-only)"
+        ( cd /home/dev/kube-coder && git pull --ff-only origin main >/dev/null 2>&1 ) \
+          && log_stage "kube-coder source refreshed" \
+          || log_stage "NOTE: git pull skipped (local commits or offline); existing clone retained"
       fi
     ) &
 

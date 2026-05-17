@@ -5,6 +5,8 @@ import { HealthDot } from './HealthDot';
 import { MetricsBar } from './MetricsBar';
 import { createTerminalTask, terminalUrl } from '../api/tasks';
 import { refreshTasks } from '../store/tasks';
+import { navigate } from '../store/router';
+import { drawerOpen, sheetOpen } from '../store/ui';
 import './Topbar.css';
 
 /**
@@ -46,12 +48,25 @@ export function Topbar() {
   const isDark = theme.value !== 'light';
   return (
     <header class="topbar" role="banner">
-      <div class="brand">
+      <button
+        type="button"
+        class="brand brand-button"
+        onClick={() => {
+          // Close any open overlays first, then return to the home route so
+          // the brand mark consistently behaves as a "back to home" anchor.
+          drawerOpen.value = null;
+          sheetOpen.value = null;
+          paletteOpen.value = false;
+          navigate('/tasks');
+        }}
+        aria-label="Go to home (Build)"
+        title="Home — Build sessions"
+      >
         <span class="brand-mark" aria-hidden>kc</span>
         <span class="brand-name">kube-coder</span>
         <span class="brand-tag" aria-label="next-generation dashboard">next</span>
         <HealthDot />
-      </div>
+      </button>
       <button
         type="button"
         class="topbar-search"

@@ -17,6 +17,9 @@
   transform: translateY(100%);
   transition: transform var(--motion-base), height var(--motion-base);
   display: flex; flex-direction: column;
+  /* Honor iOS safe areas top + bottom so the X isn't clipped by notch/URL bar
+     and content isn't hidden behind the home indicator. */
+  padding-top: var(--safe-top);
   padding-bottom: var(--safe-bottom);
   max-height: 92vh;
 }
@@ -46,7 +49,9 @@
 
 .sheet-header-floating {
   position: absolute;
-  top: 8px;
+  /* Offset by safe-area-top so the X clears the iOS notch / URL bar. The
+     sheet itself has padding-top: var(--safe-top) so this stacks correctly. */
+  top: calc(var(--safe-top) + 8px);
   right: 8px;
   background: transparent;
   border: 0;

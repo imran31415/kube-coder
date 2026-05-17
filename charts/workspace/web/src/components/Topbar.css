@@ -22,6 +22,22 @@
 }
 
 .brand { display: inline-flex; align-items: center; gap: 8px; }
+.brand-button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border-radius: var(--radius-sm);
+  transition: opacity var(--motion-fast);
+}
+.brand-button:hover { opacity: 0.8; }
+.brand-button:active { transform: translateY(0.5px); }
+.brand-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .brand-mark {
   font-family: var(--font-mono);
   font-weight: 600;

@@ -61,6 +61,10 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const [subagentsCount, setSubagentsCount] = useState<number>(0);
   const [confirmKill, setConfirmKill] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  // Lets the user reclaim vertical space (mobile especially) by collapsing
+  // the task header + meta strip. Tabs stay visible since they're the
+  // primary nav inside the detail view.
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
 
   // When the selected task CHANGES, snap to a sensible default tab:
   //   - live (running)  → Terminal (the user wants to watch it work)
@@ -196,63 +200,89 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const banner = !isLive ? FINISHED_BANNER[t.status] : undefined;
 
   return (
-    <article class="td">
-      <header class="td-header">
-        <div class="td-headline">
-          <Pill tone={STATUS_TONE[t.status]} mono title={STATUS_HELP[t.status]}>
-            {t.status}
-          </Pill>
-          <h2 class="td-title" title={t.prompt || undefined}>
-            {t.name || t.prompt || '(unnamed)'}
-          </h2>
-        </div>
-        <div class="td-actions">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onCopyLink}
-            disabled={busy}
-            title="Copy a deep-link URL to this task to your clipboard"
-          >
-            {copied ? 'Copied' : 'Copy link'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onRename}
-            disabled={busy}
-            title="Rename this task (display only — doesn't affect the tmux session)"
-          >
-            Rename
-          </Button>
-          <Button
-            size="sm"
-            variant={t.status === 'running' ? 'danger' : 'ghost'}
-            onClick={onKill}
-            disabled={busy || t.status !== 'running'}
-            title={
-              t.status === 'running'
-                ? 'Kill the tmux session (output is preserved)'
-                : 'Already stopped'
-            }
-          >
-            <Icon name="kill" size={14} /> Kill
-          </Button>
-          {onClose && (
+    <article class={`td ${headerCollapsed ? 'td-collapsed' : ''}`}>
+      {!headerCollapsed && (
+        <header class="td-header">
+          <div class="td-headline">
+            <Pill tone={STATUS_TONE[t.status]} mono title={STATUS_HELP[t.status]}>
+              {t.status}
+            </Pill>
+            <h2 class="td-title" title={t.prompt || undefined}>
+              {t.name || t.prompt || '(unnamed)'}
+            </h2>
+          </div>
+          <div class="td-actions">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onCopyLink}
+              disabled={busy}
+              title="Copy a deep-link URL to this task to your clipboard"
+            >
+              {copied ? 'Copied' : 'Copy link'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onRename}
+              disabled={busy}
+              title="Rename this task (display only — doesn't affect the tmux session)"
+            >
+              Rename
+            </Button>
+            <Button
+              size="sm"
+              variant={t.status === 'running' ? 'danger' : 'ghost'}
+              onClick={onKill}
+              disabled={busy || t.status !== 'running'}
+              title={
+                t.status === 'running'
+                  ? 'Kill the tmux session (output is preserved)'
+                  : 'Already stopped'
+              }
+            >
+              <Icon name="kill" size={14} /> Kill
+            </Button>
             <Button
               size="sm"
               variant="ghost"
               iconOnly
-              onClick={onClose}
-              aria-label="Close detail"
-              title="Deselect task"
+              onClick={() => setHeaderCollapsed(true)}
+              aria-label="Hide task header"
+              title="Hide the header + meta strip — gives the terminal more vertical space"
             >
-              <Icon name="close" />
+              <Icon name="chevron-down" size={14} />
             </Button>
-          )}
-        </div>
-      </header>
+            {onClose && (
+              <Button
+                size="sm"
+                variant="ghost"
+                iconOnly
+                onClick={onClose}
+                aria-label="Close detail"
+                title="Deselect task"
+              >
+                <Icon name="close" />
+              </Button>
+            )}
+          </div>
+        </header>
+      )}
+      {headerCollapsed && (
+        <button
+          type="button"
+          class="td-expand"
+          onClick={() => setHeaderCollapsed(false)}
+          aria-label="Show task header"
+          title="Show the task header again"
+        >
+          <Icon name="chevron-right" size={12} />
+          <span class="mono">{t.name || t.task_id.slice(0, 12)}</span>
+          <Pill tone={STATUS_TONE[t.status]} mono>{t.status}</Pill>
+        </button>
+      )}
 
+      {!headerCollapsed && (
       <div class="td-meta">
         {t.workdir && (
           <span
@@ -277,6 +307,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
           </span>
         )}
       </div>
+      )}
 
       <nav class="td-tabs" role="tablist">
         {visibleTabs.map((id) => (
