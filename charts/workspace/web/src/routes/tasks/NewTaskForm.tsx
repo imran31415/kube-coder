@@ -5,6 +5,9 @@ import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Icon } from '../../components/Icon';
 import { randomBuildName } from '../../util/randomName';
+import { navigate, currentPath } from '../../store/router';
+import { sheetOpen } from '../../store/ui';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 import './new-task.css';
 
 /**
@@ -14,6 +17,7 @@ import './new-task.css';
  * there. Server.py allows an empty prompt for exactly this flow.
  */
 export function NewTaskForm({ onClose }: { onClose: () => void }) {
+  const isMobile = useIsMobile();
   const [name, setName] = useState(() => randomBuildName());
   const [workdir, setWorkdir] = useState('/home/dev');
   const [assistant, setAssistant] = useState('');
@@ -49,7 +53,17 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         const { renameTask } = await import('../../api/tasks');
         void renameTask(task.task_id, name).catch(() => undefined);
       }
+      // Drop the user straight into the new build's terminal:
+      //   - if they're on a different route, navigate to /tasks first
+      //   - on mobile, open the task-detail BottomSheet (the master/detail
+      //     pane that auto-renders on desktop doesn't exist on phones)
+      //   - select the task so TaskDetail mounts on the Terminal tab
+      //     (running tasks default to Terminal per TaskDetail's useEffect)
+      if (!currentPath.value.startsWith('/tasks')) {
+        navigate('/tasks');
+      }
       selectTask(task.task_id);
+      if (isMobile) sheetOpen.value = 'task-detail';
       onClose();
     }
   }
