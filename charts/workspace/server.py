@@ -792,7 +792,7 @@ class ClaudeTaskManager:
         recent_output = ''
         session_name = meta.get('tmux_session', f'claude-{task_id}')
         result = subprocess.run(
-            ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-50'],
+            ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-50'],
             capture_output=True, text=True,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -813,7 +813,10 @@ class ClaudeTaskManager:
         # For live sessions, capture the tmux pane content
         session_name = meta.get('tmux_session', f'claude-{task_id}')
         result = subprocess.run(
-            ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-200'],
+            # -J joins wrapped lines, so URLs the assistant prints that
+            # overflow the 220-col pane come back as one logical line —
+            # critical for the SPA's URL-detection strip in the Terminal tab.
+            ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-200'],
             capture_output=True, text=True,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -1113,9 +1116,11 @@ class ClaudeTaskManager:
             return
         
         # Session is still running, check for waiting-for-input patterns
-        # Capture current output to analyze for waiting patterns
+        # Capture current output to analyze for waiting patterns. -J joins
+        # wrapped lines so prompts like "Continue? (y/n)" that overflow the
+        # pane width still match the regex patterns.
         capture_cmd = subprocess.run(
-            ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-50'],  # Last 50 lines
+            ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-50'],
             capture_output=True, text=True,
         )
         
@@ -2575,7 +2580,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             """Return the current pane content (with history), or fall back to
             output.log if the tmux session is gone (task completed/killed)."""
             r = subprocess.run(
-                ['tmux', 'capture-pane', '-t', session_name, '-p', '-S', '-2000'],
+                ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-2000'],
                 capture_output=True, text=True,
             )
             if r.returncode == 0 and r.stdout:
