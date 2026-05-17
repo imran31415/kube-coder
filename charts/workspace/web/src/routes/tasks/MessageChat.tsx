@@ -23,7 +23,9 @@ export interface MessageChatProps {
 export function MessageChat({ taskId, status }: MessageChatProps) {
   const TAIL_LINES = 80;
   const POLL_MS = 3000;
-  const isRunning = status === 'running';
+  // Treat "waiting-for-input" as alive too — task is paused on a prompt and
+  // sending a follow-up is exactly how the user unblocks it.
+  const isRunning = status === 'running' || status === 'waiting-for-input';
 
   const [latest, setLatest] = useState<string>('');
   const [loaded, setLoaded] = useState(false);
@@ -152,8 +154,10 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
         <textarea
           class="mc-input"
           placeholder={
-            status === 'running'
-              ? 'Reply to the assistant…  (⌘/Ctrl+Enter to send)'
+            isRunning
+              ? (status === 'waiting-for-input'
+                  ? 'Task is waiting for your input — reply here. (⌘/Ctrl+Enter to send)'
+                  : 'Reply to the assistant…  (⌘/Ctrl+Enter to send)')
               : 'Task is no longer running; replies will be queued.'
           }
           value={msg}
