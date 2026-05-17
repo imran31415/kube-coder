@@ -936,5 +936,105 @@ class WebhookReceiverTests(unittest.TestCase):
         self.assertIn('```json', task['prompt'])  # attach mode appended payload
 
 
+class SSRFGuardTests(unittest.TestCase):
+    """`_is_safe_response_url` must reject hooks aimed at internal IPs so a
+    malicious caller can't turn the completion-hook into a probe of the cloud
+    metadata service / in-cluster services."""
+
+    def test_rejects_loopback_literal(self):
+        for url in ('http://127.0.0.1/x', 'http://[::1]/x', 'http://localhost/x'):
+            self.assertFalse(server.ClaudeTaskManager._is_safe_response_url(url), url)
+
+    def test_rejects_link_local_metadata_service(self):
+        self.assertFalse(server.ClaudeTaskManager._is_safe_response_url(
+            'http://169.254.169.254/latest/meta-data/'))
+
+    def test_rejects_rfc1918(self):
+        for url in ('http://10.0.0.1/', 'http://192.168.1.1/', 'http://172.16.0.1/'):
+            self.assertFalse(server.ClaudeTaskManager._is_safe_response_url(url), url)
+
+    def test_unresolvable_passes_through(self):
+        """Hosts that don't resolve fall through (urlopen will fail safely).
+        Tests rely on this so synthetic .test TLDs keep working."""
+        self.assertTrue(server.ClaudeTaskManager._is_safe_response_url(
+            'http://does-not-exist.invalid/hook'))
+
+    def test_allow_internal_hooks_opts_back_in(self):
+        orig = server.ALLOW_INTERNAL_HOOKS
+        try:
+            server.ALLOW_INTERNAL_HOOKS = True
+            self.assertTrue(server.ClaudeTaskManager._is_safe_response_url(
+                'http://127.0.0.1/x'))
+        finally:
+            server.ALLOW_INTERNAL_HOOKS = orig
+
+
+class RequestBodyCapTests(unittest.TestCase):
+    """`read_json_body` must refuse bodies over MAX_REQUEST_BODY_BYTES so a
+    single Content-Length: huge POST can't OOM the pod."""
+
+    def _handler_with_length(self, content_length):
+        h = mock.Mock(spec=server.BrowserHandler)
+        h.headers = {'Content-Length': str(content_length)}
+        h.rfile = mock.Mock()
+        h.rfile.read.return_value = b'{}'
+        return h
+
+    def test_rejects_oversized_body(self):
+        h = self._handler_with_length(server.MAX_REQUEST_BODY_BYTES + 1)
+        with self.assertRaises(ValueError):
+            server.BrowserHandler.read_json_body(h)
+
+    def test_accepts_undersized_body(self):
+        h = self._handler_with_length(2)
+        self.assertEqual(server.BrowserHandler.read_json_body(h), {})
+
+
+class TrustedProxyTests(unittest.TestCase):
+    """check_claude_auth must ignore X-Auth-Request-* / Remote-User headers
+    when TRUSTED_PROXY=false — otherwise a misconfigured ingress that doesn't
+    strip client-supplied headers becomes a trivial auth bypass."""
+
+    def _handler_with(self, headers, auth_mode='basic', trusted=True):
+        h = mock.Mock(spec=server.BrowserHandler)
+        h.headers = headers
+        return h
+
+    def test_upstream_headers_ignored_when_proxy_untrusted(self):
+        orig_trust, orig_auth = server.TRUSTED_PROXY, server.AUTH_MODE
+        try:
+            server.TRUSTED_PROXY = False
+            server.AUTH_MODE = 'basic'
+            h = self._handler_with({'X-Auth-Request-Email': 'attacker@evil.test'})
+            self.assertFalse(server.BrowserHandler.check_claude_auth(h))
+            h = self._handler_with({'Remote-User': 'attacker'})
+            self.assertFalse(server.BrowserHandler.check_claude_auth(h))
+        finally:
+            server.TRUSTED_PROXY, server.AUTH_MODE = orig_trust, orig_auth
+
+    def test_upstream_headers_accepted_when_proxy_trusted(self):
+        orig_trust, orig_auth = server.TRUSTED_PROXY, server.AUTH_MODE
+        try:
+            server.TRUSTED_PROXY = True
+            server.AUTH_MODE = 'basic'
+            h = self._handler_with({'X-Auth-Request-Email': 'user@example.com'})
+            self.assertTrue(server.BrowserHandler.check_claude_auth(h))
+        finally:
+            server.TRUSTED_PROXY, server.AUTH_MODE = orig_trust, orig_auth
+
+    def test_allow_none_mode_false_blocks_public_demo(self):
+        """PII endpoints pass allow_none_mode=False so AUTH_MODE=none cannot
+        leak the operator's git config / SSH key fingerprint."""
+        orig_auth = server.AUTH_MODE
+        try:
+            server.AUTH_MODE = 'none'
+            h = self._handler_with({})
+            self.assertTrue(server.BrowserHandler.check_claude_auth(h))
+            self.assertFalse(server.BrowserHandler.check_claude_auth(
+                h, allow_none_mode=False))
+        finally:
+            server.AUTH_MODE = orig_auth
+
+
 if __name__ == '__main__':
     unittest.main()
