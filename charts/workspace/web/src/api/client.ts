@@ -60,6 +60,30 @@ function buildUrl(path: string, query?: Options['query']): string {
   return qs ? `${prefixed}?${qs}` : prefixed;
 }
 
+/**
+ * Detect the "auth expired" symptom and bounce the whole page to
+ * /oauth2/start?rd=<current> so the user sees a real sign-in prompt
+ * instead of silent CORS errors in devtools. Fires at most once per page
+ * load so we can't get stuck in a redirect loop if sign-in fails.
+ */
+let _authRedirectFired = false;
+function redirectToSignIn(): void {
+  if (_authRedirectFired) return;
+  if (typeof window === 'undefined') return;
+  _authRedirectFired = true;
+  const rd = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.href = `/oauth2/start?rd=${rd}`;
+}
+
+function isAuthExpiredError(e: unknown): boolean {
+  // Browser fetch raises TypeError when it tries to follow a cross-origin
+  // redirect with credentials (oauth2-proxy 302 → github.com/login/...).
+  // No status code reaches us — only a generic "Failed to fetch".
+  if (!(e instanceof TypeError)) return false;
+  const msg = (e.message || '').toLowerCase();
+  return msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('load failed');
+}
+
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<T> {
   const { body, query, headers, ...rest } = opts;
   const init: RequestInit = {
@@ -73,7 +97,22 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
     body: body === undefined ? undefined : JSON.stringify(body),
   };
   const url = buildUrl(path, query);
-  const res = await fetch(url, init);
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (e) {
+    if (isAuthExpiredError(e)) {
+      redirectToSignIn();
+      throw new ApiError('Session expired — redirecting to sign in.', 401, null);
+    }
+    throw e;
+  }
+  // oauth2-proxy sometimes returns 401 directly (when configured to skip the
+  // redirect for AJAX) — handle that path too.
+  if (res.status === 401 && url.startsWith('/oauth/')) {
+    redirectToSignIn();
+    throw new ApiError('Session expired — redirecting to sign in.', 401, null);
+  }
   const ctype = res.headers.get('Content-Type') || '';
   const isJson = ctype.includes('application/json');
   const parsed: unknown = isJson ? await res.json().catch(() => null) : await res.text();
