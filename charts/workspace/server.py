@@ -2507,11 +2507,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if output is None:
             self.send_json({'error': 'Task or output not found'}, 404)
             return
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(output.encode('utf-8', errors='replace'))
+        # JSON-wrap the body so the SPA's typed fetch client (which expects
+        # `{output: string}`) deserializes correctly. The legacy dashboard's
+        # raw-text consumer was retired with the dashboard.html removal.
+        self.send_json({'output': output})
 
     def handle_claude_stream_output(self):
         """Server-Sent Events stream of a task's rendered tmux output.

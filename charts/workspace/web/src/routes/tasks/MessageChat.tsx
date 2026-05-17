@@ -1,9 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import type { VNode } from 'preact';
 import { getTaskOutput, type TaskStatus } from '../../api/tasks';
 import { sendFollowup } from '../../store/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { usePoll } from '../../hooks/usePoll';
+
+/**
+ * Walk through a string of terminal output and wrap any http(s) URL in a
+ * tappable <a>. Critical on mobile where the user can't highlight text
+ * inside the ttyd iframe — the Send-message tab becomes a copy-friendly
+ * mirror that also surfaces auth/login links Claude prints.
+ */
+const LINKIFY_RE = /https?:\/\/[^\s<>"'`\[\]{}|\\^]+[^\s<>"'`\[\]{}|\\^,.;:!?]/g;
+function linkify(text: string): (string | VNode)[] {
+  const out: (string | VNode)[] = [];
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  LINKIFY_RE.lastIndex = 0;
+  while ((m = LINKIFY_RE.exec(text)) !== null) {
+    if (m.index > lastIdx) out.push(text.slice(lastIdx, m.index));
+    out.push(
+      <a
+        href={m[0]}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="mc-bubble-link"
+        title="Open link in new tab"
+      >
+        {m[0]}
+      </a>
+    );
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) out.push(text.slice(lastIdx));
+  return out;
+}
 
 export interface MessageChatProps {
   taskId: string;
@@ -134,7 +166,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
                 </span>
               </div>
               <pre class="mc-bubble-content mono">
-                {trimmedLatest || '(no output yet)'}
+                {trimmedLatest ? linkify(trimmedLatest) : '(no output yet)'}
               </pre>
             </div>
 
