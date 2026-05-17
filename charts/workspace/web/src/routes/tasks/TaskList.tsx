@@ -14,6 +14,7 @@ import {
   tasksLoading,
   taskCounts,
 } from '../../store/tasks';
+import { navigate } from '../../store/router';
 import { sheetOpen } from '../../store/ui';
 import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
@@ -66,6 +67,11 @@ export function TaskList() {
   const pastCount = counts.completed + counts.error;
 
   function onRowClick(t: TaskSummary) {
+    // URL is the source of truth so a reload restores the same selection
+    // (and the TerminalPane re-attaches automatically). TasksRoute mirrors
+    // currentPath → selectedTaskId; we keep selectTask here as a belt-and-
+    // suspenders sync for the immediate render frame.
+    navigate(`/tasks/${t.task_id}`);
     selectTask(t.task_id);
     if (isMobile) sheetOpen.value = 'task-detail';
   }

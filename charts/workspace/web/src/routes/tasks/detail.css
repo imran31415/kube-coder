@@ -313,6 +313,7 @@
 .term-pane-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--size-2);
   padding: 6px var(--size-3);
   border-bottom: 1px solid var(--border);
@@ -409,5 +410,28 @@
   .term-pane-frames-split {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr 1fr;
+  }
+  /* On narrow viewports the toolbar tries to fit ~6 buttons + a port form
+     on one row. Let it wrap, drop the port-form's left border (which looks
+     wrong once the row wraps), and tighten paddings. Without this the bar
+     pushes content off-screen on phones. */
+  .term-pane-bar {
+    padding: 6px var(--size-2);
+    font-size: 11px;
+  }
+  .term-pane-port {
+    margin-left: 0;
+    border-left: 0;
+    padding-left: 0;
+    flex-basis: 100%;
+  }
+  .term-pane-grow {
+    /* On wrap the grow spacer would push the action buttons onto their own
+       full-width row; collapse it so they sit beside the status dot. */
+    flex: 0;
+    display: none;
+  }
+  .term-pane-iframe {
+    min-height: 280px;
   }
 }

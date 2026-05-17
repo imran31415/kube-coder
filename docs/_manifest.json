@@ -1,0 +1,52 @@
+{
+  "$comment": "In-app docs site nav. Each leaf node points at a markdown file relative to /home/dev/kube-coder/docs/. The SPA renders these inside the /docs route. Edit this file to add or reorder pages — the dashboard picks it up on next request (mtime-cached).",
+  "version": 1,
+  "sections": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "pages": [
+        { "id": "getting-started", "title": "Getting started", "file": "in-app/getting-started.md", "summary": "What you see on first load, how to run your first task, where to go next." }
+      ]
+    },
+    {
+      "id": "tasks",
+      "title": "Tasks",
+      "pages": [
+        { "id": "tasks-concepts", "title": "Concepts", "file": "in-app/tasks-concepts.md", "summary": "What a task is, lifecycle states, tmux sessions, attaching." },
+        { "id": "tasks-assistants", "title": "Assistants", "file": "llm-setup.md", "summary": "Claude Code vs OpenRouter vs the open-source GPU harness." },
+        { "id": "tasks-api", "title": "HTTP API", "file": "claude-task-api.md", "summary": "Full Claude Task API reference — curl recipes and endpoint matrix." }
+      ]
+    },
+    {
+      "id": "memory",
+      "title": "Memory",
+      "pages": [
+        { "id": "memory-concepts", "title": "Concepts", "file": "in-app/memory-concepts.md", "summary": "Namespaces, importance, tags, the secret tag, how Claude reads memory back." },
+        { "id": "memory-architecture", "title": "Architecture", "file": "persistent-memory.md", "summary": "SQLite WAL store, MCP server, the UserPromptSubmit inject hook." }
+      ]
+    },
+    {
+      "id": "triggers",
+      "title": "Triggers",
+      "pages": [
+        { "id": "triggers-webhooks", "title": "Webhooks", "file": "in-app/triggers-webhooks.md", "summary": "Signed webhooks, payload templating, response URLs, replay protection." }
+      ]
+    },
+    {
+      "id": "workspace",
+      "title": "Workspace",
+      "pages": [
+        { "id": "files", "title": "Files", "file": "in-app/files.md", "summary": "Files tab tour, upload limits, where data lives, the persistence model." },
+        { "id": "browser", "title": "Browser & VNC", "file": "in-app/browser.md", "summary": "Headless Firefox/Chrome on the virtual display, the VNC viewer, kiosk mode." }
+      ]
+    },
+    {
+      "id": "meta",
+      "title": "Improving kube-coder",
+      "pages": [
+        { "id": "improvements-plan", "title": "Improvements plan", "file": "improvements-plan.md", "summary": "Living planning doc covering ongoing code-quality and feature work." }
+      ]
+    }
+  ]
+}

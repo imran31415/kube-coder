@@ -16,6 +16,7 @@ import { MemoryRoute } from './memory/index';
 import { TriggersRoute } from './triggers/index';
 import { FilesRoute } from './files/index';
 import { SettingsRoute } from './settings/index';
+import { DocsRoute } from './docs/index';
 import { MoreSheet } from './more/index';
 import './Shell.css';
 
@@ -24,6 +25,7 @@ const ROUTE_COMPONENTS: Record<string, FunctionComponent> = {
   '/memory': MemoryRoute,
   '/triggers': TriggersRoute,
   '/files': FilesRoute,
+  '/docs': DocsRoute,
   '/settings': SettingsRoute,
 };
 

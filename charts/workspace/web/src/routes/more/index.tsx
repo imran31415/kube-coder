@@ -51,6 +51,12 @@ export function MoreSheet() {
       onSelect: () => { navigate('/files'); sheetOpen.value = null; },
     },
     {
+      label: 'Docs',
+      icon: 'docs',
+      onSelect: () => { navigate('/docs'); sheetOpen.value = null; },
+      hint: 'Learn how every feature works',
+    },
+    {
       label: 'Settings',
       icon: 'settings',
       onSelect: () => { navigate('/settings'); sheetOpen.value = null; },
