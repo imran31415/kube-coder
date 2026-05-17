@@ -74,20 +74,16 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
         >
           <span class="sheet-grab" />
         </button>
-        {title ? (
-          <div class="sheet-header">
-            <h2 class="sheet-title">{title}</h2>
-            <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close">
-              <Icon name="close" />
-            </Button>
-          </div>
-        ) : (
-          <div class="sheet-header sheet-header-floating">
-            <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close">
-              <Icon name="close" />
-            </Button>
-          </div>
-        )}
+        {/* Always render a real (non-floating) header so the X has guaranteed
+            space at the top of the sheet — floating-position was getting
+            clipped by the iOS URL bar/notch on portrait phones. The header
+            is shorter when there's no title so we still maximize body area. */}
+        <div class={`sheet-header ${!title ? 'sheet-header-bare' : ''}`}>
+          {title && <h2 class="sheet-title">{title}</h2>}
+          <Button variant="ghost" size="sm" iconOnly onClick={onClose} aria-label="Close" title="Close">
+            <Icon name="close" />
+          </Button>
+        </div>
         <div class="sheet-body">{children}</div>
       </section>
     </>

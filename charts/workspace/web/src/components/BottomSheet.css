@@ -42,25 +42,20 @@
 
 .sheet-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 4px var(--size-4) var(--size-3);
+  padding: 4px var(--size-3) var(--size-2);
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .sheet-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 
-.sheet-header-floating {
-  position: absolute;
-  /* Offset by safe-area-top so the X clears the iOS notch / URL bar. The
-     sheet itself has padding-top: var(--safe-top) so this stacks correctly. */
-  top: calc(var(--safe-top) + 8px);
-  right: 8px;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  z-index: 2;
+/* Title-less variant: header collapses to just the X aligned right. */
+.sheet-header-bare {
+  justify-content: flex-end;
+  padding: 4px var(--size-2) 4px;
+  border-bottom: 0;
 }
 
-.sheet-header .btn-icon,
-.sheet-header-floating .btn-icon {
+.sheet-header .btn-icon {
   /* Strong contrast so the close affordance is obvious on every screen. */
   width: 40px;
   height: 40px;
@@ -68,8 +63,7 @@
   background: var(--surface-2);
   border: 1px solid var(--border);
 }
-.sheet-header .btn-icon:hover,
-.sheet-header-floating .btn-icon:hover {
+.sheet-header .btn-icon:hover {
   background: var(--surface-3);
   border-color: var(--border-2);
 }

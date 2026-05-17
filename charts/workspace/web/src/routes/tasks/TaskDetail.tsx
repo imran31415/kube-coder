@@ -27,6 +27,17 @@ const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' 
   'waiting-for-input': 'warn',
 };
 
+// Short labels for the pill — the raw status "waiting-for-input" is 17 chars
+// and overflows the header on narrow screens (clips Copy link / Rename).
+const STATUS_PILL_LABEL: Record<TaskStatus, string> = {
+  running: 'running',
+  completed: 'done',
+  killed: 'killed',
+  error: 'error',
+  unknown: 'unknown',
+  'waiting-for-input': 'waiting',
+};
+
 const STATUS_HELP: Record<TaskStatus, string> = {
   running: 'Task is alive in tmux. Output streams in the Terminal tab.',
   completed: 'Task exited cleanly. Output is preserved; tmux session may have been reaped.',
@@ -217,7 +228,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
         <header class="td-header">
           <div class="td-headline">
             <Pill tone={STATUS_TONE[t.status]} mono title={STATUS_HELP[t.status]}>
-              {t.status}
+              {STATUS_PILL_LABEL[t.status]}
             </Pill>
             <h2 class="td-title" title={t.prompt || undefined}>
               {t.name || t.prompt || '(unnamed)'}
@@ -290,7 +301,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
         >
           <Icon name="chevron-right" size={12} />
           <span class="mono">{t.name || t.task_id.slice(0, 12)}</span>
-          <Pill tone={STATUS_TONE[t.status]} mono>{t.status}</Pill>
+          <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_PILL_LABEL[t.status]}</Pill>
         </button>
       )}
 
