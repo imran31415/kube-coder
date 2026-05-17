@@ -454,3 +454,82 @@
     min-height: 280px;
   }
 }
+
+/* URL strip above the terminal iframe — lets mobile users tap links the
+   ttyd iframe won't let them highlight. Hidden in Preview mode. */
+.term-pane-urls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px var(--size-3) 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.term-pane-urls-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.term-pane-urls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.term-pane-urls-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.term-pane-urls-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--accent);
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.term-pane-urls-link:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.term-pane-urls-link .mono {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.term-pane-urls-copy {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-width: 56px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.term-pane-urls-copy:hover { background: var(--surface-3); color: var(--text); }
+
+/* Touch-friendly target sizing on coarse pointers. */
+@media (pointer: coarse) {
+  .term-pane-urls-link { padding: 10px 12px; min-height: 40px; }
+  .term-pane-urls-copy { padding: 9px 12px; min-height: 40px; }
+}
