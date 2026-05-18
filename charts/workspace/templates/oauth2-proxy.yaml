@@ -6,9 +6,9 @@ metadata:
   namespace: {{ .Values.namespace }}
 type: Opaque
 stringData:
-  cookie-secret: {{ .Values.oauth2.cookieSecret | quote }}
-  client-id: {{ .Values.oauth2.clientId | quote }}
-  client-secret: {{ .Values.oauth2.clientSecret | quote }}
+  cookie-secret: {{ required "oauth2.cookieSecret is required when ingress.auth.type=oauth2" .Values.oauth2.cookieSecret | quote }}
+  client-id: {{ required "oauth2.clientId is required when ingress.auth.type=oauth2" .Values.oauth2.clientId | quote }}
+  client-secret: {{ required "oauth2.clientSecret is required when ingress.auth.type=oauth2" .Values.oauth2.clientSecret | quote }}
 ---
 apiVersion: apps/v1
 kind: Deployment
