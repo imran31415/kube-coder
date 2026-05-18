@@ -86,18 +86,27 @@ export async function refreshTasks(): Promise<void> {
   return inFlight;
 }
 
+// Tracks the most recently requested task id so a slow in-flight response
+// for an earlier selection (or a poll tick) doesn't clobber a fresher one.
+// Without this guard, rapidly switching between tasks would race the GETs
+// and the detail pane could revert to an older task's data mid-render.
+let _selectedLoadToken = 0;
+
 export async function loadSelectedTask(id: string): Promise<void> {
+  const token = ++_selectedLoadToken;
   selectedTaskLoading.value = true;
   try {
     const t = await getTask(id);
+    if (token !== _selectedLoadToken) return;
     selectedTask.value = t;
   } catch (err) {
+    if (token !== _selectedLoadToken) return;
     pushToast(
       err instanceof Error ? err.message : 'Failed to load task',
       { kind: 'danger' },
     );
   } finally {
-    selectedTaskLoading.value = false;
+    if (token === _selectedLoadToken) selectedTaskLoading.value = false;
   }
 }
 

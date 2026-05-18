@@ -129,3 +129,48 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
 export const apiGet = <T>(path: string, query?: Options['query']) => api<T>(path, { method: 'GET', query });
 export const apiPost = <T>(path: string, body?: unknown) => api<T>(path, { method: 'POST', body });
 export const apiDelete = <T>(path: string) => api<T>(path, { method: 'DELETE' });
+
+/**
+ * Like `api()` but for non-JSON bodies (file uploads). Skips JSON
+ * serialisation but applies the same auth header + oauth prefix +
+ * session-expired redirect behaviour. Use for endpoints that take a
+ * raw Blob/File/FormData.
+ */
+export async function apiRaw(
+  path: string,
+  opts: { method?: string; body?: BodyInit; headers?: Record<string, string> } = {},
+): Promise<Response> {
+  const url = buildUrl(path);
+  const init: RequestInit = {
+    method: opts.method || 'POST',
+    headers: {
+      ...(devToken() ? { Authorization: `Bearer ${devToken()}` } : {}),
+      ...(opts.headers || {}),
+    },
+    body: opts.body,
+  };
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (e) {
+    if (isAuthExpiredError(e)) {
+      redirectToSignIn();
+      throw new ApiError('Session expired — redirecting to sign in.', 401, null);
+    }
+    throw e;
+  }
+  if (res.status === 401 && url.startsWith('/oauth/')) {
+    redirectToSignIn();
+    throw new ApiError('Session expired — redirecting to sign in.', 401, null);
+  }
+  if (!res.ok) {
+    let parsed: unknown = null;
+    try { parsed = await res.json(); } catch { /* not JSON */ }
+    const msg =
+      (parsed && typeof parsed === 'object' && 'error' in (parsed as Record<string, unknown>)
+        ? String((parsed as Record<string, unknown>).error)
+        : null) ?? `${res.status} ${res.statusText}`;
+    throw new ApiError(msg, res.status, parsed);
+  }
+  return res;
+}

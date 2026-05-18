@@ -4,6 +4,7 @@ import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
 import { MutatorOnly } from '../../components/MutatorOnly';
+import { PromptDialog } from '../../components/ConfirmDialog';
 import './files.css';
 
 function fmtSize(bytes: number): string {
@@ -18,6 +19,7 @@ export function FilesRoute() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mkdirOpen, setMkdirOpen] = useState(false);
 
   async function refresh(p: string) {
     setBusy(true);
@@ -67,8 +69,8 @@ export function FilesRoute() {
     }
   }
 
-  async function onMkdir() {
-    const name = prompt('New folder name:');
+  async function onMkdirConfirm(name: string) {
+    setMkdirOpen(false);
     if (!name) return;
     setBusy(true);
     try {
@@ -94,7 +96,7 @@ export function FilesRoute() {
         </div>
         <MutatorOnly>
           <div class="files-actions">
-            <Button variant="ghost" onClick={onMkdir} disabled={busy}>
+            <Button variant="ghost" onClick={() => setMkdirOpen(true)} disabled={busy}>
               <Icon name="plus" size={14} /> Folder
             </Button>
             <label class="files-upload">
@@ -167,6 +169,16 @@ export function FilesRoute() {
           ))}
         </tbody>
       </table>
+
+      <PromptDialog
+        open={mkdirOpen}
+        title="New folder"
+        body={path ? `Create under ${path}` : 'Create under /home/dev'}
+        placeholder="folder-name"
+        confirmLabel="Create"
+        onConfirm={onMkdirConfirm}
+        onCancel={() => setMkdirOpen(false)}
+      />
     </div>
   );
 }

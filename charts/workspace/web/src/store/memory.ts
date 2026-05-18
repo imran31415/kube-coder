@@ -39,17 +39,25 @@ export const filteredMemories = computed(() => {
   });
 });
 
+// Dedupe in-flight list fetches so the poll tick + an explicit refresh
+// can't race and clobber each other (the slower response would win).
+let _refreshInFlight: Promise<void> | null = null;
 export async function refreshMemories(): Promise<void> {
+  if (_refreshInFlight) return _refreshInFlight;
   memoriesLoading.value = true;
-  try {
-    const r = await listMemories({ limit: 200 });
-    memories.value = r.memories;
-    memoriesError.value = null;
-  } catch (err) {
-    memoriesError.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    memoriesLoading.value = false;
-  }
+  _refreshInFlight = (async () => {
+    try {
+      const r = await listMemories({ limit: 200 });
+      memories.value = r.memories;
+      memoriesError.value = null;
+    } catch (err) {
+      memoriesError.value = err instanceof Error ? err.message : String(err);
+    } finally {
+      memoriesLoading.value = false;
+      _refreshInFlight = null;
+    }
+  })();
+  return _refreshInFlight;
 }
 
 export async function refreshStats(): Promise<void> {
@@ -60,10 +68,15 @@ export async function refreshStats(): Promise<void> {
   }
 }
 
+// Same race-guard idea as loadSelectedTask in store/tasks.ts: a slow
+// response for an earlier selection must not clobber a fresher one.
+let _selectedLoadToken = 0;
 export async function loadSelected(ns: string, key: string): Promise<void> {
+  const token = ++_selectedLoadToken;
   selectedMemoryLoading.value = true;
   try {
     const m = await getMemory(ns, key);
+    if (token !== _selectedLoadToken) return;
     // Only overwrite if the detail response is a real record (has the
     // identifying fields). If the server returns garbage or a partial
     // object, keep whatever selectMemory() set from the list row instead
@@ -76,9 +89,10 @@ export async function loadSelected(ns: string, key: string): Promise<void> {
       console.warn('[memory] getMemory returned partial response; keeping list-row data', m);
     }
   } catch (err) {
+    if (token !== _selectedLoadToken) return;
     pushToast(err instanceof Error ? err.message : 'Memory load failed', { kind: 'danger' });
   } finally {
-    selectedMemoryLoading.value = false;
+    if (token === _selectedLoadToken) selectedMemoryLoading.value = false;
   }
 }
 
