@@ -87,16 +87,17 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
 export function coerceTaskDetail(raw: unknown): TaskDetail {
   const base = coerceTaskSummary(raw);
   const r = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {};
+  // Spread `r` FIRST so unknown server-extra fields pass through, then let
+  // `base` + the typed defaults below override every known field. The
+  // previous order (`...base, ...r`) silently undid every safeString /
+  // safeArray coercion above for task_id, prompt, status, name, etc.
   return {
+    ...r,
     ...base,
     workdir: typeof r.workdir === 'string' ? r.workdir : undefined,
     session_id: typeof r.session_id === 'string' ? r.session_id : undefined,
     tmux_session: typeof r.tmux_session === 'string' ? r.tmux_session : undefined,
     assistant: typeof r.assistant === 'string' ? r.assistant : undefined,
     recent_output: typeof r.recent_output === 'string' ? r.recent_output : undefined,
-    // Allow server-extra fields through (TaskDetail has an index signature).
-    ...r,
-    // …but our defaults override raw if the raw value is wrong-shaped.
-    memory_injected: base.memory_injected,
   };
 }

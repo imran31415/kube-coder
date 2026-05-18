@@ -1,4 +1,4 @@
-import { apiGet, withOauthPrefix } from './client';
+import { apiGet, apiPost, apiRaw } from './client';
 
 export interface FileEntry {
   name: string;
@@ -14,7 +14,10 @@ export interface FileListing {
 export const listFiles = (path = '') => apiGet<FileListing>('/api/files/list', { path });
 
 export async function uploadFile(file: File, destPath: string): Promise<void> {
-  const res = await fetch(withOauthPrefix('/api/files/upload'), {
+  // apiRaw handles the Blob body and still propagates the Bearer token +
+  // oauth2-proxy session-expired redirect. The previous raw fetch() here
+  // silently failed on expired sessions (no /oauth2/start bounce).
+  await apiRaw('/api/files/upload', {
     method: 'POST',
     headers: {
       'X-Dest-Path': destPath,
@@ -23,16 +26,8 @@ export async function uploadFile(file: File, destPath: string): Promise<void> {
     },
     body: file,
   });
-  if (!res.ok) {
-    throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
-  }
 }
 
 export async function makeDirectory(path: string): Promise<void> {
-  const res = await fetch(withOauthPrefix('/api/files/mkdir'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
-  });
-  if (!res.ok) throw new Error(`mkdir failed: ${res.status}`);
+  await apiPost('/api/files/mkdir', { path });
 }
