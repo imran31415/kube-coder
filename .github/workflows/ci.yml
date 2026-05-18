@@ -1,16 +1,14 @@
 name: CI
 
+# Run on every PR / push to main. The previous `paths: charts/**` filter
+# skipped CI entirely on changes under charts/workspace/web/ (the SPA),
+# letting frontend regressions ship green. The per-job step list is fast
+# enough (~3 min total) that running unconditionally is the right default.
 on:
   push:
     branches: [main]
-    paths:
-      - 'charts/**'
-      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'charts/**'
-      - '.github/workflows/ci.yml'
 
 jobs:
   helm-lint:
@@ -62,3 +60,41 @@ jobs:
 
       - name: Run unit tests
         run: helm unittest charts/workspace/
+
+  python-tests:
+    name: Server.py Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run server.py tests
+        run: make python-tests
+
+  web-tests:
+    name: Dashboard SPA Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+          cache-dependency-path: charts/workspace/web/yarn.lock
+
+      - name: Install SPA deps
+        run: yarn --cwd charts/workspace/web install --frozen-lockfile
+
+      - name: Type-check + build
+        run: yarn --cwd charts/workspace/web build
+
+      - name: Vitest
+        run: yarn --cwd charts/workspace/web test
