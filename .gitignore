@@ -4,7 +4,14 @@
 *~
 .idea/
 .vscode/
+# Ignore .claude/ session/cache state, but keep .claude/skills/ which is a
+# tracked part of the repo (otherwise a contributor running
+# `git rm -r --cached .claude/` to fix a local edit would silently delete
+# the skill definitions). Order matters — exclusion has to come after the
+# blanket ignore.
 .claude/
+!.claude/skills/
+!.claude/skills/**
 
 # Python bytecode
 __pycache__/
@@ -20,3 +27,9 @@ secrets/
 # `deployments/<user>/` + `secrets/<user>/` shape but everything stays out
 # of git. See NEW_USER_PROVISIONING.md → "Private workspaces".
 users-private/
+
+# Ad-hoc patches / diffs produced by `git format-patch` or `git diff` for
+# local review. These shouldn't be committed; the canonical change-history
+# lives in `git log`.
+*.patch
+*.diff

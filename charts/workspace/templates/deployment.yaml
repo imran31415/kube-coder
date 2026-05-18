@@ -214,6 +214,11 @@ spec:
         ports:
         - containerPort: 2376
           name: docker
+        # Resource caps prevent a runaway `docker build` (fork bomb,
+        # 10GB layer, etc.) from starving every other workspace on the
+        # node. Override per-workspace via .Values.build.dindResources.
+        resources:
+{{ toYaml (.Values.build.dindResources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi") "limits" (dict "cpu" "2" "memory" "4Gi"))) | indent 10 }}
         volumeMounts:
         - name: docker-certs
           mountPath: /certs/client

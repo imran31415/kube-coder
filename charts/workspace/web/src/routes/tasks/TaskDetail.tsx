@@ -40,26 +40,30 @@ const STATUS_PILL_LABEL: Record<TaskStatus, string> = {
 };
 
 const STATUS_HELP: Record<TaskStatus, string> = {
-  running: 'Task is alive in tmux. Output streams in the Terminal tab.',
+  running: 'Task is alive in tmux. Output streams in the Session tab.',
   completed: 'Task exited cleanly. Output is preserved; tmux session may have been reaped.',
   killed: 'Task was killed via the dashboard.',
   error: 'Task exited with an error code.',
   unknown: 'Status could not be determined.',
-  'waiting-for-input': 'Task is waiting for user input. Check the Terminal or Message tab to respond.',
+  'waiting-for-input': 'Task is waiting for user input. Check the Session or Send message tab to respond.',
 };
 
 type DetailTab = 'terminal' | 'preview' | 'message' | 'info' | 'subagents';
+// The "terminal" id is historical — what the user sees is "Session", which is
+// the live attach to the task's tmux/Claude session. terminal-entry.sh falls
+// back to the most-recent claude-* session when the pending file is missing,
+// so the tab always lands the user inside their build.
 const TAB_LABELS: Record<DetailTab, string> = {
-  terminal: 'Terminal',
+  terminal: 'Session',
   preview: 'Preview',
   message: 'Send message',
   info: 'Info',
   subagents: 'Subagents',
 };
 const TAB_HELP: Record<DetailTab, string> = {
-  terminal: 'Live tmux session — attach and type as if you were SSH\'d into the pod.',
-  preview: 'Side-by-side terminal + workspace browser (noVNC).',
-  message: 'Chat-style composer that mirrors the terminal in a friendly UI.',
+  terminal: 'Live Claude/OpenCode session — attach and type as if you were SSH\'d into the pod.',
+  preview: 'Side-by-side session + workspace browser (noVNC).',
+  message: 'Chat-style composer that mirrors the session in a friendly UI.',
   info: 'Metadata, prompt, timestamps, and injected memory.',
   subagents: 'Sub-tasks spawned by Claude\'s Agent / Task tool.',
 };

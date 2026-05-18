@@ -64,6 +64,26 @@ ALERT_THRESHOLDS = {
 # start if AUTH_MODE=none without READONLY_MODE=true — no unauthed writes.
 READONLY_MODE = os.environ.get('READONLY_MODE', 'false').lower() == 'true'
 AUTH_MODE = os.environ.get('AUTH_MODE', 'basic').lower()
+# TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
+# X-Auth-Request-User / X-Auth-Request-Email / Remote-User headers from the
+# request. Without it we ignore those headers — the only ways to authenticate
+# become AUTH_MODE=none (gated to readonly) or a Bearer token. Set to true
+# when an upstream proxy strips client-supplied auth headers (e.g. our
+# oauth2-proxy + ingress).
+TRUSTED_PROXY = os.environ.get('TRUSTED_PROXY', 'true').lower() == 'true'
+# Hard cap on JSON request bodies. Without this, a single
+# Content-Length: huge POST will allocate the body before parsing and OOM
+# the pod. Override via MAX_REQUEST_BODY_BYTES.
+MAX_REQUEST_BODY_BYTES = int(os.environ.get('MAX_REQUEST_BODY_BYTES', str(1024 * 1024)))
+# Hard ceiling on /stream connection lifetime. Clients are expected to
+# reconnect; without this an unbounded handler-thread leak is the path of
+# least resistance to DoS. Override via STREAM_MAX_SECONDS.
+STREAM_MAX_SECONDS = int(os.environ.get('STREAM_MAX_SECONDS', '1800'))
+# SSRF guard for the completion-hook response_url. By default we refuse to
+# POST to RFC1918 / link-local / loopback so a malicious caller cannot turn
+# us into a probe of the cloud metadata service or in-cluster services.
+# Set ALLOW_INTERNAL_HOOKS=true to opt back in (single-user trusted deploy).
+ALLOW_INTERNAL_HOOKS = os.environ.get('ALLOW_INTERNAL_HOOKS', 'false').lower() == 'true'
 
 def _check_safety_invariants():
     if AUTH_MODE == 'none' and not READONLY_MODE:
@@ -1022,16 +1042,50 @@ class ClaudeTaskManager:
 
     @staticmethod
     def _is_safe_response_url(url):
-        """Allow only http(s) URLs. Reject file://, gopher://, etc. — these
-        scheme handlers turn urlopen() into an SSRF / local-file primitive.
-        urllib accepts them by default, so we have to gate explicitly."""
+        """Allow only http(s) URLs to public IPs. Reject:
+          - non-http(s) schemes (file://, gopher://) — they turn urlopen() into
+            an SSRF / local-file primitive
+          - hosts that resolve to RFC1918, link-local, loopback or unspecified
+            ranges — would let an attacker probe the cloud metadata service
+            (169.254.169.254), in-cluster services (10.x), or the workspace
+            itself (localhost)
+        Set ALLOW_INTERNAL_HOOKS=true to opt back in (single-user / trusted
+        deploys that need to POST hook results into the cluster)."""
         if not url or not isinstance(url, str):
             return False
         try:
             parsed = urllib.parse.urlparse(url)
         except (ValueError, TypeError):
             return False
-        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            return False
+        if ALLOW_INTERNAL_HOOKS:
+            return True
+        host = parsed.hostname or ''
+        if not host:
+            return False
+        # Resolve to *all* addresses; reject if any one is internal — DNS
+        # rebinding can return an internal IP on the second lookup, so the
+        # set-must-be-all-public check has to apply here. Unresolvable
+        # hostnames pass through — urlopen will fail safely at fire time
+        # and there's no SSRF target to actually hit.
+        import socket
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except (socket.gaierror, UnicodeError):
+            return True
+        import ipaddress
+        for info in infos:
+            sockaddr = info[4]
+            try:
+                ip = ipaddress.ip_address(sockaddr[0])
+            except (ValueError, IndexError):
+                return False
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_multicast or ip.is_unspecified
+                    or ip.is_reserved):
+                return False
+        return True
 
     @staticmethod
     def _fire_completion_hook(meta):
@@ -2431,32 +2485,42 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def check_auth(self):
-        """Check if request has proper authentication headers"""
-        auth_header = self.headers.get('Authorization', '')
-        # If we have nginx auth, the user is already authenticated
-        # We can also check for specific headers nginx sets
-        remote_user = self.headers.get('Remote-User', '')
-        if auth_header or remote_user:
+        """Legacy auth check used by the (deprecated) pre-SPA endpoints.
+        Honors Remote-User only when TRUSTED_PROXY=true so a misconfigured
+        ingress cannot be exploited by client-supplied headers."""
+        if self.headers.get('Authorization', ''):
+            return True
+        if TRUSTED_PROXY and self.headers.get('Remote-User', ''):
             return True
         return False
     
     # --- Claude Task API helpers ---
 
-    def check_claude_auth(self):
+    def check_claude_auth(self, allow_none_mode=True):
         """Returns True if request is authenticated via OAuth2 headers OR valid bearer token.
 
         Short-circuits to True when AUTH_MODE=none — the public-demo
         deployment runs without an auth proxy in front of it. Guarded at
         startup (see _check_safety_invariants below) so this combo is only
         allowed when READONLY_MODE=true.
+
+        Set allow_none_mode=False on endpoints that must always require a
+        real identity (e.g. anything that returns PII or workspace secrets
+        — the public demo must not leak the operator's git config / SSH
+        key fingerprint just because the demo runs unauth'd).
+
+        Upstream-auth headers (X-Auth-Request-*, Remote-User) are only
+        honored when TRUSTED_PROXY=true — otherwise a misconfigured
+        ingress that doesn't strip client-supplied headers becomes a
+        trivial auth bypass.
         """
-        if AUTH_MODE == 'none':
+        if AUTH_MODE == 'none' and allow_none_mode:
             return True
-        if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
-            return True
-        remote_user = self.headers.get('Remote-User', '')
-        if remote_user:
-            return True
+        if TRUSTED_PROXY:
+            if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
+                return True
+            if self.headers.get('Remote-User', ''):
+                return True
         auth_header = self.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header[7:].strip()
@@ -2464,7 +2528,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def check_oauth_only(self):
-        """Returns True only if request has OAuth2 proxy headers (not bearer token)."""
+        """Returns True only if request has OAuth2 proxy headers (not bearer token).
+        Only honored when TRUSTED_PROXY=true; otherwise returns False."""
+        if not TRUSTED_PROXY:
+            return False
         if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
             return True
         if self.headers.get('Remote-User', ''):
@@ -2479,10 +2546,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_json_body(self):
+    def read_json_body(self, max_bytes=None):
+        """Read + parse a JSON request body, refusing anything over the cap.
+        Without the cap a single Content-Length: big POST will OOM the pod.
+        Raises ValueError on oversized bodies; handlers should treat the
+        same way they treat JSONDecodeError (400)."""
+        cap = max_bytes if max_bytes is not None else MAX_REQUEST_BODY_BYTES
         content_length = int(self.headers.get('Content-Length', 0))
         if content_length == 0:
             return {}
+        if content_length > cap:
+            raise ValueError(f'request body too large ({content_length} > {cap})')
         body = self.rfile.read(content_length).decode('utf-8')
         return json.loads(body) if body else {}
 
@@ -2673,11 +2747,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
         last_heartbeat = time.time()
         last_change = time.time()
+        started = time.time()
         poll_interval = 1.5
         heartbeat_interval = 15
         idle_grace = 5  # seconds after task stops with no diff before we close
 
         while True:
+            # Hard cap so a client that never disconnects can't pin a
+            # handler thread forever (combined with ThreadingHTTPServer's
+            # unbounded thread spawn this is the easiest path to DoS).
+            # Emit a graceful end event so the SPA reconnects cleanly.
+            if time.time() - started > STREAM_MAX_SECONDS:
+                write_raw(b'event: end\ndata: timeout\n\n')
+                return
             new_capture = capture()
             if new_capture != last_capture:
                 if new_capture.startswith(last_capture):
@@ -2851,10 +2933,31 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Task not found'}, 404)
             return
         session_name = task.get('tmux_session', f'claude-{task_id}')
+        # Wait up to ~3s for the tmux session to be visible to has-session
+        # before declaring ourselves ready. Without this, the SPA can load
+        # the iframe and run terminal-entry.sh while the session that
+        # create_task spawned is still mid-registration; the entry script
+        # falls through to bash and the user sees a fresh shell instead
+        # of their task. Cheap on the happy path — has-session is ~1ms.
+        deadline = time.time() + 3.0
+        session_ready = False
+        while time.time() < deadline:
+            check = subprocess.run(
+                ['tmux', 'has-session', '-t', session_name],
+                capture_output=True,
+            )
+            if check.returncode == 0:
+                session_ready = True
+                break
+            time.sleep(0.1)
         try:
             with open('/tmp/.claude-terminal-pending', 'w') as f:
                 f.write(session_name)
-            self.send_json({'ok': True, 'session': session_name})
+            self.send_json({
+                'ok': True,
+                'session': session_name,
+                'session_ready': session_ready,
+            })
         except OSError as e:
             self.send_json({'error': str(e)}, 500)
 
@@ -2982,6 +3085,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_secret=cfg.get('response_secret'),
             source=f"webhook:{cfg['id']}",
         )
+        # Propagate task-creation failures (tmux unreachable, fs error) so
+        # the upstream sees a 5xx and can retry, rather than a 202 with a
+        # task_id that never runs.
+        if task.get('status') == 'error':
+            self.send_json({
+                'error': task.get('error') or 'failed to spawn task',
+                'webhook_id': cfg['id'],
+                'task_id': task.get('task_id'),
+            }, 502)
+            return
         self.send_json({
             'task_id': task['task_id'],
             'webhook_id': cfg['id'],
@@ -3674,7 +3787,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         try:
             # Proxy the request to the local noVNC server
             vnc_url = "http://localhost:6081/vnc.html?autoconnect=true&resize=scale"
-            with urllib.request.urlopen(vnc_url) as response:
+            with urllib.request.urlopen(vnc_url, timeout=10) as response:
                 content = response.read()
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
@@ -3740,7 +3853,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if query_part:
                 vnc_url += f"?{query_part}"
 
-            with urllib.request.urlopen(vnc_url) as response:
+            with urllib.request.urlopen(vnc_url, timeout=10) as response:
                 content = response.read()
                 content_type = response.headers.get('Content-Type', 'text/html')
                 self.send_response(200)
@@ -3953,7 +4066,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(response).encode())
 
     def send_metrics(self):
-        """Send system metrics (CPU, memory, disk) as JSON"""
+        """Send system metrics (CPU, memory, disk) as JSON.
+        Auth-gated to avoid double-duty as an unauthenticated workload
+        side-channel — public-demo callers get through via AUTH_MODE=none."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         metrics = MetricsCollector.get_all_metrics()
 
         self.send_response(200)
@@ -3963,7 +4081,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(metrics).encode())
 
     def send_github_status(self):
-        """Send combined GitHub status as JSON"""
+        """Send combined GitHub status as JSON.
+        Strictly auth-gated (allow_none_mode=False) — the response leaks
+        the SSH public-key fingerprint, gh CLI username, and git
+        name/email, none of which should ever surface on a public demo."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         status = GitHubManager.get_full_status()
 
         self.send_response(200)
@@ -3973,7 +4097,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(status).encode())
 
     def send_git_config(self):
-        """Send git config as JSON"""
+        """Send git config as JSON. Strictly auth-gated (allow_none_mode=False)
+        — exposes the operator's git name + email."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
         config = GitHubManager.get_git_config()
 
         self.send_response(200)
@@ -4203,13 +4331,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
             url = f'http://localhost:{port}'
 
-            # Kill any prior browser so the dashboard's Preview pane shows only
-            # one window. We're inside a single-user pod so a broad pkill is OK.
-            subprocess.run(['pkill', '-f', 'chrome'], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-            subprocess.run(['pkill', '-f', 'chromium'], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-            subprocess.run(['pkill', '-f', 'firefox'], stdout=subprocess.DEVNULL,
+            # Kill only browsers launched by this handler — pkill -f chrome
+            # would also kill any user-spawned dev tool whose name includes
+            # the substring (e.g. chrome-devtools-frontend). The marker dir
+            # is unique to this handler and appears in every launched
+            # browser's argv (chromium via --user-data-dir=, firefox via
+            # -profile <dir>) so pkill -f on the literal path matches both.
+            kc_user_data_dir = '/tmp/kc-managed-browser'
+            os.makedirs(kc_user_data_dir, exist_ok=True)
+            subprocess.run(['pkill', '-f', kc_user_data_dir],
+                           stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
             time.sleep(0.3)
 
@@ -4217,20 +4348,26 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # no tabs, no URL bar, no window chrome — just the page. Combined
             # with vnc.html?resize=scale on the dashboard side, the Preview
             # pane ends up showing essentially only the browser content.
+            # --user-data-dir is the marker pkill uses above to scope the
+            # kill to only browsers we launched.
             chrome_args = [
                 '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+                f'--user-data-dir={kc_user_data_dir}',
                 '--start-fullscreen', f'--app={url}',
             ]
+            # Firefox uses -profile <dir>; we mirror the chromium marker so
+            # both can be killed by the single pkill above.
+            firefox_args = ['--safe-mode', '-profile', kc_user_data_dir, '--kiosk', url]
 
             browser_commands = [
                 ('chromium-browser', chrome_args),
                 ('/usr/bin/chromium-browser', chrome_args),
                 ('/usr/bin/google-chrome', chrome_args),
                 ('/usr/local/bin/browser', []),
-                ('/usr/bin/firefox-esr', ['--safe-mode', '--kiosk', url]),
-                ('/usr/bin/firefox', ['--safe-mode', '--kiosk', url]),
-                ('firefox-esr', ['--safe-mode', '--kiosk', url]),
-                ('firefox', ['--safe-mode', '--kiosk', url]),
+                ('/usr/bin/firefox-esr', firefox_args),
+                ('/usr/bin/firefox', firefox_args),
+                ('firefox-esr', firefox_args),
+                ('firefox', firefox_args),
             ]
 
             browser_cmd = None
