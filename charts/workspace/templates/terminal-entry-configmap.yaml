@@ -11,6 +11,10 @@ data:
     # past 2-3GB and combine with code-server to OOM the workspace cgroup.
     export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
     PENDING_FILE="/tmp/.claude-terminal-pending"
+    LOG=/tmp/terminal-entry.log
+    # One-line-per-invocation diagnostics so we can see why a connection
+    # fell through to bash. Tail with `kubectl exec ... -- tail -f /tmp/terminal-entry.log`.
+    log() { printf '[%s] pid=%d %s\n' "$(date -Iseconds)" "$$" "$*" >> "$LOG"; }
     SESSION_NAME=""
     # Atomic claim so two near-simultaneous ttyd connections (e.g. Terminal
     # tab + Preview tab rendering back-to-back on a freshly created task)
@@ -21,21 +25,38 @@ data:
         if mv "$PENDING_FILE" "$CLAIM" 2>/dev/null; then
             SESSION_NAME=$(cat "$CLAIM" 2>/dev/null)
             rm -f "$CLAIM"
+            log "claimed pending session=$SESSION_NAME"
+        else
+            log "pending file disappeared between -f and mv (lost race)"
         fi
+    else
+        log "no pending file — falling through to bash"
+    fi
+    # As a last resort, prefer the most-recently-modified claude-* tmux
+    # session over a fresh bash. This is the safety net that turns "user
+    # clicked Session tab on an existing task but pending file was already
+    # claimed" into the right behaviour — the SPA always renders against
+    # the currently selected task and the most recent session is almost
+    # always the one they want.
+    if [ -z "$SESSION_NAME" ]; then
+        SESSION_NAME=$(tmux list-sessions -F '#{session_activity} #{session_name}' 2>/dev/null \
+            | grep ' claude-' | sort -nr | head -1 | awk '{print $2}')
+        [ -n "$SESSION_NAME" ] && log "no pending — falling back to newest tmux session=$SESSION_NAME"
     fi
     if [ -n "$SESSION_NAME" ]; then
         # `tmux new-session -d` on the server returns the task_id before
         # the session is reliably visible to `has-session` from another
         # process. Without a retry window, this script falls through to
         # `bash -l` and the iframe shows a fresh shell instead of the
-        # task's Claude session — the user has to refresh the page or
-        # switch to Preview to force a remount that lands after tmux is
-        # ready. Poll for ~3s before giving up.
-        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        # task's Claude session. Poll for ~3s before giving up.
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
             if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+                log "attached to $SESSION_NAME on retry $i"
                 exec tmux attach-session -t "$SESSION_NAME"
             fi
             sleep 0.25
         done
+        log "gave up on $SESSION_NAME after retries — has-session never succeeded"
     fi
+    log "no session resolved — exec bash -l"
     exec bash -l
