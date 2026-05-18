@@ -2933,10 +2933,31 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Task not found'}, 404)
             return
         session_name = task.get('tmux_session', f'claude-{task_id}')
+        # Wait up to ~3s for the tmux session to be visible to has-session
+        # before declaring ourselves ready. Without this, the SPA can load
+        # the iframe and run terminal-entry.sh while the session that
+        # create_task spawned is still mid-registration; the entry script
+        # falls through to bash and the user sees a fresh shell instead
+        # of their task. Cheap on the happy path — has-session is ~1ms.
+        deadline = time.time() + 3.0
+        session_ready = False
+        while time.time() < deadline:
+            check = subprocess.run(
+                ['tmux', 'has-session', '-t', session_name],
+                capture_output=True,
+            )
+            if check.returncode == 0:
+                session_ready = True
+                break
+            time.sleep(0.1)
         try:
             with open('/tmp/.claude-terminal-pending', 'w') as f:
                 f.write(session_name)
-            self.send_json({'ok': True, 'session': session_name})
+            self.send_json({
+                'ok': True,
+                'session': session_name,
+                'session_ready': session_ready,
+            })
         except OSError as e:
             self.send_json({'error': str(e)}, 500)
 
