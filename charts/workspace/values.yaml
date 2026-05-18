@@ -33,6 +33,27 @@ ingress:
     enabled: true
     secretName: ""
     clusterIssuer: letsencrypt-production
+  # Caps applied only by ingress-public.yaml (auth.type=none). Defense in
+  # depth around the unauthed demo surface — bump these for a higher-
+  # traffic demo, but don't disable them.
+  publicLimits:
+    rps: 10
+    connections: 20
+    bodySize: "16k"
+
+# OAuth2 (GitHub) settings — only used when ingress.auth.type=oauth2.
+# Real credentials should come from a gitignored overlay (e.g.
+# secrets/<user>/oauth2.yaml). Public-repo defaults leave them empty,
+# and oauth2-proxy.yaml renders a `required` guard so a forgotten
+# overlay surfaces at `helm install` time rather than as a silently
+# broken pod.
+oauth2:
+  cookieSecret: ""        # 16/24/32 random bytes, base64-encoded
+  clientId: ""            # GitHub OAuth App client id
+  clientSecret: ""        # GitHub OAuth App client secret
+  githubUsers: ""         # comma-separated allowlist (optional)
+  githubOrg: ""           # restrict to org members (optional)
+  githubTeam: ""          # restrict to team slug (optional)
 
 # Read-only public demo mode. When true:
 #   - server.py rejects every POST/DELETE/PUT with 403 readonly

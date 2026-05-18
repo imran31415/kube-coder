@@ -22,6 +22,7 @@ import { Icon } from '../../components/Icon';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { Drawer } from '../../components/Drawer';
 import { BottomSheet } from '../../components/BottomSheet';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { pushToast } from '../../store/ui';
 import './triggers.css';
 
@@ -116,6 +117,7 @@ export function TriggersRoute() {
 }
 
 function TriggerRow({ t }: { t: Trigger }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const tone = t.kind === 'cron' ? (t.suspended ? 'warn' : 'accent') : 'info';
   const label = t.kind === 'cron' ? (t.suspended ? 'cron · paused' : 'cron') : 'webhook';
   return (
@@ -137,12 +139,24 @@ function TriggerRow({ t }: { t: Trigger }) {
             <Button
               size="sm"
               variant="danger"
-              onClick={() => {
-                if (confirm(`Delete ${t.id}?`)) void removeTrigger(t);
-              }}
+              onClick={() => setConfirmDelete(true)}
             >
               Delete
             </Button>
+            <ConfirmDialog
+              open={confirmDelete}
+              title={`Delete ${t.id}?`}
+              body={t.kind === 'cron'
+                ? 'The CronJob and its in-cluster Secret will be deleted.'
+                : 'The webhook config will be deleted and any external sender will start getting 404s.'}
+              confirmLabel="Delete"
+              destructive
+              onConfirm={() => {
+                setConfirmDelete(false);
+                void removeTrigger(t);
+              }}
+              onCancel={() => setConfirmDelete(false)}
+            />
           </MutatorOnly>
         </div>
       </div>

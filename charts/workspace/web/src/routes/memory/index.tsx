@@ -23,6 +23,7 @@ import { EmptyState } from '../../components/primitives/EmptyState';
 import { Drawer } from '../../components/Drawer';
 import { BottomSheet } from '../../components/BottomSheet';
 import { MutatorOnly } from '../../components/MutatorOnly';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import {
   getMemoryHistory,
   getMemoryNeighbors,
@@ -294,6 +295,7 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
   const [tab, setTab] = useState<MemTab>('value');
   const [history, setHistory] = useState<MemoryRecord[] | null>(null);
   const [neighbors, setNeighbors] = useState<{ nodes: MemoryRecord[]; edges: { from_id: number; to_id: number; kind: string; weight: number }[] } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const cacheKey = useMemo(() => (m ? `${m.namespace}/${m.key}` : ''), [m]);
 
@@ -339,14 +341,22 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
             <Button
               size="sm"
               variant="danger"
-              onClick={() => {
-                if (confirm(`Delete ${m.namespace}.${m.key}? It will be soft-deleted and remain in history.`)) {
-                  void removeMemory(m.namespace, m.key);
-                }
-              }}
+              onClick={() => setConfirmDelete(true)}
             >
               Delete
             </Button>
+            <ConfirmDialog
+              open={confirmDelete}
+              title={`Delete ${m.namespace}.${m.key}?`}
+              body="It will be soft-deleted and remain in history — you can restore from the History tab."
+              confirmLabel="Delete"
+              destructive
+              onConfirm={() => {
+                setConfirmDelete(false);
+                void removeMemory(m.namespace, m.key);
+              }}
+              onCancel={() => setConfirmDelete(false)}
+            />
           </MutatorOnly>
         </div>
       </header>

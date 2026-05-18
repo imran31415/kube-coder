@@ -1,0 +1,108 @@
+suite: public ingress + auth-mode gating tests
+templates:
+  - templates/ingress-public.yaml
+  - templates/oauth2-proxy.yaml
+  - templates/serviceaccount.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: ingress-public.yaml is NOT emitted by default (auth.type=basic)
+    template: templates/ingress-public.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: ingress-public.yaml renders only when auth.type=none
+    template: templates/ingress-public.yaml
+    set:
+      ingress.auth.type: none
+      readOnly: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: ws-testuser-public
+
+  - it: public ingress carries the defense-in-depth rate / connection / body caps
+    template: templates/ingress-public.yaml
+    set:
+      ingress.auth.type: none
+      readOnly: true
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/limit-rps"]
+          value: "10"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/limit-connections"]
+          value: "20"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: "16k"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/force-ssl-redirect"]
+          value: "true"
+
+  - it: publicLimits in values override the default caps
+    template: templates/ingress-public.yaml
+    set:
+      ingress.auth.type: none
+      readOnly: true
+      ingress.publicLimits.rps: 50
+      ingress.publicLimits.connections: 100
+      ingress.publicLimits.bodySize: "1m"
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/limit-rps"]
+          value: "50"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/limit-connections"]
+          value: "100"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: "1m"
+
+  - it: oauth2-proxy.yaml fails closed when oauth2.cookieSecret is missing
+    template: templates/oauth2-proxy.yaml
+    set:
+      ingress.auth.type: oauth2
+      oauth2.cookieSecret: ""
+      oauth2.clientId: cid
+      oauth2.clientSecret: csec
+    asserts:
+      - failedTemplate:
+          errorMessage: "oauth2.cookieSecret is required when ingress.auth.type=oauth2"
+
+  - it: oauth2-proxy.yaml renders cleanly when all three secrets are present
+    template: templates/oauth2-proxy.yaml
+    set:
+      ingress.auth.type: oauth2
+      oauth2.cookieSecret: cs
+      oauth2.clientId: cid
+      oauth2.clientSecret: csec
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: stringData["cookie-secret"]
+          value: cs
+      - equal:
+          path: stringData["client-id"]
+          value: cid
+
+  - it: workspace Role does NOT grant `list` on Secrets — cross-tenant enumeration vector
+    template: templates/serviceaccount.yaml
+    documentIndex: 1
+    asserts:
+      - notContains:
+          path: rules
+          any: true
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["create", "get", "list", "update", "patch", "delete"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["create", "get", "update", "patch", "delete"]

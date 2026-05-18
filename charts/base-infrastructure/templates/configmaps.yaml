@@ -21,34 +21,55 @@ data:
     done
     [[ -z "$DEST" ]] && usage
 
+    # Reject shell / YAML metachars before any value reaches the manifest.
+    # Without this, a path like '$(curl evil)' or "; rm -rf /" would be
+    # substituted into the heredoc below — a tenant-crossing privilege
+    # escalation via the workspace ServiceAccount. The allowlist matches
+    # what kaniko + docker tags + relative paths actually need.
+    _validate() {
+      local name="$1" val="$2"
+      if [[ ! "$val" =~ ^[A-Za-z0-9._/:@+-]+$ ]]; then
+        echo "docker-build: refusing unsafe characters in $name: $val" >&2
+        exit 2
+      fi
+    }
+    _validate DEST "$DEST"
+    _validate DOCKERFILE "$DOCKERFILE"
+    _validate CTX "$CTX"
+
     NS="{{ .Values.namespace }}"
     USER_POD="$(hostname)"
     USER_NAME="$(echo "$USER_POD" | sed -E 's/^ws-([^-]+)-.*/\1/')"
+    _validate USER_NAME "$USER_NAME"
     PVC="ws-${USER_NAME}-home"
 
     JOB="kaniko-${USER_NAME}-$(date +%s)"
     echo "Starting Kaniko Job $JOB to build $DEST from $CTX (Dockerfile: $DOCKERFILE)"
 
+    # Build the manifest with a *quoted* heredoc ('EOF') so the shell does
+    # NOT expand $VARS inside it, then patch via `kubectl create --dry-run`
+    # + envsubst-style sed where we control every replacement. Belt and
+    # suspenders on top of the validator above.
     TMPYAML="$(mktemp)"
-    cat >"$TMPYAML" <<EOF
+    cat >"$TMPYAML" <<'EOF'
     apiVersion: batch/v1
     kind: Job
     metadata:
-      name: ${JOB}
-      namespace: ${NS}
+      name: __JOB__
+      namespace: __NS__
     spec:
       ttlSecondsAfterFinished: 300
       template:
         spec:
           restartPolicy: Never
-          serviceAccountName: ws-${USER_NAME}
+          serviceAccountName: ws-__USER_NAME__
           containers:
           - name: kaniko
             image: {{ .Values.build.kanikoImage }}
             args:
-              - "--context=dir:///workspace/${CTX}"
-              - "--dockerfile=/workspace/${CTX}/${DOCKERFILE}"
-              - "--destination=${DEST}"
+              - "--context=dir:///workspace/__CTX__"
+              - "--dockerfile=/workspace/__CTX__/__DOCKERFILE__"
+              - "--destination=__DEST__"
               - "--cleanup"
             volumeMounts:
             - name: work
@@ -62,11 +83,20 @@ data:
           volumes:
           - name: work
             persistentVolumeClaim:
-              claimName: ${PVC}
+              claimName: __PVC__
           - name: regcred
             secret:
               secretName: {{ .Values.registry.name }}
     EOF
+    sed -i \
+      -e "s|__JOB__|${JOB}|g" \
+      -e "s|__NS__|${NS}|g" \
+      -e "s|__USER_NAME__|${USER_NAME}|g" \
+      -e "s|__CTX__|${CTX}|g" \
+      -e "s|__DOCKERFILE__|${DOCKERFILE}|g" \
+      -e "s|__DEST__|${DEST}|g" \
+      -e "s|__PVC__|${PVC}|g" \
+      "$TMPYAML"
 
     kubectl apply -f "$TMPYAML"
     echo "Waiting for build to complete..."

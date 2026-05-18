@@ -102,7 +102,18 @@ export function MemoryGraph({ memories, selectedId, onSelect }: Props) {
       );
   }, [roots, size.w]);
 
-  // Build / update the simulation when data changes.
+  // Keep the latest onSelect in a ref so the click handler binding can stay
+  // stable — otherwise every parent re-render (which passes a fresh arrow
+  // function) would re-bind handlers, re-trigger the simulation effect, and
+  // make the graph visibly "jump".
+  const onSelectRef = useRef(onSelect);
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
+
+  // Build / update the simulation when DATA changes. Selection styling is
+  // handled in a separate effect below so clicking a row doesn't tear the
+  // simulation down and re-run the layout from scratch.
   useEffect(() => {
     if (!svgRef.current) return;
     const w = size.w;
@@ -159,19 +170,17 @@ export function MemoryGraph({ memories, selectedId, onSelect }: Props) {
       .attr('stroke', 'var(--surface)')
       .attr('stroke-width', 1.5);
 
-    const merged = enter.merge(nodeSel as any);
+    const merged = enter.merge(nodeSel as ReturnType<typeof enter.merge>);
 
     merged
-      .on('click', (_, d) => onSelect(d.record))
+      .on('click', (_, d) => onSelectRef.current(d.record))
       .on('mouseenter', (_, d) => setHover(d))
       .on('mouseleave', () => setHover(null));
 
     merged
       .select('circle.mg-dot')
       .attr('r', (d) => radius(d.importance))
-      .attr('fill', (d) => colorForKind(d.kind))
-      .attr('stroke', (d) => (d.id === selectedId ? 'var(--accent)' : 'var(--surface)'))
-      .attr('stroke-width', (d) => (d.id === selectedId ? 2.5 : 1.5));
+      .attr('fill', (d) => colorForKind(d.kind));
 
     // Drag behavior.
     const dragBehavior = drag<SVGGElement, Node>()
@@ -205,7 +214,17 @@ export function MemoryGraph({ memories, selectedId, onSelect }: Props) {
     return () => {
       sim.stop();
     };
-  }, [nodes, size.w, size.h, xScale, radius, selectedId, onSelect]);
+  }, [nodes, size.w, size.h, xScale, radius]);
+
+  // Selection-only styling: update stroke without rebuilding the simulation.
+  useEffect(() => {
+    if (!svgRef.current) return;
+    const svg = select(svgRef.current);
+    svg
+      .selectAll<SVGCircleElement, Node>('circle.mg-dot')
+      .attr('stroke', (d) => (d.id === selectedId ? 'var(--accent)' : 'var(--surface)'))
+      .attr('stroke-width', (d) => (d.id === selectedId ? 2.5 : 1.5));
+  }, [selectedId]);
 
   // Cluster labels (root namespaces) along the top.
   const clusterLabels = useMemo(() => {

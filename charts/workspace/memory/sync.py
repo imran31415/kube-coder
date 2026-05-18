@@ -306,13 +306,18 @@ class ClaudeMemorySyncer:
     _stop_event = threading.Event()
     _last_run_at: float = 0.0
     _last_result: Dict[str, int] = {}
+    # Guards _started so two near-simultaneous start() calls can't both
+    # spawn the background thread (the old check-then-set sequence had a
+    # TOCTOU window). Class-level so all callers share the same lock.
+    _start_lock = threading.Lock()
 
     @classmethod
     def start(cls, *, interval_seconds: int = 60,
               roots: Iterable[str] = DEFAULT_SCAN_ROOTS) -> None:
-        if cls._started:
-            return
-        cls._started = True
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
 
         def _loop():
             # One eager pass on startup so the dashboard shows existing
