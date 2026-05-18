@@ -11,11 +11,31 @@ data:
     # past 2-3GB and combine with code-server to OOM the workspace cgroup.
     export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
     PENDING_FILE="/tmp/.claude-terminal-pending"
+    SESSION_NAME=""
+    # Atomic claim so two near-simultaneous ttyd connections (e.g. Terminal
+    # tab + Preview tab rendering back-to-back on a freshly created task)
+    # can't race for the same one-shot pending file. The loser still gets
+    # a usable shell via the bash-l fallback below.
     if [ -f "$PENDING_FILE" ]; then
-        SESSION_NAME=$(cat "$PENDING_FILE")
-        rm -f "$PENDING_FILE"
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            exec tmux attach-session -t "$SESSION_NAME"
+        CLAIM="${PENDING_FILE}.$$"
+        if mv "$PENDING_FILE" "$CLAIM" 2>/dev/null; then
+            SESSION_NAME=$(cat "$CLAIM" 2>/dev/null)
+            rm -f "$CLAIM"
         fi
+    fi
+    if [ -n "$SESSION_NAME" ]; then
+        # `tmux new-session -d` on the server returns the task_id before
+        # the session is reliably visible to `has-session` from another
+        # process. Without a retry window, this script falls through to
+        # `bash -l` and the iframe shows a fresh shell instead of the
+        # task's Claude session — the user has to refresh the page or
+        # switch to Preview to force a remount that lands after tmux is
+        # ready. Poll for ~3s before giving up.
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+                exec tmux attach-session -t "$SESSION_NAME"
+            fi
+            sleep 0.25
+        done
     fi
     exec bash -l
