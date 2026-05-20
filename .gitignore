@@ -33,3 +33,8 @@ users-private/
 # lives in `git log`.
 *.patch
 *.diff
+
+# Playwright MCP server session artifacts (console logs + page snapshots
+# auto-written when browser tools run from this directory). Useful as
+# flight-recorder data during a session, regenerable, not source.
+.playwright-mcp/
