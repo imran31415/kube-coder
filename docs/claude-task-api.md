@@ -469,12 +469,17 @@ All endpoints return errors as JSON with an appropriate HTTP status code:
 
 ## Dashboard
 
-The workspace dashboard at `https://{user}.dev.archon.cx/oauth/` includes a **Claude Tasks** section that:
+The workspace dashboard SPA (root URL of your workspace) has a
+**Build** tab that fronts this API. From there you can:
 
-- Polls `GET /api/claude/tasks` every 10 seconds
-- Shows each task as a card with status badge (running/completed/error/killed), prompt preview, and relative timestamp
-- Provides **Attach** button for running tasks -- opens a new terminal tab auto-attached to the task's tmux session
-- Provides **Kill** button to stop running tasks
+- Create tasks, watch live tmux output, send follow-up messages, and stop tasks.
+- Filter by status (running / past / errored) and reopen any prior task — state
+  is persisted under `~/.claude-tasks/`.
+- Attach a real terminal to the underlying tmux session in one click.
+- Pick which assistant (Claude / OpenRouter / kc-harness) runs the task.
+
+See [Tasks — Concepts](/docs/tasks-concepts) for the lifecycle and
+[Tasks — Assistants](/docs/tasks-assistants) for the assistant picker.
 
 ## Using the `/remote-task` Skill
 
@@ -521,7 +526,7 @@ The file `charts/workspace/templates/ingress-claude-api.yaml` creates a dedicate
 | File | Purpose |
 |---|---|
 | `charts/workspace/server.py` | Python HTTP server with `ClaudeTaskManager` class. Handles all API endpoints. |
-| `charts/workspace/dashboard.html` | Dashboard UI with Claude Tasks section. |
+| `charts/workspace/web/` | Vite + Preact SPA — the dashboard you load at `/`. |
 | `charts/workspace/templates/deployment.yaml` | Pod spec with entrypoint, env vars, and volume mounts. |
 | `charts/workspace/templates/terminal-entry-configmap.yaml` | Wrapper script for ttyd enabling one-click tmux attach. |
 | `charts/workspace/templates/github-app-secret.yaml` | Kubernetes Secret for GitHub App credentials. |

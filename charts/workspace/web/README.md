@@ -19,21 +19,20 @@ port 6080. Start `server.py` first if you want live data.
 ## Production
 
 `yarn build` produces `dist/`. The image's Dockerfile copies it to
-`/opt/dashboard-dist/` and `server.py` serves it at `/next/` (with the legacy
-dashboard still at `/`). After Phase 6 the new SPA moves to `/` and the legacy
-dashboard.html is retired.
+`/opt/dashboard-dist/` and `server.py` serves it at `/` (with `/next/`
+kept as a legacy alias).
 
 ## Layout
 
 ```
 src/
   main.tsx         entry
-  app.tsx          temp landing (Phase 0)
-  api/             typed fetch wrappers (Phase 1+)
-  store/           signals-based state (Phase 1+)
-  routes/          page-level components
-  components/      Drawer / BottomSheet / BottomNav / CommandPalette / …
-  hooks/           useSSE / useSwipe / useShortcut / useMediaQuery
+  app.tsx          shell + router
+  api/             typed fetch wrappers
+  store/           signals-based state
+  routes/          page-level components (desktop / tasks / memory / triggers / files / docs / settings)
+  components/      Drawer / BottomSheet / BottomNav / CommandPalette / Topbar / …
+  hooks/           useSSE / useSwipe / useShortcut / useMediaQuery / useEscape / …
   styles/
     tokens.css     design tokens (dark + light)
     reset.css

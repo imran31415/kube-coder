@@ -109,6 +109,11 @@ function renderMarkdown(src: string): string {
       '</div>';
     html = html.replace(`<!--KC_CALLOUT_${i}-->`, block);
   }
+  // Wrap every table in a horizontally scrollable container so wide tables
+  // can scroll independently of the page layout instead of forcing the
+  // article wider than the mobile viewport.
+  html = html.replace(/<table>/g, '<div class="docs-table-wrap"><table>')
+             .replace(/<\/table>/g, '</table></div>');
   return DOMPurify.sanitize(html, {
     ADD_ATTR: ['target', 'rel'],
     USE_PROFILES: { html: true },
