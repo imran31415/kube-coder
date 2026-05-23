@@ -111,6 +111,12 @@ export function DesktopRoute() {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   function onSurfaceClick(e: MouseEvent) {
     if (serverMode.value.readOnly) return;
+    // If the editor drawer / bottom sheet is open, the user is inside
+    // the icon form — every click bubbles up to here, which would re-
+    // open the "Add icon?" prompt and steal focus from the form. Bail
+    // early in that case. data-dt-stop on children is the secondary
+    // line of defense for cells, bulletin, etc.
+    if (drawerOpen.value === ('desktop-edit' as DrawerKey)) return;
     // Only fire when the click is on the surface itself or empty grid —
     // not on an icon button / bulletin row. Walk up from target; if we
     // hit a `data-dt-stop` ancestor before the surface, ignore.

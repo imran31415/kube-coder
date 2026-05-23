@@ -1,5 +1,15 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import './detail.css';
+import type { TaskDetail as TaskDetailType } from '../../api/tasks';
+import { PopoverMenu, PopoverItem, PopoverSection, PopoverDivider } from '../../components/PopoverMenu';
+import { previewFullscreen } from '../../store/ui';
+import { getSessionSignals } from './sessionSignals';
+import {
+  openTerminalInNewTab,
+  toggleScrollMode,
+  triggerReattach,
+  uploadFileToTask,
+} from './sessionActions';
 import {
   selectedTask,
   selectedTaskLoading,
@@ -8,8 +18,6 @@ import {
   selectTask,
 } from '../../store/tasks';
 import { listSubagents } from '../../api/subagents';
-import { Pill } from '../../components/primitives/Pill';
-import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { TerminalPane } from './TerminalPane';
 import { SubagentsTab } from './SubagentsTab';
@@ -19,34 +27,11 @@ import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import type { TaskStatus } from '../../api/tasks';
 
-const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' | 'accent'> = {
-  running: 'accent',
-  completed: 'success',
-  killed: 'warn',
-  error: 'danger',
-  unknown: 'neutral',
-  'waiting-for-input': 'warn',
-};
-
-// Short labels for the pill — the raw status "waiting-for-input" is 17 chars
-// and overflows the header on narrow screens (clips Copy link / Rename).
-const STATUS_PILL_LABEL: Record<TaskStatus, string> = {
-  running: 'running',
-  completed: 'done',
-  killed: 'killed',
-  error: 'error',
-  unknown: 'unknown',
-  'waiting-for-input': 'waiting',
-};
-
-const STATUS_HELP: Record<TaskStatus, string> = {
-  running: 'Task is alive in tmux. Output streams in the Session tab.',
-  completed: 'Task exited cleanly. Output is preserved; tmux session may have been reaped.',
-  killed: 'Task was killed via the dashboard.',
-  error: 'Task exited with an error code.',
-  unknown: 'Status could not be determined.',
-  'waiting-for-input': 'Task is waiting for user input. Check the Session or Send message tab to respond.',
-};
+// STATUS_TONE / STATUS_PILL_LABEL / STATUS_HELP previously drove the
+// task header's status pill. The header was retired when the bars were
+// consolidated into TaskBar; status is now communicated by the colored
+// dot at the left of the bar (see TaskBar's td-bar-dot rules). Keeping
+// TAB_HELP / TAB_LABELS only since those still feed the tab buttons.
 
 type DetailTab = 'terminal' | 'preview' | 'message' | 'info' | 'subagents';
 // The "terminal" id is historical — what the user sees is "Session", which is
@@ -89,10 +74,9 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const [subagentsCount, setSubagentsCount] = useState<number>(0);
   const [confirmKill, setConfirmKill] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
-  // Default-collapsed: most users just want to see the session output. The
-  // header (title, status, Copy link, Rename, Kill, meta strip) expands via
-  // the chevron pill that replaces it.
-  const [headerCollapsed, setHeaderCollapsed] = useState(true);
+  // (headerCollapsed state removed — the prior collapsible header was
+  // retired in the bar-consolidation pass; TaskBar is now always
+  // visible and carries everything.)
 
   // When the selected task CHANGES, snap to a sensible default tab:
   //   - live (running)  → Terminal (the user wants to watch it work)
@@ -227,138 +211,24 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   };
   const banner = !isLive ? FINISHED_BANNER[t.status] : undefined;
 
+  const isSessionTab = tab === 'terminal' || tab === 'preview';
   return (
-    <article class={`td ${headerCollapsed ? 'td-collapsed' : ''}`}>
-      {!headerCollapsed && (
-        <header class="td-header">
-          <div class="td-headline">
-            <Pill tone={STATUS_TONE[t.status]} mono title={STATUS_HELP[t.status]}>
-              {STATUS_PILL_LABEL[t.status]}
-            </Pill>
-            <h2 class="td-title" title={t.prompt || undefined}>
-              {t.name || t.prompt || '(unnamed)'}
-            </h2>
-          </div>
-          <div class="td-actions">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onCopyLink}
-              disabled={busy}
-              title="Copy a deep-link URL to this task to your clipboard"
-            >
-              {copied ? 'Copied' : 'Copy link'}
-            </Button>
-            <MutatorOnly>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={onRename}
-                disabled={busy}
-                title="Rename this task (display only — doesn't affect the tmux session)"
-              >
-                Rename
-              </Button>
-              <Button
-                size="sm"
-                variant={isLive ? 'danger' : 'ghost'}
-                onClick={onKill}
-                disabled={busy || !isLive}
-                title={
-                  isLive
-                    ? 'Kill the tmux session (output is preserved)'
-                    : 'Already stopped'
-                }
-              >
-                <Icon name="kill" size={14} /> Kill
-              </Button>
-            </MutatorOnly>
-            <Button
-              size="sm"
-              variant="ghost"
-              iconOnly
-              onClick={() => setHeaderCollapsed(true)}
-              aria-label="Hide task header"
-              title="Hide the header + meta strip — gives the terminal more vertical space"
-            >
-              <Icon name="chevron-down" size={14} />
-            </Button>
-            {onClose && (
-              <Button
-                size="sm"
-                variant="ghost"
-                iconOnly
-                onClick={onClose}
-                aria-label="Close detail"
-                title="Deselect task"
-              >
-                <Icon name="close" />
-              </Button>
-            )}
-          </div>
-        </header>
-      )}
-      {headerCollapsed && (
-        <button
-          type="button"
-          class="td-expand"
-          onClick={() => setHeaderCollapsed(false)}
-          aria-label="Show task header"
-          title="Show the task header again"
-        >
-          <Icon name="chevron-right" size={12} />
-          <span class="mono">{t.name || t.task_id.slice(0, 12)}</span>
-          <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_PILL_LABEL[t.status]}</Pill>
-        </button>
-      )}
-
-      {!headerCollapsed && (
-      <div class="td-meta">
-        {t.workdir && (
-          <span
-            class="td-meta-path"
-            title="Working directory inside the workspace pod (cwd of the tmux session)"
-          >
-            <Icon name="files" size={11} />
-            <span class="mono">{String(t.workdir)}</span>
-          </span>
-        )}
-        <span class="td-meta-chip mono muted" title="Internal task ID — used by /api/claude/tasks endpoints">
-          {t.task_id}
-        </span>
-        {t.assistant && (
-          <span class="td-meta-chip muted" title="Which assistant is driving this task">
-            {String(t.assistant)}
-          </span>
-        )}
-        {t.source && (
-          <span class="td-meta-chip muted" title="Where the task originated (dashboard, MCP, cron, webhook, …)">
-            {t.source}
-          </span>
-        )}
-      </div>
-      )}
-
-      <nav class="td-tabs" role="tablist">
-        {visibleTabs.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            class={`td-tab ${tab === id ? 'td-tab-active' : ''}`}
-            onClick={() => setTab(id)}
-            title={TAB_HELP[id]}
-          >
-            {TAB_LABELS[id]}
-            {id === 'subagents' && subagentsCount > 0 && (
-              <span class="td-tab-count" aria-label={`${subagentsCount} subagent invocations`}>
-                {subagentsCount}
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
+    <article class="td">
+      <TaskBar
+        task={t}
+        tab={tab}
+        setTab={setTab}
+        visibleTabs={visibleTabs}
+        subagentsCount={subagentsCount}
+        isLive={isLive}
+        isSessionTab={isSessionTab}
+        copied={copied}
+        busy={busy}
+        onCopyLink={onCopyLink}
+        onRename={onRename}
+        onKill={onKill}
+        onClose={onClose}
+      />
 
       <div class="td-body" role="tabpanel">
         {banner && (
@@ -435,4 +305,189 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
 export function deselectAndClose(setSheet: (v: null) => void) {
   selectTask(null);
   setSheet(null);
+}
+
+/** Skinny unified bar replacing the prior 3 stacked rows (task header,
+ *  meta strip, term-pane action bar). Holds: status dot, scroll-mode
+ *  indicator, tabs, fullscreen toggle (Preview only), and a single
+ *  Settings menu that absorbs every per-task action. */
+function TaskBar({
+  task, tab, setTab, visibleTabs, subagentsCount, isLive, isSessionTab,
+  copied, busy, onCopyLink, onRename, onKill, onClose,
+}: {
+  task: TaskDetailType;
+  tab: DetailTab;
+  setTab: (t: DetailTab) => void;
+  visibleTabs: DetailTab[];
+  subagentsCount: number;
+  isLive: boolean;
+  isSessionTab: boolean;
+  copied: boolean;
+  busy: boolean;
+  onCopyLink: () => void;
+  onRename: () => void;
+  onKill: () => void;
+  onClose?: () => void;
+}) {
+  const s = getSessionSignals(task.task_id);
+  const uploadRef = useRef<HTMLInputElement | null>(null);
+  // Hidden file input — clicking the menu item just synthesizes a click
+  // on the input so we get the native picker without restructuring the
+  // popover (popovers don't host functional inputs cleanly).
+  function pickFile() {
+    uploadRef.current?.click();
+  }
+  function onFileChosen(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const f = input.files?.[0];
+    if (f) void uploadFileToTask(task.task_id, f);
+    input.value = '';
+  }
+  const phase = s.phase.value;
+  const scrollOn = s.scrollMode.value;
+
+  return (
+    <div class="td-bar" role="toolbar" aria-label="Task controls">
+      {/* Status dot — color reflects TerminalPane phase. Click to reattach. */}
+      <button
+        type="button"
+        class={`td-bar-dot td-bar-dot-${phase}`}
+        title={
+          phase === 'ready' ? 'Attached — click to reattach'
+          : phase === 'preparing' ? 'Preparing session…'
+          : 'Error attaching — click to retry'
+        }
+        aria-label={`Session ${phase}, click to reattach`}
+        onClick={() => triggerReattach(task.task_id)}
+        disabled={!isSessionTab}
+      />
+      {scrollOn && (
+        <span class="td-bar-scroll mono" title="Scroll mode active — click in the menu to exit">
+          SCROLL
+        </span>
+      )}
+      <nav class="td-bar-tabs" role="tablist">
+        {visibleTabs.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            class={`td-bar-tab ${tab === id ? 'td-bar-tab-active' : ''}`}
+            onClick={() => setTab(id)}
+            title={TAB_HELP[id]}
+          >
+            {TAB_LABELS[id]}
+            {id === 'subagents' && subagentsCount > 0 && (
+              <span class="td-bar-tab-count">{subagentsCount}</span>
+            )}
+          </button>
+        ))}
+      </nav>
+      <span class="td-bar-grow" />
+      {/* Hidden file input must live in the DOM near the trigger so
+          synthetic click works. Outside the popover panel so its lifecycle
+          isn't bound to popover open/close. */}
+      <MutatorOnly>
+        <input
+          ref={uploadRef}
+          type="file"
+          hidden
+          onChange={onFileChosen}
+        />
+      </MutatorOnly>
+      {tab === 'preview' && (
+        <button
+          type="button"
+          class="td-bar-icon-btn"
+          onClick={() => (previewFullscreen.value = !previewFullscreen.value)}
+          title={previewFullscreen.value ? 'Exit fullscreen (Esc)' : 'Fullscreen preview'}
+          aria-label={previewFullscreen.value ? 'Exit fullscreen' : 'Fullscreen'}
+        >
+          <Icon name={previewFullscreen.value ? 'fullscreen-exit' : 'fullscreen'} size={14} />
+        </button>
+      )}
+      <PopoverMenu
+        align="right"
+        trigger={({ onClick, ref, 'aria-expanded': ex }) => (
+          <button
+            type="button"
+            class="td-bar-icon-btn"
+            onClick={onClick}
+            ref={ref as (el: HTMLButtonElement | null) => void}
+            aria-expanded={ex}
+            aria-haspopup="menu"
+            title="Task settings + actions"
+            aria-label="Open task menu"
+          >
+            <Icon name="settings" size={14} />
+          </button>
+        )}
+      >
+        {(close) => (
+          <>
+            <PopoverSection>Session</PopoverSection>
+            <PopoverItem
+              disabled={!isSessionTab || phase === 'preparing'}
+              onClick={() => { triggerReattach(task.task_id); close(); }}
+              hint="↻"
+            >
+              Reattach
+            </PopoverItem>
+            <MutatorOnly>
+              <PopoverItem
+                disabled={phase !== 'ready'}
+                onClick={() => { pickFile(); close(); }}
+              >
+                Upload file…
+              </PopoverItem>
+            </MutatorOnly>
+            <MutatorOnly>
+              <PopoverItem
+                disabled={phase !== 'ready'}
+                onClick={() => { void toggleScrollMode(task.task_id); close(); }}
+              >
+                {scrollOn ? 'Exit scroll mode' : 'Scroll mode'}
+              </PopoverItem>
+            </MutatorOnly>
+            <PopoverItem
+              onClick={() => { void openTerminalInNewTab(task.task_id); close(); }}
+            >
+              Open in new tab
+            </PopoverItem>
+            <PopoverDivider />
+            <PopoverSection>Task</PopoverSection>
+            <PopoverItem
+              disabled={busy}
+              onClick={() => { onCopyLink(); close(); }}
+            >
+              {copied ? 'Copied' : 'Copy link'}
+            </PopoverItem>
+            <MutatorOnly>
+              <PopoverItem disabled={busy} onClick={() => { onRename(); close(); }}>
+                Rename
+              </PopoverItem>
+            </MutatorOnly>
+            <MutatorOnly>
+              <PopoverItem
+                disabled={busy || !isLive}
+                danger
+                onClick={() => { onKill(); close(); }}
+              >
+                Kill session
+              </PopoverItem>
+            </MutatorOnly>
+            {onClose && (
+              <>
+                <PopoverDivider />
+                <PopoverItem onClick={() => { onClose(); close(); }}>
+                  Close detail
+                </PopoverItem>
+              </>
+            )}
+          </>
+        )}
+      </PopoverMenu>
+    </div>
+  );
 }

@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput, setScrollMode } from '../../api/tasks';
-import { uploadFile } from '../../api/files';
-import { sendFollowup } from '../../store/tasks';
-import { previewFullscreen, pushToast } from '../../store/ui';
-import { MutatorOnly } from '../../components/MutatorOnly';
+import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
+import { getSessionSignals } from './sessionSignals';
 
 export interface TerminalPaneProps {
   taskId: string;
@@ -114,70 +111,18 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const [termSrc, setTermSrc] = useState<string>('');
   const [vncSrc, setVncSrc] = useState<string>('');
 
-  // Upload "+" button — lets the user drop a file into the running task's
-  // workspace directly from the Session/Preview top bar. Mobile users
-  // couldn't easily get a local file into the Claude session before; they
-  // had to switch to the Files route, upload, then come back and message
-  // the path. Now: tap +, pick file, file lands at
-  // /home/dev/uploads/<task_id>/<name> and a brief notice gets pasted
-  // into the tmux pane so Claude knows it's there.
-  const uploadInputRef = useRef<HTMLInputElement | null>(null);
-  const [uploading, setUploading] = useState(false);
-  async function onUploadFile(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    const destDir = `uploads/${taskId}`;
-    try {
-      await uploadFile(file, destDir);
-      const fullPath = `/home/dev/${destDir}/${file.name}`;
-      pushToast(`Uploaded ${file.name} → ${fullPath}`, { kind: 'success' });
-      // Best-effort: tell the active session about it so the user doesn't
-      // have to copy/paste the path. Failure here is non-fatal (the file
-      // is on disk regardless), so just log a softer toast.
-      try {
-        await sendFollowup(
-          taskId,
-          `I uploaded a file to your workspace: ${fullPath}`,
-        );
-      } catch {
-        pushToast('Upload OK, but could not notify the session — paste the path manually.', { kind: 'warn' });
-      }
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Upload failed', { kind: 'danger' });
-    } finally {
-      setUploading(false);
-      input.value = '';
-    }
-  }
-
-  // Scroll mode toggle — flips the tmux pane in/out of copy-mode via a
-  // server-side `tmux copy-mode` / `send-keys -X cancel`. Replaces the
-  // user holding Ctrl+B [ to scroll back and `q` to exit. Once in
-  // copy-mode, arrow keys / Page Up / wheel drive the scrollback (even
-  // when the inner app is on alt-screen — copy-mode's bindings win).
-  const [scrollMode, setScrollModeState] = useState<boolean>(false);
-  const [scrollBusy, setScrollBusy] = useState(false);
-  async function toggleScrollMode() {
-    const next: 'enter' | 'exit' = scrollMode ? 'exit' : 'enter';
-    setScrollBusy(true);
-    try {
-      await setScrollMode(taskId, next);
-      setScrollModeState(next === 'enter');
-      if (next === 'enter') {
-        pushToast('Scroll mode on — arrows / PgUp / wheel to scroll, click button again to exit.', { kind: 'info', ttl: 5000 });
-      }
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Could not toggle scroll mode', { kind: 'danger' });
-    } finally {
-      setScrollBusy(false);
-    }
-  }
-  // Reset scroll-mode state when the task changes — the server tracks
-  // tmux state per session so we don't actually need to "exit" the old
-  // task's mode before switching, but the button label should reset.
-  useEffect(() => { setScrollModeState(false); }, [taskId]);
+  // Mirror our local phase into the per-task session signal so
+  // TaskDetail's status dot in the unified bar can reflect it without
+  // prop-drilling.
+  const sessionSignals = getSessionSignals(taskId);
+  useEffect(() => {
+    sessionSignals.phase.value = phase;
+  }, [phase, sessionSignals]);
+  // Reset scroll-mode state when switching tasks (the server-side tmux
+  // state is per session; UI label should reset to match).
+  useEffect(() => {
+    sessionSignals.scrollMode.value = false;
+  }, [taskId, sessionSignals]);
 
   // Preview-only port + path controls. Path defaults to "/" so the
   // existing port-only flow keeps working, but the user can now drop in
@@ -277,6 +222,18 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         setPhase('error');
       });
   }
+  // Reattach when the per-task counter bumps from outside (settings menu
+  // in TaskDetail's unified bar). Skips the initial 0 → 0 case via the
+  // dep + a guard ref. Watching the value via useEffect is enough; the
+  // signal subscription is implicit.
+  const lastReattachAt = useRef<number>(sessionSignals.reattachCounter.value);
+  useEffect(() => {
+    const cur = sessionSignals.reattachCounter.value;
+    if (cur === lastReattachAt.current) return;
+    lastReattachAt.current = cur;
+    reattach();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionSignals.reattachCounter.value]);
 
   /**
    * Bounce the VNC iframe through about:blank then a cache-busted URL so
@@ -353,115 +310,50 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
 
   return (
     <div class={`term-pane ${withVnc ? 'term-pane-split' : ''}`}>
-      <div class="term-pane-bar muted">
-        <span class={`term-pane-dot term-pane-dot-${phase}`} aria-hidden="true" />
-        <span class="mono">{phase === 'ready' ? 'attached' : phase}</span>
-
-        {withVnc && (
-          <form class="term-pane-port" onSubmit={openPort} title="Open localhost:<port><path> in the in-pod Chrome (right pane)">
-            <span class="term-pane-port-label mono">localhost:</span>
-            <input
-              type="number"
-              class="term-pane-port-input mono"
-              min={1}
-              max={65535}
-              value={port}
-              onInput={(e) => setPort((e.target as HTMLInputElement).value)}
-              aria-label="Localhost port to open in the in-pod browser"
-              disabled={portBusy}
-            />
-            <input
-              type="text"
-              class="term-pane-port-path mono"
-              value={urlPath}
-              onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
-              placeholder="/"
-              aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
-              disabled={portBusy}
-              spellcheck={false}
-              autocapitalize="off"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              variant="secondary"
-              disabled={portBusy}
-              title="Point the in-pod browser at localhost:<port><path>"
-            >
-              Open
-            </Button>
-            {portStatus && (
-              <span class="term-pane-port-status mono" aria-live="polite">
-                {portStatus}
-              </span>
-            )}
-          </form>
-        )}
-
-        <span class="term-pane-grow" />
-        <MutatorOnly>
+      {/* Preview-only inline form to repoint the in-pod browser. Lives
+          under the iframe row when in Preview mode; the main action bar
+          (Upload / Scroll / Reattach / etc.) was promoted into
+          TaskDetail's unified .td-bar above the tabs. */}
+      {withVnc && (
+        <form class="term-pane-port term-pane-port-floating" onSubmit={openPort} title="Open localhost:<port><path> in the in-pod Chrome (right pane)">
+          <span class="term-pane-port-label mono">localhost:</span>
           <input
-            ref={uploadInputRef}
-            type="file"
-            hidden
-            onChange={onUploadFile}
+            type="number"
+            class="term-pane-port-input mono"
+            min={1}
+            max={65535}
+            value={port}
+            onInput={(e) => setPort((e.target as HTMLInputElement).value)}
+            aria-label="Localhost port to open in the in-pod browser"
+            disabled={portBusy}
+          />
+          <input
+            type="text"
+            class="term-pane-port-path mono"
+            value={urlPath}
+            onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
+            placeholder="/"
+            aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
+            disabled={portBusy}
+            spellcheck={false}
+            autocapitalize="off"
           />
           <Button
+            type="submit"
             size="sm"
-            variant="ghost"
-            onClick={() => uploadInputRef.current?.click()}
-            disabled={uploading || phase !== 'ready'}
-            title={
-              uploading
-                ? 'Uploading…'
-                : 'Upload a file into this task\'s workspace and notify the Claude session'
-            }
+            variant="secondary"
+            disabled={portBusy}
+            title="Point the in-pod browser at localhost:<port><path>"
           >
-            <Icon name="plus" size={12} /> {uploading ? 'Uploading…' : 'Upload'}
+            Open
           </Button>
-        </MutatorOnly>
-        <Button
-          size="sm"
-          variant={scrollMode ? 'primary' : 'ghost'}
-          onClick={toggleScrollMode}
-          disabled={scrollBusy || phase !== 'ready'}
-          title={
-            scrollMode
-              ? 'Exit scroll mode — return to the live session'
-              : 'Enter scroll mode — arrows / PgUp / wheel scroll the tmux history. Replaces Ctrl+B [ + q.'
-          }
-        >
-          {scrollMode ? 'Exit scroll' : 'Scroll'}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={reattach} disabled={phase === 'preparing'} title="Re-prepare the tmux session and reload the terminal iframe">
-          <Icon name="play" size={12} /> Reattach
-        </Button>
-        {withVnc && (
-          <Button size="sm" variant="ghost" onClick={refreshVnc} title="Reload the noVNC viewer">
-            Refresh view
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={openTerminalInNewTab}
-          title="Open this task's terminal in its own browser tab"
-        >
-          New tab
-        </Button>
-        {withVnc && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => (previewFullscreen.value = !previewFullscreen.value)}
-            aria-label={previewFullscreen.value ? 'Exit fullscreen' : 'Fullscreen'}
-            title={previewFullscreen.value ? 'Exit fullscreen (Esc)' : 'Hide rail + master list — give Preview the full viewport'}
-          >
-            <Icon name={previewFullscreen.value ? 'fullscreen-exit' : 'fullscreen'} size={12} />
-            {previewFullscreen.value ? ' Exit' : ' Fullscreen'}
-          </Button>
-        )}
-      </div>
+          {portStatus && (
+            <span class="term-pane-port-status mono" aria-live="polite">
+              {portStatus}
+            </span>
+          )}
+        </form>
+      )}
 
       {phase === 'error' && (
         <div class="term-pane-error">

@@ -580,3 +580,152 @@
 @keyframes term-pane-spin {
   to { transform: rotate(360deg); }
 }
+
+/* ───────────────────────────────────────────────────────────────────
+   Unified task control bar (.td-bar) — replaces the prior header
+   (.td-header), meta strip (.td-meta), tabs row (.td-tabs), and the
+   TerminalPane action bar (.term-pane-bar). One skinny row that
+   carries: status dot, scroll-mode indicator, tabs, fullscreen
+   toggle (Preview only), and the settings ⚙️ popover.
+   ─────────────────────────────────────────────────────────────────── */
+.td-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--size-3);
+  height: 40px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+/* Status dot — color reflects TerminalPane phase. Clickable when on
+   a session tab to trigger a reattach. Uses the same palette as
+   the prior .term-pane-dot but bigger touch target. */
+.td-bar-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-subtle);
+  border: 0;
+  margin-right: 4px;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 100ms ease, background var(--motion-fast), box-shadow var(--motion-fast);
+}
+.td-bar-dot:disabled { cursor: default; }
+.td-bar-dot:hover:not(:disabled) { transform: scale(1.15); }
+.td-bar-dot-ready {
+  background: #4ade80;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #4ade80 18%, transparent);
+}
+.td-bar-dot-preparing {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
+  animation: td-bar-dot-pulse 1.2s ease-in-out infinite;
+}
+.td-bar-dot-error {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+@keyframes td-bar-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .td-bar-dot-preparing { animation: none; }
+}
+
+/* "SCROLL" indicator next to the dot when copy-mode is active.
+   Quiet mono pill — disappears on exit. */
+.td-bar-scroll {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  margin-right: 4px;
+}
+
+/* Tabs row — same visual language as the prior .td-tabs but inline. */
+.td-bar-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.td-bar-tabs::-webkit-scrollbar { display: none; }
+.td-bar-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.td-bar-tab:hover { background: var(--surface-2); color: var(--text); }
+.td-bar-tab-active {
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 500;
+}
+.td-bar-tab-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.td-bar-grow { flex: 1; }
+
+/* Right-side icon-only buttons (fullscreen, settings gear). */
+.td-bar-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.td-bar-icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.td-bar-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.td-bar-icon-btn[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+
+/* Mobile: tighten everything, ensure the bar stays single-row. */
+@media (max-width: 720px) {
+  .td-bar { padding: 0 var(--size-2); height: 38px; }
+  .td-bar-tab { padding: 5px 8px; font-size: 12px; }
+  .td-bar-icon-btn { width: 32px; height: 32px; }
+}
+
+/* Floating Preview-only port form — moved out of the retired
+   .term-pane-bar into a small inline strip below the iframes.
+   Keep it visually quiet so the noVNC viewer is the dominant
+   element on the Preview tab. */
+.term-pane-port-floating {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
