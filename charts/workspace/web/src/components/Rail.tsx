@@ -1,6 +1,7 @@
 import { currentPath, navigate, ROUTES, matchRoute } from '../store/router';
-import { railCollapsed, previewFullscreen } from '../store/ui';
+import { railCollapsed, previewFullscreen, drawerOpen } from '../store/ui';
 import { Icon, type IconName } from './Icon';
+import { MutatorOnly } from './MutatorOnly';
 import './Rail.css';
 
 const ICONS: Record<string, IconName> = {
@@ -24,19 +25,55 @@ export function Rail() {
       data-collapsed={collapsed ? 'true' : 'false'}
     >
       <div class="rail-items">
-        {ROUTES.map((r) => (
-          <button
-            key={r.path}
-            type="button"
-            class={`rail-item ${active === r.path ? 'rail-item-active' : ''}`}
-            onClick={() => navigate(r.path)}
-            aria-current={active === r.path ? 'page' : undefined}
-            title={collapsed ? r.title : undefined}
-          >
-            <Icon name={ICONS[r.path] ?? 'inbox'} size={16} />
-            <span class="rail-item-label">{r.title}</span>
-          </button>
-        ))}
+        {ROUTES.map((r) => {
+          const isActive = active === r.path;
+          // Build row gets an inline "+" that opens the new-build drawer —
+          // replaces the old route-header "New build" button, reclaiming the
+          // vertical space at the top of the Tasks route. Hidden when the
+          // rail is collapsed to a 52px icon strip.
+          if (r.path === '/tasks' && !collapsed) {
+            return (
+              <div key={r.path} class="rail-row">
+                <button
+                  type="button"
+                  class={`rail-item ${isActive ? 'rail-item-active' : ''}`}
+                  onClick={() => navigate(r.path)}
+                  aria-current={isActive ? 'page' : undefined}
+                >
+                  <Icon name={ICONS[r.path] ?? 'inbox'} size={16} />
+                  <span class="rail-item-label">{r.title}</span>
+                </button>
+                <MutatorOnly>
+                  <button
+                    type="button"
+                    class="rail-item-action"
+                    onClick={() => {
+                      if (!isActive) navigate('/tasks');
+                      drawerOpen.value = 'new-task';
+                    }}
+                    aria-label="New build"
+                    title="New build"
+                  >
+                    <Icon name="plus" size={14} />
+                  </button>
+                </MutatorOnly>
+              </div>
+            );
+          }
+          return (
+            <button
+              key={r.path}
+              type="button"
+              class={`rail-item ${isActive ? 'rail-item-active' : ''}`}
+              onClick={() => navigate(r.path)}
+              aria-current={isActive ? 'page' : undefined}
+              title={collapsed ? r.title : undefined}
+            >
+              <Icon name={ICONS[r.path] ?? 'inbox'} size={16} />
+              <span class="rail-item-label">{r.title}</span>
+            </button>
+          );
+        })}
       </div>
       <button
         type="button"

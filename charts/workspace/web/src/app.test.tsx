@@ -16,12 +16,15 @@ beforeEach(() => {
 
 describe('App shell', () => {
   it('renders the brand, search trigger, and the default Build route', () => {
-    render(<App />);
+    const { container } = render(<App />);
     expect(screen.getByText('kube-coder')).toBeInTheDocument();
     expect(screen.getByLabelText('Open command palette')).toBeInTheDocument();
-    // route-level heading — the /tasks URL still resolves but its display
-    // label was renamed to "Build" alongside the new-build flow.
-    expect(screen.getByRole('heading', { level: 1, name: 'Build' })).toBeInTheDocument();
+    // The Build route no longer carries a route-level <h1> — the header was
+    // dropped to reclaim vertical space and the "+ New build" affordance moved
+    // into the rail. We assert the route mounted by checking the rail's Build
+    // item is marked active.
+    const activeRailItem = container.querySelector('.rail .rail-item[aria-current="page"]');
+    expect(activeRailItem?.textContent).toContain('Build');
   });
 
   it('navigates between routes via the rail buttons', async () => {
