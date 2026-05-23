@@ -3,6 +3,9 @@
   flex-direction: column;
   gap: 16px;
   padding-bottom: 32px;
+  /* Allow flex children with their own scrolling content to shrink below
+     min-content so a wide table/pre doesn't widen the route shell. */
+  min-width: 0;
 }
 
 .docs-loading,
@@ -114,6 +117,7 @@
 
 .docs-article {
   max-width: 760px;
+  min-width: 0;
 }
 .docs-article-header {
   margin-bottom: 16px;
@@ -131,6 +135,7 @@
   margin: 0 0 6px 0;
   letter-spacing: -0.015em;
   line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 .docs-article-summary {
   margin: 0;
@@ -142,6 +147,14 @@
   font-size: 14.5px;
   line-height: 1.65;
   color: var(--text, #e6e6ea);
+  min-width: 0;
+}
+.docs-article-body p,
+.docs-article-body li,
+.docs-article-body h1,
+.docs-article-body h2,
+.docs-article-body h3 {
+  overflow-wrap: anywhere;
 }
 .docs-article-body h2 {
   font-size: 20px;
@@ -182,6 +195,11 @@
   background: var(--surface-2);
   padding: 2px 5px;
   border-radius: 4px;
+  /* Inline code (file paths, env vars) inside flowing prose should wrap
+     so it never widens its parent past the viewport. Block code in <pre>
+     opts out below — long shell commands stay on one scrolling line. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .docs-article-body pre {
   background: var(--surface-2);
@@ -191,6 +209,12 @@
   overflow-x: auto;
   font-size: 12.5px;
   line-height: 1.5;
+  max-width: 100%;
+}
+.docs-article-body pre code {
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: pre;
 }
 .docs-article-body pre code {
   background: transparent;
@@ -211,11 +235,21 @@
 .docs-article-body blockquote p:last-child {
   margin-bottom: 0;
 }
+.docs-article-body .docs-table-wrap {
+  margin: 14px 0;
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+.docs-article-body .docs-table-wrap > table {
+  margin: 0;
+}
 .docs-article-body table {
   border-collapse: collapse;
   margin: 14px 0;
   width: 100%;
   font-size: 13px;
+  table-layout: auto;
 }
 .docs-article-body th,
 .docs-article-body td {
@@ -223,6 +257,8 @@
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .docs-article-body th {
   background: var(--surface-2);
@@ -251,4 +287,46 @@
 }
 .docs-callout-scenario {
   border-left-color: var(--accent, #6db9ff);
+}
+
+/* Mobile tightening — give pages the full width and trim chrome that
+   competes with the article body for vertical space. */
+@media (max-width: 760px) {
+  .docs-layout-mobile {
+    gap: 12px;
+  }
+  .route-docs .route-header {
+    margin-bottom: 4px;
+  }
+  .route-docs .route-subtitle {
+    display: none;
+  }
+  .docs-article-title {
+    font-size: 22px;
+  }
+  .docs-article-summary {
+    font-size: 13px;
+  }
+  .docs-article-body {
+    font-size: 14px;
+  }
+  .docs-article-body h2 {
+    font-size: 17px;
+    margin-top: 24px;
+  }
+  .docs-article-body h3 {
+    font-size: 15px;
+    margin-top: 18px;
+  }
+  .docs-article-body pre {
+    padding: 10px 12px;
+    font-size: 11.5px;
+  }
+  .docs-article-body table {
+    font-size: 12px;
+  }
+  .docs-article-body th,
+  .docs-article-body td {
+    padding: 5px 8px;
+  }
 }
