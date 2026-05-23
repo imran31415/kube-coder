@@ -109,8 +109,34 @@
   border-radius: var(--radius-pill);
   white-space: nowrap;
 }
+/* Clickable variant — the pill is now an <a> linking to the kube-coder
+   repo so demo visitors can find the helm chart and deploy their own
+   writable workspace. Reset anchor defaults + add hover affordance. */
+.readonly-pill-link {
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), transform 80ms ease;
+}
+.readonly-pill-link:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--accent-soft));
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.readonly-pill-link:active { transform: translateY(0.5px); }
+.readonly-pill-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 @media (max-width: 480px) {
   .readonly-pill { font-size: 9.5px; padding: 1px 6px; }
+}
+/* Narrow phones — the pill label is long ("Demo · Deploy your own ↗");
+   swap to a short "Deploy ↗" so it fits next to the WaitingBadge. */
+@media (max-width: 540px) {
+  .readonly-pill-link { font-size: 0; padding: 2px 8px; }
+  .readonly-pill-link::before {
+    content: "Deploy ↗";
+    font-size: 10.5px;
+  }
 }
 
 .topbar-link {

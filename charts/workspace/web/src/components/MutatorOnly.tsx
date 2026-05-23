@@ -18,15 +18,22 @@ export function ReadOnlyOnly({ children }: { children: ComponentChildren }) {
   return <>{children}</>;
 }
 
-/** Topbar pill that flags the public-demo deployment. */
+/** Topbar pill that flags the public-demo deployment. Doubles as the
+ *  conversion CTA — clicking opens the kube-coder repo on GitHub where
+ *  visitors can find the helm chart and deploy their own writable
+ *  workspace. Without this, demo visitors had no in-context path off
+ *  the read-only deck (the prior version was a plain <span>). */
 export function ReadOnlyPill() {
   if (!serverMode.value.readOnly) return null;
   return (
-    <span
-      class="readonly-pill"
-      title="This workspace is a public demo — every mutation endpoint returns 403."
+    <a
+      class="readonly-pill readonly-pill-link"
+      href="https://github.com/imran31415/kube-coder#quick-start"
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Public demo — every mutation returns 403. Click to deploy your own writable workspace."
     >
-      Demo · Read-only
-    </span>
+      Demo · Deploy your own ↗
+    </a>
   );
 }

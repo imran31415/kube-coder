@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render } from '@testing-library/preact';
 import { WaitingBadge, waitingTasks } from './WaitingBadge';
 import { tasks } from '../store/tasks';

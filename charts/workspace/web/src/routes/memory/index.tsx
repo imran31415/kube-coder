@@ -443,11 +443,16 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
           ) : (
             <ul class="md-relations">
               {neighbors.edges!.map((e) => {
-                const other = (neighbors.nodes ?? []).find((n) => n.id === (e.from_id === m.id ? e.to_id : e.from_id));
+                const outgoing = e.from_id === m.id;
+                const other = (neighbors.nodes ?? []).find((n) => n.id === (outgoing ? e.to_id : e.from_id));
+                // Show direction explicitly so the user can tell whether
+                // this memory references the other (→) or is referenced
+                // by it (←). Previously both directions rendered as →
+                // which silently misrepresented incoming edges.
                 return (
                   <li key={`${e.from_id}-${e.to_id}-${e.kind}`}>
                     <Pill tone="info" mono>{e.kind}</Pill>
-                    {' → '}
+                    {outgoing ? ' → ' : ' ← '}
                     <span class="mono">{other ? `${other.namespace}.${other.key}` : '?'}</span>
                     <span class="muted mono"> · weight {e.weight.toFixed(2)}</span>
                   </li>
