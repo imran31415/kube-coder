@@ -12,6 +12,7 @@ import { BottomSheet } from '../components/BottomSheet';
 import { ShortcutsHelp } from '../components/ShortcutsHelp';
 import { Onboarding } from '../components/Onboarding';
 import { TasksRoute } from './tasks/index';
+import { DesktopRoute } from './desktop/index';
 import { MemoryRoute } from './memory/index';
 import { TriggersRoute } from './triggers/index';
 import { FilesRoute } from './files/index';
@@ -22,6 +23,7 @@ import './Shell.css';
 
 const ROUTE_COMPONENTS: Record<string, FunctionComponent> = {
   '/tasks': TasksRoute,
+  '/desktop': DesktopRoute,
   '/memory': MemoryRoute,
   '/triggers': TriggersRoute,
   '/files': FilesRoute,

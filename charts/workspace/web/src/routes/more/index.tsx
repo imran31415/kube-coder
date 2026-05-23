@@ -51,6 +51,15 @@ export function MoreSheet() {
   ];
   const entries: MoreEntry[] = [
     ...mutatingEntries,
+    // BottomNav surfaces Desktop / Build / Memory; everything below is
+    // the "secondary" set the More sheet absorbs. Triggers moved here
+    // when BottomNav switched its third slot to Desktop.
+    {
+      label: 'Triggers',
+      icon: 'triggers',
+      onSelect: () => { navigate('/triggers'); sheetOpen.value = null; },
+      hint: 'Webhooks + crons that fire builds',
+    },
     {
       label: 'Files',
       icon: 'files',
