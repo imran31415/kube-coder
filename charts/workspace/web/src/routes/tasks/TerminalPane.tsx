@@ -469,6 +469,24 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
           <div class="muted" style={{ marginTop: 4, fontSize: 12 }}>
             The task may have ended, or the workspace is missing the ttyd entrypoint.
           </div>
+          <div class="term-pane-error-actions">
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={reattach}
+              title="Re-run prepare-terminal and reload the iframe"
+            >
+              <Icon name="play" size={12} /> Try again
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={openTerminalInNewTab}
+              title="Open this task's terminal in its own browser tab"
+            >
+              New tab
+            </Button>
+          </div>
         </div>
       )}
 

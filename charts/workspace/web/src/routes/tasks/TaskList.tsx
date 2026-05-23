@@ -1,4 +1,4 @@
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import {
   filteredTasks,
   selectedTaskId,
@@ -62,6 +62,19 @@ export function TaskList() {
   const list = filteredTasks.value;
   const counts = taskCounts.value;
   const activeId = selectedTaskId.value;
+
+  // Deep links (palette, /tasks/<id>) select a task whose row may sit far
+  // below the fold. Without a scroll, the user sees an unchanged list and
+  // wonders if the click registered. Scroll the active row into view, but
+  // only when activeId actually changes — re-running on every render would
+  // fight the user's manual scrolling.
+  const listRef = useRef<HTMLUListElement | null>(null);
+  useEffect(() => {
+    if (!activeId || !listRef.current) return;
+    const el = listRef.current.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(activeId)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeId]);
   const userChoice = taskStatusFilter.value;
   const effective = taskStatusFilterEffective.value;
   // We auto-relaxed if user picked 'running' but there are none.
@@ -142,9 +155,9 @@ export function TaskList() {
           />
         )
       ) : (
-        <ul class="tl-list" role="list">
+        <ul class="tl-list" role="list" ref={listRef}>
           {list.map((t) => (
-            <li key={t.task_id}>
+            <li key={t.task_id} data-task-id={t.task_id}>
               <button
                 class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${t.status === 'waiting-for-input' ? 'tl-row-waiting' : ''}`}
                 onClick={() => onRowClick(t)}

@@ -18,6 +18,7 @@ export function FilesRoute() {
   const [path, setPath] = useState('');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loadedOnce, setLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mkdirOpen, setMkdirOpen] = useState(false);
 
@@ -32,6 +33,7 @@ export function FilesRoute() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setLoadedOnce(true);
     }
   }
 
@@ -167,6 +169,17 @@ export function FilesRoute() {
               <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
             </tr>
           ))}
+          {busy && (!loadedOnce || entries.length === 0) && (
+            <>
+              {Array.from({ length: 5 }, (_, i) => (
+                <tr class="files-row files-row-skeleton" key={`skeleton-${i}`} aria-hidden="true">
+                  <td><span class="files-skeleton-cell files-skeleton-name" /></td>
+                  <td><span class="files-skeleton-cell files-skeleton-size" /></td>
+                  <td><span class="files-skeleton-cell files-skeleton-date" /></td>
+                </tr>
+              ))}
+            </>
+          )}
         </tbody>
       </table>
 
