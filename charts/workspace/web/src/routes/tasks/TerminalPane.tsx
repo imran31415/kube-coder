@@ -14,6 +14,7 @@ export interface TerminalPaneProps {
 }
 
 const LAST_PORT_KEY = 'kc.previewPort';
+const LAST_PATH_KEY = 'kc.previewPath';
 
 /**
  * Pull HTTP(S) URLs out of the tmux pane text. Mobile users can't easily
@@ -178,13 +179,18 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   // task's mode before switching, but the button label should reset.
   useEffect(() => { setScrollModeState(false); }, [taskId]);
 
-  // Preview-only port controls
+  // Preview-only port + path controls. Path defaults to "/" so the
+  // existing port-only flow keeps working, but the user can now drop in
+  // /admin, /?dev=1, etc. and the in-pod browser will navigate there
+  // instead of just the host root. Both persisted to localStorage so
+  // the next Preview open inherits the last setting per workspace.
   const [port, setPort] = useState<string>(() => {
-    try {
-      return localStorage.getItem(LAST_PORT_KEY) ?? '8080';
-    } catch {
-      return '8080';
-    }
+    try { return localStorage.getItem(LAST_PORT_KEY) ?? '8080'; }
+    catch { return '8080'; }
+  });
+  const [urlPath, setUrlPath] = useState<string>(() => {
+    try { return localStorage.getItem(LAST_PATH_KEY) ?? '/'; }
+    catch { return '/'; }
   });
   const [portStatus, setPortStatus] = useState<string>('');
   const [portBusy, setPortBusy] = useState(false);
@@ -318,15 +324,24 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
       setPortStatus('Enter a port 1-65535');
       return;
     }
+    // Normalize path — empty becomes '/', missing leading slash is added,
+    // raw whitespace stripped. Mirrors the server-side validation.
+    let normPath = (urlPath || '/').trim();
+    if (!normPath) normPath = '/';
+    if (!normPath.startsWith('/')) normPath = '/' + normPath;
     setPortBusy(true);
-    setPortStatus(`→ localhost:${n}…`);
+    const target = `localhost:${n}${normPath === '/' ? '' : normPath}`;
+    setPortStatus(`→ ${target}…`);
     try {
-      const r = await openLocalhostPort(n);
+      const r = await openLocalhostPort(n, normPath);
       if (r && 'error' in r) {
         setPortStatus(`open failed: ${r.error}`);
       } else {
-        setPortStatus(`→ localhost:${n}`);
-        try { localStorage.setItem(LAST_PORT_KEY, String(n)); } catch { /* noop */ }
+        setPortStatus(`→ ${target}`);
+        try {
+          localStorage.setItem(LAST_PORT_KEY, String(n));
+          localStorage.setItem(LAST_PATH_KEY, normPath);
+        } catch { /* noop */ }
         refreshVnc();
       }
     } catch (err) {
@@ -343,7 +358,7 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         <span class="mono">{phase === 'ready' ? 'attached' : phase}</span>
 
         {withVnc && (
-          <form class="term-pane-port" onSubmit={openPort} title="Open localhost:<port> in the in-pod Chrome (right pane)">
+          <form class="term-pane-port" onSubmit={openPort} title="Open localhost:<port><path> in the in-pod Chrome (right pane)">
             <span class="term-pane-port-label mono">localhost:</span>
             <input
               type="number"
@@ -355,12 +370,23 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               aria-label="Localhost port to open in the in-pod browser"
               disabled={portBusy}
             />
+            <input
+              type="text"
+              class="term-pane-port-path mono"
+              value={urlPath}
+              onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
+              placeholder="/"
+              aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
+              disabled={portBusy}
+              spellcheck={false}
+              autocapitalize="off"
+            />
             <Button
               type="submit"
               size="sm"
               variant="secondary"
               disabled={portBusy}
-              title="Point the in-pod browser at this port"
+              title="Point the in-pod browser at localhost:<port><path>"
             >
               Open
             </Button>

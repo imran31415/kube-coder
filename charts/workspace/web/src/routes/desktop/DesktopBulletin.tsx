@@ -91,7 +91,17 @@ export function DesktopBulletin() {
         <span class="dt-bulletin-sub muted">Latest builds and memories — click to jump</span>
       </header>
       {!loaded ? (
-        <div class="dt-bulletin-empty muted">Loading…</div>
+        <ul class="dt-bulletin-list" role="list" aria-busy="true">
+          {[0, 1, 2].map((i) => (
+            <li key={i}>
+              <div class="dt-bulletin-row dt-bulletin-row-skel" aria-hidden="true">
+                <span class="dt-skel dt-skel-tag" />
+                <span class="dt-skel dt-skel-title" />
+                <span class="dt-skel dt-skel-snippet" />
+              </div>
+            </li>
+          ))}
+        </ul>
       ) : (
         <ul class="dt-bulletin-list" role="list">
           {entries.map((e) => (
