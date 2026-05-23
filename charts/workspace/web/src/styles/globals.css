@@ -1,11 +1,13 @@
 body {
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.5;
+  /* Reading-comfort sizing — bumped from 14px / 1.5 toward Kindle-ish
+     parameters so long sessions on the dashboard feel like reading a
+     well-set page rather than scanning UI chrome. */
+  font-size: 15px;
+  line-height: 1.65;
   background: var(--bg);
   color: var(--text);
-  letter-spacing: -0.005em;
-  /* Geist defaults render beautifully; only enable tabular nums for code/data. */
+  letter-spacing: 0;
   font-feature-settings: 'ss01';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -13,7 +15,7 @@ body {
 }
 
 @media (pointer: coarse) {
-  body { font-size: 15px; }
+  body { font-size: 16px; }
 }
 
 code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
@@ -29,25 +31,7 @@ code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
 .subtle { color: var(--text-subtle); }
 .mono { font-family: var(--font-mono); }
 
-/* CRT scanline overlay — dark mode only. Sits above everything via fixed
-   positioning + high z-index, but pointer-events: none lets clicks through.
-   2.5% alpha is barely perceptible up close, gives just enough texture. */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  background-image: repeating-linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0.025) 0,
-    rgba(255, 255, 255, 0.025) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-}
-@media (prefers-color-scheme: light) {
-  body::before { display: none; }
-}
-:root[data-theme="light"] body::before { display: none; }
-:root[data-theme="dark"] body::before { display: block; }
+/* Scanline overlay removed for the Linux IDE polish pass — the dashboard
+   now leans on clean surfaces + restrained accent rather than themed
+   character touches. Keep the rule deleted, not toggled off, so future
+   theme work isn't tempted to re-enable it. */

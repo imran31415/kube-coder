@@ -46,12 +46,16 @@
 }
 :root[data-theme="light"] .btn-primary:hover:not(:disabled) { color: #ffffff; }
 
+/* Borderless secondary / danger to reduce overall chrome noise. The
+   subtle fill on secondary is enough to read as a button; the danger
+   variant relies on text color + hover fill. Borders only appear on
+   :focus-visible for keyboard a11y. */
 .btn-secondary {
   background: var(--surface-2);
   color: var(--text);
-  border-color: var(--border);
+  border-color: transparent;
 }
-.btn-secondary:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-2); }
+.btn-secondary:hover:not(:disabled) { background: var(--surface-3); }
 
 .btn-ghost {
   background: transparent;
@@ -63,6 +67,14 @@
 .btn-danger {
   background: transparent;
   color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-color: transparent;
 }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+/* Keyboard focus rings — restore a visible outline so dropping the
+   resting border doesn't hurt accessibility. Only on focus-visible
+   (keyboard / programmatic), never on mouse focus. */
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
