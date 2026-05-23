@@ -21,9 +21,17 @@ describe('design tokens', () => {
     expect(tokensSrc).toMatch(/prefers-reduced-motion: reduce/);
   });
 
-  it('uses the phosphor-green CRT accent in dark mode', () => {
+  it('defines a valid CSS color value for --accent', () => {
+    // Asserts shape, not a specific hex — the dashboard palette has
+    // iterated several times (phosphor green → violet → off-white) and
+    // pinning the value forced a test update on every theme commit.
+    // The contract we actually care about is: --accent is set, in dark
+    // mode, to a parseable hex / rgb / rgba color.
     const m = tokensSrc.match(/--accent:\s*([^;]+);/);
-    expect(m?.[1].trim()).toBe('#7cffb0');
+    const value = m?.[1].trim();
+    expect(value, '--accent token is defined').toBeTruthy();
+    expect(value, `--accent value "${value}" should be a hex or rgb(a) color`)
+      .toMatch(/^(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))$/);
   });
 
   it('declares topbar, bottomnav, and rail layout heights', () => {
