@@ -339,11 +339,12 @@
    Reads as a quiet card; no shadow, hairline border, tight density.
    ──────────────────────────────────────────────────────────────── */
 
-/* Widget-sized bulletin — centered below the icon grid with equal
-   left/right margins. Constrained width keeps it reading as a small
-   desk widget rather than a full content card. */
+/* Widget-sized bulletin — left-aligned to the icon grid's left edge.
+   Constrained width keeps it reading as a small desk widget rather
+   than a full content card; left-aligning keeps it visually anchored
+   to the icons rather than floating in the center on wide screens. */
 .dt-bulletin {
-  margin: var(--size-5) auto 0;
+  margin: var(--size-5) 0 0;
   width: 100%;
   max-width: 420px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
