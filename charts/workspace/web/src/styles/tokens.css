@@ -2,7 +2,11 @@
    Palette tuned for readable contrast in both modes:
    - dark uses a soft near-black (not pure #000) so surfaces sit visibly above bg
    - light uses an off-white bg with pure-white cards so cards "pop"
-   Type sizes bumped from 13px → 14px base for readability. */
+   Type sizes bumped from 13px → 14px base for readability.
+
+   Visual identity: "Terminal CRT" — phosphor-green accent + tighter radii.
+   Dark mode uses a bright phosphor green; light mode falls back to a deep
+   forest green so the accent stays readable on white. */
 :root {
   /* Dark is the default — the @media + [data-theme] blocks below mirror this. */
   --bg:          #0e0e10;
@@ -15,19 +19,19 @@
   --text-muted:  #adadb5;
   --text-subtle: #7e7e87;
 
-  --accent:        #5eead4;
-  --accent-strong: #2dd4bf;
-  --accent-soft:   rgba(94, 234, 212, 0.14);
-  --on-accent:     #052e2b;
+  --accent:        #7cffb0;
+  --accent-strong: #39ff14;
+  --accent-soft:   rgba(124, 255, 176, 0.12);
+  --on-accent:     #052e1f;
 
   --success: #34d399;
   --warn:    #fbbf24;
   --danger:  #f87171;
   --info:    #60a5fa;
 
-  --radius-sm: 6px;
-  --radius:    8px;
-  --radius-lg: 12px;
+  --radius-sm: 3px;
+  --radius:    4px;
+  --radius-lg: 6px;
   --radius-pill: 999px;
 
   --motion-fast: 150ms ease;
@@ -72,9 +76,9 @@
     --text-muted:  #52525b;
     --text-subtle: #71717a;
 
-    --accent:        #0f766e;
-    --accent-strong: #115e59;
-    --accent-soft:   rgba(15, 118, 110, 0.10);
+    --accent:        #15803d;
+    --accent-strong: #14532d;
+    --accent-soft:   rgba(21, 128, 61, 0.10);
     --on-accent:     #ffffff;
 
     --success: #047857;
@@ -100,10 +104,10 @@
   --text-muted:  #adadb5;
   --text-subtle: #7e7e87;
 
-  --accent:        #5eead4;
-  --accent-strong: #2dd4bf;
-  --accent-soft:   rgba(94, 234, 212, 0.14);
-  --on-accent:     #052e2b;
+  --accent:        #7cffb0;
+  --accent-strong: #39ff14;
+  --accent-soft:   rgba(124, 255, 176, 0.12);
+  --on-accent:     #052e1f;
 
   --success: #34d399;
   --warn:    #fbbf24;
@@ -127,9 +131,9 @@
   --text-muted:  #52525b;
   --text-subtle: #71717a;
 
-  --accent:        #0f766e;
-  --accent-strong: #115e59;
-  --accent-soft:   rgba(15, 118, 110, 0.10);
+  --accent:        #15803d;
+  --accent-strong: #14532d;
+  --accent-soft:   rgba(21, 128, 61, 0.10);
   --on-accent:     #ffffff;
 
   --success: #047857;
