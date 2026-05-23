@@ -62,6 +62,10 @@ export interface RouteDef {
 }
 
 export const ROUTES: RouteDef[] = [
+  // Desktop is the default landing route — matchRoute('/') falls through
+  // to ROUTES[0], so this order also controls what the user sees on a
+  // bare visit to the dashboard.
+  { path: '/desktop', title: 'Desktop' },
   { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },
   { path: '/triggers', title: 'Triggers' },

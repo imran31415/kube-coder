@@ -24,11 +24,14 @@ export function TasksRoute() {
     const suffix = pathSuffix(currentPath.value).split('/')[0];
     const target = suffix || null;
     if (target !== selectedTaskId.value) selectTask(target);
-    // Also open the mobile detail sheet if landing on a deep link.
-    if (target && isMobile && sheetOpen.value !== 'task-detail') {
-      sheetOpen.value = 'task-detail';
+    // Mobile detail used to ride a bottom sheet — replaced with full-
+    // screen routing below. Clear any leftover sheet state so nothing
+    // floats over the new fullscreen detail.
+    if (isMobile && sheetOpen.value === 'task-detail') {
+      sheetOpen.value = null;
     }
   }, [currentPath.value, isMobile]);
+  const hasSelected = !!selectedTaskId.value;
   const collapsedMaster = masterCollapsed.value;
   const fullscreen = previewFullscreen.value;
   // Compute the layout modifier as we have three states on desktop:
@@ -59,7 +62,8 @@ export function TasksRoute() {
             <TaskList />
           </div>
         )}
-        {isMobile && (
+        {isMobile && !hasSelected && (
+          // Mobile, no task selected → full-screen build list.
           <div class="tasks-master">
             <MutatorOnly>
               <Button
@@ -72,6 +76,15 @@ export function TasksRoute() {
               </Button>
             </MutatorOnly>
             <TaskList />
+          </div>
+        )}
+        {isMobile && hasSelected && (
+          // Mobile, task selected → full-screen detail (no list, no
+          // BottomSheet). TaskDetail's own header carries the back ←
+          // affordance via onClose. Routes back to /tasks which clears
+          // selection + this branch unmounts.
+          <div class="tasks-detail-pane tasks-detail-pane-mobile">
+            <TaskDetail onClose={() => navigate('/tasks')} />
           </div>
         )}
         {!isMobile && (
@@ -91,19 +104,6 @@ export function TasksRoute() {
           </div>
         )}
       </div>
-
-      {/* Mobile: detail in bottom sheet. TaskDetail renders its own header,
-          so we omit the sheet title to avoid a duplicate. */}
-      <BottomSheet
-        open={isMobile && sheetOpen.value === 'task-detail'}
-        onClose={() => {
-          sheetOpen.value = null;
-          navigate('/tasks');
-        }}
-        initialSnap="full"
-      >
-        <TaskDetail />
-      </BottomSheet>
 
       {/* New task: drawer on desktop, full sheet on mobile */}
       {!isMobile ? (
