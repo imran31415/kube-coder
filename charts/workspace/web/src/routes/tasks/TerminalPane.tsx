@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
-import { previewFullscreen } from '../../store/ui';
+import { uploadFile } from '../../api/files';
+import { sendFollowup } from '../../store/tasks';
+import { previewFullscreen, pushToast } from '../../store/ui';
+import { MutatorOnly } from '../../components/MutatorOnly';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 
@@ -109,6 +112,44 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const [err, setErr] = useState<string>('');
   const [termSrc, setTermSrc] = useState<string>('');
   const [vncSrc, setVncSrc] = useState<string>('');
+
+  // Upload "+" button — lets the user drop a file into the running task's
+  // workspace directly from the Session/Preview top bar. Mobile users
+  // couldn't easily get a local file into the Claude session before; they
+  // had to switch to the Files route, upload, then come back and message
+  // the path. Now: tap +, pick file, file lands at
+  // /home/dev/uploads/<task_id>/<name> and a brief notice gets pasted
+  // into the tmux pane so Claude knows it's there.
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  async function onUploadFile(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    const destDir = `uploads/${taskId}`;
+    try {
+      await uploadFile(file, destDir);
+      const fullPath = `/home/dev/${destDir}/${file.name}`;
+      pushToast(`Uploaded ${file.name} → ${fullPath}`, { kind: 'success' });
+      // Best-effort: tell the active session about it so the user doesn't
+      // have to copy/paste the path. Failure here is non-fatal (the file
+      // is on disk regardless), so just log a softer toast.
+      try {
+        await sendFollowup(
+          taskId,
+          `I uploaded a file to your workspace: ${fullPath}`,
+        );
+      } catch {
+        pushToast('Upload OK, but could not notify the session — paste the path manually.', { kind: 'warn' });
+      }
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Upload failed', { kind: 'danger' });
+    } finally {
+      setUploading(false);
+      input.value = '';
+    }
+  }
 
   // Preview-only port controls
   const [port, setPort] = useState<string>(() => {
@@ -305,6 +346,27 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         )}
 
         <span class="term-pane-grow" />
+        <MutatorOnly>
+          <input
+            ref={uploadInputRef}
+            type="file"
+            hidden
+            onChange={onUploadFile}
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => uploadInputRef.current?.click()}
+            disabled={uploading || phase !== 'ready'}
+            title={
+              uploading
+                ? 'Uploading…'
+                : 'Upload a file into this task\'s workspace and notify the Claude session'
+            }
+          >
+            <Icon name="plus" size={12} /> {uploading ? 'Uploading…' : 'Upload'}
+          </Button>
+        </MutatorOnly>
         <Button size="sm" variant="ghost" onClick={reattach} disabled={phase === 'preparing'} title="Re-prepare the tmux session and reload the terminal iframe">
           <Icon name="play" size={12} /> Reattach
         </Button>

@@ -24,42 +24,32 @@ export function Rail() {
       aria-label="Primary"
       data-collapsed={collapsed ? 'true' : 'false'}
     >
+      {/* Primary CTA at the top of the rail. Sits above the route list with
+          a 1px separator so it reads as a distinct action, not a nav item.
+          Earlier "+" icon-only button next to the Build row was too easy
+          to miss; this is the discoverable replacement. Hidden in
+          read-only public-demo via MutatorOnly. */}
+      <MutatorOnly>
+        <div class="rail-cta">
+          <button
+            type="button"
+            class="rail-cta-btn"
+            onClick={() => {
+              if (active !== '/tasks') navigate('/tasks');
+              drawerOpen.value = 'new-task';
+            }}
+            title="New build"
+            aria-label="New build"
+          >
+            <Icon name="plus" size={14} />
+            {!collapsed && <span class="rail-cta-label">New build</span>}
+          </button>
+        </div>
+        <div class="rail-sep" aria-hidden="true" />
+      </MutatorOnly>
       <div class="rail-items">
         {ROUTES.map((r) => {
           const isActive = active === r.path;
-          // Build row gets an inline "+" that opens the new-build drawer —
-          // replaces the old route-header "New build" button, reclaiming the
-          // vertical space at the top of the Tasks route. Hidden when the
-          // rail is collapsed to a 52px icon strip.
-          if (r.path === '/tasks' && !collapsed) {
-            return (
-              <div key={r.path} class="rail-row">
-                <button
-                  type="button"
-                  class={`rail-item ${isActive ? 'rail-item-active' : ''}`}
-                  onClick={() => navigate(r.path)}
-                  aria-current={isActive ? 'page' : undefined}
-                >
-                  <Icon name={ICONS[r.path] ?? 'inbox'} size={16} />
-                  <span class="rail-item-label">{r.title}</span>
-                </button>
-                <MutatorOnly>
-                  <button
-                    type="button"
-                    class="rail-item-action"
-                    onClick={() => {
-                      if (!isActive) navigate('/tasks');
-                      drawerOpen.value = 'new-task';
-                    }}
-                    aria-label="New build"
-                    title="New build"
-                  >
-                    <Icon name="plus" size={14} />
-                  </button>
-                </MutatorOnly>
-              </div>
-            );
-          }
           return (
             <button
               key={r.path}

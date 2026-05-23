@@ -16,7 +16,11 @@ function loadPrefs(): PersistedPrefs {
   const fallback: PersistedPrefs = {
     theme: 'system',
     density: 'comfortable',
-    railCollapsed: false,
+    // Default-collapsed rail so the dashboard opens with the most chrome
+    // hidden — reduces visual noise on first paint, and the toggle at the
+    // bottom of the rail (chevron) is a one-click expand. Users who prefer
+    // the labeled rail can pin it open and the choice persists.
+    railCollapsed: true,
     masterCollapsed: false,
   };
   if (typeof localStorage === 'undefined') return fallback;
