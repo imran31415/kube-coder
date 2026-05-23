@@ -50,6 +50,32 @@
 
 .files-up-icon { transform: rotate(180deg); }
 
+.files-row-skeleton:hover td { background: transparent; }
+.files-skeleton-cell {
+  display: block;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-3) 50%,
+    var(--surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: files-shimmer 1.2s ease-in-out infinite;
+}
+.files-skeleton-name { width: 60%; max-width: 240px; }
+.files-skeleton-size { width: 40px; }
+.files-skeleton-date { width: 70px; }
+
+@keyframes files-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .files-skeleton-cell { animation: none; }
+}
+
 @media (max-width: 600px) {
   .files-table th:nth-child(3), .files-table td:nth-child(3) { display: none; }
 }

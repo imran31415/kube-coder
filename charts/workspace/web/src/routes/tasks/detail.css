@@ -417,6 +417,12 @@
   border-radius: var(--radius);
   font-size: 13px;
 }
+.term-pane-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2);
+  margin-top: var(--size-3);
+}
 
 .term-pane-frames {
   flex: 1;

@@ -128,15 +128,31 @@ export async function removeMemory(ns: string, key: string): Promise<void> {
 }
 
 let pollHandle: ReturnType<typeof setInterval> | null = null;
+let visibilityHandler: (() => void) | null = null;
 export function startMemoryPolling(intervalMs = 30000) {
   void refreshMemories();
   void refreshStats();
   if (pollHandle) clearInterval(pollHandle);
+  // Same visibility guard as task polling — memory changes rarely while
+  // the tab is in the background; refresh on focus instead of every
+  // interval tick.
   pollHandle = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     void refreshMemories();
   }, intervalMs);
+  if (typeof document !== 'undefined') {
+    if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = () => {
+      if (!document.hidden) void refreshMemories();
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
 }
 export function stopMemoryPolling() {
   if (pollHandle) clearInterval(pollHandle);
   pollHandle = null;
+  if (visibilityHandler && typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
+  }
 }
