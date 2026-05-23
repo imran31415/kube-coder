@@ -28,3 +28,26 @@ code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
 .muted { color: var(--text-muted); }
 .subtle { color: var(--text-subtle); }
 .mono { font-family: var(--font-mono); }
+
+/* CRT scanline overlay — dark mode only. Sits above everything via fixed
+   positioning + high z-index, but pointer-events: none lets clicks through.
+   2.5% alpha is barely perceptible up close, gives just enough texture. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.025) 0,
+    rgba(255, 255, 255, 0.025) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+@media (prefers-color-scheme: light) {
+  body::before { display: none; }
+}
+:root[data-theme="light"] body::before { display: none; }
+:root[data-theme="dark"] body::before { display: block; }
