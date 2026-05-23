@@ -9,16 +9,21 @@
 ## The 60-second tour
 
 When you load the dashboard at `https://<you>.dev.<domain>/`, you land
-on the **Build** tab. The left rail (or the bottom-nav on mobile)
-switches you between the five core surfaces:
+on the **Desktop** tab. The left rail (or the bottom-nav on mobile)
+switches you between the core surfaces:
 
 | Surface | What it's for |
 | --- | --- |
+| **Desktop** | VNC viewer for the pod's virtual display — Firefox/Chrome, GUI apps, dev-server preview. |
 | **Build** | Create and watch Claude tasks. Each task runs in its own tmux session. |
 | **Memory** | Persistent key/value store shared between you and Claude. Survives pod restarts. |
 | **Triggers** | Webhooks and cron jobs that fire tasks on a schedule or external event. |
 | **Files** | Browse and upload to `/home/dev`. |
+| **Docs** | This site. |
 | **Settings** | Theme, Git identity, browser preview, metrics. |
+
+On mobile the bottom-nav surfaces Desktop / Build / Memory plus a
+**More** sheet for Triggers, Files, Docs, and Settings.
 
 The top bar has a search button (or press **⌘K** / **Ctrl-K**) for the
 command palette — jump to any task, memory, trigger, or doc page from
