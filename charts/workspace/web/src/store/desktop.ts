@@ -10,6 +10,7 @@ import {
   launchDesktopItem,
 } from '../api/desktop';
 import { pushToast } from './ui';
+import { navigate } from './router';
 
 export const desktopItems = signal<DesktopItem[]>([]);
 export const desktopError = signal<string | null>(null);
@@ -92,7 +93,12 @@ export async function launchItem(item: DesktopItem): Promise<void> {
   try {
     const r = await launchDesktopItem(item.id);
     if (r.kind === 'task') {
-      pushToast(`Launched build · ${r.task_id}`, { kind: 'success' });
+      // Jump straight to the new build's detail view — TasksRoute's
+      // URL-driven useEffect calls selectTask(task_id) and the
+      // TerminalPane mounts. Without this nav the user would just see
+      // a toast and have to manually open the Builds list.
+      pushToast(`Launched · ${item.label}`, { kind: 'success', ttl: 2500 });
+      navigate(`/tasks/${encodeURIComponent(r.task_id)}`);
     } else if (r.kind === 'shell') {
       const ok = r.exit_code === 0;
       pushToast(
