@@ -58,8 +58,13 @@ data:
     {
       printf '%s\n' 'set -g mouse on'
       printf '%s\n' 'set -g history-limit 50000'
-      printf '%s\n' '# Wheel-scroll bindings — enter+exit copy-mode cleanly without'
-      printf '%s\n' '# leaving the user stuck in a modal navigation state.'
+      printf '%s\n' '# Wheel events arrive as proper mouse-scroll escapes (xterm.js DEC'
+      printf '%s\n' '# 1007 is reset in terminal-entry.sh so alt-screen apps like Claude'
+      printf '%s\n' '# pass wheel through instead of converting to arrow keys). On first'
+      printf '%s\n' '# wheel-up, enter copy-mode; on wheel-down at the bottom, return to'
+      printf '%s\n' '# the live pane. Natural scrollbar UX without the Ctrl+B [ hotkey.'
+      printf '%s\n' "bind -T root WheelUpPane   if-shell -F -t = '#{mouse_any_flag}' 'send-keys -M' 'if-shell -F -t = \"#{pane_in_mode}\" \"send-keys -M\" \"copy-mode -et=\"'"
+      printf '%s\n' "bind -T root WheelDownPane if-shell -F -t = '#{mouse_any_flag}' 'send-keys -M' 'send-keys -M'"
       printf '%s\n' 'bind -T copy-mode-vi WheelUpPane   send-keys -X -N 3 scroll-up'
       printf '%s\n' 'bind -T copy-mode-vi WheelDownPane send-keys -X -N 3 scroll-down'
     } > /home/dev/.tmux.conf
@@ -203,7 +208,15 @@ data:
     {{- end }}
 
     log_stage "starting ttyd"
-    ttyd --port 7681 --interface 0.0.0.0 --writable --client-option disableLeaveAlert=true -w /home/dev \
+    # scrollback=10000   — give xterm.js a 10k-line buffer + show the native
+    #                       scrollbar on the iframe edge. User can drag to
+    #                       scroll regardless of alt-screen mode (Claude TUI).
+    # disableLeaveAlert  — suppress "Are you sure you want to leave?" prompt
+    #                       when navigating away from the iframe.
+    ttyd --port 7681 --interface 0.0.0.0 --writable \
+      --client-option disableLeaveAlert=true \
+      --client-option scrollback=10000 \
+      -w /home/dev \
       /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
 
     log_stage "starting Xvfb / fluxbox / x11vnc"
@@ -428,7 +441,10 @@ data:
       {{- end }}
       if ! netstat -tln 2>/dev/null | grep -q :7681; then
         log_stage "restarting ttyd"
-        ttyd --port 7681 --interface 0.0.0.0 --writable --client-option disableLeaveAlert=true -w /home/dev \
+        ttyd --port 7681 --interface 0.0.0.0 --writable \
+          --client-option disableLeaveAlert=true \
+          --client-option scrollback=10000 \
+          -w /home/dev \
           /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
       fi
       if ! netstat -tln 2>/dev/null | grep -q :6081; then

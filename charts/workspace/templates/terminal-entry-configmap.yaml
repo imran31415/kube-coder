@@ -10,6 +10,19 @@ data:
     # from this shell. Without this, long-running claude sessions can grow
     # past 2-3GB and combine with code-server to OOM the workspace cgroup.
     export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
+
+    # Disable xterm.js's "alternate scroll" mode (DEC private mode 1007).
+    # By default, when the inner app (Claude TUI, vim, less, fzf) is on
+    # the alt screen, xterm.js converts mouse-wheel events into Up/Down
+    # arrow keys client-side — so wheel-scrolling Claude flips through
+    # its own readline-style prompt history instead of scrolling output.
+    # Resetting mode 1007 makes xterm.js send proper mouse-wheel escapes
+    # in alt-screen mode too, which tmux mouse-mode then turns into
+    # copy-mode scrolling. This sequence is the actual fix for the bug
+    # the terminal-overrides smcup@/rmcup@ workaround in ~/.tmux.conf
+    # was trying to address — Claude (not tmux) is what requests alt
+    # screen, so the override there was a no-op.
+    printf '\033[?1007l'
     PENDING_FILE="/tmp/.claude-terminal-pending"
     LOG=/tmp/terminal-entry.log
     # One-line-per-invocation diagnostics so we can see why a connection
