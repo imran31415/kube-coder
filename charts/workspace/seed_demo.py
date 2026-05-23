@@ -101,12 +101,16 @@ DEMO_MEMORIES = [
     ),
     (
         'project', 'public-demo-limits',
-        'On this public deploy: New Build / Edit / Delete / Kill / Rename / '
-        'Send are hidden in the UI and the server rejects POST/DELETE with '
-        '403. /terminal, /vnc-direct, /websockify, /browser ingresses are '
-        'omitted from the helm chart entirely so visitors can never reach '
-        'ttyd or the VNC desktop. Reads (list memories, browse docs, view '
-        'this seeded task transcript) work normally.',
+        'On this public deploy (DEMO_SHOW_ALL=true): New Build / Edit / '
+        'Delete / Kill / Rename / Send are rendered but dimmed and '
+        'click-intercepted — clicking shows a "sign up to enable" toast and '
+        'the server rejects POST/DELETE with 403 regardless. The /terminal '
+        'ingress IS exposed read-only: ttyd runs without --writable and execs '
+        'simulated-claude.sh, a scripted Claude session, so visitors can '
+        'scroll/copy the output but cannot type into the pod. /vnc-direct, '
+        '/websockify, /browser remain omitted from the chart. Reads (list '
+        'memories, browse docs, view this seeded task transcript) work '
+        'normally.',
         'semantic', 'demo,security', 0.85,
     ),
 ]

@@ -27,6 +27,17 @@ data:
     }
     trap on_term TERM INT
 
+    # ttyd is read-only by default; --writable is what lets clients type into
+    # the TTY. On the read-only public demo (READONLY_MODE=true) we drop the
+    # flag so visitors can scroll/copy the scripted simulated-claude.sh output
+    # but cannot send keystrokes into the pod. Unquoted expansion: empty =>
+    # zero args, so a normal deploy still launches ttyd --writable.
+    TTYD_WRITABLE="--writable"
+    if [ "${READONLY_MODE:-false}" = "true" ]; then
+      TTYD_WRITABLE=""
+      log_stage "READONLY_MODE — launching ttyd read-only (keystrokes disabled)"
+    fi
+
     log_stage "preparing home and credential directories"
     cd /home/dev
     mkdir -p /home/dev/.local/share/code-server/extensions
@@ -216,7 +227,7 @@ data:
     #                       scroll regardless of alt-screen mode (Claude TUI).
     # disableLeaveAlert  — suppress "Are you sure you want to leave?" prompt
     #                       when navigating away from the iframe.
-    ttyd --port 7681 --interface 0.0.0.0 --writable \
+    ttyd --port 7681 --interface 0.0.0.0 $TTYD_WRITABLE \
       --client-option disableLeaveAlert=true \
       --client-option scrollback=10000 \
       -w /home/dev \
@@ -444,7 +455,7 @@ data:
       {{- end }}
       if ! netstat -tln 2>/dev/null | grep -q :7681; then
         log_stage "restarting ttyd"
-        ttyd --port 7681 --interface 0.0.0.0 --writable \
+        ttyd --port 7681 --interface 0.0.0.0 $TTYD_WRITABLE \
           --client-option disableLeaveAlert=true \
           --client-option scrollback=10000 \
           -w /home/dev \

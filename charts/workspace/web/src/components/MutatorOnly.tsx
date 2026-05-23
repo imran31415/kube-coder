@@ -1,15 +1,43 @@
 import type { ComponentChildren } from 'preact';
 import { serverMode } from '../store/server-mode';
+import { pushToast } from '../store/ui';
 
 /**
- * Renders children only when the workspace is *not* in read-only public-demo
- * mode. Use to wrap mutation UI (New/Edit/Delete/Kill/Rename/Send) so the
- * public deploy hides them entirely instead of letting users click and
- * collect 403s. Server still enforces the gate; this is presentation only.
+ * Wraps mutation UI (New/Edit/Delete/Kill/Rename/Send). Behaviour by mode:
+ *   - writable deploy           → render children normally.
+ *   - read-only demo, show-all  → render children, but dimmed and
+ *     click-intercepted (data-demo-disabled) so visitors see the full UI
+ *     surface and get a "sign up to enable" toast instead of a silent 403.
+ *   - read-only deploy, default → hide children entirely.
+ * The server enforces the real gate (READONLY_MODE → 403); this is purely
+ * presentation.
  */
 export function MutatorOnly({ children }: { children: ComponentChildren }) {
-  if (serverMode.value.readOnly) return null;
-  return <>{children}</>;
+  const mode = serverMode.value;
+  if (!mode.readOnly) return <>{children}</>;
+  if (mode.demoShowAll) {
+    return (
+      <span
+        class="demo-disabled"
+        data-demo-disabled="true"
+        title="Demo — sign up to enable"
+        // Capture-phase so the toast fires before any child handler and the
+        // underlying mutation never runs (it would 403 anyway). preventDefault
+        // also stops <a> navigations (e.g. the "New terminal" link).
+        onClickCapture={(e: MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          pushToast(
+            'Demo — sign up to enable. Deploy your own: github.com/imran31415/kube-coder',
+            { kind: 'info' },
+          );
+        }}
+      >
+        {children}
+      </span>
+    );
+  }
+  return null;
 }
 
 /** Inverse of MutatorOnly — renders only inside read-only deployments. */

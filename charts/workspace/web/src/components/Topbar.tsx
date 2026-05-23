@@ -7,6 +7,7 @@ import { MutatorOnly, ReadOnlyPill } from './MutatorOnly';
 import { WaitingBadge } from './WaitingBadge';
 import { createTerminalTask, terminalUrl } from '../api/tasks';
 import { refreshTasks } from '../store/tasks';
+import { serverMode } from '../store/server-mode';
 import { navigate } from '../store/router';
 import { drawerOpen, sheetOpen } from '../store/ui';
 import './Topbar.css';
@@ -29,12 +30,18 @@ async function openNewTerminal() {
     // after we've kept the handle.
     win.opener = null;
   }
-  try {
-    await createTerminalTask();
-    void refreshTasks();
-    pushToast('Terminal session registered.', { kind: 'success' });
-  } catch (e) {
-    pushToast(e instanceof Error ? e.message : 'Could not register terminal task', { kind: 'warn' });
+  // Public read-only demo: there's no real task to register (the POST would
+  // 403), and the terminal serves the scripted simulated-claude.sh session
+  // read-only. Skip registration and just open it — keystrokes are ignored
+  // server-side (ttyd launched without --writable on that deploy).
+  if (!serverMode.value.readOnly) {
+    try {
+      await createTerminalTask();
+      void refreshTasks();
+      pushToast('Terminal session registered.', { kind: 'success' });
+    } catch (e) {
+      pushToast(e instanceof Error ? e.message : 'Could not register terminal task', { kind: 'warn' });
+    }
   }
   const url = terminalUrl();
   if (win && !win.closed) {
@@ -93,15 +100,24 @@ export function Topbar() {
           >
             VS Code ↗
           </a>
+        </MutatorOnly>
+        {/* Terminal stays openable on the read-only demo — it's the scripted
+            simulated-claude.sh showcase. Hidden only on a (hypothetical)
+            plain read-only deploy that isn't running the demo. */}
+        {(!serverMode.value.readOnly || serverMode.value.demoShowAll) && (
           <button
             type="button"
             class="topbar-link topbar-link-strong"
             onClick={openNewTerminal}
-            title="Register a plain-bash task and open ttyd in a new tab"
+            title={
+              serverMode.value.readOnly
+                ? 'Open the read-only demo terminal (scripted Claude session)'
+                : 'Register a plain-bash task and open ttyd in a new tab'
+            }
           >
-            New terminal ↗
+            {serverMode.value.readOnly ? 'View terminal ↗' : 'New terminal ↗'}
           </button>
-        </MutatorOnly>
+        )}
         <Button
           variant="ghost"
           size="sm"

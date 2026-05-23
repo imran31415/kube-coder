@@ -28,6 +28,15 @@ data:
     # One-line-per-invocation diagnostics so we can see why a connection
     # fell through to bash. Tail with `kubectl exec ... -- tail -f /tmp/terminal-entry.log`.
     log() { printf '[%s] pid=%d %s\n' "$(date -Iseconds)" "$$" "$*" >> "$LOG"; }
+    # Read-only public demo: there are no real Claude tasks to attach to, so
+    # skip the pending-file / tmux dance entirely and run the scripted demo
+    # conversation. ttyd is launched without --writable on this deploy
+    # (workspace-entrypoint), so visitors can scroll/copy but not type. The
+    # script writes only under /tmp — never /home/dev.
+    if [ "${READONLY_MODE:-false}" = "true" ]; then
+        log "READONLY_MODE — exec simulated-claude demo"
+        exec /terminal-scripts/simulated-claude.sh
+    fi
     SESSION_NAME=""
     # Atomic claim so two near-simultaneous ttyd connections (e.g. Terminal
     # tab + Preview tab rendering back-to-back on a freshly created task)
@@ -73,3 +82,70 @@ data:
     fi
     log "no session resolved — exec bash -l"
     exec bash -l
+  # Scripted "Claude Code" session for the read-only public showcase. Prints a
+  # canned flow (prompt → reasoning → tool use → diff → tests → done) at a
+  # human-ish pace, then loops. Pure output: reads no stdin (ttyd runs without
+  # --writable on the demo deploy) and writes nothing outside /tmp. Never
+  # touches the real workspace. terminal-entry.sh execs this when READONLY_MODE.
+  simulated-claude.sh: |
+    #!/bin/bash
+    # Colors. ANSI-C $'...' produces real ESC bytes; printf '%s' prints verbatim.
+    B=$'\033[1m'; D=$'\033[2m'; R=$'\033[0m'
+    GRN=$'\033[32m'; CYN=$'\033[36m'; YEL=$'\033[33m'; MAG=$'\033[35m'
+
+    # Print a line, then pause. Args: text [delay-seconds]
+    say() { printf '%s\n' "$1"; sleep "${2:-0.4}"; }
+    clear_screen() { printf '\033[2J\033[3J\033[H'; }
+
+    demo_once() {
+      clear_screen
+      say "${D}╭─ kube-coder · live demo ─────────────────────────────────╮${R}" 0.2
+      say "${D}│ Read-only showcase — this is a scripted Claude session.  │${R}" 0.2
+      say "${D}│ Deploy your own writable workspace:                      │${R}" 0.2
+      say "${D}│   ${CYN}github.com/imran31415/kube-coder${R}${D}                       │${R}" 0.2
+      say "${D}╰──────────────────────────────────────────────────────────╯${R}" 0.7
+
+      printf '\n'
+      say "${B}${GRN}❯${R} ${B}Add a /healthz endpoint to the API server and a test for it.${R}" 1.0
+
+      printf '\n'
+      say "${MAG}✻ Thinking…${R}" 0.6
+      say "${D}  I'll add a lightweight liveness route beside the existing${R}" 0.25
+      say "${D}  handlers, then cover it with a unit test.${R}" 0.9
+
+      printf '\n'
+      say "${CYN}● Read${R} ${B}server.py${R} ${D}(1–40)${R}" 0.5
+      say "${D}  …reading the request router…${R}" 0.8
+
+      printf '\n'
+      say "${CYN}● Edit${R} ${B}server.py${R}" 0.5
+      say "${GRN}  +    if path == '/healthz':${R}" 0.18
+      say "${GRN}  +        self.send_json({'ok': True})${R}" 0.18
+      say "${GRN}  +        return${R}" 0.7
+
+      printf '\n'
+      say "${D}  diff —— tests/test_health.py${R}" 0.2
+      say "${GRN}  + def test_healthz_ok():${R}" 0.15
+      say "${GRN}  +     r = client.get('/healthz')${R}" 0.15
+      say "${GRN}  +     assert r.status_code == 200${R}" 0.7
+
+      printf '\n'
+      say "${CYN}● Bash${R} ${B}pytest tests/test_health.py -q${R}" 0.7
+      say "${D}  ……${R}" 0.6
+      say "${GRN}  .                                                   [100%]${R}" 0.3
+      say "${GRN}  1 passed in 0.21s${R}" 0.9
+
+      printf '\n'
+      say "${B}${GRN}✓ Done.${R} Added ${B}/healthz${R} plus a passing test." 0.4
+      say "${D}  2 files changed, 14 insertions(+)${R}" 1.4
+
+      printf '\n'
+      say "${D}— demo restarts shortly — ${CYN}sign up to drive a real session${R}${D} —${R}" 0.5
+    }
+
+    # Loop forever so the read-only terminal always shows activity; a fresh
+    # ttyd connection simply starts again from the top.
+    while true; do
+      demo_once
+      sleep 6
+    done

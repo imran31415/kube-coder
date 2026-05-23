@@ -449,19 +449,15 @@
   border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
 }
 
+/* Flex layout (was grid) — the grid version's `tag title time / tag
+   snippet snippet` template was rendering the title hard against the
+   tag pill in some browsers even with explicit gap, producing the
+   clipping you saw. Flex with a wrapping inner column is simpler and
+   does the right thing every time. */
 .dt-bulletin-row {
-  display: grid;
-  /* `auto` on the tag column so the pill sizes to its content (was a
-     hard 60px which clipped "Running" + dot into the title column).
-     `minmax(0, 1fr)` on the title so ellipsis works without the 1fr
-     refusing to shrink below its intrinsic content width. */
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
-  grid-template-areas:
-    "tag title time"
-    "tag snippet snippet";
-  gap: 1px 10px;
+  display: flex;
   align-items: center;
+  gap: 12px;
   width: 100%;
   padding: 7px 12px;
   background: transparent;
@@ -470,7 +466,14 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background var(--motion-fast);
+  transition: background var(--motion-fast), opacity var(--motion-fast);
+}
+.dt-bulletin-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
 }
 .dt-bulletin-row:hover { background: var(--surface-2); opacity: 1; }
 .dt-bulletin-row:focus-visible {
@@ -487,10 +490,10 @@
 .dt-bulletin-row { transition: background var(--motion-fast), opacity var(--motion-fast); }
 
 .dt-bulletin-tag {
-  grid-area: tag;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 600;
@@ -502,7 +505,6 @@
   color: var(--text-muted);
   width: max-content;
   white-space: nowrap;
-  align-self: center;
   line-height: 1.1;
 }
 .dt-bulletin-tag-running {
@@ -523,7 +525,6 @@
 }
 
 .dt-bulletin-title-text {
-  grid-area: title;
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
@@ -534,7 +535,6 @@
 }
 
 .dt-bulletin-snippet {
-  grid-area: snippet;
   font-size: 11.5px;
   line-height: 1.35;
   min-width: 0;
@@ -544,9 +544,11 @@
 }
 
 .dt-bulletin-time {
-  grid-area: time;
   font-size: 10.5px;
   color: var(--text-subtle);
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding-top: 3px;
 }
 
 /* Subtle pulsing green dot for builds currently in `running` status —
@@ -636,12 +638,8 @@
   .dt-cell-icon svg { width: 21px; height: 21px; }
   /* Bulletin centered to match the centered icon grid. */
   .dt-bulletin { margin-left: auto; margin-right: auto; }
-  .dt-bulletin-row {
-    grid-template-columns: 70px 1fr;
-    grid-template-areas:
-      "tag title"
-      "tag snippet"
-      "time time";
-  }
-  .dt-bulletin-time { padding-top: 4px; }
+  /* Bulletin row layout adapts naturally — flex column wraps the body
+     content; tag stays on the left, time on the right. Smaller padding
+     so the widget feels tighter on phones. */
+  .dt-bulletin-row { padding: 7px 10px; gap: 10px; }
 }

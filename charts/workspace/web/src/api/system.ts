@@ -23,6 +23,10 @@ export interface ServerMode {
   readOnly: boolean;
   authed: boolean;
   authMode: 'basic' | 'oauth2' | 'none' | string;
+  /** Public-demo "show everything" hint. When true (only on the read-only
+   *  demo deploy), MutatorOnly renders mutation controls disabled instead of
+   *  hiding them, so visitors see the full UI. The server still 403s writes. */
+  demoShowAll?: boolean;
 }
 
 export const getMode = () => apiGet<ServerMode>('/api/mode');

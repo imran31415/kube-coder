@@ -35,3 +35,17 @@ code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
    now leans on clean surfaces + restrained accent rather than themed
    character touches. Keep the rule deleted, not toggled off, so future
    theme work isn't tempted to re-enable it. */
+
+/* Public-demo "show everything" mode: MutatorOnly wraps mutation controls in
+   [data-demo-disabled] instead of hiding them. The wrapper is display:contents
+   so it never disturbs the surrounding flex/grid layout — the dimming +
+   not-allowed cursor land on its direct children, and a capture-phase click
+   handler (MutatorOnly.tsx) swallows the click and toasts "sign up to enable".
+   We deliberately do NOT set pointer-events:none here: that would suppress the
+   very click event the capture handler relies on to show the toast. */
+[data-demo-disabled] { display: contents; }
+[data-demo-disabled] > * {
+  opacity: 0.5;
+  filter: saturate(0.55);
+  cursor: not-allowed;
+}

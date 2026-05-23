@@ -13,6 +13,7 @@ export const serverMode = signal<ServerMode>({
   readOnly: true,
   authed: true,
   authMode: 'basic',
+  demoShowAll: false,
 });
 
 export const serverModeLoaded = signal<boolean>(false);
@@ -29,7 +30,7 @@ export async function loadServerMode(): Promise<void> {
     // isn't stuck behind a phantom read-only gate. The startup default
     // above only protects the brief window between first paint and the
     // probe completing.
-    serverMode.value = { readOnly: false, authed: true, authMode: 'basic' };
+    serverMode.value = { readOnly: false, authed: true, authMode: 'basic', demoShowAll: false };
   } finally {
     serverModeLoaded.value = true;
   }

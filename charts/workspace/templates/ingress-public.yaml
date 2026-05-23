@@ -63,4 +63,18 @@ spec:
             name: ws-{{ .Values.user.name }}
             port:
               number: 6080
+      # Read-only terminal for the public demo. The SPA opens /oauth/terminal/
+      # (api/tasks.ts terminalUrl); rewrite-target /$1 strips the /oauth/
+      # prefix so ttyd (port 7681) serves at its own root — same mapping the
+      # oauth2-terminal ingress uses, minus the auth annotations. Safe to
+      # expose unauthenticated: ttyd is launched WITHOUT --writable on the
+      # read-only deploy (workspace-entrypoint), so visitors can scroll/copy
+      # the scripted simulated-claude.sh output but cannot type into the pod.
+      - path: /oauth/terminal/?(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 7681
 {{- end }}
