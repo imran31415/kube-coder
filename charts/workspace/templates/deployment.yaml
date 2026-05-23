@@ -124,6 +124,12 @@ spec:
           value: {{ .Values.readOnly | default false | quote }}
         - name: AUTH_MODE
           value: {{ .Values.ingress.auth.type | default "basic" | quote }}
+        # DEMO_SHOW_ALL=true makes the SPA render mutation UI (dimmed +
+        # click-intercepted) instead of hiding it, so the public demo shows
+        # the full surface. Server still 403s every write. Presentation-only;
+        # only set on the read-only demo deploy.
+        - name: DEMO_SHOW_ALL
+          value: {{ .Values.demoShowAll | default false | quote }}
         ports:
         - name: http
           containerPort: 8080

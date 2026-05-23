@@ -64,6 +64,12 @@ ALERT_THRESHOLDS = {
 # start if AUTH_MODE=none without READONLY_MODE=true — no unauthed writes.
 READONLY_MODE = os.environ.get('READONLY_MODE', 'false').lower() == 'true'
 AUTH_MODE = os.environ.get('AUTH_MODE', 'basic').lower()
+# DEMO_SHOW_ALL=true makes the SPA *render* every mutation control instead of
+# hiding it (MutatorOnly), so the public demo shows the full UI surface — but
+# the server still 403s every write via _readonly_block. Presentation-only
+# hint surfaced through /api/mode; it does NOT relax any gate. Only meaningful
+# alongside READONLY_MODE=true (the demo deploy); inert otherwise.
+DEMO_SHOW_ALL = os.environ.get('DEMO_SHOW_ALL', 'false').lower() == 'true'
 # TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
 # X-Auth-Request-User / X-Auth-Request-Email / Remote-User headers from the
 # request. Without it we ignore those headers — the only ways to authenticate
@@ -97,6 +103,8 @@ def _check_safety_invariants():
         print('[server.py] READONLY_MODE active — mutating endpoints will 403.', file=sys.stderr)
     if AUTH_MODE == 'none':
         print('[server.py] AUTH_MODE=none — check_claude_auth short-circuits to True.', file=sys.stderr)
+    if DEMO_SHOW_ALL:
+        print('[server.py] DEMO_SHOW_ALL=true — SPA renders mutation UI (still 403-gated).', file=sys.stderr)
 _check_safety_invariants()
 
 # Strip ANSI escape sequences (CSI, OSC, single-char) from terminal output
@@ -2594,6 +2602,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 'readOnly': READONLY_MODE,
                 'authed': AUTH_MODE != 'none',
                 'authMode': AUTH_MODE,
+                'demoShowAll': DEMO_SHOW_ALL,
             })
             return
         if claude_path == '/api/claude/tasks':

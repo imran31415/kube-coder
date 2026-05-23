@@ -106,10 +106,12 @@ export function DesktopBulletin() {
                   )}
                   {STATUS_LABEL[e.status]}
                 </span>
-                <span class="dt-bulletin-title-text">{e.title}</span>
-                {e.snippet && (
-                  <span class="dt-bulletin-snippet muted">{e.snippet}</span>
-                )}
+                <span class="dt-bulletin-row-body">
+                  <span class="dt-bulletin-title-text">{e.title}</span>
+                  {e.snippet && (
+                    <span class="dt-bulletin-snippet muted">{e.snippet}</span>
+                  )}
+                </span>
                 <span class="dt-bulletin-time muted mono">{relativeTime(e.ts)}</span>
               </button>
             </li>

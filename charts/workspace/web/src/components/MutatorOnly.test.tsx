@@ -13,10 +13,33 @@ describe('MutatorOnly / ReadOnlyOnly / ReadOnlyPill', () => {
     expect(r.getByText('Delete')).toBeTruthy();
   });
 
-  it('MutatorOnly hides children when read-only', () => {
+  it('MutatorOnly hides children when read-only (default demo)', () => {
     serverMode.value = { readOnly: true, authed: true, authMode: 'none' };
     const r = render(<MutatorOnly><button>Delete</button></MutatorOnly>);
     expect(r.queryByText('Delete')).toBeNull();
+  });
+
+  it('MutatorOnly renders children disabled when read-only + demoShowAll', () => {
+    serverMode.value = { readOnly: true, authed: true, authMode: 'none', demoShowAll: true };
+    const r = render(<MutatorOnly><button>Delete</button></MutatorOnly>);
+    // Child is visible (full UI surface) ...
+    expect(r.getByText('Delete')).toBeTruthy();
+    // ... but wrapped in the demo-disabled marker CSS dims + click-intercepts.
+    const wrap = r.container.querySelector('[data-demo-disabled="true"]');
+    expect(wrap).toBeTruthy();
+  });
+
+  it('MutatorOnly demo click is swallowed and surfaces a sign-up toast', async () => {
+    const { toasts } = await import('../store/ui');
+    toasts.value = [];
+    serverMode.value = { readOnly: true, authed: true, authMode: 'none', demoShowAll: true };
+    let childClicked = false;
+    const r = render(
+      <MutatorOnly><button onClick={() => { childClicked = true; }}>Delete</button></MutatorOnly>,
+    );
+    (r.getByText('Delete') as HTMLButtonElement).click();
+    expect(childClicked).toBe(false);
+    expect(toasts.value.some((t) => /sign up to enable/i.test(t.message))).toBe(true);
   });
 
   it('ReadOnlyOnly is the inverse — hides children outside read-only mode', () => {
