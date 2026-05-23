@@ -19,10 +19,11 @@
 }
 
 .rail-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--size-2);
-  padding: 7px 10px;
+  padding: 7px 10px 7px 14px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-size: 13px;
@@ -33,12 +34,28 @@
   transition: background var(--motion-fast), color var(--motion-fast);
 }
 .rail-item:hover { background: var(--surface-2); color: var(--text); }
+/* Active state: 3px phosphor bar pinned to the left edge + faint accent tint.
+   More tmux/htop, less highlighted-button than the previous full-fill. */
 .rail-item-active {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
   color: var(--accent);
   font-weight: 500;
 }
-.rail-item-active:hover { background: var(--accent-soft); color: var(--accent); }
+.rail-item-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.rail-item-active:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
 
 .rail-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

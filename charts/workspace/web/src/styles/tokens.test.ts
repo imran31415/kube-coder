@@ -21,9 +21,9 @@ describe('design tokens', () => {
     expect(tokensSrc).toMatch(/prefers-reduced-motion: reduce/);
   });
 
-  it('uses the chosen teal accent in dark mode', () => {
+  it('uses the phosphor-green CRT accent in dark mode', () => {
     const m = tokensSrc.match(/--accent:\s*([^;]+);/);
-    expect(m?.[1].trim()).toBe('#5eead4');
+    expect(m?.[1].trim()).toBe('#7cffb0');
   });
 
   it('declares topbar, bottomnav, and rail layout heights', () => {
