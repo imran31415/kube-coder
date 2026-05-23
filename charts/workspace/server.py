@@ -2147,7 +2147,7 @@ class DesktopManager:
     _SEED_ITEMS = [
         {
             'id': 'seedclaud',
-            'label': 'Claude · /home/dev',
+            'label': 'New build',
             'icon': 'icon:chat',
             'hotkey': 'cmd+shift+c',
             'action': {
@@ -4797,19 +4797,39 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         try:
-            # Accept an optional {"port": <int>} JSON body so the dashboard's
-            # Preview pane can re-point the in-pod browser without a code change.
-            # Falls back to 8080 (the historical default) when nothing is sent.
+            # Accept an optional {"port": <int>, "path": "<suffix>"} JSON
+            # body so the dashboard's Preview pane can re-point the in-pod
+            # browser without a code change. Path is appended after the
+            # port (e.g. localhost:8080/admin or localhost:3000/?dev=1);
+            # falls back to "/" when nothing is sent. The historical
+            # port-only body still works.
             port = 8080
+            url_path = '/'
             try:
                 content_length = int(self.headers.get('Content-Length', 0) or 0)
                 if content_length:
                     raw = self.rfile.read(content_length).decode('utf-8')
                     body = json.loads(raw) if raw else {}
-                    if isinstance(body, dict) and 'port' in body:
-                        port = int(body['port'])
+                    if isinstance(body, dict):
+                        if 'port' in body:
+                            port = int(body['port'])
+                        raw_path = str(body.get('path') or '').strip()
+                        if raw_path:
+                            # Normalize: ensure leading slash, no scheme,
+                            # no host, no embedded newlines. Reject if it
+                            # contains characters that don't belong in a
+                            # path/query/fragment.
+                            if '\n' in raw_path or '\r' in raw_path or ' ' in raw_path:
+                                self.send_error_response('path must not contain whitespace or newlines')
+                                return
+                            if raw_path.lower().startswith(('http://', 'https://')):
+                                self.send_error_response('path must be a relative suffix, not a full URL')
+                                return
+                            if not raw_path.startswith('/'):
+                                raw_path = '/' + raw_path
+                            url_path = raw_path
             except (ValueError, json.JSONDecodeError):
-                self.send_error_response('Invalid JSON body — expected {"port": <int>}')
+                self.send_error_response('Invalid JSON body — expected {"port": <int>, "path": "<suffix>"}')
                 return
             if not (1 <= port <= 65535):
                 self.send_error_response('port must be between 1 and 65535')
@@ -4818,7 +4838,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             env = os.environ.copy()
             env['DISPLAY'] = ':99'
 
-            url = f'http://localhost:{port}'
+            url = f'http://localhost:{port}{url_path}'
 
             # Kill only browsers launched by this handler — pkill -f chrome
             # would also kill any user-spawned dev tool whose name includes

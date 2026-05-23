@@ -29,13 +29,18 @@
    keeps the tighter grid (see the @media block at the bottom). */
 .dt-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  /* Fixed-width columns (not 1fr) so columns don't stretch to fill the
+     viewport — that stretch made the visual icon shift right of the
+     bulletin's left edge on wide screens. With fixed columns + start
+     justification, the leftmost cell sits at the same x as the bulletin
+     below. */
+  grid-template-columns: repeat(auto-fill, 124px);
+  justify-content: start;
   /* Big row gap so when icons wrap to a new row they don't crowd the
      row above — the prior --size-6 (32px) made Settings stack tightly
      under Claude. --size-7 (48px) gives proper desktop-icon breathing. */
   gap: var(--size-7) var(--size-4);
   margin-top: var(--size-5);
-  justify-items: center;
 }
 
 .dt-cell {
@@ -45,6 +50,26 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* Stagger entrance — small fade-rise on first mount. nth-child up to
+     a reasonable bound; later cells fall back to the longest delay so
+     a very long grid stays animated without crawling forever. */
+  animation: dt-cell-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes dt-cell-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.dt-cell:nth-child(1)  { animation-delay: 0ms; }
+.dt-cell:nth-child(2)  { animation-delay: 50ms; }
+.dt-cell:nth-child(3)  { animation-delay: 100ms; }
+.dt-cell:nth-child(4)  { animation-delay: 150ms; }
+.dt-cell:nth-child(5)  { animation-delay: 200ms; }
+.dt-cell:nth-child(6)  { animation-delay: 250ms; }
+.dt-cell:nth-child(7)  { animation-delay: 300ms; }
+.dt-cell:nth-child(8)  { animation-delay: 350ms; }
+.dt-cell:nth-child(n+9){ animation-delay: 400ms; }
+@media (prefers-reduced-motion: reduce) {
+  .dt-cell { animation: none; }
 }
 
 /* "Add a new icon" cell — dashed outline, same footprint as a real
@@ -100,6 +125,7 @@
 }
 
 .dt-cell-icon {
+  position: relative;
   width: 64px;
   height: 64px;
   display: inline-flex;
@@ -115,6 +141,21 @@
               background var(--motion-fast),
               border-color var(--motion-fast),
               box-shadow var(--motion-fast);
+  /* Subtle top-edge "light catch" — a thin highlight that mimics the
+     way light hits the top of a tactile button. Reads as polish, not
+     decoration; barely visible at rest. */
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--text) 4%, transparent) 0%,
+    transparent 28%
+  );
+}
+.dt-cell-launch:hover .dt-cell-icon {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--text) 8%, transparent) 0%,
+    transparent 32%
+  );
 }
 .dt-cell-launch:hover .dt-cell-icon {
   transform: translateY(-2px);
@@ -339,12 +380,13 @@
    Reads as a quiet card; no shadow, hairline border, tight density.
    ──────────────────────────────────────────────────────────────── */
 
-/* Widget-sized bulletin — left-aligned to the icon grid's left edge.
-   Constrained width keeps it reading as a small desk widget rather
-   than a full content card; left-aligning keeps it visually anchored
-   to the icons rather than floating in the center on wide screens. */
+/* Widget-sized bulletin — left-aligned to the icon BADGE column (not
+   the cell column). The cell is 108px wide with a 64px badge centered
+   inside it → the badge starts 22px in from the cell-left. We offset
+   the bulletin by the same 22px so its left edge visually matches the
+   icon column's center-of-badge alignment on wide screens. */
 .dt-bulletin {
-  margin: var(--size-5) 0 0;
+  margin: var(--size-5) 0 0 22px;
   width: 100%;
   max-width: 420px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
@@ -372,6 +414,35 @@
 .dt-bulletin-sub { font-size: 11px; display: none; }
 
 .dt-bulletin-empty { padding: 10px 12px; font-size: 11.5px; }
+
+/* Skeleton state — three faux rows with shimmering bars. Mirrors the
+   real row layout (tag pill + title + snippet) so the swap to real
+   data doesn't reflow the widget. */
+.dt-bulletin-row-skel { cursor: default; opacity: 0.85; }
+.dt-bulletin-row-skel:hover { background: transparent; }
+.dt-skel {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-3) 50%,
+    var(--surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: dt-skel-shimmer 1.4s linear infinite;
+}
+.dt-skel-tag     { grid-area: tag;     height: 16px; width: 52px; }
+.dt-skel-title   { grid-area: title;   height: 12px; width: 60%; }
+.dt-skel-snippet { grid-area: snippet; height: 10px; width: 90%; }
+@keyframes dt-skel-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-skel { animation: none; }
+}
 
 .dt-bulletin-list { list-style: none; margin: 0; padding: 0; }
 .dt-bulletin-list > li + li {
@@ -533,8 +604,22 @@
 
 @media (max-width: 720px) {
   .route-desktop { padding: var(--size-3); }
-  .dt-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--size-2); }
-  .dt-cell-icon-emoji { font-size: 32px; }
+  /* Mobile: shrink icons ~30% (64 → 45) and center the whole grid +
+     bulletin so they sit balanced on phones rather than anchored to
+     the left edge. Desktop stays left-anchored (above) — the bigger
+     viewport handles the offset better. */
+  .dt-grid {
+    grid-template-columns: repeat(auto-fill, 86px);
+    gap: var(--size-5) var(--size-3);
+    justify-content: center;
+  }
+  .dt-cell { max-width: 86px; }
+  .dt-cell-label { font-size: 11px; max-width: 86px; }
+  .dt-cell-icon { width: 45px; height: 45px; border-radius: 12px; font-size: 24px; }
+  .dt-cell-icon-emoji { font-size: 24px; }
+  .dt-cell-icon svg { width: 21px; height: 21px; }
+  /* Bulletin centered to match the centered icon grid. */
+  .dt-bulletin { margin-left: auto; margin-right: auto; }
   .dt-bulletin-row {
     grid-template-columns: 70px 1fr;
     grid-template-areas:

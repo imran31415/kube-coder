@@ -110,8 +110,8 @@ export const vncUrl = () =>
  * display, so noVNC immediately reflects the new page. See server.py:3769
  * (open_localhost in server.py).
  */
-export const openLocalhostPort = (port: number) =>
-  apiPost<{ ok: true } | { error: string }>('/api/open-localhost', { port });
+export const openLocalhostPort = (port: number, path = '/') =>
+  apiPost<{ ok: true } | { error: string }>('/api/open-localhost', { port, path });
 
 /** Spawn the in-pod kiosk Chrome (or fallback browser). See server.py:3718. */
 export const launchInPodBrowser = () =>

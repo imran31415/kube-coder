@@ -365,17 +365,20 @@
   font-size: 11.5px;
   color: var(--text-muted);
 }
-.term-pane-port-input {
+.term-pane-port-input,
+.term-pane-port-path {
   font: inherit;
   font-size: 12px;
-  width: 64px;
   padding: 3px 6px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius-sm);
 }
-.term-pane-port-input:focus {
+.term-pane-port-input { width: 64px; }
+.term-pane-port-path { width: 140px; min-width: 80px; }
+.term-pane-port-input:focus,
+.term-pane-port-path:focus {
   outline: none;
   border-color: var(--accent);
   background: var(--bg);

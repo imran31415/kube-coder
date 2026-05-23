@@ -78,8 +78,8 @@ export function MemoryRoute() {
           </p>
         </div>
         <MutatorOnly>
-          <Button variant="primary" size="md" onClick={onNew}>
-            <Icon name="plus" size={14} /> New memory
+          <Button variant="secondary" size="sm" onClick={onNew}>
+            <Icon name="plus" size={12} /> New memory
           </Button>
         </MutatorOnly>
       </header>
