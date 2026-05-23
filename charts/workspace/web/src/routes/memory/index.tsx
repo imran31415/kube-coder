@@ -227,13 +227,32 @@ function MemoryViewTabs({ view, onChange }: { view: MemoryView; onChange: (v: Me
 
 function MemoryToolbar() {
   const ns = namespaces.value;
+  // Decouple the visible input value from the filter signal so fast typing
+  // doesn't re-run `filteredMemories` (and its substring scan over the value
+  // bodies) on every keystroke. 120ms feels instantaneous and lets a typical
+  // word complete before the list re-filters.
+  const [draft, setDraft] = useState(memoryFilter.value);
+  useEffect(() => {
+    if (draft === memoryFilter.value) return;
+    const id = window.setTimeout(() => {
+      memoryFilter.value = draft;
+    }, 120);
+    return () => window.clearTimeout(id);
+  }, [draft]);
+  // Keep the input in sync when the signal is cleared externally (e.g. by
+  // the EmptyState "clear filter" action) — without this, the visible
+  // value would silently drift from the actual filter.
+  useEffect(() => {
+    if (memoryFilter.value !== draft) setDraft(memoryFilter.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoryFilter.value]);
   return (
     <div class="mem-toolbar">
       <Input
         fullWidth
         placeholder="Search namespace, key, or content…"
-        value={memoryFilter.value}
-        onInput={(e) => (memoryFilter.value = (e.target as HTMLInputElement).value)}
+        value={draft}
+        onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
         aria-label="Filter memories"
       />
       <div class="mem-namespace-row" role="tablist" aria-label="Namespace facets">
@@ -424,11 +443,16 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
           ) : (
             <ul class="md-relations">
               {neighbors.edges!.map((e) => {
-                const other = (neighbors.nodes ?? []).find((n) => n.id === (e.from_id === m.id ? e.to_id : e.from_id));
+                const outgoing = e.from_id === m.id;
+                const other = (neighbors.nodes ?? []).find((n) => n.id === (outgoing ? e.to_id : e.from_id));
+                // Show direction explicitly so the user can tell whether
+                // this memory references the other (→) or is referenced
+                // by it (←). Previously both directions rendered as →
+                // which silently misrepresented incoming edges.
                 return (
                   <li key={`${e.from_id}-${e.to_id}-${e.kind}`}>
                     <Pill tone="info" mono>{e.kind}</Pill>
-                    {' → '}
+                    {outgoing ? ' → ' : ' ← '}
                     <span class="mono">{other ? `${other.namespace}.${other.key}` : '?'}</span>
                     <span class="muted mono"> · weight {e.weight.toFixed(2)}</span>
                   </li>

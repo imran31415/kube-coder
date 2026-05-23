@@ -166,15 +166,36 @@ export async function sendFollowup(id: string, prompt: string): Promise<void> {
 
 // Polling. Phase 2 keeps this; Phase 6 swaps for /api/events SSE.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
+let visibilityHandler: (() => void) | null = null;
 export function startTaskPolling(intervalMs = 10000) {
   refreshTasks();
   if (pollHandle) clearInterval(pollHandle);
+  // Skip ticks while the tab is hidden — mobile users especially shouldn't
+  // pay the network/battery cost for refreshes they aren't looking at. On
+  // visibilitychange back to visible, fire one immediate refresh so the UI
+  // is current the instant they look at it again, then resume the normal
+  // interval.
   pollHandle = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     void refreshTasks();
     if (selectedTaskId.value) void loadSelectedTask(selectedTaskId.value);
   }, intervalMs);
+  if (typeof document !== 'undefined') {
+    if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = () => {
+      if (!document.hidden) {
+        void refreshTasks();
+        if (selectedTaskId.value) void loadSelectedTask(selectedTaskId.value);
+      }
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
+  }
 }
 export function stopTaskPolling() {
   if (pollHandle) clearInterval(pollHandle);
   pollHandle = null;
+  if (visibilityHandler && typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
+  }
 }
