@@ -29,12 +29,16 @@ describe('App shell', () => {
 
   it('navigates between routes via the rail buttons', async () => {
     const { container } = render(<App />);
-    // The bottom nav is also rendered in the DOM (hidden via CSS in real life),
-    // so pick the rail-specific button.
-    const railMemory = container.querySelector('.rail .rail-item:nth-child(2)') as HTMLButtonElement;
-    expect(railMemory).toBeTruthy();
-    expect(railMemory.textContent).toContain('Memory');
-    railMemory.click();
+    // The bottom nav is also rendered in the DOM (hidden via CSS in real
+    // life), so pick the rail-specific button. Resolved by text rather
+    // than position so adding a new route to ROUTES doesn't break the
+    // test (Desktop landed at index 2, Memory shifted to 3).
+    const railItems = Array.from(
+      container.querySelectorAll('.rail .rail-item'),
+    ) as HTMLButtonElement[];
+    const railMemory = railItems.find((el) => el.textContent?.includes('Memory'));
+    expect(railMemory, 'rail has a Memory entry').toBeTruthy();
+    railMemory!.click();
     expect(currentPath.value).toBe('/memory');
     // Heading swaps to the new route (signal-triggered re-render).
     await screen.findByRole('heading', { level: 1, name: 'Memory' });

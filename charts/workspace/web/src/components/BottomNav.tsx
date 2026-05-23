@@ -10,10 +10,16 @@ interface Slot {
 }
 
 const SLOTS: Slot[] = [
+  // Desktop is the default landing on the SPA — give it the first slot
+  // here too so primary nav is consistent across the rail + bottom bar.
+  { path: '/desktop', title: 'Desktop', icon: 'desktop' },
   { path: '/tasks', title: 'Build', icon: 'tasks' },
   { path: '/memory', title: 'Memory', icon: 'memory' },
-  { path: '/triggers', title: 'Triggers', icon: 'triggers' },
 ];
+
+// "More" sheet absorbs anything not in SLOTS — triggers, files, docs,
+// settings. Highlights when the current route is one of those.
+const MORE_ROUTES = new Set(['/triggers', '/files', '/docs', '/settings']);
 
 export function BottomNav() {
   const active = matchRoute(currentPath.value).path;
@@ -31,7 +37,7 @@ export function BottomNav() {
         </button>
       ))}
       <button
-        class={`bn-item ${active === '/files' || active === '/settings' || active === '/docs' ? 'bn-item-active' : ''}`}
+        class={`bn-item ${MORE_ROUTES.has(active) ? 'bn-item-active' : ''}`}
         onClick={() => (sheetOpen.value = 'more')}
         aria-label="More"
       >

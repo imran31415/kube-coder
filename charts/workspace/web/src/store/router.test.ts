@@ -45,16 +45,17 @@ describe('matchRoute()', () => {
     expect(matchRoute('/memory').path).toBe('/memory');
   });
 
-  it('falls back to /tasks for unknown routes', () => {
-    expect(matchRoute('/nonsense').path).toBe('/tasks');
+  it('falls back to the default route for unknown paths', () => {
+    // Default = ROUTES[0]; currently Desktop, was Build pre-launcher.
+    expect(matchRoute('/nonsense').path).toBe('/desktop');
   });
 
   it('treats nested paths as their top-level route (detail handled inside)', () => {
     expect(matchRoute('/tasks/abc-123').path).toBe('/tasks');
   });
 
-  it('treats `/` as the default Tasks route', () => {
-    expect(matchRoute('/').path).toBe('/tasks');
-    expect(matchRoute('').path).toBe('/tasks');
+  it('treats `/` as the default landing route', () => {
+    expect(matchRoute('/').path).toBe('/desktop');
+    expect(matchRoute('').path).toBe('/desktop');
   });
 });

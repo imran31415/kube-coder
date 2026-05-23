@@ -56,7 +56,7 @@ export const drawerOpen = signal<DrawerKey | null>(null);
 export const sheetOpen = signal<SheetKey | null>(null);
 export const paletteOpen = signal(false);
 
-export type DrawerKey = 'settings' | 'files' | 'github' | 'metrics' | 'new-task' | 'memory-edit' | 'trigger-edit';
+export type DrawerKey = 'settings' | 'files' | 'github' | 'metrics' | 'new-task' | 'memory-edit' | 'trigger-edit' | 'desktop-edit';
 export type SheetKey = 'task-detail' | 'memory-detail' | 'trigger-detail' | 'new-task' | 'more';
 
 export interface Toast {
