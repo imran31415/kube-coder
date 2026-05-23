@@ -51,15 +51,18 @@ data:
     # hotkey needed); 50k line history covers a long Claude session without
     # hitting the default 2k limit. Always overwritten on boot so chart
     # edits propagate.
-    cat > /home/dev/.tmux.conf <<'EOF'
-set -g mouse on
-set -g history-limit 50000
-# Wheel-scroll should immediately enter + exit copy-mode without sticking
-# the user in a modal navigation state. The default tmux 3.x behavior is
-# close to this but a touch janky; these bindings smooth it out.
-bind -T copy-mode-vi WheelUpPane   send-keys -X -N 3 scroll-up
-bind -T copy-mode-vi WheelDownPane send-keys -X -N 3 scroll-down
-EOF
+    # Brace-group of printf lines instead of a heredoc — the surrounding
+    # YAML block scalar uses 4-space indent which conflicts with
+    # heredoc terminator placement (`EOF` must be unindented for `<<'EOF'`
+    # or use `<<-` with tab indent, neither friendly to this file).
+    {
+      printf '%s\n' 'set -g mouse on'
+      printf '%s\n' 'set -g history-limit 50000'
+      printf '%s\n' '# Wheel-scroll bindings — enter+exit copy-mode cleanly without'
+      printf '%s\n' '# leaving the user stuck in a modal navigation state.'
+      printf '%s\n' 'bind -T copy-mode-vi WheelUpPane   send-keys -X -N 3 scroll-up'
+      printf '%s\n' 'bind -T copy-mode-vi WheelDownPane send-keys -X -N 3 scroll-down'
+    } > /home/dev/.tmux.conf
     # If a tmux server is already running (e.g. after a pod restart with
     # surviving sessions), re-source the config so the live sessions pick
     # up the new settings without needing to be killed + relaunched.
