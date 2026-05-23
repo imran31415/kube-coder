@@ -38,7 +38,17 @@ type MemoryView = 'list' | 'graph';
 export function MemoryRoute() {
   const isMobile = useIsMobile();
   const [editing, setEditing] = useState<MemoryUpsertInput | null>(null);
-  const [view, setView] = useState<MemoryView>('list');
+  // Default to graph — the relationship map gives a faster sense of the
+  // memory store at a glance. Auto-swaps to list when the user picks a
+  // node (so the detail pane on the right has room to render) and back
+  // to graph when they clear selection. The view tabs still let them
+  // override manually at any time.
+  const [view, setView] = useState<MemoryView>('graph');
+  useEffect(() => {
+    if (selectedMemory.value && view === 'graph') setView('list');
+    else if (!selectedMemory.value && view === 'list') setView('graph');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMemory.value]);
 
   useEffect(() => {
     startMemoryPolling(30000);

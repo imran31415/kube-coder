@@ -79,3 +79,27 @@
 @media (max-width: 600px) {
   .files-table th:nth-child(3), .files-table td:nth-child(3) { display: none; }
 }
+
+/* "Open in VS Code" per-row link — small, low-contrast icon button at
+   the row's right edge. Brightens on hover so it reads as actionable.
+   Hidden on the busy/skeleton rows automatically (the 4th column is
+   empty in those rows). */
+.files-row-vscode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-subtle);
+  background: transparent;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.files-row-vscode:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.files-row-vscode:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

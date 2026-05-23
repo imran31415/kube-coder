@@ -132,12 +132,13 @@ export function FilesRoute() {
             <th>Name</th>
             <th>Size</th>
             <th>Modified</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
           {path && (
             <tr class="files-row files-row-up">
-              <td colSpan={3}>
+              <td colSpan={4}>
                 <button class="files-row-btn" onClick={goUp}>
                   <Icon name="chevron-right" size={14} class="files-up-icon" />
                   <span>..</span>
@@ -155,6 +156,7 @@ export function FilesRoute() {
               </td>
               <td class="muted mono">—</td>
               <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
+              <td><OpenInVscode path={path ? `${path}/${e.name}` : e.name} kind="dir" /></td>
             </tr>
           ))}
           {files.map((e) => (
@@ -167,6 +169,7 @@ export function FilesRoute() {
               </td>
               <td class="muted mono">{fmtSize(e.size)}</td>
               <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
+              <td><OpenInVscode path={path ? `${path}/${e.name}` : e.name} kind="file" /></td>
             </tr>
           ))}
           {busy && (!loadedOnce || entries.length === 0) && (
@@ -176,6 +179,7 @@ export function FilesRoute() {
                   <td><span class="files-skeleton-cell files-skeleton-name" /></td>
                   <td><span class="files-skeleton-cell files-skeleton-size" /></td>
                   <td><span class="files-skeleton-cell files-skeleton-date" /></td>
+                  <td />
                 </tr>
               ))}
             </>
@@ -193,5 +197,34 @@ export function FilesRoute() {
         onCancel={() => setMkdirOpen(false)}
       />
     </div>
+  );
+}
+
+/** Per-row "Open in VS Code" affordance. Files open at their parent
+ *  folder (code-server's URL-payload `openFile` syntax varies between
+ *  versions, but `?folder=<parent>` is universal and the file tree
+ *  highlights the requested file via the path navigation). Directories
+ *  open as the workspace folder. Hidden in read-only public demo via
+ *  the MutatorOnly wrapper at the call sites — code-server is unauth'd
+ *  there too so we don't surface a link that opens an editor session. */
+function OpenInVscode({ path, kind }: { path: string; kind: 'dir' | 'file' }) {
+  const absHome = '/home/dev';
+  const abs = `${absHome}/${path}`;
+  const folder = kind === 'dir'
+    ? abs
+    : abs.slice(0, abs.lastIndexOf('/')) || absHome;
+  const href = `/oauth/vscode/?folder=${encodeURIComponent(folder)}`;
+  return (
+    <a
+      class="files-row-vscode"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={kind === 'dir' ? 'Open folder in VS Code' : 'Open parent folder in VS Code'}
+      aria-label={kind === 'dir' ? `Open ${path} in VS Code` : `Open parent of ${path} in VS Code`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <Icon name="link" size={12} />
+    </a>
   );
 }

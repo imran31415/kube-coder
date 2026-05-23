@@ -184,6 +184,9 @@ data:
     if [ ! -f "$CS_USER_DIR/settings.json" ]; then
       cat > "$CS_USER_DIR/settings.json" <<'JSON'
     {
+      "workbench.colorTheme": "Default Dark Modern",
+      "workbench.preferredDarkColorTheme": "Default Dark Modern",
+      "window.autoDetectColorScheme": false,
       "terminal.integrated.scrollback": 2000,
       "files.watcherExclude": {
         "**/node_modules/**": true,
