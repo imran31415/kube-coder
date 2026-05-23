@@ -4,6 +4,7 @@ import { Icon } from './Icon';
 import { HealthDot } from './HealthDot';
 import { MetricsBar } from './MetricsBar';
 import { MutatorOnly, ReadOnlyPill } from './MutatorOnly';
+import { WaitingBadge } from './WaitingBadge';
 import { createTerminalTask, terminalUrl } from '../api/tasks';
 import { refreshTasks } from '../store/tasks';
 import { navigate } from '../store/router';
@@ -79,6 +80,7 @@ export function Topbar() {
         <kbd class="topbar-kbd">⌘K</kbd>
       </button>
       <div class="topbar-actions">
+        <WaitingBadge />
         <ReadOnlyPill />
         <MetricsBar />
         <MutatorOnly>

@@ -37,6 +37,17 @@ describe('MutatorOnly / ReadOnlyOnly / ReadOnlyPill', () => {
 
     serverMode.value = { readOnly: true, authed: true, authMode: 'none' };
     r = render(<ReadOnlyPill />);
-    expect(r.getByText(/Demo · Read-only/)).toBeTruthy();
+    expect(r.getByText(/Demo · Deploy your own/)).toBeTruthy();
+  });
+
+  it('ReadOnlyPill in demo mode links to the kube-coder repo (deploy-your-own CTA)', () => {
+    serverMode.value = { readOnly: true, authed: true, authMode: 'none' };
+    const r = render(<ReadOnlyPill />);
+    const link = r.container.querySelector('a.readonly-pill') as HTMLAnchorElement;
+    expect(link).toBeTruthy();
+    expect(link.href).toMatch(/github\.com\/imran31415\/kube-coder/);
+    expect(link.target).toBe('_blank');
+    // noopener guards against tabnabbing on the demo deploy.
+    expect(link.rel).toMatch(/noopener/);
   });
 });
