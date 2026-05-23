@@ -42,6 +42,34 @@
 
 .rail-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Row wrapper for rail items that carry an inline action (e.g. Build "+"). */
+.rail-row { display: flex; align-items: stretch; gap: 2px; }
+.rail-row > .rail-item { flex: 1; min-width: 0; }
+
+.rail-item-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), transform 80ms ease;
+}
+.rail-item-action:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.rail-item-action:active { transform: translateY(0.5px); }
+.rail-item-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+[data-density="compact"] .rail-item-action { width: 26px; }
+
 .rail-toggle {
   display: flex;
   align-items: center;

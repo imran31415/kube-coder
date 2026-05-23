@@ -246,6 +246,13 @@
   margin-bottom: var(--size-2);
   border-bottom: 1px solid var(--border);
 }
+
+/* Mobile-only "New build" CTA at the top of the master pane — phones don't
+   show the left rail, so this is the equivalent of the rail's "+" affordance. */
+.tasks-mobile-new {
+  align-self: stretch;
+  margin-bottom: var(--size-2);
+}
 .tasks-detail-pane {
   background: var(--surface);
   border: 1px solid var(--border);
