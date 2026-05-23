@@ -1,0 +1,58 @@
+.waiting-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px 0 6px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--warn, #d97706) 12%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--warn, #d97706) 45%, var(--border));
+  color: var(--warn, #d97706);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast), border-color var(--motion-fast), transform 80ms ease;
+}
+.waiting-badge:hover {
+  background: color-mix(in srgb, var(--warn, #d97706) 20%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--warn, #d97706) 60%, var(--border));
+}
+.waiting-badge:active { transform: translateY(0.5px); }
+.waiting-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.waiting-badge-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--warn, #d97706);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn, #d97706) 60%, transparent);
+  animation: waiting-pulse 1.6s ease-in-out infinite;
+}
+.waiting-badge-count {
+  font-weight: 700;
+  font-size: 12px;
+}
+.waiting-badge-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+@keyframes waiting-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn, #d97706) 50%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--warn, #d97706) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .waiting-badge-dot { animation: none; }
+}
+
+/* Narrow phones — drop the "waiting" label to save room; the pulsing dot
+   plus count is still unambiguous. */
+@media (max-width: 480px) {
+  .waiting-badge-label { display: none; }
+  .waiting-badge { padding: 0 6px; }
+}
