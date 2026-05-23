@@ -40,13 +40,6 @@
         { "id": "files", "title": "Files", "file": "in-app/files.md", "summary": "Files tab tour, upload limits, where data lives, the persistence model." },
         { "id": "browser", "title": "Browser & VNC", "file": "in-app/browser.md", "summary": "Headless Firefox/Chrome on the virtual display, the VNC viewer, kiosk mode." }
       ]
-    },
-    {
-      "id": "meta",
-      "title": "Improving kube-coder",
-      "pages": [
-        { "id": "improvements-plan", "title": "Improvements plan", "file": "improvements-plan.md", "summary": "Living planning doc covering ongoing code-quality and feature work." }
-      ]
     }
   ]
 }

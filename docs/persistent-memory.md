@@ -352,15 +352,11 @@ Phase 3 list.)
 
 ## Roadmap
 
-Phase 1 (shipped): SQLite + WAL, FTS5 search, history, refs, graph
-relations table, MCP tools, auto-injection (FTS-ranked), claude-auto
+Shipped: SQLite + WAL, FTS5 search, history, refs, graph relations,
+dashboard graph view, MCP tools, auto-injection (FTS-ranked), claude-auto
 sync.
 
-Phase 2: Semantic recall via embeddings (Voyage AI / OpenAI). Value-flip
-in `values.yaml` — no image rebuild needed because deps are pre-installed.
-
-Phase 3: Background consolidation (dedupe + decay) every 6 h, nightly
-backups, dashboard graph mini-view, manual consolidate button.
-
-Phase 4: Encryption-at-rest for `secret`-tagged entries; cross-workspace
-sharing; export/import; conflict surfacing in the UI.
+Next: semantic recall via embeddings (Voyage AI / OpenAI — deps are
+pre-installed, value-flip in `values.yaml`), background consolidation
+(dedupe + decay), nightly backups, encryption-at-rest for
+`secret`-tagged entries, export/import.
