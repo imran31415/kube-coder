@@ -2967,6 +2967,45 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # The receiver endpoint (handle_webhook_receive) is intentionally NOT
     # behind that auth: external services authenticate via HMAC of the body.
 
+    def handle_claude_scroll_mode(self):
+        """Toggle tmux copy-mode for a task's pane.
+        Replaces the user holding Ctrl+B [ to scroll and `q` to exit —
+        instead the SPA shows a single Scroll-mode button that POSTs here.
+        Once in copy-mode, arrow keys / Page Up / mouse wheel all navigate
+        the scrollback (xterm.js's alt-screen wheel→arrow conversion lands
+        on copy-mode's own arrow bindings, which is what we want here)."""
+        if self._readonly_block():
+            return
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        action = (data.get('action') or '').strip().lower()
+        if action not in ('enter', 'exit'):
+            self.send_json({'error': "action must be 'enter' or 'exit'"}, 400)
+            return
+        task_id = self._claude_task_id
+        task = ClaudeTaskManager.get_task(task_id)
+        if task is None:
+            self.send_json({'error': 'Task not found'}, 404)
+            return
+        session_name = task.get('tmux_session', f'claude-{task_id}')
+        if action == 'enter':
+            cmd = ['tmux', 'copy-mode', '-t', session_name]
+        else:
+            cmd = ['tmux', 'send-keys', '-t', session_name, '-X', 'cancel']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            self.send_json({
+                'error': result.stderr.strip() or 'tmux command failed',
+            }, 500)
+            return
+        self.send_json({'ok': True, 'mode': action})
+
     def handle_webhook_list(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -3656,8 +3695,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        rel_dir = (self.headers.get('X-Dest-Path') or '').strip()
-        filename = (self.headers.get('X-Filename') or '').strip()
+        # Client URL-encodes both headers because HTTP header values are
+        # ISO-8859-1; Unicode filenames (smart quotes, emoji, CJK, accented
+        # letters) would otherwise trip fetch() in the browser. Decode here
+        # before applying the safe-filename / under-home checks so the
+        # validation runs on the actual intended path.
+        rel_dir = urllib.parse.unquote((self.headers.get('X-Dest-Path') or '').strip())
+        filename = urllib.parse.unquote((self.headers.get('X-Filename') or '').strip())
         if not self._safe_filename(filename):
             self.send_json({'error': 'invalid X-Filename header'}, 400)
             return
@@ -3948,6 +3992,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_prepare_terminal()
+                    return
+                # /api/claude/tasks/{id}/scroll-mode — toggle tmux copy-mode
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/scroll-mode$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_scroll_mode()
                     return
                 # /api/webhooks/{id}/test — fire as if from outside (dashboard)
                 m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)/test$', path)

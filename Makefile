@@ -61,24 +61,17 @@ build: ## Build Docker image for amd64 architecture (loads into local Docker)
 # if `build` was just run.
 push: ## Build and push Docker image (single buildx invocation; cache shared with `build`)
 	@echo "Building + pushing $(IMAGE)..."
-	# --provenance=false works around a recurring buildx hang where the
-	# CLI sits idle for minutes after `pushing manifest done`, blocking
-	# every `make ship` mid-flight. Root cause: buildkit's default
-	# provenance attestation generation + upload pass after the main
-	# manifest push doesn't time out cleanly on the docker-container
-	# driver in some network configs. We don't consume provenance metadata
-	# downstream, so disabling is loss-free. Same workaround used widely
-	# in CI/CD pipelines that hit this. --sbom=false for symmetry; never
-	# enabled by default but cheap insurance against the same class of
-	# post-push attestation hang.
-	docker buildx build \
-		--platform $(PLATFORM) \
-		--provenance=false \
-		--sbom=false \
-		-t $(IMAGE) \
-		-f devlaptop/Dockerfile \
-		--push \
-		.
+	# scripts/buildx-push.sh wraps the raw `docker buildx build --push`
+	# call so the recurring post-push CLI hang can't block `make ship`.
+	# The wrapper watches buildx output for `pushing manifest … done`
+	# (the registry-confirmed success line), gives buildx 10s grace,
+	# then SIGTERMs the CLI if still alive. --provenance=false +
+	# --sbom=false + BUILDX_NO_DEFAULT_ATTESTATIONS=1 reduce the hang
+	# frequency but don't eliminate it on Docker Desktop + the
+	# docker-container driver, so the safety-kill is what actually
+	# makes `make ship` deterministic. See the script header for the
+	# full diagnosis.
+	./scripts/buildx-push.sh "$(IMAGE)" devlaptop/Dockerfile "$(PLATFORM)"
 
 clean: ## Clean up local Docker images
 	@echo "Cleaning up local images..."

@@ -87,6 +87,16 @@ export const killTask = (id: string) => apiDelete<{ ok: true }>(`/api/claude/tas
 export const prepareTerminal = (id: string) =>
   apiPost<{ ok: true; tmux_session?: string }>(`/api/claude/tasks/${id}/prepare-terminal`, {});
 
+// Toggle tmux copy-mode for a task. Replaces the user holding Ctrl+B [
+// to scroll and `q` to exit — the SPA's Scroll-mode button POSTs here so
+// arrow keys / Page Up / mouse wheel land on copy-mode navigation
+// instead of being eaten by Claude TUI's prompt.
+export const setScrollMode = (id: string, action: 'enter' | 'exit') =>
+  apiPost<{ ok: true; mode: 'enter' | 'exit' }>(
+    `/api/claude/tasks/${id}/scroll-mode`,
+    { action },
+  );
+
 /** Absolute URL for the ttyd iframe; cache-busts on each open. */
 export const terminalUrl = () => `/oauth/terminal/?t=${Date.now()}`;
 

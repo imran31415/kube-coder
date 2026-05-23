@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
+import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput, setScrollMode } from '../../api/tasks';
 import { uploadFile } from '../../api/files';
 import { sendFollowup } from '../../store/tasks';
 import { previewFullscreen, pushToast } from '../../store/ui';
@@ -150,6 +150,33 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
       input.value = '';
     }
   }
+
+  // Scroll mode toggle — flips the tmux pane in/out of copy-mode via a
+  // server-side `tmux copy-mode` / `send-keys -X cancel`. Replaces the
+  // user holding Ctrl+B [ to scroll back and `q` to exit. Once in
+  // copy-mode, arrow keys / Page Up / wheel drive the scrollback (even
+  // when the inner app is on alt-screen — copy-mode's bindings win).
+  const [scrollMode, setScrollModeState] = useState<boolean>(false);
+  const [scrollBusy, setScrollBusy] = useState(false);
+  async function toggleScrollMode() {
+    const next: 'enter' | 'exit' = scrollMode ? 'exit' : 'enter';
+    setScrollBusy(true);
+    try {
+      await setScrollMode(taskId, next);
+      setScrollModeState(next === 'enter');
+      if (next === 'enter') {
+        pushToast('Scroll mode on — arrows / PgUp / wheel to scroll, click button again to exit.', { kind: 'info', ttl: 5000 });
+      }
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Could not toggle scroll mode', { kind: 'danger' });
+    } finally {
+      setScrollBusy(false);
+    }
+  }
+  // Reset scroll-mode state when the task changes — the server tracks
+  // tmux state per session so we don't actually need to "exit" the old
+  // task's mode before switching, but the button label should reset.
+  useEffect(() => { setScrollModeState(false); }, [taskId]);
 
   // Preview-only port controls
   const [port, setPort] = useState<string>(() => {
@@ -367,6 +394,19 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
             <Icon name="plus" size={12} /> {uploading ? 'Uploading…' : 'Upload'}
           </Button>
         </MutatorOnly>
+        <Button
+          size="sm"
+          variant={scrollMode ? 'primary' : 'ghost'}
+          onClick={toggleScrollMode}
+          disabled={scrollBusy || phase !== 'ready'}
+          title={
+            scrollMode
+              ? 'Exit scroll mode — return to the live session'
+              : 'Enter scroll mode — arrows / PgUp / wheel scroll the tmux history. Replaces Ctrl+B [ + q.'
+          }
+        >
+          {scrollMode ? 'Exit scroll' : 'Scroll'}
+        </Button>
         <Button size="sm" variant="ghost" onClick={reattach} disabled={phase === 'preparing'} title="Re-prepare the tmux session and reload the terminal iframe">
           <Icon name="play" size={12} /> Reattach
         </Button>
