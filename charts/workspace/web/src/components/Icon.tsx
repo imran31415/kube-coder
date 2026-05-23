@@ -26,7 +26,11 @@ export type IconName =
   | 'chevron-down'
   | 'fullscreen'
   | 'fullscreen-exit'
-  | 'inbox';
+  | 'inbox'
+  | 'chat'
+  | 'terminal'
+  | 'link'
+  | 'desktop';
 
 const PATHS: Record<IconName, JSX.Element> = {
   tasks: (
@@ -147,6 +151,28 @@ const PATHS: Record<IconName, JSX.Element> = {
   inbox: (
     <>
       <path d="M3 11h4l1 2h4l1-2h4M3 11l2-6h10l2 6v6H3z" />
+    </>
+  ),
+  chat: (
+    <>
+      <path d="M4 4h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H8l-4 3z" />
+    </>
+  ),
+  terminal: (
+    <>
+      <rect x="3" y="4" width="14" height="12" rx="1" />
+      <path d="M6 9l2 2-2 2M10 13h4" />
+    </>
+  ),
+  link: (
+    <>
+      <path d="M9 11l-2 2a3 3 0 0 1-4-4l2-2M11 9l2-2a3 3 0 0 1 4 4l-2 2M7 13l6-6" />
+    </>
+  ),
+  desktop: (
+    <>
+      <rect x="3" y="4" width="14" height="9" rx="1" />
+      <path d="M7 17h6M10 13v4" />
     </>
   ),
 };

@@ -2093,6 +2093,279 @@ spec:
         return ok, cfg
 
 
+class DesktopManager:
+    """Backs the /api/desktop endpoints — the customizable launcher grid on
+    the Desktop tab. Single JSON file at /home/dev/.kube-coder/desktop.json
+    holds the full ordered icon list. One file (not one file per icon)
+    keeps reordering trivial and avoids transient inconsistency on a
+    cold pod read.
+
+    Schema:
+        {
+          "version": 1,
+          "items": [
+            {
+              "id":     "<8-hex>",
+              "label":  "Refactor auth",
+              "icon":   "📝",             # any single grapheme cluster
+              "hotkey": "cmd+shift+1",     # optional
+              "action": {
+                "type":      "task",
+                "prompt":    "...",
+                "workdir":   "/home/dev/kube-coder",
+                "assistant": "claude"      # or "opencode-openrouter" / "kc-harness"
+              }
+            }
+          ]
+        }
+
+    Action types:
+      task  — server creates a Claude/OpenCode task via ClaudeTaskManager
+      url   — client opens in a new tab; server is just bookkeeping
+      shell — server runs a one-shot bash command, returns stdout/stderr
+
+    All shell commands run as the workspace user with the workspace's own
+    environment + cwd — no privilege escalation, no setuid. The owner of
+    the workspace also owns the desktop config so anyone who can edit a
+    `shell` action can already run arbitrary commands via the terminal.
+    """
+
+    CONFIG_PATH = '/home/dev/.kube-coder/desktop.json'
+    CONFIG_DIR = '/home/dev/.kube-coder'
+    SHELL_TIMEOUT_DEFAULT = 30   # seconds
+    SHELL_TIMEOUT_MAX = 300
+    _ID_RE = re.compile(r'^[a-z0-9]{4,16}$')
+    _ALLOWED_ACTION_TYPES = ('task', 'url', 'shell')
+
+    @staticmethod
+    def _ensure_dir():
+        os.makedirs(DesktopManager.CONFIG_DIR, mode=0o755, exist_ok=True)
+
+    # Seed icons rendered the first time a workspace opens the Desktop
+    # tab. Each user can delete or edit any of these; the seed only fires
+    # when desktop.json doesn't exist (first-ever load on the PVC).
+    _SEED_ITEMS = [
+        {
+            'id': 'seedclaud',
+            'label': 'Claude · /home/dev',
+            'icon': 'icon:chat',
+            'hotkey': 'cmd+shift+c',
+            'action': {
+                'type': 'task',
+                'prompt': '',
+                'workdir': '/home/dev',
+                'assistant': 'claude',
+            },
+        },
+        {
+            'id': 'seedbuild',
+            'label': 'Builds',
+            'icon': 'icon:tasks',
+            'action': {
+                'type': 'url',
+                'url': '/tasks',
+                'target': 'self',
+            },
+        },
+        {
+            'id': 'seedmem01',
+            'label': 'Memory',
+            'icon': 'icon:memory',
+            'action': {
+                'type': 'url',
+                'url': '/memory',
+                'target': 'self',
+            },
+        },
+        {
+            'id': 'seedsett1',
+            'label': 'Settings',
+            'icon': 'icon:settings',
+            'action': {
+                'type': 'url',
+                'url': '/settings',
+                'target': 'self',
+            },
+        },
+    ]
+
+    @staticmethod
+    def _load_all():
+        DesktopManager._ensure_dir()
+        if not os.path.exists(DesktopManager.CONFIG_PATH):
+            # First-ever load on this PVC — seed defaults so the Desktop
+            # tab isn't an empty page on a fresh workspace. The user can
+            # delete/edit/reorder them like any other icon.
+            seeded = {'version': 1, 'items': list(DesktopManager._SEED_ITEMS)}
+            try:
+                DesktopManager._save_all(seeded)
+            except OSError:
+                pass  # If we can't write, just return the in-memory copy.
+            return seeded
+        try:
+            with open(DesktopManager.CONFIG_PATH) as f:
+                data = json.load(f)
+            if not isinstance(data, dict) or 'items' not in data:
+                return {'version': 1, 'items': []}
+            if not isinstance(data['items'], list):
+                data['items'] = []
+            return data
+        except (OSError, json.JSONDecodeError):
+            return {'version': 1, 'items': []}
+
+    @staticmethod
+    def _save_all(data):
+        DesktopManager._ensure_dir()
+        # Atomic write — tmp + rename — so a crashed write can't leave the
+        # config file empty / half-written and brick the Desktop route.
+        tmp = DesktopManager.CONFIG_PATH + f'.tmp.{os.getpid()}'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, DesktopManager.CONFIG_PATH)
+
+    @staticmethod
+    def _new_id():
+        return secrets.token_hex(4)
+
+    @staticmethod
+    def _validate(item):
+        """Validate an item submitted by the client. Returns the cleaned
+        dict or raises ValueError. Server is the trust boundary; the SPA
+        validates too but a curl client can post anything."""
+        if not isinstance(item, dict):
+            raise ValueError('item must be an object')
+        label = str(item.get('label', '')).strip()
+        if not label or len(label) > 80:
+            raise ValueError('label must be 1-80 chars')
+        icon = str(item.get('icon', '')).strip()
+        # Accept either a short emoji/text (≤8 chars) or the named-icon
+        # prefix form "icon:NAME" (up to 32 chars) which the SPA renders
+        # via its built-in Icon component for the clean line-icon look.
+        if not icon or len(icon) > 32:
+            raise ValueError('icon must be 1-32 chars (emoji or "icon:NAME")')
+        hotkey = item.get('hotkey')
+        if hotkey is not None:
+            hotkey = str(hotkey).strip().lower()
+            if hotkey and not re.match(r'^[a-z0-9+\- ]{1,40}$', hotkey):
+                raise ValueError('hotkey must be a short modifier expression e.g. "cmd+shift+1"')
+            if not hotkey:
+                hotkey = None
+        action = item.get('action')
+        if not isinstance(action, dict):
+            raise ValueError('action must be an object')
+        action_type = action.get('type')
+        if action_type not in DesktopManager._ALLOWED_ACTION_TYPES:
+            raise ValueError(f'action.type must be one of {DesktopManager._ALLOWED_ACTION_TYPES}')
+        cleaned_action = {'type': action_type}
+        if action_type == 'task':
+            # Empty prompt is intentional — boots the assistant CLI into
+            # interactive REPL mode (NewTaskForm sends '' too for the
+            # "open a Claude session" flow). Just cap the upper bound.
+            prompt = str(action.get('prompt', ''))
+            if len(prompt) > 8000:
+                raise ValueError('action.prompt must be <= 8000 chars')
+            cleaned_action['prompt'] = prompt
+            workdir = str(action.get('workdir', '')).strip() or '/home/dev'
+            cleaned_action['workdir'] = workdir
+            assistant = action.get('assistant')
+            if assistant:
+                cleaned_action['assistant'] = str(assistant).strip()
+        elif action_type == 'url':
+            url = str(action.get('url', '')).strip()
+            if not url or not re.match(r'^(https?://|/)[\S]+$', url):
+                raise ValueError('action.url must be http(s) or an absolute path')
+            cleaned_action['url'] = url
+            target = str(action.get('target', 'blank')).strip()
+            if target not in ('blank', 'self'):
+                raise ValueError('action.target must be "blank" or "self"')
+            cleaned_action['target'] = target
+        elif action_type == 'shell':
+            command = str(action.get('command', '')).strip()
+            if not command or len(command) > 4000:
+                raise ValueError('action.command must be 1-4000 chars')
+            cleaned_action['command'] = command
+            try:
+                timeout = int(action.get('timeout') or DesktopManager.SHELL_TIMEOUT_DEFAULT)
+            except (TypeError, ValueError):
+                raise ValueError('action.timeout must be an integer (seconds)')
+            if timeout < 1 or timeout > DesktopManager.SHELL_TIMEOUT_MAX:
+                raise ValueError(f'action.timeout must be 1-{DesktopManager.SHELL_TIMEOUT_MAX}s')
+            cleaned_action['timeout'] = timeout
+        cleaned = {
+            'label': label,
+            'icon': icon,
+            'action': cleaned_action,
+        }
+        if hotkey:
+            cleaned['hotkey'] = hotkey
+        return cleaned
+
+    @staticmethod
+    def list_items():
+        return DesktopManager._load_all().get('items', [])
+
+    @staticmethod
+    def create(item):
+        cleaned = DesktopManager._validate(item)
+        cleaned['id'] = DesktopManager._new_id()
+        data = DesktopManager._load_all()
+        data['items'].append(cleaned)
+        DesktopManager._save_all(data)
+        return cleaned
+
+    @staticmethod
+    def update(item_id, item):
+        if not DesktopManager._ID_RE.match(item_id or ''):
+            raise ValueError('invalid id')
+        cleaned = DesktopManager._validate(item)
+        cleaned['id'] = item_id
+        data = DesktopManager._load_all()
+        for i, existing in enumerate(data['items']):
+            if existing.get('id') == item_id:
+                data['items'][i] = cleaned
+                DesktopManager._save_all(data)
+                return cleaned
+        raise ValueError('item not found')
+
+    @staticmethod
+    def delete(item_id):
+        if not DesktopManager._ID_RE.match(item_id or ''):
+            raise ValueError('invalid id')
+        data = DesktopManager._load_all()
+        before = len(data['items'])
+        data['items'] = [it for it in data['items'] if it.get('id') != item_id]
+        if len(data['items']) == before:
+            raise ValueError('item not found')
+        DesktopManager._save_all(data)
+
+    @staticmethod
+    def reorder(ordered_ids):
+        if not isinstance(ordered_ids, list):
+            raise ValueError('order must be an array of ids')
+        data = DesktopManager._load_all()
+        by_id = {it.get('id'): it for it in data['items']}
+        new_items = []
+        seen = set()
+        for item_id in ordered_ids:
+            if item_id in by_id and item_id not in seen:
+                new_items.append(by_id[item_id])
+                seen.add(item_id)
+        # Append any items not mentioned (defensive — client should send all).
+        for it in data['items']:
+            if it.get('id') not in seen:
+                new_items.append(it)
+        data['items'] = new_items
+        DesktopManager._save_all(data)
+        return data['items']
+
+    @staticmethod
+    def get(item_id):
+        for it in DesktopManager.list_items():
+            if it.get('id') == item_id:
+                return it
+        return None
+
+
 class DocsManager:
     """Backs the /api/docs endpoints used by the in-app documentation site.
 
@@ -2263,7 +2536,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # client-side routing handles deep links. The legacy dashboard.html
         # has been removed; if /opt/dashboard-dist is missing we return 503
         # rather than fall back to anything stale.
-        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/docs', '/settings'}
+        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/docs', '/settings', '/desktop'}
         first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
         if normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
             rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
@@ -2372,6 +2645,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if m:
             self._cron_id = m.group(1)
             self.handle_cron_get()
+            return
+
+        # --- Desktop launcher (dashboard) ---
+        if claude_path == '/api/desktop':
+            self.handle_desktop_list()
+            return
+        m = re.match(r'^/api/desktop/([a-z0-9]+)$', claude_path)
+        if m:
+            item = DesktopManager.get(m.group(1))
+            if item is None:
+                self.send_json({'error': 'item not found'}, 404)
+            else:
+                self.send_json(item)
             return
 
         # --- Memory API (dashboard surface; backs the Memory tab) ---
@@ -2593,6 +2879,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._cron_id = m.group(1)
                 self.handle_cron_delete()
+                return
+            m = re.match(r'^/api/desktop/([a-z0-9]+)$', path)
+            if m:
+                self.handle_desktop_delete(m.group(1))
                 return
             m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations/(\d+)$', path)
             if m:
@@ -3005,6 +3295,140 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             }, 500)
             return
         self.send_json({'ok': True, 'mode': action})
+
+    # ── Desktop launcher handlers ──────────────────────────────────────
+    # All reads (GET /api/desktop, /api/desktop/{id}) pass through
+    # check_claude_auth + allow_none_mode=True so the public-demo can
+    # show the seeded launcher. Writes go through _readonly_block first so
+    # the public-demo can't add/edit/delete icons.
+
+    def handle_desktop_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'items': DesktopManager.list_items()})
+
+    def handle_desktop_create(self):
+        if self._readonly_block():
+            return
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            body = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        try:
+            item = DesktopManager.create(body)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        self.send_json(item, 201)
+
+    def handle_desktop_update(self, item_id):
+        if self._readonly_block():
+            return
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            body = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        try:
+            item = DesktopManager.update(item_id, body)
+        except ValueError as e:
+            code = 404 if 'not found' in str(e) else 400
+            self.send_json({'error': str(e)}, code)
+            return
+        self.send_json(item)
+
+    def handle_desktop_delete(self, item_id):
+        if self._readonly_block():
+            return
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            DesktopManager.delete(item_id)
+        except ValueError as e:
+            code = 404 if 'not found' in str(e) else 400
+            self.send_json({'error': str(e)}, code)
+            return
+        self.send_json({'ok': True})
+
+    def handle_desktop_reorder(self):
+        if self._readonly_block():
+            return
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            body = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        ids = body.get('order') if isinstance(body, dict) else None
+        try:
+            items = DesktopManager.reorder(ids or [])
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        self.send_json({'items': items})
+
+    def handle_desktop_launch(self, item_id):
+        """Execute the icon's action server-side. `task` returns the
+        created task_id; `shell` returns stdout/stderr/exit_code; `url`
+        rejects (client opens the URL directly, server is just bookkeeping).
+        Mutations gated by _readonly_block — viewing the launcher in the
+        public demo is fine, firing it isn't."""
+        if self._readonly_block():
+            return
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        item = DesktopManager.get(item_id)
+        if not item:
+            self.send_json({'error': 'item not found'}, 404)
+            return
+        action = item.get('action', {})
+        kind = action.get('type')
+        if kind == 'task':
+            task = ClaudeTaskManager.create_task(
+                action.get('prompt', ''),
+                workdir=action.get('workdir') or '/home/dev',
+                source=f'desktop:{item_id}',
+                assistant=action.get('assistant'),
+            )
+            if task.get('status') == 'error':
+                self.send_json({'error': task.get('error') or 'task spawn failed'}, 500)
+                return
+            self.send_json({'kind': 'task', 'task_id': task.get('task_id')}, 201)
+        elif kind == 'shell':
+            try:
+                result = subprocess.run(
+                    ['bash', '-lc', action.get('command', 'true')],
+                    capture_output=True,
+                    text=True,
+                    timeout=int(action.get('timeout') or DesktopManager.SHELL_TIMEOUT_DEFAULT),
+                    cwd='/home/dev',
+                )
+                self.send_json({
+                    'kind': 'shell',
+                    'exit_code': result.returncode,
+                    'stdout': (result.stdout or '')[-8000:],
+                    'stderr': (result.stderr or '')[-2000:],
+                })
+            except subprocess.TimeoutExpired:
+                self.send_json({'error': 'command timed out', 'kind': 'shell'}, 504)
+        elif kind == 'url':
+            # The client opens URLs directly — no server work needed.
+            # Return ok so the client can still report a launch event.
+            self.send_json({'kind': 'url', 'url': action.get('url'), 'target': action.get('target', 'blank')})
+        else:
+            self.send_json({'error': f'unknown action type: {kind}'}, 400)
 
     def handle_webhook_list(self):
         if not self.check_claude_auth():
@@ -3961,6 +4385,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Cron CRUD (dashboard)
             elif path == "/api/crons":
                 self.handle_cron_create()
+            # Desktop launcher (dashboard)
+            elif path == "/api/desktop":
+                self.handle_desktop_create()
+            elif path == "/api/desktop/_reorder":
+                self.handle_desktop_reorder()
             # Memory API (dashboard surface; mirrored by MCP)
             elif path == "/api/memory":
                 self.handle_memory_upsert()
@@ -3998,6 +4427,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_scroll_mode()
+                    return
+                # Desktop launcher per-item routes
+                # PUT-like update (POST + id == "update"); /launch fires
+                m = re.match(r'^/api/desktop/([a-z0-9]+)/launch$', path)
+                if m:
+                    self.handle_desktop_launch(m.group(1))
+                    return
+                m = re.match(r'^/api/desktop/([a-z0-9]+)$', path)
+                if m:
+                    self.handle_desktop_update(m.group(1))
                     return
                 # /api/webhooks/{id}/test — fire as if from outside (dashboard)
                 m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)/test$', path)
