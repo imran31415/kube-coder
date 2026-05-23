@@ -89,10 +89,10 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const [subagentsCount, setSubagentsCount] = useState<number>(0);
   const [confirmKill, setConfirmKill] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
-  // Lets the user reclaim vertical space (mobile especially) by collapsing
-  // the task header + meta strip. Tabs stay visible since they're the
-  // primary nav inside the detail view.
-  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  // Default-collapsed: most users just want to see the session output. The
+  // header (title, status, Copy link, Rename, Kill, meta strip) expands via
+  // the chevron pill that replaces it.
+  const [headerCollapsed, setHeaderCollapsed] = useState(true);
 
   // When the selected task CHANGES, snap to a sensible default tab:
   //   - live (running)  → Terminal (the user wants to watch it work)

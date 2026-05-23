@@ -40,22 +40,6 @@ export function TasksRoute() {
       : '';
   return (
     <div class={`route route-tasks ${fullscreen ? 'route-tasks-fullscreen' : ''}`}>
-      {!fullscreen && (
-        <header class="route-header route-header-with-action">
-          <div>
-            <h1 class="route-title">Build</h1>
-            <p class="route-subtitle muted">
-              Each build is a live Claude / OpenCode session in tmux. List refreshes every 10s.
-            </p>
-          </div>
-          <MutatorOnly>
-            <Button variant="primary" size="md" onClick={() => (drawerOpen.value = 'new-task')}>
-              <Icon name="plus" size={14} /> New build
-            </Button>
-          </MutatorOnly>
-        </header>
-      )}
-
       <div class={`tasks-layout ${layoutMod}`}>
         {!isMobile && !collapsedMaster && !fullscreen && (
           <div class="tasks-master">
@@ -77,6 +61,16 @@ export function TasksRoute() {
         )}
         {isMobile && (
           <div class="tasks-master">
+            <MutatorOnly>
+              <Button
+                variant="primary"
+                size="md"
+                onClick={() => (drawerOpen.value = 'new-task')}
+                class="tasks-mobile-new"
+              >
+                <Icon name="plus" size={14} /> New build
+              </Button>
+            </MutatorOnly>
             <TaskList />
           </div>
         )}
