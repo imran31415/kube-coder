@@ -67,12 +67,12 @@ export function TasksRoute() {
           <div class="tasks-master">
             <MutatorOnly>
               <Button
-                variant="primary"
-                size="md"
+                variant="secondary"
+                size="sm"
                 onClick={() => (drawerOpen.value = 'new-task')}
                 class="tasks-mobile-new"
               >
-                <Icon name="plus" size={14} /> New build
+                <Icon name="plus" size={12} /> New build
               </Button>
             </MutatorOnly>
             <TaskList />
