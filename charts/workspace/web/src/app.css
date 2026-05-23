@@ -14,9 +14,18 @@
   border-bottom: 1px solid var(--border);
 }
 .route-title {
-  font-size: 22px;
+  font-family: var(--font-mono);
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.route-title::before {
+  content: '$';
+  color: var(--text-subtle);
+  font-weight: 500;
 }
 .route-subtitle { font-size: 13px; }
 
