@@ -55,6 +55,12 @@ export function MoreSheet() {
     // the "secondary" set the More sheet absorbs. Triggers moved here
     // when BottomNav switched its third slot to Desktop.
     {
+      label: 'Apps',
+      icon: 'apps',
+      onSelect: () => { navigate('/apps'); sheetOpen.value = null; },
+      hint: 'Locally-listening services on this workspace',
+    },
+    {
       label: 'Triggers',
       icon: 'triggers',
       onSelect: () => { navigate('/triggers'); sheetOpen.value = null; },

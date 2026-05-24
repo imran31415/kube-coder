@@ -1,0 +1,125 @@
+.route-apps { display: flex; flex-direction: column; gap: var(--size-3); }
+
+.apps-banner {
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--text);
+  padding: var(--size-3);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.apps-error {
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  padding: var(--size-3);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* --- list --- */
+.apps-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.apps-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--size-3) var(--size-4);
+  display: flex; align-items: center; gap: var(--size-3);
+}
+.apps-row:hover { border-color: var(--border-2); }
+
+.apps-row-stopped { opacity: 0.7; }
+.apps-row-blocked { opacity: 0.55; }
+
+.apps-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.apps-row-name {
+  display: flex; align-items: center; gap: var(--size-2);
+  font-size: 14px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.apps-row-meta { font-size: 11.5px; font-family: var(--font-mono, ui-monospace, monospace); }
+
+.apps-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+@media (max-width: 600px) {
+  .apps-row { flex-direction: column; align-items: stretch; }
+  .apps-row-actions { justify-content: flex-end; }
+}
+
+/* --- pin dialog --- */
+.apps-modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--size-3);
+}
+.apps-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 8px);
+  padding: var(--size-4);
+  width: min(440px, 100%);
+  display: flex; flex-direction: column; gap: var(--size-3);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+.apps-modal-title { margin: 0; font-size: 16px; }
+.apps-modal-hint { font-size: 12.5px; margin: 0; }
+.apps-modal-row {
+  display: grid; grid-template-columns: 100px 1fr; gap: var(--size-3);
+}
+@media (max-width: 480px) { .apps-modal-row { grid-template-columns: 1fr; } }
+.apps-modal-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.apps-modal-check {
+  display: flex; align-items: flex-start; gap: var(--size-2);
+  font-size: 12.5px; line-height: 1.4;
+}
+.apps-modal-check code {
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+.apps-modal-err {
+  color: var(--danger);
+  font-size: 12.5px;
+}
+.apps-modal-actions { display: flex; justify-content: flex-end; gap: var(--size-2); }
+
+/* --- embedded iframe view --- */
+.apps-embed {
+  display: flex; flex-direction: column;
+  /* Subtract whatever surrounding margin the .app-main padding adds so
+   * the iframe fills its container neatly. The .app-main padding is
+   * var(--size-4) (16px) by default. Going negative reclaims it. */
+  height: 100%;
+  min-height: 60vh;
+  margin: calc(var(--size-4, 16px) * -1);
+}
+.apps-embed-header {
+  display: flex; align-items: center; gap: var(--size-3);
+  padding: var(--size-2) var(--size-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  min-height: 44px;
+}
+.apps-embed-title {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 14px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.apps-embed-port { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; margin-left: 4px; }
+.apps-embed-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.apps-embed-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: var(--surface-2, #fff);
+}
+
+/* On mobile, drop the padding on the main pane so the iframe goes
+ * fully edge-to-edge. The body class is toggled by AppEmbed. */
+body.apps-embedding .app-main { padding: 0; }
