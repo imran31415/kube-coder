@@ -2830,6 +2830,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # SPA at root. /dashboard and /browser kept for back-compat URLs.
             self.serve_next_spa('/')
             return
+        elif self.path == "/livez":
+            self.send_livez()
+            return
         elif self.path == "/health":
             self.send_health_check()
             return
@@ -4578,6 +4581,49 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # Per-CSP-directive splitter — used to strip frame-ancestors while keeping
     # the rest of the policy intact.
     _CSP_FRAME_ANCESTORS_RE = re.compile(r'(?:^|;)\s*frame-ancestors[^;]*', re.IGNORECASE)
+    # Root-absolute src/href values in a proxied HTML body, e.g. src="/assets/x"
+    # or href='/main.css'. The lookbehind skips data-src / srcset and similar
+    # (no attr-boundary match); the value class stops at the closing quote,
+    # whitespace or tag end. Bytes-mode so we never have to decode the body.
+    _ABS_ASSET_URL_RE = re.compile(rb'(?<![\w-])((?:src|href)\s*=\s*)(["\'])(/[^"\'<>\s]*)')
+    # Opening <head> tag — where we inject the runtime base-path shim.
+    _HEAD_OPEN_RE = re.compile(rb'<head\b[^>]*>', re.IGNORECASE)
+    # Injected into proxied HTML so an app's *runtime* requests (built in JS,
+    # not in the HTML we rewrite) also stay under the proxy prefix. The shim
+    # runs in the browser, where the full client-visible prefix — including the
+    # external /oauth auth segment that oauth2-proxy strips before requests
+    # reach this server — IS visible via location.pathname. It re-prefixes
+    # root-absolute fetch/XHR/EventSource/WebSocket targets; protocol-relative
+    # (//cdn), already-prefixed and relative URLs pass through. A classic
+    # inline <script> runs at parse time, before the app's deferred module
+    # scripts, so the patches are in place first.
+    _APP_PROXY_SHIM = (
+        b'<script>(function(){'
+        b'var p=location.pathname,k="/api/app-proxy/",ix=p.indexOf(k);if(ix<0)return;'
+        b'var r=p.slice(ix+k.length),j=r.indexOf("/"),port=j<0?r:r.slice(0,j);'
+        b'if(!port)return;var P=p.slice(0,ix+k.length+port.length);'
+        b'function fix(u){if(typeof u!=="string"||!u)return u;'
+        b'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"&&u.indexOf(P+"/")!==0&&u.indexOf("/api/app-proxy/")!==0)return P+u;'
+        b'return u;}'
+        # fetch must be invoked with this===window; a bare call on a saved
+        # reference throws "Illegal invocation", so bind it.
+        b'var _f=window.fetch&&window.fetch.bind(window);if(_f){window.fetch=function(q,n){'
+        b'if(typeof q==="string")return _f(fix(q),n);'
+        b'if(q&&q.url){try{return _f(new Request(fix(q.url),q),n)}catch(e){}}'
+        b'return _f(q,n)};}'
+        b'var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){'
+        b'if(arguments.length>1)arguments[1]=fix(arguments[1]);return _x.apply(this,arguments)};'
+        b'if(window.EventSource){var E=window.EventSource;window.EventSource=function(u,c){return new E(fix(u),c)};'
+        b'window.EventSource.prototype=E.prototype;}'
+        b'if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){'
+        b'try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")'
+        b'u=(location.protocol==="https:"?"wss://":"ws://")+location.host+P+u;}catch(e){}'
+        b'return pr!==undefined?new W(u,pr):new W(u)};window.WebSocket.prototype=W.prototype;'
+        # Preserve the readyState constants apps read as WebSocket.OPEN etc.
+        b'window.WebSocket.CONNECTING=W.CONNECTING;window.WebSocket.OPEN=W.OPEN;'
+        b'window.WebSocket.CLOSING=W.CLOSING;window.WebSocket.CLOSED=W.CLOSED;}'
+        b'})();</script>'
+    )
     # Hop-by-hop headers that must not be forwarded between client and
     # upstream. RFC 7230 §6.1 plus the usual extras.
     _HOP_BY_HOP_HEADERS = frozenset({
@@ -4834,7 +4880,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Build forwarded headers. Drop hop-by-hop + ours; add X-Forwarded-*.
         fwd_headers = {}
         for k, v in self.headers.items():
-            if k.lower() in self._HOP_BY_HOP_HEADERS:
+            kl = k.lower()
+            if kl in self._HOP_BY_HOP_HEADERS:
+                continue
+            # Ask the upstream for an identity-encoded body. We rewrite
+            # absolute asset URLs in HTML responses (see below), which only
+            # works on uncompressed bytes; over a localhost hop compression
+            # buys nothing anyway.
+            if kl == 'accept-encoding':
                 continue
             fwd_headers[k] = v
         fwd_headers['Host'] = f'127.0.0.1:{port}'
@@ -4856,6 +4909,21 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(f'Bad gateway: cannot reach 127.0.0.1:{port} ({e})\n'.encode())
             return
 
+        # A 200 text/html body gets its root-absolute asset URLs made relative
+        # so a stock build (Vite/CRA: <script src="/assets/x">) loads under the
+        # proxy prefix instead of 404ing against the dashboard origin root (see
+        # _rewrite_html_asset_urls). Buffered because the rewrite changes the
+        # length; assets, JSON and SSE still stream untouched. The forwarded
+        # request dropped Accept-Encoding, so this body is identity-encoded
+        # and rewritable.
+        ctype = resp.getheader('Content-Type', '') or ''
+        rewrite_body = (
+            method != 'HEAD'
+            and resp.status == 200
+            and 'text/html' in ctype.lower()
+        )
+        rewritten = self._rewrite_proxied_html(resp.read(), port) if rewrite_body else None
+
         # Forward status + filtered headers.
         self.send_response(resp.status, resp.reason)
         for k, v in resp.getheaders():
@@ -4872,10 +4940,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if kl == 'location':
                 v = self._rewrite_location_header(v, port)
             self.send_header(k, v)
+        if rewritten is not None:
+            # Body length changed; the upstream's framing headers were already
+            # dropped (hop-by-hop), so declare our own so the client doesn't
+            # have to wait on connection close to know the body is complete.
+            self.send_header('Content-Length', str(len(rewritten)))
         self.end_headers()
-        # Stream the body. read1 returns what's available so SSE heartbeats
-        # arrive without waiting for a full read() to fill.
-        if method != 'HEAD':
+
+        if method == 'HEAD':
+            pass
+        elif rewritten is not None:
+            try:
+                self.wfile.write(rewritten)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        else:
+            # Stream the body. read1 returns what's available so SSE heartbeats
+            # arrive without waiting for a full read() to fill.
             try:
                 while True:
                     chunk = resp.read1(65536) if hasattr(resp, 'read1') else resp.read(65536)
@@ -4993,6 +5074,49 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Permissive default — no CORS preflight wired for any other route.
         self.send_response(204)
         self.end_headers()
+
+    def _rewrite_proxied_html(self, body, port):
+        """Rewrite a proxied HTML body so a stock build renders AND can reach
+        its backend through the /api/app-proxy/<port> prefix.
+
+        Two parts:
+
+        1. Static src/href URLs (parsed by the browser, not via JS) are made
+           relative by dropping the leading slash. We relativize rather than
+           prepend a prefix because the client reaches us through an external
+           /oauth auth segment that oauth2-proxy strips before the request
+           arrives here — so the server can neither see nor reconstruct the URL
+           the browser actually used. A relative URL sidesteps that: the
+           browser resolves it against the iframe document's real URL
+           (…/oauth/api/app-proxy/<port>/ — trailing slash guaranteed by the
+           301 above), keeping the /oauth prefix so it authenticates. Skips
+           protocol-relative (//cdn) and already-proxied URLs; relative URLs
+           are already correct.
+
+        2. A runtime shim (_APP_PROXY_SHIM) is injected into <head> to catch
+           requests the app builds in JS at request time — fetch('/runs'),
+           XHR, EventSource, WebSocket — which relativizing the HTML can't
+           touch. The shim re-prefixes those in the browser, where the full
+           client-visible prefix is available.
+        """
+        def repl(mo):
+            url = mo.group(3)
+            if url.startswith(b'//') or url.startswith(b'/api/app-proxy/'):
+                return mo.group(0)
+            rel = url[1:]  # drop the single leading '/'
+            return mo.group(1) + mo.group(2) + (rel or b'./')
+
+        body = self._ABS_ASSET_URL_RE.sub(repl, body)
+
+        # Inject the runtime shim right after <head> so it patches fetch/XHR
+        # before the app's own scripts run. If there's no <head> (rare),
+        # prepend it — a leading classic script still executes first.
+        if self._HEAD_OPEN_RE.search(body):
+            body = self._HEAD_OPEN_RE.sub(
+                lambda mo: mo.group(0) + self._APP_PROXY_SHIM, body, count=1)
+        else:
+            body = self._APP_PROXY_SHIM + body
+        return body
 
     @staticmethod
     def _rewrite_location_header(value, port):
@@ -5225,6 +5349,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(message.encode())
     
+    def send_livez(self):
+        """Liveness probe — proves the HTTP server thread is alive and can
+        answer, nothing more. Deliberately does ZERO blocking work: no socket
+        connects to sub-services (see send_health_check), no auth, no disk, no
+        JSON. On a 2-CPU pod a busy assistant task + many tmux-streaming
+        handler threads can starve the GIL enough that a heavier handler can't
+        finish inside the 10s liveness timeout for 3 straight probes (~90s),
+        and the kubelet then SIGTERMs the container — killing the user's live
+        tmux + tasks. A handler this cheap needs the GIL for only microseconds,
+        so it returns even under heavy contention. Sub-service status belongs
+        to /health (readiness) and the /health/* detail endpoints."""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(b'ok')
+
     def send_health_check(self):
         """Overall health check endpoint - always returns 200 to avoid blocking"""
         vscode_status = self.check_service_health('localhost', 8080)

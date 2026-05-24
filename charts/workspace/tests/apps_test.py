@@ -322,6 +322,23 @@ class _StubUpstreamHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
+        # Special path: a stock Vite-style index.html with absolute asset URLs
+        # so we can verify the proxy rewrites them under the prefix.
+        if self.path == '/html':
+            html = (
+                b'<!doctype html><html><head>'
+                b'<script type="module" crossorigin src="/assets/index-DMwNl9rx.js"></script>'
+                b'<link rel="stylesheet" href="/assets/index-DeubTYm-.css">'
+                b'<link rel="preconnect" href="https://fonts.googleapis.com">'
+                b'<img data-src="/lazy.png">'
+                b'</head><body><a href="docs/page">rel</a></body></html>'
+            )
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+            return
         self._send(200, {'method': 'GET', 'path': self.path})
 
     def do_POST(self):
@@ -453,6 +470,48 @@ class AppsProxyTests(unittest.TestCase):
             self.assertEqual(loc, f'/api/app-proxy/{self.upstream_port}/elsewhere')
         else:
             self.fail('Expected 302 from stub upstream')
+
+    def test_html_absolute_asset_urls_are_made_relative(self):
+        # A stock build serving <script src="/assets/x"> must come back with
+        # those root-absolute URLs made relative, so the browser resolves them
+        # against the iframe document (…/api/app-proxy/<port>/) — preserving
+        # the external /oauth auth prefix the server never sees — instead of
+        # 404ing/401ing against the dashboard origin root.
+        with urllib.request.urlopen(self._proxy_url('/html'), timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            html = r.read()
+            # Content-Length must reflect the rewritten (shorter) body.
+            self.assertEqual(int(r.headers['Content-Length']), len(html))
+        # Absolute asset URLs are now relative (leading slash dropped)...
+        self.assertIn(b'src="assets/index-DMwNl9rx.js"', html)
+        self.assertIn(b'href="assets/index-DeubTYm-.css"', html)
+        # ...while external, data-src and already-relative URLs are untouched.
+        self.assertIn(b'href="https://fonts.googleapis.com"', html)
+        self.assertIn(b'data-src="/lazy.png"', html)
+        self.assertIn(b'href="docs/page"', html)
+        self.assertNotIn(b'src="/assets/index-DMwNl9rx.js"', html)
+
+    def test_html_gets_runtime_base_path_shim_in_head(self):
+        # The shim that re-prefixes runtime fetch/XHR/WebSocket calls must be
+        # injected right after <head>, before the app's own scripts.
+        with urllib.request.urlopen(self._proxy_url('/html'), timeout=5) as r:
+            html = r.read()
+        self.assertIn(b'window.fetch=function', html)
+        self.assertIn(b'XMLHttpRequest.prototype.open', html)
+        # Injected inside <head>, ahead of the app's module script.
+        head_at = html.find(b'<head')
+        shim_at = html.find(b'window.fetch=function')
+        script_at = html.find(b'src="assets/index-DMwNl9rx.js"')
+        self.assertNotEqual(head_at, -1)
+        self.assertLess(head_at, shim_at)
+        self.assertLess(shim_at, script_at)
+
+    def test_non_html_body_is_not_rewritten(self):
+        # JSON (and other non-HTML) bodies must pass through byte-for-byte even
+        # if they happen to contain something that looks like src="/x".
+        with urllib.request.urlopen(self._proxy_url('/api/data'), timeout=5) as r:
+            body = json.loads(r.read())
+        self.assertEqual(body['path'], '/api/data')
 
     def test_proxy_rejects_internal_port(self):
         # 8080 is in INTERNAL_PORTS. Returns 403 with a reason.
