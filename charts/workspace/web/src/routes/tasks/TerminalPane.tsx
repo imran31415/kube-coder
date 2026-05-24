@@ -1,17 +1,29 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
+import { proxyUrl } from '../../api/apps';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { getSessionSignals } from './sessionSignals';
 
 export interface TerminalPaneProps {
   taskId: string;
-  /** When true, renders ttyd on the left and the noVNC viewer on the right. */
+  /** When true, renders ttyd on the left and a preview of the app on the
+   *  right. The preview source toggles between the in-app reverse-proxy
+   *  iframe ('app') and the in-pod Chrome via noVNC ('browser'). */
   withVnc?: boolean;
 }
 
 const LAST_PORT_KEY = 'kc.previewPort';
 const LAST_PATH_KEY = 'kc.previewPath';
+const LAST_MODE_KEY = 'kc.previewMode';
+
+type PreviewMode = 'app' | 'browser';
+
+// Mirrors AppEmbed's iframe sandbox: same-origin so cookies/localStorage
+// work for typical dev servers, scripts/forms/popups/downloads for normal
+// app behaviour, and crucially NO allow-top-navigation so a framed app
+// can't bounce the user out of the dashboard.
+const APP_FRAME_SANDBOX = 'allow-same-origin allow-scripts allow-forms allow-popups allow-downloads';
 
 /**
  * Pull HTTP(S) URLs out of the tmux pane text. Mobile users can't easily
@@ -137,9 +149,38 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     try { return localStorage.getItem(LAST_PATH_KEY) ?? '/'; }
     catch { return '/'; }
   });
+  // Preview source: 'app' embeds the reverse-proxy iframe directly (fast,
+  // real DOM, no in-pod browser); 'browser' drives the in-pod Chrome and
+  // mirrors it via noVNC (for things that need a real browser, e.g. apps
+  // that can't be framed). Defaults to 'app' — the lighter, newer path.
+  const [mode, setMode] = useState<PreviewMode>(() => {
+    try { return localStorage.getItem(LAST_MODE_KEY) === 'browser' ? 'browser' : 'app'; }
+    catch { return 'app'; }
+  });
+  // Committed target for the app iframe. Kept separate from the port/path
+  // input so typing doesn't reload the frame on every keystroke — only
+  // "Open" (or the initial mount) commits. Seeded from the persisted port.
+  const [appPort, setAppPort] = useState<number>(() => {
+    try {
+      const n = parseInt(localStorage.getItem(LAST_PORT_KEY) ?? '8080', 10);
+      return n >= 1 && n <= 65535 ? n : 8080;
+    } catch { return 8080; }
+  });
+  const [appPath, setAppPath] = useState<string>(() => {
+    try { return localStorage.getItem(LAST_PATH_KEY) ?? '/'; }
+    catch { return '/'; }
+  });
+  // Bumped to force a fresh iframe mount — browsers don't reliably refetch
+  // on a bare src reassignment (same trick AppEmbed uses).
+  const [appReloadKey, setAppReloadKey] = useState(0);
   const [portStatus, setPortStatus] = useState<string>('');
   const [portBusy, setPortBusy] = useState(false);
   const vncRef = useRef<HTMLIFrameElement | null>(null);
+
+  // Persist the preview-source choice per workspace.
+  useEffect(() => {
+    try { localStorage.setItem(LAST_MODE_KEY, mode); } catch { /* noop */ }
+  }, [mode]);
 
   // Tappable URL strip — refreshed every ~4s from the task's tmux pane.
   // Skipped in Preview (withVnc) mode since the VNC viewer is the primary
@@ -274,6 +315,12 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     }
   }
 
+  /** Reload just the app-preview iframe (App mode). */
+  function reloadApp() {
+    setAppReloadKey((k) => k + 1);
+    setPortStatus('reloaded');
+  }
+
   async function openPort(e: Event) {
     e.preventDefault();
     const n = parseInt(port, 10);
@@ -286,6 +333,23 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     let normPath = (urlPath || '/').trim();
     if (!normPath) normPath = '/';
     if (!normPath.startsWith('/')) normPath = '/' + normPath;
+    // Remember the target for the next Preview open regardless of mode.
+    try {
+      localStorage.setItem(LAST_PORT_KEY, String(n));
+      localStorage.setItem(LAST_PATH_KEY, normPath);
+    } catch { /* noop */ }
+
+    if (mode === 'app') {
+      // In-app iframe: no server round-trip — the reverse proxy resolves
+      // the port itself. Commit the target + force a fresh mount.
+      setAppPort(n);
+      setAppPath(normPath);
+      setAppReloadKey((k) => k + 1);
+      setPortStatus(`→ :${n}${normPath === '/' ? '' : normPath}`);
+      return;
+    }
+
+    // Browser mode: drive the in-pod Chrome and refresh the noVNC viewer.
     setPortBusy(true);
     const target = `localhost:${n}${normPath === '/' ? '' : normPath}`;
     setPortStatus(`→ ${target}…`);
@@ -295,10 +359,6 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         setPortStatus(`open failed: ${r.error}`);
       } else {
         setPortStatus(`→ ${target}`);
-        try {
-          localStorage.setItem(LAST_PORT_KEY, String(n));
-          localStorage.setItem(LAST_PATH_KEY, normPath);
-        } catch { /* noop */ }
         refreshVnc();
       }
     } catch (err) {
@@ -310,49 +370,90 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
 
   return (
     <div class={`term-pane ${withVnc ? 'term-pane-split' : ''}`}>
-      {/* Preview-only inline form to repoint the in-pod browser. Lives
-          under the iframe row when in Preview mode; the main action bar
-          (Upload / Scroll / Reattach / etc.) was promoted into
-          TaskDetail's unified .td-bar above the tabs. */}
+      {/* Preview-only control strip: source toggle (App vs Browser) + the
+          port/path form that repoints whichever source is active. Lives
+          under the iframe row; the main action bar (Upload / Scroll /
+          Reattach / etc.) was promoted into TaskDetail's unified .td-bar. */}
       {withVnc && (
-        <form class="term-pane-port term-pane-port-floating" onSubmit={openPort} title="Open localhost:<port><path> in the in-pod Chrome (right pane)">
-          <span class="term-pane-port-label mono">localhost:</span>
-          <input
-            type="number"
-            class="term-pane-port-input mono"
-            min={1}
-            max={65535}
-            value={port}
-            onInput={(e) => setPort((e.target as HTMLInputElement).value)}
-            aria-label="Localhost port to open in the in-pod browser"
-            disabled={portBusy}
-          />
-          <input
-            type="text"
-            class="term-pane-port-path mono"
-            value={urlPath}
-            onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
-            placeholder="/"
-            aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
-            disabled={portBusy}
-            spellcheck={false}
-            autocapitalize="off"
-          />
-          <Button
-            type="submit"
-            size="sm"
-            variant="secondary"
-            disabled={portBusy}
-            title="Point the in-pod browser at localhost:<port><path>"
+        <div class="term-pane-controls term-pane-port-floating">
+          <div class="term-pane-modeseg" role="group" aria-label="Preview source">
+            <button
+              type="button"
+              class={`term-pane-modeseg-btn ${mode === 'app' ? 'is-active' : ''}`}
+              aria-pressed={mode === 'app'}
+              onClick={() => setMode('app')}
+              title="In-app view — embeds the app directly through the reverse proxy (fast, real DOM)"
+            >
+              App
+            </button>
+            <button
+              type="button"
+              class={`term-pane-modeseg-btn ${mode === 'browser' ? 'is-active' : ''}`}
+              aria-pressed={mode === 'browser'}
+              onClick={() => setMode('browser')}
+              title="Browser — renders the page in the in-pod Chrome, mirrored via noVNC"
+            >
+              Browser
+            </button>
+          </div>
+          <form
+            class="term-pane-port"
+            onSubmit={openPort}
+            title={mode === 'app'
+              ? 'Point the in-app iframe at localhost:<port><path>'
+              : 'Open localhost:<port><path> in the in-pod Chrome (right pane)'}
           >
-            Open
-          </Button>
+            <span class="term-pane-port-label mono">localhost:</span>
+            <input
+              type="number"
+              class="term-pane-port-input mono"
+              min={1}
+              max={65535}
+              value={port}
+              onInput={(e) => setPort((e.target as HTMLInputElement).value)}
+              aria-label="Localhost port to preview"
+              disabled={portBusy}
+            />
+            <input
+              type="text"
+              class="term-pane-port-path mono"
+              value={urlPath}
+              onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
+              placeholder="/"
+              aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
+              disabled={portBusy}
+              spellcheck={false}
+              autocapitalize="off"
+            />
+            <Button
+              type="submit"
+              size="sm"
+              variant="secondary"
+              disabled={portBusy}
+              title={mode === 'app'
+                ? 'Load localhost:<port><path> in the in-app iframe'
+                : 'Point the in-pod browser at localhost:<port><path>'}
+            >
+              Open
+            </Button>
+          </form>
+          {mode === 'app' && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={reloadApp}
+              title="Reload the app iframe"
+            >
+              Reload
+            </Button>
+          )}
           {portStatus && (
             <span class="term-pane-port-status mono" aria-live="polite">
               {portStatus}
             </span>
           )}
-        </form>
+        </div>
       )}
 
       {phase === 'error' && (
@@ -435,7 +536,17 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               allow="clipboard-read; clipboard-write"
             />
           )}
-          {withVnc && vncSrc && (
+          {withVnc && mode === 'app' && (
+            <iframe
+              key={`app-${taskId}-${appReloadKey}`}
+              class="term-pane-iframe term-pane-iframe-app"
+              src={proxyUrl(appPort, appPath)}
+              title="App preview"
+              sandbox={APP_FRAME_SANDBOX}
+              allow="clipboard-read; clipboard-write"
+            />
+          )}
+          {withVnc && mode === 'browser' && vncSrc && (
             <iframe
               key={`vnc-${taskId}-${vncSrc}`}
               ref={vncRef}
