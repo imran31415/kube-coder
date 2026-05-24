@@ -19,6 +19,7 @@ assistant — all behind **GitHub OAuth2** at a per-user subdomain.
 
 <img width="1377" height="861" alt="image" src="https://github.com/user-attachments/assets/40b36ba0-1673-448b-b4c3-f529a3042a37" />
 
+
 ---
 
 ## What's in a workspace
