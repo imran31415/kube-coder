@@ -149,14 +149,21 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 3
         livenessProbe:
+          # Liveness hits the cheap /livez (no sub-service socket connects, no
+          # auth) — restarting this pod destroys the user's live tmux + tasks,
+          # so the probe must only catch a truly wedged process, not a busy
+          # one. failureThreshold 6 x period 30s => ~3 min of sustained
+          # unresponsiveness before a restart. Readiness (below) keeps the
+          # richer /health check so a degraded sub-service still drops the pod
+          # from Service endpoints without killing it.
           httpGet:
-            path: /health
+            path: /livez
             port: 6080
             scheme: HTTP
           initialDelaySeconds: 60
           periodSeconds: 30
           timeoutSeconds: 10
-          failureThreshold: 3
+          failureThreshold: 6
         volumeMounts:
         - name: home
           mountPath: /home/dev
