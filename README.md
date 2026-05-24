@@ -17,12 +17,7 @@ assistant — all behind **GitHub OAuth2** at a per-user subdomain.
 [Public demo and Docs site
 ](https://demo-public.dev.scalebase.io/docs/getting-started)
 
-<img width="1421" height="864" alt="image" src="https://github.com/user-attachments/assets/467ae68a-b22a-4755-91cd-dd4e92da7738" />
-
-<img width="1179" height="1989" alt="image" src="https://github.com/user-attachments/assets/e2d54f81-445b-4daa-934a-c5093845a8c7" />
-
-<img width="505" height="864" alt="image" src="https://github.com/user-attachments/assets/ff701294-58e1-4496-b2cc-3e19b9653e3d" />
-
+<img width="1377" height="861" alt="image" src="https://github.com/user-attachments/assets/40b36ba0-1673-448b-b4c3-f529a3042a37" />
 
 ---
 
