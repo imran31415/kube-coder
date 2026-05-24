@@ -30,6 +30,7 @@ export type IconName =
   | 'chat'
   | 'terminal'
   | 'link'
+  | 'apps'
   | 'desktop';
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -173,6 +174,14 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <rect x="3" y="4" width="14" height="9" rx="1" />
       <path d="M7 17h6M10 13v4" />
+    </>
+  ),
+  apps: (
+    <>
+      <rect x="3" y="3" width="6" height="6" rx="1" />
+      <rect x="11" y="3" width="6" height="6" rx="1" />
+      <rect x="3" y="11" width="6" height="6" rx="1" />
+      <rect x="11" y="11" width="6" height="6" rx="1" />
     </>
   ),
 };

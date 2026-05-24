@@ -17,9 +17,9 @@ const SLOTS: Slot[] = [
   { path: '/memory', title: 'Memory', icon: 'memory' },
 ];
 
-// "More" sheet absorbs anything not in SLOTS — triggers, files, docs,
-// settings. Highlights when the current route is one of those.
-const MORE_ROUTES = new Set(['/triggers', '/files', '/docs', '/settings']);
+// "More" sheet absorbs anything not in SLOTS — apps, triggers, files,
+// docs, settings. Highlights when the current route is one of those.
+const MORE_ROUTES = new Set(['/apps', '/triggers', '/files', '/docs', '/settings']);
 
 export function BottomNav() {
   const active = matchRoute(currentPath.value).path;
