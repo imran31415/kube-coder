@@ -4,6 +4,8 @@ import { proxyUrl } from '../../api/apps';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { getSessionSignals } from './sessionSignals';
+import { useIsMobile } from '../../hooks/useMediaQuery';
+import { previewFullscreen } from '../../store/ui';
 
 export interface TerminalPaneProps {
   taskId: string;
@@ -176,6 +178,14 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const [portStatus, setPortStatus] = useState<string>('');
   const [portBusy, setPortBusy] = useState(false);
   const vncRef = useRef<HTMLIFrameElement | null>(null);
+  const appRef = useRef<HTMLIFrameElement | null>(null);
+
+  // The side-by-side split doesn't fit on phones, so on mobile the Preview
+  // shows ONE pane at a time — the live session (terminal) or the app preview
+  // — chosen via the segmented control. Defaults to the app so the user lands
+  // on what they came to see. Desktop keeps the split.
+  const isMobile = useIsMobile();
+  const [mobilePane, setMobilePane] = useState<'session' | 'preview'>('preview');
 
   // Persist the preview-source choice per workspace.
   useEffect(() => {
@@ -321,6 +331,16 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     setPortStatus('reloaded');
   }
 
+  // Back/forward drive the app iframe's own history. The app is proxied
+  // through our origin, so the iframe is same-origin and contentWindow is
+  // reachable; guard anyway in case a navigation lands cross-origin.
+  function appBack() {
+    try { appRef.current?.contentWindow?.history.back(); } catch { /* cross-origin */ }
+  }
+  function appForward() {
+    try { appRef.current?.contentWindow?.history.forward(); } catch { /* cross-origin */ }
+  }
+
   async function openPort(e: Event) {
     e.preventDefault();
     const n = parseInt(port, 10);
@@ -368,85 +388,119 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     }
   }
 
+  // Which preview pane is active. Desktop always shows the preview pane (the
+  // right half of the split); mobile shows it only when the user hasn't
+  // switched to the Session pane.
+  const showPreview = !isMobile || mobilePane === 'preview';
+  const showApp = showPreview && mode === 'app';
+  const showBrowser = showPreview && mode === 'browser';
+  const fs = previewFullscreen.value;
+
   return (
     <div class={`term-pane ${withVnc ? 'term-pane-split' : ''}`}>
-      {/* Preview-only control strip: source toggle (App vs Browser) + the
-          port/path form that repoints whichever source is active. Lives
-          under the iframe row; the main action bar (Upload / Scroll /
-          Reattach / etc.) was promoted into TaskDetail's unified .td-bar. */}
+      {/* Preview-only control strip. Desktop: source toggle (App | Browser) +
+          port form drive the right pane (terminal stays on the left). Mobile:
+          a single-pane selector (Session | App | Browser) since the split
+          doesn't fit, plus app back/forward/reload and a fullscreen toggle. */}
       {withVnc && (
         <div class="term-pane-controls term-pane-port-floating">
-          <div class="term-pane-modeseg" role="group" aria-label="Preview source">
+          <div class="term-pane-modeseg" role="group" aria-label={isMobile ? 'Preview pane' : 'Preview source'}>
+            {isMobile && (
+              <button
+                type="button"
+                class={`term-pane-modeseg-btn ${mobilePane === 'session' ? 'is-active' : ''}`}
+                aria-pressed={mobilePane === 'session'}
+                onClick={() => setMobilePane('session')}
+                title="Live session (terminal)"
+              >
+                Session
+              </button>
+            )}
             <button
               type="button"
-              class={`term-pane-modeseg-btn ${mode === 'app' ? 'is-active' : ''}`}
-              aria-pressed={mode === 'app'}
-              onClick={() => setMode('app')}
+              class={`term-pane-modeseg-btn ${showApp ? 'is-active' : ''}`}
+              aria-pressed={showApp}
+              onClick={() => { setMode('app'); setMobilePane('preview'); }}
               title="In-app view — embeds the app directly through the reverse proxy (fast, real DOM)"
             >
               App
             </button>
             <button
               type="button"
-              class={`term-pane-modeseg-btn ${mode === 'browser' ? 'is-active' : ''}`}
-              aria-pressed={mode === 'browser'}
-              onClick={() => setMode('browser')}
+              class={`term-pane-modeseg-btn ${showBrowser ? 'is-active' : ''}`}
+              aria-pressed={showBrowser}
+              onClick={() => { setMode('browser'); setMobilePane('preview'); }}
               title="Browser — renders the page in the in-pod Chrome, mirrored via noVNC"
             >
               Browser
             </button>
           </div>
-          <form
-            class="term-pane-port"
-            onSubmit={openPort}
-            title={mode === 'app'
-              ? 'Point the in-app iframe at localhost:<port><path>'
-              : 'Open localhost:<port><path> in the in-pod Chrome (right pane)'}
-          >
-            <span class="term-pane-port-label mono">localhost:</span>
-            <input
-              type="number"
-              class="term-pane-port-input mono"
-              min={1}
-              max={65535}
-              value={port}
-              onInput={(e) => setPort((e.target as HTMLInputElement).value)}
-              aria-label="Localhost port to preview"
-              disabled={portBusy}
-            />
-            <input
-              type="text"
-              class="term-pane-port-path mono"
-              value={urlPath}
-              onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
-              placeholder="/"
-              aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
-              disabled={portBusy}
-              spellcheck={false}
-              autocapitalize="off"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              variant="secondary"
-              disabled={portBusy}
+          {showPreview && (
+            <form
+              class="term-pane-port"
+              onSubmit={openPort}
               title={mode === 'app'
-                ? 'Load localhost:<port><path> in the in-app iframe'
-                : 'Point the in-pod browser at localhost:<port><path>'}
+                ? 'Point the in-app iframe at localhost:<port><path>'
+                : 'Open localhost:<port><path> in the in-pod Chrome'}
             >
-              Open
-            </Button>
-          </form>
-          {mode === 'app' && (
-            <Button
+              <span class="term-pane-port-label mono">localhost:</span>
+              <input
+                type="number"
+                class="term-pane-port-input mono"
+                min={1}
+                max={65535}
+                value={port}
+                onInput={(e) => setPort((e.target as HTMLInputElement).value)}
+                aria-label="Localhost port to preview"
+                disabled={portBusy}
+              />
+              <input
+                type="text"
+                class="term-pane-port-path mono"
+                value={urlPath}
+                onInput={(e) => setUrlPath((e.target as HTMLInputElement).value)}
+                placeholder="/"
+                aria-label="Path or query suffix (e.g. /admin or /?dev=1)"
+                disabled={portBusy}
+                spellcheck={false}
+                autocapitalize="off"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                variant="secondary"
+                disabled={portBusy}
+                title={mode === 'app'
+                  ? 'Load localhost:<port><path> in the in-app iframe'
+                  : 'Point the in-pod browser at localhost:<port><path>'}
+              >
+                Open
+              </Button>
+            </form>
+          )}
+          {showApp && (
+            <div class="term-pane-navbtns" role="group" aria-label="App navigation">
+              <button type="button" class="term-pane-navbtn" onClick={appBack} title="Back" aria-label="Back">
+                <Icon name="chevron-left" size={14} />
+              </button>
+              <button type="button" class="term-pane-navbtn" onClick={appForward} title="Forward" aria-label="Forward">
+                <Icon name="chevron-right" size={14} />
+              </button>
+              <button type="button" class="term-pane-navbtn term-pane-navbtn-reload" onClick={reloadApp} title="Reload" aria-label="Reload">
+                ↻
+              </button>
+            </div>
+          )}
+          {showPreview && (
+            <button
               type="button"
-              size="sm"
-              variant="ghost"
-              onClick={reloadApp}
-              title="Reload the app iframe"
+              class="term-pane-navbtn"
+              onClick={() => (previewFullscreen.value = !fs)}
+              title={fs ? 'Exit fullscreen — back to kube-coder' : 'Fullscreen app'}
+              aria-label={fs ? 'Exit fullscreen' : 'Fullscreen'}
             >
-              Reload
-            </Button>
+              <Icon name={fs ? 'fullscreen-exit' : 'fullscreen'} size={14} />
+            </button>
           )}
           {portStatus && (
             <span class="term-pane-port-status mono" aria-live="polite">
@@ -521,13 +575,15 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
         </div>
       )}
       {phase === 'ready' && (
-        <div class={`term-pane-frames ${withVnc ? 'term-pane-frames-split' : ''}`}>
+        // Split only on desktop Preview; mobile shows a single full pane.
+        <div class={`term-pane-frames ${withVnc && !isMobile ? 'term-pane-frames-split' : ''}`}>
           {/* key={taskId} → guarantees a fresh DOM iframe per task. Without
               this, switching tasks would reuse the previous iframe element
               and we'd race ttyd against a half-torn-down WebSocket. Only
               render once the prepare-terminal POST has resolved (phase='ready')
-              so the entry script's pending-file read sees the right value. */}
-          {termSrc && (
+              so the entry script's pending-file read sees the right value.
+              On mobile Preview, the terminal shows only on the Session pane. */}
+          {termSrc && (!withVnc || !isMobile || mobilePane === 'session') && (
             <iframe
               key={`term-${taskId}-${termSrc}`}
               class="term-pane-iframe"
@@ -536,8 +592,9 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               allow="clipboard-read; clipboard-write"
             />
           )}
-          {withVnc && mode === 'app' && (
+          {withVnc && showApp && (
             <iframe
+              ref={appRef}
               key={`app-${taskId}-${appReloadKey}`}
               class="term-pane-iframe term-pane-iframe-app"
               src={proxyUrl(appPort, appPath)}
@@ -546,7 +603,7 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               allow="clipboard-read; clipboard-write"
             />
           )}
-          {withVnc && mode === 'browser' && vncSrc && (
+          {withVnc && showBrowser && vncSrc && (
             <iframe
               key={`vnc-${taskId}-${vncSrc}`}
               ref={vncRef}
