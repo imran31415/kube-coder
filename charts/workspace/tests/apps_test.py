@@ -553,6 +553,19 @@ class AppsProxyTests(unittest.TestCase):
             self.assertEqual(r.status, 200)
             self.assertEqual(r.read(), b'TTF!')
 
+    def test_origin_header_rewritten_to_localhost(self):
+        # @font-face fonts and fetch() are CORS requests carrying Origin; dev
+        # servers often 500 a foreign Origin. The proxy must rewrite it to the
+        # upstream's localhost form before forwarding.
+        req = urllib.request.Request(
+            self._proxy_url('/echo'),
+            headers={'Origin': 'https://imran.dev.scalebase.io'},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+        _m, _p, hdrs, _b = _StubUpstreamHandler.received[-1]
+        self.assertEqual(hdrs.get('Origin'), f'http://localhost:{self.upstream_port}')
+
     def test_no_referer_does_not_proxy_to_app(self):
         # Same path WITHOUT an app-proxy Referer must NOT be touched — it falls
         # through to the dashboard's normal handling (404 here).
