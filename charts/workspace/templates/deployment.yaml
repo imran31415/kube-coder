@@ -130,6 +130,16 @@ spec:
         # only set on the read-only demo deploy.
         - name: DEMO_SHOW_ALL
           value: {{ .Values.demoShowAll | default false | quote }}
+        # kube-coder environment marker — always set so anything running in
+        # the workspace (dev servers, build scripts, the user's own app) can
+        # detect it's inside a kube-coder pod. KUBE_CODER is visible to every
+        # process; EXPO_PUBLIC_KUBE_CODER is the Expo-public alias that gets
+        # inlined into the web bundle (Expo only exposes EXPO_PUBLIC_* to
+        # client code). Frontend check: `if (process.env.EXPO_PUBLIC_KUBE_CODER)`.
+        - name: KUBE_CODER
+          value: "1"
+        - name: EXPO_PUBLIC_KUBE_CODER
+          value: "1"
         ports:
         - name: http
           containerPort: 8080
