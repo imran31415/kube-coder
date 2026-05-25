@@ -315,6 +315,15 @@ class _StubUpstreamHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         type(self).received.append(('GET', self.path, dict(self.headers), b''))
+        # Special path: a font, to exercise the referer-based fallback for
+        # sub-resources that escaped the proxy prefix to the dashboard root.
+        if self.path == '/assets/icon.ttf':
+            self.send_response(200)
+            self.send_header('Content-Type', 'font/ttf')
+            self.send_header('Content-Length', '4')
+            self.end_headers()
+            self.wfile.write(b'TTF!')
+            return
         # Special path: emit a Location header so we can verify rewriting.
         if self.path == '/redirect':
             self.send_response(302)
@@ -516,6 +525,42 @@ class AppsProxyTests(unittest.TestCase):
         with urllib.request.urlopen(self._proxy_url('/api/data'), timeout=5) as r:
             body = json.loads(r.read())
         self.assertEqual(body['path'], '/api/data')
+
+    def test_referer_fallback_redirects_escaped_subresource(self):
+        # A font/chunk request that escaped the prefix to the dashboard root
+        # (path /assets/icon.ttf, no proxy prefix) but carries an app-proxy
+        # Referer must be 302-redirected onto the proxy path (reusing the
+        # Referer's prefix, incl. /oauth) so it re-enters through auth.
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        req = urllib.request.Request(
+            f'http://127.0.0.1:{self.port}/assets/icon.ttf',
+            headers={'Referer': f'http://127.0.0.1:{self.port}/oauth/api/app-proxy/{self.upstream_port}/profile'},
+        )
+        try:
+            opener.open(req, timeout=5)
+            self.fail('expected a 302 redirect to the proxy path')
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 302)
+            self.assertEqual(
+                e.headers.get('Location'),
+                f'/oauth/api/app-proxy/{self.upstream_port}/assets/icon.ttf',
+            )
+        # Following the redirect actually reaches the upstream font.
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.read(), b'TTF!')
+
+    def test_no_referer_does_not_proxy_to_app(self):
+        # Same path WITHOUT an app-proxy Referer must NOT be touched — it falls
+        # through to the dashboard's normal handling (404 here).
+        try:
+            urllib.request.urlopen(f'http://127.0.0.1:{self.port}/assets/icon.ttf', timeout=5)
+            self.fail('expected the dashboard to 404 without an app-proxy referer')
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
 
     def test_proxy_rejects_internal_port(self):
         # 8080 is in INTERNAL_PORTS. Returns 403 with a reason.
