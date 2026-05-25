@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 // Stub the network + URL helpers so the pane reaches phase==='ready'
 // without a real backend.
@@ -68,6 +68,41 @@ describe('TerminalPane preview source toggle', () => {
     await waitFor(() => {
       expect(screen.getByTitle('Workspace browser (VNC)')).toBeInTheDocument();
     });
+    expect(screen.queryByTitle('App preview')).toBeNull();
+  });
+});
+
+describe('TerminalPane mobile preview', () => {
+  let savedMM: typeof window.matchMedia;
+  beforeEach(() => {
+    savedMM = window.matchMedia;
+    window.matchMedia = ((q: string) => ({
+      matches: /max-width:\s*720px/.test(q),
+      media: q,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    localStorage.clear();
+  });
+  afterEach(() => {
+    window.matchMedia = savedMM;
+  });
+
+  it('shows one pane at a time with a Session|App selector (defaults to app)', async () => {
+    render(<TerminalPane taskId="m1" withVnc />);
+    // Defaults to the app pane; the terminal is not rendered alongside it.
+    await screen.findByTitle('App preview');
+    expect(screen.queryByTitle('Task terminal')).toBeNull();
+    // The mobile-only Session pane button exists.
+    const sessionBtn = screen.getByRole('button', { name: 'Session' });
+
+    // Switching to Session swaps the single pane to the terminal.
+    fireEvent.click(sessionBtn);
+    await screen.findByTitle('Task terminal');
     expect(screen.queryByTitle('App preview')).toBeNull();
   });
 });

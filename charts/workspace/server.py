@@ -2810,6 +2810,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if normalized_path == '' or normalized_path == '/':
             normalized_path = '/'
 
+        # Sub-resources an embedded app loaded that escaped the proxy prefix
+        # (lazy route chunks, @font-face fonts, …) land at the dashboard root.
+        # If the Referer is an app-proxy iframe, send them back to that app.
+        # Runs before dashboard routing so an escaped /tasks etc. goes to the
+        # app rather than serving it the dashboard SPA.
+        if self._dispatch_referer_proxy('GET'):
+            return
+
         # All SPA routes serve the new dashboard. /next/* is the explicit form
         # (kept for backward compat after cutover) and the bare top-level
         # routes (/, /tasks, /memory, …) all serve the same SPA index.html so
@@ -4589,20 +4597,33 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # Opening <head> tag — where we inject the runtime base-path shim.
     _HEAD_OPEN_RE = re.compile(rb'<head\b[^>]*>', re.IGNORECASE)
     # Injected into proxied HTML so an app's *runtime* requests (built in JS,
-    # not in the HTML we rewrite) also stay under the proxy prefix. The shim
-    # runs in the browser, where the full client-visible prefix — including the
+    # not in the HTML we rewrite) reach the right service through the proxy.
+    # Runs in the browser, where the full client-visible prefix — including the
     # external /oauth auth segment that oauth2-proxy strips before requests
-    # reach this server — IS visible via location.pathname. It re-prefixes
-    # root-absolute fetch/XHR/EventSource/WebSocket targets; protocol-relative
-    # (//cdn), already-prefixed and relative URLs pass through. A classic
-    # inline <script> runs at parse time, before the app's deferred module
-    # scripts, so the patches are in place first.
+    # reach this server — IS visible via location.pathname. For fetch / XHR /
+    # EventSource / WebSocket it rewrites:
+    #   - root-absolute paths (`/api/x`)           → <prefix>/api/x  (this app's port)
+    #   - same-origin absolute URLs                → same, via their path
+    #   - localhost:<port> / 127.0.0.1:<port> URLs → /…/api-app-proxy/<port>/…
+    #     so a separate backend ("API on :8086") the app talks to over loopback
+    #     is reached through the proxy too — and becomes same-origin (no CORS).
+    # Protocol-relative (//cdn), already-proxied, and port-less / external URLs
+    # pass through. A classic inline <script> runs at parse time, before the
+    # app's deferred module scripts, so the patches are in place first.
     _APP_PROXY_SHIM = (
         b'<script>(function(){'
         b'var p=location.pathname,k="/api/app-proxy/",ix=p.indexOf(k);if(ix<0)return;'
         b'var r=p.slice(ix+k.length),j=r.indexOf("/"),port=j<0?r:r.slice(0,j);'
-        b'if(!port)return;var P=p.slice(0,ix+k.length+port.length);'
+        b'if(!port)return;'
+        b'var P=p.slice(0,ix+k.length+port.length);'   # this app: /…/api-app-proxy/<port>
+        b'var root=p.slice(0,ix+k.length-1);'          # proxy root: /…/api-app-proxy
+        b'function pp(pt,pa){return root+"/"+pt+(pa||"/");}'
+        b'function wsx(pt,pa){return (location.protocol==="https:"?"wss://":"ws://")+location.host+pp(pt,pa);}'
+        b'var LH=/^https?:\\/\\/(?:localhost|127\\.0\\.0\\.1):(\\d+)(\\/[^\\s]*)?$/i;'
+        b'var LW=/^wss?:\\/\\/(?:localhost|127\\.0\\.0\\.1):(\\d+)(\\/[^\\s]*)?$/i;'
         b'function fix(u){if(typeof u!=="string"||!u)return u;'
+        b'var m=u.match(LH);if(m)return pp(m[1],m[2]);'                       # localhost:<port> → that port
+        b'var o=location.origin+"/";if(u.indexOf(o)===0)u=u.slice(location.origin.length);'  # same-origin abs → path
         b'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"&&u.indexOf(P+"/")!==0&&u.indexOf("/api/app-proxy/")!==0)return P+u;'
         b'return u;}'
         # fetch must be invoked with this===window; a bare call on a saved
@@ -4616,8 +4637,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         b'if(window.EventSource){var E=window.EventSource;window.EventSource=function(u,c){return new E(fix(u),c)};'
         b'window.EventSource.prototype=E.prototype;}'
         b'if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){'
-        b'try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")'
-        b'u=(location.protocol==="https:"?"wss://":"ws://")+location.host+P+u;}catch(e){}'
+        b'try{if(typeof u==="string"){var m=u.match(LW);'
+        b'if(m)u=wsx(m[1],m[2]);'                                             # ws://localhost:<port> → that port
+        b'else if(u.charAt(0)==="/"&&u.charAt(1)!=="/")u=wsx(port,u);}}catch(e){}'  # root-relative → this app
         b'return pr!==undefined?new W(u,pr):new W(u)};window.WebSocket.prototype=W.prototype;'
         # Preserve the readyState constants apps read as WebSocket.OPEN etc.
         b'window.WebSocket.CONNECTING=W.CONNECTING;window.WebSocket.OPEN=W.OPEN;'
@@ -4631,6 +4653,42 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         'te', 'trailers', 'transfer-encoding', 'upgrade',
         'host', 'content-length',  # we re-derive these
     })
+
+    def _dispatch_referer_proxy(self, method):
+        """Recover a sub-resource that escaped the proxy prefix to the dashboard
+        origin root — @font-face icon fonts (loaded by the CSS engine), lazy
+        route chunks (dynamic import()), <img> srcs — i.e. requests the client
+        shim can't rewrite. They arrive here as root-absolute paths and would
+        404.
+
+        When the Referer is one of our /api/app-proxy/<port>/ iframes (and the
+        path isn't already a proxy path), 302-redirect it to the proxy path,
+        reusing the Referer's own prefix — including the /oauth segment — so
+        the redirect re-enters through oauth2-proxy and authenticates normally.
+
+        We redirect rather than proxy inline on purpose: Referer is forgeable
+        by non-browser clients, so proxying here would be an unauthenticated
+        read path to loopback ports. The redirect target still enforces auth
+        (a real browser carries the session cookie and follows the 3xx for
+        fonts/images/modules; an unauthenticated client just gets bounced to
+        login by oauth2-proxy).
+        """
+        ref = self.headers.get('Referer') or ''
+        m = re.search(r'(/(?:oauth/|browser/)?api/app-proxy/(\d+))', ref)
+        if not m:
+            return False
+        norm = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+        if norm.startswith('/api/app-proxy/'):
+            return False  # already a proxy path — _dispatch_app_proxy handles it
+        ok, _reason = AppsManager.is_proxyable(int(m.group(2)))
+        if not ok:
+            return False
+        target = m.group(1) + (self.path if self.path.startswith('/') else '/' + self.path)
+        self.send_response(302)
+        self.send_header('Location', target)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+        return True
 
     def _dispatch_app_proxy(self, claude_path, method):
         """Match /api/app-proxy/<port>/... and forward to the upstream.
@@ -4889,6 +4947,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # buys nothing anyway.
             if kl == 'accept-encoding':
                 continue
+            # Rewrite Origin to the localhost form the upstream expects. Dev
+            # servers (Metro, Vite, …) often 500/403 a request whose Origin is
+            # a foreign host (anti-DNS-rebinding / CORS) — and @font-face fonts
+            # and fetch()/XHR are CORS requests that carry Origin, so without
+            # this icon fonts 500 and many API calls fail. Mirrors the
+            # WebSocket proxy, which already rewrites Origin the same way.
+            if kl == 'origin':
+                v = f'http://localhost:{port}'
             fwd_headers[k] = v
         fwd_headers['Host'] = f'127.0.0.1:{port}'
         fwd_headers['X-Forwarded-Prefix'] = prefix
@@ -5063,6 +5129,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self):
         path = self.path.replace('/browser', '').replace('/oauth', '')
         if self._dispatch_app_proxy(path, 'HEAD'):
+            return
+        if self._dispatch_referer_proxy('HEAD'):
             return
         # Fall back to the parent's static-file HEAD handling.
         return super().do_HEAD()
