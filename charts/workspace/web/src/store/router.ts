@@ -68,6 +68,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/desktop', title: 'Desktop' },
   { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },
+  { path: '/apps', title: 'Apps' },
   { path: '/triggers', title: 'Triggers' },
   { path: '/files', title: 'Files' },
   { path: '/docs', title: 'Docs' },

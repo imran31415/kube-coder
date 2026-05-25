@@ -17,6 +17,7 @@ import threading
 import uuid
 import urllib.parse
 import urllib.request
+import http.client
 import fcntl
 
 # Persistent memory subsystem — shared with mcp_memory.py via the colocated
@@ -2504,6 +2505,277 @@ class DocsManager:
         return results[:limit]
 
 
+class AppsManager:
+    """Backs the Applications page in the dashboard SPA.
+
+    Discovers locally-listening TCP services (from /proc/net/tcp[6]) and
+    merges them with a user-curated list of "pinned" ports persisted on
+    the workspace PVC. A pinned port gives the user a friendly name and
+    stays in the list even when the underlying process is stopped, so the
+    UI can show "my Django app — stopped" instead of an entry that
+    disappears every time the server restarts.
+
+    The proxy itself (BrowserHandler._proxy_app_request) calls is_proxyable
+    to confirm the requested port is currently listening on loopback before
+    forwarding — that prevents bearer-authed callers from probing arbitrary
+    pod-external ports through the dashboard.
+    """
+
+    PINS_PATH = os.path.expanduser('~/.claude-tasks/apps.json')
+
+    # Ports the workspace itself owns. Hidden from the auto-list and
+    # refused by the proxy even if the user tries to pin them.
+    INTERNAL_PORTS = frozenset({22, 2376, 5900, 6080, 6081, 7681, 8080})
+
+    # Bind addresses we accept as "on loopback". 0.0.0.0 / :: are
+    # "all interfaces" which includes loopback, so anything bound that
+    # way is reachable from the pod and safe to proxy.
+    LOOPBACK_ADDRS = frozenset({'127.0.0.1', '::1', '0.0.0.0', '::'})
+
+    _NAME_RE = re.compile(r'^[\w \-./@:]{1,80}$')
+
+    # --- /proc/net/tcp parsing ---
+
+    @staticmethod
+    def parse_listen_ports(tcp_path='/proc/net/tcp', tcp6_path='/proc/net/tcp6'):
+        """Return [{port, addr, inode}] for every LISTEN socket bound to a
+        loopback address. Parameters allow injecting fixture files in tests."""
+        out = []
+        for path, family in ((tcp_path, 4), (tcp6_path, 6)):
+            try:
+                with open(path) as f:
+                    lines = f.read().splitlines()[1:]
+            except (FileNotFoundError, PermissionError):
+                continue
+            for line in lines:
+                parts = line.split()
+                if len(parts) < 10 or parts[3] != '0A':  # 0A = TCP_LISTEN
+                    continue
+                local = parts[1]
+                if ':' not in local:
+                    continue
+                ip_hex, port_hex = local.rsplit(':', 1)
+                try:
+                    port = int(port_hex, 16)
+                except ValueError:
+                    continue
+                if family == 4:
+                    addr = AppsManager._decode_ipv4_hex(ip_hex)
+                else:
+                    addr = AppsManager._decode_ipv6_hex(ip_hex)
+                if addr is None or not AppsManager._is_loopback(addr):
+                    continue
+                try:
+                    inode = int(parts[9])
+                except ValueError:
+                    inode = 0
+                out.append({'port': port, 'addr': addr, 'inode': inode})
+        # Dedupe by port (a service bound on both v4 and v6 shows up twice).
+        seen = {}
+        for entry in out:
+            seen.setdefault(entry['port'], entry)
+        return list(seen.values())
+
+    @staticmethod
+    def _decode_ipv4_hex(s):
+        if len(s) != 8:
+            return None
+        try:
+            return '.'.join(str(int(s[i:i + 2], 16)) for i in (6, 4, 2, 0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _decode_ipv6_hex(s):
+        """/proc/net/tcp6 IPv6: 32 hex chars, little-endian per 32-bit word.
+        Decode to a canonical lowercase form so the loopback check matches."""
+        if len(s) != 32:
+            return None
+        try:
+            groups = []
+            for i in range(0, 32, 8):
+                word = s[i:i + 8]
+                # Reverse bytes within the 32-bit word.
+                be = word[6:8] + word[4:6] + word[2:4] + word[0:2]
+                groups.append(be[:4].lower())
+                groups.append(be[4:8].lower())
+            full = ':'.join(groups)
+        except ValueError:
+            return None
+        # Canonicalize the addresses we care about; leave others as-is.
+        if full == '0000:0000:0000:0000:0000:0000:0000:0000':
+            return '::'
+        if full == '0000:0000:0000:0000:0000:0000:0000:0001':
+            return '::1'
+        # IPv4-mapped (::ffff:a.b.c.d) — present the dotted form so the
+        # loopback check below can match the v4 string directly.
+        if full.startswith('0000:0000:0000:0000:0000:ffff:'):
+            tail = full.split(':')[-2:]  # ['7f00', '0001']
+            try:
+                packed = int(tail[0] + tail[1], 16).to_bytes(4, 'big')
+                return f'::ffff:{packed[0]}.{packed[1]}.{packed[2]}.{packed[3]}'
+            except ValueError:
+                return full
+        return full
+
+    @staticmethod
+    def _is_loopback(addr):
+        if addr in AppsManager.LOOPBACK_ADDRS:
+            return True
+        # IPv4-mapped IPv6 loopback (::ffff:127.0.0.1).
+        if addr.startswith('::ffff:') and addr.endswith('.127.0.0.1'):
+            return True
+        if addr.startswith('::ffff:127.'):
+            return True
+        return False
+
+    # --- pin persistence ---
+
+    @staticmethod
+    def _ensure_dir():
+        os.makedirs(os.path.dirname(AppsManager.PINS_PATH), mode=0o700, exist_ok=True)
+
+    @staticmethod
+    def _load_pins():
+        if not os.path.exists(AppsManager.PINS_PATH):
+            return {}
+        try:
+            with open(AppsManager.PINS_PATH) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for k, v in data.items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                out[int(k)] = v
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    @staticmethod
+    def _save_pins(pins):
+        AppsManager._ensure_dir()
+        # JSON keys must be strings; sort for stable diffs.
+        on_disk = {str(p): pins[p] for p in sorted(pins.keys())}
+        tmp = AppsManager.PINS_PATH + f'.tmp.{os.getpid()}'
+        with open(tmp, 'w') as f:
+            json.dump(on_disk, f, indent=2)
+        os.replace(tmp, AppsManager.PINS_PATH)
+
+    @staticmethod
+    def _validate_port(port):
+        try:
+            p = int(port)
+        except (TypeError, ValueError):
+            raise ValueError('port must be an integer')
+        if not (1 <= p <= 65535):
+            raise ValueError('port must be between 1 and 65535')
+        return p
+
+    @staticmethod
+    def _validate_name(name):
+        s = str(name or '').strip()
+        if not s:
+            raise ValueError('name is required')
+        if not AppsManager._NAME_RE.match(s):
+            raise ValueError(
+                'name must be 1-80 chars; letters, digits, space, _-./@: only'
+            )
+        return s
+
+    @classmethod
+    def add_pin(cls, port, name, strip_prefix=False):
+        port = cls._validate_port(port)
+        name = cls._validate_name(name)
+        pins = cls._load_pins()
+        pins[port] = {
+            'name': name,
+            'strip_prefix': bool(strip_prefix),
+            'created_at': time.time(),
+        }
+        cls._save_pins(pins)
+        return pins[port]
+
+    @classmethod
+    def remove_pin(cls, port):
+        port = cls._validate_port(port)
+        pins = cls._load_pins()
+        if port in pins:
+            del pins[port]
+            cls._save_pins(pins)
+            return True
+        return False
+
+    @classmethod
+    def get_pin(cls, port):
+        try:
+            port = cls._validate_port(port)
+        except ValueError:
+            return None
+        return cls._load_pins().get(port)
+
+    # --- merged view ---
+
+    @classmethod
+    def list_apps(cls):
+        """Merged list shown on the Applications page.
+
+        Order: pinned entries first (sorted by name), then discovered
+        entries that aren't pinned (sorted by port).
+        """
+        listeners = {entry['port']: entry for entry in cls.parse_listen_ports()}
+        pins = cls._load_pins()
+        rows = []
+        seen = set()
+        for port in sorted(pins.keys(), key=lambda p: (pins[p].get('name', '').lower(), p)):
+            seen.add(port)
+            pin = pins[port]
+            listening = port in listeners
+            if port in cls.INTERNAL_PORTS:
+                rows.append({
+                    'port': port, 'name': pin.get('name', ''),
+                    'pinned': True, 'status': 'blocked',
+                    'strip_prefix': bool(pin.get('strip_prefix')),
+                    'addr': listeners.get(port, {}).get('addr', ''),
+                })
+                continue
+            rows.append({
+                'port': port, 'name': pin.get('name', ''),
+                'pinned': True,
+                'status': 'running' if listening else 'stopped',
+                'strip_prefix': bool(pin.get('strip_prefix')),
+                'addr': listeners.get(port, {}).get('addr', ''),
+            })
+        for port in sorted(listeners.keys()):
+            if port in seen or port in cls.INTERNAL_PORTS:
+                continue
+            rows.append({
+                'port': port, 'name': '',
+                'pinned': False, 'status': 'running',
+                'strip_prefix': False,
+                'addr': listeners[port].get('addr', ''),
+            })
+        return rows
+
+    @classmethod
+    def is_proxyable(cls, port):
+        """(ok, reason). Called by the proxy before forwarding."""
+        try:
+            port = cls._validate_port(port)
+        except ValueError as e:
+            return False, str(e)
+        if port in cls.INTERNAL_PORTS:
+            return False, f'port {port} is reserved for the workspace'
+        listeners = {e['port']: e for e in cls.parse_listen_ports()}
+        if port not in listeners:
+            return False, f'port {port} is not currently listening on loopback'
+        return True, ''
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -2520,7 +2792,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             path in ('/', '/dashboard', '/dashboard/', '/browser', '/browser/', '/next', '/next/')
             or path.startswith('/next/')
             or any(path == r or path.startswith(r + '/')
-                   for r in ('/tasks', '/memory', '/triggers', '/files', '/docs', '/settings'))
+                   for r in ('/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings'))
         )
         if is_html or is_spa_route:
             self.send_header('Cache-Control', 'no-cache, must-revalidate')
@@ -2544,7 +2816,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # client-side routing handles deep links. The legacy dashboard.html
         # has been removed; if /opt/dashboard-dist is missing we return 503
         # rather than fall back to anything stale.
-        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/triggers', '/files', '/docs', '/settings', '/desktop'}
+        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop'}
         first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
         if normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
             rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
@@ -2557,6 +2829,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         ):
             # SPA at root. /dashboard and /browser kept for back-compat URLs.
             self.serve_next_spa('/')
+            return
+        elif self.path == "/livez":
+            self.send_livez()
             return
         elif self.path == "/health":
             self.send_health_check()
@@ -2604,6 +2879,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 'authMode': AUTH_MODE,
                 'demoShowAll': DEMO_SHOW_ALL,
             })
+            return
+        # /api/apps — Applications page list endpoint.
+        if claude_path == '/api/apps':
+            self._handle_apps_list()
+            return
+        # Reverse-proxy to a locally-listening web app.
+        if self._dispatch_app_proxy(claude_path, 'GET'):
             return
         if claude_path == '/api/claude/tasks':
             self.handle_claude_list_tasks()
@@ -2874,6 +3156,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             path = self.path.replace('/browser', '').replace('/oauth', '')
+            # /api/apps/pins/<port> — remove a pinned port. Match before the
+            # generic app-proxy dispatcher so the proxy doesn't swallow it.
+            m = re.match(r'^/api/apps/pins/(\d+)$', path)
+            if m:
+                self._handle_apps_pin_delete(int(m.group(1)))
+                return
+            if self._dispatch_app_proxy(path, 'DELETE'):
+                return
             m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', path)
             if m:
                 self._claude_task_id = m.group(1)
@@ -4288,6 +4578,559 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(error_html.encode())
 
+    # Per-CSP-directive splitter — used to strip frame-ancestors while keeping
+    # the rest of the policy intact.
+    _CSP_FRAME_ANCESTORS_RE = re.compile(r'(?:^|;)\s*frame-ancestors[^;]*', re.IGNORECASE)
+    # Root-absolute src/href values in a proxied HTML body, e.g. src="/assets/x"
+    # or href='/main.css'. The lookbehind skips data-src / srcset and similar
+    # (no attr-boundary match); the value class stops at the closing quote,
+    # whitespace or tag end. Bytes-mode so we never have to decode the body.
+    _ABS_ASSET_URL_RE = re.compile(rb'(?<![\w-])((?:src|href)\s*=\s*)(["\'])(/[^"\'<>\s]*)')
+    # Opening <head> tag — where we inject the runtime base-path shim.
+    _HEAD_OPEN_RE = re.compile(rb'<head\b[^>]*>', re.IGNORECASE)
+    # Injected into proxied HTML so an app's *runtime* requests (built in JS,
+    # not in the HTML we rewrite) also stay under the proxy prefix. The shim
+    # runs in the browser, where the full client-visible prefix — including the
+    # external /oauth auth segment that oauth2-proxy strips before requests
+    # reach this server — IS visible via location.pathname. It re-prefixes
+    # root-absolute fetch/XHR/EventSource/WebSocket targets; protocol-relative
+    # (//cdn), already-prefixed and relative URLs pass through. A classic
+    # inline <script> runs at parse time, before the app's deferred module
+    # scripts, so the patches are in place first.
+    _APP_PROXY_SHIM = (
+        b'<script>(function(){'
+        b'var p=location.pathname,k="/api/app-proxy/",ix=p.indexOf(k);if(ix<0)return;'
+        b'var r=p.slice(ix+k.length),j=r.indexOf("/"),port=j<0?r:r.slice(0,j);'
+        b'if(!port)return;var P=p.slice(0,ix+k.length+port.length);'
+        b'function fix(u){if(typeof u!=="string"||!u)return u;'
+        b'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"&&u.indexOf(P+"/")!==0&&u.indexOf("/api/app-proxy/")!==0)return P+u;'
+        b'return u;}'
+        # fetch must be invoked with this===window; a bare call on a saved
+        # reference throws "Illegal invocation", so bind it.
+        b'var _f=window.fetch&&window.fetch.bind(window);if(_f){window.fetch=function(q,n){'
+        b'if(typeof q==="string")return _f(fix(q),n);'
+        b'if(q&&q.url){try{return _f(new Request(fix(q.url),q),n)}catch(e){}}'
+        b'return _f(q,n)};}'
+        b'var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){'
+        b'if(arguments.length>1)arguments[1]=fix(arguments[1]);return _x.apply(this,arguments)};'
+        b'if(window.EventSource){var E=window.EventSource;window.EventSource=function(u,c){return new E(fix(u),c)};'
+        b'window.EventSource.prototype=E.prototype;}'
+        b'if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){'
+        b'try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")'
+        b'u=(location.protocol==="https:"?"wss://":"ws://")+location.host+P+u;}catch(e){}'
+        b'return pr!==undefined?new W(u,pr):new W(u)};window.WebSocket.prototype=W.prototype;'
+        # Preserve the readyState constants apps read as WebSocket.OPEN etc.
+        b'window.WebSocket.CONNECTING=W.CONNECTING;window.WebSocket.OPEN=W.OPEN;'
+        b'window.WebSocket.CLOSING=W.CLOSING;window.WebSocket.CLOSED=W.CLOSED;}'
+        b'})();</script>'
+    )
+    # Hop-by-hop headers that must not be forwarded between client and
+    # upstream. RFC 7230 §6.1 plus the usual extras.
+    _HOP_BY_HOP_HEADERS = frozenset({
+        'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+        'te', 'trailers', 'transfer-encoding', 'upgrade',
+        'host', 'content-length',  # we re-derive these
+    })
+
+    def _dispatch_app_proxy(self, claude_path, method):
+        """Match /api/app-proxy/<port>/... and forward to the upstream.
+
+        Centralizes the dispatch so every HTTP verb (GET/POST/PUT/DELETE/
+        HEAD/OPTIONS) shares the same matching + auth + proxy code. The
+        verb-specific do_* methods call this near the top of their /api
+        routing chain; returns True if the request was handled.
+        """
+        m = re.match(r'^/api/app-proxy/(\d+)(/.*)?$', claude_path)
+        if not m:
+            return False
+        port = int(m.group(1))
+        upstream_path = m.group(2) or '/'
+        # Preserve the original query string (stripped from claude_path
+        # by the caller before normalization).
+        qs = self.path.split('?', 1)
+        if len(qs) == 2:
+            upstream_path = upstream_path + '?' + qs[1]
+        # GET requests carrying Upgrade: websocket are hijacked into a
+        # raw bidirectional socket relay. Everything else is normal HTTP.
+        if method == 'GET' and self.headers.get('Upgrade', '').lower() == 'websocket':
+            self._proxy_app_websocket(port, upstream_path)
+            return True
+        self._proxy_app_request(port, upstream_path, method=method)
+        return True
+
+    def _proxy_app_websocket(self, port, upstream_path):
+        """Hijack the underlying TCP socket and relay a WebSocket session
+        between the client and the upstream app.
+
+        BaseHTTPRequestHandler's request loop reads the next request line
+        from `self.rfile` after `do_GET` returns. Setting
+        `self.close_connection = True` stops that loop after we take over
+        the socket. We never call `self.send_response()` ourselves — the
+        upstream's 101 response is relayed verbatim so the client sees the
+        real Sec-WebSocket-Accept handshake.
+        """
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+        ok, reason = AppsManager.is_proxyable(port)
+        if not ok:
+            self.send_response(403)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write((reason + '\n').encode())
+            return
+
+        # Compute the forwarded path the same way the HTTP proxy does.
+        prefix = f'/api/app-proxy/{port}'
+        pin = AppsManager.get_pin(port) or {}
+        keep_prefix = bool(pin.get('strip_prefix', False))
+        if not keep_prefix:
+            forwarded_path = upstream_path or '/'
+        else:
+            forwarded_path = prefix + (upstream_path if upstream_path.startswith('/') else '/' + upstream_path)
+
+        # Open the upstream socket.
+        try:
+            import socket as _socket
+            upstream = _socket.create_connection(('127.0.0.1', port), timeout=5)
+        except OSError as e:
+            self.send_response(502)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(f'WebSocket upstream unreachable: {e}\n'.encode())
+            return
+
+        # Send the upstream the original WebSocket handshake. Use the client's
+        # headers minus Host/hop-by-hop; rewrite Origin so an app that whitelists
+        # localhost still accepts the connection. Keep Sec-WebSocket-Key intact
+        # so the upstream's Sec-WebSocket-Accept is valid for the client.
+        try:
+            req_lines = [f'GET {forwarded_path} HTTP/1.1']
+            req_lines.append(f'Host: 127.0.0.1:{port}')
+            for k, v in self.headers.items():
+                kl = k.lower()
+                if kl == 'host':
+                    continue
+                if kl == 'origin':
+                    # Rewrite to the localhost form the upstream expects.
+                    req_lines.append(f'Origin: http://localhost:{port}')
+                    continue
+                req_lines.append(f'{k}: {v}')
+            req_lines.append('X-Forwarded-Prefix: ' + prefix)
+            if self.headers.get('Host'):
+                req_lines.append('X-Forwarded-Host: ' + self.headers['Host'])
+            req_lines.append('')
+            req_lines.append('')
+            handshake = ('\r\n'.join(req_lines)).encode('iso-8859-1')
+            upstream.sendall(handshake)
+        except OSError as e:
+            upstream.close()
+            self.send_response(502)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(f'WebSocket handshake failed: {e}\n'.encode())
+            return
+
+        # Read the upstream's response headers and stream the raw bytes
+        # back to the client. We just need to slurp up to the blank line;
+        # everything after that is opaque WebSocket frames.
+        try:
+            buf = bytearray()
+            upstream.settimeout(10)
+            while b'\r\n\r\n' not in buf:
+                chunk = upstream.recv(4096)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+            header_end = buf.find(b'\r\n\r\n')
+            if header_end < 0:
+                upstream.close()
+                # Don't try to send any response — the framework hasn't seen
+                # anything yet, so we can write a normal HTTP error.
+                self.send_response(502)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(b'WebSocket upstream returned no response\n')
+                return
+            head = bytes(buf[:header_end + 4])
+            leftover = bytes(buf[header_end + 4:])
+        except OSError as e:
+            upstream.close()
+            self.send_response(502)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(f'WebSocket upstream read failed: {e}\n'.encode())
+            return
+
+        # Take over the socket — don't let the framework write any more
+        # headers or another request after we return.
+        self.close_connection = True
+        client_sock = self.connection
+        try:
+            # Relay the upstream's handshake response verbatim, then any
+            # data that arrived in the same packet after the headers.
+            client_sock.sendall(head)
+            if leftover:
+                client_sock.sendall(leftover)
+        except OSError:
+            upstream.close()
+            return
+
+        upstream.settimeout(None)
+        client_sock.settimeout(None)
+
+        # Manual access log so an admin can see the 101 in pod logs.
+        try:
+            self.log_message('"GET %s HTTP/1.1" 101 -', self.path)
+        except Exception:
+            pass
+
+        # Bidirectional relay. One thread per direction; SHUT_WR on EOF
+        # prevents a deadlock when one peer closes write but keeps reading.
+        import socket as _socket
+
+        def pipe(src, dst, name):
+            try:
+                while True:
+                    chunk = src.recv(65536)
+                    if not chunk:
+                        break
+                    dst.sendall(chunk)
+            except (OSError, ConnectionResetError):
+                pass
+            finally:
+                try:
+                    dst.shutdown(_socket.SHUT_WR)
+                except OSError:
+                    pass
+
+        t_up = threading.Thread(target=pipe, args=(client_sock, upstream, 'c2u'), daemon=True)
+        t_down = threading.Thread(target=pipe, args=(upstream, client_sock, 'u2c'), daemon=True)
+        t_up.start()
+        t_down.start()
+        t_up.join()
+        t_down.join()
+        try:
+            upstream.close()
+        except Exception:
+            pass
+
+    def _proxy_app_request(self, port, upstream_path, method='GET'):
+        """Reverse-proxy a request to http://127.0.0.1:<port><upstream_path>.
+
+        Streams the response body via read1+flush so SSE/chunked responses
+        arrive promptly. Strips X-Frame-Options + CSP frame-ancestors from
+        the upstream so the response can be embedded in the dashboard
+        iframe. Rewrites absolute Location headers back to the proxy path.
+
+        Path handling:
+        - default (root-path-aware apps configured with --root-path /
+          FORCE_SCRIPT_NAME / --base): strip the /api/app-proxy/<port>
+          prefix before forwarding; the upstream's router expects the
+          unprefixed path and uses X-Forwarded-Prefix for URL generation.
+        - pinned port with strip_prefix=False: pass the full path through
+          (the Vite-style case where the dev server only matches its own
+          --base prefix).
+        """
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+        ok, reason = AppsManager.is_proxyable(port)
+        if not ok:
+            self.send_response(403)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write((reason + '\n').encode())
+            return
+
+        # Trailing-slash 301 so relative URLs resolve against the prefix root.
+        if upstream_path in ('', '/'):
+            normalized = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+            if normalized == f'/api/app-proxy/{port}':
+                self.send_response(301)
+                self.send_header('Location', f'/api/app-proxy/{port}/')
+                self.end_headers()
+                return
+
+        # Apply the prefix-stripping rule based on the pin's flag.
+        prefix = f'/api/app-proxy/{port}'
+        pin = AppsManager.get_pin(port) or {}
+        keep_prefix = bool(pin.get('strip_prefix', False))  # default: strip
+        if not keep_prefix:
+            # Strip the proxy prefix from the path we forward upstream.
+            # The query string is already attached so just slice the path.
+            if '?' in upstream_path:
+                p, q = upstream_path.split('?', 1)
+                forwarded_path = (p or '/') + '?' + q
+            else:
+                forwarded_path = upstream_path or '/'
+        else:
+            # Pass the full path through. The upstream is configured to
+            # only match URLs starting with the proxy prefix.
+            forwarded_path = prefix + (upstream_path if upstream_path.startswith('/') else '/' + upstream_path)
+
+        # Read request body (if any).
+        body = None
+        body_len = int(self.headers.get('Content-Length') or 0)
+        if body_len > 0:
+            body = self.rfile.read(body_len)
+
+        # Build forwarded headers. Drop hop-by-hop + ours; add X-Forwarded-*.
+        fwd_headers = {}
+        for k, v in self.headers.items():
+            kl = k.lower()
+            if kl in self._HOP_BY_HOP_HEADERS:
+                continue
+            # Ask the upstream for an identity-encoded body. We rewrite
+            # absolute asset URLs in HTML responses (see below), which only
+            # works on uncompressed bytes; over a localhost hop compression
+            # buys nothing anyway.
+            if kl == 'accept-encoding':
+                continue
+            fwd_headers[k] = v
+        fwd_headers['Host'] = f'127.0.0.1:{port}'
+        fwd_headers['X-Forwarded-Prefix'] = prefix
+        fwd_headers['X-Forwarded-Proto'] = 'https' if self.headers.get('X-Forwarded-Proto') == 'https' else 'http'
+        if 'Host' in self.headers:
+            fwd_headers['X-Forwarded-Host'] = self.headers['Host']
+        if body is not None:
+            fwd_headers['Content-Length'] = str(len(body))
+
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=30)
+            conn.request(method, forwarded_path, body=body, headers=fwd_headers)
+            resp = conn.getresponse()
+        except (ConnectionRefusedError, OSError) as e:
+            self.send_response(502)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(f'Bad gateway: cannot reach 127.0.0.1:{port} ({e})\n'.encode())
+            return
+
+        # A 200 text/html body gets its root-absolute asset URLs made relative
+        # so a stock build (Vite/CRA: <script src="/assets/x">) loads under the
+        # proxy prefix instead of 404ing against the dashboard origin root (see
+        # _rewrite_html_asset_urls). Buffered because the rewrite changes the
+        # length; assets, JSON and SSE still stream untouched. The forwarded
+        # request dropped Accept-Encoding, so this body is identity-encoded
+        # and rewritable.
+        ctype = resp.getheader('Content-Type', '') or ''
+        rewrite_body = (
+            method != 'HEAD'
+            and resp.status == 200
+            and 'text/html' in ctype.lower()
+        )
+        rewritten = self._rewrite_proxied_html(resp.read(), port) if rewrite_body else None
+
+        # Forward status + filtered headers.
+        self.send_response(resp.status, resp.reason)
+        for k, v in resp.getheaders():
+            kl = k.lower()
+            if kl in self._HOP_BY_HOP_HEADERS:
+                continue
+            if kl == 'x-frame-options':
+                continue
+            if kl == 'content-security-policy':
+                stripped = self._CSP_FRAME_ANCESTORS_RE.sub('', v).strip().strip(';').strip()
+                if not stripped:
+                    continue
+                v = stripped
+            if kl == 'location':
+                v = self._rewrite_location_header(v, port)
+            self.send_header(k, v)
+        if rewritten is not None:
+            # Body length changed; the upstream's framing headers were already
+            # dropped (hop-by-hop), so declare our own so the client doesn't
+            # have to wait on connection close to know the body is complete.
+            self.send_header('Content-Length', str(len(rewritten)))
+        self.end_headers()
+
+        if method == 'HEAD':
+            pass
+        elif rewritten is not None:
+            try:
+                self.wfile.write(rewritten)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        else:
+            # Stream the body. read1 returns what's available so SSE heartbeats
+            # arrive without waiting for a full read() to fill.
+            try:
+                while True:
+                    chunk = resp.read1(65536) if hasattr(resp, 'read1') else resp.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    try:
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        break
+            finally:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # --- Apps API (list + pin CRUD) ---
+
+    def _handle_apps_list(self):
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+        # Embedded iframes need cookie-based auth; bearer-only deployments
+        # can't auth iframe sub-resource requests. Let the SPA show a clear
+        # explanation instead of the user staring at mysterious 401s.
+        unavailable = None
+        if AUTH_MODE not in ('oauth2',):
+            unavailable = ('Applications requires the workspace to run behind an OAuth2 '
+                           'proxy so iframe sub-resource requests can authenticate via cookies. '
+                           'Current AUTH_MODE is "{}".'.format(AUTH_MODE))
+        try:
+            apps = AppsManager.list_apps()
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+            return
+        self.send_json({
+            'apps': apps,
+            'unavailable_reason': unavailable,
+            'auth_mode': AUTH_MODE,
+        })
+
+    def _handle_apps_pin_create(self):
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+        try:
+            body = self.read_json_body(max_bytes=4096) or {}
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        except json.JSONDecodeError:
+            self.send_json({'error': 'invalid JSON'}, 400)
+            return
+        try:
+            pin = AppsManager.add_pin(
+                port=body.get('port'),
+                name=body.get('name'),
+                strip_prefix=bool(body.get('strip_prefix', False)),
+            )
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        self.send_json({'ok': True, 'pin': {**pin, 'port': AppsManager._validate_port(body.get('port'))}}, 201)
+
+    def _handle_apps_pin_delete(self, port):
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+        try:
+            removed = AppsManager.remove_pin(port)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        self.send_json({'ok': True, 'removed': bool(removed)})
+
+    # --- Additional HTTP verbs for the app proxy ---
+    #
+    # SimpleHTTPRequestHandler doesn't ship do_PUT / do_HEAD / do_OPTIONS, so
+    # they 501 by default. The app proxy needs to forward all common verbs
+    # so embedded apps (and their Try-it-out clients) work.
+
+    def do_PUT(self):
+        if self._readonly_block():
+            return
+        path = self.path.replace('/browser', '').replace('/oauth', '')
+        if self._dispatch_app_proxy(path, 'PUT'):
+            return
+        self.send_response(501)
+        self.end_headers()
+
+    def do_PATCH(self):
+        if self._readonly_block():
+            return
+        path = self.path.replace('/browser', '').replace('/oauth', '')
+        if self._dispatch_app_proxy(path, 'PATCH'):
+            return
+        self.send_response(501)
+        self.end_headers()
+
+    def do_HEAD(self):
+        path = self.path.replace('/browser', '').replace('/oauth', '')
+        if self._dispatch_app_proxy(path, 'HEAD'):
+            return
+        # Fall back to the parent's static-file HEAD handling.
+        return super().do_HEAD()
+
+    def do_OPTIONS(self):
+        path = self.path.replace('/browser', '').replace('/oauth', '')
+        if self._dispatch_app_proxy(path, 'OPTIONS'):
+            return
+        # Permissive default — no CORS preflight wired for any other route.
+        self.send_response(204)
+        self.end_headers()
+
+    def _rewrite_proxied_html(self, body, port):
+        """Rewrite a proxied HTML body so a stock build renders AND can reach
+        its backend through the /api/app-proxy/<port> prefix.
+
+        Two parts:
+
+        1. Static src/href URLs (parsed by the browser, not via JS) are made
+           relative by dropping the leading slash. We relativize rather than
+           prepend a prefix because the client reaches us through an external
+           /oauth auth segment that oauth2-proxy strips before the request
+           arrives here — so the server can neither see nor reconstruct the URL
+           the browser actually used. A relative URL sidesteps that: the
+           browser resolves it against the iframe document's real URL
+           (…/oauth/api/app-proxy/<port>/ — trailing slash guaranteed by the
+           301 above), keeping the /oauth prefix so it authenticates. Skips
+           protocol-relative (//cdn) and already-proxied URLs; relative URLs
+           are already correct.
+
+        2. A runtime shim (_APP_PROXY_SHIM) is injected into <head> to catch
+           requests the app builds in JS at request time — fetch('/runs'),
+           XHR, EventSource, WebSocket — which relativizing the HTML can't
+           touch. The shim re-prefixes those in the browser, where the full
+           client-visible prefix is available.
+        """
+        def repl(mo):
+            url = mo.group(3)
+            if url.startswith(b'//') or url.startswith(b'/api/app-proxy/'):
+                return mo.group(0)
+            rel = url[1:]  # drop the single leading '/'
+            return mo.group(1) + mo.group(2) + (rel or b'./')
+
+        body = self._ABS_ASSET_URL_RE.sub(repl, body)
+
+        # Inject the runtime shim right after <head> so it patches fetch/XHR
+        # before the app's own scripts run. If there's no <head> (rare),
+        # prepend it — a leading classic script still executes first.
+        if self._HEAD_OPEN_RE.search(body):
+            body = self._HEAD_OPEN_RE.sub(
+                lambda mo: mo.group(0) + self._APP_PROXY_SHIM, body, count=1)
+        else:
+            body = self._APP_PROXY_SHIM + body
+        return body
+
+    @staticmethod
+    def _rewrite_location_header(value, port):
+        """Map upstream-absolute Locations back to the proxy-prefixed path."""
+        prefix = f'/api/app-proxy/{port}'
+        for host_form in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
+            if value.startswith(host_form):
+                return prefix + value[len(host_form):]
+        # Absolute-path Location (e.g. "/foo") — re-prefix so the iframe
+        # navigates through the proxy and not to the dashboard origin root.
+        if value.startswith('/') and not value.startswith(prefix + '/') and value != prefix:
+            return prefix + value
+        return value
+
     def proxy_vnc_request(self):
         # Proxy requests to the local noVNC server.
         # Gate behind the same auth as the rest of the dashboard — the VNC
@@ -4361,6 +5204,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
             path = self.path.replace('/browser', '').replace('/oauth', '')
             
+            # /api/apps/pins — add a pinned port to the Applications page.
+            if path == "/api/apps/pins":
+                self._handle_apps_pin_create()
+                return
+            # /api/app-proxy/<port>/... — forward to a locally-listening
+            # web app. Match early so it short-circuits the explicit
+            # endpoint list below.
+            if self._dispatch_app_proxy(path, 'POST'):
+                return
             if path == "/api/launch-chrome":
                 self.launch_chrome()
             elif path == "/api/open-localhost":
@@ -4497,6 +5349,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(message.encode())
     
+    def send_livez(self):
+        """Liveness probe — proves the HTTP server thread is alive and can
+        answer, nothing more. Deliberately does ZERO blocking work: no socket
+        connects to sub-services (see send_health_check), no auth, no disk, no
+        JSON. On a 2-CPU pod a busy assistant task + many tmux-streaming
+        handler threads can starve the GIL enough that a heavier handler can't
+        finish inside the 10s liveness timeout for 3 straight probes (~90s),
+        and the kubelet then SIGTERMs the container — killing the user's live
+        tmux + tasks. A handler this cheap needs the GIL for only microseconds,
+        so it returns even under heavy contention. Sub-service status belongs
+        to /health (readiness) and the /health/* detail endpoints."""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(b'ok')
+
     def send_health_check(self):
         """Overall health check endpoint - always returns 200 to avoid blocking"""
         vscode_status = self.check_service_health('localhost', 8080)

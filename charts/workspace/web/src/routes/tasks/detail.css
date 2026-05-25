@@ -729,3 +729,57 @@
   background: var(--surface);
   flex-shrink: 0;
 }
+
+/* Preview control strip: source toggle + port form + reload, laid out in
+   one wrapping row. The toggle sits left of the port form. */
+.term-pane-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--size-2);
+}
+/* Drop the port form's own left border/margin — inside the strip the flex
+   gap handles spacing and the leading border would float oddly. */
+.term-pane-controls .term-pane-port {
+  margin-left: 0;
+  border-left: 0;
+  padding-left: 0;
+}
+
+/* Segmented App | Browser toggle for the preview source. */
+.term-pane-modeseg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.term-pane-modeseg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.term-pane-modeseg-btn + .term-pane-modeseg-btn {
+  border-left: 1px solid var(--border);
+}
+.term-pane-modeseg-btn:hover { color: var(--text); }
+.term-pane-modeseg-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+.term-pane-modeseg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* App-preview iframe sits on the page background (it renders real DOM,
+   unlike the dark VNC framebuffer). */
+.term-pane-iframe-app { background: var(--bg); }

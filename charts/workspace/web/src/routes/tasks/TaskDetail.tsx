@@ -47,7 +47,7 @@ const TAB_LABELS: Record<DetailTab, string> = {
 };
 const TAB_HELP: Record<DetailTab, string> = {
   terminal: 'Live Claude/OpenCode session — attach and type as if you were SSH\'d into the pod.',
-  preview: 'Side-by-side session + workspace browser (noVNC).',
+  preview: 'Side-by-side session + app preview — in-app iframe or in-pod browser (noVNC).',
   message: 'Chat-style composer that mirrors the session in a friendly UI.',
   info: 'Metadata, prompt, timestamps, and injected memory.',
   subagents: 'Sub-tasks spawned by Claude\'s Agent / Task tool.',

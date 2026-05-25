@@ -18,6 +18,7 @@ import { TriggersRoute } from './triggers/index';
 import { FilesRoute } from './files/index';
 import { SettingsRoute } from './settings/index';
 import { DocsRoute } from './docs/index';
+import { AppsRoute } from './apps/index';
 import { MoreSheet } from './more/index';
 import { waitingTasks } from '../components/WaitingBadge';
 import './Shell.css';
@@ -26,6 +27,7 @@ const ROUTE_COMPONENTS: Record<string, FunctionComponent> = {
   '/tasks': TasksRoute,
   '/desktop': DesktopRoute,
   '/memory': MemoryRoute,
+  '/apps': AppsRoute,
   '/triggers': TriggersRoute,
   '/files': FilesRoute,
   '/docs': DocsRoute,
