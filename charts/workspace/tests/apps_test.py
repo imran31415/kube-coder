@@ -498,6 +498,10 @@ class AppsProxyTests(unittest.TestCase):
             html = r.read()
         self.assertIn(b'window.fetch=function', html)
         self.assertIn(b'XMLHttpRequest.prototype.open', html)
+        # The shim also routes loopback backends (e.g. an API on :8086) through
+        # the proxy, so it must carry the localhost rewrite logic + WS handling.
+        self.assertIn(b'localhost', html)
+        self.assertIn(b'WebSocket', html)
         # Injected inside <head>, ahead of the app's module script.
         head_at = html.find(b'<head')
         shim_at = html.find(b'window.fetch=function')

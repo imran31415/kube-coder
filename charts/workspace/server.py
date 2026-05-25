@@ -4589,20 +4589,33 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # Opening <head> tag — where we inject the runtime base-path shim.
     _HEAD_OPEN_RE = re.compile(rb'<head\b[^>]*>', re.IGNORECASE)
     # Injected into proxied HTML so an app's *runtime* requests (built in JS,
-    # not in the HTML we rewrite) also stay under the proxy prefix. The shim
-    # runs in the browser, where the full client-visible prefix — including the
+    # not in the HTML we rewrite) reach the right service through the proxy.
+    # Runs in the browser, where the full client-visible prefix — including the
     # external /oauth auth segment that oauth2-proxy strips before requests
-    # reach this server — IS visible via location.pathname. It re-prefixes
-    # root-absolute fetch/XHR/EventSource/WebSocket targets; protocol-relative
-    # (//cdn), already-prefixed and relative URLs pass through. A classic
-    # inline <script> runs at parse time, before the app's deferred module
-    # scripts, so the patches are in place first.
+    # reach this server — IS visible via location.pathname. For fetch / XHR /
+    # EventSource / WebSocket it rewrites:
+    #   - root-absolute paths (`/api/x`)           → <prefix>/api/x  (this app's port)
+    #   - same-origin absolute URLs                → same, via their path
+    #   - localhost:<port> / 127.0.0.1:<port> URLs → /…/api-app-proxy/<port>/…
+    #     so a separate backend ("API on :8086") the app talks to over loopback
+    #     is reached through the proxy too — and becomes same-origin (no CORS).
+    # Protocol-relative (//cdn), already-proxied, and port-less / external URLs
+    # pass through. A classic inline <script> runs at parse time, before the
+    # app's deferred module scripts, so the patches are in place first.
     _APP_PROXY_SHIM = (
         b'<script>(function(){'
         b'var p=location.pathname,k="/api/app-proxy/",ix=p.indexOf(k);if(ix<0)return;'
         b'var r=p.slice(ix+k.length),j=r.indexOf("/"),port=j<0?r:r.slice(0,j);'
-        b'if(!port)return;var P=p.slice(0,ix+k.length+port.length);'
+        b'if(!port)return;'
+        b'var P=p.slice(0,ix+k.length+port.length);'   # this app: /…/api-app-proxy/<port>
+        b'var root=p.slice(0,ix+k.length-1);'          # proxy root: /…/api-app-proxy
+        b'function pp(pt,pa){return root+"/"+pt+(pa||"/");}'
+        b'function wsx(pt,pa){return (location.protocol==="https:"?"wss://":"ws://")+location.host+pp(pt,pa);}'
+        b'var LH=/^https?:\\/\\/(?:localhost|127\\.0\\.0\\.1):(\\d+)(\\/[^\\s]*)?$/i;'
+        b'var LW=/^wss?:\\/\\/(?:localhost|127\\.0\\.0\\.1):(\\d+)(\\/[^\\s]*)?$/i;'
         b'function fix(u){if(typeof u!=="string"||!u)return u;'
+        b'var m=u.match(LH);if(m)return pp(m[1],m[2]);'                       # localhost:<port> → that port
+        b'var o=location.origin+"/";if(u.indexOf(o)===0)u=u.slice(location.origin.length);'  # same-origin abs → path
         b'if(u.charAt(0)==="/"&&u.charAt(1)!=="/"&&u.indexOf(P+"/")!==0&&u.indexOf("/api/app-proxy/")!==0)return P+u;'
         b'return u;}'
         # fetch must be invoked with this===window; a bare call on a saved
@@ -4616,8 +4629,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         b'if(window.EventSource){var E=window.EventSource;window.EventSource=function(u,c){return new E(fix(u),c)};'
         b'window.EventSource.prototype=E.prototype;}'
         b'if(window.WebSocket){var W=window.WebSocket;window.WebSocket=function(u,pr){'
-        b'try{if(typeof u==="string"&&u.charAt(0)==="/"&&u.charAt(1)!=="/")'
-        b'u=(location.protocol==="https:"?"wss://":"ws://")+location.host+P+u;}catch(e){}'
+        b'try{if(typeof u==="string"){var m=u.match(LW);'
+        b'if(m)u=wsx(m[1],m[2]);'                                             # ws://localhost:<port> → that port
+        b'else if(u.charAt(0)==="/"&&u.charAt(1)!=="/")u=wsx(port,u);}}catch(e){}'  # root-relative → this app
         b'return pr!==undefined?new W(u,pr):new W(u)};window.WebSocket.prototype=W.prototype;'
         # Preserve the readyState constants apps read as WebSocket.OPEN etc.
         b'window.WebSocket.CONNECTING=W.CONNECTING;window.WebSocket.OPEN=W.OPEN;'
