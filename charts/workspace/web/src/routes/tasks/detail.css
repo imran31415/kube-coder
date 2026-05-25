@@ -783,3 +783,27 @@
 /* App-preview iframe sits on the page background (it renders real DOM,
    unlike the dark VNC framebuffer). */
 .term-pane-iframe-app { background: var(--bg); }
+
+/* App navigation (back / forward / reload) + fullscreen toggle — compact
+   icon buttons in the preview control strip. */
+.term-pane-navbtns { display: inline-flex; gap: 2px; }
+.term-pane-navbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.term-pane-navbtn-reload { font-size: 15px; }
+.term-pane-navbtn:hover { background: var(--surface-3); color: var(--text); }
+.term-pane-navbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
