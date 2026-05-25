@@ -84,15 +84,20 @@ tests:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.path
           value: /health
 
-  - it: should configure liveness probe on port 6080
+  - it: should configure liveness probe on the cheap /livez endpoint
     template: templates/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.port
           value: 6080
+      # Liveness uses /livez (zero-work), not /health (which does blocking
+      # sub-service socket connects) — see send_livez in server.py.
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.path
-          value: /health
+          value: /livez
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.failureThreshold
+          value: 6
 
   - it: should mount the home PVC
     template: templates/deployment.yaml
@@ -155,6 +160,22 @@ tests:
       - matchRegex:
           path: data["start.sh"]
           pattern: "cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md"
+
+  - it: always marks the pod as a kube-coder environment
+    template: templates/deployment.yaml
+    asserts:
+      # Canonical flag — visible to every process in the pod.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KUBE_CODER
+            value: "1"
+      # Expo-public alias so the marker reaches client/browser bundles.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXPO_PUBLIC_KUBE_CODER
+            value: "1"
 
   - it: open-source defaults inject no assistant env vars
     template: templates/deployment.yaml

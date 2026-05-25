@@ -118,6 +118,18 @@ class NextSpaRouteTests(unittest.TestCase):
         cache = headers.get('Cache-Control', '')
         self.assertIn('no-cache', cache)
 
+    # --- Liveness endpoint ---
+
+    def test_livez_returns_ok_without_auth_or_subservice_checks(self):
+        # The k8s liveness probe hits /livez. It must answer 200 with a tiny
+        # body and never block on sub-service socket connects (unlike /health),
+        # so a busy/GIL-starved server still passes liveness and the kubelet
+        # doesn't SIGTERM the pod (killing the user's tmux + tasks).
+        status, headers, body = self._get('/livez')
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'ok')
+        self.assertIn('no-store', headers.get('Cache-Control', ''))
+
     # --- SPA history fallback ---
 
     def test_unknown_deep_link_falls_back_to_index(self):
