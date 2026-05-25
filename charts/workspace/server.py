@@ -4636,6 +4636,22 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Preserve the readyState constants apps read as WebSocket.OPEN etc.
         b'window.WebSocket.CONNECTING=W.CONNECTING;window.WebSocket.OPEN=W.OPEN;'
         b'window.WebSocket.CLOSING=W.CLOSING;window.WebSocket.CLOSED=W.CLOSED;}'
+        # CSS url() re-prefixer for fonts/assets injected at runtime — e.g.
+        # @expo/vector-icons loads its .ttf via @font-face{src:url(/assets/…)}
+        # through CSSStyleSheet.insertRule / the FontFace API, which the CSS
+        # engine fetches (not window.fetch), so the fetch shim never sees them.
+        # Rewrites only root-absolute url(/…); //, data:, already-proxied pass.
+        b'function fc(t){if(typeof t!=="string"||t.indexOf("url(")<0)return t;'
+        b'return t.replace(/url\\(\\s*(["\\x27]?)(\\/[^)"\\x27]*)/g,function(z,q,u){'
+        b'if(u.charAt(1)==="/"||u.indexOf(P+"/")===0||u.indexOf("/api/app-proxy/")===0)return z;'
+        b'return "url("+q+P+u;});}'
+        b'if(window.CSSStyleSheet&&CSSStyleSheet.prototype.insertRule){'
+        b'var _ir=CSSStyleSheet.prototype.insertRule;CSSStyleSheet.prototype.insertRule=function(r,i){'
+        b'try{if(typeof r==="string")r=fc(r);}catch(e){}'
+        b'return i===undefined?_ir.call(this,r):_ir.call(this,r,i);};}'
+        b'if(window.FontFace){var _FF=window.FontFace;window.FontFace=function(f,s,d){'
+        b'try{if(typeof s==="string")s=fc(s);}catch(e){}return new _FF(f,s,d);};'
+        b'window.FontFace.prototype=_FF.prototype;}'
         b'})();</script>'
     )
     # Hop-by-hop headers that must not be forwarded between client and
