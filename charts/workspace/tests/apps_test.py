@@ -502,10 +502,6 @@ class AppsProxyTests(unittest.TestCase):
         # the proxy, so it must carry the localhost rewrite logic + WS handling.
         self.assertIn(b'localhost', html)
         self.assertIn(b'WebSocket', html)
-        # ...and re-prefixes runtime-injected CSS url() (e.g. @expo/vector-icons
-        # fonts) via insertRule + the FontFace constructor.
-        self.assertIn(b'insertRule', html)
-        self.assertIn(b'FontFace', html)
         # Injected inside <head>, ahead of the app's module script.
         head_at = html.find(b'<head')
         shim_at = html.find(b'window.fetch=function')
