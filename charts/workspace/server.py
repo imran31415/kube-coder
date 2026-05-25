@@ -4947,6 +4947,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # buys nothing anyway.
             if kl == 'accept-encoding':
                 continue
+            # Rewrite Origin to the localhost form the upstream expects. Dev
+            # servers (Metro, Vite, …) often 500/403 a request whose Origin is
+            # a foreign host (anti-DNS-rebinding / CORS) — and @font-face fonts
+            # and fetch()/XHR are CORS requests that carry Origin, so without
+            # this icon fonts 500 and many API calls fail. Mirrors the
+            # WebSocket proxy, which already rewrites Origin the same way.
+            if kl == 'origin':
+                v = f'http://localhost:{port}'
             fwd_headers[k] = v
         fwd_headers['Host'] = f'127.0.0.1:{port}'
         fwd_headers['X-Forwarded-Prefix'] = prefix
