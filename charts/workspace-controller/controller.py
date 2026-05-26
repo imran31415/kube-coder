@@ -94,21 +94,32 @@ class KubectlError(RuntimeError):
         self.stderr = stderr
 
 
-def _kubectl_json(args):
-    """Run `kubectl <args> -o json -n <ns>` and parse stdout."""
+def _kubectl_json(args, _attempts=2):
+    """Run `kubectl <args> -o json -n <ns>` and parse stdout.
+
+    Retries once on failure: kubectl's discovery cache is cold right after a pod
+    start and several read endpoints fire concurrently on page load, which can
+    make the first call fail transiently. These are read-only, so a retry is safe."""
     cmd = ['kubectl', *args, '-n', NAMESPACE, '-o', 'json']
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT)
-    except FileNotFoundError:
-        raise KubectlError('kubectl not found on PATH')
-    except subprocess.TimeoutExpired:
-        raise KubectlError(f'kubectl timed out after {KUBECTL_TIMEOUT}s')
-    if proc.returncode != 0:
-        raise KubectlError(f'kubectl {args[0]} failed', proc.stderr.strip())
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise KubectlError(f'kubectl returned non-JSON: {exc}')
+    last = None
+    for attempt in range(_attempts):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT)
+        except FileNotFoundError:
+            raise KubectlError('kubectl not found on PATH')
+        except subprocess.TimeoutExpired:
+            last = KubectlError(f'kubectl timed out after {KUBECTL_TIMEOUT}s')
+        else:
+            if proc.returncode == 0:
+                try:
+                    return json.loads(proc.stdout)
+                except json.JSONDecodeError as exc:
+                    last = KubectlError(f'kubectl returned non-JSON: {exc}')
+            else:
+                last = KubectlError(f'kubectl {args[0]} failed', proc.stderr.strip())
+        if attempt + 1 < _attempts:
+            time.sleep(0.4)
+    raise last
 
 
 def _kubectl_run(args):
@@ -523,10 +534,16 @@ def compute_insights(window_seconds=None):
     try:
         deps = _kubectl_json(['get', 'deployments']).get('items', [])
         pods = _kubectl_json(['get', 'pods']).get('items', [])
-        pvcs = _kubectl_json(['get', 'pvc']).get('items', [])
     except KubectlError as exc:
         out['error'] = str(exc)
         return out
+    # PVC sizes are only needed for disk %-used and storage-cost tips — best
+    # effort so a missing read (or RBAC gap) degrades those tips, not all of them.
+    pvcs = []
+    try:
+        pvcs = _kubectl_json(['get', 'pvc']).get('items', [])
+    except KubectlError:
+        pass
 
     pvc_cap = {}
     for p in pvcs:
