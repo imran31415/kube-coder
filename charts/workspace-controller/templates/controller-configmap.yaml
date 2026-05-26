@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-controller-app
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+data:
+  controller.py: |
+{{ .Files.Get "controller.py" | indent 4 }}

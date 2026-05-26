@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: workspace-controller
+  template:
+    metadata:
+      labels:
+        {{- include "wc.labels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the backend or the SPA changes (both ship via
+        # ConfigMap, so the image digest alone won't trigger a restart).
+        checksum/controller: {{ include (print $.Template.BasePath "/controller-configmap.yaml") . | sha256sum }}
+        checksum/controller-web: {{ include (print $.Template.BasePath "/controller-web-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: workspace-controller
+      {{- if .Values.controller.image.pullSecretName }}
+      imagePullSecrets:
+      - name: {{ .Values.controller.image.pullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: controller
+        image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+        command: ["python3", "/controller/controller.py"]
+        env:
+        # kubectl writes a best-effort discovery cache under $HOME/.kube and
+        # may use $TMPDIR; point both at writable emptyDirs so the readonly
+        # root filesystem doesn't make it spew warnings.
+        - name: HOME
+          value: /home/controller
+        - name: TMPDIR
+          value: /tmp
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CONTROLLER_PORT
+          value: "8080"
+        - name: CONTROLLER_DIST_DIR
+          value: /controller-web
+        - name: WORKSPACE_PREFIX
+          value: {{ .Values.controller.workspacePrefix | quote }}
+        - name: TRUSTED_PROXY
+          value: "true"
+        - name: ADMIN_USERS
+          value: {{ .Values.controller.adminUsers | quote }}
+        - name: PROMETHEUS_URL
+          value: {{ .Values.controller.metrics.prometheusUrl | quote }}
+        - name: COST_CPU_CORE_HOUR
+          value: {{ .Values.controller.metrics.cost.cpuCoreHour | quote }}
+        - name: COST_MEM_GB_HOUR
+          value: {{ .Values.controller.metrics.cost.memGbHour | quote }}
+        - name: COST_STORAGE_GB_MONTH
+          value: {{ .Values.controller.metrics.cost.storageGbMonth | quote }}
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        volumeMounts:
+        - name: controller-app
+          mountPath: /controller
+        - name: controller-web
+          mountPath: /controller-web
+        - name: home
+          mountPath: /home/controller
+        - name: tmp
+          mountPath: /tmp
+        resources:
+{{ toYaml .Values.controller.resources | indent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: controller-app
+        configMap:
+          name: workspace-controller-app
+          defaultMode: 0444
+      - name: controller-web
+        configMap:
+          name: workspace-controller-web
+          defaultMode: 0444
+      - name: home
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
