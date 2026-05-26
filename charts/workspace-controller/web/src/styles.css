@@ -112,6 +112,15 @@ body {
   border-style: dashed;
 }
 
+.insight.loading {
+  animation: insight-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes insight-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.85; }
+}
+
 .empty {
   color: var(--muted);
   padding: 3rem 1rem;
