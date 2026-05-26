@@ -4676,6 +4676,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         ref = self.headers.get('Referer') or ''
         m = re.search(r'(/(?:oauth/|browser/)?api/app-proxy/(\d+))', ref)
         if not m:
+            # TEMP diagnostic: an escaped navigation/sub-resource with no
+            # usable app-proxy Referer would fall through to a 404. Log what
+            # we got so we can see why (only for likely-escaped requests).
+            dest = self.headers.get('Sec-Fetch-Dest', '')
+            if ref or dest in ('document', 'iframe', 'empty'):
+                try:
+                    self.log_message('[app-escape] %s path=%s dest=%s mode=%s referer=%r',
+                                     method, self.path, dest,
+                                     self.headers.get('Sec-Fetch-Mode', ''), ref[:160])
+                except Exception:
+                    pass
             return False
         norm = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
         if norm.startswith('/api/app-proxy/'):
@@ -5176,14 +5187,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
         body = self._ABS_ASSET_URL_RE.sub(repl, body)
 
-        # Inject the runtime shim right after <head> so it patches fetch/XHR
-        # before the app's own scripts run. If there's no <head> (rare),
-        # prepend it — a leading classic script still executes first.
+        # Inject (1) a permissive referrer policy and (2) the runtime shim,
+        # right after <head> so they take effect before the app's own scripts.
+        # The referrer meta makes the app's *navigations* carry the full iframe
+        # URL as Referer — without it, a hard navigation (window.location) that
+        # drops the app's base lands at the dashboard root with no Referer and
+        # 404s, instead of being redirected back onto the proxy path by
+        # _dispatch_referer_proxy.
+        head_inject = b'<meta name="referrer" content="unsafe-url">' + self._APP_PROXY_SHIM
         if self._HEAD_OPEN_RE.search(body):
             body = self._HEAD_OPEN_RE.sub(
-                lambda mo: mo.group(0) + self._APP_PROXY_SHIM, body, count=1)
+                lambda mo: mo.group(0) + head_inject, body, count=1)
         else:
-            body = self._APP_PROXY_SHIM + body
+            body = head_inject + body
         return body
 
     @staticmethod
