@@ -1,0 +1,37 @@
+# Single ingress: every path on the controller host goes to oauth2-proxy,
+# which authenticates and reverse-proxies to the controller. oauth2-proxy
+# serves /oauth2/* itself (sign-in, callback) and forwards everything else.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: workspace-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "8"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ required "controller.host is required" .Values.controller.host }}
+    secretName: {{ required "ingress.tls.secretName is required when tls.enabled" .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ required "controller.host is required" .Values.controller.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: workspace-controller-oauth2
+            port:
+              number: 4180

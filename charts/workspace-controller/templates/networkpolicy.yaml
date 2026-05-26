@@ -1,0 +1,56 @@
+{{/*
+The controller trusts the X-Forwarded-User header it receives (TRUSTED_PROXY).
+That is only safe if the ONLY thing that can reach it is its own oauth2-proxy —
+otherwise any pod in this shared namespace (other tenants' workspaces run
+user code) could hit workspace-controller:8080 directly with a forged
+X-Forwarded-User and gain admin control of every workspace. These policies
+pin the trust path: ingress controller -> oauth2-proxy -> controller, nothing
+else. Mirrors the workspace chart's networkpolicy.yaml. Egress is left open
+(controller only needs the in-cluster kube-apiserver, reached via the cluster
+network) — tighten later alongside the workspace egress work.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workspace-controller-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: workspace-controller
+  policyTypes:
+  - Ingress
+  ingress:
+  # Only the controller's own oauth2-proxy may reach the backend.
+  - from:
+    - podSelector:
+        matchLabels:
+          app: workspace-controller-oauth2
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workspace-controller-oauth2-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: workspace-controller-oauth2
+spec:
+  podSelector:
+    matchLabels:
+      app: workspace-controller-oauth2
+  policyTypes:
+  - Ingress
+  ingress:
+  # Only the nginx ingress controller may reach oauth2-proxy.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 4180
