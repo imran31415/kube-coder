@@ -46,9 +46,11 @@ controller:
     prometheusUrl: http://prometheus-kube-prometheus-prometheus.default.svc:9090
     # Rough, operator-tunable cost model shown in the mini dashboard. Compute
     # is estimated from observed CPU/memory usage; storage from PVC size.
+    # Defaults from DigitalOcean Basic droplet pricing ($12/mo per 1 vCPU + 2 GB,
+    # split 50/50 => ~$0.0082/core-hr, ~$0.0041/GB-hr) + $0.10/GB-mo block storage.
     cost:
-      cpuCoreHour: "0.024"
-      memGbHour: "0.012"
+      cpuCoreHour: "0.0082"
+      memGbHour: "0.0041"
       storageGbMonth: "0.10"
 
 ingress:
