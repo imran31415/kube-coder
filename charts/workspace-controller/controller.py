@@ -534,10 +534,16 @@ def compute_insights(window_seconds=None):
     try:
         deps = _kubectl_json(['get', 'deployments']).get('items', [])
         pods = _kubectl_json(['get', 'pods']).get('items', [])
-        pvcs = _kubectl_json(['get', 'pvc']).get('items', [])
     except KubectlError as exc:
         out['error'] = str(exc)
         return out
+    # PVC sizes are only needed for disk %-used and storage-cost tips — best
+    # effort so a missing read (or RBAC gap) degrades those tips, not all of them.
+    pvcs = []
+    try:
+        pvcs = _kubectl_json(['get', 'pvc']).get('items', [])
+    except KubectlError:
+        pass
 
     pvc_cap = {}
     for p in pvcs:
