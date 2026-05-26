@@ -68,12 +68,19 @@ PROMETHEUS_URL = os.environ.get(
 ).rstrip('/')
 PROM_TIMEOUT = int(os.environ.get('PROM_TIMEOUT', '8'))
 # Rough cost model — approximate, operator-tunable. Compute is billed on
-# observed usage; storage on the PVC's provisioned size. Defaults are
-# ballpark DOKS figures; override via env / values.
-COST_CPU_CORE_HOUR = float(os.environ.get('COST_CPU_CORE_HOUR', '0.024'))
-COST_MEM_GB_HOUR = float(os.environ.get('COST_MEM_GB_HOUR', '0.012'))
+# observed usage; storage on the PVC's provisioned size. Defaults derived from
+# DigitalOcean Basic droplet pricing, which is linear at $12/mo per (1 vCPU +
+# 2 GB): splitting that 50/50 gives ~$6/core-mo and ~$3/GB-mo, i.e. $0.0082/
+# core-hr and $0.0041/GB-hr. Block storage is $0.10/GB-mo. Override via env.
+COST_CPU_CORE_HOUR = float(os.environ.get('COST_CPU_CORE_HOUR', '0.0082'))
+COST_MEM_GB_HOUR = float(os.environ.get('COST_MEM_GB_HOUR', '0.0041'))
 COST_STORAGE_GB_MONTH = float(os.environ.get('COST_STORAGE_GB_MONTH', '0.10'))
 HOURS_PER_MONTH = 730.0
+
+# Insights: how far back to analyse usage for the dashboard tips, and the CPU
+# level under which a workspace is considered idle.
+INSIGHTS_WINDOW = int(os.environ.get('INSIGHTS_WINDOW_SECONDS', '21600'))  # 6h
+INSIGHTS_IDLE_CPU_CORES = float(os.environ.get('INSIGHTS_IDLE_CPU_CORES', '0.05'))
 
 # Deployment name must look like <prefix><user>; <user> is lowercase
 # DNS-label-ish. This is also the canonical "is this a workspace" test.
@@ -289,6 +296,20 @@ def prom_range(expr, seconds, step):
     return [[int(float(t)), float(v)] for t, v in res[0]['values']] if res else []
 
 
+def prom_instant_multi(expr):
+    """[(labels, value), ...] for an instant query — all series."""
+    res = _prom_get('/api/v1/query', {'query': expr})['result']
+    return [(r['metric'], float(r['value'][1])) for r in res]
+
+
+def prom_range_multi(expr, seconds, step):
+    """[(labels, [values...]), ...] for a range query — all series."""
+    end = int(time.time())
+    res = _prom_get('/api/v1/query_range',
+                    {'query': expr, 'start': end - seconds, 'end': end, 'step': step})['result']
+    return [(s['metric'], [float(v) for _, v in s['values']]) for s in res]
+
+
 def _cost(cpu_cores, mem_bytes, storage_bytes):
     """Rough monthly cost: compute on observed usage + storage on PVC size."""
     compute_hr = cpu_cores * COST_CPU_CORE_HOUR + (mem_bytes / 1e9) * COST_MEM_GB_HOUR
@@ -348,15 +369,19 @@ def workspace_metrics(user, range_seconds=3600, step=300):
         'metricsError': None,
     }
 
-    cpu_expr = f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns}",pod=~"{pod_re}",container!=""}}[5m]))'
-    mem_expr = f'sum(container_memory_working_set_bytes{{namespace="{ns}",pod=~"{pod_re}",container!=""}})'
+    # `avg by (pod, container)` collapses duplicate series: this cluster runs
+    # multiple kube-prometheus-stacks, so cadvisor metrics are scraped several
+    # times over and a plain sum() would multiply usage. disk uses max() for
+    # the same reason.
+    cpu_expr = f'sum(avg by (pod, container) (rate(container_cpu_usage_seconds_total{{namespace="{ns}",pod=~"{pod_re}",container!=""}}[5m])))'
+    mem_expr = f'sum(avg by (pod, container) (container_memory_working_set_bytes{{namespace="{ns}",pod=~"{pod_re}",container!=""}}))'
     disk_expr = f'max(kubelet_volume_stats_used_bytes{{namespace="{ns}",persistentvolumeclaim="{name}-home"}})'
     try:
         cpu = prom_scalar(cpu_expr)
         mem = prom_scalar(mem_expr)
         disk = prom_scalar(disk_expr)
-        rx = prom_scalar(f'sum(rate(container_network_receive_bytes_total{{namespace="{ns}",pod=~"{pod_re}"}}[5m]))')
-        tx = prom_scalar(f'sum(rate(container_network_transmit_bytes_total{{namespace="{ns}",pod=~"{pod_re}"}}[5m]))')
+        rx = prom_scalar(f'sum(avg by (pod, interface) (rate(container_network_receive_bytes_total{{namespace="{ns}",pod=~"{pod_re}"}}[5m])))')
+        tx = prom_scalar(f'sum(avg by (pod, interface) (rate(container_network_transmit_bytes_total{{namespace="{ns}",pod=~"{pod_re}"}}[5m])))')
         start_ts = prom_scalar(f'min(kube_pod_start_time{{namespace="{ns}",pod=~"{pod_re}"}})')
 
         out['cpu']['cores'] = cpu
@@ -379,6 +404,211 @@ def workspace_metrics(user, range_seconds=3600, step=300):
         out['cost'] = _cost(cpu or 0.0, mem or 0.0, pvc_bytes or 0.0)
     except PromError as exc:
         out['metricsError'] = str(exc)
+    return out
+
+
+# --- Insights (automatic advisories) ----------------------------------------
+
+_SEVERITY_RANK = {'critical': 0, 'warn': 1, 'info': 2}
+
+
+def _fmt_bytes(b):
+    if not b:
+        return '0 B'
+    if b >= 1e9:
+        return f'{b / 1e9:.1f} GB'
+    if b >= 1e6:
+        return f'{b / 1e6:.0f} MB'
+    return f'{b / 1e3:.0f} KB'
+
+
+def _fmt_dur(seconds):
+    h = seconds / 3600.0
+    if h < 1:
+        return f'{seconds / 60:.0f}m'
+    if h < 1.5:
+        return f'{h:.1f}h'
+    return f'{h:.0f}h'
+
+
+def _mean(xs):
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def _user_for_pod(pod, names):
+    """Map a Prometheus pod label (ws-<user>-<rs>-<hash>) to a username via the
+    known deployment names."""
+    for dep_name, user in names.items():
+        if pod.startswith(dep_name + '-'):
+            return user
+    return None
+
+
+def _advise(user, f, cpu_vals, mem_vals, disk_used, window):
+    """Heuristic tips for one workspace. Conservative — each rule needs a clear
+    signal to avoid noisy false positives."""
+    adv = []
+
+    def add(severity, kind, message):
+        adv.append({'user': user, 'severity': severity, 'kind': kind, 'message': message})
+
+    pvc = f['pvc_bytes']
+    covered = min(window, f['uptime']) if f['uptime'] else window
+    hstr = _fmt_dur(covered)
+
+    if not f['running']:
+        if pvc:
+            storage_mo = (pvc / 1e9) * COST_STORAGE_GB_MONTH
+            if storage_mo >= 0.5:
+                add('info', 'stopped-storage',
+                    f"{user}'s workspace is stopped, but its {_fmt_bytes(pvc)} disk still costs "
+                    f"~${storage_mo:.2f}/mo.")
+        return adv
+
+    if not f['ready']:
+        r = f.get('reason')
+        add('warn', 'unhealthy',
+            f"{user}'s workspace is running but not ready{f' ({r})' if r else ''} — check the pod.")
+    if f['restarts'] >= 5:
+        add('warn', 'restarts',
+            f"{user}'s workspace has restarted {f['restarts']} times — it may be unstable.")
+
+    cpu_limit, mem_limit = f['cpu_limit'], f['mem_limit']
+    cpu_mean = _mean(cpu_vals)
+    cpu_max = max(cpu_vals) if cpu_vals else 0.0
+    mem_mean = _mean(mem_vals)
+    mem_min = min(mem_vals) if mem_vals else 0.0
+    mem_max = max(mem_vals) if mem_vals else 0.0
+    mem_last = mem_vals[-1] if mem_vals else 0.0
+
+    # Time-based tips need enough history (>= 1h covered, >= 6 samples).
+    if len(cpu_vals) >= 6 and covered >= 3600:
+        flat_mem = mem_mean > 0 and (mem_max - mem_min) / mem_mean < 0.15
+        elevated_mem = mem_mean > max(1e9, 0.3 * (mem_limit or 0))
+        idle_cpu = cpu_max < INSIGHTS_IDLE_CPU_CORES
+        if idle_cpu and flat_mem and elevated_mem:
+            add('warn', 'lingering-mem',
+                f"{user}'s workspace has held a steady {_fmt_bytes(mem_mean)} of memory for the last "
+                f"{hstr} with almost no CPU — consider checking for a lingering process.")
+        elif idle_cpu:
+            compute_mo = (cpu_mean * COST_CPU_CORE_HOUR + (mem_mean / 1e9) * COST_MEM_GB_HOUR) * HOURS_PER_MONTH
+            tail = f" Stopping it would free compute (~${compute_mo:.2f}/mo)." if compute_mo >= 0.5 \
+                else " Consider stopping it."
+            add('info', 'idle',
+                f"{user}'s workspace has been idle (CPU under {int(INSIGHTS_IDLE_CPU_CORES * 1000)}m) "
+                f"for the last {hstr}.{tail}")
+        elif cpu_limit and cpu_mean > 0.8 * cpu_limit:
+            add('warn', 'high-cpu',
+                f"{user}'s workspace has averaged {cpu_mean / cpu_limit * 100:.0f}% CPU over the last {hstr}.")
+
+    if mem_limit and mem_last > 0.9 * mem_limit:
+        add('critical', 'oom-risk',
+            f"{user}'s workspace memory is at {mem_last / mem_limit * 100:.0f}% of its limit — "
+            f"risk of an OOM kill.")
+    if pvc and disk_used:
+        dpct = disk_used / pvc * 100
+        if dpct >= 95:
+            add('critical', 'disk-full',
+                f"{user}'s workspace disk is {dpct:.0f}% full — free space or grow the PVC.")
+        elif dpct >= 85:
+            add('warn', 'disk-high', f"{user}'s workspace disk is {dpct:.0f}% full.")
+    return adv
+
+
+def compute_insights(window_seconds=None):
+    window = max(1800, min(window_seconds or INSIGHTS_WINDOW, 604800))
+    step = max(120, window // 60)
+    out = {'generatedAt': int(time.time()), 'windowSeconds': window, 'advisories': [], 'error': None}
+
+    try:
+        deps = _kubectl_json(['get', 'deployments']).get('items', [])
+        pods = _kubectl_json(['get', 'pods']).get('items', [])
+        pvcs = _kubectl_json(['get', 'pvc']).get('items', [])
+    except KubectlError as exc:
+        out['error'] = str(exc)
+        return out
+
+    pvc_cap = {}
+    for p in pvcs:
+        nm = p.get('metadata', {}).get('name', '')
+        cap = ((p.get('status', {}).get('capacity', {}) or {}).get('storage')
+               or (p.get('spec', {}).get('resources', {}).get('requests', {}) or {}).get('storage'))
+        pvc_cap[nm] = parse_bytes(cap)
+
+    pods_by_app = {}
+    for p in pods:
+        app = p.get('metadata', {}).get('labels', {}).get('app')
+        if app:
+            pods_by_app.setdefault(app, []).append(p)
+
+    import datetime
+    facts, names = {}, {}
+    for dep in deps:
+        name = dep.get('metadata', {}).get('name', '')
+        m = _NAME_RE.match(name)
+        if not m:
+            continue
+        user = m.group(1)
+        names[name] = user
+        spec = dep.get('spec', {})
+        status = dep.get('status', {})
+        containers = spec.get('template', {}).get('spec', {}).get('containers', [])
+        cpu_limit = sum(c for c in (parse_cpu((cn.get('resources', {}).get('limits', {}) or {}).get('cpu'))
+                                    for cn in containers) if c) or None
+        mem_limit = sum(c for c in (parse_bytes((cn.get('resources', {}).get('limits', {}) or {}).get('memory'))
+                                    for cn in containers) if c) or None
+        uptime, restarts, reason = None, 0, None
+        for pod in pods_by_app.get(name, []):
+            st = pod.get('status', {})
+            if st.get('startTime'):
+                try:
+                    t0 = datetime.datetime.fromisoformat(st['startTime'].replace('Z', '+00:00')).timestamp()
+                    uptime = int(time.time() - t0)
+                except ValueError:
+                    pass
+            for cs in st.get('containerStatuses', []) or []:
+                restarts += cs.get('restartCount', 0)
+                waiting = cs.get('state', {}).get('waiting')
+                if waiting and waiting.get('reason'):
+                    reason = waiting['reason']
+        facts[user] = {
+            'name': name,
+            'running': spec.get('replicas', 1) >= 1,
+            'ready': (status.get('readyReplicas', 0) or 0) >= 1,
+            'cpu_limit': cpu_limit, 'mem_limit': mem_limit,
+            'pvc_bytes': pvc_cap.get(f'{name}-home'),
+            'uptime': uptime, 'restarts': restarts, 'reason': reason,
+        }
+
+    ns = NAMESPACE
+    cpu_by_user, mem_by_user, disk_by_user = {}, {}, {}
+    try:
+        for metric, vals in prom_range_multi(
+                f'sum by (pod) (avg by (pod, container) (rate(container_cpu_usage_seconds_total{{namespace="{ns}",pod=~"ws-.*",container!=""}}[5m])))',
+                window, step):
+            u = _user_for_pod(metric.get('pod', ''), names)
+            if u:
+                cpu_by_user[u] = vals
+        for metric, vals in prom_range_multi(
+                f'sum by (pod) (avg by (pod, container) (container_memory_working_set_bytes{{namespace="{ns}",pod=~"ws-.*",container!=""}}))',
+                window, step):
+            u = _user_for_pod(metric.get('pod', ''), names)
+            if u:
+                mem_by_user[u] = vals
+        for metric, val in prom_instant_multi(
+                f'max by (persistentvolumeclaim) (kubelet_volume_stats_used_bytes{{namespace="{ns}",persistentvolumeclaim=~"ws-.*-home"}})'):
+            pvc_name = metric.get('persistentvolumeclaim', '')
+            u = names.get(pvc_name[:-5]) if pvc_name.endswith('-home') else None
+            if u:
+                disk_by_user[u] = val
+    except PromError as exc:
+        out['error'] = str(exc)
+
+    for user, f in facts.items():
+        out['advisories'].extend(
+            _advise(user, f, cpu_by_user.get(user, []), mem_by_user.get(user, []),
+                    disk_by_user.get(user), window))
+    out['advisories'].sort(key=lambda a: (_SEVERITY_RANK.get(a['severity'], 9), a['user']))
     return out
 
 
@@ -464,6 +694,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             try:
                 self.send_json(list_workspaces())
+            except KubectlError as exc:
+                self.send_json({'error': str(exc), 'detail': exc.stderr}, 502)
+            return
+        if path == '/api/insights':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            try:
+                self.send_json(compute_insights())
             except KubectlError as exc:
                 self.send_json({'error': str(exc), 'detail': exc.stderr}, 502)
             return

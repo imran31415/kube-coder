@@ -57,6 +57,24 @@ export interface WorkspaceMetrics {
 export const getWorkspaceMetrics = (user: string, rangeSeconds = 3600) =>
   apiGet<WorkspaceMetrics>(`/api/workspaces/${user}/metrics`, { range: rangeSeconds });
 
+export type Severity = 'critical' | 'warn' | 'info';
+
+export interface Advisory {
+  user: string;
+  severity: Severity;
+  kind: string;
+  message: string;
+}
+
+export interface InsightsResponse {
+  generatedAt: number;
+  windowSeconds: number;
+  advisories: Advisory[];
+  error: string | null;
+}
+
+export const getInsights = () => apiGet<InsightsResponse>('/api/insights');
+
 export const startWorkspace = (user: string) =>
   apiPost<{ ok: true; user: string; desiredReplicas: number }>(`/api/workspaces/${user}/start`);
 
