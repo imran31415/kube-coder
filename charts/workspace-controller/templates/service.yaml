@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: workspace-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: workspace-controller
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP

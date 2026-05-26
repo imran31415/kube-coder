@@ -1,0 +1,71 @@
+# workspace-controller — admin console that lists every workspace in the
+# namespace and lets an operator start/stop any of them. Single in-cluster
+# Deployment, gated by oauth2-proxy to an admin GitHub-user allowlist.
+#
+# This chart is deployed ONCE per namespace (like base-infrastructure), not
+# per user. Resolve values from a gitignored dir (users-private/_controller/)
+# — see `make deploy-controller`.
+
+namespace: coder
+
+controller:
+  # DNS hostname the console is served at, e.g. controller.dev.example.io.
+  # REQUIRED. cert-manager won't issue TLS until this resolves to the cluster.
+  host: ""
+
+  # The same image the workspaces run (python3 + kubectl already inside). The
+  # Makefile overrides the tag via --set so the controller tracks the built
+  # image; this default is only a fallback for raw `helm install`.
+  image:
+    repository: registry.digitalocean.com/resourceloop/coder
+    tag: devlaptop-v1.10.0-vnc-resize
+    pullPolicy: IfNotPresent
+    pullSecretName: regcred
+
+  # A workspace is any Deployment whose name starts with this prefix. The
+  # username shown in the UI is the name minus the prefix. Mirrors the
+  # ws-<user> convention used by the workspace chart.
+  workspacePrefix: "ws-"
+
+  # Defense-in-depth on top of the oauth2-proxy gate: if set (comma-separated
+  # GitHub usernames), controller.py also checks X-Auth-Request-User against
+  # this list. Leave empty to trust the oauth2-proxy --github-user gate alone.
+  adminUsers: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Per-workspace usage metrics come from the in-cluster Prometheus (this
+  # cluster has no metrics-server). Empty disables the metrics panel cleanly.
+  metrics:
+    prometheusUrl: http://prometheus-kube-prometheus-prometheus.default.svc:9090
+    # Rough, operator-tunable cost model shown in the mini dashboard. Compute
+    # is estimated from observed CPU/memory usage; storage from PVC size.
+    cost:
+      cpuCoreHour: "0.024"
+      memGbHour: "0.012"
+      storageGbMonth: "0.10"
+
+ingress:
+  className: nginx
+  tls:
+    enabled: true
+    # REQUIRED when tls.enabled — cert-manager writes the issued cert here.
+    secretName: ""
+    clusterIssuer: letsencrypt-production
+
+# Dedicated GitHub OAuth App for the controller host (a workspace's app can't
+# be reused — the callback URL must match this host). REQUIRED.
+oauth2:
+  cookieSecret: ""   # 32 chars: openssl rand -base64 64 | tr -d '\n=+/' | head -c 32
+  clientId: ""
+  clientSecret: ""
+  # THE access gate — comma-separated GitHub usernames allowed to sign in.
+  githubUsers: ""
+  githubOrg: ""
+  githubTeam: ""

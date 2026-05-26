@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-controller-web
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+# The SPA is built (vite-plugin-singlefile) into a single self-contained
+# index.html and committed to web-dist/ by `make controller-web`, then shipped
+# here. One inlined file => one ConfigMap key, well under the 1 MiB limit and
+# no hashed-asset/subdir gymnastics. If web-dist/ is missing (chart linted
+# before a build), fall back to a clear placeholder.
+data:
+  index.html: |
+{{ .Files.Get "web-dist/index.html" | default "<!doctype html><meta charset=utf-8><title>workspace-controller</title><body style=\"font-family:sans-serif;padding:2rem\">SPA not built. Run <code>make controller-web</code> then redeploy.</body>" | indent 4 }}

@@ -266,3 +266,73 @@ ship-config: require-user deploy ## Helm upgrade only — for server.py / config
 	@echo "Forcing rollout in case the configmap checksum didn't change..."
 	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
 	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+
+# =============================================================================
+# workspace-controller (charts/workspace-controller/) — admin console that
+# lists every workspace in the namespace and starts/stops them. Deployed ONCE
+# per namespace (not per user). Reuses the coder image (python3 + kubectl);
+# controller.py and the built SPA both ship via ConfigMap, so the whole app
+# uses the fast config-only path — no second image build.
+#
+# One-time prerequisites (mirror new-user.sh; cert-manager won't issue TLS
+# until DNS resolves and the OAuth callback must match the host exactly):
+#   - a DNS host for the console (controller.host)
+#   - a DEDICATED GitHub OAuth App, callback https://<host>/oauth2/callback
+#   - a 32-char cookieSecret: openssl rand -base64 64 | tr -d '\n=+/' | head -c 32
+#   - oauth2.githubUsers — the admin allowlist; THIS is the access gate
+# Put these in users-private/_controller/values.yaml (gitignored); any
+# users-private/_controller/secrets/*.yaml are merged in too.
+# =============================================================================
+.PHONY: controller-web controller-web-install deploy-controller ship-controller-config controller-dev require-controller
+
+WC_DIR := charts/workspace-controller
+WC_WEB_DIR := $(WC_DIR)/web
+CONTROLLER_DIR := users-private/_controller
+controller_secret_flags = $(foreach f,$(wildcard $(CONTROLLER_DIR)/secrets/*.yaml),-f $(f))
+
+controller-web-install: ## Install controller SPA deps (yarn, node 20)
+	cd $(WC_WEB_DIR) && yarn install
+
+# vite-plugin-singlefile emits one self-contained index.html; copy it into the
+# chart (web-dist/) where Helm's .Files.Get can read it for the ConfigMap. The
+# size guard catches the day the bundle outgrows the 1 MiB ConfigMap limit.
+controller-web: controller-web-install ## Build controller SPA → chart web-dist/ (single inlined index.html)
+	cd $(WC_WEB_DIR) && yarn build
+	rm -rf $(WC_DIR)/web-dist && mkdir -p $(WC_DIR)/web-dist
+	cp $(WC_WEB_DIR)/dist/index.html $(WC_DIR)/web-dist/index.html
+	@bytes=$$(wc -c < $(WC_DIR)/web-dist/index.html); \
+	echo "Built controller SPA: $$bytes bytes (ConfigMap limit ~1048576)"; \
+	if [ $$bytes -gt 1000000 ]; then \
+	  echo "WARNING: SPA is near the 1 MiB ConfigMap limit — switch to image-baked delivery."; fi
+
+require-controller:
+	@if [ ! -f $(CONTROLLER_DIR)/values.yaml ]; then \
+	  echo "ERROR: missing $(CONTROLLER_DIR)/values.yaml — set controller.host, oauth2.{cookieSecret,clientId,clientSecret,githubUsers}. Schema: $(WC_DIR)/values.yaml"; exit 1; fi
+
+deploy-controller: require-controller ## Helm upgrade the workspace-controller release
+	@echo "Deploying workspace-controller from $(CONTROLLER_DIR)/values.yaml..."
+	helm upgrade workspace-controller ./$(WC_DIR) \
+		-f $(CONTROLLER_DIR)/values.yaml \
+		$(controller_secret_flags) \
+		--set controller.image.tag=$(IMAGE_NAME)-$(VERSION) \
+		--namespace $(NAMESPACE) \
+		--install \
+		--wait \
+		--timeout 5m
+
+# Primary deploy path: rebuild SPA, helm upgrade, force-roll the pod.
+ship-controller-config: controller-web deploy-controller ## Build SPA + deploy + roll the controller pod
+	@echo "Forcing rollout in case the configmap checksum didn't change..."
+	kubectl rollout restart deployment/workspace-controller -n $(NAMESPACE)
+	kubectl rollout status deployment/workspace-controller -n $(NAMESPACE) --timeout=180s
+
+# Local dev: run controller.py against your kubeconfig. Listing is read-only
+# and safe against the real cluster. Auth via a dev bearer token — in the
+# browser set localStorage['kc.devToken']='devtoken' (or curl -H 'Authorization:
+# Bearer devtoken'). Run `yarn --cwd $(WC_WEB_DIR) dev` in another shell for the UI.
+controller-dev: ## Run controller.py locally (KUBECONFIG listing; dev bearer token)
+	CONTROLLER_DEV_TOKEN=devtoken \
+	CONTROLLER_DIST_DIR=$(PWD)/$(WC_DIR)/web-dist \
+	NAMESPACE=$(NAMESPACE) \
+	TRUSTED_PROXY=false \
+	python3 $(WC_DIR)/controller.py

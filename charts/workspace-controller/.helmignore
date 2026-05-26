@@ -1,0 +1,8 @@
+# Keep the chart package small and stop `helm` walking node_modules symlinks.
+# We deliberately KEEP controller.py and web-dist/ — they're read via .Files.
+web/
+*.tgz
+.git
+.DS_Store
+__pycache__/
+*.pyc
