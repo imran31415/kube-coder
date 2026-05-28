@@ -21,7 +21,7 @@ spec:
         checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
         checksum/terminal-entry: {{ include (print $.Template.BasePath "/terminal-entry-configmap.yaml") . | sha256sum }}
         checksum/workspace-entrypoint: {{ include (print $.Template.BasePath "/workspace-entrypoint-configmap.yaml") . | sha256sum }}
-        {{- if or .Values.assistant.openrouter.apiKey .Values.assistant.fallback.baseUrl }}
+        {{- if or .Values.assistant.openrouter.apiKey .Values.assistant.deepseek.apiKey .Values.assistant.fallback.baseUrl }}
         checksum/assistant-secret: {{ include (print $.Template.BasePath "/assistant-secret.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.github.app.appId }}
@@ -79,6 +79,15 @@ spec:
               key: openrouter-api-key
         - name: KC_OPENROUTER_MODEL
           value: {{ .Values.assistant.openrouter.model | quote }}
+        {{- end }}
+        {{- if .Values.assistant.deepseek.apiKey }}
+        - name: DEEPSEEK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: assistant-secrets-{{ .Values.user.name }}
+              key: deepseek-api-key
+        - name: KC_DEEPSEEK_MODEL
+          value: {{ .Values.assistant.deepseek.model | quote }}
         {{- end }}
         {{- if .Values.assistant.fallback.baseUrl }}
         - name: KC_FALLBACK_BASE_URL
