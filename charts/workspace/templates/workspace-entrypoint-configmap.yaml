@@ -113,8 +113,8 @@ data:
     # itself needs no on-disk config — it reads ANTHROPIC_API_KEY from env
     # or OAuths interactively. The config is rewritten on every pod start
     # so Helm value changes flow through cleanly.
-    if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ]; then
-      log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
+    if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ]; then
+      log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) deepseek=$([ -n "$DEEPSEEK_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
       mkdir -p $HOME/.config/opencode
       OPENROUTER_MODEL_DEFAULT="${KC_OPENROUTER_MODEL:-anthropic/claude-sonnet-4}"
       FALLBACK_MODEL_DEFAULT="${KC_FALLBACK_MODEL:-anthropic/claude-sonnet-4}"
@@ -129,12 +129,13 @@ data:
     import json, os
     cfg = {"$schema": "https://opencode.ai/config.json"}
     provider = {}
-    # OpenRouter is a first-class OpenCode provider -- the CLI auto-
-    # discovers it from $OPENROUTER_API_KEY in the pod env. We deliberately
-    # do NOT emit a stub block for it: any custom provider listed alongside
-    # an incomplete first-class entry (no npm field) makes opencodes config
-    # loader silently drop the rest, including our fallback. The OpenRouter
-    # model still surfaces to /api/claude/assistants via KC_OPENROUTER_MODEL.
+    # OpenRouter and DeepSeek are first-class OpenCode providers -- the CLI
+    # auto-discovers them from $OPENROUTER_API_KEY and $DEEPSEEK_API_KEY in
+    # the pod env. We deliberately do NOT emit stub blocks for them: any
+    # custom provider listed alongside an incomplete first-class entry
+    # (no npm field) makes opencodes config loader silently drop the rest,
+    # including our fallback. Their models still surface to
+    # /api/claude/assistants via KC_OPENROUTER_MODEL / KC_DEEPSEEK_MODEL.
     if os.environ.get("KC_FALLBACK_BASE_URL"):
         options = {"baseURL": os.environ["KC_FALLBACK_BASE_URL"]}
         # Only declare apiKey when one is actually present. OpenCode

@@ -189,6 +189,11 @@ tests:
           path: spec.template.spec.containers[0].env
           any: true
           content:
+            name: DEEPSEEK_API_KEY
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
             name: KC_FALLBACK_BASE_URL
 
   - it: injects OpenRouter env when openrouter.apiKey is set
@@ -210,6 +215,26 @@ tests:
           content:
             name: KC_OPENROUTER_MODEL
             value: "anthropic/claude-sonnet-4"
+
+  - it: injects DeepSeek env when deepseek.apiKey is set
+    template: templates/deployment.yaml
+    set:
+      assistant.deepseek.apiKey: sk-ds-test
+      assistant.deepseek.model: deepseek-chat
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEEPSEEK_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: assistant-secrets-testuser
+                key: deepseek-api-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DEEPSEEK_MODEL
+            value: "deepseek-chat"
 
   - it: injects fallback env when fallback.baseUrl is set
     template: templates/deployment.yaml
@@ -271,6 +296,15 @@ tests:
       - equal:
           path: stringData["fallback-api-key"]
           value: "bearer-test"
+
+  - it: renders assistant-secret with deepseek key when only deepseek is set
+    template: templates/assistant-secret.yaml
+    set:
+      assistant.deepseek.apiKey: sk-ds-test
+    asserts:
+      - equal:
+          path: stringData["deepseek-api-key"]
+          value: "sk-ds-test"
 
   - it: should invoke the entrypoint script as the container command
     template: templates/deployment.yaml
