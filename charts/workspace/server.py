@@ -527,10 +527,11 @@ class ClaudeTaskManager:
         return token
 
     # ── Assistant selection ──────────────────────────────────────────────
-    # Three assistant options surfaced in the dashboard dropdown:
+    # Assistant options surfaced in the dashboard dropdown:
     #   1. Claude Code   — always available (anthropic-hosted)
     #   2. OpenRouter    — OpenCode CLI proxied through OpenRouter
-    #   3. Opensource GPU — kc-harness against the configured Ollama endpoint
+    #   3. DeepSeek      — OpenCode CLI against DeepSeek's native API
+    #   4. Opensource GPU — kc-harness against the configured Ollama endpoint
     # The legacy `opencode-fallback` assistant was retired in favour of
     # kc-harness: same endpoint, narrow tool surface, XML-aware parser, so
     # small local models actually execute tools instead of describing them.
@@ -542,6 +543,10 @@ class ClaudeTaskManager:
         'opencode-openrouter': {
             'id': 'opencode-openrouter',
             'label': 'OpenRouter',
+        },
+        'opencode-deepseek': {
+            'id': 'opencode-deepseek',
+            'label': 'DeepSeek',
         },
         # kc-harness — thin in-pod LLM tool-call loop at /tmp/browser/harness.py
         # See charts/workspace/harness.py for the design rationale.
@@ -558,6 +563,11 @@ class ClaudeTaskManager:
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['opencode-openrouter'],
                 model=os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'),
+            ))
+        if os.environ.get('DEEPSEEK_API_KEY'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['opencode-deepseek'],
+                model=os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat'),
             ))
         if os.environ.get('KC_FALLBACK_BASE_URL'):
             out.append(dict(
@@ -584,6 +594,9 @@ class ClaudeTaskManager:
             # Quote the model so a hostile env var can't break out of the
             # `bash -lc` shell_cmd built downstream in create_task().
             return f'opencode --model {_shell_quote(f"openrouter/{model}")}'
+        if assistant == 'opencode-deepseek':
+            model = os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
+            return f'opencode --model {_shell_quote(f"deepseek/{model}")}'
         if assistant == 'kc-harness':
             # Reads stdin (tmux paste) and emits dashboard JSONL events.
             # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the

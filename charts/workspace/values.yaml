@@ -134,6 +134,12 @@ assistant:
   openrouter:
     apiKey: ""                            # OPENROUTER_API_KEY
     model: "anthropic/claude-sonnet-4"
+  # OpenCode → DeepSeek (https://api.deepseek.com)
+  # DeepSeek is a first-class OpenCode provider: the CLI auto-discovers
+  # the key from $DEEPSEEK_API_KEY, so no on-disk provider stub is needed.
+  deepseek:
+    apiKey: ""                            # DEEPSEEK_API_KEY
+    model: "deepseek-chat"                # or "deepseek-reasoner"
   # OpenCode → any OpenAI-compatible endpoint
   # (e.g. a private proxy running on your own Digital Ocean droplet)
   fallback:
