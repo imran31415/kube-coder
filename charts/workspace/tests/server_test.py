@@ -225,6 +225,7 @@ class AssistantSelectionTests(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
         # Restore env
         for k in ('OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
+                  'DEEPSEEK_API_KEY', 'KC_DEEPSEEK_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
                   'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME'):
             os.environ.pop(k, None)
@@ -240,6 +241,15 @@ class AssistantSelectionTests(unittest.TestCase):
         os.environ['KC_OPENROUTER_MODEL'] = 'anthropic/claude-sonnet-4'
         ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
         self.assertIn('opencode-openrouter', ids)
+
+    def test_deepseek_listed_when_env_set(self):
+        os.environ['DEEPSEEK_API_KEY'] = 'sk-ds-test'
+        os.environ['KC_DEEPSEEK_MODEL'] = 'deepseek-chat'
+        match = [a for a in server.ClaudeTaskManager.available_assistants()
+                 if a['id'] == 'opencode-deepseek']
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]['label'], 'DeepSeek')
+        self.assertEqual(match[0]['model'], 'deepseek-chat')
 
     def test_kc_harness_listed_when_fallback_env_set(self):
         # kc-harness is the third assistant; appears whenever an Ollama-style
@@ -265,6 +275,8 @@ class AssistantSelectionTests(unittest.TestCase):
     def test_command_per_assistant(self):
         os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'
         os.environ['KC_OPENROUTER_MODEL'] = 'anthropic/claude-sonnet-4'
+        os.environ['DEEPSEEK_API_KEY'] = 'sk-ds-test'
+        os.environ['KC_DEEPSEEK_MODEL'] = 'deepseek-chat'
         os.environ['KC_FALLBACK_BASE_URL'] = 'https://x.example/v1'
         self.assertEqual(
             server.ClaudeTaskManager.assistant_command('claude'),
@@ -273,6 +285,10 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertEqual(
             server.ClaudeTaskManager.assistant_command('opencode-openrouter'),
             'opencode --model openrouter/anthropic/claude-sonnet-4',
+        )
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('opencode-deepseek'),
+            'opencode --model deepseek/deepseek-chat',
         )
         self.assertEqual(
             server.ClaudeTaskManager.assistant_command('kc-harness'),
