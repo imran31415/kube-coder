@@ -71,13 +71,12 @@ data:
               - "--dockerfile=/workspace/__CTX__/__DOCKERFILE__"
               - "--destination=__DEST__"
               - "--cleanup"
-            volumeMounts:
-            - name: work
-              mountPath: /workspace
             env:
             - name: DOCKER_CONFIG
               value: /kaniko/.docker/
             volumeMounts:
+            - name: work
+              mountPath: /workspace
             - name: regcred
               mountPath: /kaniko/.docker
           volumes:

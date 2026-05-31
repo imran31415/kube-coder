@@ -35,6 +35,10 @@ TOKEN_FILE = '/home/dev/.claude-tasks/.api-token'
 TIMEOUT = 3.0
 MAX_ENTRIES = 8
 MAX_CHARS = 4000
+# Match the documented relevance floor (see values.yaml memory.inject.minScore
+# and MemoryManager.top_for_prompt). Below this the auto-inject prepends
+# noise; the dashboard's create_task path enforces the same floor.
+MIN_SCORE = 0.30
 
 
 def _read_token() -> str:
@@ -78,7 +82,15 @@ def _query_memories(prompt: str, token: str) -> list:
             data = json.load(r)
     except Exception:
         return []
-    return data.get('memories', []) or []
+    memories = data.get('memories', []) or []
+    # Enforce the documented relevance floor. We keep entries whose score is
+    # absent (the search degraded to LIKE fallback, or the endpoint returned
+    # an unscored list) so we never silently drop everything when scoring is
+    # unavailable; only entries scored below MIN_SCORE are filtered.
+    def _keep(m):
+        score = m.get('_score')
+        return score is None or score >= MIN_SCORE
+    return [m for m in memories if _keep(m)]
 
 
 def _format_block(memories: list) -> str:

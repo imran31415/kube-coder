@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { createTask, selectTask } from '../../store/tasks';
-import { listAssistants, listWorkdirs, type AssistantOption, type WorkdirOption } from '../../api/tasks';
+import { listAssistants, listWorkdirs, renameTask, type AssistantOption, type WorkdirOption } from '../../api/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Icon } from '../../components/Icon';
@@ -50,7 +50,6 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       // If the server accepted no name, leave as-is; otherwise rename in the
       // background (best-effort — failure is OK, the random name still shows).
       if (name && name !== task.name) {
-        const { renameTask } = await import('../../api/tasks');
         void renameTask(task.task_id, name).catch(() => undefined);
       }
       // Drop the user straight into the new build's terminal:

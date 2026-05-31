@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiDelete, withOauthPrefix } from './client';
+import { apiGet, apiPost, apiDelete } from './client';
 import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
 
 export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown' | 'waiting-for-input';
@@ -129,41 +129,3 @@ export const createTerminalTask = () =>
 export const listAssistants = () => apiGet<{ assistants: AssistantOption[] }>('/api/claude/assistants').then((r) => r.assistants);
 
 export const listWorkdirs = () => apiGet<{ dirs: WorkdirOption[] }>('/api/workspace/dirs').then((r) => r.dirs);
-
-/**
- * Open the SSE stream for a task's live output. Returns the EventSource so
- * the caller can close it on unmount. The handler receives the accumulated
- * screen text, not raw diffs — server.py emits the full pane content each
- * tick after stripping ANSI escapes.
- */
-export function openTaskStream(
-  id: string,
-  onChunk: (text: string) => void,
-  onEnd?: (info: { status?: string }) => void,
-  onError?: (err: Event) => void,
-): EventSource {
-  const url = withOauthPrefix(`/api/claude/tasks/${id}/stream?from=start`);
-  const es = new EventSource(url);
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data) as { text?: string; output?: string };
-      const text = data.text ?? data.output ?? '';
-      if (text) onChunk(text);
-    } catch {
-      // Some implementations send raw text after `data: `.
-      onChunk(e.data);
-    }
-  };
-  es.addEventListener('end', (e: MessageEvent) => {
-    try {
-      onEnd?.(JSON.parse(e.data));
-    } catch {
-      onEnd?.({});
-    }
-    es.close();
-  });
-  es.onerror = (e) => {
-    onError?.(e);
-  };
-  return es;
-}

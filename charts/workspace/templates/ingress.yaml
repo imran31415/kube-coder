@@ -11,7 +11,7 @@ metadata:
     {{- end }}
     {{- if eq .Values.ingress.auth.type "basic" }}
     nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
+    nginx.ingress.kubernetes.io/auth-secret: {{ required "ingress.auth.secretName is required when ingress.auth.type=basic (an empty value here disables basic auth and exposes the workspace publicly)" .Values.ingress.auth.secretName }}
     nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
     {{- end }}
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
@@ -69,7 +69,7 @@ metadata:
     {{- end }}
     {{- if eq .Values.ingress.auth.type "basic" }}
     nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
+    nginx.ingress.kubernetes.io/auth-secret: {{ required "ingress.auth.secretName is required when ingress.auth.type=basic (an empty value here disables basic auth and exposes the workspace publicly)" .Values.ingress.auth.secretName }}
     nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
     {{- end }}
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
@@ -110,7 +110,7 @@ metadata:
     {{- end }}
     {{- if eq .Values.ingress.auth.type "basic" }}
     nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
+    nginx.ingress.kubernetes.io/auth-secret: {{ required "ingress.auth.secretName is required when ingress.auth.type=basic (an empty value here disables basic auth and exposes the workspace publicly)" .Values.ingress.auth.secretName }}
     nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
     {{- end }}
     nginx.ingress.kubernetes.io/rewrite-target: /
@@ -154,7 +154,7 @@ metadata:
     # Protect VNC HTML pages with basic auth
     {{- if eq .Values.ingress.auth.type "basic" }}
     nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.ingress.auth.secretName }}
+    nginx.ingress.kubernetes.io/auth-secret: {{ required "ingress.auth.secretName is required when ingress.auth.type=basic (an empty value here disables basic auth and exposes the workspace publicly)" .Values.ingress.auth.secretName }}
     nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
     {{- end }}
     nginx.ingress.kubernetes.io/rewrite-target: /$1

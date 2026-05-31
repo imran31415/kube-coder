@@ -4,9 +4,7 @@ import {
   getMemory,
   upsertMemory as apiUpsert,
   deleteMemory as apiDelete,
-  memoryStats as apiStats,
   type MemoryRecord,
-  type MemoryStats,
   type MemoryUpsertInput,
 } from '../api/memory';
 import { pushToast } from './ui';
@@ -16,7 +14,6 @@ export const memoriesLoading = signal(false);
 export const memoriesError = signal<string | null>(null);
 export const memoryFilter = signal('');
 export const memoryNamespaceFacet = signal<string | null>(null);
-export const stats = signal<MemoryStats | null>(null);
 
 export const selectedMemoryId = signal<number | null>(null);
 export const selectedMemory = signal<MemoryRecord | null>(null);
@@ -58,14 +55,6 @@ export async function refreshMemories(): Promise<void> {
     }
   })();
   return _refreshInFlight;
-}
-
-export async function refreshStats(): Promise<void> {
-  try {
-    stats.value = await apiStats();
-  } catch {
-    // non-fatal
-  }
 }
 
 // Same race-guard idea as loadSelectedTask in store/tasks.ts: a slow
@@ -131,7 +120,6 @@ let pollHandle: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;
 export function startMemoryPolling(intervalMs = 30000) {
   void refreshMemories();
-  void refreshStats();
   if (pollHandle) clearInterval(pollHandle);
   // Same visibility guard as task polling — memory changes rarely while
   // the tab is in the background; refresh on focus instead of every

@@ -29,19 +29,5 @@ export interface DocsPage {
   markdown: string;
 }
 
-export interface DocsSearchHit {
-  id: string;
-  title: string;
-  section_title: string;
-  snippet: string;
-  score: number;
-}
-
-export interface DocsSearchResponse {
-  q: string;
-  results: DocsSearchHit[];
-}
-
 export const listDocs = () => apiGet<DocsManifest>('/api/docs');
 export const getDocsPage = (id: string) => apiGet<DocsPage>(`/api/docs/${encodeURIComponent(id)}`);
-export const searchDocs = (q: string) => apiGet<DocsSearchResponse>('/api/docs/search', { q });

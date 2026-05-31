@@ -1,6 +1,6 @@
 import type { FunctionComponent } from 'preact';
 import { useEffect } from 'preact/hooks';
-import { currentPath, matchRoute, ROUTES } from '../store/router';
+import { currentPath, matchRoute } from '../store/router';
 import { paletteOpen, sheetOpen } from '../store/ui';
 import { useShortcut } from '../hooks/useShortcut';
 import { Topbar } from '../components/Topbar';
@@ -81,6 +81,3 @@ export function Shell() {
     </div>
   );
 }
-
-// Re-export so TS recognises the available routes in this file.
-export { ROUTES };
