@@ -16,6 +16,3 @@ export const generateSshKey = (email: string) =>
 
 export const setGitConfig = (name: string, email: string) =>
   apiPost<{ ok: true }>('/api/github/config', { name, email });
-
-export const ghLoginUrl = () => apiPost<{ url: string; code: string }>('/api/github/cli/login-url', {});
-export const ghCompleteAuth = () => apiPost<{ authenticated: boolean }>('/api/github/cli/complete-auth', {});

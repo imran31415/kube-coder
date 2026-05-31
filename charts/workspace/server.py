@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import http.server
-import socketserver
 import html
 import subprocess
 import os
@@ -1940,28 +1939,51 @@ class CronManager:
         spawns reads the new token. In-flight jobs that were already pulled
         from the API will fail their next call (intended — that's the
         rotation point). Returns (cfg, new_token) or (None, None) if the
-        cron doesn't exist or the k8s apply failed."""
+        cron doesn't exist or the k8s apply failed (in which case the
+        on-disk config is restored to the previous token to keep parity
+        with the k8s Secret)."""
         cfg = CronManager.get_cron(cron_id, include_secrets=True)
         if cfg is None:
             return None, None
+        # Remember the previous token so we can revert the on-disk config
+        # if the k8s apply fails — without this the file would have the
+        # new token while the Secret still has the old, and legitimate
+        # CronJob fires would reject until the next successful rotation.
+        old_token = cfg.get('fire_token')
+        old_rotated_at = cfg.get('fire_token_rotated_at')
         new_token = secrets.token_urlsafe(32)
         cfg['fire_token'] = new_token
         cfg['fire_token_rotated_at'] = time.time()
 
         path = CronManager._config_path(cron_id)
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump(cfg, f, indent=2)
-        os.chmod(tmp, 0o600)
-        os.rename(tmp, path)
+
+        def _write_atomic(data):
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.chmod(tmp, 0o600)
+            os.rename(tmp, path)
+
+        _write_atomic(cfg)
 
         try:
             CronManager._apply_k8s(cfg)
         except Exception as e:
-            # The local config has already been written with the new token;
-            # roll it back so we don't desync from the k8s Secret. Surface
-            # the underlying error to the caller.
-            cfg['fire_token'] = cfg.get('fire_token')  # no-op; just for clarity
+            # Revert the on-disk config so the local file and the k8s Secret
+            # agree on the same (old) token.
+            cfg['fire_token'] = old_token
+            if old_rotated_at is None:
+                cfg.pop('fire_token_rotated_at', None)
+            else:
+                cfg['fire_token_rotated_at'] = old_rotated_at
+            try:
+                _write_atomic(cfg)
+            except Exception as rollback_err:
+                print(
+                    f'[cron] rotate-token ROLLBACK FAILED for {cron_id}: {rollback_err}; '
+                    f'disk has new token but k8s Secret still has the old one',
+                    file=sys.stderr,
+                )
             print(f'[cron] rotate-token kubectl apply failed for {cron_id}: {e}', file=sys.stderr)
             return None, None
         return cfg, new_token
@@ -3094,6 +3116,27 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     
     # --- Claude Task API helpers ---
 
+    @staticmethod
+    def _strip_route_prefix(path):
+        """Strip the SPA's leading `/oauth/` and `/browser/` route prefixes.
+
+        A naive `path.replace('/oauth', '').replace('/browser', '')` (which
+        this method replaces) corrupts paths that contain the substrings
+        mid-string — e.g. `/api/oauth/foo` becomes `/api//foo` and may not
+        match any registered route. Only prefix matches are stripped, and
+        the bare `/oauth` or `/browser` route maps to `/`. Order matters
+        because both wraps are valid (`/oauth/browser/api/x` -> `/api/x`).
+        """
+        if path.startswith('/oauth/'):
+            path = path[len('/oauth'):]
+        elif path == '/oauth':
+            path = '/'
+        if path.startswith('/browser/'):
+            path = path[len('/browser'):]
+        elif path == '/browser':
+            path = '/'
+        return path
+
     def check_claude_auth(self, allow_none_mode=True):
         """Returns True if request is authenticated via OAuth2 headers OR valid bearer token.
 
@@ -3137,9 +3180,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def send_json(self, data, status=200):
-        body = json.dumps(data).encode()
+        body = json.dumps(data).encode('utf-8')
         self.send_response(status)
-        self.send_header('Content-type', 'application/json')
+        self.send_header('Content-type', 'application/json; charset=utf-8')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(body)
@@ -3176,7 +3219,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if self._readonly_block():
             return
         try:
-            path = self.path.replace('/browser', '').replace('/oauth', '')
+            path = self._strip_route_prefix(self.path)
             # /api/apps/pins/<port> — remove a pinned port. Match before the
             # generic app-proxy dispatcher so the proxy doesn't swallow it.
             m = re.match(r'^/api/apps/pins/(\d+)$', path)
@@ -4534,6 +4577,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json({'ok': True, 'path': rel_out}, 201)
 
     def send_vnc_viewer(self):
+        # Defense-in-depth: oauth2-proxy should already have rejected an
+        # unauth'd visitor, but if this handler is ever reached directly
+        # (e.g. a misconfigured ingress) refuse rather than render the
+        # iframe URL anyway. The deeper /vnc/<path> proxy IS authed; this
+        # wrapper page used to slip through.
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Unauthorized')
+            return
         # Instead of embedding, redirect to the noVNC URL directly
         host = self.headers.get('Host', 'localhost').split(':')[0]
         vnc_url = f"https://{host}/vnc-direct/vnc.html?host={host}&port=6081&autoconnect=true&resize=scale"
@@ -4570,6 +4624,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(vnc_html.encode())
     
     def redirect_to_vnc(self):
+        # Defense-in-depth — see send_vnc_viewer above. This handler
+        # actually proxies localhost:6081 content, so unauth'd access
+        # would have exposed the VNC HTML directly.
+        if not self.check_claude_auth():
+            self.send_response(401)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Unauthorized')
+            return
         # Redirect to the noVNC URL running on localhost:6081
         import urllib.request
         try:
@@ -4872,7 +4935,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # prevents a deadlock when one peer closes write but keeps reading.
         import socket as _socket
 
-        def pipe(src, dst, name):
+        def pipe(src, dst):
             try:
                 while True:
                     chunk = src.recv(65536)
@@ -4887,8 +4950,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 except OSError:
                     pass
 
-        t_up = threading.Thread(target=pipe, args=(client_sock, upstream, 'c2u'), daemon=True)
-        t_down = threading.Thread(target=pipe, args=(upstream, client_sock, 'u2c'), daemon=True)
+        t_up = threading.Thread(target=pipe, args=(client_sock, upstream), daemon=True)
+        t_down = threading.Thread(target=pipe, args=(upstream, client_sock), daemon=True)
         t_up.start()
         t_down.start()
         t_up.join()
@@ -5057,7 +5120,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                         self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError):
                         break
-            finally:
+            except (BrokenPipeError, ConnectionResetError):
                 pass
         try:
             conn.close()
@@ -5075,7 +5138,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # can't auth iframe sub-resource requests. Let the SPA show a clear
         # explanation instead of the user staring at mysterious 401s.
         unavailable = None
-        if AUTH_MODE not in ('oauth2',):
+        if AUTH_MODE != 'oauth2':
             unavailable = ('Applications requires the workspace to run behind an OAuth2 '
                            'proxy so iframe sub-resource requests can authenticate via cookies. '
                            'Current AUTH_MODE is "{}".'.format(AUTH_MODE))
@@ -5135,7 +5198,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_PUT(self):
         if self._readonly_block():
             return
-        path = self.path.replace('/browser', '').replace('/oauth', '')
+        path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'PUT'):
             return
         self.send_response(501)
@@ -5144,14 +5207,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def do_PATCH(self):
         if self._readonly_block():
             return
-        path = self.path.replace('/browser', '').replace('/oauth', '')
+        path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'PATCH'):
             return
         self.send_response(501)
         self.end_headers()
 
     def do_HEAD(self):
-        path = self.path.replace('/browser', '').replace('/oauth', '')
+        path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'HEAD'):
             return
         if self._dispatch_referer_proxy('HEAD'):
@@ -5160,7 +5223,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_HEAD()
 
     def do_OPTIONS(self):
-        path = self.path.replace('/browser', '').replace('/oauth', '')
+        path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'OPTIONS'):
             return
         # Permissive default — no CORS preflight wired for any other route.
@@ -5299,7 +5362,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
-            path = self.path.replace('/browser', '').replace('/oauth', '')
+            path = self._strip_route_prefix(self.path)
             
             # /api/apps/pins — add a pinned port to the Applications page.
             if path == "/api/apps/pins":

@@ -1,0 +1,39 @@
+namespace: test
+
+controller:
+  host: controller.test.example.com
+  image:
+    repository: test-registry/coder
+    tag: test
+    pullPolicy: IfNotPresent
+    pullSecretName: regcred
+  workspacePrefix: "ws-"
+  adminUsers: "alice,bob"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  metrics:
+    prometheusUrl: http://prom.test.local:9090
+    cost:
+      cpuCoreHour: "0.0082"
+      memGbHour: "0.0041"
+      storageGbMonth: "0.10"
+
+ingress:
+  className: nginx
+  tls:
+    enabled: true
+    secretName: controller-tls
+    clusterIssuer: letsencrypt-staging
+
+oauth2:
+  cookieSecret: "abcdefghijklmnopqrstuvwxyz123456"
+  clientId: test-client-id
+  clientSecret: test-client-secret
+  githubUsers: "alice,bob"
+  githubOrg: ""
+  githubTeam: ""

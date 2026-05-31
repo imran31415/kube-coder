@@ -28,7 +28,10 @@ export function SubagentsTab({ sessionId }: { sessionId?: string }) {
       }
     }
     void tick();
-    const id = setInterval(tick, 15000);
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void tick();
+    }, 15000);
     return () => {
       cancelled = true;
       clearInterval(id);

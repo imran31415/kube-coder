@@ -31,7 +31,10 @@ export function HealthDot() {
 
   useEffect(() => {
     void tick();
-    const id = setInterval(tick, 30_000);
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void tick();
+    }, 30_000);
     return () => clearInterval(id);
   }, []);
 
