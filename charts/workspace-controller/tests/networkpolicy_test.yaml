@@ -1,0 +1,58 @@
+suite: workspace-controller NetworkPolicy
+templates:
+  - templates/networkpolicy.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should render two policies (backend + oauth2 frontend)
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: kind
+          value: NetworkPolicy
+      - equal:
+          path: metadata.name
+          value: workspace-controller-ingress
+
+  - it: should select the controller backend pod only
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.podSelector.matchLabels.app
+          value: workspace-controller
+
+  - it: should only allow oauth2-proxy to reach the controller backend on 8080
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            podSelector:
+              matchLabels:
+                app: workspace-controller-oauth2
+      - contains:
+          path: spec.ingress[0].ports
+          content:
+            protocol: TCP
+            port: 8080
+
+  - it: should pin only nginx-ingress as the oauth2-proxy traffic source
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.name
+          value: workspace-controller-oauth2-ingress
+      - equal:
+          path: spec.podSelector.matchLabels.app
+          value: workspace-controller-oauth2
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: ingress-nginx
+      - contains:
+          path: spec.ingress[0].ports
+          content:
+            protocol: TCP
+            port: 4180

@@ -15,7 +15,6 @@ import {
   selectedTaskLoading,
   killTask,
   renameTask,
-  selectTask,
 } from '../../store/tasks';
 import { listSubagents } from '../../api/subagents';
 import { Icon } from '../../components/Icon';
@@ -120,7 +119,10 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
       return;
     }
     void tick();
-    const id = window.setInterval(tick, 20000);
+    const id = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void tick();
+    }, 20000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -299,12 +301,6 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
       />
     </article>
   );
-}
-
-// Convenience for mobile sheet — close-and-deselect button.
-export function deselectAndClose(setSheet: (v: null) => void) {
-  selectTask(null);
-  setSheet(null);
 }
 
 /** Skinny unified bar replacing the prior 3 stacked rows (task header,

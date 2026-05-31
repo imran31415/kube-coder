@@ -11,11 +11,10 @@ share the underlying SQLite file via store.py.
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 from .store import MemoryStore, DB_PATH
 
@@ -337,9 +336,13 @@ class MemoryManager:
         _validate_ns_key(namespace, key)
         with cls.store().conn() as c:
             q = 'SELECT * FROM memories WHERE namespace=? AND key=?'
+            params: List[Any] = [namespace, key]
             if not include_deleted:
-                q += ' AND deleted_at IS NULL'
-            row = c.execute(q, (namespace, key)).fetchone()
+                # Filter soft-deleted AND TTL-expired in the same gate so
+                # callers that want the canonical "live" view get it.
+                q += ' AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)'
+                params.append(time.time())
+            row = c.execute(q, params).fetchone()
         return _row_to_dict(row) if row else None
 
     @classmethod
@@ -352,7 +355,7 @@ class MemoryManager:
         limit: int = 500,
         include_deleted: bool = False,
     ) -> List[Dict[str, Any]]:
-        limit = max(1, min(int(limit), 2000))
+        limit = max(1, min(int(limit), 100000))
         if q:
             return cls.search(q=q, namespaces=[namespace] if namespace else None,
                               kinds=[kind] if kind else None, limit=limit)
@@ -360,6 +363,8 @@ class MemoryManager:
         params: List[Any] = []
         if not include_deleted:
             clauses.append('deleted_at IS NULL')
+            clauses.append('(expires_at IS NULL OR expires_at > ?)')
+            params.append(time.time())
         if namespace:
             clauses.append('namespace=?')
             params.append(namespace)
@@ -433,25 +438,19 @@ class MemoryManager:
         if not q or not q.strip():
             return []
         fts_q = _build_fts_query(q)
-        params: List[Any] = [fts_q, limit * 4]  # over-fetch for re-rank
-        clauses = ['m.deleted_at IS NULL']
+        now = time.time()
+        clauses = ['m.deleted_at IS NULL',
+                   '(m.expires_at IS NULL OR m.expires_at > ?)']
         kinds = [k for k in (kinds or []) if k]
         namespaces = [n for n in (namespaces or []) if n]
-        if kinds:
-            clauses.append('m.kind IN (' + ','.join('?' * len(kinds)) + ')')
-            params[1:1] = kinds  # insert before limit
         if namespaces:
             clauses.append('m.namespace IN (' + ','.join('?' * len(namespaces)) + ')')
-            params[1:1] = namespaces
+        if kinds:
+            clauses.append('m.kind IN (' + ','.join('?' * len(kinds)) + ')')
         where = ' AND '.join(clauses)
 
-        # Reconstruct param order: fts_q must be first.
-        params = [fts_q]
-        if namespaces:
-            params.extend(namespaces)
-        if kinds:
-            params.extend(kinds)
-        params.append(limit * 4)
+        # Param order matches the SQL: MATCH ?, expires-at-now, namespaces, kinds, LIMIT.
+        params: List[Any] = [fts_q, now, *namespaces, *kinds, limit * 4]
 
         sql = f"""
             SELECT m.*, bm25(memories_fts) AS fts_rank
@@ -460,7 +459,6 @@ class MemoryManager:
             WHERE memories_fts MATCH ? AND {where}
             ORDER BY fts_rank LIMIT ?
         """
-        now = time.time()
         with cls.store().conn() as c:
             try:
                 rows = c.execute(sql, params).fetchall()
@@ -481,8 +479,9 @@ class MemoryManager:
 
     @staticmethod
     def _search_like(c, q, namespaces, kinds, limit):
-        params: List[Any] = []
-        clauses = ['deleted_at IS NULL']
+        params: List[Any] = [time.time()]
+        clauses = ['deleted_at IS NULL',
+                   '(expires_at IS NULL OR expires_at > ?)']
         like = f'%{q}%'
         clauses.append('(value LIKE ? OR key LIKE ? OR tags LIKE ?)')
         params.extend([like, like, like])
@@ -540,9 +539,10 @@ class MemoryManager:
             with cls.store().conn() as c:
                 rows = c.execute(
                     "SELECT * FROM memories WHERE deleted_at IS NULL "
+                    " AND (expires_at IS NULL OR expires_at > ?) "
                     " AND kind IN ('preference','procedural') "
                     " ORDER BY importance DESC, updated_at DESC LIMIT ?",
-                    (k * 2,),
+                    (time.time(), k * 2),
                 ).fetchall()
             results = [_row_to_dict(r) for r in rows]
         else:
@@ -641,19 +641,15 @@ class MemoryManager:
         depth = max(1, min(int(depth), 4))
         limit = max(1, min(int(limit), 500))
         kinds_list = [k for k in (kinds or []) if k]
+        now = time.time()
         with cls.store().conn() as c:
             root = c.execute(
-                'SELECT id FROM memories WHERE namespace=? AND key=? AND deleted_at IS NULL',
-                (namespace, key)).fetchone()
+                'SELECT id FROM memories WHERE namespace=? AND key=? '
+                'AND deleted_at IS NULL '
+                'AND (expires_at IS NULL OR expires_at > ?)',
+                (namespace, key, now)).fetchone()
             if not root:
                 return []
-            params: List[Any] = [root['id'], depth]
-            kind_pred = ''
-            if kinds_list:
-                placeholders = ','.join('?' * len(kinds_list))
-                kind_pred = f' AND r.kind IN ({placeholders})'
-                params[1:1] = kinds_list  # before depth
-            # Build the sql carefully:
             kind_filter = (
                 f' AND r.kind IN ({",".join("?"*len(kinds_list))})'
                 if kinds_list else ''
@@ -670,13 +666,14 @@ class MemoryManager:
                 FROM walk
                 JOIN memories m ON m.id = walk.memory_id
                 WHERE walk.depth > 0 AND m.deleted_at IS NULL
+                  AND (m.expires_at IS NULL OR m.expires_at > ?)
                 ORDER BY walk.depth, m.updated_at DESC
                 LIMIT ?
             """
-            ordered = [root['id'], depth]
+            ordered: List[Any] = [root['id'], depth]
             if kinds_list:
                 ordered.extend(kinds_list)
-            ordered.append(limit)
+            ordered.extend([now, limit])
             rows = c.execute(sql, ordered).fetchall()
         return [_row_to_dict(r) for r in rows]
 

@@ -269,7 +269,11 @@ def sync_once(roots: Iterable[str] = DEFAULT_SCAN_ROOTS) -> Dict[str, int]:
         return {'scanned': scanned, 'changed': changed, 'pruned': 0,
                 'prune_skipped': True}
     try:
-        candidates = MemoryManager.list(limit=2000)
+        # Pull every imported entry; MemoryManager.list() caps internally at
+        # 100k which is plenty for any realistic Claude markdown corpus.
+        # Without a large limit, overflow rows would silently never be
+        # pruned even though they ought to be.
+        candidates = MemoryManager.list(limit=100000)
         for row in candidates:
             tags = row.get('tags', '')
             if 'claude-memory' not in tags:

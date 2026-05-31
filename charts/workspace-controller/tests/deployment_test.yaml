@@ -1,0 +1,122 @@
+suite: workspace-controller deployment
+templates:
+  - templates/deployment.yaml
+  - templates/controller-configmap.yaml
+  - templates/controller-web-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should name the deployment workspace-controller
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: workspace-controller
+      - equal:
+          path: metadata.namespace
+          value: test
+
+  - it: should ship a single replica
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: should bind to the SA so kubectl has cluster credentials
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: workspace-controller
+
+  - it: should set the controller image from values
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "test-registry/coder:test"
+
+  - it: should enforce runAsNonRoot at pod level
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 1000
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: should harden the controller container
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: should trust proxy headers and configure the admin allowlist
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TRUSTED_PROXY
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_USERS
+            value: "alice,bob"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKSPACE_PREFIX
+            value: "ws-"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PROMETHEUS_URL
+            value: "http://prom.test.local:9090"
+
+  - it: should expose HTTP on port 8080
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 8080
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: 8080
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /livez
+
+  - it: should mount the controller code + SPA from ConfigMaps
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: controller-app
+            configMap:
+              name: workspace-controller-app
+              defaultMode: 0444
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: controller-web
+            configMap:
+              name: workspace-controller-web
+              defaultMode: 0444

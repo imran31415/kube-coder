@@ -15,7 +15,6 @@ export const triggers = signal<Trigger[]>([]);
 export const triggersLoading = signal(false);
 export const triggersError = signal<string | null>(null);
 export const triggerFilter = signal('');
-export const selectedTrigger = signal<Trigger | null>(null);
 
 export const filteredTriggers = computed(() => {
   const needle = triggerFilter.value.trim().toLowerCase();
@@ -65,7 +64,6 @@ export async function removeTrigger(t: Trigger): Promise<void> {
     if (t.kind === 'cron') await deleteCron(t.id);
     else await deleteWebhook(t.id);
     pushToast(`Deleted ${t.id}`, { kind: 'warn' });
-    if (selectedTrigger.value?.id === t.id) selectedTrigger.value = null;
     await refreshTriggers();
   } catch (err) {
     pushToast(err instanceof Error ? err.message : 'Delete failed', { kind: 'danger' });
