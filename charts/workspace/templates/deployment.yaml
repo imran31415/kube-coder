@@ -240,7 +240,18 @@ spec:
       - name: dind
         image: docker:27-dind
         securityContext:
+          # Pod-level securityContext sets runAsNonRoot:true (cc18d99 hardening
+          # for the ide container). dind is the docker daemon — it MUST run
+          # as root to manage /var/lib/docker, namespaces, cgroups, etc.
+          # K8s admission rejects a runAsUser:0 container under a
+          # runAsNonRoot:true pod unless the container explicitly overrides
+          # with its own runAsNonRoot:false. Without this line, the dind
+          # container fails with CreateContainerConfigError on every new
+          # pod (existing pods survive until restart). See
+          # charts/workspace/tests/deployment_test.yaml for the regression
+          # guard.
           privileged: true
+          runAsNonRoot: false
           runAsUser: 0
           runAsGroup: 0
         env:
@@ -265,6 +276,10 @@ spec:
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext:
+          # Same override as the dind sidecar: sshd needs root to bind
+          # privileged port 22 and exec into user shells, so it must opt
+          # out of the pod-level runAsNonRoot:true.
+          runAsNonRoot: false
           runAsUser: 0
           runAsGroup: 0
         command: ["/bin/bash", "/ssh-server-config/entrypoint.sh"]

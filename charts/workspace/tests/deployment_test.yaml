@@ -6,6 +6,7 @@ templates:
   - templates/terminal-entry-configmap.yaml
   - templates/workspace-entrypoint-configmap.yaml
   - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
 values:
   - test-values.yaml
 tests:
@@ -328,3 +329,50 @@ tests:
             configMap:
               name: workspace-entrypoint-testuser
               defaultMode: 365
+
+  # Regression guard for the cc18d99 hardening breakage: pod-level
+  # runAsNonRoot:true contradicts containers that legitimately need
+  # runAsUser:0 (dind for docker daemon, sshd for port 22 + user shells).
+  # Without an explicit container-level runAsNonRoot:false override, K8s
+  # admission rejects the pod with CreateContainerConfigError.
+  - it: dind sidecar overrides pod runAsNonRoot when buildkit is enabled
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: dind
+      - equal:
+          path: spec.template.spec.containers[1].securityContext.runAsNonRoot
+          value: false
+      - equal:
+          path: spec.template.spec.containers[1].securityContext.runAsUser
+          value: 0
+      - equal:
+          path: spec.template.spec.containers[1].securityContext.privileged
+          value: true
+
+  - it: dind sidecar is absent in kaniko build mode
+    template: templates/deployment.yaml
+    set:
+      build.mode: kaniko
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers
+          content:
+            name: dind
+          any: true
+
+  - it: ssh-server sidecar overrides pod runAsNonRoot when ssh is enabled
+    template: templates/deployment.yaml
+    set:
+      ssh.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[2].name
+          value: ssh-server
+      - equal:
+          path: spec.template.spec.containers[2].securityContext.runAsNonRoot
+          value: false
+      - equal:
+          path: spec.template.spec.containers[2].securityContext.runAsUser
+          value: 0
