@@ -35,6 +35,3 @@ export async function loadServerMode(): Promise<void> {
     serverModeLoaded.value = true;
   }
 }
-
-/** True when this dashboard instance is the public read-only demo. */
-export const useReadOnly = () => serverMode.value.readOnly;

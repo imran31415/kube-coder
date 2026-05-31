@@ -43,6 +43,12 @@ jobs:
             --set oauth2.clientSecret=test-secret \
             > /dev/null
 
+      - name: Lint workspace-controller chart
+        run: helm lint charts/workspace-controller/ -f charts/workspace-controller/tests/test-values.yaml
+
+      - name: Template workspace-controller chart
+        run: helm template test-wc charts/workspace-controller/ -f charts/workspace-controller/tests/test-values.yaml > /dev/null
+
   helm-test:
     name: Helm Unit Tests
     runs-on: ubuntu-latest
@@ -58,8 +64,11 @@ jobs:
       - name: Install helm-unittest plugin
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v0.5.2
 
-      - name: Run unit tests
+      - name: Run unit tests (workspace)
         run: helm unittest charts/workspace/
+
+      - name: Run unit tests (workspace-controller)
+        run: helm unittest charts/workspace-controller/
 
   python-tests:
     name: Server.py Unit Tests

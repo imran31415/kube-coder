@@ -16,6 +16,7 @@ web/src/api/client.ts) so the auth cookie attaches; we strip that prefix here.
 
 Stdlib only — no third-party deps, so it runs on the unmodified coder image.
 """
+import datetime
 import http.server
 import hmac
 import json
@@ -464,7 +465,10 @@ def _advise(user, f, cpu_vals, mem_vals, disk_used, window):
         adv.append({'user': user, 'severity': severity, 'kind': kind, 'message': message})
 
     pvc = f['pvc_bytes']
-    covered = min(window, f['uptime']) if f['uptime'] else window
+    # Use `is not None` (not truthy) so a freshly-started workspace with
+    # uptime=0 doesn't reset `covered` to the full window and trigger a
+    # spurious "idle for 6h" advisory.
+    covered = min(window, f['uptime']) if f['uptime'] is not None else window
     hstr = _fmt_dur(covered)
 
     if not f['running']:
@@ -558,7 +562,6 @@ def compute_insights(window_seconds=None):
         if app:
             pods_by_app.setdefault(app, []).append(p)
 
-    import datetime
     facts, names = {}, {}
     for dep in deps:
         name = dep.get('metadata', {}).get('name', '')
@@ -680,10 +683,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     or self.headers.get('Remote-User') or '')
             email = (self.headers.get('X-Forwarded-Email')
                      or self.headers.get('X-Auth-Request-Email') or '')
-            if user or email:
-                if ADMIN_USERS and user and user.lower() not in ADMIN_USERS:
-                    return False  # authenticated, but not on the allowlist
-                return True
+            if not (user or email):
+                return False
+            # If an allowlist is configured, require a username AND require
+            # the username (not just email) to be on the list. Previously a
+            # request with only X-Forwarded-Email fell through to "return
+            # True" because the `and user` clause short-circuited — that
+            # silently bypassed the allowlist when oauth2-proxy was
+            # configured to forward email but not username.
+            if ADMIN_USERS:
+                if not user or user.lower() not in ADMIN_USERS:
+                    return False
+            return True
         return False
 
     def _norm_path(self):
@@ -712,7 +723,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(list_workspaces())
             except KubectlError as exc:
-                self.send_json({'error': str(exc), 'detail': exc.stderr}, 502)
+                sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/insights':
             if not self.check_admin():
@@ -721,7 +733,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(compute_insights())
             except KubectlError as exc:
-                self.send_json({'error': str(exc), 'detail': exc.stderr}, 502)
+                sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
             return
         m = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/metrics$', path)
         if m:
@@ -744,7 +757,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except LookupError:
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             except KubectlError as exc:
-                self.send_json({'error': str(exc), 'detail': exc.stderr}, 502)
+                sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
             return
         if path.startswith('/api/'):
             self.send_json({'error': 'not found'}, 404)
@@ -772,7 +786,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             return
         except KubectlError as exc:
-            self.send_json({'error': str(exc), 'detail': exc.stderr}, 502)
+            sys.stderr.write(f'[controller] scale {user}={replicas}: {exc}: {exc.stderr}\n')
+            self.send_json({'error': str(exc)}, 502)
             return
         self.send_json({'ok': True, 'user': user, 'desiredReplicas': replicas})
 

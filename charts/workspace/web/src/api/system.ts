@@ -8,16 +8,7 @@ export interface Health {
   [k: string]: unknown;
 }
 
-export interface Metrics {
-  cpu_percent?: number;
-  memory_percent?: number;
-  disk_percent?: number;
-  timestamp?: number;
-  [k: string]: unknown;
-}
-
 export const getHealth = () => apiGet<Health>('/health');
-export const getMetrics = () => apiGet<Metrics>('/metrics');
 
 export interface ServerMode {
   readOnly: boolean;

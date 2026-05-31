@@ -26,4 +26,3 @@ export function useMediaQuery(query: string): boolean {
 }
 
 export const useIsMobile = () => useMediaQuery('(max-width: 720px)');
-export const useIsCoarsePointer = () => useMediaQuery('(pointer: coarse)');

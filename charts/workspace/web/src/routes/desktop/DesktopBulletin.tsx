@@ -64,7 +64,10 @@ export function DesktopBulletin() {
     // Poll every 10s so the widget reflects newly-started / completed
     // builds without a page refresh. Same cadence as the rest of the
     // dashboard's task list refresh.
-    const id = window.setInterval(refresh, 10_000);
+    const id = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void refresh();
+    }, 10_000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 

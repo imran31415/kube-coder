@@ -15,7 +15,7 @@ user:
 # Container image configuration
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.5.0
+  tag: devlaptop-v1.10.0-vnc-resize
   pullPolicy: Always
   pullSecretName: regcred
 
@@ -64,6 +64,14 @@ oauth2:
 # Hard-coupled to ingress.auth.type=none so we never accidentally expose a
 # mutable workspace without auth — server.py refuses to start in that combo.
 readOnly: false
+
+# Public-demo hint: when true, the read-only SPA shows ALL persistent
+# memories on the Memory tab (including auto-imported `claude.*` notes)
+# instead of just the curated demo set. The server still enforces
+# read-only writes — this only affects what the SPA renders. Off by
+# default; only flip on for a demo deployment where the visible memory
+# is intended as documentation.
+demoShowAll: false
 
 # Resource limits and requests
 resources:

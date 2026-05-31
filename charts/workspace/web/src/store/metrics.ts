@@ -30,10 +30,3 @@ export function startMetricsPolling(intervalMs = 10000): void {
   void refreshMetrics();
   pollTimer = window.setInterval(refreshMetrics, intervalMs);
 }
-
-export function stopMetricsPolling(): void {
-  if (pollTimer != null) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}

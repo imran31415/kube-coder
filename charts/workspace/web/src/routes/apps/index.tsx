@@ -53,7 +53,10 @@ export function AppsRoute() {
     // the user is starting/stopping dev servers. A quiet 5s refresh
     // surfaces "stopped" → "running" transitions without being so
     // chatty it hammers the loopback parse on every tick.
-    const id = window.setInterval(refresh, 5000);
+    const id = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void refresh();
+    }, 5000);
     return () => window.clearInterval(id);
   }, []);
 
