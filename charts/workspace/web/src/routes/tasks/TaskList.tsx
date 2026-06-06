@@ -22,6 +22,7 @@ import { Icon } from '../../components/Icon';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import type { TaskStatus, TaskSummary } from '../../api/tasks';
+import { isStaleWaiting, idleLabel } from '../../api/tasks';
 import './tasks.css';
 
 const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' | 'accent'> = {
@@ -159,13 +160,16 @@ export function TaskList() {
           {list.map((t) => (
             <li key={t.task_id} data-task-id={t.task_id}>
               <button
-                class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${t.status === 'waiting-for-input' ? 'tl-row-waiting' : ''}`}
+                class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${t.status === 'waiting-for-input' ? 'tl-row-waiting' : ''} ${isStaleWaiting(t) ? 'tl-row-stale' : ''}`}
                 onClick={() => onRowClick(t)}
                 aria-current={activeId === t.task_id ? 'true' : 'false'}
               >
                 <div class="tl-row-head">
                   <div class="tl-row-status-container">
                     <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+                    {isStaleWaiting(t) && (
+                      <Pill tone="danger" mono>stale</Pill>
+                    )}
                     {t.parent_task_id && (
                       <Pill tone="neutral" mono>sub-agent</Pill>
                     )}
@@ -181,10 +185,12 @@ export function TaskList() {
                   </span>
                 </div>
                 {t.name && t.prompt && <div class="tl-row-sub muted">{t.prompt}</div>}
-                {t.status === 'waiting-for-input' && t.last_input_prompt && (
-                  <div class="tl-row-prompt">
-                    <span class="tl-row-prompt-label">Waiting for input:</span>
-                    <span class="tl-row-prompt-text">{t.last_input_prompt}</span>
+                {t.status === 'waiting-for-input' && (
+                  <div class={`tl-row-prompt ${isStaleWaiting(t) ? 'tl-row-prompt-stale' : ''}`}>
+                    <span class="tl-row-prompt-label">
+                      {isStaleWaiting(t) ? 'Needs attention' : 'Waiting for input'}
+                    </span>
+                    <span class="tl-row-prompt-text">idle {idleLabel(t)}</span>
                   </div>
                 )}
                 <div class="tl-row-meta muted">

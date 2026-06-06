@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { listTasks, type TaskSummary } from '../../api/tasks';
+import { listTasks, isStaleWaiting, type TaskSummary } from '../../api/tasks';
 import { navigate } from '../../store/router';
 
 interface BulletinEntry {
@@ -9,6 +9,15 @@ interface BulletinEntry {
   snippet: string;
   ts: number;            // unix seconds
   status: 'running' | 'waiting-for-input';
+  stale: boolean;        // waiting + idle past the stale threshold
+}
+
+// Sort key: stale-waiting first, then waiting, then running — so the
+// sessions that need the user's input are always surfaced before busy ones.
+function attentionRank(e: BulletinEntry): number {
+  if (e.stale) return 0;
+  if (e.status === 'waiting-for-input') return 1;
+  return 2;
 }
 
 const STATUS_LABEL: Record<BulletinEntry['status'], string> = {
@@ -50,8 +59,12 @@ export function DesktopBulletin() {
             snippet: (t.prompt || '').slice(0, 140),
             ts: t.created_at ?? 0,
             status: t.status as BulletinEntry['status'],
+            stale: isStaleWaiting(t),
           }))
-          .sort((a: BulletinEntry, b: BulletinEntry) => b.ts - a.ts)
+          // Waiting/stale first (needs input), then most-recent within group.
+          .sort((a: BulletinEntry, b: BulletinEntry) =>
+            attentionRank(a) - attentionRank(b) || b.ts - a.ts,
+          )
           .slice(0, 3);
         setEntries(live);
       } catch {
@@ -103,11 +116,11 @@ export function DesktopBulletin() {
                 onClick={() => navigateToEntry(e)}
                 title={e.snippet || e.title}
               >
-                <span class={`dt-bulletin-tag dt-bulletin-tag-${e.status === 'waiting-for-input' ? 'waiting' : 'running'}`}>
+                <span class={`dt-bulletin-tag dt-bulletin-tag-${e.stale ? 'stale' : e.status === 'waiting-for-input' ? 'waiting' : 'running'}`}>
                   {e.status === 'running' && (
                     <span class="dt-bulletin-running" aria-hidden="true" />
                   )}
-                  {STATUS_LABEL[e.status]}
+                  {e.stale ? 'Needs you' : STATUS_LABEL[e.status]}
                 </span>
                 <span class="dt-bulletin-row-body">
                   <span class="dt-bulletin-title-text">{e.title}</span>

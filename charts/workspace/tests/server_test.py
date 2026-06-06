@@ -1054,5 +1054,87 @@ class TrustedProxyTests(unittest.TestCase):
             server.AUTH_MODE = orig_auth
 
 
+class WaitingQuiescenceTests(unittest.TestCase):
+    """Quiescence-based waiting-for-input detection in _reconcile_status.
+
+    A live session whose rendered screen stops changing for >= the idle
+    threshold flips to waiting-for-input; any screen change flips it back to
+    running and resets the idle clock.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self._orig_tasks_dir = server.ClaudeTaskManager.TASKS_DIR
+        server.ClaudeTaskManager.TASKS_DIR = self.tmpdir
+
+    def tearDown(self):
+        server.ClaudeTaskManager.TASKS_DIR = self._orig_tasks_dir
+
+    def _make_task(self, **meta_extra):
+        task_dir = os.path.join(self.tmpdir, 'tq-1')
+        os.makedirs(task_dir, exist_ok=True)
+        meta = {'task_id': 'tq-1', 'status': 'running', 'tmux_session': 'claude-tq-1'}
+        meta.update(meta_extra)
+        with open(os.path.join(task_dir, 'task.json'), 'w') as f:
+            json.dump(meta, f)
+        return meta, task_dir
+
+    @staticmethod
+    def _digest(screen):
+        return hashlib.sha1(server.strip_ansi(screen).encode('utf-8', 'replace')).hexdigest()
+
+    def _tmux(self, screen):
+        """subprocess.run stub: session alive; capture-pane returns `screen`."""
+        def run(args, *a, **k):
+            if 'has-session' in args:
+                return mock.Mock(returncode=0, stdout='', stderr='')
+            if 'capture-pane' in args:
+                return mock.Mock(returncode=0, stdout=screen, stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+        return run
+
+    def test_stable_screen_past_threshold_flags_waiting(self):
+        screen = 'idle input box\n> '
+        meta, task_dir = self._make_task(
+            pane_hash=self._digest(screen),
+            last_activity_at=time.time() - (server.IDLE_WAITING_SECONDS + 5),
+        )
+        with mock.patch('server.subprocess.run', side_effect=self._tmux(screen)):
+            server.ClaudeTaskManager._reconcile_status(meta, task_dir)
+        self.assertEqual(meta['status'], 'waiting-for-input')
+        self.assertTrue(meta.get('waiting_for_input'))
+
+    def test_stable_screen_within_threshold_stays_running(self):
+        screen = 'idle input box\n> '
+        meta, task_dir = self._make_task(
+            pane_hash=self._digest(screen),
+            last_activity_at=time.time() - 5,  # only briefly idle
+        )
+        with mock.patch('server.subprocess.run', side_effect=self._tmux(screen)):
+            server.ClaudeTaskManager._reconcile_status(meta, task_dir)
+        self.assertEqual(meta['status'], 'running')
+
+    def test_changed_screen_clears_waiting(self):
+        meta, task_dir = self._make_task(
+            status='waiting-for-input', waiting_for_input=True,
+            pane_hash='stale-hash', last_activity_at=time.time() - 1000,
+        )
+        with mock.patch('server.subprocess.run', side_effect=self._tmux('fresh agent output\n')):
+            server.ClaudeTaskManager._reconcile_status(meta, task_dir)
+        self.assertEqual(meta['status'], 'running')
+        self.assertNotIn('waiting_for_input', meta)
+        self.assertIn('last_activity_at', meta)
+
+    def test_changed_screen_running_resets_idle_clock(self):
+        meta, task_dir = self._make_task(
+            pane_hash='stale-hash', last_activity_at=time.time() - 1000,
+        )
+        before = meta['last_activity_at']
+        with mock.patch('server.subprocess.run', side_effect=self._tmux('spinner frame 2\n')):
+            server.ClaudeTaskManager._reconcile_status(meta, task_dir)
+        self.assertEqual(meta['status'], 'running')
+        self.assertGreater(meta['last_activity_at'], before)
+
+
 if __name__ == '__main__':
     unittest.main()
