@@ -1,0 +1,465 @@
+#!/bin/bash
+# Workspace pod entrypoint. Runs all in-pod services (code-server, ttyd,
+# Xvfb/x11vnc/websockify, browser/Claude API server) and supervises them
+# in a watchdog loop. Mirrors the inline script that previously lived in
+# deployment.yaml — extracted here so it's editable as a real shell script.
+set -o pipefail
+
+log_stage() { echo "[stage] $*" >&2; }
+
+# Forward SIGTERM/SIGINT to in-pod services so tmux sessions and the
+# browser server flush gracefully on pod terminate.
+on_term() {
+  log_stage "SIGTERM received, killing tmux server and child services"
+  tmux kill-server 2>/dev/null || true
+  pkill -TERM -f "code-server" 2>/dev/null || true
+  pkill -TERM -f "ttyd" 2>/dev/null || true
+  pkill -TERM -f "websockify" 2>/dev/null || true
+  pkill -TERM -f "python3 server.py" 2>/dev/null || true
+  exit 0
+}
+trap on_term TERM INT
+
+# ttyd is read-only by default; --writable is what lets clients type into
+# the TTY. On the read-only public demo (READONLY_MODE=true) we drop the
+# flag so visitors can scroll/copy the scripted simulated-claude.sh output
+# but cannot send keystrokes into the pod. Unquoted expansion: empty =>
+# zero args, so a normal deploy still launches ttyd --writable.
+TTYD_WRITABLE="--writable"
+if [ "${READONLY_MODE:-false}" = "true" ]; then
+  TTYD_WRITABLE=""
+  log_stage "READONLY_MODE — launching ttyd read-only (keystrokes disabled)"
+fi
+
+log_stage "preparing home and credential directories"
+cd /home/dev
+mkdir -p /home/dev/.local/share/code-server/extensions
+mkdir -p ~/.config ~/.config/git ~/.config/gh
+mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh
+chmod 700 /home/dev/.credentials/.ssh
+ln -sf /home/dev/.credentials/.ssh ~/.ssh
+touch /home/dev/.credentials/.config/git/config
+ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
+ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
+# CLAUDE.md is chart-managed (describes the workspace environment to
+# Claude). Always overwrite from the configmap so chart updates land
+# — previously we preserved any existing file, which meant edits to
+# claude-md.txt never reached workspaces with an established PVC.
+# User-level notes belong in the persistent-memory subsystem, not
+# here.
+cp /claude-config/CLAUDE.md /home/dev/CLAUDE.md
+
+# tmux config — chart-managed so dashboard users get the same scrollback
+# ergonomics out of the box. mouse on means scroll-wheel in the
+# Session/Preview iframe enters tmux copy-mode automatically (no Ctrl+B [
+# hotkey needed); 50k line history covers a long Claude session without
+# hitting the default 2k limit. Always overwritten on boot so chart
+# edits propagate.
+# Brace-group of printf lines instead of a heredoc — the surrounding
+# YAML block scalar uses 4-space indent which conflicts with
+# heredoc terminator placement (`EOF` must be unindented for `<<'EOF'`
+# or use `<<-` with tab indent, neither friendly to this file).
+{
+  printf '%s\n' 'set -g mouse on'
+  printf '%s\n' 'set -g history-limit 50000'
+  printf '%s\n' '# Wheel events arrive as proper mouse-scroll escapes (xterm.js DEC'
+  printf '%s\n' '# 1007 is reset in terminal-entry.sh so alt-screen apps like Claude'
+  printf '%s\n' '# pass wheel through instead of converting to arrow keys). On first'
+  printf '%s\n' '# wheel-up, enter copy-mode; on wheel-down at the bottom, return to'
+  printf '%s\n' '# the live pane. Natural scrollbar UX without the Ctrl+B [ hotkey.'
+  printf '%s\n' "bind -T root WheelUpPane   if-shell -F -t = '#{mouse_any_flag}' 'send-keys -M' 'if-shell -F -t = \"#{pane_in_mode}\" \"send-keys -M\" \"copy-mode -et=\"'"
+  printf '%s\n' "bind -T root WheelDownPane if-shell -F -t = '#{mouse_any_flag}' 'send-keys -M' 'send-keys -M'"
+  printf '%s\n' 'bind -T copy-mode-vi WheelUpPane   send-keys -X -N 3 scroll-up'
+  printf '%s\n' 'bind -T copy-mode-vi WheelDownPane send-keys -X -N 3 scroll-down'
+} > /home/dev/.tmux.conf
+# If a tmux server is already running (e.g. after a pod restart with
+# surviving sessions), re-source the config so the live sessions pick
+# up the new settings without needing to be killed + relaunched.
+tmux source-file /home/dev/.tmux.conf 2>/dev/null || true
+
+# Ensure the upstream kube-coder source is available at /home/dev/kube-coder
+# so Claude can introspect the workspace's own infrastructure and contribute
+# changes back via fork+PR (see CLAUDE.md "kube-coder source" section).
+# Also keeps /home/dev/kube-coder/docs current so the in-app Docs site
+# picks up new pages without a manual sync. Idempotent — clones if missing,
+# ff-only-pulls if present (skipped silently when there are local commits).
+# Backgrounded so a slow/flaky network never blocks pod readiness.
+# Runs in READONLY_MODE too — the readonly gate is for *runtime* mutations
+# from HTTP clients, not boot-time setup. The public demo needs the docs
+# tree at /home/dev/kube-coder/docs/ to populate the in-app /docs route.
+(
+  if [ ! -d /home/dev/kube-coder/.git ]; then
+    log_stage "cloning kube-coder source into /home/dev/kube-coder"
+    git clone https://github.com/imran31415/kube-coder.git /home/dev/kube-coder \
+      && log_stage "kube-coder source clone complete" \
+      || log_stage "WARNING: kube-coder clone failed (network?); will retry on next pod start"
+  else
+    log_stage "refreshing kube-coder source (git pull --ff-only)"
+    ( cd /home/dev/kube-coder && git pull --ff-only origin main >/dev/null 2>&1 ) \
+      && log_stage "kube-coder source refreshed" \
+      || log_stage "NOTE: git pull skipped (local commits or offline); existing clone retained"
+  fi
+) &
+
+# Render an OpenCode config file whenever at least one OpenCode-backed
+# provider has been configured (OpenRouter and/or Fallback). Claude
+# itself needs no on-disk config — it reads ANTHROPIC_API_KEY from env
+# or OAuths interactively. The config is rewritten on every pod start
+# so Helm value changes flow through cleanly.
+if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ]; then
+  log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) deepseek=$([ -n "$DEEPSEEK_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
+  mkdir -p $HOME/.config/opencode
+  OPENROUTER_MODEL_DEFAULT="${KC_OPENROUTER_MODEL:-anthropic/claude-sonnet-4}"
+  FALLBACK_MODEL_DEFAULT="${KC_FALLBACK_MODEL:-anthropic/claude-sonnet-4}"
+  FALLBACK_PROVIDER_ID="${KC_FALLBACK_PROVIDER_ID:-kube-coder-fallback}"
+  FALLBACK_PROVIDER_NAME="${KC_FALLBACK_PROVIDER_NAME:-Kube-Coder Fallback}"
+  # NOTE: heredoc delimiter is single-quoted ('PY') so bash performs NO
+  # expansion on the body. Critical because (a) the literal token
+  # {env:VAR} must reach opencode unchanged, and (b) earlier comments
+  # containing backticks were being command-substituted by bash and
+  # corrupting the python stdin.
+  python3 - <<'PY' > $HOME/.config/opencode/opencode.json
+import json, os
+cfg = {"$schema": "https://opencode.ai/config.json"}
+provider = {}
+# OpenRouter and DeepSeek are first-class OpenCode providers -- the CLI
+# auto-discovers them from $OPENROUTER_API_KEY and $DEEPSEEK_API_KEY in
+# the pod env. We deliberately do NOT emit stub blocks for them: any
+# custom provider listed alongside an incomplete first-class entry
+# (no npm field) makes opencodes config loader silently drop the rest,
+# including our fallback. Their models still surface to
+# /api/claude/assistants via KC_OPENROUTER_MODEL / KC_DEEPSEEK_MODEL.
+if os.environ.get("KC_FALLBACK_BASE_URL"):
+    options = {"baseURL": os.environ["KC_FALLBACK_BASE_URL"]}
+    # Only declare apiKey when one is actually present. OpenCode
+    # silently disables the provider if the env-ref resolves to empty,
+    # which made --model <id>/<model> fall back to OpenRouter without a
+    # visible error. Open Ollama endpoints don't need a key at all.
+    if os.environ.get("KC_FALLBACK_API_KEY"):
+        options["apiKey"] = "{env:KC_FALLBACK_API_KEY}"
+    provider[os.environ.get("KC_FALLBACK_PROVIDER_ID", "kube-coder-fallback")] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": os.environ.get("KC_FALLBACK_PROVIDER_NAME", "Kube-Coder Fallback"),
+        "options": options,
+        # tool_call: true is required — OpenCode silently disables tool
+        # advertising for custom-provider models that don't declare it,
+        # which makes the model say "there is no function to run X" and
+        # hallucinate webfetch-style replies instead of using bash/edit.
+        "models": {os.environ.get("KC_FALLBACK_MODEL", "anthropic/claude-sonnet-4"): {"tool_call": True}},
+    }
+if provider:
+    cfg["provider"] = provider
+print(json.dumps(cfg, indent=2))
+PY
+fi
+
+if [ -n "$GITHUB_APP_ID" ]; then
+  log_stage "minting initial GitHub App token and starting refresh daemon"
+  python3 /github-app/github-app-token.py --once
+  # shellcheck disable=SC1091
+  source /home/dev/.credentials/.github-env
+  cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env
+
+  # Make GH_TOKEN/GITHUB_TOKEN visible to EVERY shell in the pod —
+  # not just interactive bash. The previous "append to ~/.bashrc"
+  # approach silently failed for:
+  #   • `bash -c '…'`         — non-interactive, .bashrc returns early
+  #   • scripts and hooks     — same as above
+  #   • `gh auth git-credential` invoked by Git's credential helper
+  # We wire three sources so every shell flavour finds it:
+  #   1. /etc/profile.d/00-github-env.sh   → login shells
+  #   2. /etc/bash.bashrc                  → interactive non-login bash
+  #   3. BASH_ENV (set on the container)   → non-interactive bash
+  # The shipped file always reads /home/dev/.profile.d-github-env so the
+  # daemon's in-place rewrites are picked up without restart.
+  GH_SRC_LINE='[ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env'
+  echo "$GH_SRC_LINE" | sudo tee /etc/profile.d/00-github-env.sh > /dev/null
+  sudo chmod 0644 /etc/profile.d/00-github-env.sh
+  if ! sudo grep -qF '/home/dev/.profile.d-github-env' /etc/bash.bashrc 2>/dev/null; then
+    echo "$GH_SRC_LINE" | sudo tee -a /etc/bash.bashrc > /dev/null
+  fi
+
+  python3 /github-app/github-app-token.py --daemon &
+fi
+
+{{- if .Values.codeServer.enabled }}
+log_stage "seeding default code-server settings (first run only)"
+CS_USER_DIR=/home/dev/.local/share/code-server/User
+mkdir -p "$CS_USER_DIR"
+if [ ! -f "$CS_USER_DIR/settings.json" ]; then
+  cat > "$CS_USER_DIR/settings.json" <<'JSON'
+{
+  "workbench.colorTheme": "Default Dark Modern",
+  "workbench.preferredDarkColorTheme": "Default Dark Modern",
+  "window.autoDetectColorScheme": false,
+  "terminal.integrated.scrollback": 2000,
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.git/**": true,
+    "**/dist/**": true,
+    "**/build/**": true,
+    "**/.next/**": true,
+    "**/target/**": true
+  }
+}
+JSON
+fi
+
+log_stage "starting code-server"
+NODE_OPTIONS="--max-old-space-size=1536" \
+  code-server --bind-addr 0.0.0.0:8080 --auth none \
+  --user-data-dir /home/dev/.local/share/code-server \
+  --extensions-dir /home/dev/.local/share/code-server/extensions \
+  /home/dev > /tmp/code-server.log 2>&1 &
+{{- else }}
+log_stage "code-server disabled (codeServer.enabled=false); skipping launch"
+{{- end }}
+
+log_stage "starting ttyd"
+# scrollback=10000   — give xterm.js a 10k-line buffer + show the native
+#                       scrollbar on the iframe edge. User can drag to
+#                       scroll regardless of alt-screen mode (Claude TUI).
+# disableLeaveAlert  — suppress "Are you sure you want to leave?" prompt
+#                       when navigating away from the iframe.
+ttyd --port 7681 --interface 0.0.0.0 $TTYD_WRITABLE \
+  --client-option disableLeaveAlert=true \
+  --client-option scrollback=10000 \
+  -w /home/dev \
+  /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
+
+log_stage "starting Xvfb / fluxbox / x11vnc"
+export DISPLAY=:99
+rm -f /tmp/.X99-lock
+# The initial -screen geometry sets the MAX framebuffer Xvfb can ever
+# render; xrandr can switch to smaller modes within this allocation but
+# not larger. We size the framebuffer to fit a 1080p landscape monitor
+# AND a tall mobile portrait (e.g. iPhone 15 Pro Max 430x932 zoomed),
+# then immediately switch to 1280x720 as the visible default.
+Xvfb :99 -screen 0 1920x1280x24 +extension RANDR &
+sleep 3
+DISPLAY=:99 setxkbmap us
+DISPLAY=:99 fluxbox &
+sleep 1
+
+# Register the common screen sizes noVNC clients may request via the
+# ExtendedDesktopSize protocol (resize=remote). Without these, x11vnc's
+# -xrandr handler has no matching mode to switch to and silently keeps
+# the old size. We use synthetic modelines (Xvfb ignores real pixel
+# timings) instead of `cvt`, which isn't shipped in x11-xserver-utils.
+# The output name comes from xrandr itself ("screen" on Xvfb 21.x).
+if command -v xrandr >/dev/null 2>&1; then
+  OUTPUT_NAME=$(DISPLAY=:99 xrandr 2>/dev/null | awk '/ connected/{print $1; exit}')
+  OUTPUT_NAME=${OUTPUT_NAME:-screen}
+  register_mode() {
+    local W=$1 H=$2 NAME="${1}x${2}" CLK
+    CLK=$(( W * H / 16384 + 25 ))
+    DISPLAY=:99 xrandr --newmode "$NAME" "$CLK" \
+      "$W" "$((W+16))" "$((W+32))" "$((W+64))" \
+      "$H" "$((H+1))"  "$((H+3))"  "$((H+10))" \
+      -HSync -VSync 2>/dev/null || true
+    DISPLAY=:99 xrandr --addmode "$OUTPUT_NAME" "$NAME" 2>/dev/null || true
+  }
+  for mode in \
+      "1280 720" "1920 1080" "1366 768" "1024 768" \
+      "390 844" "844 390" "393 852" "852 393" "430 932" "932 430" \
+      "768 1024" "1024 1366" "414 896" "896 414"; do
+    # shellcheck disable=SC2086
+    register_mode $mode
+  done
+  DISPLAY=:99 xrandr --output "$OUTPUT_NAME" --mode 1280x720 2>/dev/null || true
+fi
+
+# -xrandr resize lets remote clients trigger a framebuffer resize via
+# the ExtendedDesktopSize message — x11vnc applies it through xrandr,
+# so mobile devices get a portrait framebuffer instead of a letterbox.
+#
+# We deliberately do NOT enable -ncache here: while client-side pixel
+# caching reduces bandwidth on window motion, x11vnc implements it by
+# placing the cache *below* the visible framebuffer, doubling the
+# reported canvas height. Combined with noVNC's resize=scale (used by
+# the dashboard's Preview pane) this would scale the cache area into
+# the iframe and shrink the visible desktop to a tiny strip at the top.
+x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -repeat \
+  -cursor -cursorpos -24to32 -nobell -noipv6 \
+  -xrandr resize &
+sleep 2
+
+log_stage "waiting for VNC port 5900"
+for i in {1..30}; do
+  netstat -tln 2>/dev/null | grep -q :5900 && break
+  sleep 1
+done
+
+log_stage "starting websockify (noVNC from image at /usr/share/novnc)"
+pkill -f websockify || true
+sleep 1
+websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
+  > /tmp/websockify.log 2>&1 &
+sleep 2
+
+log_stage "preparing persistent memory subsystem"
+# Persist Claude Code's own file-based auto-memory across pod restarts
+# by symlinking ~/.claude (ephemeral in /home/ubuntu or wherever $HOME
+# points) to a PVC-backed directory under /home/dev/.claude. Without
+# this, every restart wipes ~/.claude/projects/*/memory/*.md and the
+# auto-sync prune step would soft-delete every imported entry.
+TARGET=/home/dev/.claude
+mkdir -p "$TARGET"
+chmod 700 "$TARGET"
+# If a previous deploy mis-symlinked $TARGET to itself, repair it: a
+# self-link is detectable as `readlink == basename` and yields the
+# "too many levels of symbolic links" error on any access.
+if [ -L "$TARGET" ]; then
+  LINK_DEST=$(readlink "$TARGET")
+  if [ "$LINK_DEST" = "$TARGET" ] || [ "$LINK_DEST" = ".claude" ]; then
+    rm -f "$TARGET"
+    mkdir -p "$TARGET"
+    chmod 700 "$TARGET"
+  fi
+fi
+# Symlink every other plausible $HOME/.claude → the PVC target so that
+# whichever user actually runs `claude`, its file-based auto-memory
+# writes land on the PVC.
+for HOME_DIR in /home/ubuntu; do
+  [ -d "$HOME_DIR" ] || continue
+  LINK="$HOME_DIR/.claude"
+  # Don't try to symlink the target to itself.
+  [ "$LINK" = "$TARGET" ] && continue
+  # Already a correct symlink? leave it.
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$TARGET" ]; then
+    continue
+  fi
+  # Existing directory (or stale symlink): merge contents into the
+  # PVC target (no-clobber preserves PVC as canonical), then replace.
+  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+    cp -an "$LINK"/. "$TARGET"/ 2>/dev/null || true
+    rm -rf "$LINK"
+  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    rm -f "$LINK"
+  fi
+  ln -sfn "$TARGET" "$LINK" 2>/dev/null || true
+done
+
+# The memory subsystem ships its Python package as flat configmap keys
+# (configmap keys cannot contain "/"). Unpack them into a real `memory/`
+# tree next to server.py so `from memory.manager import ...` resolves.
+mkdir -p /tmp/browser/memory /home/dev/.claude-memory/backups
+chmod 700 /home/dev/.claude-memory
+# Materialize package files (rename flat keys → real layout).
+install -m 0644 /browser-config/memory__init__.py /tmp/browser/memory/__init__.py
+install -m 0644 /browser-config/memory_store.py    /tmp/browser/memory/store.py
+install -m 0644 /browser-config/memory_manager.py  /tmp/browser/memory/manager.py
+install -m 0644 /browser-config/memory_sync.py     /tmp/browser/memory/sync.py
+# Seed the per-user MCP server + user-prompt-submit hook next to the
+# SQLite file so claude config points at PVC-backed paths that survive
+# configmap rotations.
+install -m 0755 /browser-config/mcp_memory.py          /home/dev/.claude-memory/mcp_memory.py
+install -m 0755 /browser-config/memory_inject_hook.py  /home/dev/.claude-memory/memory_inject_hook.py
+# The MCP server imports the same memory.* package; expose it alongside.
+rm -rf /home/dev/.claude-memory/memory
+mkdir -p /home/dev/.claude-memory/memory
+install -m 0644 /tmp/browser/memory/__init__.py /home/dev/.claude-memory/memory/__init__.py
+install -m 0644 /tmp/browser/memory/store.py    /home/dev/.claude-memory/memory/store.py
+install -m 0644 /tmp/browser/memory/manager.py  /home/dev/.claude-memory/memory/manager.py
+install -m 0644 /tmp/browser/memory/sync.py     /home/dev/.claude-memory/memory/sync.py
+# Register the MCP server in the user's claude config (idempotent merge).
+python3 /browser-config/seed_claude_config.py || \
+  log_stage "WARNING: seed_claude_config.py failed (memory MCP not registered)"
+
+log_stage "starting browser/Claude API server on :6080"
+mkdir -p /tmp/browser
+# Copy Python sources (these need a pod restart to take effect).
+# Skip the flat memory_* / memory__init__.py keys — reassembled above.
+for f in /browser-config/*; do
+  base=$(basename "$f")
+  case "$base" in
+    memory_*|memory__init__.py) continue ;;
+  esac
+  cp "$f" /tmp/browser/
+done
+# Symlink HTML/CSS/JS from the separate (non-checksummed) browser-html
+# ConfigMap so dashboard edits + helm-upgrade refresh without a pod
+# restart. The kubelet syncs the new ConfigMap to /browser-html
+# atomically; the symlinks here dereference to the fresh content on
+# the next HTTP request.
+for f in /browser-html/*; do
+  ln -sf "$f" "/tmp/browser/$(basename "$f")"
+done
+cd /tmp/browser
+# Public-demo seed. Idempotent (no-ops once stores have data) and gated
+# on READONLY_MODE so it can never pollute a real workspace. Runs before
+# server.py binds so visitors never see an empty Memory / Build page.
+if [ "${READONLY_MODE:-false}" = "true" ]; then
+  log_stage "READONLY_MODE — running seed_demo.py to populate sample data"
+  READONLY_MODE=true python3 /tmp/browser/seed_demo.py \
+    2>&1 | sed 's/^/[seed_demo] /' || log_stage "WARNING: seed_demo.py exited non-zero"
+fi
+python3 server.py &
+
+log_stage "all services launched, entering supervision loop"
+tick=0
+while true; do
+  sleep 30
+  tick=$((tick + 1))
+
+  # Every 5 min: snapshot top RSS processes for post-incident diagnosis.
+  # Rotates at ~1MB to keep PVC use bounded across long-lived pods.
+  if [ $((tick % 10)) -eq 0 ]; then
+    {
+      echo "=== $(date -u +%FT%TZ) memory snapshot ==="
+      ps -eo pid,ppid,rss,comm,args --sort=-rss 2>/dev/null | head -15
+      echo "--- cgroup memory.current ---"
+      cat /sys/fs/cgroup/memory.current 2>/dev/null \
+        || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null \
+        || echo "n/a"
+      echo
+    } >> /tmp/memory.log 2>&1
+    if [ "$(stat -c %s /tmp/memory.log 2>/dev/null || echo 0)" -gt 1048576 ]; then
+      tail -c 524288 /tmp/memory.log > /tmp/memory.log.tmp && mv /tmp/memory.log.tmp /tmp/memory.log
+    fi
+  fi
+
+  # Every 5 min: reap orphan chromium/headless_shell processes adopted by
+  # PID 1. Playwright MCP and similar tools can leak these when a claude
+  # session crashes without cleaning up its browser context.
+  if [ $((tick % 10)) -eq 0 ]; then
+    ps -eo pid,ppid,comm,args 2>/dev/null \
+      | awk '$2==1 && ($3 ~ /chrome|chromium|headless_shell/ || $0 ~ /--remote-debugging-port/) {print $1}' \
+      | while read -r orphan_pid; do
+          log_stage "reaping orphan browser PID $orphan_pid"
+          kill -TERM "$orphan_pid" 2>/dev/null || true
+        done
+  fi
+
+  if ! pgrep -f "python3 server.py" > /dev/null; then
+    log_stage "restarting browser server"
+    ( cd /tmp/browser && python3 server.py & )
+  fi
+  {{- if .Values.codeServer.enabled }}
+  if ! netstat -tln 2>/dev/null | grep -q :8080; then
+    log_stage "restarting code-server (killing stale processes first)"
+    pkill -f "code-server" 2>/dev/null || true
+    sleep 1
+    NODE_OPTIONS="--max-old-space-size=1536" \
+      code-server --bind-addr 0.0.0.0:8080 --auth none \
+      --user-data-dir /home/dev/.local/share/code-server \
+      --extensions-dir /home/dev/.local/share/code-server/extensions \
+      /home/dev >> /tmp/code-server.log 2>&1 &
+  fi
+  {{- end }}
+  if ! netstat -tln 2>/dev/null | grep -q :7681; then
+    log_stage "restarting ttyd"
+    ttyd --port 7681 --interface 0.0.0.0 $TTYD_WRITABLE \
+      --client-option disableLeaveAlert=true \
+      --client-option scrollback=10000 \
+      -w /home/dev \
+      /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
+  fi
+  if ! netstat -tln 2>/dev/null | grep -q :6081; then
+    log_stage "restarting websockify"
+    pkill -f websockify || true
+    sleep 1
+    websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
+      >> /tmp/websockify.log 2>&1 &
+  fi
+done

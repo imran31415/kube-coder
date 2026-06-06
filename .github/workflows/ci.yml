@@ -107,3 +107,29 @@ jobs:
 
       - name: Vitest
         run: yarn --cwd charts/workspace/web test
+
+  docker-build:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: devlaptop/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: kube-coder:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Build only the runtime stage (skip SPA dashboard builder) to
+          # keep CI fast while still validating the Dockerfile + all
+          # install commands (Ante, Claude Code, OpenCode, ttyd, etc.).
+          target: runtime
