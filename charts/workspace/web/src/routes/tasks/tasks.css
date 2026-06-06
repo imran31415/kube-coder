@@ -141,6 +141,23 @@
   background: var(--warning-soft, color-mix(in srgb, #fbbf24 12%, var(--surface)));
 }
 
+/* Stale escalation — a waiting task that's been idle past the stale
+   threshold (~20m). Overrides the amber with a stronger red "needs you" cue
+   and a more urgent pulse. */
+.tl-row-stale {
+  border-color: color-mix(in srgb, #ef4444 45%, var(--border));
+  background: color-mix(in srgb, #ef4444 10%, var(--surface));
+  animation: tl-stale-pulse 1.4s ease-in-out infinite;
+}
+.tl-row-stale:hover {
+  background: color-mix(in srgb, #ef4444 15%, var(--surface-2));
+  border-color: color-mix(in srgb, #ef4444 60%, var(--border-2));
+}
+.tl-row-stale.tl-row-active {
+  border-color: #ef4444;
+  background: color-mix(in srgb, #ef4444 14%, var(--surface));
+}
+
 .tl-row-status-container {
   display: flex;
   align-items: center;
@@ -172,6 +189,24 @@
   font-family: var(--font-mono);
   color: var(--text);
   word-break: break-word;
+}
+
+/* Stale variant of the prompt strip — red-tinted to match .tl-row-stale. */
+.tl-row-prompt-stale {
+  background: color-mix(in srgb, #ef4444 8%, var(--surface-2));
+  border-color: color-mix(in srgb, #ef4444 30%, var(--border));
+}
+.tl-row-prompt-stale .tl-row-prompt-label {
+  color: #ef4444;
+}
+
+@keyframes tl-stale-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, #ef4444 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, #ef4444 12%, transparent);
+  }
 }
 
 @keyframes tl-waiting-pulse {

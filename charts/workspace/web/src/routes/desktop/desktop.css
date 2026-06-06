@@ -515,6 +515,10 @@
   background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
   color: var(--warn);
 }
+.dt-bulletin-tag-stale {
+  background: color-mix(in srgb, #ef4444 20%, var(--surface-2));
+  color: #ef4444;
+}
 :root[data-theme="light"] .dt-bulletin-tag-running {
   background: color-mix(in srgb, #047857 14%, var(--surface-2));
   color: #047857;

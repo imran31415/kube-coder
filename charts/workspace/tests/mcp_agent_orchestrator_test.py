@@ -150,6 +150,28 @@ class SpawnGuardTests(unittest.TestCase):
         self.assertEqual(payload['mode'], 'interactive')
         thread_cls.assert_called_once()
 
+    def _spawn_workdir(self, args):
+        with mock.patch.object(orch.subprocess, 'run', side_effect=_tmux_alive), \
+             mock.patch.object(orch, '_count_live_agent_sessions', return_value=0), \
+             mock.patch.object(orch.threading, 'Thread'):
+            res = orch._tool_spawn_agent({'prompt': 'go', 'assistant': 'ante', **args})
+        meta_path = os.path.join(self.tmp, json.loads(res['content'][0]['text'])['task_id'], 'task.json')
+        with open(meta_path) as f:
+            return json.load(f)
+
+    def test_workdir_defaults_to_spawning_agent_cwd(self):
+        # No workdir passed → inherit the orchestrator's cwd (the parent's dir).
+        meta = self._spawn_workdir({})
+        self.assertEqual(meta['workdir'], os.getcwd())
+
+    def test_explicit_existing_workdir_is_used(self):
+        meta = self._spawn_workdir({'workdir': self.tmp})
+        self.assertEqual(meta['workdir'], self.tmp)
+
+    def test_nonexistent_workdir_falls_back(self):
+        meta = self._spawn_workdir({'workdir': '/no/such/dir/xyz'})
+        self.assertEqual(meta['workdir'], '/home/dev')
+
 
 class ReconcileTests(unittest.TestCase):
     def setUp(self):

@@ -320,7 +320,20 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         return {'isError': True, 'content': [{'type': 'text', 'text': 'prompt is required'}]}
 
     assistant = args.get('assistant', 'ante')
-    workdir = args.get('workdir', '/home/dev')
+    # Default the sub-agent's working directory to the SPAWNING agent's cwd.
+    # This MCP server is a stdio subprocess of the parent CLI, so os.getcwd()
+    # is the directory the parent was launched in (its project) — a far better
+    # default than a hardcoded path. Fall back to /home/dev if the requested
+    # or inherited directory doesn't exist, so a bad value can't make the
+    # sub-agent's `cd` fail and kill the session before it starts.
+    workdir = (args.get('workdir') or '').strip()
+    if not workdir:
+        try:
+            workdir = os.getcwd()
+        except OSError:
+            workdir = '/home/dev'
+    if not os.path.isdir(workdir):
+        workdir = '/home/dev'
     parent_task_id = args.get('parent_task_id') or os.environ.get('KC_TASK_ID')
 
     # Headless one-shot is the orchestration default: the agent exits when
@@ -639,7 +652,7 @@ TOOLS: Dict[str, Any] = {
                         'enum': ['headless', 'interactive'],
                         'default': 'headless',
                     },
-                    'workdir': {'type': 'string', 'description': 'Working directory', 'default': '/home/dev'},
+                    'workdir': {'type': 'string', 'description': "Working directory for the sub-agent. Defaults to the spawning agent's own working directory (its project); pass an absolute path to override."},
                     'parent_task_id': {'type': 'string', 'description': 'Parent task for lineage tracking (auto-inherited from env)'},
                 },
                 'required': ['prompt'],
