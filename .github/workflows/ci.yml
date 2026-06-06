@@ -129,7 +129,9 @@ jobs:
           tags: kube-coder:ci-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Build only the runtime stage (skip SPA dashboard builder) to
-          # keep CI fast while still validating the Dockerfile + all
-          # install commands (Ante, Claude Code, OpenCode, ttyd, etc.).
+          # Build the runtime stage (no push). This still compiles the SPA
+          # (runtime COPYs from the dashboard-builder stage, so a tsc/build
+          # break fails here) and runs every install command — Ante, Claude
+          # Code, OpenCode, ttyd — catching Dockerfile/dependency regressions
+          # before deploy.
           target: runtime

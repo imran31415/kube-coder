@@ -149,6 +149,22 @@ if os.environ.get("KC_FALLBACK_BASE_URL"):
     }
 if provider:
     cfg["provider"] = provider
+# Register the same stdio MCP servers Claude and Ante get so OpenCode can
+# also initiate + track sub-agents (agent-orchestrator) and share the
+# persistent memory. `mcp` is an independent top-level key — it does not
+# interact with the provider-loader fragility noted above.
+cfg["mcp"] = {
+    "agent-orchestrator": {
+        "type": "local",
+        "command": ["python3", "/tmp/browser/mcp_agent_orchestrator.py"],
+        "enabled": True,
+    },
+    "memory": {
+        "type": "local",
+        "command": ["python3", "/home/dev/.claude-memory/mcp_memory.py"],
+        "enabled": True,
+    },
+}
 print(json.dumps(cfg, indent=2))
 PY
 fi
@@ -365,6 +381,55 @@ install -m 0644 /tmp/browser/memory/sync.py     /home/dev/.claude-memory/memory/
 # Register the MCP server in the user's claude config (idempotent merge).
 python3 /browser-config/seed_claude_config.py || \
   log_stage "WARNING: seed_claude_config.py failed (memory MCP not registered)"
+
+# Seed Ante's config so a spawned/selected Ante agent gets the SAME stdio
+# MCP servers Claude does — the agent-orchestrator (so Ante can itself
+# spawn + track sub-agents, making the task flow bidirectional) and the
+# shared persistent memory. Idempotent merge: only the kube-coder-managed
+# mcp_servers keys are touched, user settings are preserved.
+# has_completed_onboarding is set so headless `ante -p` never stalls on a
+# first-run onboarding prompt. Ante reads ~/.ante/settings.json (see
+# docs.antigma.ai → Storage / MCP Servers).
+log_stage "seeding Ante MCP config (~/.ante/settings.json)"
+python3 - <<'PY' || log_stage "WARNING: Ante config seed failed (Ante MCP not registered)"
+import json, os
+ante_dir = os.path.expanduser('~/.ante')
+os.makedirs(ante_dir, exist_ok=True)
+path = os.path.join(ante_dir, 'settings.json')
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        cfg = {}
+except (OSError, ValueError):
+    cfg = {}
+servers = cfg.get('mcp_servers')
+if not isinstance(servers, dict):
+    servers = {}
+servers['agent-orchestrator'] = {
+    'command': 'python3',
+    'args': ['/tmp/browser/mcp_agent_orchestrator.py'],
+}
+servers['memory'] = {
+    'command': 'python3',
+    'args': ['/home/dev/.claude-memory/mcp_memory.py'],
+}
+cfg['mcp_servers'] = servers
+cfg.setdefault('has_completed_onboarding', True)
+# Default Ante to OpenRouter when that key is configured — Ante reuses the
+# same OPENROUTER_API_KEY as OpenCode, and 'openrouter' is a built-in Ante
+# provider (no catalog.json needed). Without a default, headless `ante -p`
+# would auto-detect and could land on a provider with no credentials.
+# setdefault so a user's explicit provider/model choice is preserved.
+if os.environ.get('OPENROUTER_API_KEY'):
+    cfg.setdefault('provider', 'openrouter')
+    cfg.setdefault('model', os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'))
+tmp = path + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(cfg, f, indent=2)
+os.replace(tmp, path)
+print('[seed_ante_config] wrote', path)
+PY
 
 log_stage "starting browser/Claude API server on :6080"
 mkdir -p /tmp/browser
