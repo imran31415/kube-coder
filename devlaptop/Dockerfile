@@ -63,7 +63,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # https://docs.anthropic.com/en/docs/claude-code/setup
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
-ARG CLAUDE_CODE_VERSION=2.1.143
+ARG CLAUDE_CODE_VERSION=2.1.167
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -75,17 +75,21 @@ ARG OPENCODE_VERSION=1.15.3
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Ante CLI — terminal-native AI coding agent from Antigma Labs.
-# Distributed as a single ~15MB self-contained binary. install.sh detects
-# the platform, downloads the matching binary, and installs it to
-# $HOME/.ante/bin (i.e. /root/.ante/bin in this root build stage), adding
-# that dir to shell rc files only. That location is NOT on the `dev` user's
-# PATH, so we relocate the binary to /usr/local/bin (on every shell's PATH,
-# including non-login `kubectl exec` and the orchestrator's `bash -lc`).
+# Distributed as a single self-contained binary. install.sh installs it to
+# $HOME/.ante/bin (/root/.ante/bin in this root build stage). We keep the real
+# binary at /opt/ante/ante and make /usr/local/bin/ante a *symlink* to the
+# PVC-backed path /home/dev/.ante/bin/ante. start.sh seeds that PVC path from
+# /opt/ante/ante on boot — this gives a writable, persistent binary location
+# (the pod blocks runtime sudo, so we can't repoint /usr/local/bin at runtime),
+# while the image stays the source of truth: bump ANTE_VERSION + rebuild to
+# update. Version is pinned to the `stable` channel for reproducible builds.
 # https://docs.antigma.ai
-ARG ANTE_VERSION=latest
+ARG ANTE_VERSION=stable
 RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
-    && install -m 0755 "$HOME/.ante/bin/ante" /usr/local/bin/ante \
-    && test -x /usr/local/bin/ante
+    && mkdir -p /opt/ante \
+    && install -m 0755 "$HOME/.ante/bin/ante" /opt/ante/ante \
+    && test -x /opt/ante/ante \
+    && ln -sfn /home/dev/.ante/bin/ante /usr/local/bin/ante
 
 # Install ttyd for mobile-friendly terminal access.
 # Pinned to a known-good version so transient 502s from GitHub's release CDN

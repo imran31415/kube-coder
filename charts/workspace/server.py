@@ -109,57 +109,16 @@ def strip_ansi(text):
     return _ANSI_RE.sub('', text)
 
 
-def detect_waiting_for_input(output):
-    """Detect common patterns indicating waiting for human input.
-    
-    Returns:
-        tuple: (is_waiting, last_prompt_line)
-    """
-    if not output or not output.strip():
-        return False, ""
-    
-    lines = output.strip().split('\n')
-    if not lines:
-        return False, ""
-    
-    # Get the last few non-empty lines for pattern analysis
-    last_lines = []
-    for line in reversed(lines):
-        if line.strip():
-            last_lines.append(line.strip())
-        if len(last_lines) >= 3:  # Check last 3 non-empty lines
-            break
-    
-    if not last_lines:
-        return False, ""
-    
-    # Patterns that typically indicate waiting for input
-    waiting_patterns = [
-        r'.*[?]\s*$',                    # Questions ending with ?
-        r'.*>\s*$',                      # Shell-like prompts ending with >
-        r'.*:\s*$',                      # Prompts ending with :
-        r'.*Press\s+(any\s+)?key.*',     # "Press any key" messages
-        r'.*Enter\s+your\s+(choice|input|answer).*', # "Enter your choice"
-        r'.*Please\s+(provide|enter|type|input).*',  # "Please provide"
-        r'.*Waiting\s+for.*input.*',     # "Waiting for input"
-        r'.*Continue\?\s*(\(y/n\))?\s*$', # "Continue? (y/n)"
-        r'.*\(y/n\)\s*$',               # Simple (y/n) prompts
-        r'.*\[.*\]\?\s*$',              # Bracketed choice prompts like [y/N]?
-        r'.*\s+\$\s*$',                 # Command prompts ending with $
-        r'.*#\s*$',                     # Root prompts ending with #
-        r'.*Select\s+an?\s+option.*',   # "Select an option"
-        r'.*Choose\s+(from|an?).*',     # "Choose from" or "Choose an"
-        r'.*Which\s+.*\?.*',           # "Which option?" type questions
-    ]
-    
-    # Check each of the last few lines
-    for line in last_lines:
-        for pattern in waiting_patterns:
-            if re.search(pattern, line, re.IGNORECASE):
-                # Return the line that matched as the prompt
-                return True, line
-    
-    return False, ""
+# How long a task's rendered tmux screen must stay unchanged before we treat
+# it as waiting-for-input. While an agent works it streams output / animates a
+# spinner+timer, so the screen keeps changing; a static screen means it has
+# finished its turn (or hit a prompt) and is awaiting the human. This replaced
+# a regex scraper that never worked against the agents' full-screen TUIs.
+# Env-overridable for tuning.
+try:
+    IDLE_WAITING_SECONDS = float(os.environ.get('KC_IDLE_WAITING_SECONDS', '90'))
+except ValueError:
+    IDLE_WAITING_SECONDS = 90.0
 
 class MetricsCollector:
     """Collects system metrics from /proc filesystem and os.statvfs"""
@@ -843,6 +802,9 @@ class ClaudeTaskManager:
                     'status': meta.get('status', 'unknown'),
                     'created_at': meta.get('created_at'),
                     'finished_at': meta.get('finished_at') or meta.get('killed_at'),
+                    # Moment the rendered screen last changed — drives the
+                    # dashboard's idle-duration label + stale escalation.
+                    'last_activity_at': meta.get('last_activity_at'),
                     'source': meta.get('source'),
                     'kind': meta.get('kind', 'claude'),
                     'assistant': meta.get('assistant'),
@@ -1227,47 +1189,58 @@ class ClaudeTaskManager:
                     ClaudeTaskManager._fire_completion_hook(updated)
             return
         
-        # Session is still running, check for waiting-for-input patterns
-        # Capture current output to analyze for waiting patterns. -J joins
-        # wrapped lines so prompts like "Continue? (y/n)" that overflow the
-        # pane width still match the regex patterns.
+        # Session is alive — derive waiting-for-input from render *quiescence*
+        # rather than scraping prompt text (which never worked across the
+        # full-screen TUIs Claude/Ante/OpenCode render). While an agent works
+        # it streams output / animates a spinner+timer, so the captured screen
+        # keeps changing; once it finishes a turn or hits a prompt the screen
+        # goes static. Stable for >= IDLE_WAITING_SECONDS ⇒ waiting-for-input.
+        # `last_activity_at` (the moment the screen last changed) also lets the
+        # dashboard show idle duration and escalate long-idle ("stale") tasks.
         capture_cmd = subprocess.run(
-            ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-50'],
+            ['tmux', 'capture-pane', '-t', session_name, '-p'],
             capture_output=True, text=True,
         )
-        
-        if capture_cmd.returncode == 0 and capture_cmd.stdout:
-            clean_output = strip_ansi(capture_cmd.stdout)
-            is_waiting, prompt_line = detect_waiting_for_input(clean_output)
-            
-            # Update status based on waiting detection
-            if is_waiting and current_status == 'running':
-                # Transition to waiting-for-input
+        if capture_cmd.returncode != 0:
+            return
+        screen = strip_ansi(capture_cmd.stdout or '')
+        digest = hashlib.sha1(screen.encode('utf-8', 'replace')).hexdigest()
+        now = time.time()
+
+        if digest != meta.get('pane_hash'):
+            # Screen changed → activity. Record it, reset the idle clock, and
+            # if we had flagged waiting, return to running.
+            def mutate(m):
+                m['pane_hash'] = digest
+                m['last_activity_at'] = now
+                if m.get('status') == 'waiting-for-input':
+                    m['status'] = 'running'
+                    m.pop('waiting_for_input', None)
+                    m.pop('last_input_prompt', None)
+
+            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+            if updated is not None:
+                meta['pane_hash'] = digest
+                meta['last_activity_at'] = now
+                if meta.get('status') == 'waiting-for-input':
+                    meta['status'] = 'running'
+                    meta.pop('waiting_for_input', None)
+                    meta.pop('last_input_prompt', None)
+            return
+
+        # Screen unchanged since the previous capture.
+        if current_status == 'running':
+            stable_since = meta.get('last_activity_at') or now
+            if now - stable_since >= IDLE_WAITING_SECONDS:
                 def mutate(m):
-                    if m.get('status') == 'running':  # Double-check inside lock
+                    if m.get('status') == 'running':  # re-check inside lock
                         m['status'] = 'waiting-for-input'
                         m['waiting_for_input'] = True
-                        m['last_input_prompt'] = prompt_line
-                
+
                 updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
                 if updated is not None:
                     meta['status'] = 'waiting-for-input'
                     meta['waiting_for_input'] = True
-                    meta['last_input_prompt'] = prompt_line
-                    
-            elif not is_waiting and current_status == 'waiting-for-input':
-                # Transition back to running (user provided input or prompt cleared)
-                def mutate(m):
-                    if m.get('status') == 'waiting-for-input':  # Double-check inside lock
-                        m['status'] = 'running'
-                        m.pop('waiting_for_input', None)
-                        m.pop('last_input_prompt', None)
-                
-                updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-                if updated is not None:
-                    meta['status'] = 'running'
-                    meta.pop('waiting_for_input', None)
-                    meta.pop('last_input_prompt', None)
 
 
 def _shell_quote(s):

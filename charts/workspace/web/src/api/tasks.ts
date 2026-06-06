@@ -27,6 +27,37 @@ export interface TaskSummary {
   waiting_for_input?: boolean;
   /** Last prompt or question that triggered waiting state */
   last_input_prompt?: string;
+  /** Unix seconds the rendered screen last changed (drives idle/stale UI). */
+  last_activity_at?: number | null;
+}
+
+/**
+ * A waiting task is "stale" once it's been idle this long — escalated in the
+ * UI from a gentle "your turn" amber to a stronger "needs attention" cue.
+ */
+export const STALE_AFTER_SECONDS = 20 * 60;
+
+/** Seconds the task's screen has been idle, or null if unknown. */
+export function idleSeconds(t: TaskSummary): number | null {
+  if (typeof t.last_activity_at !== 'number') return null;
+  return Math.max(0, Math.floor(Date.now() / 1000 - t.last_activity_at));
+}
+
+/** True when the task is waiting AND has been idle past the stale threshold. */
+export function isStaleWaiting(t: TaskSummary): boolean {
+  if (t.status !== 'waiting-for-input') return false;
+  const s = idleSeconds(t);
+  return s !== null && s >= STALE_AFTER_SECONDS;
+}
+
+/** Short idle-duration label like "3m" / "1h" / "2d", or '' if unknown. */
+export function idleLabel(t: TaskSummary): string {
+  const s = idleSeconds(t);
+  if (s === null) return '';
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }
 
 export interface TaskDetail extends TaskSummary {
