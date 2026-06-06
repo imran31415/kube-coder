@@ -77,6 +77,7 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
     finished_at: typeof r.finished_at === 'number' ? r.finished_at : null,
     source: typeof r.source === 'string' ? r.source : null,
     kind: safeString(r.kind as string | undefined) || 'claude',
+    parent_task_id: typeof r.parent_task_id === 'string' ? r.parent_task_id : null,
     memory_injected: safeArray(r.memory_injected as TaskSummary['memory_injected']),
     memory_injection_disabled: r.memory_injection_disabled === true,
     waiting_for_input: r.waiting_for_input === true,

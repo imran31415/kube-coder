@@ -107,3 +107,31 @@ jobs:
 
       - name: Vitest
         run: yarn --cwd charts/workspace/web test
+
+  docker-build:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: devlaptop/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: kube-coder:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Build the runtime stage (no push). This still compiles the SPA
+          # (runtime COPYs from the dashboard-builder stage, so a tsc/build
+          # break fails here) and runs every install command — Ante, Claude
+          # Code, OpenCode, ttyd — catching Dockerfile/dependency regressions
+          # before deploy.
+          target: runtime

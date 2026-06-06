@@ -1,4 +1,10 @@
 #!/bin/bash
+# DEPRECATED — This script uses the legacy remote-dev/ chart.
+# Use the charts/workspace chart instead via the Makefile:
+#   make deploy USER=<name>
+#
+# The new chart supports multiple users, OAuth2, Kaniko builds, SSH,
+# and the persistent memory subsystem. See README.md for details.
 
 # Remote Dev Helm Chart Setup Script
 # This script helps you set up the remote development environment
