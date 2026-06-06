@@ -420,10 +420,16 @@ cfg.setdefault('has_completed_onboarding', True)
 # same OPENROUTER_API_KEY as OpenCode, and 'openrouter' is a built-in Ante
 # provider (no catalog.json needed). Without a default, headless `ante -p`
 # would auto-detect and could land on a provider with no credentials.
-# setdefault so a user's explicit provider/model choice is preserved.
+#
+# Model: pin a cheap-but-capable default (DeepSeek v3.2 via OpenRouter,
+# ~$0.23/$0.34 per 1M) — Ante is frequently a background sub-agent, so the
+# expensive Sonnet default isn't warranted. Decoupled from OpenCode's
+# KC_OPENROUTER_MODEL; override per-workspace with KC_ANTE_MODEL. Written
+# explicitly (not setdefault) so the managed default also lands on existing
+# PVCs whose settings.json still carries an older model.
 if os.environ.get('OPENROUTER_API_KEY'):
-    cfg.setdefault('provider', 'openrouter')
-    cfg.setdefault('model', os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'))
+    cfg['provider'] = 'openrouter'
+    cfg['model'] = os.environ.get('KC_ANTE_MODEL', 'deepseek/deepseek-v3.2')
 tmp = path + '.tmp'
 with open(tmp, 'w') as f:
     json.dump(cfg, f, indent=2)
