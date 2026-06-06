@@ -100,15 +100,14 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   }, [t?.status]);
 
   // Poll subagents count so we can hide the tab when empty.
-  const sessionId = t && typeof t.session_id === 'string' ? t.session_id : undefined;
+  const taskId = t && typeof t.task_id === 'string' ? t.task_id : undefined;
   useEffect(() => {
     let cancelled = false;
     async function tick() {
       try {
-        const r = await listSubagents();
+        const r = await listSubagents(taskId);
         if (cancelled) return;
-        const filtered = sessionId ? r.subagents.filter((s) => s.session_id === sessionId) : r.subagents;
-        setSubagentsCount(filtered.length);
+        setSubagentsCount(r.subagents.length);
       } catch {
         if (cancelled) return;
         setSubagentsCount(0);
@@ -277,7 +276,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
           </dl>
         )}
         {tab === 'subagents' && (
-          <SubagentsTab sessionId={sessionId} />
+          <SubagentsTab taskId={taskId} />
         )}
       </div>
       <ConfirmDialog
