@@ -615,14 +615,19 @@ class ClaudeTaskManager:
 
         session_name = f'claude-{task_id}'
 
-        # ── Memory auto-injection ─────────────────────────────────────────
-        # Compute a <workspace_memories> block from top-K relevant memories
-        # and prepend it to the actually-pasted prompt. The block is wrapped
-        # in tags so Claude can clearly distinguish prior context from the
-        # user's current message. See plan §Auto-injection.
+        # ── Memory auto-injection (opt-in, OFF by default) ────────────────
+        # Optionally compute a <workspace_memories> block from top-K relevant
+        # memories and prepend it to the pasted prompt. This is now OFF by
+        # default: it front-loaded a large block of memories into every new
+        # session (especially noisy for Ante), and the agent can pull
+        # memories on demand via the memory MCP tools — which CLAUDE.md
+        # already documents. Set KC_MEMORY_PREINJECT=1 to restore the old
+        # prepend behavior. `disable_memory_injection` still force-disables.
+        _preinject = os.environ.get('KC_MEMORY_PREINJECT', '').strip().lower() \
+            in ('1', 'true', 'yes', 'on')
         injected_memories = []
         injection_block = ''
-        if _MEMORY_AVAILABLE and not disable_memory_injection:
+        if _MEMORY_AVAILABLE and _preinject and not disable_memory_injection:
             try:
                 injected_memories = MemoryManager.top_for_prompt(prompt or '')
                 injection_block = MemoryManager.format_injection_block(injected_memories)

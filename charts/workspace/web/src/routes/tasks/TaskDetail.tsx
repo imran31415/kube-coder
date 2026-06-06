@@ -126,7 +126,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
       cancelled = true;
       clearInterval(id);
     };
-  }, [t?.task_id, sessionId]);
+  }, [t?.task_id, taskId]);
 
   // If user is on the Subagents tab and the count drops to zero, kick them
   // back to Terminal so they don't see an empty/hidden tab content.

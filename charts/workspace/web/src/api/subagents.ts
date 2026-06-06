@@ -1,5 +1,5 @@
 import { apiGet } from './client';
-import type { TaskSummary } from './tasks';
+import type { TaskStatus } from './tasks';
 
 export interface SubagentInvocation {
   tool_use_id: string;
@@ -10,7 +10,9 @@ export interface SubagentInvocation {
   description?: string;
   subagent_type?: string;
   prompt?: string;
-  status: 'running' | 'completed' | 'error' | 'killed';
+  // Mirrors the backend task status (sub-agents are real spawned tasks now),
+  // so it carries the full TaskStatus union, not a hand-picked subset.
+  status: TaskStatus;
   ended_at?: string | number;
   is_error?: boolean;
 }
@@ -33,22 +35,3 @@ export const listSubagents = (parentTaskId?: string): Promise<SubagentsResponse>
   const params = parentTaskId ? { parent: parentTaskId } : undefined;
   return apiGet<SubagentsResponse>('/api/subagents', params);
 };
-
-/**
- * Convert a list of TaskSummary items (from GET /api/claude/tasks?parent=...)
- * into the SubagentInvocation format used by the SubagentsTab component.
- */
-export const taskSummariesToSubagents = (tasks: TaskSummary[]): SubagentInvocation[] =>
-  tasks.map((t) => ({
-    tool_use_id: t.task_id,
-    tool: 'spawn_agent',
-    timestamp: t.created_at ?? 0,
-    session_id: t.task_id,
-    project: 'kube-coder',
-    description: (t.prompt ?? '').slice(0, 200),
-    subagent_type: (t as any).assistant ?? 'claude',
-    prompt: t.prompt ?? '',
-    status: t.status === 'killed' ? 'killed' : t.status,
-    ended_at: t.finished_at ?? undefined,
-    is_error: t.status === 'error',
-  }));

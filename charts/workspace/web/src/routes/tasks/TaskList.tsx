@@ -166,6 +166,9 @@ export function TaskList() {
                 <div class="tl-row-head">
                   <div class="tl-row-status-container">
                     <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+                    {t.parent_task_id && (
+                      <Pill tone="neutral" mono>sub-agent</Pill>
+                    )}
                     {t.status === 'waiting-for-input' && (
                       <span class="tl-waiting-indicator" title="Task is waiting for user input">
                         ⏳
@@ -186,6 +189,9 @@ export function TaskList() {
                 )}
                 <div class="tl-row-meta muted">
                   <span class="mono">{t.task_id.slice(0, 18)}</span>
+                  {t.parent_task_id && (
+                    <span title={`Spawned by task ${t.parent_task_id}`}> · ↳ from {t.parent_task_id.slice(0, 12)}</span>
+                  )}
                   {t.source && <span> · {t.source}</span>}
                   {t.kind && t.kind !== 'claude' && <span> · {t.kind}</span>}
                   {(t.memory_injected?.length ?? 0) > 0 && (

@@ -7,8 +7,11 @@ Maintains two files:
     - mcpServers.memory entry pointing at the stdio MCP server.
 
   ~/.claude/settings.json
-    - hooks.UserPromptSubmit entry pointing at the inject hook so every
-      interactive `claude` prompt gets memory-aware context prefixed.
+    - Strips the legacy hooks.UserPromptSubmit memory-injection entry if
+      present. That hook prepended a <workspace_memories> block to every
+      prompt; it's now removed in favor of on-demand recall via the memory
+      MCP tools (documented in CLAUDE.md). Removal is active so long-lived
+      PVCs that still carry the old entry get cleaned up on boot.
 
 Safe to run on every pod boot: leaves any other settings the user has
 configured untouched, only repairs the kube-coder-managed keys.
@@ -68,17 +71,6 @@ DESIRED_MCPS = {
     },
 }
 
-# UserPromptSubmit hooks fire on every user message. The hook script
-# queries /api/memory and prints a <workspace_memories> block to stdout;
-# Claude Code injects that into the prompt as additional context.
-DESIRED_HOOK_ENTRY = {
-    'matcher': '*',
-    'hooks': [
-        {'type': 'command', 'command': f'python3 {INJECT_HOOK}'},
-    ],
-}
-
-
 def _atomic_write(path: str, data: str) -> None:
     parent = os.path.dirname(path) or '.'
     os.makedirs(parent, exist_ok=True)
@@ -135,41 +127,52 @@ def _seed_mcp() -> None:
     print(f'[seed_claude_config] wrote {CONFIG_PATH}')
 
 
-def _hook_already_present(entries: list, target_cmd: str) -> bool:
-    """Check whether any UserPromptSubmit entry already runs our hook."""
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        for h in entry.get('hooks', []) or []:
-            cmd = (h or {}).get('command', '')
-            if target_cmd in cmd:
-                return True
+def _entry_runs_inject_hook(entry: object) -> bool:
+    """True if a UserPromptSubmit entry runs our memory-inject hook."""
+    if not isinstance(entry, dict):
+        return False
+    for h in entry.get('hooks', []) or []:
+        if INJECT_HOOK in (h or {}).get('command', ''):
+            return True
     return False
 
 
-def _seed_hooks() -> None:
+def _remove_inject_hook() -> None:
+    """Strip the legacy per-prompt memory-injection hook if present.
+
+    The UserPromptSubmit hook fed a <workspace_memories> block into every
+    Claude prompt. That's disabled now — memories are pulled on demand via
+    the memory MCP tools. We actively remove any matching entry so a
+    long-lived PVC's settings.json gets cleaned up on the next boot. Other
+    UserPromptSubmit hooks the user configured are left intact.
+    """
+    if not os.path.exists(SETTINGS_PATH):
+        return
     settings = _load_json(SETTINGS_PATH)
-    hooks = settings.setdefault('hooks', {})
+    hooks = settings.get('hooks')
     if not isinstance(hooks, dict):
-        print('[seed_claude_config] settings.hooks is not an object; refusing to overwrite',
-              file=sys.stderr)
         return
-    submit_hooks = hooks.setdefault('UserPromptSubmit', [])
+    submit_hooks = hooks.get('UserPromptSubmit')
     if not isinstance(submit_hooks, list):
-        print('[seed_claude_config] settings.hooks.UserPromptSubmit not a list; refusing to overwrite',
-              file=sys.stderr)
         return
-    if _hook_already_present(submit_hooks, INJECT_HOOK):
-        print('[seed_claude_config] UserPromptSubmit hook already present')
-        return
-    submit_hooks.append(DESIRED_HOOK_ENTRY)
+
+    kept = [e for e in submit_hooks if not _entry_runs_inject_hook(e)]
+    if len(kept) == len(submit_hooks):
+        return  # nothing of ours to remove
+
+    if kept:
+        hooks['UserPromptSubmit'] = kept
+    else:
+        hooks.pop('UserPromptSubmit', None)
+        if not hooks:
+            settings.pop('hooks', None)
     _atomic_write(SETTINGS_PATH, json.dumps(settings, indent=2) + '\n')
-    print(f'[seed_claude_config] wrote UserPromptSubmit hook to {SETTINGS_PATH}')
+    print(f'[seed_claude_config] removed UserPromptSubmit memory hook from {SETTINGS_PATH}')
 
 
 def main() -> int:
     _seed_mcp()
-    _seed_hooks()
+    _remove_inject_hook()
     return 0
 
 

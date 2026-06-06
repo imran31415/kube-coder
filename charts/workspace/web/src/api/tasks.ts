@@ -18,6 +18,8 @@ export interface TaskSummary {
   finished_at: number | null;
   source: string | null;
   kind: TaskKind;
+  /** Set when this task was spawned by another agent (agent-orchestrator). */
+  parent_task_id?: string | null;
   /** Optional — bare terminal tasks (kind=='terminal') omit memory fields. */
   memory_injected?: MemoryInjection[];
   memory_injection_disabled?: boolean;
