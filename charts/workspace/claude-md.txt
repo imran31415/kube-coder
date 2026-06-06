@@ -230,3 +230,68 @@ has it.
 Tag sensitive entries with `secret` to opt them out of the
 auto-injection block. They remain readable via explicit tool calls but
 won't leak into every prompt.
+
+## Agent Orchestration (MCP) — spawn sub-agents for parallel work
+
+This workspace ships an `agent-orchestrator` MCP server that lets you
+spawn, monitor, and collect results from sub-agent sessions. Use it to
+decompose large problems into parallel subtasks. The same tools are
+registered for **Claude, Ante, and OpenCode**, so any of these harnesses
+can spawn any other and lineage is tracked across them.
+
+By default agents spawn in **headless** mode: the sub-agent runs the
+prompt to completion and exits, so `get_agent_status` flips to
+`completed` (or `error`, with an `exit_code`) on its own and
+`wait_for_agent` returns the real result. Pass `mode="interactive"` to
+instead launch a long-lived REPL you can attach to from the dashboard
+(needed for `kc-harness`, which has no headless mode).
+
+Guardrails: spawning is capped by nesting depth (`KC_MAX_SPAWN_DEPTH`,
+default 3) and by concurrent live agents (`KC_MAX_SUBAGENTS`, default 8)
+so orchestration can't fork-bomb the pod or run away on API spend.
+
+### Available tools
+
+| Tool | Purpose |
+|------|---------|
+| `spawn_agent(prompt, assistant, mode)` | Launch a sub-agent in its own tmux session. Returns `task_id` immediately. `mode` is `headless` (default) or `interactive`. |
+| `get_agent_status(task_id)` | Check status (`running`/`completed`/`error`/`killed`) and `exit_code`. |
+| `list_subagents()` | List all agents you've spawned (auto-detects your task context). |
+| `get_agent_output(task_id, tail)` | Retrieve the output log from an agent. |
+| `wait_for_agent(task_id, timeout)` | Block until the agent finishes, then return its output. |
+| `kill_agent(task_id)` | Terminate a running agent. |
+
+### Supported assistants
+
+- `ante` — Ante CLI (pre-installed; defaults to OpenRouter when its key is set)
+- `claude` — Claude Code (requires Anthropic API key or OAuth)
+- `opencode-openrouter` — OpenCode via OpenRouter
+- `opencode-deepseek` — OpenCode via DeepSeek
+- `kc-harness` — Opensource GPU (requires a running Ollama endpoint)
+
+### Orchestration patterns
+
+**Parallel fan-out** — split work across many agents at once:
+```
+spawn_agent(prompt="Refactor module A", assistant="ante")  → task_1
+spawn_agent(prompt="Refactor module B", assistant="ante")  → task_2
+spawn_agent(prompt="Write tests for module C", assistant="claude") → task_3
+...then poll or wait for each...
+get_agent_output(task_1)
+get_agent_output(task_2)
+get_agent_output(task_3)
+...synthesize results...
+```
+
+**Sequential pipeline** — chain agents where each step depends on the prior:
+```
+wait_for_agent(spawn_agent(prompt="Step 1: design", assistant="ante").task_id)
+wait_for_agent(spawn_agent(prompt="Step 2: implement", assistant="claude").task_id)
+```
+
+**Collect-and-synthesize** — spawn workers, gather results, report:
+```
+agents = [spawn_agent(prompt=f"Analyze file {f}") for f in files]
+results = [get_agent_output(a.task_id) for a in agents]
+...summarize across all results...
+```

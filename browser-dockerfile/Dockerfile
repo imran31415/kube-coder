@@ -1,3 +1,10 @@
+# DEPRECATED — The main devlaptop/Dockerfile now bundles Firefox + noVNC
+# support directly (see the "Install browser with noVNC" section). This
+# layered image is no longer needed. It's kept for reference only.
+# Consider removing this directory once all deployments reference the
+# main image.
+#
+# syntax=docker/dockerfile:1.7
 FROM --platform=linux/amd64 registry.digitalocean.com/resourceloop/coder:devlaptop-v1.6.0
 
 # Switch to root to install packages

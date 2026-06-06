@@ -139,6 +139,7 @@ test-imran: ## Test Imran's workspace
 	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- yarn --version
 	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- gh --version | head -1
 	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- code-server --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- ante --version | head -1
 
 test-gerard: ## Test Gerard's workspace
 	@echo "Testing Gerard's workspace..."
@@ -146,6 +147,7 @@ test-gerard: ## Test Gerard's workspace
 	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- yarn --version
 	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- gh --version | head -1
 	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- code-server --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- ante --version | head -1
 
 test-all: test-imran test-gerard ## Test all workspaces
 
@@ -199,6 +201,7 @@ test: require-user ## Sanity-test any user's workspace (USER=<name>)
 	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- yarn --version
 	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- gh --version | head -1
 	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- code-server --version | head -1
+	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- ante --version | head -1
 
 rollback: require-user ## Rollback any user's workspace (USER=<name>)
 	helm rollback $(USER)-workspace --namespace $(NAMESPACE)
