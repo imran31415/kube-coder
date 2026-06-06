@@ -39,17 +39,6 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
     _MEMORY_AVAILABLE = False
     print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
 
-# Read-only scanner over Claude's local session transcripts. Surfaces
-# active subagents (Agent tool uses) to the dashboard. No persistence —
-# transcripts are the source of truth.
-try:
-    import transcript_scanner
-    _TRANSCRIPTS_AVAILABLE = True
-except Exception as _ts_import_err:
-    transcript_scanner = None  # type: ignore
-    _TRANSCRIPTS_AVAILABLE = False
-    print(f'[transcripts] import failed: {_ts_import_err}', file=sys.stderr)
-
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
@@ -539,6 +528,10 @@ class ClaudeTaskManager:
             'id': 'claude',
             'label': 'Claude Code',
         },
+        'ante': {
+            'id': 'ante',
+            'label': 'Ante CLI',
+        },
         'opencode-openrouter': {
             'id': 'opencode-openrouter',
             'label': 'OpenRouter',
@@ -558,6 +551,7 @@ class ClaudeTaskManager:
     @staticmethod
     def available_assistants():
         out = [dict(ClaudeTaskManager.ASSISTANTS['claude'], default=True)]
+        out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
         if os.environ.get('OPENROUTER_API_KEY'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['opencode-openrouter'],
@@ -588,6 +582,8 @@ class ClaudeTaskManager:
 
     @staticmethod
     def assistant_command(assistant):
+        if assistant == 'ante':
+            return 'ante'
         if assistant == 'opencode-openrouter':
             model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
             # Quote the model so a hostile env var can't break out of the
@@ -605,7 +601,8 @@ class ClaudeTaskManager:
 
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
-                    source=None, disable_memory_injection=False, assistant=None):
+                    source=None, disable_memory_injection=False, assistant=None,
+                    parent_task_id=None):
         ClaudeTaskManager.ensure_tasks_dir()
         assistant = ClaudeTaskManager.resolve_assistant(assistant)
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
@@ -643,6 +640,8 @@ class ClaudeTaskManager:
             'created_at': time.time(),
             'tmux_session': session_name,
             'assistant': assistant,
+            'parent_task_id': parent_task_id,
+            'sub_task_ids': [],
             'memory_injected': [
                 {'namespace': m.get('namespace'), 'key': m.get('key')}
                 for m in injected_memories
@@ -809,7 +808,7 @@ class ClaudeTaskManager:
         return meta
 
     @staticmethod
-    def list_tasks():
+    def list_tasks(parent=None):
         ClaudeTaskManager.ensure_tasks_dir()
         tasks = []
         try:
@@ -826,6 +825,12 @@ class ClaudeTaskManager:
                 with open(meta_path, 'r') as f:
                     meta = json.load(f)
                 ClaudeTaskManager._reconcile_status(meta, task_dir)
+
+                # Filter by parent_task_id when requested
+                task_parent = meta.get('parent_task_id')
+                if parent is not None and task_parent != parent:
+                    continue
+
                 tasks.append({
                     'task_id': meta.get('task_id', entry),
                     'name': meta.get('name'),
@@ -835,6 +840,9 @@ class ClaudeTaskManager:
                     'finished_at': meta.get('finished_at') or meta.get('killed_at'),
                     'source': meta.get('source'),
                     'kind': meta.get('kind', 'claude'),
+                    'assistant': meta.get('assistant'),
+                    'parent_task_id': task_parent,
+                    'sub_task_ids': meta.get('sub_task_ids', []),
                     'memory_injected': meta.get('memory_injected', []),
                     'memory_injection_disabled':
                         bool(meta.get('memory_injection_disabled')),
@@ -3265,7 +3273,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        tasks = ClaudeTaskManager.list_tasks()
+        # Parse ?parent=<task_id> filter from query string
+        parent = None
+        if '?' in self.path:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            parent_val = params.get('parent', [None])[0]
+            if parent_val:
+                parent = parent_val
+        tasks = ClaudeTaskManager.list_tasks(parent=parent)
         self.send_json({'tasks': tasks})
 
     def handle_workspace_dirs(self):
@@ -4341,30 +4357,62 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'detail': 'consolidation worker activates in Phase 3',
         }, 202)
 
-    # ── Subagents (read-only view over local transcripts) ──
-    # Derives entirely from ~/.claude/projects/*/*.jsonl. No write path —
-    # the dashboard surfaces what Claude has already done.
-
-    def _transcripts_unavailable(self):
-        if _TRANSCRIPTS_AVAILABLE:
-            return False
-        self.send_json({
-            'error': 'transcript scanner unavailable',
-            'code': 'unavailable',
-        }, 503)
-        return True
+    # ── Subagents (spawned child tasks) ──────────────────────────
+    # Lists real spawned sub-tasks filtered by parent_task_id.
+    # Replaces the old read-only transcript scanner which was fragile
+    # and version-dependent.
 
     def handle_subagents_list(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        if self._transcripts_unavailable():
+        # Parse ?parent=<task_id> filter from query string
+        parent = None
+        if '?' in self.path:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            parent_val = params.get('parent', [None])[0]
+            if parent_val:
+                parent = parent_val
+        if not parent:
+            self.send_json({'subagents': [], 'count': 0,
+                            'running_count': 0, 'completed_count': 0,
+                            'error_count': 0, 'note': 'pass ?parent=<task_id> to list sub-agents'})
             return
-        try:
-            self.send_json(transcript_scanner.list_subagents())
-        except Exception as e:
-            print(f'[subagents] error: {e}', file=sys.stderr)
-            self.send_json({'error': str(e), 'code': 'internal'}, 500)
+        tasks = ClaudeTaskManager.list_tasks(parent=parent)
+        subagents = []
+        running = 0
+        completed = 0
+        errored = 0
+        for t in tasks:
+            status = t['status']
+            sa = {
+                'tool_use_id': t['task_id'],
+                'tool': 'spawn_agent',
+                'timestamp': t['created_at'],
+                'session_id': t['task_id'],
+                'project': 'kube-coder',
+                'description': t.get('prompt', '')[:200],
+                'subagent_type': t.get('assistant', 'claude'),
+                'prompt': t.get('prompt', ''),
+                'status': status,
+                'ended_at': t.get('finished_at'),
+                'is_error': status == 'error',
+            }
+            subagents.append(sa)
+            if status == 'running':
+                running += 1
+            elif status in ('completed',):
+                completed += 1
+            elif status in ('error', 'killed'):
+                errored += 1
+        self.send_json({
+            'subagents': subagents,
+            'count': len(subagents),
+            'running_count': running,
+            'completed_count': completed,
+            'error_count': errored,
+        })
 
     # ── Docs (in-app documentation site) ────────────────────────────────
     def handle_docs_manifest(self):

@@ -42,6 +42,14 @@ DESIRED_MCPS = {
         'command': 'python3',
         'args': [MCP_SCRIPT],
     },
+    # Agent orchestrator: spawn, monitor, and collect results from
+    # sub-agent tasks (Ante, Claude, OpenCode). Runs alongside any agent.
+    # See charts/workspace/mcp_agent_orchestrator.py for implementation.
+    'agent-orchestrator': {
+        'type': 'stdio',
+        'command': 'python3',
+        'args': ['/tmp/browser/mcp_agent_orchestrator.py'],
+    },
     # Playwright: full browser automation. Useful for web-app testing /
     # scraping / e2e flows. Uses Firefox (already in the workspace image).
     # First-use cost is ~1 min while Playwright downloads its own browser

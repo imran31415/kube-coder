@@ -231,9 +231,11 @@ class AssistantSelectionTests(unittest.TestCase):
             os.environ.pop(k, None)
         os.environ.update(self._saved_env)
 
-    def test_default_only_lists_claude(self):
+    def test_default_lists_claude_and_ante(self):
         avail = server.ClaudeTaskManager.available_assistants()
-        self.assertEqual([a['id'] for a in avail], ['claude'])
+        self.assertIn('claude', [a['id'] for a in avail])
+        # Ante is always available (pre-installed in the image)
+        self.assertIn('ante', [a['id'] for a in avail])
         self.assertTrue(avail[0]['default'])
 
     def test_openrouter_listed_when_env_set(self):
