@@ -82,6 +82,7 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
     memory_injection_disabled: r.memory_injection_disabled === true,
     waiting_for_input: r.waiting_for_input === true,
     last_input_prompt: typeof r.last_input_prompt === 'string' ? r.last_input_prompt : undefined,
+    last_activity_at: typeof r.last_activity_at === 'number' ? r.last_activity_at : null,
   };
 }
 

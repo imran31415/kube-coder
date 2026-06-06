@@ -356,6 +356,52 @@ for HOME_DIR in /home/ubuntu; do
   ln -sfn "$TARGET" "$LINK" 2>/dev/null || true
 done
 
+# Persist Ante's config across pod restarts and keep its binary on the PVC.
+# Ante stores everything (settings, sessions, versions.json) under ~/.ante,
+# which on the ephemeral /home/ubuntu home was wiped every restart. We point
+# ~/.ante at the PVC (same pattern as ~/.claude above) and seed the binary at
+# the PVC path /home/dev/.ante/bin/ante — which /usr/local/bin/ante is a
+# build-time symlink to. The image is the source of truth for the version
+# (bump ANTE_VERSION + rebuild); we refresh the PVC copy from /opt/ante/ante
+# below so a rebuild propagates and nothing strands the pod on an old binary.
+ANTE_TARGET=/home/dev/.ante
+mkdir -p "$ANTE_TARGET/bin"
+if [ -L "$ANTE_TARGET" ]; then
+  AD=$(readlink "$ANTE_TARGET")
+  if [ "$AD" = "$ANTE_TARGET" ] || [ "$AD" = ".ante" ]; then
+    rm -f "$ANTE_TARGET"; mkdir -p "$ANTE_TARGET/bin"
+  fi
+fi
+for HOME_DIR in /home/ubuntu; do
+  [ -d "$HOME_DIR" ] || continue
+  LINK="$HOME_DIR/.ante"
+  [ "$LINK" = "$ANTE_TARGET" ] && continue
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$ANTE_TARGET" ]; then
+    continue
+  fi
+  # Merge any existing ~/.ante (incl. a binary the user already updated to)
+  # into the PVC — cp -an keeps the PVC copy canonical — then replace with a
+  # symlink.
+  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+    cp -an "$LINK"/. "$ANTE_TARGET"/ 2>/dev/null || true
+    rm -rf "$LINK"
+  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    rm -f "$LINK"
+  fi
+  ln -sfn "$ANTE_TARGET" "$LINK" 2>/dev/null || true
+done
+# Seed/refresh the PVC binary from the image's copy (/opt/ante/ante). The image
+# is the source of truth, so overwrite whenever the PVC copy is missing or
+# differs — this propagates a manual ANTE_VERSION bump on rebuild and stops a
+# stale binary from stranding the pod. /usr/local/bin/ante is a build-time
+# symlink to this path, so no runtime root (sudo is blocked) is needed.
+if [ -f /opt/ante/ante ]; then
+  if [ ! -e "$ANTE_TARGET/bin/ante" ] || ! cmp -s /opt/ante/ante "$ANTE_TARGET/bin/ante"; then
+    install -m 0755 /opt/ante/ante "$ANTE_TARGET/bin/ante" 2>/dev/null \
+      || cp -p /opt/ante/ante "$ANTE_TARGET/bin/ante" 2>/dev/null || true
+  fi
+fi
+
 # The memory subsystem ships its Python package as flat configmap keys
 # (configmap keys cannot contain "/"). Unpack them into a real `memory/`
 # tree next to server.py so `from memory.manager import ...` resolves.
