@@ -17,7 +17,7 @@ RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install;
 COPY charts/workspace/web/ ./
 RUN yarn build
 
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -73,6 +73,14 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # https://opencode.ai
 ARG OPENCODE_VERSION=1.15.3
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
+
+# Ante CLI — terminal-native AI coding agent from Antigma Labs.
+# Distributed as a single ~15MB self-contained binary. The install.sh
+# script detects the platform, downloads the matching binary, and places
+# it at /usr/local/bin/ante.
+# https://docs.antigma.ai
+ARG ANTE_VERSION=latest
+RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION}
 
 # Install ttyd for mobile-friendly terminal access.
 # Pinned to a known-good version so transient 502s from GitHub's release CDN
