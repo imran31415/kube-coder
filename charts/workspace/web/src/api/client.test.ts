@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { api, apiGet, apiPost, ApiError, withOauthPrefix } from './client';
+import { api, apiGet, apiPost, ApiError, isErrorResponse, withOauthPrefix } from './client';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -94,5 +94,28 @@ describe('api client', () => {
       expect((e as ApiError).status).toBe(400);
       expect((e as ApiError).message).toBe('nope');
     }
+  });
+});
+
+describe('isErrorResponse', () => {
+  it('matches { error } objects', () => {
+    expect(isErrorResponse({ error: 'boom' })).toBe(true);
+  });
+
+  it('rejects success-shaped objects', () => {
+    expect(isErrorResponse({ ok: true })).toBe(false);
+  });
+
+  // Regression for issue #44: api() returns 2xx non-JSON bodies as a string,
+  // and a bare `'error' in r` on a string throws
+  // `TypeError: Cannot use 'in' operator…` which surfaced in a toast.
+  it('does not throw on string bodies', () => {
+    expect(() => isErrorResponse('<html>proxy page</html>')).not.toThrow();
+    expect(isErrorResponse('<html>proxy page</html>')).toBe(false);
+  });
+
+  it('rejects null and undefined', () => {
+    expect(isErrorResponse(null)).toBe(false);
+    expect(isErrorResponse(undefined)).toBe(false);
   });
 });

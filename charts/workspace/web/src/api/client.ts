@@ -22,6 +22,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Type guard for `{ error: string }`-shaped API responses. Call sites must use
+ * this instead of a bare `'error' in r` — `api()` returns plain text bodies
+ * as a string (client.ts:118), and applying `in` to a string throws
+ * `TypeError: Cannot use 'in' operator…`, which then surfaces in a toast
+ * (issue #44).
+ */
+export function isErrorResponse(v: unknown): v is { error: string } {
+  return typeof v === 'object' && v !== null && 'error' in v;
+}
+
 interface Options extends Omit<RequestInit, 'body'> {
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined | null>;
@@ -118,9 +129,8 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
   const parsed: unknown = isJson ? await res.json().catch(() => null) : await res.text();
   if (!res.ok) {
     const msg =
-      (isJson && parsed && typeof parsed === 'object' && 'error' in (parsed as Record<string, unknown>)
-        ? String((parsed as Record<string, unknown>).error)
-        : null) ?? `${res.status} ${res.statusText}`;
+      (isJson && isErrorResponse(parsed) ? String(parsed.error) : null) ??
+      `${res.status} ${res.statusText}`;
     throw new ApiError(msg, res.status, parsed);
   }
   return parsed as T;
@@ -167,9 +177,7 @@ export async function apiRaw(
     let parsed: unknown = null;
     try { parsed = await res.json(); } catch { /* not JSON */ }
     const msg =
-      (parsed && typeof parsed === 'object' && 'error' in (parsed as Record<string, unknown>)
-        ? String((parsed as Record<string, unknown>).error)
-        : null) ?? `${res.status} ${res.statusText}`;
+      (isErrorResponse(parsed) ? String(parsed.error) : null) ?? `${res.status} ${res.statusText}`;
     throw new ApiError(msg, res.status, parsed);
   }
   return res;

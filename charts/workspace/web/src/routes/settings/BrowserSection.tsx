@@ -1,5 +1,6 @@
 import { useState } from 'preact/hooks';
 import { launchInPodBrowser, openLocalhostPort, vncUrl } from '../../api/tasks';
+import { isErrorResponse } from '../../api/client';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
@@ -17,7 +18,7 @@ export function BrowserSection() {
     setBusy(true);
     try {
       const r = await launchInPodBrowser();
-      if (r && 'error' in r) pushToast(`Launch failed: ${r.error}`, { kind: 'danger' });
+      if (isErrorResponse(r)) pushToast(`Launch failed: ${r.error}`, { kind: 'danger' });
       else pushToast('Browser launched in pod.', { kind: 'success' });
     } catch (e) {
       pushToast(e instanceof Error ? e.message : 'Launch failed', { kind: 'danger' });
@@ -36,7 +37,7 @@ export function BrowserSection() {
     setBusy(true);
     try {
       const r = await openLocalhostPort(n);
-      if (r && 'error' in r) pushToast(`Open failed: ${r.error}`, { kind: 'danger' });
+      if (isErrorResponse(r)) pushToast(`Open failed: ${r.error}`, { kind: 'danger' });
       else pushToast(`Pointed in-pod browser at localhost:${n}.`, { kind: 'success' });
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Open failed', { kind: 'danger' });
