@@ -263,16 +263,18 @@ class AssistantSelectionTests(unittest.TestCase):
                 server.ClaudeTaskManager.resolve_assistant('librefang'), 'librefang')
 
     def test_command_librefang_chats_with_coder(self):
-        self.assertEqual(
-            server.ClaudeTaskManager.assistant_command('librefang'),
-            'librefang chat coder',
-        )
+        cmd = server.ClaudeTaskManager.assistant_command('librefang')
+        # The REPL is preceded by a daemon bootstrap (without it `librefang
+        # chat` panics and the tmux session dies instantly), then chats coder.
+        self.assertIn('librefang status', cmd)
+        self.assertIn('librefang start', cmd)
+        self.assertTrue(cmd.rstrip().endswith('librefang chat coder'))
         # KC_LIBREFANG_AGENT overrides the agent name and is shell-quoted so
         # a hostile env var can't break out of the bash -lc shell_cmd.
         os.environ['KC_LIBREFANG_AGENT'] = 'my agent'
-        self.assertEqual(
-            server.ClaudeTaskManager.assistant_command('librefang'),
-            "librefang chat 'my agent'",
+        self.assertTrue(
+            server.ClaudeTaskManager.assistant_command('librefang')
+            .rstrip().endswith("librefang chat 'my agent'"),
         )
 
     def test_openrouter_listed_when_env_set(self):

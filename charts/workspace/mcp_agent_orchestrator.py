@@ -254,6 +254,23 @@ def _librefang_agent() -> str:
     return os.environ.get('KC_LIBREFANG_AGENT', 'coder')
 
 
+def _librefang_daemon_bootstrap() -> str:
+    """Shell prefix that ensures the LibreFang kernel daemon is up.
+
+    Both `librefang chat` (interactive) and `librefang message` (headless)
+    talk to the kernel and panic ("there is no reactor running") when no
+    daemon is running, killing the tmux session instantly. `librefang start`
+    self-daemonizes and is a no-op when already up; we poll status briefly so
+    the follow-up command doesn't run before the daemon's API binds."""
+    return (
+        'librefang status -q >/dev/null 2>&1 || { '
+        'librefang start >/dev/null 2>&1 || true; '
+        'for _ in 1 2 3 4 5 6 7 8 9 10; do '
+        'librefang status -q >/dev/null 2>&1 && break; sleep 1; '
+        'done; }; '
+    )
+
+
 def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) -> str:
     """Build the shell command that launches an assistant.
 
@@ -274,7 +291,10 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         if assistant == 'kc-harness':
             return 'python3 /tmp/browser/harness.py'
         if assistant == 'librefang':
-            return f'librefang chat {_shell_quote(_librefang_agent())}'
+            # Interactive REPL also needs the daemon — see _assistant_command's
+            # headless branch and _librefang_daemon_bootstrap().
+            return (_librefang_daemon_bootstrap()
+                    + f'librefang chat {_shell_quote(_librefang_agent())}')
         return assistant if assistant in ('claude', 'ante') else 'claude'
 
     q = _shell_quote(prompt)
@@ -284,18 +304,9 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         return f'ante --yolo -p {q}'
     if assistant == 'librefang':
         # `librefang message` is the CLI's one-shot mode but requires the
-        # daemon. `librefang start` self-daemonizes and errors harmlessly
-        # when already running; poll status briefly so the message isn't
-        # sent before the daemon's API binds.
+        # daemon (see _librefang_daemon_bootstrap()).
         agent = _shell_quote(_librefang_agent())
-        return (
-            'librefang status -q >/dev/null 2>&1 || { '
-            'librefang start >/dev/null 2>&1 || true; '
-            'for _ in 1 2 3 4 5 6 7 8 9 10; do '
-            'librefang status -q >/dev/null 2>&1 && break; sleep 1; '
-            'done; }; '
-            f'librefang message {agent} {q}'
-        )
+        return _librefang_daemon_bootstrap() + f'librefang message {agent} {q}'
     # OpenCode one-shot: `opencode run <message>` is non-interactive.
     return f'opencode run --model {_shell_quote(_opencode_model(assistant))} {q}'
 
