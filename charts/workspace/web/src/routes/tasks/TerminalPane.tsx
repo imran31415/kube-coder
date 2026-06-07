@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
 import { proxyUrl } from '../../api/apps';
+import { isErrorResponse } from '../../api/client';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { getSessionSignals } from './sessionSignals';
@@ -375,7 +376,7 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     setPortStatus(`→ ${target}…`);
     try {
       const r = await openLocalhostPort(n, normPath);
-      if (r && 'error' in r) {
+      if (isErrorResponse(r)) {
         setPortStatus(`open failed: ${r.error}`);
       } else {
         setPortStatus(`→ ${target}`);
