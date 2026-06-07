@@ -4,36 +4,6 @@
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
-
-## Dependencies and Acknowledgments
-
-kube-coder builds upon the shoulders of remarkable open-source projects and services that make modern development environments possible:
-
-**Core Infrastructure & Orchestration**
-- **[Kubernetes](https://kubernetes.io)** and **[Helm](https://helm.sh)** for enterprise-grade container orchestration and deployment
-- **[NGINX Ingress Controller](https://kubernetes.github.io/ingress-nginx/)** for sophisticated routing and traffic management
-
-**Development Environments**
-- **[VS Code / code-server](https://github.com/coder/code-server)** for a full-featured browser-based IDE experience
-- **[tmux](https://github.com/tmux/tmux)** for persistent terminal sessions and multiplexing
-- **[ttyd](https://github.com/tsl0922/ttyd)** for browser-based terminal access
-- **[noVNC](https://novnc.com/)** and **[Xvfb](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml)** for in-pod browser virtualization
-
-**AI-Powered Development Assistants**
-- **[Claude Code](https://code.anthropic.com/)** for state-of-the-art AI pair programming
-- **[OpenCode](https://opencode.ai/)** for flexible, open-source compatible AI assistance
-- **[Ante](https://antigma.ai/)** for advanced terminal-based AI interactions
-
-**Security & Authentication**
-- **[oauth2-proxy](https://github.com/oauth2-proxy/oauth2-proxy)** for robust OAuth2 authentication with GitHub integration
-
-**Dashboard & User Interface**
-- **[Preact](https://preactjs.com/)** and **[Vite](https://vitejs.dev/)** for lightning-fast, modern dashboard development
-- **[Playwright](https://playwright.dev/)** for comprehensive testing and automation
-
-**Utility & Tooling**
-- **Ubuntu** base system with latest versions of `yarn`, `gh`, `jq`, `ripgrep`, `fzf`, and other essential developer tools
-
 ---
 
 ## Enterprise-Grade Development Workspaces on Kubernetes
@@ -328,6 +298,36 @@ make test-all-units
 Pull requests welcome — please run `make dashboard-web-test` and `make python-tests` before opening a PR.
 
 ---
+
+## Dependencies and Acknowledgments
+
+kube-coder builds upon the shoulders of remarkable open-source projects and services that make modern development environments possible:
+
+**Core Infrastructure & Orchestration**
+- **[Kubernetes](https://kubernetes.io)** and **[Helm](https://helm.sh)** for enterprise-grade container orchestration and deployment
+- **[NGINX Ingress Controller](https://kubernetes.github.io/ingress-nginx/)** for sophisticated routing and traffic management
+
+**Development Environments**
+- **[VS Code / code-server](https://github.com/coder/code-server)** for a full-featured browser-based IDE experience
+- **[tmux](https://github.com/tmux/tmux)** for persistent terminal sessions and multiplexing
+- **[ttyd](https://github.com/tsl0922/ttyd)** for browser-based terminal access
+- **[noVNC](https://novnc.com/)** and **[Xvfb](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml)** for in-pod browser virtualization
+
+**AI-Powered Development Assistants**
+- **[Claude Code](https://code.anthropic.com/)** for state-of-the-art AI pair programming
+- **[OpenCode](https://opencode.ai/)** for flexible, open-source compatible AI assistance
+- **[Ante](https://antigma.ai/)** for advanced terminal-based AI interactions
+
+**Security & Authentication**
+- **[oauth2-proxy](https://github.com/oauth2-proxy/oauth2-proxy)** for robust OAuth2 authentication with GitHub integration
+
+**Dashboard & User Interface**
+- **[Preact](https://preactjs.com/)** and **[Vite](https://vitejs.dev/)** for lightning-fast, modern dashboard development
+- **[Playwright](https://playwright.dev/)** for comprehensive testing and automation
+
+**Utility & Tooling**
+- **Ubuntu** base system with latest versions of `yarn`, `gh`, `jq`, `ripgrep`, `fzf`, and other essential developer tools
+
 
 ## Contact & Demo Requests
 
