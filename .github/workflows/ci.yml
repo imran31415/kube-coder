@@ -135,3 +135,41 @@ jobs:
           # Code, OpenCode, ttyd — catching Dockerfile/dependency regressions
           # before deploy.
           target: runtime
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Secret Scanning
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
+      - name: Docker Image Vulnerability Scanning
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'devlaptop/Dockerfile'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: SCA Scanning (JavaScript/TypeScript)
+        run: |
+          cd charts/workspace/web
+          npm audit --audit-level=high || echo "Vulnerabilities found"
+        if: success() || failure()
+
+      - name: SCA Scanning (Python)
+        run: |
+          pip install safety
+          safety check --full-report || echo "Vulnerabilities found"
+        if: success() || failure()
