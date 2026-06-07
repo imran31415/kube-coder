@@ -47,6 +47,15 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertIn('--yolo', cmd)
         self.assertIn("'write tests'", cmd)
 
+    def test_headless_librefang_ensures_daemon_then_messages(self):
+        cmd = orch._assistant_command('librefang', 'write tests', headless=True)
+        # One-shot mode is `librefang message <agent> <prompt>` …
+        self.assertIn('librefang message coder', cmd)
+        self.assertIn("'write tests'", cmd)
+        # … which needs the daemon: the command bootstraps it when down.
+        self.assertIn('librefang status', cmd)
+        self.assertIn('librefang start', cmd)
+
     def test_headless_opencode_uses_run_subcommand(self):
         cmd = orch._assistant_command('opencode-openrouter', 'hi', headless=True)
         self.assertIn('opencode run', cmd)
@@ -60,6 +69,22 @@ class AssistantCommandTests(unittest.TestCase):
 
     def test_interactive_ante_is_bare_repl(self):
         self.assertEqual(orch._assistant_command('ante', 'x', headless=False), 'ante')
+
+    def test_interactive_librefang_is_chat_repl(self):
+        self.assertEqual(
+            orch._assistant_command('librefang', 'x', headless=False),
+            'librefang chat coder',
+        )
+
+    def test_librefang_agent_env_override_is_quoted(self):
+        os.environ['KC_LIBREFANG_AGENT'] = 'my agent'
+        try:
+            self.assertEqual(
+                orch._assistant_command('librefang', 'x', headless=False),
+                "librefang chat 'my agent'",
+            )
+        finally:
+            os.environ.pop('KC_LIBREFANG_AGENT', None)
 
     def test_kc_harness_never_headless(self):
         # kc-harness has no headless interface — even when headless is
