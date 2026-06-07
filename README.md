@@ -78,8 +78,6 @@ kube-coder delivers **per-user, isolated development environments** that combine
 | **Assistant** | Claude Code (default) or OpenCode | per-task |
 | **Auth** | oauth2-proxy injects `X-Auth-Request-User` headers | every `/oauth/*` route |
 
-<!-- TODO: screenshot of the topbar showing CPU/MEM/DSK pills + VS Code / New terminal buttons -->
-
 ---
 
 ## Dashboard at a Glance
@@ -92,15 +90,14 @@ The next-generation dashboard at `/` is a single-page Preact app delivering unif
 - **Files** — Read the workspace PVC, upload files, create directories.
 - **Settings** — Appearance customization, GitHub identity management, browser/VNC controls, **system metrics with real-time visualizations + alerts + service health**.
 
-<!-- TODO: side-by-side screenshots: Build list + Terminal tab, Preview split, Send message chat -->
+### Top Bar Interface
+The dashboard includes a persistent top bar showing real-time CPU, memory, and disk usage metrics, along with quick-access buttons for VS Code and creating new terminal sessions.
 
 ### Mobile Experience
 
 The dashboard is fully responsive. Below 720px the Rail collapses into a BottomNav (Build / Memory / Triggers / More), the detail pane moves into a swipe-able bottom sheet, and the topbar slims to just brand + search + the two primary actions (VS Code, New terminal).
 
-<!-- TODO: mobile screenshot of Build list + BottomSheet with task detail -->
-
----
+Mobile users experience an optimized interface with touch-friendly controls and intuitive navigation patterns suitable for on-the-go development environment management.
 
 ## Quick Start
 
