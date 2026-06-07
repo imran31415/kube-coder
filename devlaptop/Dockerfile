@@ -56,14 +56,14 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 # code-server (VS Code in the browser, MIT-licensed)
 # https://github.com/coder/code-server
 RUN ARCH=$(dpkg --print-architecture) \
-  && curl -fsSL "https://github.com/coder/code-server/releases/download/v4.95.3/code-server_4.95.3_${ARCH}.deb" -o /tmp/cs.deb \
+  && curl -fsSL "https://github.com/coder/code-server/releases/download/v4.123.0/code-server_4.123.0_${ARCH}.deb" -o /tmp/cs.deb \
   && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
 
 # Claude Code CLI (terminal assistant). Bring your own API key (or Bedrock/Vertex).
 # https://docs.anthropic.com/en/docs/claude-code/setup
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
-ARG CLAUDE_CODE_VERSION=2.1.167
+ARG CLAUDE_CODE_VERSION=2.1.168
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -71,7 +71,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # OpenRouter directly and any OpenAI-compatible base URL (e.g. a self-hosted
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
-ARG OPENCODE_VERSION=1.15.3
+ARG OPENCODE_VERSION=1.16.2
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Ante CLI — terminal-native AI coding agent from Antigma Labs.
