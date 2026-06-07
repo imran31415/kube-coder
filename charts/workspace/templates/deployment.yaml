@@ -92,6 +92,10 @@ spec:
         - name: KC_DEEPSEEK_MODEL
           value: {{ .Values.assistant.deepseek.model | quote }}
         {{- end }}
+        {{- if (.Values.assistant.librefang).agent }}
+        - name: KC_LIBREFANG_AGENT
+          value: {{ .Values.assistant.librefang.agent | quote }}
+        {{- end }}
         {{- if .Values.assistant.fallback.baseUrl }}
         - name: KC_FALLBACK_BASE_URL
           valueFrom:

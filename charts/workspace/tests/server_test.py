@@ -216,6 +216,7 @@ class AssistantSelectionTests(unittest.TestCase):
             'OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
             'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
             'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
+            'KC_LIBREFANG_AGENT',
         ) if k in os.environ}
 
     def tearDown(self):
@@ -227,7 +228,8 @@ class AssistantSelectionTests(unittest.TestCase):
         for k in ('OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
                   'DEEPSEEK_API_KEY', 'KC_DEEPSEEK_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
-                  'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME'):
+                  'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
+                  'KC_LIBREFANG_AGENT'):
             os.environ.pop(k, None)
         os.environ.update(self._saved_env)
 
@@ -237,6 +239,41 @@ class AssistantSelectionTests(unittest.TestCase):
         # Ante is always available (pre-installed in the image)
         self.assertIn('ante', [a['id'] for a in avail])
         self.assertTrue(avail[0]['default'])
+
+    def test_librefang_listed_only_when_binary_present(self):
+        # Availability is gated on the CLI actually resolving — older images
+        # predate the binary and the dropdown must not offer a dead option.
+        with mock.patch('server.shutil.which', return_value=None):
+            ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+            self.assertNotIn('librefang', ids)
+        with mock.patch('server.shutil.which',
+                        return_value='/usr/local/bin/librefang'):
+            match = [a for a in server.ClaudeTaskManager.available_assistants()
+                     if a['id'] == 'librefang']
+            self.assertEqual(len(match), 1)
+            self.assertEqual(match[0]['label'], 'LibreFang')
+
+    def test_resolve_librefang_requires_binary(self):
+        with mock.patch('server.shutil.which', return_value=None):
+            self.assertEqual(
+                server.ClaudeTaskManager.resolve_assistant('librefang'), 'claude')
+        with mock.patch('server.shutil.which',
+                        return_value='/usr/local/bin/librefang'):
+            self.assertEqual(
+                server.ClaudeTaskManager.resolve_assistant('librefang'), 'librefang')
+
+    def test_command_librefang_chats_with_coder(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('librefang'),
+            'librefang chat coder',
+        )
+        # KC_LIBREFANG_AGENT overrides the agent name and is shell-quoted so
+        # a hostile env var can't break out of the bash -lc shell_cmd.
+        os.environ['KC_LIBREFANG_AGENT'] = 'my agent'
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('librefang'),
+            "librefang chat 'my agent'",
+        )
 
     def test_openrouter_listed_when_env_set(self):
         os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'

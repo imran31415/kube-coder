@@ -12,6 +12,7 @@ import collections
 import hmac
 import hashlib
 import secrets
+import shutil
 import threading
 import uuid
 import urllib.parse
@@ -476,9 +477,11 @@ class ClaudeTaskManager:
     # ── Assistant selection ──────────────────────────────────────────────
     # Assistant options surfaced in the dashboard dropdown:
     #   1. Claude Code   — always available (anthropic-hosted)
-    #   2. OpenRouter    — OpenCode CLI proxied through OpenRouter
-    #   3. DeepSeek      — OpenCode CLI against DeepSeek's native API
-    #   4. Opensource GPU — kc-harness against the configured Ollama endpoint
+    #   2. Ante CLI      — always available (pre-installed in the image)
+    #   3. LibreFang     — agent-OS CLI; listed when its binary is present
+    #   4. OpenRouter    — OpenCode CLI proxied through OpenRouter
+    #   5. DeepSeek      — OpenCode CLI against DeepSeek's native API
+    #   6. Opensource GPU — kc-harness against the configured Ollama endpoint
     # The legacy `opencode-fallback` assistant was retired in favour of
     # kc-harness: same endpoint, narrow tool surface, XML-aware parser, so
     # small local models actually execute tools instead of describing them.
@@ -490,6 +493,14 @@ class ClaudeTaskManager:
         'ante': {
             'id': 'ante',
             'label': 'Ante CLI',
+        },
+        # LibreFang — open-source agent OS (https://librefang.ai). Tasks talk
+        # to its registry-bundled "coder" agent via `librefang chat`; the CLI
+        # picks up whatever provider key is in the environment
+        # (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …).
+        'librefang': {
+            'id': 'librefang',
+            'label': 'LibreFang',
         },
         'opencode-openrouter': {
             'id': 'opencode-openrouter',
@@ -511,6 +522,12 @@ class ClaudeTaskManager:
     def available_assistants():
         out = [dict(ClaudeTaskManager.ASSISTANTS['claude'], default=True)]
         out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
+        # LibreFang — listed only when its CLI is actually resolvable (older
+        # images predate it, and /usr/local/bin/librefang is a symlink to a
+        # PVC path that start.sh seeds), so the dropdown never advertises a
+        # dead option.
+        if shutil.which('librefang'):
+            out.append(dict(ClaudeTaskManager.ASSISTANTS['librefang']))
         if os.environ.get('OPENROUTER_API_KEY'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['opencode-openrouter'],
@@ -543,6 +560,14 @@ class ClaudeTaskManager:
     def assistant_command(assistant):
         if assistant == 'ante':
             return 'ante'
+        if assistant == 'librefang':
+            # Interactive chat REPL with the registry's "coder" agent (synced
+            # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT
+            # overrides the agent name for users who ship their own manifest.
+            # Quoted so a hostile env var can't break out of the `bash -lc`
+            # shell_cmd built downstream in create_task().
+            agent = os.environ.get('KC_LIBREFANG_AGENT', 'coder')
+            return f'librefang chat {_shell_quote(agent)}'
         if assistant == 'opencode-openrouter':
             model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
             # Quote the model so a hostile env var can't break out of the

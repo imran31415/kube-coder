@@ -402,6 +402,53 @@ if [ -f /opt/ante/ante ]; then
   fi
 fi
 
+# Persist LibreFang's home across pod restarts — same pattern as ~/.ante
+# above. LibreFang keeps everything (config.toml, agents, sessions, the
+# registry cache, and the binary at bin/librefang) under ~/.librefang, so
+# one PVC symlink covers data + binary. /usr/local/bin/librefang is a
+# build-time symlink to the PVC path; we seed/refresh it from the image's
+# copy (/opt/librefang/librefang) below so a LIBREFANG_VERSION bump
+# propagates on rebuild.
+LIBREFANG_TARGET=/home/dev/.librefang
+mkdir -p "$LIBREFANG_TARGET/bin"
+if [ -L "$LIBREFANG_TARGET" ]; then
+  LFD=$(readlink "$LIBREFANG_TARGET")
+  if [ "$LFD" = "$LIBREFANG_TARGET" ] || [ "$LFD" = ".librefang" ]; then
+    rm -f "$LIBREFANG_TARGET"; mkdir -p "$LIBREFANG_TARGET/bin"
+  fi
+fi
+for HOME_DIR in /home/ubuntu; do
+  [ -d "$HOME_DIR" ] || continue
+  LINK="$HOME_DIR/.librefang"
+  [ "$LINK" = "$LIBREFANG_TARGET" ] && continue
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$LIBREFANG_TARGET" ]; then
+    continue
+  fi
+  # Merge any existing ~/.librefang into the PVC (cp -an keeps the PVC copy
+  # canonical), then replace with a symlink.
+  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+    cp -an "$LINK"/. "$LIBREFANG_TARGET"/ 2>/dev/null || true
+    rm -rf "$LINK"
+  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    rm -f "$LINK"
+  fi
+  ln -sfn "$LIBREFANG_TARGET" "$LINK" 2>/dev/null || true
+done
+if [ -f /opt/librefang/librefang ]; then
+  if [ ! -e "$LIBREFANG_TARGET/bin/librefang" ] || ! cmp -s /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang"; then
+    install -m 0755 /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null \
+      || cp -p /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null || true
+  fi
+fi
+# One-time non-interactive init so the first `librefang chat` inside a task
+# tmux doesn't block on the interactive setup wizard. Idempotent: skipped
+# once config.toml exists. Provider keys are read from the environment at
+# chat time (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so the --quick
+# defaults are enough here.
+if [ -x "$LIBREFANG_TARGET/bin/librefang" ] && [ ! -f "$LIBREFANG_TARGET/config.toml" ]; then
+  HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" init --quick >/dev/null 2>&1 || true
+fi
+
 # The memory subsystem ships its Python package as flat configmap keys
 # (configmap keys cannot contain "/"). Unpack them into a real `memory/`
 # tree next to server.py so `from memory.manager import ...` resolves.
