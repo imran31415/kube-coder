@@ -148,6 +148,14 @@ assistant:
   deepseek:
     apiKey: ""                            # DEEPSEEK_API_KEY
     model: "deepseek-chat"                # or "deepseek-reasoner"
+  # LibreFang (https://librefang.ai) — open-source agent OS. The CLI is
+  # pre-installed in the image (like Ante) and reuses whatever provider keys
+  # are configured elsewhere (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so
+  # there is no key to set here. `agent` picks which LibreFang agent tasks
+  # talk to; the registry-bundled "coder" is the right default for a coding
+  # workspace.
+  librefang:
+    agent: "coder"                        # KC_LIBREFANG_AGENT
   # OpenCode → any OpenAI-compatible endpoint
   # (e.g. a private proxy running on your own Digital Ocean droplet)
   fallback:
