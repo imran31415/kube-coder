@@ -566,8 +566,22 @@ class ClaudeTaskManager:
             # overrides the agent name for users who ship their own manifest.
             # Quoted so a hostile env var can't break out of the `bash -lc`
             # shell_cmd built downstream in create_task().
-            agent = os.environ.get('KC_LIBREFANG_AGENT', 'coder')
-            return f'librefang chat {_shell_quote(agent)}'
+            #
+            # `librefang chat` needs the kernel daemon running — without it the
+            # CLI panics ("there is no reactor running") and the tmux session
+            # exits instantly. `librefang start` self-daemonizes and is a no-op
+            # when already up; poll status briefly so the REPL doesn't attach
+            # before the daemon's API binds. Mirrors the headless bootstrap in
+            # mcp_agent_orchestrator.py.
+            agent = _shell_quote(os.environ.get('KC_LIBREFANG_AGENT', 'coder'))
+            return (
+                'librefang status -q >/dev/null 2>&1 || { '
+                'librefang start >/dev/null 2>&1 || true; '
+                'for _ in 1 2 3 4 5 6 7 8 9 10; do '
+                'librefang status -q >/dev/null 2>&1 && break; sleep 1; '
+                'done; }; '
+                f'librefang chat {agent}'
+            )
         if assistant == 'opencode-openrouter':
             model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
             # Quote the model so a hostile env var can't break out of the
