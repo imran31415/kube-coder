@@ -60,7 +60,7 @@ kube-coder delivers **per-user, isolated development environments** that combine
 - **Helm-based deployment** - Repeatable, version-controlled infrastructure as code
 - **Comprehensive monitoring** - Built-in metrics, health checks, and logging
 
-[Documentation](docs/getting-started.md)
+[Documentation](docs/)
 
 <img width="1512" height="864" alt="kube-coder workspace interface" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
 
