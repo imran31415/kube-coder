@@ -5,25 +5,70 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
 
-Per-user development workspaces on Kubernetes. Each pod packages **VS Code** in
-the browser, a **persistent tmux terminal**, a **Vite + Preact dashboard**, an
-**in-pod browser with noVNC**, and an interactive **Claude Code / OpenCode**
-assistant — all behind **GitHub OAuth2** at a per-user subdomain.
+## Dependencies and Acknowledgments
 
-> Built so a single Helm chart can host as many independent IDE pods as your
-> cluster has room for: separate namespace, ingress, persistent volume, and
-> assistant config per user.
+kube-coder builds upon the shoulders of remarkable open-source projects and services that make modern development environments possible:
 
-[Public demo and Docs site
-](https://demo-public.dev.scalebase.io/docs/getting-started)
+**Core Infrastructure & Orchestration**
+- **[Kubernetes](https://kubernetes.io)** and **[Helm](https://helm.sh)** for enterprise-grade container orchestration and deployment
+- **[NGINX Ingress Controller](https://kubernetes.github.io/ingress-nginx/)** for sophisticated routing and traffic management
 
-<img width="1512" height="864" alt="image" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
+**Development Environments**
+- **[VS Code / code-server](https://github.com/coder/code-server)** for a full-featured browser-based IDE experience
+- **[tmux](https://github.com/tmux/tmux)** for persistent terminal sessions and multiplexing
+- **[ttyd](https://github.com/tsl0922/ttyd)** for browser-based terminal access
+- **[noVNC](https://novnc.com/)** and **[Xvfb](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml)** for in-pod browser virtualization
+
+**AI-Powered Development Assistants**
+- **[Claude Code](https://code.anthropic.com/)** for state-of-the-art AI pair programming
+- **[OpenCode](https://opencode.ai/)** for flexible, open-source compatible AI assistance
+- **[Ante](https://antigma.ai/)** for advanced terminal-based AI interactions
+
+**Security & Authentication**
+- **[oauth2-proxy](https://github.com/oauth2-proxy/oauth2-proxy)** for robust OAuth2 authentication with GitHub integration
+
+**Dashboard & User Interface**
+- **[Preact](https://preactjs.com/)** and **[Vite](https://vitejs.dev/)** for lightning-fast, modern dashboard development
+- **[Playwright](https://playwright.dev/)** for comprehensive testing and automation
+
+**Utility & Tooling**
+- **Ubuntu** base system with latest versions of `yarn`, `gh`, `jq`, `ripgrep`, `fzf`, and other essential developer tools
 
 ---
 
-## What's in a workspace
+## Enterprise-Grade Development Workspaces on Kubernetes
 
-| Surface | What you get | URL |
+kube-coder delivers **per-user, isolated development environments** that combine the power of cloud-native infrastructure with cutting-edge AI assistance. Each workspace provides a comprehensive suite of development tools—**VS Code in the browser**, **persistent tmux terminals**, an **interactive dashboard**, **in-pod browser sessions**, and **AI-powered build automation**—all secured behind GitHub OAuth and accessible via per-user subdomains.
+
+> **Architected for scale:** A single Helm chart can deploy as many independent IDE pods as your Kubernetes cluster can accommodate—each with separate namespaces, ingress rules, persistent volumes, and assistant configurations.
+
+### Why Choose kube-coder?
+
+**🚀 Developer Productivity Revolution**
+- **Zero-setup onboarding** - New developers get a fully configured environment in minutes, not days
+- **Persistent workspaces** - Your environment survives pod restarts, preserving in-flight work and tmux sessions
+- **AI-powered workflows** - Integrate Claude Code or OpenCode directly into your development process
+- **Multi-modal access** - Code, terminal, and browser interfaces available simultaneously
+
+**🔒 Enterprise Security & Isolation**
+- **Per-user isolation** - Separate Kubernetes namespaces, network policies, and persistent volumes
+- **GitHub OAuth integration** - Secure authentication with your existing identity provider
+- **Zero-trust networking** - Internal services protected behind authentication proxies
+
+**📈 Operational Excellence**
+- **Kubernetes-native** - Leverage built-in scaling, healing, and resource management
+- **Helm-based deployment** - Repeatable, version-controlled infrastructure as code
+- **Comprehensive monitoring** - Built-in metrics, health checks, and logging
+
+[Documentation](docs/)
+
+<img width="1512" height="864" alt="kube-coder workspace interface" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
+
+---
+
+## What's in a Workspace
+
+| Surface | Capabilities | Access URL |
 |---|---|---|
 | **Dashboard SPA** | Vite + Preact app: Build sessions, Memory, Triggers, Files, Settings | `/` |
 | **Terminal** | ttyd-attached tmux, accessible from any browser | `/oauth/terminal/` |
@@ -33,41 +78,28 @@ assistant — all behind **GitHub OAuth2** at a per-user subdomain.
 | **Assistant** | Claude Code (default) or OpenCode | per-task |
 | **Auth** | oauth2-proxy injects `X-Auth-Request-User` headers | every `/oauth/*` route |
 
-<!-- TODO: screenshot of the topbar showing CPU/MEM/DSK pills + VS Code / New terminal buttons -->
-
 ---
 
-## Dashboard at a glance
+## Dashboard at a Glance
 
-The next-generation dashboard at `/` is a single-page Preact app. Key surfaces:
+The next-generation dashboard at `/` is a single-page Preact app delivering unified control over your development environment:
 
-- **Build** — list of live + past Claude/OpenCode sessions on the left, a detail
-  pane on the right with tabs for **Terminal**, **Preview** (split: ttyd ┃
-  noVNC), **Send message** (chat-style mirror of the tmux pane), **Info**,
-  and **Subagents** (hidden when empty). Live sessions default to Terminal;
-  finished sessions hide interactive tabs and show a status banner.
-- **Memory** — persistent SQLite-backed memory + history + relations across
-  build sessions; mirrored over MCP for the assistant to read/write.
-- **Triggers** — webhooks + cron jobs that spawn build sessions on schedule
-  or HTTP POST.
-- **Files** — read the workspace PVC, upload, mkdir.
-- **Settings** — appearance, GitHub identity, browser/VNC controls, **system
-  metrics with bars + alerts + service health**.
+- **Build** — List of live + past Claude/OpenCode sessions on the left, with a detail pane on the right featuring tabs for **Terminal**, **Preview** (split: ttyd ┃ noVNC), **Send message** (chat-style mirror of the tmux pane), **Info**, and **Subagents** (hidden when empty). Live sessions default to Terminal; finished sessions hide interactive tabs and show a status banner.
+- **Memory** — Persistent SQLite-backed memory + history + relations across build sessions; mirrored over MCP for the assistant to read/write.
+- **Triggers** — Webhooks + cron jobs that spawn build sessions on schedule or HTTP POST.
+- **Files** — Read the workspace PVC, upload files, create directories.
+- **Settings** — Appearance customization, GitHub identity management, browser/VNC controls, **system metrics with real-time visualizations + alerts + service health**.
 
-<!-- TODO: side-by-side screenshots: Build list + Terminal tab, Preview split, Send message chat -->
+### Top Bar Interface
+The dashboard includes a persistent top bar showing real-time CPU, memory, and disk usage metrics, along with quick-access buttons for VS Code and creating new terminal sessions.
 
-### Mobile
+### Mobile Experience
 
-The dashboard is fully responsive. Below 720px the Rail collapses into a
-BottomNav (Build / Memory / Triggers / More), the detail pane moves into a
-swipe-able bottom sheet, and the topbar slims to just brand + search + the
-two primary actions (VS Code, New terminal).
+The dashboard is fully responsive. Below 720px the Rail collapses into a BottomNav (Build / Memory / Triggers / More), the detail pane moves into a swipe-able bottom sheet, and the topbar slims to just brand + search + the two primary actions (VS Code, New terminal).
 
-<!-- TODO: mobile screenshot of Build list + BottomSheet with task detail -->
+Mobile users experience an optimized interface with touch-friendly controls and intuitive navigation patterns suitable for on-the-go development environment management.
 
----
-
-## Quick start
+## Quick Start
 
 ### Prerequisites
 
@@ -75,16 +107,15 @@ two primary actions (VS Code, New terminal).
 - Helm 3.0+
 - An nginx-ingress controller
 - A GitHub OAuth App (for oauth2-proxy)
-- A `regcred` image-pull Secret in the target namespace pointing at your
-  registry (we use `registry.digitalocean.com/<org>/<repo>`)
+- A `regcred` image-pull Secret in the target namespace pointing at your registry (we use `registry.digitalocean.com/<org>/<repo>`)
 
-### One-time: base infrastructure
+### One-time: Base Infrastructure
 
 ```bash
 make deploy-base                  # base-infrastructure helm release
 ```
 
-### Onboard a user
+### Onboard a User
 
 ```bash
 # Scaffold a private workspace under users-private/<name>/ — generates
@@ -106,12 +137,11 @@ make shell  USER=<name>
 make test   USER=<name>
 ```
 
-The script `setup.sh` walks first-time users through GitHub OAuth, DNS, and
-Claude credentials interactively for the basic-auth flow (older path).
+The script `setup.sh` walks first-time users through GitHub OAuth, DNS, and Claude credentials interactively for the basic-auth flow (older path).
 
 ---
 
-## Common commands
+## Common Commands
 
 ```bash
 # Docker image
@@ -145,18 +175,11 @@ make status                       # helm + pod status
 
 ---
 
-## Build sessions (Claude / OpenCode)
+## Build Sessions (Claude / OpenCode)
 
-Each **build session** is an interactive Claude Code or OpenCode tmux
-session inside the workspace pod. Sessions are created via the dashboard
-("New build") or the JSON API and survive pod restarts; output is mirrored
-to a log file under `~/.kube-coder/tasks/<task_id>/`.
+Each **build session** is an interactive Claude Code or OpenCode tmux session inside the workspace pod. Sessions are created via the dashboard ("New build") or the JSON API and survive pod restarts; output is mirrored to a log file under `~/.kube-coder/tasks/<task_id>/`.
 
-The dashboard's **New build** flow is intentionally minimal — pick an
-assistant + working directory, give the session a memorable random name
-(e.g. `funny-kitty-37`), hit **Start build**, and you land directly in the
-live terminal. No prompt textarea: type your first prompt inside the
-session, the way you would in any REPL.
+The dashboard's **New build** flow is intentionally minimal — pick an assistant + working directory, give the session a memorable random name (e.g. `funny-kitty-37`), hit **Start build**, and you land directly in the live terminal. No prompt textarea: type your first prompt inside the session, the way you would in any REPL.
 
 ### API
 
@@ -186,61 +209,50 @@ curl -s https://<user>.dev.example.com/oauth/api/claude/tasks \
 /remote-task --workspace imran --prompt "investigate flaky test in foo_test.py"
 ```
 
-Sends the prompt to a remote workspace's `/api/claude/tasks` endpoint and
-streams the result back. Used to dispatch work to a stronger workspace from
-a lighter local one.
+Sends the prompt to a remote workspace's `/api/claude/tasks` endpoint and streams the result back. Used to dispatch work to a stronger workspace from a lighter local one.
 
 ---
 
-## Persistent memory
+## Persistent Memory
 
 Each workspace has a SQLite-backed memory store accessible via:
 
 - **Dashboard** → Memory route (CRUD with history + relations)
-- **MCP server** auto-spawned by Claude/OpenCode (read + write from inside
-  the assistant)
+- **MCP server** auto-spawned by Claude/OpenCode (read + write from inside the assistant)
 - **REST** at `/api/memory`
 
-Memory records are auto-injected into new build prompts when relevant — the
-server runs a similarity search over namespace+key+value tags and prepends
-the top matches inside a `<workspace_memories>` block.
+Memory records are auto-injected into new build prompts when relevant — the server runs a similarity search over namespace+key+value tags and prepends the top matches inside a `<workspace_memories>` block.
 
 <!-- TODO: screenshot of Memory route with history tab open -->
 
 ---
 
-## Triggers — webhooks, crons, completion hooks
+## Triggers — Webhooks, Crons, Completion Hooks
 
 Three ways to dispatch a build session without clicking "New build":
 
-1. **Completion hooks** — register a webhook URL on a session that fires
-   when the assistant finishes (status, output URL, summary).
-2. **Webhooks** — accept inbound POSTs; convert the body to a build prompt
-   using a template.
+1. **Completion hooks** — Register a webhook URL on a session that fires when the assistant finishes (status, output URL, summary).
+2. **Webhooks** — Accept inbound POSTs; convert the body to a build prompt using a template.
 3. **Crons** — UNIX cron expressions that POST to a webhook on schedule.
 
-All three live under `Triggers` in the dashboard. Mutual references between
-tasks and triggers are tracked in the memory store so you can see what
-fired what.
+All three live under `Triggers` in the dashboard. Mutual references between tasks and triggers are tracked in the memory store so you can see what fired what.
 
 <!-- TODO: screenshot of Triggers route with webhook + cron example -->
 
 ---
 
-## Pluggable AI assistants
+## Pluggable AI Assistants
 
 Configure per-workspace via `assistant.provider` in values.yaml:
 
 - **`claude`** (default) — Anthropic Claude Code with your API key
-- **`opencode`** — OpenRouter or any OpenAI-compatible base URL via on-disk
-  config written at pod start
+- **`opencode`** — OpenRouter or any OpenAI-compatible base URL via on-disk config written at pod start
 
-Each build session picks its assistant at create-time; you can mix Claude
-and OpenCode sessions in the same workspace.
+Each build session picks its assistant at create-time; you can mix Claude and OpenCode sessions in the same workspace.
 
 ---
 
-## Pre-installed stack
+## Pre-installed Stack
 
 | Component | Version |
 |---|---|
@@ -255,7 +267,7 @@ Bump versions in `devlaptop/Dockerfile` and run `make push` to rebuild.
 
 ---
 
-## Repository layout
+## Repository Layout
 
 ```
 charts/
@@ -296,9 +308,7 @@ Makefile                   # all common commands (`make help`)
                                                         └───────────────────┘
 ```
 
-Per-user PVC mounted at `/home/dev` survives pod restarts; tmux sessions
-attached to it survive too, so an in-flight Claude build keeps running even
-if the dashboard tab is closed.
+Per-user PVC mounted at `/home/dev` survives pod restarts; tmux sessions attached to it survive too, so an in-flight Claude build keeps running even if the dashboard tab is closed.
 
 ---
 
@@ -315,8 +325,15 @@ DASHBOARD_DIST_DIR=$(pwd)/charts/workspace/web/dist \
 make test-all-units
 ```
 
-Pull requests welcome — please run `make dashboard-web-test` and
-`make python-tests` before opening a PR.
+Pull requests welcome — please run `make dashboard-web-test` and `make python-tests` before opening a PR.
+
+---
+
+## Contact & Demo Requests
+
+Interested in a demonstration, enterprise deployment, or custom integration? Our team is ready to help you transform your development workflow.
+
+**Professional Inquiries:** scalebaseio@gmail.com
 
 ---
 
