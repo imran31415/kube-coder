@@ -71,17 +71,19 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertEqual(orch._assistant_command('ante', 'x', headless=False), 'ante')
 
     def test_interactive_librefang_is_chat_repl(self):
-        self.assertEqual(
-            orch._assistant_command('librefang', 'x', headless=False),
-            'librefang chat coder',
-        )
+        cmd = orch._assistant_command('librefang', 'x', headless=False)
+        # Interactive REPL also bootstraps the daemon first — without it
+        # `librefang chat` panics and the tmux session exits immediately.
+        self.assertIn('librefang status', cmd)
+        self.assertIn('librefang start', cmd)
+        self.assertTrue(cmd.rstrip().endswith('librefang chat coder'))
 
     def test_librefang_agent_env_override_is_quoted(self):
         os.environ['KC_LIBREFANG_AGENT'] = 'my agent'
         try:
-            self.assertEqual(
-                orch._assistant_command('librefang', 'x', headless=False),
-                "librefang chat 'my agent'",
+            self.assertTrue(
+                orch._assistant_command('librefang', 'x', headless=False)
+                .rstrip().endswith("librefang chat 'my agent'"),
             )
         finally:
             os.environ.pop('KC_LIBREFANG_AGENT', None)
