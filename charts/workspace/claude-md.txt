@@ -265,6 +265,8 @@ so orchestration can't fork-bomb the pod or run away on API spend.
 
 - `ante` — Ante CLI (pre-installed; defaults to OpenRouter when its key is set)
 - `claude` — Claude Code (requires Anthropic API key or OAuth)
+- `librefang` — LibreFang agent OS (pre-installed; talks to its registry
+  `coder` agent and reuses whatever provider key is in the environment)
 - `opencode-openrouter` — OpenCode via OpenRouter
 - `opencode-deepseek` — OpenCode via DeepSeek
 - `kc-harness` — Opensource GPU (requires a running Ollama endpoint)

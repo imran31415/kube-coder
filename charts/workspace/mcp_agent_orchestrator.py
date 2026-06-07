@@ -239,13 +239,19 @@ def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
 # Assistants with a non-interactive one-shot "print" mode that exits when
 # the task is done. Anything not listed has no reliable headless interface
 # (kc-harness) and is always run interactively (prompt pasted into the REPL).
-_HEADLESS_CAPABLE = {'claude', 'ante', 'opencode-openrouter', 'opencode-deepseek'}
+_HEADLESS_CAPABLE = {'claude', 'ante', 'librefang', 'opencode-openrouter', 'opencode-deepseek'}
 
 
 def _opencode_model(assistant: str) -> str:
     if assistant == 'opencode-deepseek':
         return 'deepseek/' + os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
     return 'openrouter/' + os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
+
+
+def _librefang_agent() -> str:
+    """LibreFang agent name tasks talk to — the registry-bundled `coder`
+    unless KC_LIBREFANG_AGENT points at a user-supplied manifest."""
+    return os.environ.get('KC_LIBREFANG_AGENT', 'coder')
 
 
 def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) -> str:
@@ -267,6 +273,8 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
             return f'opencode --model {_shell_quote(_opencode_model(assistant))}'
         if assistant == 'kc-harness':
             return 'python3 /tmp/browser/harness.py'
+        if assistant == 'librefang':
+            return f'librefang chat {_shell_quote(_librefang_agent())}'
         return assistant if assistant in ('claude', 'ante') else 'claude'
 
     q = _shell_quote(prompt)
@@ -274,6 +282,20 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         return f'claude --dangerously-skip-permissions -p {q}'
     if assistant == 'ante':
         return f'ante --yolo -p {q}'
+    if assistant == 'librefang':
+        # `librefang message` is the CLI's one-shot mode but requires the
+        # daemon. `librefang start` self-daemonizes and errors harmlessly
+        # when already running; poll status briefly so the message isn't
+        # sent before the daemon's API binds.
+        agent = _shell_quote(_librefang_agent())
+        return (
+            'librefang status -q >/dev/null 2>&1 || { '
+            'librefang start >/dev/null 2>&1 || true; '
+            'for _ in 1 2 3 4 5 6 7 8 9 10; do '
+            'librefang status -q >/dev/null 2>&1 && break; sleep 1; '
+            'done; }; '
+            f'librefang message {agent} {q}'
+        )
     # OpenCode one-shot: `opencode run <message>` is non-interactive.
     return f'opencode run --model {_shell_quote(_opencode_model(assistant))} {q}'
 
@@ -307,6 +329,7 @@ def _wait_pane_ready(session_name: str, min_delay: float = 1.5,
 _ASSISTANTS_LIST = [
     {'id': 'claude', 'label': 'Claude Code'},
     {'id': 'ante', 'label': 'Ante CLI'},
+    {'id': 'librefang', 'label': 'LibreFang'},
     {'id': 'opencode-openrouter', 'label': 'OpenRouter'},
     {'id': 'opencode-deepseek', 'label': 'DeepSeek'},
     {'id': 'kc-harness', 'label': 'Opensource GPU'},
@@ -641,7 +664,7 @@ TOOLS: Dict[str, Any] = {
                     'assistant': {
                         'type': 'string',
                         'description': 'Which agent to spawn',
-                        'enum': ['ante', 'claude', 'opencode-openrouter', 'opencode-deepseek', 'kc-harness'],
+                        'enum': ['ante', 'claude', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'kc-harness'],
                         'default': 'ante',
                     },
                     'mode': {

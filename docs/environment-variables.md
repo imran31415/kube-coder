@@ -38,6 +38,11 @@ This document describes all environment variables used by kube-coder components.
 | `DEEPSEEK_API_KEY` | - | DeepSeek API key. |
 | `KC_DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek model identifier. |
 
+#### LibreFang Integration
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KC_LIBREFANG_AGENT` | `coder` | LibreFang agent name tasks talk to (`librefang chat <agent>` / `librefang message <agent>`). LibreFang has no key of its own — it reuses whatever provider key is in the environment (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). |
+
 #### Fallback/Generic AI Backend
 | Variable | Default | Description |
 |----------|---------|-------------|

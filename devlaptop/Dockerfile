@@ -91,6 +91,22 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
     && test -x /opt/ante/ante \
     && ln -sfn /home/dev/.ante/bin/ante /usr/local/bin/ante
 
+# LibreFang CLI — open-source agent OS (https://librefang.ai); surfaces in
+# the dashboard/orchestrator as the `librefang` assistant. Same persistence
+# pattern as Ante above: the real binary lives at /opt/librefang/librefang
+# and /usr/local/bin/librefang is a *symlink* to the PVC-backed path
+# /home/dev/.librefang/bin/librefang, which start.sh seeds from /opt on
+# boot. ~/.librefang also holds LibreFang's own config/agents/sessions, so
+# the one PVC symlink persists data + binary together. LIBREFANG_AUTO_START=0
+# stops the installer from booting the daemon inside the build. Bump
+# LIBREFANG_VERSION (a release tag; empty = latest) + rebuild to update.
+ARG LIBREFANG_VERSION=
+RUN curl -fsSL https://librefang.ai/install.sh \
+    | LIBREFANG_INSTALL_DIR=/opt/librefang LIBREFANG_AUTO_START=0 \
+      LIBREFANG_VERSION=${LIBREFANG_VERSION} sh \
+    && test -x /opt/librefang/librefang \
+    && ln -sfn /home/dev/.librefang/bin/librefang /usr/local/bin/librefang
+
 # Install ttyd for mobile-friendly terminal access.
 # Pinned to a known-good version so transient 502s from GitHub's release CDN
 # don't break the build (we hit them repeatedly while bumping to v1.7.1).
