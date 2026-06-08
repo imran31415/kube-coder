@@ -611,7 +611,7 @@ class ClaudeTaskManager:
         if workdir is None:
             workdir = '/home/dev'
 
-        session_name = f'claude-{task_id}'
+        session_name = f'kube-coder-{task_id}'
 
         # ── Memory auto-injection (opt-in, OFF by default) ────────────────
         # Optionally compute a <workspace_memories> block from top-K relevant
@@ -769,7 +769,7 @@ class ClaudeTaskManager:
         if workdir is None:
             workdir = '/home/dev'
 
-        session_name = f'claude-{task_id}'
+        session_name = f'kube-coder-{task_id}'
 
         meta = {
             'task_id': task_id,
@@ -869,7 +869,7 @@ class ClaudeTaskManager:
 
         # Get recent output from live tmux pane or fallback to log file
         recent_output = ''
-        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
         result = subprocess.run(
             ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-50'],
             capture_output=True, text=True,
@@ -890,7 +890,7 @@ class ClaudeTaskManager:
             meta = json.load(f)
 
         # For live sessions, capture the tmux pane content
-        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
         result = subprocess.run(
             # -J joins wrapped lines, so URLs the assistant prints that
             # overflow the 220-col pane come back as one logical line —
@@ -925,7 +925,7 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
 
-        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
 
         # Check if tmux session is still alive
         check = subprocess.run(
@@ -985,7 +985,7 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
 
-        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
 
         # Kill the tmux session if alive
         subprocess.run(
@@ -3378,7 +3378,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except (OSError, json.JSONDecodeError):
             self.send_json({'error': 'Task metadata unreadable'}, 500)
             return
-        session_name = meta.get('tmux_session', f'claude-{task_id}')
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
         output_log = os.path.join(task_dir, 'output.log')
 
         self.send_response(200)
@@ -3618,7 +3618,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if task is None:
             self.send_json({'error': 'Task not found'}, 404)
             return
-        session_name = task.get('tmux_session', f'claude-{task_id}')
+        session_name = task.get('tmux_session', f'kube-coder-{task_id}')
         # Wait up to ~3s for the tmux session to be visible to has-session
         # before declaring ourselves ready. Without this, the SPA can load
         # the iframe and run terminal-entry.sh while the session that
@@ -3679,7 +3679,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if task is None:
             self.send_json({'error': 'Task not found'}, 404)
             return
-        session_name = task.get('tmux_session', f'claude-{task_id}')
+        session_name = task.get('tmux_session', f'kube-coder-{task_id}')
         if action == 'enter':
             cmd = ['tmux', 'copy-mode', '-t', session_name]
         else:
@@ -4785,6 +4785,33 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Preserve the readyState constants apps read as WebSocket.OPEN etc.
         b'window.WebSocket.CONNECTING=W.CONNECTING;window.WebSocket.OPEN=W.OPEN;'
         b'window.WebSocket.CLOSING=W.CLOSING;window.WebSocket.CLOSED=W.CLOSED;}'
+        # Dynamically-injected <link>/<script> (modulepreload, the rel=stylesheet
+        # CSS-preload links a Vite/Rolldown SPA appends at runtime, prefetch) build
+        # their href/src from the app's absolute base (e.g. /dashboard/assets/x.css)
+        # — fetch/XHR patching doesn't cover element insertion, so those escape the
+        # proxy prefix and 404/HTML-fall-through ("Unable to preload CSS for ..."").
+        # Rewrite href/src through fix() as the node is inserted (before the browser
+        # fetches it), so the request goes through the authed proxy path.
+        # Primary: intercept the href/src *property setter* on freshly-created
+        # link/script elements. The bundler's CSS preloader does `o.href=t`
+        # (a property assignment, not setAttribute) then document.head.append —
+        # patching appendChild alone misses it. Redefining the setter on the
+        # instance catches the absolute path at the moment it is assigned.
+        b'function fxp(el,prop){try{var pr=Object.getPrototypeOf(el);'
+        b'var d=pr&&Object.getOwnPropertyDescriptor(pr,prop);'
+        b'if(d&&d.set&&d.get){Object.defineProperty(el,prop,{configurable:true,enumerable:d.enumerable,'
+        b'get:function(){return d.get.call(this)},'
+        b'set:function(v){try{v=fix(v)}catch(e){}return d.set.call(this,v)}});}}catch(e){}}'
+        b'var _ce=document.createElement;document.createElement=function(t){'
+        b'var el=_ce.apply(document,arguments);try{var tg=(""+t).toLowerCase();'
+        b'if(tg==="link")fxp(el,"href");else if(tg==="script")fxp(el,"src");}catch(e){}return el;};'
+        # Fallback: fix href/src as a node is inserted, covering elements built
+        # via innerHTML / cloneNode that bypass our createElement override.
+        b'function fxn(n){try{if(!n||!n.tagName)return;var t=n.tagName;'
+        b'if(t==="LINK"){var h=n.getAttribute&&n.getAttribute("href");if(h)n.setAttribute("href",fix(h));}'
+        b'else if(t==="SCRIPT"){var s=n.getAttribute&&n.getAttribute("src");if(s)n.setAttribute("src",fix(s));}}catch(e){}}'
+        b'var _ap=Node.prototype.appendChild;Node.prototype.appendChild=function(n){fxn(n);return _ap.call(this,n)};'
+        b'var _ib=Node.prototype.insertBefore;Node.prototype.insertBefore=function(n,r){fxn(n);return _ib.call(this,n,r)};'
         b'})();</script>'
     )
     # Hop-by-hop headers that must not be forwarded between client and
@@ -5155,6 +5182,25 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if not stripped:
                     continue
                 v = stripped
+                # We inject an inline runtime shim into rewritten HTML (see
+                # _rewrite_proxied_html). A restrictive script-src — e.g.
+                # "script-src 'self'" with no 'unsafe-inline' — makes the
+                # browser silently block that inline <script> from executing,
+                # so the app's runtime asset requests stay unproxied and a
+                # Vite/Rolldown SPA's CSS preloads 404 ("Unable to preload CSS
+                # for /…"). Add 'unsafe-inline' to script-src so the shim runs.
+                # Only for responses we actually rewrote.
+                if rewritten is not None:
+                    parts = [p.strip() for p in v.split(';') if p.strip()]
+                    has_script_src = False
+                    for i, p in enumerate(parts):
+                        if p.lower().startswith('script-src'):
+                            has_script_src = True
+                            if "'unsafe-inline'" not in p.lower():
+                                parts[i] = p + " 'unsafe-inline'"
+                    if not has_script_src:
+                        parts.append("script-src 'self' 'unsafe-inline'")
+                    v = '; '.join(parts)
             if kl == 'location':
                 v = self._rewrite_location_header(v, port)
             self.send_header(k, v)
