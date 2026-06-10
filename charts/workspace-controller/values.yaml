@@ -18,7 +18,7 @@ controller:
   # image; this default is only a fallback for raw `helm install`.
   image:
     repository: registry.digitalocean.com/resourceloop/coder
-    tag: devlaptop-v1.10.0-vnc-resize
+    tag: devlaptop-v1.11.0-claude-ante-updates
     pullPolicy: IfNotPresent
     pullSecretName: regcred
 

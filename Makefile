@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests
+.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage
 
 # =============================================================================
 # Generic per-user helpers
@@ -26,7 +26,7 @@ secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
 IMAGE_NAME := devlaptop
-VERSION := v1.10.0-vnc-resize
+VERSION := v1.11.0-claude-ante-updates
 PLATFORM := linux/amd64
 NAMESPACE := coder
 
@@ -222,13 +222,29 @@ dashboard-web: dashboard-web-install ## Build the new dashboard SPA → charts/w
 	@echo "To preview locally: DASHBOARD_DIST_DIR=$(PWD)/$(WEB_DIR)/dist python3 charts/workspace/server.py"
 
 dashboard-web-test: dashboard-web-install ## Run SPA unit tests (Vitest)
-	cd $(WEB_DIR) && yarn test
+	cd $(WEB_DIR) && yarn test --reporter=verbose
 
 dashboard-web-clean: ## Remove SPA build artifacts
 	rm -rf $(WEB_DIR)/dist $(WEB_DIR)/node_modules
 
 python-tests: ## Run server.py unit + integration tests
 	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v
+
+python-coverage: ## Run Python tests with coverage report
+	cd charts/workspace && coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html
+
+dashboard-web-coverage: dashboard-web-install ## Run SPA tests with coverage report
+	cd $(WEB_DIR) && yarn test:coverage
+
+test-coverage: ## Run tests with terminal coverage summary
+	@echo "=== Running Frontend Tests with Coverage ==="
+	@cd $(WEB_DIR) && yarn test:coverage 2>&1 | tail -20
+	@echo ""
+	@echo "=== Running Backend Tests with Coverage ==="
+	@cd charts/workspace && coverage run -m unittest discover -s tests -p '*_test.py' -v > /dev/null 2>&1 && coverage report
+
+coverage: ## Run all tests with comprehensive coverage reports and HTML output
+	@./scripts/coverage-report.sh
 
 test-all-units: dashboard-web-test python-tests ## Run SPA (Vitest) + server.py (unittest) tests
 

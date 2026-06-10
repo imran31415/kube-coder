@@ -12,7 +12,7 @@ user:
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.10.0-vnc-resize
+  tag: devlaptop-v1.11.0-claude-ante-updates
   pullPolicy: Always
   pullSecretName: regcred
 

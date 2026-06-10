@@ -38,3 +38,10 @@ users-private/
 # auto-written when browser tools run from this directory). Useful as
 # flight-recorder data during a session, regenerable, not source.
 .playwright-mcp/
+# Coverage reports
+charts/workspace/.coverage
+charts/workspace/htmlcov/
+charts/workspace/web/coverage/
+*.coverage
+.coverage
+.coverage.*
