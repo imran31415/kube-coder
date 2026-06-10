@@ -63,7 +63,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # https://docs.anthropic.com/en/docs/claude-code/setup
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
-ARG CLAUDE_CODE_VERSION=2.1.168
+ARG CLAUDE_CODE_VERSION=2.1.172
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -71,7 +71,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # OpenRouter directly and any OpenAI-compatible base URL (e.g. a self-hosted
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
-ARG OPENCODE_VERSION=1.16.2
+ARG OPENCODE_VERSION=1.17.3
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Ante CLI — terminal-native AI coding agent from Antigma Labs.
@@ -100,7 +100,7 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
 # the one PVC symlink persists data + binary together. LIBREFANG_AUTO_START=0
 # stops the installer from booting the daemon inside the build. Bump
 # LIBREFANG_VERSION (a release tag; empty = latest) + rebuild to update.
-ARG LIBREFANG_VERSION=
+ARG LIBREFANG_VERSION=v2026.6.10-beta.17
 RUN curl -fsSL https://librefang.ai/install.sh \
     | LIBREFANG_INSTALL_DIR=/opt/librefang LIBREFANG_AUTO_START=0 \
       LIBREFANG_VERSION=${LIBREFANG_VERSION} sh \
@@ -132,7 +132,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
 # sqlite-vec loadable extension — enables vector search inside SQLite for the
 # persistent-memory subsystem (Phase 2 activates this). Shipped as a single
 # .so so the dashboard + MCP memory server can `conn.load_extension('vec0')`.
-ARG SQLITE_VEC_VERSION=0.1.6
+ARG SQLITE_VEC_VERSION=0.1.9
 RUN ARCH=$(dpkg --print-architecture) \
  && case "$ARCH" in amd64) VEC_ARCH=x86_64 ;; arm64) VEC_ARCH=aarch64 ;; *) VEC_ARCH=$ARCH ;; esac \
  && mkdir -p /usr/local/lib/sqlite-vec \
@@ -144,8 +144,8 @@ RUN ARCH=$(dpkg --print-architecture) \
 # retries. Installed eagerly so Phase 2 activation needs only a value flip.
 # --break-system-packages is required on Ubuntu 24.04 (PEP 668).
 RUN pip3 install --break-system-packages --no-cache-dir \
-    voyageai==0.2.4 \
-    httpx==0.27.2
+    voyageai==0.4.0 \
+    httpx==0.28.1
 
 # Install browser with noVNC for web access.
 # `file` lets the post-download tarball check below work.
