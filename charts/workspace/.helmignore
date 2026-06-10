@@ -10,6 +10,7 @@ tests/
 # (devlaptop/Dockerfile multi-stage). The chart itself doesn't need any of it.
 web/node_modules/
 web/dist/
+web/coverage/
 web/.vite/
 web/src/
 web/scripts/
