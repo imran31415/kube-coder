@@ -50,12 +50,15 @@ spec:
         workingDir: /home/dev
         command: ["/bin/bash", "-l", "/workspace-entrypoint/start.sh"]
         env:
-        # Make non-interactive bash (e.g. `bash -c …`, hooks, git credential
-        # helpers) source the GH_TOKEN/GITHUB_TOKEN export. Bash ignores
-        # BASH_ENV when the file doesn't exist yet, so it is safe to set
-        # unconditionally — the entrypoint creates the file after first mint.
+        # Make non-interactive bash (e.g. `bash -c …`, hooks, the gh/git
+        # credential helper) source the GH_TOKEN/GITHUB_TOKEN export. Points
+        # at the user-writable file the token daemon rewrites in place — the
+        # container runs with allowPrivilegeEscalation:false, so /etc/* cannot
+        # be written and a /etc path here would dangle. Bash ignores BASH_ENV
+        # when the file doesn't exist yet, so it is safe to set unconditionally
+        # — the entrypoint creates the file after first mint.
         - name: BASH_ENV
-          value: /etc/profile.d/00-github-env.sh
+          value: /home/dev/.profile.d-github-env
         {{- if eq .Values.build.mode "buildkit" }}
         - name: DOCKER_HOST
           value: "tcp://localhost:2376"

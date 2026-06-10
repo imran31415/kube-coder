@@ -176,24 +176,26 @@ if [ -n "$GITHUB_APP_ID" ]; then
   source /home/dev/.credentials/.github-env
   cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env
 
-  # Make GH_TOKEN/GITHUB_TOKEN visible to EVERY shell in the pod —
-  # not just interactive bash. The previous "append to ~/.bashrc"
-  # approach silently failed for:
-  #   • `bash -c '…'`         — non-interactive, .bashrc returns early
-  #   • scripts and hooks     — same as above
-  #   • `gh auth git-credential` invoked by Git's credential helper
-  # We wire three sources so every shell flavour finds it:
-  #   1. /etc/profile.d/00-github-env.sh   → login shells
-  #   2. /etc/bash.bashrc                  → interactive non-login bash
-  #   3. BASH_ENV (set on the container)   → non-interactive bash
-  # The shipped file always reads /home/dev/.profile.d-github-env so the
-  # daemon's in-place rewrites are picked up without restart.
+  # Make GH_TOKEN/GITHUB_TOKEN visible to EVERY shell flavour in the pod.
+  # The container runs with allowPrivilegeEscalation:false (see the
+  # securityContext in deployment.yaml), so `sudo` cannot escalate and any
+  # write under /etc/* fails silently. We therefore wire only user-writable
+  # locations (uid 1000) — no sudo, nothing under /etc:
+  #   1. BASH_ENV=/home/dev/.profile.d-github-env (set in deployment.yaml)
+  #                          → non-interactive bash: `bash -c …`, hooks,
+  #                            the gh/git credential helper — the path that
+  #                            actually breaks when this is missing
+  #   2. ~/.bashrc           → interactive non-login bash
+  #   3. ~/.profile          → login shells
+  # All three read /home/dev/.profile.d-github-env, which the refresh daemon
+  # rewrites in place, so new shells pick up rotated tokens without restart.
   GH_SRC_LINE='[ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env'
-  echo "$GH_SRC_LINE" | sudo tee /etc/profile.d/00-github-env.sh > /dev/null
-  sudo chmod 0644 /etc/profile.d/00-github-env.sh
-  if ! sudo grep -qF '/home/dev/.profile.d-github-env' /etc/bash.bashrc 2>/dev/null; then
-    echo "$GH_SRC_LINE" | sudo tee -a /etc/bash.bashrc > /dev/null
-  fi
+  for rc in /home/dev/.bashrc /home/dev/.profile; do
+    touch "$rc"
+    if ! grep -qF '/home/dev/.profile.d-github-env' "$rc"; then
+      printf '\n# github-app token (rewritten in place by the refresh daemon)\n%s\n' "$GH_SRC_LINE" >> "$rc"
+    fi
+  done
 
   python3 /github-app/github-app-token.py --daemon &
 fi
