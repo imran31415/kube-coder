@@ -10,16 +10,24 @@ on:
   pull_request:
     branches: [main]
 
+# Default to a read-only token for every job. The security-scan job widens
+# this to upload SARIF (see its own permissions block). Without an explicit
+# block the workflow inherited the repo's read-only default, so the
+# upload-sarif step failed on pushes to main with "Resource not accessible
+# by integration" (PR runs happened to get a writable token and passed).
+permissions:
+  contents: read
+
 jobs:
   helm-lint:
     name: Helm Lint & Template
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: v3.14.0
 
@@ -54,10 +62,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: v3.14.0
 
@@ -75,10 +83,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -90,10 +98,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'yarn'
@@ -113,13 +121,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: devlaptop/Dockerfile
@@ -140,9 +148,12 @@ jobs:
     name: Security Scanning
     runs-on: ubuntu-latest
     needs: docker-build  # Wait for docker-build to complete
+    permissions:
+      contents: read          # checkout + trufflehog
+      security-events: write  # upload-sarif -> GitHub code scanning
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Secret Scanning
         uses: trufflesecurity/trufflehog@main
@@ -150,10 +161,10 @@ jobs:
           extra_args: --only-verified
 
       - name: Set up Docker
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image for scanning
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: devlaptop/Dockerfile
@@ -173,15 +184,19 @@ jobs:
           scanners: 'vuln'
 
       - name: Upload Trivy Scan Results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
 
       - name: SCA Scanning (JavaScript/TypeScript)
         run: |
+          # The SPA uses yarn classic (yarn.lock, no package-lock.json), so
+          # `npm audit` aborted with ENOLOCK and scanned nothing. yarn audit
+          # reads yarn.lock directly. It exits non-zero when advisories exist,
+          # so keep the `|| echo` to stay non-blocking.
           cd charts/workspace/web
-          npm audit --audit-level=high || echo "Vulnerabilities found"
+          yarn audit --level high || echo "Vulnerabilities found"
         if: success() || failure()
 
       - name: SCA Scanning (Python)
