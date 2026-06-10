@@ -4,6 +4,7 @@
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
+[![Test Coverage](https://img.shields.io/badge/coverage-48%25-yellow)](https://github.com/imran31415/kube-coder)
 ---
 
 ## Enterprise-Grade Development Workspaces on Kubernetes
@@ -136,6 +137,8 @@ make dashboard-web-clean          # rm -rf dist + node_modules
 # Tests across the repo
 make test-all-units               # SPA (vitest) + server.py (unittest)
 make python-tests                 # server.py only
+make test-coverage                # Run tests with terminal coverage summary
+make coverage                     # Generate comprehensive HTML coverage reports
 
 # Cluster status
 make status                       # helm + pod status
@@ -227,13 +230,63 @@ Each build session picks its assistant at create-time; you can mix Claude and Op
 | Component | Version |
 |---|---|
 | Node.js | 20 LTS |
-| `code-server` | 4.95.3 |
-| Claude Code CLI | 2.1.143 |
-| OpenCode CLI | 1.15.3 |
+| `code-server` | v4.123.0 |
+| Claude Code CLI | 2.1.172 |
+| OpenCode CLI | 1.17.3 |
+| Ante CLI | 0.preview.37 (stable channel) |
+| LibreFang | v2026.6.10-beta.17 |
 | ttyd | 1.7.7 |
 | tmux, yarn, gh, jq, ripgrep, fzf | latest from Ubuntu |
 
 Bump versions in `devlaptop/Dockerfile` and run `make push` to rebuild.
+
+---
+
+## Testing & Code Quality
+
+kube-coder includes comprehensive test suites for both frontend and backend components with detailed coverage reporting.
+
+### Test Coverage
+
+| Component | Coverage | Framework |
+|---|---|---|
+| **Frontend (Dashboard)** | 40.5% | Vitest + @testing-library |
+| **Backend (Python API)** | 57% | unittest + coverage.py |
+| **Overall** | 48% | Weighted average |
+
+### Running Tests
+
+```bash
+# Run all unit tests (SPA + Python)
+make test-all-units
+
+# Run tests with coverage reports
+make coverage
+
+# Quick terminal coverage summary
+make test-coverage
+
+# Frontend tests only
+make dashboard-web-test
+
+# Python tests only  
+make python-tests
+```
+
+### Coverage Reports
+
+Detailed HTML coverage reports are generated:
+
+- **Frontend**: `charts/workspace/web/coverage/index.html`
+- **Backend**: `charts/workspace/htmlcov/index.html`
+
+Run `make coverage` to generate comprehensive reports with overall coverage calculation.
+
+### Test Structure
+
+- **Frontend**: 50+ Vitest unit tests covering React components, state management, and API integration
+- **Backend**: 180+ Python unit tests covering API endpoints, business logic, and integration scenarios
+- **CI Integration**: All tests run automatically on GitHub Actions
 
 ---
 
@@ -293,9 +346,10 @@ DASHBOARD_DIST_DIR=$(pwd)/charts/workspace/web/dist \
 
 # Tests
 make test-all-units
+make coverage           # Generate comprehensive coverage reports
 ```
 
-Pull requests welcome — please run `make dashboard-web-test` and `make python-tests` before opening a PR.
+Pull requests welcome — please run `make test-all-units` and ensure adequate test coverage before opening a PR. Use `make coverage` to verify coverage thresholds are met.
 
 ---
 
