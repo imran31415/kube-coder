@@ -23,9 +23,21 @@ secrets_dir = $(firstword $(wildcard ./secrets/$(1) ./users-private/$(1)/secrets
 # Build a `-f path` arg for every *.yaml inside the resolved secrets dir.
 secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 
+# Resolve the image ref (repository:tag) a user's pod actually runs, read
+# straight from their values.yaml `image:` block. `make ship USER=<x>` builds
+# and pushes THIS tag, so the pushed image and the helm deploy can never
+# diverge. Previously `ship` built the global $(VERSION) tag below, which
+# matched almost no deployed workspace — a silent "configmap shipped but the
+# image didn't" footgun, since the rolled pod just re-pulled its existing,
+# unchanged tag. Empty when a workspace pins no image.tag in its values.
+user_image = $(shell awk '/^image:/{i=1;next} i&&/^[^[:space:]]/{exit} i&&/^[[:space:]]*repository:[[:space:]]*/{r=$$2} i&&/^[[:space:]]*tag:[[:space:]]*/{t=$$2} END{if(r&&t)print r":"t}' $(call values_file,$(1)))
+
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
 IMAGE_NAME := devlaptop
+# Fallback tag for user-less `make build` / `make push` / `make clean` only.
+# `make ship USER=<x>` does NOT use this — it derives the tag from that user's
+# values.yaml via $(user_image) so build and deploy stay in lockstep.
 VERSION := v1.11.0-claude-ante-updates
 PLATFORM := linux/amd64
 NAMESPACE := coder
@@ -260,8 +272,22 @@ test-all-units: dashboard-web-test python-tests ## Run SPA (Vitest) + server.py 
 # We also force a rollout restart at the end: when only the image changed
 # (configmap unchanged), helm sees no diff and the pod wouldn't otherwise
 # restart, even with imagePullPolicy: Always.
+#
+# The image tag is taken from the USER's values.yaml (via $(user_image)), NOT
+# the global $(VERSION) — so `make push` builds exactly the tag the helm
+# deploy references and the pod re-pulls. Building the wrong tag used to leave
+# the image silently stale while only the configmap updated.
 # Usage:  make ship USER=<name>
-ship: require-user push deploy ## Full deploy: build+push image, helm upgrade, force-roll the pod (USER=<name>)
+ship: require-user validate-user ## Full deploy: build+push the user's image tag, helm upgrade, force-roll the pod (USER=<name>)
+	@img="$(call user_image,$(USER))"; \
+	if [ -z "$$img" ]; then \
+	  echo "ERROR: no image.repository/tag found in $(call values_file,$(USER))."; \
+	  echo "       Set them there, or run 'make push' + 'make deploy USER=$(USER)' manually."; \
+	  exit 1; \
+	fi; \
+	echo "==> Shipping $(USER): building + pushing $$img (from $(call values_file,$(USER)))"; \
+	$(MAKE) --no-print-directory push IMAGE="$$img"
+	@$(MAKE) --no-print-directory deploy USER=$(USER)
 	@echo "Forcing rollout restart so $(USER)'s pod re-pulls the image..."
 	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
 	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
