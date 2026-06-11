@@ -177,6 +177,19 @@ make local-down DELETE=1     # also delete the minikube profile entirely
   expose it.
 - **Resources.** Defaults are laptop-sized; heavy builds/tests inside the
   workspace may want a bigger `minikube start --memory`.
+- **Apple Silicon: the in-workspace browser/Desktop is degraded.** The image
+  bundles Firefox via Mozilla's `linux64` (x86_64) build, which can't execute
+  on an `arm64` node. The image still builds, and the **dashboard, terminal,
+  tasks, Memory, Files, code-server, and Claude all work** — but the noVNC
+  **Desktop** tab (which launches Firefox/X11) won't render. The dashboard
+  opens on the Desktop tab by default, so just click **Build** (Tasks) or
+  another tab. On `amd64` hosts the Desktop tab works normally.
+- **Auth model.** Local uses http basic auth, where the ingress is the sole
+  authenticator and server.py trusts requests that reach it (ingress-nginx
+  strips the credential header and blocks re-forwarding it, so the backend
+  can't re-verify). This is fine for a single-tenant local cluster; for
+  multi-tenant clusters use `ingress.auth.type=oauth2`, where server.py
+  enforces identity itself.
 
 ---
 

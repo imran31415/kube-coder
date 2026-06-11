@@ -27,7 +27,9 @@ metadata:
     nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.publicLimits.rps | default 10 | quote }}
     nginx.ingress.kubernetes.io/limit-connections: {{ .Values.ingress.publicLimits.connections | default 20 | quote }}
     nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.publicLimits.bodySize | default "16k" | quote }}
+    {{- if .Values.ingress.tls.enabled }}
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

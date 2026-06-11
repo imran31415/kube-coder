@@ -1061,7 +1061,11 @@ class TrustedProxyTests(unittest.TestCase):
         orig_trust, orig_auth = server.TRUSTED_PROXY, server.AUTH_MODE
         try:
             server.TRUSTED_PROXY = False
-            server.AUTH_MODE = 'basic'
+            # oauth2, not basic: the X-Auth/Remote-User header-trust path this
+            # test exercises only applies in oauth2 mode. In basic mode
+            # check_claude_auth trusts the ingress edge and short-circuits, so
+            # it wouldn't test the TRUSTED_PROXY header gate at all.
+            server.AUTH_MODE = 'oauth2'
             h = self._handler_with({'X-Auth-Request-Email': 'attacker@evil.test'})
             self.assertFalse(server.BrowserHandler.check_claude_auth(h))
             h = self._handler_with({'Remote-User': 'attacker'})
@@ -1073,8 +1077,27 @@ class TrustedProxyTests(unittest.TestCase):
         orig_trust, orig_auth = server.TRUSTED_PROXY, server.AUTH_MODE
         try:
             server.TRUSTED_PROXY = True
-            server.AUTH_MODE = 'basic'
+            # oauth2, not basic: see the companion test — the header-trust path
+            # only applies in oauth2 mode (basic short-circuits to trusted).
+            server.AUTH_MODE = 'oauth2'
             h = self._handler_with({'X-Auth-Request-Email': 'user@example.com'})
+            self.assertTrue(server.BrowserHandler.check_claude_auth(h))
+        finally:
+            server.TRUSTED_PROXY, server.AUTH_MODE = orig_trust, orig_auth
+
+    def test_basic_mode_trusts_ingress_edge(self):
+        """AUTH_MODE=basic is edge-auth: the nginx-ingress basic-auth gate is
+        the sole authenticator (it strips the credential header and the
+        controller blocks re-forwarding it), so server.py trusts any request
+        that reached it — that's what makes the SPA's /api/* calls work under
+        basic auth. A request with no auth headers still returns True here
+        because in a real deployment it could only have arrived through the
+        authenticating ingress."""
+        orig_trust, orig_auth = server.TRUSTED_PROXY, server.AUTH_MODE
+        try:
+            server.TRUSTED_PROXY = False
+            server.AUTH_MODE = 'basic'
+            h = self._handler_with({})
             self.assertTrue(server.BrowserHandler.check_claude_auth(h))
         finally:
             server.TRUSTED_PROXY, server.AUTH_MODE = orig_trust, orig_auth

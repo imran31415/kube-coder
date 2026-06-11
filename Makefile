@@ -421,9 +421,17 @@ local-up: ## Start the local minikube cluster + enable the nginx ingress addon
 
 local-build: ## Build the workspace image for your host arch and load it into minikube
 	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH)..."
-	docker buildx build --platform linux/$(LOCAL_ARCH) -t $(LOCAL_IMAGE) -f devlaptop/Dockerfile --load .
+	# Output to a tarball instead of `--load`: the docker-container buildx
+	# driver's `--load` reliably hangs the CLI on Docker Desktop *after* the
+	# image is written (the same post-build hang scripts/buildx-push.sh wraps
+	# for `--push`), which would wedge `make`. `-o type=docker,dest=...` writes
+	# the image and exits cleanly; minikube loads the tarball directly — also
+	# avoiding a redundant copy through the host docker daemon.
+	docker buildx build --platform linux/$(LOCAL_ARCH) -t $(LOCAL_IMAGE) \
+		-f devlaptop/Dockerfile -o type=docker,dest=/tmp/kube-coder-local-image.tar .
 	@echo "Loading $(LOCAL_IMAGE) into minikube (large image — can take a minute)..."
-	minikube image load $(LOCAL_IMAGE) -p $(LOCAL_PROFILE)
+	minikube image load /tmp/kube-coder-local-image.tar -p $(LOCAL_PROFILE)
+	@rm -f /tmp/kube-coder-local-image.tar
 
 local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the local cluster
 	$(LOCAL_KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
