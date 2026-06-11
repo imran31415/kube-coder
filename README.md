@@ -389,6 +389,10 @@ Interested in a demonstration, enterprise deployment, or custom integration? Our
 
 **Professional Inquiries:** scalebaseio@gmail.com
 
+## New provisioning video
+
+https://github.com/user-attachments/assets/d9e6c19c-28ab-4f5e-963a-08b1d0a7085a
+
 ## Marketing Video
 
 https://github.com/user-attachments/assets/1e4d1bd5-ec9c-4f4e-88ba-7c2b79593a4c
