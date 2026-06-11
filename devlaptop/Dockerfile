@@ -97,13 +97,31 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
 # and /usr/local/bin/librefang is a *symlink* to the PVC-backed path
 # /home/dev/.librefang/bin/librefang, which start.sh seeds from /opt on
 # boot. ~/.librefang also holds LibreFang's own config/agents/sessions, so
-# the one PVC symlink persists data + binary together. LIBREFANG_AUTO_START=0
-# stops the installer from booting the daemon inside the build. Bump
-# LIBREFANG_VERSION (a release tag; empty = latest) + rebuild to update.
+# the one PVC symlink persists data + binary together.
+#
+# Pull the release tarball straight from GitHub Releases instead of piping
+# librefang.ai/install.sh: that host 403s GitHub Actions runner IPs, which
+# broke the CI image build (and cascaded into the Trivy SARIF upload). The
+# GitHub release CDN is reachable from CI — same as ttyd below. Prefer the
+# static musl build, fall back to glibc. The installer pulls this exact
+# tarball (librefang/librefang releases); we just skip its WAF-gated front
+# door. Bump LIBREFANG_VERSION (a release tag) + rebuild to update.
 ARG LIBREFANG_VERSION=v2026.6.10-beta.17
-RUN curl -fsSL https://librefang.ai/install.sh \
-    | LIBREFANG_INSTALL_DIR=/opt/librefang LIBREFANG_AUTO_START=0 \
-      LIBREFANG_VERSION=${LIBREFANG_VERSION} sh \
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         amd64) LF_ARCH=x86_64 ;; \
+         arm64) LF_ARCH=aarch64 ;; \
+         *) LF_ARCH="$ARCH" ;; \
+       esac \
+    && BASE="https://github.com/librefang/librefang/releases/download/${LIBREFANG_VERSION}" \
+    && mkdir -p /opt/librefang \
+    && ( curl -fL --retry 5 --retry-delay 5 --retry-connrefused \
+           "${BASE}/librefang-${LF_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/librefang.tar.gz \
+         || curl -fL --retry 5 --retry-delay 5 --retry-connrefused \
+           "${BASE}/librefang-${LF_ARCH}-unknown-linux-gnu.tar.gz" -o /tmp/librefang.tar.gz ) \
+    && tar -xzf /tmp/librefang.tar.gz -C /opt/librefang \
+    && rm /tmp/librefang.tar.gz \
+    && chmod +x /opt/librefang/librefang* \
     && test -x /opt/librefang/librefang \
     && ln -sfn /home/dev/.librefang/bin/librefang /usr/local/bin/librefang
 

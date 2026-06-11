@@ -185,7 +185,12 @@ jobs:
 
       - name: Upload Trivy Scan Results
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        # Upload whenever the SARIF exists, even if an earlier step failed —
+        # but skip (don't error) when it's absent, e.g. the image build or
+        # Trivy itself failed and produced no report. `always()` alone made
+        # the step fail with "Path does not exist: trivy-results.sarif",
+        # masking the real upstream failure.
+        if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: 'trivy-results.sarif'
 
