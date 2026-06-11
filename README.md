@@ -72,7 +72,52 @@ Mobile users experience an optimized interface with touch-friendly controls and 
 
 ## Quick Start
 
-### Prerequisites
+kube-coder runs two ways — pick the one that fits:
+
+| | **Local (minikube)** | **Cloud / multi-tenant** |
+|---|---|---|
+| Best for | trying it out, dev, offline | real deployments, teams |
+| Needs | Docker + minikube | a cluster, registry, DNS, GitHub OAuth |
+| Auth | http basic (`admin`/`admin`) | GitHub OAuth2 (or basic) |
+| TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
+| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [NEW_USER_PROVISIONING.md](NEW_USER_PROVISIONING.md) |
+
+### Option A — Local (minikube)
+
+Run the whole stack on a local single-node cluster — no cloud account, registry, DNS, or TLS.
+
+**Prerequisites:** Docker, minikube, kubectl, helm (`brew install minikube kubectl helm` on macOS).
+
+**One command:**
+
+```bash
+make local          # start minikube, build the image, deploy, and print access info
+```
+
+**Then reach the dashboard:**
+
+```bash
+echo '127.0.0.1  kube-coder.local' | sudo tee -a /etc/hosts   # one time
+make local-forward                                            # keep running in a terminal
+# open http://kube-coder.local:8080/   →   basic auth: admin / admin
+```
+
+`make local` is a wrapper for these steps, each runnable on its own (e.g. to rebuild after a change):
+
+```bash
+make local-up       # start the minikube cluster + enable the nginx ingress addon
+make local-build    # build the image inside minikube (native arm64 on Apple Silicon — no emulation)
+make local-secret   # create the namespace + basic-auth secret (override LOCAL_AUTH_USER/PASS)
+make local-deploy   # deploy base-infrastructure + the workspace, force-rolled
+make local-info     # reprint the /etc/hosts line, URL, and credentials
+make local-down     # remove the workspace (DELETE=1 also deletes the minikube cluster)
+```
+
+Everything targets the minikube context explicitly, so it never touches a remote cluster. Full walkthrough, configuration, limitations, and troubleshooting: **[docs/local-development.md](docs/local-development.md)**.
+
+### Option B — Cloud / multi-tenant
+
+#### Prerequisites
 
 - Kubernetes 1.19+ with `kubectl` configured
 - Helm 3.0+
@@ -80,13 +125,13 @@ Mobile users experience an optimized interface with touch-friendly controls and 
 - A GitHub OAuth App (for oauth2-proxy)
 - A `regcred` image-pull Secret in the target namespace pointing at your registry (we use `registry.digitalocean.com/<org>/<repo>`)
 
-### One-time: Base Infrastructure
+#### One-time: Base Infrastructure
 
 ```bash
 make deploy-base                  # base-infrastructure helm release
 ```
 
-### Onboard a User
+#### Onboard a User
 
 ```bash
 # Scaffold a private workspace under users-private/<name>/ — generates

@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage
+.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
 
 # =============================================================================
 # Generic per-user helpers
@@ -381,3 +381,92 @@ controller-dev: ## Run controller.py locally (KUBECONFIG listing; dev bearer tok
 	NAMESPACE=$(NAMESPACE) \
 	TRUSTED_PROXY=false \
 	python3 $(WC_DIR)/controller.py
+
+# =============================================================================
+# Local development — run kube-coder on a local single-node cluster (minikube)
+# =============================================================================
+# No cloud dependencies: a locally-built image loaded into minikube, plain HTTP,
+# http basic auth, and the cluster-default storage class. Every command targets
+# the minikube context EXPLICITLY (--context / --kube-context) so these never
+# touch a real/remote cluster. Full guide: docs/local-development.md
+#
+#   make local          # one-shot: start cluster, build+load image, deploy
+#   make local-forward   # port-forward the ingress to localhost:8080 (blocking)
+#   make local-info      # print the /etc/hosts line, URL, and credentials
+#   make local-down      # remove the workspace (DELETE=1 also deletes the cluster)
+
+LOCAL_PROFILE     := kube-coder
+LOCAL_IMAGE       := kube-coder:local
+LOCAL_VALUES      := deployments/local/values.yaml
+LOCAL_HOST        := kube-coder.local
+LOCAL_AUTH_SECRET := kube-coder-basic-auth
+LOCAL_AUTH_USER   := admin
+LOCAL_AUTH_PASS   := admin
+LOCAL_RELEASE     := local-workspace
+# Host arch -> docker platform. Native arm64 on Apple Silicon avoids emulation.
+LOCAL_ARCH        := $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+# Bind every kubectl/helm call to the minikube context, never the current one.
+LOCAL_KUBECTL     := kubectl --context $(LOCAL_PROFILE)
+LOCAL_HELM        := helm --kube-context $(LOCAL_PROFILE)
+
+local: local-up local-build local-secret local-deploy local-info ## Local one-shot: start minikube, build+load image, deploy, print access info
+
+local-up: ## Start the local minikube cluster + enable the nginx ingress addon
+	@command -v minikube >/dev/null || { echo "ERROR: minikube not found. Install it: 'brew install minikube' (macOS) or https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+	minikube start -p $(LOCAL_PROFILE) --driver=docker --cpus=4 --memory=6g
+	minikube addons enable ingress -p $(LOCAL_PROFILE)
+	@echo "Waiting for the ingress controller to be ready..."
+	$(LOCAL_KUBECTL) -n ingress-nginx wait --for=condition=ready pod \
+		-l app.kubernetes.io/component=controller --timeout=180s
+
+local-build: ## Build the workspace image for your host arch directly inside minikube
+	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH) inside minikube..."
+	# Build INSIDE the minikube node rather than host `docker buildx ... --load`.
+	# On Docker Desktop the docker-container buildx driver reliably hangs the
+	# CLI *after* the image is written (the same post-build hang
+	# scripts/buildx-push.sh wraps for `--push`) — `--load` and
+	# `-o type=docker,dest=…` both wedge `make`. `minikube image build` uses the
+	# node's own builder: no host buildx, no hang, and no separate image-load
+	# copy (the image lands straight in the cluster). Honors .dockerignore.
+	minikube image build -t $(LOCAL_IMAGE) -f devlaptop/Dockerfile -p $(LOCAL_PROFILE) .
+
+local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the local cluster
+	$(LOCAL_KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
+	@printf '%s:%s\n' "$(LOCAL_AUTH_USER)" "$$(openssl passwd -apr1 $(LOCAL_AUTH_PASS))" > /tmp/kc-local-htpasswd
+	$(LOCAL_KUBECTL) -n $(NAMESPACE) create secret generic $(LOCAL_AUTH_SECRET) \
+		--from-file=auth=/tmp/kc-local-htpasswd --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
+	@rm -f /tmp/kc-local-htpasswd
+	@echo "basic-auth secret '$(LOCAL_AUTH_SECRET)' ready (user: $(LOCAL_AUTH_USER) / pass: $(LOCAL_AUTH_PASS))"
+
+local-deploy: ## Deploy base-infrastructure + the workspace to the local cluster
+	$(LOCAL_HELM) upgrade base-infrastructure ./charts/base-infrastructure \
+		--namespace $(NAMESPACE) --install --wait --timeout 3m
+	$(LOCAL_HELM) upgrade $(LOCAL_RELEASE) ./charts/workspace \
+		-f $(LOCAL_VALUES) --namespace $(NAMESPACE) --install --wait --timeout 5m
+	# Force a rollout so a freshly `local-build`-loaded image is picked up:
+	# the tag (kube-coder:local) doesn't change, so helm sees no diff and the
+	# pod would otherwise keep the old image even though minikube reloaded it.
+	$(LOCAL_KUBECTL) -n $(NAMESPACE) rollout restart deployment/ws-local
+	$(LOCAL_KUBECTL) -n $(NAMESPACE) rollout status deployment/ws-local --timeout=180s
+
+local-forward: ## Port-forward the local ingress controller to localhost:8080 (blocking; Ctrl-C to stop)
+	@echo "Forwarding http://$(LOCAL_HOST):8080 -> ingress-nginx. Ensure /etc/hosts maps $(LOCAL_HOST) -> 127.0.0.1 (see 'make local-info')."
+	$(LOCAL_KUBECTL) -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80
+
+local-info: ## Print local access details (/etc/hosts line, URL, credentials)
+	@echo ""
+	@echo "=== kube-coder local access ==="
+	@echo "1. Map the host once (needs sudo):"
+	@echo "     echo '127.0.0.1  $(LOCAL_HOST)' | sudo tee -a /etc/hosts"
+	@echo "2. Forward the ingress (keep this running in a terminal):"
+	@echo "     make local-forward"
+	@echo "3. Open:        http://$(LOCAL_HOST):8080/"
+	@echo "4. Basic auth:  $(LOCAL_AUTH_USER) / $(LOCAL_AUTH_PASS)"
+	@echo ""
+	@echo "Logs:  $(LOCAL_KUBECTL) -n $(NAMESPACE) logs -f deploy/ws-local -c ide"
+	@echo "Shell: $(LOCAL_KUBECTL) -n $(NAMESPACE) exec -it deploy/ws-local -c ide -- bash"
+
+local-down: ## Remove the local workspace (add DELETE=1 to also delete the minikube cluster)
+	-$(LOCAL_HELM) uninstall $(LOCAL_RELEASE) -n $(NAMESPACE)
+	-$(LOCAL_HELM) uninstall base-infrastructure -n $(NAMESPACE)
+	@if [ "$(DELETE)" = "1" ]; then echo "Deleting minikube profile $(LOCAL_PROFILE)..."; minikube delete -p $(LOCAL_PROFILE); else echo "Cluster kept. Run 'make local-down DELETE=1' to delete the minikube profile."; fi

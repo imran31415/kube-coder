@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiDelete } from './client';
+import { apiGet, apiPost, apiDelete, authPrefix } from './client';
 import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
 
 export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown' | 'waiting-for-input';
@@ -130,12 +130,18 @@ export const setScrollMode = (id: string, action: 'enter' | 'exit') =>
     { action },
   );
 
-/** Absolute URL for the ttyd iframe; cache-busts on each open. */
-export const terminalUrl = () => `/oauth/terminal/?t=${Date.now()}`;
+/** Absolute URL for the ttyd iframe; cache-busts on each open. Uses the
+ *  deployment's auth prefix (empty under basic auth, /oauth behind oauth2). */
+export const terminalUrl = () => `${authPrefix()}/terminal/?t=${Date.now()}`;
 
 /** Absolute URL for the embedded noVNC viewer. */
 export const vncUrl = () =>
-  `/oauth/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
+  `${authPrefix()}/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
+
+/** URL that opens code-server at `folder`, via the deployment's auth prefix
+ *  (empty under basic auth, /oauth behind the oauth2 ingress). */
+export const vscodeUrl = (folder = '/home/dev') =>
+  `${authPrefix()}/vscode/?folder=${encodeURIComponent(folder)}`;
 
 /**
  * Tell the in-pod kiosk Chrome to navigate to localhost:<port>. The dashboard

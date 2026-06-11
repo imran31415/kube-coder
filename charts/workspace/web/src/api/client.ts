@@ -47,15 +47,33 @@ function devToken(): string | null {
 }
 
 /**
- * Prepend /oauth to /api/* paths so requests go through the auth-injecting
- * ingress in production. Absolute URLs and already-prefixed paths pass through.
- * Exported so raw fetch()/EventSource callers (files.ts, SSE in tasks.ts) can
- * apply the same rule without duplicating the logic.
+ * The external path prefix the dashboard is served under, detected from where
+ * the SPA itself was loaded:
+ *   - '/oauth'  behind the oauth2-proxy ingress (the auth-injecting ingress
+ *               only matches /oauth/*, and the user's URL is /oauth/...).
+ *   - ''        a root / http-basic-auth deployment (e.g. local minikube),
+ *               where there is no /oauth route and services live at /terminal,
+ *               /vscode, /api, … directly.
+ * Using the loaded prefix keeps API calls AND embedded-service URLs (terminal,
+ * VS Code, VNC, metrics, app-proxy) pointed at the same ingress the user
+ * authenticated against, instead of hardcoding /oauth and 404ing under basic
+ * auth.
+ */
+export function authPrefix(): string {
+  if (typeof window === 'undefined') return '';
+  return window.location.pathname.startsWith('/oauth') ? '/oauth' : '';
+}
+
+/**
+ * Prepend the deployment's auth prefix to /api/* paths so requests go through
+ * the same ingress the SPA was served from. Absolute URLs and already-prefixed
+ * paths pass through. Exported so raw fetch()/EventSource callers (files.ts,
+ * SSE in tasks.ts) can apply the same rule without duplicating the logic.
  */
 export function withOauthPrefix(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
   if (path.startsWith('/oauth/')) return path;
-  if (path.startsWith('/api/')) return `/oauth${path}`;
+  if (path.startsWith('/api/')) return `${authPrefix()}${path}`;
   return path;
 }
 

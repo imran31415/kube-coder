@@ -156,6 +156,12 @@ class DocsApiAuthGateTests(unittest.TestCase):
         cls.tmpdir = tempfile.mkdtemp(prefix='kc-docs-auth-')
         with open(os.path.join(cls.tmpdir, '_manifest.json'), 'w') as f:
             json.dump({'version': 1, 'sections': []}, f)
+        # Pin oauth2 — the mode where server.py is the enforcer. The default
+        # AUTH_MODE=basic is an edge-auth mode (the ingress authenticates and
+        # server.py trusts it), so check_claude_auth short-circuits there and
+        # this 401 assertion only tests server.py's own gate under oauth2.
+        cls._auth_mode_save = server.AUTH_MODE
+        server.AUTH_MODE = 'oauth2'
         cls._docs_dir_save = server.DocsManager.DOCS_DIR
         server.DocsManager.DOCS_DIR = cls.tmpdir
         server.DocsManager._MANIFEST_CACHE = (0.0, None)
@@ -170,6 +176,7 @@ class DocsApiAuthGateTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        server.AUTH_MODE = cls._auth_mode_save
         server.DocsManager.DOCS_DIR = cls._docs_dir_save
         import shutil
         shutil.rmtree(cls.tmpdir, ignore_errors=True)

@@ -46,6 +46,12 @@ class LegacyAuthGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = tempfile.mkdtemp(prefix='kc-auth-')
+        # Pin oauth2 — the mode where server.py is the enforcer. The default
+        # AUTH_MODE=basic is edge-auth (the ingress authenticates, server.py
+        # trusts it), so check_claude_auth short-circuits there; this suite
+        # tests server.py's own gate, which applies under oauth2.
+        cls._auth_mode_save = server.AUTH_MODE
+        server.AUTH_MODE = 'oauth2'
         # Some handlers touch ClaudeTaskManager paths — point them at the
         # tempdir so a 401 happens BEFORE we trample a real workspace.
         cls._tasks_dir_save = server.ClaudeTaskManager.TASKS_DIR
@@ -61,6 +67,7 @@ class LegacyAuthGateTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        server.AUTH_MODE = cls._auth_mode_save
         server.ClaudeTaskManager.TASKS_DIR = cls._tasks_dir_save
         import shutil
         shutil.rmtree(cls.tmpdir, ignore_errors=True)

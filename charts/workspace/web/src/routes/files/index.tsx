@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { listFiles, makeDirectory, uploadFile, type FileEntry } from '../../api/files';
+import { vscodeUrl } from '../../api/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
@@ -213,7 +214,7 @@ function OpenInVscode({ path, kind }: { path: string; kind: 'dir' | 'file' }) {
   const folder = kind === 'dir'
     ? abs
     : abs.slice(0, abs.lastIndexOf('/')) || absHome;
-  const href = `/oauth/vscode/?folder=${encodeURIComponent(folder)}`;
+  const href = vscodeUrl(folder);
   return (
     <a
       class="files-row-vscode"

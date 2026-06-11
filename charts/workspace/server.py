@@ -3182,6 +3182,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         """
         if AUTH_MODE == 'none' and allow_none_mode:
             return True
+        # AUTH_MODE=basic: the nginx-ingress http-basic-auth gate is the sole
+        # authenticator. It validates credentials in front of the pod but
+        # deliberately strips the `Authorization` header before proxying
+        # (`proxy_set_header Authorization "";`), and re-forwarding it is
+        # blocked by the controller's admission webhook — so server.py has no
+        # forwarded proof to re-check and trusts the edge. This is what lets
+        # the SPA's /api/* calls work under basic auth; without it the
+        # dashboard loads but every data fetch 401s.
+        #
+        # Security: basic auth is a single shared password with no per-user
+        # identity to enforce, intended for local / single-tenant use where
+        # the only path to the pod is through the authenticating ingress. For
+        # multi-tenant clusters use AUTH_MODE=oauth2, where server.py is the
+        # enforcer (validated proxy headers / Bearer tokens) — see the
+        # TRUSTED_PROXY / Bearer paths below.
+        if AUTH_MODE == 'basic':
+            return True
         if TRUSTED_PROXY:
             if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
                 return True

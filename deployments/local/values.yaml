@@ -1,0 +1,83 @@
+# kube-coder — local single-node cluster overlay (minikube).
+#
+# This is the values file the `make local-*` targets feed to Helm. It runs a
+# fully self-contained workspace with NO cloud dependencies:
+#   - a locally-built image loaded into minikube (no registry / pull secret)
+#   - plain HTTP (no cert-manager / Let's Encrypt / public DNS)
+#   - http basic auth (admin/admin) created by `make local-secret`
+#   - the cluster-default storage class (minikube hostpath)
+#
+# See docs/local-development.md for the full walkthrough. Everything here is
+# safe to commit — it contains no secrets. Add your own Claude / assistant
+# keys to a gitignored overlay (secrets/local/*.yaml) if you want them.
+namespace: coder
+
+user:
+  name: local
+  # Hostname routed by the nginx ingress. Point it at the minikube IP in
+  # /etc/hosts (see `make local-info`). Not a public DNS name.
+  host: kube-coder.local
+  # Smaller than the 50Gi cloud default — plenty for a laptop.
+  pvcSize: 10Gi
+  env:
+    - name: GIT_USER_NAME
+      value: ""
+    - name: GIT_USER_EMAIL
+      value: ""
+
+# Locally-built image loaded into the cluster with `minikube image load`.
+# IfNotPresent (not Always) so the kubelet uses the loaded image instead of
+# trying to pull from a registry; no pull secret because it never leaves the
+# node. `make local-build` builds and loads this exact tag for your host arch
+# (native arm64 on Apple Silicon — no emulation).
+image:
+  repository: kube-coder
+  tag: local
+  pullPolicy: IfNotPresent
+  pullSecretName: ""
+
+# Plain HTTP + http basic auth. No cert-manager, no public DNS.
+# `make local-secret` creates the htpasswd secret referenced below.
+ingress:
+  className: nginx
+  auth:
+    type: basic
+    secretName: kube-coder-basic-auth
+  tls:
+    enabled: false
+
+readOnly: false
+
+# Laptop-sized. The IDE container still wants ~1Gi for code-server + Claude;
+# bump limits if you run heavier workloads. Start minikube with at least
+# `--cpus=4 --memory=6g` (see docs/local-development.md).
+resources:
+  requests:
+    cpu: "500m"
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# Build mode for *in-workspace* image builds (the `docker-build` helper).
+# Kaniko needs a registry to push to, which a local cluster doesn't have, so
+# the push target is left empty: kube-coder itself runs fine, but building
+# and pushing images from inside a workspace is unavailable in local mode.
+# To enable it, run `minikube addons enable registry` and point these at it.
+# (See docs/local-development.md → "Limitations".)
+build:
+  mode: kaniko
+  pushSecretName: ""
+  defaultDestinationRepo: ""
+
+# Add your own keys via a gitignored secrets/local/*.yaml overlay if desired.
+# Without them the workspace still boots; you log into Claude interactively
+# by running `claude` once in the pod's terminal.
+claude:
+  apiKey: ""
+
+codeServer:
+  enabled: true
+
+ssh:
+  enabled: false

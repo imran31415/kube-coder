@@ -62,7 +62,8 @@ describe('api client', () => {
     expect((calledInit?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
   });
 
-  it('prepends /oauth to /api/* paths so oauth2 ingress headers are injected', async () => {
+  it('prepends /oauth to /api/* paths when served under the oauth2 ingress', async () => {
+    window.history.replaceState({}, '', '/oauth/tasks');
     let url = '';
     globalThis.fetch = vi.fn(async (u: string) => {
       url = u;
@@ -75,11 +76,18 @@ describe('api client', () => {
     }) as unknown as typeof fetch;
     await apiGet('/api/claude/tasks');
     expect(url).toBe('/oauth/api/claude/tasks');
+    window.history.replaceState({}, '', '/');
   });
 
-  it('withOauthPrefix is idempotent and leaves non-/api paths alone', () => {
+  it('withOauthPrefix follows the served prefix (/oauth behind oauth2, none under basic auth)', () => {
+    // Behind the oauth2 ingress (URL under /oauth): prefix is added.
+    window.history.replaceState({}, '', '/oauth/tasks');
     expect(withOauthPrefix('/api/foo')).toBe('/oauth/api/foo');
     expect(withOauthPrefix('/oauth/api/foo')).toBe('/oauth/api/foo');
+    // Root / basic-auth deployment: no /oauth route, so no prefix.
+    window.history.replaceState({}, '', '/');
+    expect(withOauthPrefix('/api/foo')).toBe('/api/foo');
+    // Non-/api paths and absolute URLs are untouched in both modes.
     expect(withOauthPrefix('/health')).toBe('/health');
     expect(withOauthPrefix('https://example.com/api/x')).toBe('https://example.com/api/x');
   });

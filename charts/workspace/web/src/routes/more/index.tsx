@@ -2,7 +2,7 @@ import { navigate } from '../../store/router';
 import { sheetOpen, theme } from '../../store/ui';
 import { Icon, type IconName } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
-import { createTerminalTask, terminalUrl } from '../../api/tasks';
+import { createTerminalTask, terminalUrl, vscodeUrl } from '../../api/tasks';
 import { refreshTasks } from '../../store/tasks';
 import { serverMode } from '../../store/server-mode';
 import './more.css';
@@ -43,7 +43,7 @@ export function MoreSheet() {
       label: 'Open VS Code',
       icon: 'files',
       onSelect: () => {
-        window.open('/oauth/vscode/?folder=/home/dev', '_blank');
+        window.open(vscodeUrl('/home/dev'), '_blank');
         sheetOpen.value = null;
       },
       hint: 'code-server at /home/dev',

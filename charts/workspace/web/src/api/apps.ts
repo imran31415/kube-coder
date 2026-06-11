@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiDelete } from './client';
+import { apiGet, apiPost, apiDelete, authPrefix } from './client';
 
 /** One row on the Applications page. */
 export interface AppEntry {
@@ -45,6 +45,7 @@ export const unpinApp = (port: number) =>
   apiDelete<{ ok: true; removed: boolean }>(`/api/apps/pins/${port}`);
 
 /** Path the proxy lives at — used for iframe src + "open in new tab".
- *  Goes through /oauth so cookie auth attaches in production. */
+ *  Uses the deployment's auth prefix (/oauth behind oauth2, empty under basic
+ *  auth) so cookie/basic auth attaches against the right ingress. */
 export const proxyUrl = (port: number, suffix = '/') =>
-  `/oauth/api/app-proxy/${port}${suffix.startsWith('/') ? suffix : `/${suffix}`}`;
+  `${authPrefix()}/api/app-proxy/${port}${suffix.startsWith('/') ? suffix : `/${suffix}`}`;
