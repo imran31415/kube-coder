@@ -5,7 +5,7 @@ import { HealthDot } from './HealthDot';
 import { MetricsBar } from './MetricsBar';
 import { MutatorOnly, ReadOnlyPill } from './MutatorOnly';
 import { WaitingBadge } from './WaitingBadge';
-import { createTerminalTask, terminalUrl } from '../api/tasks';
+import { createTerminalTask, terminalUrl, vscodeUrl } from '../api/tasks';
 import { refreshTasks } from '../store/tasks';
 import { serverMode } from '../store/server-mode';
 import { navigate } from '../store/router';
@@ -93,7 +93,7 @@ export function Topbar() {
         <MutatorOnly>
           <a
             class="topbar-link topbar-link-strong"
-            href="/oauth/vscode/?folder=/home/dev"
+            href={vscodeUrl('/home/dev')}
             target="_blank"
             rel="noopener"
             title="Open VS Code (code-server) at /home/dev"

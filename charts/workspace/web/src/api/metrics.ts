@@ -1,9 +1,11 @@
 /**
  * Workspace pod system metrics. server.py mounts these at the top level
  * (/metrics, /health) — *not* under /api/ — so they don't go through the
- * withOauthPrefix() helper. We hit /oauth/metrics directly because the
- * auth-injecting ingress matches /oauth/(.*).
+ * withOauthPrefix() helper. We prefix with authPrefix() (/oauth behind the
+ * oauth2 ingress, empty under basic auth) so they hit the same ingress the
+ * SPA was served from.
  */
+import { authPrefix } from './client';
 
 export interface CpuMetrics {
   usage_percent: number;
@@ -59,5 +61,5 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export const fetchMetrics = () => getJson<SystemMetrics>('/oauth/metrics');
-export const fetchHealth = () => getJson<HealthSnapshot>('/oauth/health');
+export const fetchMetrics = () => getJson<SystemMetrics>(`${authPrefix()}/metrics`);
+export const fetchHealth = () => getJson<HealthSnapshot>(`${authPrefix()}/health`);
