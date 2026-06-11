@@ -72,6 +72,23 @@ Mobile users experience an optimized interface with touch-friendly controls and 
 
 ## Quick Start
 
+### Run it locally (minikube)
+
+Want to try kube-coder without a cloud account, registry, or DNS? Run the whole
+thing on a local single-node cluster:
+
+```bash
+make local          # start minikube, build + load the image, deploy, print access info
+make local-forward   # port-forward the ingress to localhost:8080 (keep running)
+# add '127.0.0.1  kube-coder.local' to /etc/hosts, then open http://kube-coder.local:8080/
+# basic auth: admin / admin
+```
+
+No cloud dependencies — locally-built image (native arm64 on Apple Silicon),
+plain HTTP, basic auth. Full walkthrough, configuration, and teardown:
+**[docs/local-development.md](docs/local-development.md)**. The cloud /
+multi-tenant flow is below.
+
 ### Prerequisites
 
 - Kubernetes 1.19+ with `kubectl` configured
