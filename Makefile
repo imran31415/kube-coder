@@ -419,19 +419,16 @@ local-up: ## Start the local minikube cluster + enable the nginx ingress addon
 	$(LOCAL_KUBECTL) -n ingress-nginx wait --for=condition=ready pod \
 		-l app.kubernetes.io/component=controller --timeout=180s
 
-local-build: ## Build the workspace image for your host arch and load it into minikube
-	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH)..."
-	# Output to a tarball instead of `--load`: the docker-container buildx
-	# driver's `--load` reliably hangs the CLI on Docker Desktop *after* the
-	# image is written (the same post-build hang scripts/buildx-push.sh wraps
-	# for `--push`), which would wedge `make`. `-o type=docker,dest=...` writes
-	# the image and exits cleanly; minikube loads the tarball directly — also
-	# avoiding a redundant copy through the host docker daemon.
-	docker buildx build --platform linux/$(LOCAL_ARCH) -t $(LOCAL_IMAGE) \
-		-f devlaptop/Dockerfile -o type=docker,dest=/tmp/kube-coder-local-image.tar .
-	@echo "Loading $(LOCAL_IMAGE) into minikube (large image — can take a minute)..."
-	minikube image load /tmp/kube-coder-local-image.tar -p $(LOCAL_PROFILE)
-	@rm -f /tmp/kube-coder-local-image.tar
+local-build: ## Build the workspace image for your host arch directly inside minikube
+	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH) inside minikube..."
+	# Build INSIDE the minikube node rather than host `docker buildx ... --load`.
+	# On Docker Desktop the docker-container buildx driver reliably hangs the
+	# CLI *after* the image is written (the same post-build hang
+	# scripts/buildx-push.sh wraps for `--push`) — `--load` and
+	# `-o type=docker,dest=…` both wedge `make`. `minikube image build` uses the
+	# node's own builder: no host buildx, no hang, and no separate image-load
+	# copy (the image lands straight in the cluster). Honors .dockerignore.
+	minikube image build -t $(LOCAL_IMAGE) -f devlaptop/Dockerfile -p $(LOCAL_PROFILE) .
 
 local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the local cluster
 	$(LOCAL_KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
@@ -446,6 +443,10 @@ local-deploy: ## Deploy base-infrastructure + the workspace to the local cluster
 		--namespace $(NAMESPACE) --install --wait --timeout 3m
 	$(LOCAL_HELM) upgrade $(LOCAL_RELEASE) ./charts/workspace \
 		-f $(LOCAL_VALUES) --namespace $(NAMESPACE) --install --wait --timeout 5m
+	# Force a rollout so a freshly `local-build`-loaded image is picked up:
+	# the tag (kube-coder:local) doesn't change, so helm sees no diff and the
+	# pod would otherwise keep the old image even though minikube reloaded it.
+	$(LOCAL_KUBECTL) -n $(NAMESPACE) rollout restart deployment/ws-local
 	$(LOCAL_KUBECTL) -n $(NAMESPACE) rollout status deployment/ws-local --timeout=180s
 
 local-forward: ## Port-forward the local ingress controller to localhost:8080 (blocking; Ctrl-C to stop)
