@@ -63,7 +63,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # https://docs.anthropic.com/en/docs/claude-code/setup
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
-ARG CLAUDE_CODE_VERSION=2.1.172
+ARG CLAUDE_CODE_VERSION=2.1.174
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -71,7 +71,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # OpenRouter directly and any OpenAI-compatible base URL (e.g. a self-hosted
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
-ARG OPENCODE_VERSION=1.17.3
+ARG OPENCODE_VERSION=1.17.4
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Ante CLI — terminal-native AI coding agent from Antigma Labs.
@@ -106,7 +106,7 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
 # static musl build, fall back to glibc. The installer pulls this exact
 # tarball (librefang/librefang releases); we just skip its WAF-gated front
 # door. Bump LIBREFANG_VERSION (a release tag) + rebuild to update.
-ARG LIBREFANG_VERSION=v2026.6.10-beta.17
+ARG LIBREFANG_VERSION=v2026.6.11-beta.18
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) LF_ARCH=x86_64 ;; \
