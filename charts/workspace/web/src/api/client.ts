@@ -60,8 +60,18 @@ function devToken(): string | null {
  * auth.
  */
 export function authPrefix(): string {
-  if (typeof window === 'undefined') return '';
-  return window.location.pathname.startsWith('/oauth') ? '/oauth' : '';
+  // server.py injects window.__KC_AUTH_PREFIX__ into the served index.html from
+  // the deployment's AUTH_MODE: '/oauth' behind the oauth2 ingress (only
+  // /oauth/* paths get the auth header injected), '' for a root/basic-auth
+  // deployment. The SPA is served at '/' in BOTH modes, so the URL can't tell
+  // them apart — the server is the source of truth. Default to '/oauth' (the
+  // production deployment) when the injection is absent so a stray build never
+  // silently drops the prefix and 401s every API call.
+  if (typeof window !== 'undefined') {
+    const inj = (window as { __KC_AUTH_PREFIX__?: unknown }).__KC_AUTH_PREFIX__;
+    if (typeof inj === 'string') return inj;
+  }
+  return '/oauth';
 }
 
 /**

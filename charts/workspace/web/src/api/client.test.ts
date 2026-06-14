@@ -62,8 +62,8 @@ describe('api client', () => {
     expect((calledInit?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
   });
 
-  it('prepends /oauth to /api/* paths when served under the oauth2 ingress', async () => {
-    window.history.replaceState({}, '', '/oauth/tasks');
+  it('prepends /oauth to /api/* paths when the server injects the oauth2 prefix', async () => {
+    (window as { __KC_AUTH_PREFIX__?: string }).__KC_AUTH_PREFIX__ = '/oauth';
     let url = '';
     globalThis.fetch = vi.fn(async (u: string) => {
       url = u;
@@ -76,20 +76,21 @@ describe('api client', () => {
     }) as unknown as typeof fetch;
     await apiGet('/api/claude/tasks');
     expect(url).toBe('/oauth/api/claude/tasks');
-    window.history.replaceState({}, '', '/');
+    delete (window as { __KC_AUTH_PREFIX__?: string }).__KC_AUTH_PREFIX__;
   });
 
-  it('withOauthPrefix follows the served prefix (/oauth behind oauth2, none under basic auth)', () => {
-    // Behind the oauth2 ingress (URL under /oauth): prefix is added.
-    window.history.replaceState({}, '', '/oauth/tasks');
+  it('withOauthPrefix follows the server-injected prefix (/oauth for oauth2, none for basic auth)', () => {
+    // oauth2 deployment: server injects '/oauth' — prefix is added.
+    (window as { __KC_AUTH_PREFIX__?: string }).__KC_AUTH_PREFIX__ = '/oauth';
     expect(withOauthPrefix('/api/foo')).toBe('/oauth/api/foo');
     expect(withOauthPrefix('/oauth/api/foo')).toBe('/oauth/api/foo');
-    // Root / basic-auth deployment: no /oauth route, so no prefix.
-    window.history.replaceState({}, '', '/');
+    // basic-auth deployment: server injects '' — no prefix.
+    (window as { __KC_AUTH_PREFIX__?: string }).__KC_AUTH_PREFIX__ = '';
     expect(withOauthPrefix('/api/foo')).toBe('/api/foo');
     // Non-/api paths and absolute URLs are untouched in both modes.
     expect(withOauthPrefix('/health')).toBe('/health');
     expect(withOauthPrefix('https://example.com/api/x')).toBe('https://example.com/api/x');
+    delete (window as { __KC_AUTH_PREFIX__?: string }).__KC_AUTH_PREFIX__;
   });
 
   it('throws ApiError with status + body on non-2xx', async () => {
