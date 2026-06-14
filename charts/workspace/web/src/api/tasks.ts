@@ -132,6 +132,21 @@ export const setScrollMode = (id: string, action: 'enter' | 'exit') =>
     { action },
   );
 
+// Drive copy-mode scrolling server-side. Touch clients (mobile) emit no wheel
+// events, so xterm's wheel->arrow conversion inside the ttyd iframe never
+// fires; instead the mobile scroll overlay POSTs a direction here. Requires
+// scroll mode (copy-mode) to already be active. `lines` scrolls multiple lines
+// per gesture.
+export const scrollTerminal = (
+  id: string,
+  direction: 'up' | 'down' | 'page-up' | 'page-down',
+  lines = 1,
+) =>
+  apiPost<{ ok: true }>(`/api/claude/tasks/${id}/scroll-mode`, {
+    action: direction,
+    lines,
+  });
+
 /** Absolute URL for the ttyd iframe; cache-busts on each open. Uses the
  *  deployment's auth prefix (empty under basic auth, /oauth behind oauth2). */
 export const terminalUrl = () => `${authPrefix()}/terminal/?t=${Date.now()}`;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput } from '../../api/tasks';
+import { prepareTerminal, terminalUrl, vncUrl, openLocalhostPort, getTaskOutput, scrollTerminal } from '../../api/tasks';
 import { proxyUrl } from '../../api/apps';
 import { isErrorResponse } from '../../api/client';
 import { Button } from '../../components/primitives/Button';
@@ -106,6 +106,36 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   // on what they came to see. Desktop keeps the split.
   const isMobile = useIsMobile();
   const [mobilePane, setMobilePane] = useState<'session' | 'preview'>('preview');
+
+  // Mobile scroll: in scroll mode (tmux copy-mode) touch can't wheel-scroll the
+  // ttyd iframe — mobile emits no wheel events, so xterm's wheel->arrow
+  // conversion never fires. A transparent overlay (rendered only in scroll mode)
+  // captures finger drags here and drives copy-mode server-side. Drag is
+  // accumulated and flushed throttled so we don't POST per pixel.
+  const scrollMode = sessionSignals.scrollMode.value;
+  const scrollTouch = useRef({ lastY: 0, accum: 0, lastSent: 0 });
+  const SCROLL_LINE_PX = 16; // px of finger travel per scrolled line
+  const SCROLL_SEND_MS = 70; // min gap between scroll POSTs
+  const onScrollTouchStart = (e: TouchEvent) => {
+    scrollTouch.current.lastY = e.touches[0]?.clientY ?? 0;
+    scrollTouch.current.accum = 0;
+  };
+  const onScrollTouchMove = (e: TouchEvent) => {
+    if (!e.touches[0]) return;
+    e.preventDefault(); // we own the gesture; don't let the page scroll/zoom
+    const st = scrollTouch.current;
+    const y = e.touches[0].clientY;
+    st.accum += y - st.lastY; // finger down (+) reveals older history => scroll up
+    st.lastY = y;
+    const now = Date.now();
+    if (now - st.lastSent < SCROLL_SEND_MS) return;
+    const lines = Math.trunc(st.accum / SCROLL_LINE_PX);
+    if (lines === 0) return;
+    st.accum -= lines * SCROLL_LINE_PX;
+    st.lastSent = now;
+    scrollTerminal(taskId, lines > 0 ? 'up' : 'down', Math.min(Math.abs(lines), 40))
+      .catch(() => { /* transient — the next gesture retries */ });
+  };
 
   // Persist the preview-source choice per workspace.
   useEffect(() => {
@@ -475,6 +505,20 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               title="Task terminal"
               allow="clipboard-read; clipboard-write"
             />
+          )}
+          {/* Mobile + scroll mode: a transparent overlay turns finger drags into
+              tmux copy-mode scrolling (the ttyd iframe ignores touch). Only
+              present in scroll mode, so normal taps/typing reach the terminal
+              the rest of the time. */}
+          {termSrc && isMobile && scrollMode && (!withVnc || mobilePane === 'session') && (
+            <div
+              class="term-pane-scroll-overlay"
+              onTouchStart={onScrollTouchStart}
+              onTouchMove={onScrollTouchMove}
+              aria-hidden="true"
+            >
+              <span class="term-pane-scroll-hint">Drag to scroll · Exit scroll mode to type</span>
+            </div>
           )}
           {withVnc && showApp && (
             <iframe
