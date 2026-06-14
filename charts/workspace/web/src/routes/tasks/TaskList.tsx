@@ -23,7 +23,13 @@ import { useIsMobile } from '../../hooks/useMediaQuery';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import type { TaskStatus, TaskSummary } from '../../api/tasks';
 import { isStaleWaiting, idleLabel } from '../../api/tasks';
+import { SessionPreview } from './SessionPreview';
 import './tasks.css';
+
+/** Alive = tmux session still exists, so a live tail is meaningful. */
+function isAliveStatus(s: TaskStatus): boolean {
+  return s === 'running' || s === 'waiting-for-input';
+}
 
 const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' | 'accent'> = {
   running: 'accent',
@@ -204,6 +210,7 @@ export function TaskList() {
                     <span> · {t.memory_injected!.length} mem</span>
                   )}
                 </div>
+                <SessionPreview taskId={t.task_id} alive={isAliveStatus(t.status)} />
               </button>
             </li>
           ))}

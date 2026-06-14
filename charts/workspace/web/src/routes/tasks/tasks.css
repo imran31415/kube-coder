@@ -123,8 +123,39 @@
   overflow: hidden;
 }
 .tl-row-meta { font-size: 11px; }
+
+/* Compact read-only tail of the live tmux pane, shown under each alive
+   session's name/id so the user can glance at activity across sessions
+   without opening each one. user-select:none so a click selects the row
+   (the click bubbles to the parent button) instead of starting a text
+   selection — but hover still works, so the title tooltip shows. The
+   accent left-rail reads as a "live feed" affordance. */
+.tl-row-preview {
+  margin-top: 4px;
+  padding: 5px 8px 5px 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  font-size: 9.5px;
+  line-height: 1.55;
+  letter-spacing: -0.1px;
+  color: var(--text-muted);
+  user-select: none;
+  cursor: pointer;
+  overflow: hidden;
+}
+.tl-row:hover .tl-row-preview { border-left-color: var(--accent); }
+.tl-row-preview-line {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-row-preview-empty { color: var(--text-subtle); font-style: italic; }
+
 [data-density="compact"] .tl-row { padding: 8px 12px; }
 [data-density="compact"] .tl-row-sub { -webkit-line-clamp: 1; }
+[data-density="compact"] .tl-row-preview { display: none; }
 
 /* Waiting for input styling */
 .tl-row-waiting {
