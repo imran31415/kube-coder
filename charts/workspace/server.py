@@ -920,7 +920,10 @@ class ClaudeTaskManager:
         return '(no output available)'
 
     @staticmethod
-    def send_followup(task_id, prompt):
+    def send_followup(task_id, prompt, submit=True):
+        # submit=False pastes the text into the live session's input box WITHOUT
+        # pressing Enter — used by the dashboard's "Paste from clipboard" action
+        # so a mobile user can drop text in, review it, and submit themselves.
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         meta_path = os.path.join(task_dir, 'task.json')
         if not os.path.isfile(meta_path):
@@ -955,23 +958,31 @@ class ClaudeTaskManager:
                 ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
                 capture_output=True, text=True, check=True,
             )
-            # Let the TUI finish ingesting the bracketed paste before Enter.
-            # Claude/OpenCode wrap pasted text in bracketed-paste escapes; if
-            # Enter lands in the same read cycle it gets absorbed into the
-            # pasted content and the message sits in the input unsent (the
-            # "it just sets the input" bug). A short settle delay makes Enter
-            # register as a submit.
-            time.sleep(0.4)
-            subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                capture_output=True, text=True,
-            )
+            if submit:
+                # Let the TUI finish ingesting the bracketed paste before Enter.
+                # Claude/OpenCode wrap pasted text in bracketed-paste escapes; if
+                # Enter lands in the same read cycle it gets absorbed into the
+                # pasted content and the message sits in the input unsent (the
+                # "it just sets the input" bug). A short settle delay makes Enter
+                # register as a submit.
+                time.sleep(0.4)
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                    capture_output=True, text=True,
+                )
             subprocess.run(
                 ['tmux', 'delete-buffer', '-b', buf_name],
                 capture_output=True, text=True,
             )
         except subprocess.CalledProcessError as e:
             return None, f'Failed to send follow-up: {e}'
+
+        # A paste (no submit) leaves the text sitting in the input box — nothing
+        # was actually sent, so don't record a followup or flip status. Return
+        # the current meta so the caller still gets a 200.
+        if not submit:
+            with open(meta_path, 'r') as f:
+                return json.load(f), None
 
         # Update metadata under an exclusive lock so concurrent /message calls
         # don't drop each other's appends to followups[].
@@ -3595,7 +3606,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not prompt:
             self.send_json({'error': 'prompt is required'}, 400)
             return
-        task, err = ClaudeTaskManager.send_followup(self._claude_task_id, prompt)
+        # submit defaults to True (normal send). False = paste-only (no Enter).
+        submit = data.get('submit', True) is not False
+        task, err = ClaudeTaskManager.send_followup(self._claude_task_id, prompt, submit=submit)
         if task is None:
             self.send_json({'error': err or 'Task not found'}, 404)
             return

@@ -20,6 +20,10 @@ export interface SessionSignals {
   /** Bump to ask TerminalPane to re-prepare + reload the iframe.
    *  Pattern: any consumer reads the value in an effect dep list. */
   reattachCounter: Signal<number>;
+  /** Carries clipboard text from the TaskBar "Paste from clipboard" action
+   *  into the Send-message composer. `nonce` bumps per paste so an identical
+   *  paste still fires the consumer's effect. Null until the first paste. */
+  pasteRequest: Signal<{ text: string; nonce: number } | null>;
 }
 
 const _store = new Map<string, SessionSignals>();
@@ -31,6 +35,7 @@ export function getSessionSignals(taskId: string): SessionSignals {
       phase: signal<SessionPhase>('preparing'),
       scrollMode: signal(false),
       reattachCounter: signal(0),
+      pasteRequest: signal<{ text: string; nonce: number } | null>(null),
     };
     _store.set(taskId, s);
   }

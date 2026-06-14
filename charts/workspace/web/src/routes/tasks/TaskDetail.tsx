@@ -15,7 +15,9 @@ import {
   selectedTaskLoading,
   killTask,
   renameTask,
+  pasteToSession,
 } from '../../store/tasks';
+import { pushToast } from '../../store/ui';
 import { listSubagents } from '../../api/subagents';
 import { Icon } from '../../components/Icon';
 import { TerminalPane } from './TerminalPane';
@@ -166,6 +168,30 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
     await renameTask(t.task_id, name);
     setBusy(false);
   }
+  async function onPaste() {
+    if (!t) return;
+    let text = '';
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      pushToast('Clipboard unavailable — allow clipboard access or paste manually.', { kind: 'warn' });
+      return;
+    }
+    if (!text.trim()) {
+      pushToast('Clipboard is empty.', { kind: 'info' });
+      return;
+    }
+    if (tab === 'message') {
+      // Drop it into the Send-message composer for review before sending.
+      const s = getSessionSignals(t.task_id);
+      const prev = s.pasteRequest.value;
+      s.pasteRequest.value = { text, nonce: (prev?.nonce ?? 0) + 1 };
+      pushToast('Pasted into the message box.', { kind: 'success' });
+    } else {
+      // Session/Preview tab — paste straight into the live tmux input (no Enter).
+      await pasteToSession(t.task_id, text);
+    }
+  }
   async function onCopyLink() {
     if (!t) return;
     // Deep-link path — TasksRoute parses /tasks/<id> on load and re-attaches
@@ -226,6 +252,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
         copied={copied}
         busy={busy}
         onCopyLink={onCopyLink}
+        onPaste={onPaste}
         onRename={onRename}
         onKill={onKill}
         onClose={onClose}
@@ -308,7 +335,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
  *  Settings menu that absorbs every per-task action. */
 function TaskBar({
   task, tab, setTab, visibleTabs, subagentsCount, isLive, isSessionTab,
-  copied, busy, onCopyLink, onRename, onKill, onClose,
+  copied, busy, onCopyLink, onPaste, onRename, onKill, onClose,
 }: {
   task: TaskDetailType;
   tab: DetailTab;
@@ -320,6 +347,7 @@ function TaskBar({
   copied: boolean;
   busy: boolean;
   onCopyLink: () => void;
+  onPaste: () => void;
   onRename: () => void;
   onKill: () => void;
   onClose?: () => void;
@@ -429,6 +457,15 @@ function TaskBar({
             >
               Reattach
             </PopoverItem>
+            <MutatorOnly>
+              <PopoverItem
+                disabled={!isLive}
+                onClick={() => { void onPaste(); close(); }}
+                hint="⌘V"
+              >
+                {tab === 'message' ? 'Paste into message box' : 'Paste from clipboard'}
+              </PopoverItem>
+            </MutatorOnly>
             <MutatorOnly>
               <PopoverItem
                 disabled={phase !== 'ready'}

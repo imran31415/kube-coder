@@ -164,6 +164,18 @@ export async function sendFollowup(id: string, prompt: string): Promise<void> {
   }
 }
 
+/** Paste text into the live session's input box WITHOUT submitting it, so the
+ *  user can review and send themselves. Backs the "Paste from clipboard"
+ *  action on the Session tab (mobile users can't paste into the ttyd iframe). */
+export async function pasteToSession(id: string, text: string): Promise<void> {
+  try {
+    await apiSendMessage(id, text, false);
+    pushToast('Pasted into session — review and press Enter to send', { kind: 'success' });
+  } catch (err) {
+    pushToast(err instanceof Error ? err.message : 'Paste failed', { kind: 'danger' });
+  }
+}
+
 // Polling. Phase 2 keeps this; Phase 6 swaps for /api/events SSE.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;

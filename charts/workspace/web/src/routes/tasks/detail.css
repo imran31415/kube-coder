@@ -196,118 +196,23 @@
 .td-info dt { color: var(--text-muted); font-size: 11.5px; padding-top: 2px; }
 .td-info dd { word-break: break-word; margin: 0; }
 
-/* Send-message chat tab — bubble layout mirroring terminal in a friendly UI. */
+/* Send-message tab — the live ttyd terminal embedded in the viewport with a
+   friendly composer box below. The terminal is the same attach the Session
+   tab uses (TerminalPane), so the auto-detected link badge comes for free. */
 .mc {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
-.mc-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--size-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-3);
-}
-.mc-loading {
-  padding: var(--size-5);
-  text-align: center;
-  font-size: 13px;
-}
-.mc-bubble {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: min(720px, 92%);
-  padding: 12px 14px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: var(--shadow-1);
-}
-.mc-bubble-assistant {
-  align-self: stretch;
-  /* The assistant bubble is the live terminal mirror — let it grow to fill
-     the body so the output uses the available height instead of sitting in a
-     small box at the top. min-height:0 lets the inner <pre> scroll. */
+/* Host for the embedded TerminalPane — let it fill the available height and
+   scroll/attach internally. */
+.mc-term {
   flex: 1;
   min-height: 0;
-  max-width: none;
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
-}
-.mc-bubble-user {
-  align-self: flex-end;
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--text);
-}
-.mc-bubble-meta {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-2);
-  font-size: 11.5px;
+  flex-direction: column;
 }
-.mc-bubble-author {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.mc-bubble-tag { font-size: 10.5px; }
-.mc-bubble-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.mc-bubble-refresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background var(--motion-fast), color var(--motion-fast);
-}
-.mc-bubble-refresh:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-.mc-bubble-content {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 320px;
-  overflow-y: auto;
-}
-/* Strong selector + explicit color on the actual <pre> so neither the
-   browser's `color-scheme: light` nor a UA stylesheet for <pre> wins. */
-.mc-bubble-assistant pre.mc-bubble-content,
-.mc-bubble-assistant .mc-bubble-content {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text);
-  /* Override the default 320px cap — fill the (now flex-grown) bubble and
-     scroll internally so the latest terminal lines stay in view. */
-  flex: 1;
-  min-height: 0;
-  max-height: none;
-}
-/* Linkified URLs inside the bubble — readable in both modes. */
-.mc-bubble-link {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  word-break: break-all;
-}
-.mc-bubble-link:hover { color: var(--accent-strong); }
 
 .mc-composer {
   border-top: 1px solid var(--border);
@@ -320,7 +225,7 @@
 }
 .mc-input {
   font: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   width: 100%;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -344,6 +249,22 @@
   font-size: 11.5px;
 }
 .mc-hint { line-height: 1.4; }
+
+/* Mobile: shrink type, hug the edges, and collapse the composer to a single
+   line so the embedded terminal gets the maximum viewport. The textarea uses
+   rows={1} so this min-height fully governs its resting height here. */
+@media (max-width: 720px) {
+  .mc-composer {
+    padding: var(--size-2);
+    gap: 6px;
+  }
+  .mc-input {
+    font-size: 10px;
+    min-height: 40px;
+    padding: 9px 10px;
+  }
+  .mc-hint { font-size: 11px; }
+}
 
 /* Terminal + preview iframe pane (shared by Terminal and Preview tabs) */
 .term-pane {
@@ -487,23 +408,65 @@
   }
 }
 
-/* URL strip above the terminal iframe — lets mobile users tap links the
-   ttyd iframe won't let them highlight. Hidden in Preview mode. */
-.term-pane-urls {
+/* Auto-detected links (TerminalLinks) — a collapsed badge above the terminal
+   that expands to a tappable list on click. Lets mobile users reach the
+   auth/login URLs the ttyd iframe won't let them highlight, without the link
+   list permanently eating the terminal viewport. Shared by the Session and
+   Send-message tabs. */
+.tlinks {
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.tlinks-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 5px var(--size-3);
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.tlinks-badge:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.tlinks-open {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 6px var(--size-3) 8px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
 }
-.term-pane-urls-label {
+.tlinks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+}
+.tlinks-label {
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.term-pane-urls-list {
+.tlinks-collapse {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 3px 9px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.tlinks-collapse:hover { background: var(--surface-3); color: var(--text); }
+.tlinks-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -511,13 +474,13 @@
   padding: 0;
   margin: 0;
 }
-.term-pane-urls-item {
+.tlinks-item {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
-.term-pane-urls-link {
+.tlinks-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -533,11 +496,11 @@
   font-weight: 500;
   transition: background var(--motion-fast), border-color var(--motion-fast);
 }
-.term-pane-urls-link:hover {
+.tlinks-link:hover {
   background: var(--accent-soft);
   border-color: var(--accent);
 }
-.term-pane-urls-link .mono {
+.tlinks-link .mono {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -545,7 +508,7 @@
   white-space: nowrap;
   font-size: 12px;
 }
-.term-pane-urls-copy {
+.tlinks-copy {
   flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -558,12 +521,13 @@
   min-width: 56px;
   transition: background var(--motion-fast), color var(--motion-fast);
 }
-.term-pane-urls-copy:hover { background: var(--surface-3); color: var(--text); }
+.tlinks-copy:hover { background: var(--surface-3); color: var(--text); }
 
 /* Touch-friendly target sizing on coarse pointers. */
 @media (pointer: coarse) {
-  .term-pane-urls-link { padding: 10px 12px; min-height: 40px; }
-  .term-pane-urls-copy { padding: 9px 12px; min-height: 40px; }
+  .tlinks-link { padding: 10px 12px; min-height: 40px; }
+  .tlinks-copy { padding: 9px 12px; min-height: 40px; }
+  .tlinks-badge { padding: 7px 12px; min-height: 36px; }
 }
 
 /* Terminal-pane loading state — shown only while prepareTerminal POST is
