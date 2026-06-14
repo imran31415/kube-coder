@@ -3725,8 +3725,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         action = (data.get('action') or '').strip().lower()
-        if action not in ('enter', 'exit'):
-            self.send_json({'error': "action must be 'enter' or 'exit'"}, 400)
+        # enter/exit toggle copy-mode. The scroll directions drive copy-mode
+        # navigation server-side so touch clients (mobile sends no wheel events,
+        # so xterm's wheel->arrow conversion inside the ttyd iframe never fires)
+        # can scroll the scrollback by POSTing here instead.
+        SCROLL_CMDS = {
+            'up': 'scroll-up', 'down': 'scroll-down',
+            'page-up': 'page-up', 'page-down': 'page-down',
+        }
+        if action not in ('enter', 'exit') and action not in SCROLL_CMDS:
+            self.send_json(
+                {'error': "action must be 'enter', 'exit', or a scroll direction"},
+                400,
+            )
             return
         task_id = self._claude_task_id
         task = ClaudeTaskManager.get_task(task_id)
@@ -3736,8 +3747,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         session_name = task.get('tmux_session', f'kube-coder-{task_id}')
         if action == 'enter':
             cmd = ['tmux', 'copy-mode', '-t', session_name]
-        else:
+        elif action == 'exit':
             cmd = ['tmux', 'send-keys', '-t', session_name, '-X', 'cancel']
+        else:
+            # Repeat the copy-mode motion `lines` times so one touch gesture can
+            # scroll several lines. Clamp so a fling can't send a runaway count.
+            try:
+                lines = int(data.get('lines') or 1)
+            except (TypeError, ValueError):
+                lines = 1
+            lines = max(1, min(lines, 40))
+            cmd = ['tmux', 'send-keys', '-t', session_name,
+                   '-X', '-N', str(lines), SCROLL_CMDS[action]]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             self.send_json({

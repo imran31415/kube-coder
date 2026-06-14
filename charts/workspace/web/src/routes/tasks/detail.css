@@ -361,6 +361,29 @@
   display: flex;
   min-height: 0;
   background: #000;
+  position: relative; /* positioning context for the mobile scroll overlay */
+}
+/* Mobile scroll-mode overlay: transparent capture layer over the ttyd iframe
+   that turns finger drags into tmux copy-mode scrolling (see TerminalPane). */
+.term-pane-scroll-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  touch-action: none; /* we handle the drag; suppress native page scroll/zoom */
+  background: transparent;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.term-pane-scroll-hint {
+  margin-top: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  user-select: none;
 }
 .term-pane-frames-split {
   display: grid;
