@@ -736,6 +736,10 @@ class ClaudeTaskManager:
                     ['tmux', 'paste-buffer', '-b', f'prompt-{task_id}', '-t', session_name],
                     capture_output=True, text=True, check=True,
                 )
+                # Settle delay so the bracketed paste is fully ingested before
+                # Enter — otherwise Enter can be absorbed into the paste and the
+                # prompt never submits. See send_followup for details.
+                time.sleep(0.4)
                 subprocess.run(
                     ['tmux', 'send-keys', '-t', session_name, 'Enter'],
                     capture_output=True, text=True,
@@ -951,6 +955,13 @@ class ClaudeTaskManager:
                 ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
                 capture_output=True, text=True, check=True,
             )
+            # Let the TUI finish ingesting the bracketed paste before Enter.
+            # Claude/OpenCode wrap pasted text in bracketed-paste escapes; if
+            # Enter lands in the same read cycle it gets absorbed into the
+            # pasted content and the message sits in the input unsent (the
+            # "it just sets the input" bug). A short settle delay makes Enter
+            # register as a submit.
+            time.sleep(0.4)
             subprocess.run(
                 ['tmux', 'send-keys', '-t', session_name, 'Enter'],
                 capture_output=True, text=True,

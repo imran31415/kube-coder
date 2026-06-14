@@ -67,6 +67,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<string[]>([]);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const mirrorRef = useRef<HTMLPreElement | null>(null);
   const cancelledRef = useRef(false);
   const timersRef = useRef<number[]>([]);
 
@@ -100,10 +101,14 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   usePoll(fetchTail, POLL_MS, { enabled: isRunning, pauseOnHidden: true });
 
   useEffect(() => {
-    // Auto-scroll to bottom whenever new content lands.
+    // Auto-scroll to bottom whenever new content lands. The mirror bubble now
+    // grows to fill the body and scrolls internally, so keep its <pre> pinned
+    // to the newest lines; also scroll the body so sent user bubbles stay in
+    // view.
+    const mirror = mirrorRef.current;
+    if (mirror) mirror.scrollTop = mirror.scrollHeight;
     const el = bodyRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [latest, sent.length]);
 
   async function onSend(e: Event) {
@@ -166,7 +171,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
                   </button>
                 </span>
               </div>
-              <pre class="mc-bubble-content mono">
+              <pre class="mc-bubble-content mono" ref={mirrorRef}>
                 {trimmedLatest ? linkify(trimmedLatest) : '(no output yet)'}
               </pre>
             </div>

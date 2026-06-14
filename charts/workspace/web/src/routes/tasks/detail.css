@@ -228,7 +228,13 @@
   box-shadow: var(--shadow-1);
 }
 .mc-bubble-assistant {
-  align-self: flex-start;
+  align-self: stretch;
+  /* The assistant bubble is the live terminal mirror — let it grow to fill
+     the body so the output uses the available height instead of sitting in a
+     small box at the top. min-height:0 lets the inner <pre> scroll. */
+  flex: 1;
+  min-height: 0;
+  max-width: none;
   border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
   background: color-mix(in srgb, var(--accent) 4%, var(--surface));
 }
@@ -288,6 +294,11 @@
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
+  /* Override the default 320px cap — fill the (now flex-grown) bubble and
+     scroll internally so the latest terminal lines stay in view. */
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 /* Linkified URLs inside the bubble — readable in both modes. */
 .mc-bubble-link {
