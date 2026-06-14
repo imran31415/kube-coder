@@ -104,8 +104,10 @@ export interface CreateTaskInput {
 }
 export const createTask = (input: CreateTaskInput) => apiPost<TaskDetail>('/api/claude/tasks', input);
 
-export const sendMessage = (id: string, prompt: string) =>
-  apiPost<TaskDetail>(`/api/claude/tasks/${id}/message`, { prompt });
+// submit=false pastes `prompt` into the live session's input box without
+// pressing Enter (the "Paste from clipboard" flow); defaults to a normal send.
+export const sendMessage = (id: string, prompt: string, submit = true) =>
+  apiPost<TaskDetail>(`/api/claude/tasks/${id}/message`, { prompt, submit });
 
 export const renameTask = (id: string, name: string) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/rename`, { name });
