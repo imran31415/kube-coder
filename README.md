@@ -39,7 +39,7 @@ kube-coder delivers **per-user, isolated development environments** that combine
 _Running a fullstack python app in split plane mode with terminal_
 <img width="1512" height="864" alt="kube-coder workspace interface" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
 
-_Running a fullstack react app in split plane mode with claude_
+_Running a fullstack Go app in split plane mode with claude_
 <img width="1441" height="863" alt="image" src="https://github.com/user-attachments/assets/9901202e-a11b-4013-ab94-32745d2bc8f5" />
 
 _Running a librefang agent along with the librefang UI dashboard in split plane mode_
