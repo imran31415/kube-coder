@@ -2,9 +2,9 @@
 
 **TL;DR:** This is the "real deployment" companion to the local minikube guide. It walks you from a Kubernetes cluster to a live, per-user kube-coder workspace at `https://<user>.dev.yourdomain.com/`, secured with **GitHub OAuth** and **automatic HTTPS** (cert-manager + Let's Encrypt). Each user gets an isolated pod, PVC, ingress, and assistant config from a single Helm chart.
 
-If you just want to try kube-coder on your laptop first, do the [minikube guide](reddit-getting-started-minikube-macbook.md) — no cloud, no DNS, no TLS. This guide is for putting it on a shared cluster for a team.
+If you just want to try kube-coder on your laptop first, do the [minikube guide](getting-started-minikube-macos.md) — no cloud, no DNS, no TLS. This guide is for putting it on a shared cluster for a team.
 
-Repo: https://github.com/imran31415/kube-coder · Sub: r/kubecoder
+Repo: https://github.com/imran31415/kube-coder
 
 ---
 
@@ -321,5 +321,5 @@ Full provisioning reference (resource sizing, org/team restrictions, lifecycle c
 
 ---
 
-That's the whole multi-tenant path: base infra once, then a tight `new-user → edit → validate → deploy` loop per developer. Pair it with the [local minikube guide](reddit-getting-started-minikube-macbook.md) for development. Questions/issues → r/kubecoder or open an issue on the repo.
+That's the whole multi-tenant path: base infra once, then a tight `new-user → edit → validate → deploy` loop per developer. Pair it with the [local minikube guide](getting-started-minikube-macos.md) for development. Questions/issues → open an issue on the repo.
 </content>
