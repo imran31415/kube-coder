@@ -4,7 +4,7 @@
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
-[![Test Coverage](https://img.shields.io/badge/coverage-48%25-yellow)](https://github.com/imran31415/kube-coder)
+[![Test Coverage](https://img.shields.io/badge/coverage-57%25-yellow)](https://github.com/imran31415/kube-coder)
 ---
 
 ## Enterprise-Grade Development Workspaces on Kubernetes
@@ -312,9 +312,9 @@ kube-coder includes comprehensive test suites for both frontend and backend comp
 
 | Component | Coverage | Framework |
 |---|---|---|
-| **Frontend (Dashboard)** | 40.5% | Vitest + @testing-library |
-| **Backend (Python API)** | 57% | unittest + coverage.py |
-| **Overall** | 48% | Weighted average |
+| **Frontend (Dashboard)** | 41.6% | Vitest + @testing-library |
+| **Backend (Python API)** | 69% | unittest + coverage.py |
+| **Overall** | 57% | Statement-weighted average |
 
 ### Running Tests
 
