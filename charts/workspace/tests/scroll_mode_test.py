@@ -41,6 +41,12 @@ def _post(url, body):
 class ScrollModeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # server.py reads AUTH_MODE at import time. Pin it to 'basic' so these
+        # unauthenticated POSTs pass check_claude_auth regardless of the ambient
+        # environment — otherwise running inside an oauth2 workspace pod (where
+        # AUTH_MODE=oauth2 is exported) makes every request 401.
+        cls._orig_auth_mode = server.AUTH_MODE
+        server.AUTH_MODE = 'basic'
         cls.port = _free_port()
         cls.httpd = http.server.ThreadingHTTPServer(
             ('127.0.0.1', cls.port), server.BrowserHandler,
@@ -52,6 +58,7 @@ class ScrollModeTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        server.AUTH_MODE = cls._orig_auth_mode
 
     def _call(self, body):
         """POST the body and return (status, the tmux argv that was run)."""
