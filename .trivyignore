@@ -1,0 +1,25 @@
+# Trivy ignore file for the kube-coder devlaptop image scan (CI security-scan job).
+#
+# Only FALSE POSITIVES belong here. Genuinely no-fix findings are dropped by
+# `ignore-unfixed: true` in .github/workflows/ci.yml; actionable findings are
+# tracked as GitHub issues and must NOT be silenced here.
+#
+# ---------------------------------------------------------------------------
+# code-server bundled-VS-Code version misparse (issue #71)
+# ---------------------------------------------------------------------------
+# Trivy reads the bundled VS Code version (1.123.0) from
+#   usr/lib/code-server/lib/vscode/package.json
+# and matches it against *code-server* advisories. We pin code-server 4.123.0
+# (devlaptop/Dockerfile), which is newer than every fix below (3.12.0 / 4.10.1
+# / 4.99.4) — so these are false positives. The bundled npm/shell-quote copies
+# live inside upstream code-server's VS Code and are not independently
+# patchable; they are resolved by bumping the pinned code-server version, at
+# which point Trivy re-evaluates them.
+CVE-2021-3810
+CVE-2023-26114
+CVE-2025-47269
+CVE-2019-16775
+CVE-2019-16776
+CVE-2019-16777
+CVE-2018-7408
+CVE-2026-9277
