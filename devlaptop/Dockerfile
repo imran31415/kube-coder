@@ -30,8 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x via NodeSource
+# npm bundled with Node 20 (10.8.x) vendors old tar/minimatch/glob/cross-spawn
+# that Trivy flags (HIGH). Upgrade the global npm first so it ships patched
+# vendored deps (npm 11.x: tar>=7.5, minimatch>=10.2, glob>=13, cross-spawn
+# dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
+# update. See github.com/imran31415/kube-coder/issues/69.
+ARG NPM_VERSION=11.17.0
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
+    && npm install -g npm@${NPM_VERSION} \
     && npm install -g yarn \
     && rm -rf /var/lib/apt/lists/*
 
