@@ -3,7 +3,6 @@
 **TL;DR:** kube-coder gives you a full browser-based dev workspace (VS Code in the browser, persistent terminals, an in-pod browser, AI assistants like Claude Code/OpenCode, a dashboard) running on Kubernetes. You can run the *whole thing locally* on your Mac with minikube — no cloud account, no registry, no DNS, no TLS. This walks you from a fresh laptop to the dashboard in your browser.
 
 Repo: https://github.com/imran31415/kube-coder
-Sub: r/kubecoder
 
 ---
 
@@ -187,6 +186,6 @@ Full local docs: https://github.com/imran31415/kube-coder/blob/main/docs/local-d
 
 ---
 
-That's it — a full cloud-style dev workspace running entirely on your MacBook. Once you're comfortable locally, the same chart deploys multi-tenant on a real cluster with GitHub OAuth and TLS. Questions/issues → drop them in r/kubecoder or open an issue on the repo.
+That's it — a full cloud-style dev workspace running entirely on your MacBook. Once you're comfortable locally, the same chart deploys multi-tenant on a real cluster with GitHub OAuth and TLS — see the [Kubernetes deployment guide](deploy-on-kubernetes.md). Questions/issues → open an issue on the repo.
 </content>
 </invoke>
