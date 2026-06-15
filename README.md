@@ -95,6 +95,10 @@ kube-coder runs two ways — pick the one that fits:
 | TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
 | Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [NEW_USER_PROVISIONING.md](NEW_USER_PROVISIONING.md) |
 
+> **📖 Step-by-step walkthroughs** — follow-along, manual-style guides for each path:
+> - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
+> - [Deploying on Kubernetes (multi-tenant, OAuth + TLS)](docs/deploy-on-kubernetes.md) — cluster → per-user workspace
+
 ### Option A — Local (minikube)
 
 Run the whole stack on a local single-node cluster — no cloud account, registry, DNS, or TLS.
