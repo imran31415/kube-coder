@@ -23,3 +23,24 @@ CVE-2019-16776
 CVE-2019-16777
 CVE-2018-7408
 CVE-2026-9277
+
+# ---------------------------------------------------------------------------
+# Docker CLI binaries — daemon-side CVEs, not applicable + no upstream fix (issue #70)
+# ---------------------------------------------------------------------------
+# These are embedded in the client-only Docker binaries this image ships
+# (docker-buildx, docker-compose plugin, standalone docker-compose). This image
+# has NO docker/containerd daemon — Docker runs in a separate DinD sidecar
+# (see CLAUDE.md), so the daemon-side code paths are unreachable here:
+#   CVE-2026-34040  github.com/docker/docker  Moby DAEMON authorization bypass
+#   CVE-2026-46680  containerd/v2             containerd DAEMON runAsNonRoot bypass
+#   CVE-2026-42504  stdlib (Go)               MIME-header decode DoS (not parsed by compose/buildx)
+# They are also not fixable today: verified that the latest upstream releases
+# (compose v5.1.4, buildx v0.34.1) are still built with Go 1.26.3 and embed
+# docker/docker v28.5.2 + containerd v2.2.3 — i.e. no published binary carries
+# the fixes yet.
+# REVISIT and remove these lines once upstream ships binaries built with
+# Go >= 1.26.4 and embedding docker/docker >= 29.3.1 / containerd >= 2.2.4,
+# then bump the pinned versions in devlaptop/Dockerfile so Trivy re-validates.
+CVE-2026-34040
+CVE-2026-46680
+CVE-2026-42504
