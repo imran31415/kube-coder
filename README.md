@@ -31,7 +31,10 @@ kube-coder delivers **per-user, isolated development environments** that combine
 - **Helm-based deployment** - Repeatable, version-controlled infrastructure as code
 - **Comprehensive monitoring** - Built-in metrics, health checks, and logging
 
-[Documentation](docs/)
+[[Documentation](docs/)](https://demo-public.dev.scalebase.io/docs)
+
+## Subredddit: 
+- https://www.reddit.com/r/kubecoder/
 
 ## Example Screenshots 
 
