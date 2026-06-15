@@ -44,3 +44,31 @@ CVE-2026-9277
 CVE-2026-34040
 CVE-2026-46680
 CVE-2026-42504
+
+# ---------------------------------------------------------------------------
+# More Docker/gh client-binary Go-module CVEs — medium, same class as #70 (issue #76)
+# ---------------------------------------------------------------------------
+# Embedded in the same client-only binaries (docker-buildx, docker-compose
+# plugin + standalone) and in usr/bin/gh. Verified the latest upstream releases
+# (compose v5.1.4, buildx v0.34.1) still embed these — no published binary
+# carries the fixes, and the vulnerable code paths (Moby daemon, in-toto
+# verification, OTLP exporter, x509 hostname check) aren't reachable from the
+# CLI usage in this image. Revisit alongside the #70 entries above when upstream
+# ships rebuilt binaries.
+CVE-2026-33997          # github.com/docker/docker — Moby daemon privilege issue
+CVE-2026-27145          # Go stdlib — x509 VerifyHostname
+CVE-2026-42507          # Go stdlib
+CVE-2026-39882          # go.opentelemetry.io/otel OTLP exporter
+GHSA-pmwq-pjrm-6p5r     # in-toto-golang negation handling (docker-buildx + gh)
+
+# ---------------------------------------------------------------------------
+# code-server bundle — more false positives / ancient vendored deps (issue #76)
+# ---------------------------------------------------------------------------
+# Same root cause as the code-server block above: Trivy reads the bundled VS
+# Code version (1.123.0) for the code-server advisory, and the `npm 1.0.1`
+# copies are decade-old deps vendored inside code-server's VS Code, not
+# independently patchable. We pin code-server 4.123.0.
+CVE-2021-42648          # code-server (VS Code version misparse)
+CVE-2013-4116           # npm (bundled in code-server VS Code)
+CVE-2016-3956           # npm (bundled in code-server VS Code)
+CVE-2020-15095          # npm (bundled in code-server VS Code)
