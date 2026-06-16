@@ -1,4 +1,5 @@
-import type { FunctionComponent } from 'preact';
+import type { ComponentType } from 'preact';
+import { lazy, Suspense } from 'preact/compat';
 import { useEffect } from 'preact/hooks';
 import { currentPath, matchRoute } from '../store/router';
 import { paletteOpen, sheetOpen } from '../store/ui';
@@ -11,19 +12,24 @@ import { ToastRack } from '../components/Toast';
 import { BottomSheet } from '../components/BottomSheet';
 import { ShortcutsHelp } from '../components/ShortcutsHelp';
 import { Onboarding } from '../components/Onboarding';
-import { TasksRoute } from './tasks/index';
-import { DesktopRoute } from './desktop/index';
-import { MemoryRoute } from './memory/index';
-import { TriggersRoute } from './triggers/index';
-import { FilesRoute } from './files/index';
-import { SettingsRoute } from './settings/index';
-import { DocsRoute } from './docs/index';
-import { AppsRoute } from './apps/index';
 import { MoreSheet } from './more/index';
 import { waitingTasks } from '../components/WaitingBadge';
 import './Shell.css';
 
-const ROUTE_COMPONENTS: Record<string, FunctionComponent> = {
+// Routes are code-split: each becomes its own chunk fetched on first visit, so
+// route-only heavy deps (D3 in Memory, marked/DOMPurify in Docs) stay out of
+// the initial bundle. `MoreSheet` stays eager — it's tiny and lives inside the
+// always-mounted BottomSheet. See issue #101.
+const TasksRoute = lazy<ComponentType>(() => import('./tasks/index').then((m) => ({ default: m.TasksRoute })));
+const DesktopRoute = lazy<ComponentType>(() => import('./desktop/index').then((m) => ({ default: m.DesktopRoute })));
+const MemoryRoute = lazy<ComponentType>(() => import('./memory/index').then((m) => ({ default: m.MemoryRoute })));
+const TriggersRoute = lazy<ComponentType>(() => import('./triggers/index').then((m) => ({ default: m.TriggersRoute })));
+const FilesRoute = lazy<ComponentType>(() => import('./files/index').then((m) => ({ default: m.FilesRoute })));
+const SettingsRoute = lazy<ComponentType>(() => import('./settings/index').then((m) => ({ default: m.SettingsRoute })));
+const DocsRoute = lazy<ComponentType>(() => import('./docs/index').then((m) => ({ default: m.DocsRoute })));
+const AppsRoute = lazy<ComponentType>(() => import('./apps/index').then((m) => ({ default: m.AppsRoute })));
+
+const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/tasks': TasksRoute,
   '/desktop': DesktopRoute,
   '/memory': MemoryRoute,
@@ -36,7 +42,7 @@ const ROUTE_COMPONENTS: Record<string, FunctionComponent> = {
 
 export function Shell() {
   const route = matchRoute(currentPath.value);
-  const RouteComponent: FunctionComponent = ROUTE_COMPONENTS[route.path] ?? ROUTE_COMPONENTS['/tasks'];
+  const RouteComponent: ComponentType = ROUTE_COMPONENTS[route.path] ?? ROUTE_COMPONENTS['/tasks'];
 
   // Cmd-K / Ctrl-K toggles the palette globally.
   useShortcut({ key: 'k', meta: true, allowInInput: true }, (e) => {
@@ -62,7 +68,9 @@ export function Shell() {
       <div class="app-body">
         <Rail />
         <main class="app-main" tabIndex={-1}>
-          <RouteComponent />
+          <Suspense fallback={<div class="route-loading" aria-busy="true" aria-label="Loading…" />}>
+            <RouteComponent />
+          </Suspense>
         </main>
       </div>
       <BottomNav />
