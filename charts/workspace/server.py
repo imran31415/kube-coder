@@ -5680,6 +5680,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(404)
                 self.end_headers()
                 self.wfile.write(f'API endpoint not found. Received: {self.path}'.encode())
+        except ValueError as e:
+            self.send_client_error(str(e), 400)
         except Exception as e:
             self.send_error_response(f'Server error: {str(e)}')
     
@@ -5690,10 +5692,21 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(message.encode())
     
     def send_error_response(self, message):
+        error_id = uuid.uuid4().hex[:12]
+        import traceback
+        traceback.print_exc()
+        print(f'[error_id={error_id}] {message}', file=sys.stderr)
+        body = json.dumps({'error': 'internal error', 'error_id': error_id})
         self.send_response(500)
-        self.send_header('Content-type', 'text/plain')
+        self.send_header('Content-type', 'application/json')
         self.end_headers()
-        self.wfile.write(message.encode())
+        self.wfile.write(body.encode())
+    def send_client_error(self, message, status_code=400):
+        body = json.dumps({'error': message})
+        self.send_response(status_code)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body.encode())
     
     def send_livez(self):
         """Liveness probe — proves the HTTP server thread is alive and can
