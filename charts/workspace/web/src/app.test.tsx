@@ -40,8 +40,10 @@ describe('App shell', () => {
     expect(railMemory, 'rail has a Memory entry').toBeTruthy();
     railMemory!.click();
     expect(currentPath.value).toBe('/memory');
-    // Heading swaps to the new route (signal-triggered re-render).
-    await screen.findByRole('heading', { level: 1, name: 'Memory' });
+    // Heading swaps to the new route. Routes are now lazy-loaded (issue #101),
+    // so allow extra time for the dynamic import chunk to resolve through
+    // Suspense before the heading appears.
+    await screen.findByRole('heading', { level: 1, name: 'Memory' }, { timeout: 5000 });
   });
 
   it('opens the command palette when the topbar search is clicked', async () => {
