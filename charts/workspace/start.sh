@@ -198,6 +198,28 @@ if [ -n "$GITHUB_APP_ID" ]; then
   done
 
   python3 /github-app/github-app-token.py --daemon &
+
+  # gh CLI wrapper: always read the live token the refresh daemon keeps fresh.
+  # BASH_ENV + the ~/.profile hook above re-export GH_TOKEN for NEW shells, but a
+  # long-lived process (notably the Claude harness) freezes whatever GH_TOKEN it
+  # captured at startup, and `gh` prefers that stale env var -> 401 "Bad
+  # credentials" ~an hour into a session. `git push` is immune because it uses
+  # the file-based credential helper; this shim gives `gh` the same file-backed
+  # guarantee by re-reading the token on every invocation. The real binary is
+  # pinned to an absolute path so re-runs can't recurse back into this shim.
+  GH_SHIM_DIR="$HOME/.local/bin"
+  if mkdir -p "$GH_SHIM_DIR" 2>/dev/null; then
+    cat > "$GH_SHIM_DIR/gh" <<'GHSHIM'
+#!/usr/bin/env bash
+if [ -r /home/dev/.credentials/.github-token ]; then
+  GH_TOKEN="$(cat /home/dev/.credentials/.github-token)"
+  GITHUB_TOKEN="$GH_TOKEN"
+  export GH_TOKEN GITHUB_TOKEN
+fi
+exec /usr/bin/gh "$@"
+GHSHIM
+    chmod +x "$GH_SHIM_DIR/gh"
+  fi
 fi
 
 {{- if .Values.codeServer.enabled }}
