@@ -14,6 +14,7 @@ import hashlib
 import secrets
 import shutil
 import threading
+import queue
 import uuid
 import urllib.parse
 import urllib.request
@@ -753,6 +754,13 @@ class ClaudeTaskManager:
 
         threading.Thread(target=send_prompt, daemon=True).start()
 
+        EventBroker.publish('task.created', {
+            'task_id': meta.get('task_id'),
+            'status': meta.get('status'),
+            'name': meta.get('name'),
+            'assistant': meta.get('assistant'),
+            'parent_task_id': meta.get('parent_task_id'),
+        })
         return meta
 
     @staticmethod
@@ -812,6 +820,12 @@ class ClaudeTaskManager:
             capture_output=True, text=True,
         )
 
+        EventBroker.publish('task.created', {
+            'task_id': meta.get('task_id'),
+            'status': meta.get('status'),
+            'name': meta.get('name'),
+            'kind': meta.get('kind'),
+        })
         return meta
 
     @staticmethod
@@ -1288,6 +1302,11 @@ class ClaudeTaskManager:
                 meta.pop('last_input_prompt', None)
                 if fire_hook:
                     ClaudeTaskManager._fire_completion_hook(updated)
+                EventBroker.publish('task.status', {
+                    'task_id': meta.get('task_id'),
+                    'status': 'completed',
+                    'finished_at': meta.get('finished_at'),
+                })
             return
         
         # Session is alive — derive waiting-for-input from render *quiescence*
@@ -1327,6 +1346,9 @@ class ClaudeTaskManager:
                     meta['status'] = 'running'
                     meta.pop('waiting_for_input', None)
                     meta.pop('last_input_prompt', None)
+                    EventBroker.publish('task.status', {
+                        'task_id': meta.get('task_id'), 'status': 'running',
+                    })
             return
 
         # Screen unchanged since the previous capture.
@@ -1342,6 +1364,9 @@ class ClaudeTaskManager:
                 if updated is not None:
                     meta['status'] = 'waiting-for-input'
                     meta['waiting_for_input'] = True
+                    EventBroker.publish('task.status', {
+                        'task_id': meta.get('task_id'), 'status': 'waiting-for-input',
+                    })
 
 
 def _shell_quote(s):
@@ -2997,6 +3022,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # --- Claude Task API (GET) ---
         # Query string is already stripped at the top; handlers re-parse it from self.path when needed.
         claude_path = normalized_path
+
+        # /api/events — Server-Sent Events firehose of dashboard events
+        # (task.created / task.status). Lets the SPA replace per-route polling
+        # with push (issue #93).
+        if claude_path == '/api/events':
+            self.handle_events_stream()
+            return
+
         # /api/mode — public deployment-mode probe used by the SPA at boot to
         # decide whether to hide mutation UI. Intentionally unauthenticated so
         # the read-only public demo can fetch it without an auth proxy in
@@ -3575,6 +3608,59 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             time.sleep(poll_interval)
+
+    def handle_events_stream(self):
+        """Server-Sent Events firehose of dashboard events (task.created /
+        task.status). Subscribes to EventBroker and forwards each event as a
+        named SSE frame so the SPA can replace per-route polling (issue #93).
+
+        Framing mirrors handle_claude_stream_output: heartbeat comments keep
+        proxies from closing an idle connection, and STREAM_MAX_SECONDS caps
+        the lifetime so a never-disconnecting client can't pin a handler
+        thread forever (the SPA reconnects on the `end` event).
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+
+        def write_raw(payload_bytes):
+            try:
+                self.wfile.write(payload_bytes)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
+
+        q = EventBroker.subscribe()
+        started = time.time()
+        # Greet so the client can flip to "connected" and stop its poll fallback.
+        if not write_raw(b'event: ready\ndata: {}\n\n'):
+            EventBroker.unsubscribe(q)
+            return
+        try:
+            while True:
+                if time.time() - started > STREAM_MAX_SECONDS:
+                    write_raw(b'event: end\ndata: timeout\n\n')
+                    return
+                try:
+                    event = q.get(timeout=15)
+                except queue.Empty:
+                    if not write_raw(b': keep-alive\n\n'):
+                        return
+                    continue
+                payload = json.dumps(event.get('data', {}))
+                frame = f"event: {event.get('type', 'message')}\ndata: {payload}\n\n"
+                if not write_raw(frame.encode('utf-8')):
+                    return
+        finally:
+            EventBroker.unsubscribe(q)
 
     def handle_claude_create_task(self):
         if not self.check_claude_auth():
@@ -6193,6 +6279,58 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error_response('Chrome not found. Please install Chrome first.')
         except Exception as e:
             self.send_error_response(f'Error opening localhost in Chrome: {str(e)}')
+
+class EventBroker:
+    """In-process fan-out of dashboard events to connected /api/events SSE
+    clients, so the SPA can replace per-route polling with push (issue #93).
+
+    Each subscriber gets a small bounded queue. If a client is too slow we drop
+    its oldest event rather than block the publisher — SSE is lossy-tolerant
+    here because the SPA reconciles via a normal fetch on (re)connect, so a
+    dropped event at worst delays an update until the next poll-fallback tick.
+    publish() never raises and never blocks the caller (e.g. the reconcile
+    loop or a request thread).
+    """
+
+    QUEUE_MAX = 200
+    _subscribers = set()
+    _lock = threading.Lock()
+
+    @classmethod
+    def subscribe(cls):
+        q = queue.Queue(maxsize=cls.QUEUE_MAX)
+        with cls._lock:
+            cls._subscribers.add(q)
+        return q
+
+    @classmethod
+    def unsubscribe(cls, q):
+        with cls._lock:
+            cls._subscribers.discard(q)
+
+    @classmethod
+    def subscriber_count(cls):
+        with cls._lock:
+            return len(cls._subscribers)
+
+    @classmethod
+    def publish(cls, event_type, data=None):
+        """Fan an event out to every subscriber. Never raises, never blocks."""
+        event = {'type': event_type, 'data': data or {}, 'ts': time.time()}
+        with cls._lock:
+            subs = list(cls._subscribers)
+        for q in subs:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                # Slow consumer — drop its oldest event to make room.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except (queue.Empty, queue.Full):
+                    pass
+        return event
+
 
 class TaskReconciler:
     """Single-process background poller that reconciles non-terminal task
