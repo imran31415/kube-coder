@@ -862,6 +862,46 @@ class ClaudeTaskManager:
         return tasks
 
     @staticmethod
+    def reconcile_running(max_tasks=1000):
+        """Reconcile every non-terminal task once; return the count touched.
+
+        This is what the background TaskReconciler calls so a finished task's
+        completion hook fires (and finished_at / waiting-for-input update) even
+        when no client is reading it. Without it, _reconcile_status only runs
+        lazily on list/get/stream, so a headless webhook/cron callback can be
+        arbitrarily delayed — or never fire if nothing polls (issue #96).
+
+        Best-effort: a bad task dir is skipped, never raised. Terminal tasks
+        are skipped cheaply (no tmux subprocess).
+        """
+        ClaudeTaskManager.ensure_tasks_dir()
+        try:
+            entries = sorted(os.listdir(ClaudeTaskManager.TASKS_DIR), reverse=True)
+        except OSError:
+            return 0
+        reconciled = 0
+        for entry in entries[:max_tasks]:
+            task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, entry)
+            meta_path = os.path.join(task_dir, 'task.json')
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            # Cheap skip for terminal tasks — avoids the tmux has-session call.
+            if meta.get('status') not in ('running', 'waiting-for-input'):
+                continue
+            try:
+                ClaudeTaskManager._reconcile_status(meta, task_dir)
+                reconciled += 1
+            except Exception as e:
+                print(f'[task-reconciler] reconcile {entry} failed: {e}',
+                      file=sys.stderr)
+        return reconciled
+
+    @staticmethod
     def get_task(task_id):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         meta_path = os.path.join(task_dir, 'task.json')
@@ -6141,6 +6181,51 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_error_response(f'Error opening localhost in Chrome: {str(e)}')
 
+class TaskReconciler:
+    """Single-process background poller that reconciles non-terminal task
+    status on an interval, so completion hooks fire and finished_at /
+    waiting-for-input update even when no client is reading the task.
+
+    Idempotent; safe to start once. Modeled on memory.sync.ClaudeMemorySyncer.
+    See issue #96.
+    """
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _last_run_at = 0.0
+    _last_reconciled = 0
+    _start_lock = threading.Lock()
+
+    @classmethod
+    def start(cls, *, interval_seconds=10):
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            while not cls._stop_event.is_set():
+                try:
+                    cls._last_reconciled = ClaudeTaskManager.reconcile_running()
+                    cls._last_run_at = time.time()
+                except Exception as e:
+                    print(f'[task-reconciler] pass failed: {e}', file=sys.stderr)
+                cls._stop_event.wait(interval_seconds)
+
+        t = threading.Thread(target=_loop, name='task-reconciler', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def status(cls):
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'last_run_at': cls._last_run_at or None,
+            'last_reconciled': cls._last_reconciled,
+        }
+
+
 if __name__ == "__main__":
     # Change to the directory containing our files
     os.chdir('/tmp/browser')
@@ -6163,6 +6248,19 @@ if __name__ == "__main__":
             print('[memory] claude-auto-memory syncer started (60s)')
         except Exception as e:
             print(f'[memory] syncer start failed: {e}', file=sys.stderr)
+
+    # Background task reconciler: flips finished tasks running -> completed and
+    # fires their completion hooks even when nothing is reading them, so headless
+    # webhook/cron callbacks are timely (issue #96).
+    try:
+        _reconcile_interval = int(os.environ.get('KC_RECONCILE_INTERVAL', '10'))
+    except (TypeError, ValueError):
+        _reconcile_interval = 10
+    try:
+        TaskReconciler.start(interval_seconds=_reconcile_interval)
+        print(f'[tasks] background reconciler started ({_reconcile_interval}s)')
+    except Exception as e:
+        print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
 
     print("Starting Browser API Server on port 6080...")
     print("Available endpoints:")
