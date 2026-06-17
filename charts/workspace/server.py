@@ -4155,6 +4155,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 'task_id': task.get('task_id'),
             }, 502)
             return
+        EventBroker.publish('trigger.fired', {
+            'trigger_type': 'webhook',
+            'trigger_id': cfg['id'],
+            'task_id': task['task_id'],
+        })
         self.send_json({
             'task_id': task['task_id'],
             'webhook_id': cfg['id'],
@@ -4292,6 +4297,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_secret=cfg.get('response_secret'),
             source=f"cron:{cfg['id']}",
         )
+        EventBroker.publish('trigger.fired', {
+            'trigger_type': 'cron',
+            'trigger_id': cfg['id'],
+            'task_id': task['task_id'],
+        })
         self.send_json({
             'task_id': task['task_id'],
             'cron_id': cfg['id'],
@@ -4497,6 +4507,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             )
         except Exception:
             pass
+        EventBroker.publish('memory.changed', {
+            'op': 'upsert', 'namespace': row['namespace'], 'key': row['key'],
+        })
         self.send_json({'memory': row}, 200)
 
     def handle_memory_delete(self, namespace, key):
@@ -4512,6 +4525,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             )
         except Exception as e:
             self._memory_error(e); return
+        EventBroker.publish('memory.changed', {
+            'op': 'delete', 'namespace': namespace, 'key': key,
+        })
         self.send_json({'memory': row, 'deleted': True})
 
     def handle_memory_link(self, namespace, key):
@@ -4539,6 +4555,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             )
         except Exception as e:
             self._memory_error(e); return
+        EventBroker.publish('memory.changed', {
+            'op': 'link', 'namespace': namespace, 'key': key,
+        })
         self.send_json({'relation': rel}, 201)
 
     def handle_memory_unlink(self, namespace, key, relation_id):

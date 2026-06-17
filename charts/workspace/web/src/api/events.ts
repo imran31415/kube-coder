@@ -25,9 +25,14 @@ export interface DashboardEvent {
 
 type Handler = (ev: DashboardEvent) => void;
 
-// Event names the backend emits today. New ones (trigger.fired,
-// memory.changed, …) just need adding here once the server publishes them.
-const EVENT_TYPES = ['task.created', 'task.status'];
+// Event names the backend emits. Add new ones here once the server publishes
+// them (see EventBroker.publish in server.py).
+const EVENT_TYPES = [
+  'task.created',
+  'task.status',
+  'trigger.fired',
+  'memory.changed',
+];
 
 let es: EventSource | null = null;
 const handlers = new Set<Handler>();
