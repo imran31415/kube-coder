@@ -1,5 +1,10 @@
 import { signal, computed } from '@preact/signals';
 import {
+  subscribeEvents,
+  eventStreamConnected,
+  type DashboardEvent,
+} from '../api/events';
+import {
   listTasks,
   getTask,
   createTask as apiCreateTask,
@@ -176,11 +181,35 @@ export async function pasteToSession(id: string, text: string): Promise<void> {
   }
 }
 
-// Polling. Phase 2 keeps this; Phase 6 swaps for /api/events SSE.
+// Real-time updates via the /api/events SSE stream (issue #93), with the
+// interval below kept as a safety-net fallback. When the stream is connected,
+// task.created / task.status events drive refreshes and the timer mostly
+// no-ops; when it's down, the timer polls at the normal cadence so the UI
+// still updates. A burst of events is coalesced into one refresh.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;
+let eventUnsub: (() => void) | null = null;
+let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+// Once connected, the timer only refreshes if we haven't fetched in this long.
+const FALLBACK_REFRESH_MS = 45000;
+
+function onDashboardEvent(ev: DashboardEvent) {
+  if (ev.type !== 'task.created' && ev.type !== 'task.status') return;
+  // Coalesce bursts (e.g. several tasks finishing at once) into one refresh.
+  if (eventRefreshTimer != null) return;
+  eventRefreshTimer = setTimeout(() => {
+    eventRefreshTimer = null;
+    void refreshTasks();
+    const sel = selectedTaskId.value;
+    const evId = typeof ev.data?.task_id === 'string' ? ev.data.task_id : undefined;
+    // Reload the open task if it's the one that changed (or on a new task).
+    if (sel && (evId === undefined || evId === sel)) void loadSelectedTask(sel);
+  }, 200);
+}
+
 export function startTaskPolling(intervalMs = 10000) {
   refreshTasks();
+  if (!eventUnsub) eventUnsub = subscribeEvents(onDashboardEvent);
   if (pollHandle) clearInterval(pollHandle);
   // Skip ticks while the tab is hidden — mobile users especially shouldn't
   // pay the network/battery cost for refreshes they aren't looking at. On
@@ -189,6 +218,13 @@ export function startTaskPolling(intervalMs = 10000) {
   // interval.
   pollHandle = setInterval(() => {
     if (typeof document !== 'undefined' && document.hidden) return;
+    // When SSE is live, events do the work — only refresh as a slow safety net.
+    if (
+      eventStreamConnected.value &&
+      Date.now() - (tasksLastFetch.value || 0) < FALLBACK_REFRESH_MS
+    ) {
+      return;
+    }
     void refreshTasks();
     if (selectedTaskId.value) void loadSelectedTask(selectedTaskId.value);
   }, intervalMs);
@@ -206,6 +242,14 @@ export function startTaskPolling(intervalMs = 10000) {
 export function stopTaskPolling() {
   if (pollHandle) clearInterval(pollHandle);
   pollHandle = null;
+  if (eventUnsub) {
+    eventUnsub();
+    eventUnsub = null;
+  }
+  if (eventRefreshTimer != null) {
+    clearTimeout(eventRefreshTimer);
+    eventRefreshTimer = null;
+  }
   if (visibilityHandler && typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', visibilityHandler);
     visibilityHandler = null;
