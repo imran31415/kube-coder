@@ -85,6 +85,15 @@ describe('event stream client', () => {
     ]);
   });
 
+  it('dispatches trigger.fired and memory.changed events', () => {
+    const seen: string[] = [];
+    subscribeEvents((ev) => seen.push(ev.type));
+    const es = MockEventSource.instances[0];
+    es.emit('trigger.fired', JSON.stringify({ trigger_type: 'cron', trigger_id: 'c1' }));
+    es.emit('memory.changed', JSON.stringify({ op: 'upsert', namespace: 'user', key: 'x' }));
+    expect(seen).toEqual(['trigger.fired', 'memory.changed']);
+  });
+
   it('delivers an empty payload for malformed data without throwing', () => {
     const seen: unknown[] = [];
     subscribeEvents((ev) => seen.push(ev));

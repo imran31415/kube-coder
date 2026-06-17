@@ -1,5 +1,10 @@
 import { signal, computed } from '@preact/signals';
 import {
+  subscribeEvents,
+  eventStreamConnected,
+  type DashboardEvent,
+} from '../api/events';
+import {
   listTriggers,
   fireCron,
   suspendCron,
@@ -70,13 +75,48 @@ export async function removeTrigger(t: Trigger): Promise<void> {
   }
 }
 
+// Real-time via the /api/events SSE stream (issue #93): a `trigger.fired`
+// event (webhook received / cron fired) refreshes the list immediately, and
+// the interval below is kept only as a safety net — it polls normally when the
+// stream is down and slows to a heartbeat when it's up.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
-export function startTriggerPolling(intervalMs = 30000) {
+let eventUnsub: (() => void) | null = null;
+let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let lastRefreshAt = 0;
+const FALLBACK_REFRESH_MS = 45000;
+
+function doRefresh() {
+  lastRefreshAt = Date.now();
   void refreshTriggers();
+}
+
+function onTriggerEvent(ev: DashboardEvent) {
+  if (ev.type !== 'trigger.fired') return;
+  if (eventRefreshTimer != null) return; // coalesce bursts
+  eventRefreshTimer = setTimeout(() => {
+    eventRefreshTimer = null;
+    doRefresh();
+  }, 250);
+}
+
+export function startTriggerPolling(intervalMs = 30000) {
+  doRefresh();
+  if (!eventUnsub) eventUnsub = subscribeEvents(onTriggerEvent);
   if (pollHandle) clearInterval(pollHandle);
-  pollHandle = setInterval(() => void refreshTriggers(), intervalMs);
+  pollHandle = setInterval(() => {
+    if (eventStreamConnected.value && Date.now() - lastRefreshAt < FALLBACK_REFRESH_MS) return;
+    doRefresh();
+  }, intervalMs);
 }
 export function stopTriggerPolling() {
   if (pollHandle) clearInterval(pollHandle);
   pollHandle = null;
+  if (eventUnsub) {
+    eventUnsub();
+    eventUnsub = null;
+  }
+  if (eventRefreshTimer != null) {
+    clearTimeout(eventRefreshTimer);
+    eventRefreshTimer = null;
+  }
 }

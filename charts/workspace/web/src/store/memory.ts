@@ -1,5 +1,10 @@
 import { signal, computed } from '@preact/signals';
 import {
+  subscribeEvents,
+  eventStreamConnected,
+  type DashboardEvent,
+} from '../api/events';
+import {
   listMemories,
   getMemory,
   upsertMemory as apiUpsert,
@@ -116,22 +121,49 @@ export async function removeMemory(ns: string, key: string): Promise<void> {
   }
 }
 
+// Real-time via the /api/events SSE stream (issue #93): a `memory.changed`
+// event refreshes the list immediately. The interval is a safety net — it also
+// catches out-of-band writes (e.g. an MCP-authored memory from a Claude task,
+// which lands in a different process and so doesn't emit here): it polls
+// normally when the stream is down and slows to a heartbeat when it's up.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 let visibilityHandler: (() => void) | null = null;
-export function startMemoryPolling(intervalMs = 30000) {
+let eventUnsub: (() => void) | null = null;
+let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let lastRefreshAt = 0;
+const FALLBACK_REFRESH_MS = 45000;
+
+function doRefresh() {
+  lastRefreshAt = Date.now();
   void refreshMemories();
+}
+
+function onMemoryEvent(ev: DashboardEvent) {
+  if (ev.type !== 'memory.changed') return;
+  if (eventRefreshTimer != null) return; // coalesce bursts
+  eventRefreshTimer = setTimeout(() => {
+    eventRefreshTimer = null;
+    doRefresh();
+  }, 250);
+}
+
+export function startMemoryPolling(intervalMs = 30000) {
+  doRefresh();
+  if (!eventUnsub) eventUnsub = subscribeEvents(onMemoryEvent);
   if (pollHandle) clearInterval(pollHandle);
   // Same visibility guard as task polling — memory changes rarely while
   // the tab is in the background; refresh on focus instead of every
   // interval tick.
   pollHandle = setInterval(() => {
     if (typeof document !== 'undefined' && document.hidden) return;
-    void refreshMemories();
+    // SSE live → events drive updates; the timer is just a slow safety net.
+    if (eventStreamConnected.value && Date.now() - lastRefreshAt < FALLBACK_REFRESH_MS) return;
+    doRefresh();
   }, intervalMs);
   if (typeof document !== 'undefined') {
     if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
     visibilityHandler = () => {
-      if (!document.hidden) void refreshMemories();
+      if (!document.hidden) doRefresh();
     };
     document.addEventListener('visibilitychange', visibilityHandler);
   }
@@ -139,6 +171,14 @@ export function startMemoryPolling(intervalMs = 30000) {
 export function stopMemoryPolling() {
   if (pollHandle) clearInterval(pollHandle);
   pollHandle = null;
+  if (eventUnsub) {
+    eventUnsub();
+    eventUnsub = null;
+  }
+  if (eventRefreshTimer != null) {
+    clearTimeout(eventRefreshTimer);
+    eventRefreshTimer = null;
+  }
   if (visibilityHandler && typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', visibilityHandler);
     visibilityHandler = null;
