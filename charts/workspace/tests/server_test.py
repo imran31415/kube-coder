@@ -478,6 +478,34 @@ class WebhookManagerTests(unittest.TestCase):
         self.assertFalse(
             server.WebhookManager.verify_signature(cfg, b'body', None))
 
+    def test_verify_signature_fails_closed_without_secret(self):
+        # A secret-less webhook is unauthenticated → must reject (issue #99).
+        cfg = {'id': 'open1', 'prompt_template': 'x', 'provider': 'generic'}
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('KC_ALLOW_UNSIGNED_WEBHOOKS', None)
+            self.assertFalse(
+                server.WebhookManager.verify_signature(cfg, b'body', 'anything'))
+
+    def test_verify_signature_open_mode_opt_in(self):
+        cfg = {'id': 'open1', 'prompt_template': 'x', 'provider': 'generic'}
+        with mock.patch.dict(os.environ, {'KC_ALLOW_UNSIGNED_WEBHOOKS': '1'}, clear=False):
+            self.assertTrue(
+                server.WebhookManager.verify_signature(cfg, b'body', 'anything'))
+
+    def test_allow_unsigned_env_parsing(self):
+        for val, expect in (('1', True), ('true', True), ('YES', True),
+                            ('on', True), ('0', False), ('', False), ('no', False)):
+            with mock.patch.dict(os.environ, {'KC_ALLOW_UNSIGNED_WEBHOOKS': val}, clear=False):
+                self.assertEqual(server.WebhookManager._allow_unsigned(), expect, val)
+
+    def test_public_view_flags_unsigned(self):
+        signed, _ = server.WebhookManager.create_or_update({
+            'id': 'signed', 'prompt_template': 'x', 'hmac_secret': 's',
+        })
+        self.assertFalse(server.WebhookManager._public_view(signed)['unsigned'])
+        secretless = {'id': 'open', 'prompt_template': 'x'}
+        self.assertTrue(server.WebhookManager._public_view(secretless)['unsigned'])
+
     def test_render_prompt_attach_mode_does_not_interpolate(self):
         """Safe-default attach mode must NOT substitute payload data into the
         instruction line — that would let inbound senders drive Claude."""
