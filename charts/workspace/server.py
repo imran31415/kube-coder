@@ -761,7 +761,36 @@ class ClaudeTaskManager:
             'assistant': meta.get('assistant'),
             'parent_task_id': meta.get('parent_task_id'),
         })
+        # Record this child on its parent so the Subagents tab / list-by-parent
+        # reflect API-created lineage (not just MCP-orchestrator-spawned ones).
+        ClaudeTaskManager._append_sub_task_id(parent_task_id, task_id)
         return meta
+
+    @staticmethod
+    def _append_sub_task_id(parent_task_id, child_task_id):
+        """Append a child task id to its parent's sub_task_ids (best-effort).
+
+        Mirrors mcp_agent_orchestrator._append_sub_task_id but uses the meta
+        file lock (_atomic_update_meta) so concurrent creates can't clobber the
+        list. No-op if there's no parent or the parent task is gone (issue #111).
+        """
+        if not parent_task_id:
+            return
+        parent_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, parent_task_id)
+        if not os.path.isfile(os.path.join(parent_dir, 'task.json')):
+            return
+
+        def mutate(m):
+            subs = m.get('sub_task_ids') or []
+            if child_task_id not in subs:
+                subs.append(child_task_id)
+                m['sub_task_ids'] = subs
+
+        try:
+            ClaudeTaskManager._atomic_update_meta(parent_dir, mutate)
+        except Exception as e:
+            print(f'[ClaudeTaskManager] sub_task_id append failed: {e}',
+                  file=sys.stderr)
 
     @staticmethod
     def create_terminal_task(workdir=None):
@@ -3681,6 +3710,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         source = data.get('source') or None
         disable_memory_injection = bool(data.get('disable_memory_injection'))
         assistant = data.get('assistant') or None
+        parent_task_id = data.get('parent_task_id') or None
         if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
             self.send_json({'error': 'response_url must be http(s)'}, 400)
             return
@@ -3692,6 +3722,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             source=source,
             disable_memory_injection=disable_memory_injection,
             assistant=assistant,
+            parent_task_id=parent_task_id,
         )
         self.send_json(task, 201)
 
