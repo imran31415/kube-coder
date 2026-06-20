@@ -1552,6 +1552,10 @@ class WebhookManager:
             if view.get(k):
                 view[k + '_set'] = True
                 view.pop(k)
+        # Flag a secret-less webhook so the UI can warn: it's unauthenticated
+        # and will reject POSTs (fail-closed) unless KC_ALLOW_UNSIGNED_WEBHOOKS
+        # is set. See verify_signature / issue #99.
+        view['unsigned'] = not cfg.get('hmac_secret')
         return view
 
     @staticmethod
@@ -1640,6 +1644,14 @@ class WebhookManager:
             return False
 
     @staticmethod
+    def _allow_unsigned():
+        """Opt-in escape hatch for secret-less ('open') webhooks. Off by
+        default so production fails closed; intended only for local/testing."""
+        return os.environ.get('KC_ALLOW_UNSIGNED_WEBHOOKS', '').strip().lower() in (
+            '1', 'true', 'yes', 'on',
+        )
+
+    @staticmethod
     def verify_signature(cfg, raw_body, headers):
         """Provider-aware signature verification.
 
@@ -1651,13 +1663,24 @@ class WebhookManager:
             Kept as a backwards-compat path for the original generic-HMAC tests
             and for callers that already extracted the one header they need.
 
-        If the webhook has no ``hmac_secret`` configured, returns True (open
-        mode — only intended for dev/testing; create() auto-mints one to
-        discourage this in production).
+        If the webhook has no ``hmac_secret`` configured it is unauthenticated,
+        so this **fails closed** (returns False) — a secret-less webhook would
+        let anonymous POSTs spawn an AI assistant with tool access. create()
+        auto-mints a secret, so this only bites hand-written / migrated configs
+        or a cleared secret. Set KC_ALLOW_UNSIGNED_WEBHOOKS=1 to opt back into
+        open mode for local/testing (issue #99).
         """
         secret = cfg.get('hmac_secret')
         if not secret:
-            return True
+            if WebhookManager._allow_unsigned():
+                return True
+            print(
+                f"[webhook] rejecting unsigned POST to webhook "
+                f"'{cfg.get('id', '?')}' — no hmac_secret configured "
+                f"(set one, or KC_ALLOW_UNSIGNED_WEBHOOKS=1 to allow)",
+                file=sys.stderr,
+            )
+            return False
 
         provider = cfg.get('provider', 'generic')
 
