@@ -18,7 +18,7 @@ metadata:
   labels:
     app: oauth2-proxy-{{ .Values.user.name }}
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: oauth2-proxy-{{ .Values.user.name }}
@@ -27,6 +27,15 @@ spec:
       labels:
         app: oauth2-proxy-{{ .Values.user.name }}
     spec:
+      # Spread the two proxy replicas across nodes so a node drain doesn't lock
+      # this user out. Soft so single-node clusters still schedule both.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: oauth2-proxy-{{ .Values.user.name }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -153,4 +162,19 @@ spec:
             name: oauth2-proxy-{{ .Values.user.name }}
             port:
               number: 4180
+---
+# A per-user oauth2-proxy outage locks this user out of their workspace, so
+# keep at least one replica through voluntary disruptions.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: oauth2-proxy-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: oauth2-proxy-{{ .Values.user.name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy-{{ .Values.user.name }}
 {{- end }}
