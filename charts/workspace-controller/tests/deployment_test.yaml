@@ -16,12 +16,28 @@ tests:
           path: metadata.namespace
           value: test
 
-  - it: should ship a single replica
+  - it: should run two replicas for HA
     template: templates/deployment.yaml
     asserts:
       - equal:
           path: spec.replicas
+          value: 2
+
+  - it: should spread replicas across nodes
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].maxSkew
           value: 1
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels.app
+          value: workspace-controller
 
   - it: should bind to the SA so kubectl has cluster credentials
     template: templates/deployment.yaml

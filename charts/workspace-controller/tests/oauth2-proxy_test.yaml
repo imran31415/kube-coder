@@ -1,0 +1,41 @@
+suite: workspace-controller oauth2-proxy HA
+templates:
+  - templates/oauth2-proxy.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should run two proxy replicas spread across nodes
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels.app
+          value: workspace-controller-oauth2
+
+  - it: should keep one proxy available via a PDB
+    documentSelector:
+      path: kind
+      value: PodDisruptionBudget
+    asserts:
+      - equal:
+          path: apiVersion
+          value: policy/v1
+      - equal:
+          path: metadata.name
+          value: workspace-controller-oauth2
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: workspace-controller-oauth2

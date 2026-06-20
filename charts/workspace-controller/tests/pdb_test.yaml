@@ -1,0 +1,26 @@
+suite: workspace-controller PodDisruptionBudget
+templates:
+  - templates/pdb.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should create a PDB keeping one controller available
+    template: templates/pdb.yaml
+    asserts:
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: apiVersion
+          value: policy/v1
+      - equal:
+          path: metadata.name
+          value: workspace-controller
+      - equal:
+          path: metadata.namespace
+          value: test
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: workspace-controller
