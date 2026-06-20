@@ -256,7 +256,7 @@ Each workspace has a SQLite-backed memory store accessible via:
 - **MCP server** auto-spawned by Claude/OpenCode (read + write from inside the assistant)
 - **REST** at `/api/memory`
 
-Memory records are auto-injected into new build prompts when relevant — the server runs a similarity search over namespace+key+value tags and prepends the top matches inside a `<workspace_memories>` block.
+Claude reads memory on demand through the memory MCP tools. Optional pre-injection (`KC_MEMORY_PREINJECT=1`, off by default) prefixes a new build's prompt with the top relevant records — a similarity search over namespace+key+value+tags — inside a `<workspace_memories>` block.
 
 <!-- TODO: screenshot of Memory route with history tab open -->
 

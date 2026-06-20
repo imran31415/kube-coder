@@ -29,16 +29,15 @@ changed what, when, from the Memory tab's **History** view.
 
 Two paths:
 
-1. **Auto-inject.** Every time you send a prompt to Claude, the
-   `UserPromptSubmit` hook runs `memory_top_for_prompt`, scores
-   entries against your prompt text, and prepends the top hits to the
-   conversation as a `<workspace_memories>` block. Cheap and silent —
-   you'll see it in Claude's first message back if you ask "what do
-   you know about me?".
-2. **Explicit lookup.** Claude has `memory_recall`, `memory_search`,
-   `memory_neighbors`, `memory_list` MCP tools. When you ask
-   "remember when I told you…", Claude calls `memory_search` rather
-   than guessing.
+1. **On-demand lookup (default).** Claude has `memory_recall`,
+   `memory_search`, `memory_neighbors`, `memory_list` MCP tools. When you
+   ask "remember when I told you…", Claude calls `memory_search` rather
+   than guessing. This is how memory works out of the box.
+2. **Optional pre-injection.** With `KC_MEMORY_PREINJECT=1`, a new build's
+   prompt is prefixed with the top-K relevant memories as a
+   `<workspace_memories>` block. It's **off by default** — and the older
+   per-prompt `UserPromptSubmit` hook that injected on *every* prompt is
+   disabled (kept out of `settings.json` on boot).
 
 The auto-inject is gated by importance, recency, and a token budget —
 big memory stores don't flood the prompt.
