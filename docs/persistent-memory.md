@@ -71,6 +71,29 @@ seeder only manages the keys above and leaves your additions alone.
 
 Migrations run idempotently on every server boot.
 
+### Enabling semantic (vector) search
+
+By default search is FTS5 keyword-only. To turn on Phase-2 hybrid
+vector search, set an embedding provider + API key. Supply the key via a
+**gitignored per-user overlay** (e.g. `secrets/<user>/memory.yaml`) — never
+a public values file:
+
+```yaml
+memory:
+  embeddings:
+    provider: voyage          # none | voyage | openai
+    model: voyage-3           # optional; blank → provider default
+    apiKey: "pa-xxxxxxxx"      # Voyage/OpenAI key
+    # baseUrl: http://proxy/v1  # openai-compatible endpoint (optional)
+    # existingSecretName: ...   # or reference a pre-made Secret (key: embedding-api-key)
+```
+
+The chart stores the key in Secret `memory-secrets-<user>` and injects it
+into the pod as `VOYAGE_API_KEY` / `OPENAI_API_KEY` (the same Secret-backed
+pattern as the assistant keys — never plaintext in the pod spec). A
+background worker then embeds memories and search fuses FTS + vector hits.
+With `provider: none` (the default) nothing changes — FTS5 only.
+
 ### Memory kinds
 
 | Kind | Use for | Retention |
