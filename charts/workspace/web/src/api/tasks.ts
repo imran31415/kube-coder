@@ -60,12 +60,23 @@ export function idleLabel(t: TaskSummary): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
+export interface HookDelivery {
+  state: 'delivered' | 'failed';
+  attempts: number;
+  status?: number;
+  delivered_at?: number;
+  last_error?: string;
+  last_attempt_at?: number;
+}
+
 export interface TaskDetail extends TaskSummary {
   workdir?: string;
   session_id?: string;
   tmux_session?: string;
   assistant?: string;
   recent_output?: string;
+  // Completion-hook (response_url) delivery state, when a hook was attempted.
+  hook_delivery?: HookDelivery;
   // Server occasionally adds fields we don't model; allow them.
   [key: string]: unknown;
 }

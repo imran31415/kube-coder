@@ -25,7 +25,7 @@ metadata:
   labels:
     app: workspace-controller-oauth2
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: workspace-controller-oauth2
@@ -34,6 +34,15 @@ spec:
       labels:
         app: workspace-controller-oauth2
     spec:
+      # Spread the two proxy replicas across nodes so a node drain can't lock
+      # every user out. Soft so single-node clusters still schedule both.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: workspace-controller-oauth2
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -126,3 +135,18 @@ spec:
   - port: 4180
     targetPort: 4180
     name: http
+---
+# An oauth2-proxy outage locks every user out of the controller, so keep at
+# least one replica through voluntary disruptions.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: workspace-controller-oauth2
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: workspace-controller-oauth2
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: workspace-controller-oauth2

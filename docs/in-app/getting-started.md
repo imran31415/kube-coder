@@ -67,13 +67,13 @@ across every future task.
    `neovim`.
 3. **Save.**
 
-Now in any task, ask Claude *"what editor do I prefer?"* — it'll
-answer "neovim" without you re-supplying the fact. The memory is
-auto-injected into Claude's prompt context.
+Now in any task, ask Claude *"what editor do I prefer?"* — it looks the
+fact up from memory (via its `memory_search` tool) and answers "neovim"
+without you re-supplying it.
 
-Memory you don't want auto-injected (tokens, private notes) — tag it
-`secret`. It stays readable on explicit lookup but never leaks into
-the prompt.
+Memory you tag `secret` (tokens, private notes) stays readable on
+explicit lookup but is kept out of any auto-injected `<workspace_memories>`
+block (used by opt-in pre-injection, `KC_MEMORY_PREINJECT=1`).
 
 ## Where to go next
 

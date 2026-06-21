@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "wc.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: workspace-controller
@@ -20,6 +20,16 @@ spec:
         checksum/controller: {{ include (print $.Template.BasePath "/controller-configmap.yaml") . | sha256sum }}
         checksum/controller-web: {{ include (print $.Template.BasePath "/controller-web-configmap.yaml") . | sha256sum }}
     spec:
+      # Keep the two replicas off the same node so a single node drain or
+      # failure can't take the whole control plane down. Soft constraint
+      # (ScheduleAnyway) so single-node clusters still schedule both pods.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: workspace-controller
       serviceAccountName: workspace-controller
       {{- if .Values.controller.image.pullSecretName }}
       imagePullSecrets:

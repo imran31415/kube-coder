@@ -89,6 +89,54 @@ tests:
           path: stringData["client-id"]
           value: cid
 
+  - it: per-user proxy runs two replicas spread across nodes
+    template: templates/oauth2-proxy.yaml
+    set:
+      ingress.auth.type: oauth2
+      oauth2.cookieSecret: cs
+      oauth2.clientId: cid
+      oauth2.clientSecret: csec
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels.app
+          value: oauth2-proxy-testuser
+
+  - it: per-user proxy keeps one replica available via a PDB
+    template: templates/oauth2-proxy.yaml
+    set:
+      ingress.auth.type: oauth2
+      oauth2.cookieSecret: cs
+      oauth2.clientId: cid
+      oauth2.clientSecret: csec
+    documentSelector:
+      path: kind
+      value: PodDisruptionBudget
+    asserts:
+      - equal:
+          path: apiVersion
+          value: policy/v1
+      - equal:
+          path: metadata.name
+          value: oauth2-proxy-testuser
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: oauth2-proxy-testuser
+
   - it: workspace Role does NOT grant `list` on Secrets — cross-tenant enumeration vector
     template: templates/serviceaccount.yaml
     documentIndex: 1

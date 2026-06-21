@@ -1,0 +1,14 @@
+# Guarantee at least one controller stays up during voluntary disruptions
+# (node drains, rolling updates) so the admin control plane never goes dark.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: workspace-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: workspace-controller

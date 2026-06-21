@@ -38,10 +38,10 @@ retries keep concurrent writes safe.
 |---|---|
 | `/home/dev/.claude-memory/memory.db` | The SQLite store. WAL-mode, future-proofed schema. |
 | `/home/dev/.claude-memory/mcp_memory.py` | Stdio MCP server invoked by `claude` per-session. |
-| `/home/dev/.claude-memory/memory_inject_hook.py` | `UserPromptSubmit` hook — fires on every interactive prompt and prepends a `<workspace_memories>` block. |
+| `/home/dev/.claude-memory/memory_inject_hook.py` | A `UserPromptSubmit` hook script that *can* prepend a `<workspace_memories>` block. It ships but is **not wired into `settings.json` by default** — memory is on-demand via MCP (see "How Claude reads memory" below). |
 | `/home/dev/.claude-memory/memory/` | Python package the MCP server imports (mirrors `/tmp/browser/memory/`). |
 | `~/.claude.json` | Has `mcpServers.memory` (plus `playwright`, `sequential-thinking`) registered by the entrypoint. |
-| `~/.claude/settings.json` | Has the `UserPromptSubmit` hook entry. |
+| `~/.claude/settings.json` | MCP/hook config. The legacy `UserPromptSubmit` memory-hook entry is **removed on every boot** (`seed_claude_config.py`), so by default there is no per-prompt memory hook. |
 | `/api/memory*` on port 6080 | HTTP surface used by the dashboard. |
 
 ### Default MCP servers seeded
@@ -113,23 +113,26 @@ Available tools: `memory_remember`, `memory_update`, `memory_recall`,
 `memory_search`, `memory_list`, `memory_link`, `memory_neighbors`,
 `memory_forget`, `memory_stats`.
 
-### Auto-injection (two layers)
+### How Claude reads memory
 
-The workspace makes memory feel "always on" via two complementary
-mechanisms:
+By default memory is **on-demand**: Claude pulls it through the memory
+MCP tools (`memory_search`, `memory_recall`, `memory_neighbors`,
+`memory_list`) when a prompt calls for it. There is no implicit
+per-prompt injection in the default configuration.
 
-1. **Task-creation auto-inject.** When a Claude task is created via the
-   dashboard's `New` button or `POST /api/claude/tasks`, the server
-   picks the top-K (default 8) most relevant memories for the prompt
-   and prefixes the pasted prompt with a `<workspace_memories>` block.
-2. **Per-prompt hook** (`~/.claude/settings.json` → `UserPromptSubmit`).
-   Every prompt typed into an interactive `claude` session (terminal,
-   ttyd, or otherwise) is run through `memory_inject_hook.py`, which
-   queries `/api/memory?q=<prompt>` and emits the same
-   `<workspace_memories>` block as additional context.
+Optional **task-creation pre-injection** is available but **off by
+default**. Set `KC_MEMORY_PREINJECT=1` and, when a Claude task is created
+via the dashboard's `New` button or `POST /api/claude/tasks`, the server
+picks the top-K (default 8) most relevant memories for the prompt and
+prefixes the pasted prompt with a `<workspace_memories>` block. With it
+off (the default), tasks carry `memory_injected: []`. The per-task
+"Don't inject memories" toggle force-disables it regardless.
 
-Together these cover every Claude invocation in the workspace — there
-is no path where memory is silent unless `tags` contains `secret`.
+> The legacy **per-prompt `UserPromptSubmit` hook** (`memory_inject_hook.py`)
+> that prepended a block to *every* interactive prompt is **disabled** —
+> `seed_claude_config.py` strips that entry from `~/.claude/settings.json`
+> on every boot. The script still ships for anyone who wants to wire it up
+> manually, but the supported default is on-demand MCP access.
 
 Claude treats the injected block as authoritative prior context; per
 CLAUDE.md it must call `memory_search` before saying "I don't know"
@@ -288,7 +291,7 @@ cp /home/dev/.claude-memory/backups/memory-<timestamp>.db \
 | Dashboard Memory tab shows "backend not enabled" | Server didn't initialize memory; check pod logs for `[memory]` lines | Restart server: `pkill -HUP -f "python3 server.py"` |
 | Claude never calls the memory tools | `~/.claude.json` lacks the `mcpServers.memory` entry | Re-run `python3 /browser-config/seed_claude_config.py` |
 | MCP server crashes | Bad SQLite write or import failure | Check `kubectl logs` (the MCP writes to stderr); fix DB or roll back image |
-| Auto-injection not happening | `memory_injected: []` on the task because no entries matched, or you ticked "Don't inject memories" | Type a more topical prompt, or untick the checkbox |
+| Pre-injection not happening | `memory_injected: []` because pre-injection is **off by default**, no entries matched, or you ticked "Don't inject memories" | Set `KC_MEMORY_PREINJECT=1` (then a more topical prompt / untick the checkbox); otherwise rely on Claude's on-demand MCP lookups |
 | Concurrent-write errors | Extreme parallel write load | Already retried up to 3× with backoff; if persistent, file an issue |
 
 ---
@@ -353,8 +356,8 @@ Phase 3 list.)
 ## Roadmap
 
 Shipped: SQLite + WAL, FTS5 search, history, refs, graph relations,
-dashboard graph view, MCP tools, auto-injection (FTS-ranked), claude-auto
-sync.
+dashboard graph view, MCP tools, opt-in pre-injection (FTS-ranked),
+claude-auto sync.
 
 Next: semantic recall via embeddings (Voyage AI / OpenAI — deps are
 pre-installed, value-flip in `values.yaml`), background consolidation
