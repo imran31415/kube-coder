@@ -630,6 +630,53 @@ def _tool_wait_for_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _tool_wait_for_agents(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Block until ALL listed agent tasks reach a terminal state (or timeout),
+    then return per-task status + output tail.
+
+    The fan-in barrier for the documented spawn-many → collect pattern: one
+    poll loop covers every child, so a caller doesn't serially block on each
+    (which would stall this single-threaded server). Unknown task_ids are
+    reported (status 'not-found'), not fatal.
+    """
+    task_ids = args.get('task_ids')
+    if not isinstance(task_ids, list) or not task_ids:
+        return {'isError': True, 'content': [{'type': 'text',
+                'text': 'task_ids (a non-empty array) is required'}]}
+    task_ids = [str(t) for t in task_ids]
+    poll_interval = args.get('poll_interval', 2.0)
+    timeout = args.get('timeout', 300.0)
+    tail = args.get('tail', 100)
+    deadline = time.time() + timeout
+
+    def snapshot(tid):
+        task_dir = _task_dir(tid)
+        meta = _read_meta(task_dir)
+        if meta is None:
+            return {'task_id': tid, 'status': 'not-found'}
+        _reconcile_status(meta, task_dir)
+        status = meta.get('status', 'unknown')
+        entry = {'task_id': tid, 'status': status}
+        if status not in ('running', 'waiting-for-input'):
+            entry['exit_code'] = meta.get('exit_code')
+            entry['output'] = _read_output(task_dir, tail=tail)
+        return entry
+
+    while True:
+        results = [snapshot(t) for t in task_ids]
+        pending = [r for r in results if r['status'] in ('running', 'waiting-for-input')]
+        if not pending:
+            return {'content': [{'type': 'text', 'text': json.dumps({
+                'results': results, 'count': len(results), 'all_complete': True,
+            })}]}
+        if time.time() >= deadline:
+            return {'content': [{'type': 'text', 'text': json.dumps({
+                'results': results, 'count': len(results), 'all_complete': False,
+                'timed_out': [r['task_id'] for r in pending],
+            })}]}
+        time.sleep(poll_interval)
+
+
 def _tool_kill_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     """Kill a spawned agent task."""
     task_id = args.get('task_id', '')
@@ -750,6 +797,27 @@ TOOLS: Dict[str, Any] = {
                     'tail': {'type': 'number', 'description': 'Lines of output to return', 'default': 100},
                 },
                 'required': ['task_id'],
+            },
+        },
+    },
+    'wait_for_agents': {
+        'handler': _tool_wait_for_agents,
+        'schema': {
+            'name': 'wait_for_agents',
+            'description': 'Block until ALL listed agents complete (or timeout), then '
+                           'return per-task status + output. The fan-in barrier for '
+                           'parallel fan-out → collect — one wait covers every child '
+                           'instead of N serial wait_for_agent calls.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'task_ids': {'type': 'array', 'items': {'type': 'string'},
+                                 'description': 'Task IDs from spawn_agent to wait on'},
+                    'timeout': {'type': 'number', 'description': 'Max seconds to wait', 'default': 300},
+                    'poll_interval': {'type': 'number', 'description': 'Poll frequency in seconds', 'default': 2},
+                    'tail': {'type': 'number', 'description': 'Lines of output per task', 'default': 100},
+                },
+                'required': ['task_ids'],
             },
         },
     },
