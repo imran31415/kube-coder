@@ -14,14 +14,21 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import struct
 import threading
 import time
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional, Sequence, Tuple
 
 DB_PATH = '/home/dev/.claude-memory/memory.db'
 
 SCHEMA_VERSION = 1
+
+# Width of the vec_memories FLOAT[N] column. Embedding providers must emit
+# (or reduce to) this many dimensions — see memory/embeddings.py. A provider
+# whose dim differs would have every insert rejected by vec0, so the worker
+# warns loudly at startup instead of silently poison-dropping the queue.
+VEC_DIM = 1024
 
 # sqlite-vec extension paths to try in order. The Dockerfile (v1.8.0+)
 # installs the .so at /usr/local/lib/vec0.so via a symlink; the unpacked
@@ -258,7 +265,7 @@ def _try_create_vec(conn: sqlite3.Connection) -> bool:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0("
             "  embedding_id INTEGER PRIMARY KEY,"
-            "  vec FLOAT[1024]"
+            f"  vec FLOAT[{VEC_DIM}]"
             ")"
         )
         return True
@@ -269,6 +276,77 @@ def _try_create_vec(conn: sqlite3.Connection) -> bool:
             conn.enable_load_extension(False)
         except (sqlite3.OperationalError, AttributeError):
             pass
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Vector (sqlite-vec) helpers — Phase 2 (#90)
+#
+# All best-effort: every function degrades to "vectors unavailable" when the
+# sqlite-vec extension or the vec_memories table isn't present, which is the
+# Phase-1 / no-extension state (e.g. CI, where vec0.so isn't installed).
+# ───────────────────────────────────────────────────────────────────────────
+
+def serialize_f32(vec: Sequence[float]) -> bytes:
+    """Pack a vector as the little-endian float32 blob sqlite-vec expects."""
+    return struct.pack('<%df' % len(vec), *(float(x) for x in vec))
+
+
+def ensure_vec_table(db_path: str = DB_PATH) -> bool:
+    """Create vec_memories if the extension is available. Idempotent.
+
+    Needed on an *upgraded* DB: migration 001 already ran (schema_version=1)
+    on the Phase-1 deploy without the extension, so the virtual table may be
+    absent even though the migration is marked applied. The worker calls this
+    on startup so activation needs no schema bump.
+    """
+    conn = _connect(db_path, load_vec=True)
+    try:
+        return _try_create_vec(conn)
+    finally:
+        conn.close()
+
+
+def vectors_available(conn: sqlite3.Connection) -> bool:
+    """True when vec_memories is queryable on this connection."""
+    try:
+        conn.execute('SELECT embedding_id FROM vec_memories LIMIT 0')
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def upsert_vector(conn: sqlite3.Connection, embedding_id: int,
+                  vec: Sequence[float]) -> None:
+    """Replace the stored vector for an embedding row. vec0 has no UPSERT, so
+    delete-then-insert."""
+    blob = serialize_f32(vec)
+    conn.execute('DELETE FROM vec_memories WHERE embedding_id=?', (embedding_id,))
+    conn.execute(
+        'INSERT INTO vec_memories(embedding_id, vec) VALUES (?, ?)',
+        (embedding_id, blob),
+    )
+
+
+def delete_vector(conn: sqlite3.Connection, embedding_id: int) -> None:
+    try:
+        conn.execute('DELETE FROM vec_memories WHERE embedding_id=?', (embedding_id,))
+    except sqlite3.OperationalError:
+        pass
+
+
+def knn(conn: sqlite3.Connection, vec: Sequence[float], k: int
+        ) -> List[Tuple[int, float]]:
+    """K-nearest-neighbour search. Returns [(embedding_id, distance), …]
+    nearest-first, or [] when vectors are unavailable."""
+    try:
+        rows = conn.execute(
+            'SELECT embedding_id, distance FROM vec_memories '
+            'WHERE vec MATCH ? AND k = ? ORDER BY distance',
+            (serialize_f32(vec), int(k)),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(int(r['embedding_id']), float(r['distance'])) for r in rows]
 
 
 # ───────────────────────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ import sqlite3
 import time
 from typing import Any, Dict, Iterable, List, Optional
 
+from . import store as _store
 from .store import MemoryStore, DB_PATH
 
 
@@ -141,7 +142,10 @@ class MemoryManager:
     @classmethod
     def store(cls) -> MemoryStore:
         if cls._store is None:
-            cls._store = MemoryStore(DB_PATH)
+            # load_vec is best-effort: harmless when the sqlite-vec extension
+            # is absent (Phase-1 / CI), and lets search() read vec_memories
+            # when it is present (Phase-2).
+            cls._store = MemoryStore(DB_PATH, load_vec=True)
         return cls._store
 
     # ── Writes ────────────────────────────────────────────────────────────
@@ -429,10 +433,14 @@ class MemoryManager:
         namespaces: Optional[Iterable[str]] = None,
         limit: int = 25,
     ) -> List[Dict[str, Any]]:
-        """Hybrid keyword search ranked by FTS rank + importance + recency.
+        """Hybrid keyword + semantic search.
 
-        Phase 1 is FTS5-only. Phase 2 adds vector results and fuses via
-        reciprocal-rank. The signature is stable across phases.
+        FTS5 is always run. When the sqlite-vec extension, the vec_memories
+        table, and an embedding provider are all available (Phase 2), a vector
+        KNN pass is fused with the FTS results via normalized reciprocal-rank
+        fusion (RRF). When any of those is missing the method degrades to the
+        Phase-1 FTS-only ranking with identical output — so behavior is
+        unchanged on deployments without embeddings configured.
         """
         limit = max(1, min(int(limit), 200))
         if not q or not q.strip():
@@ -469,13 +477,144 @@ class MemoryManager:
                 else:
                     raise
 
-        scored = [(cls._rerank_score(dict(r), now), dict(r)) for r in rows]
+            fts_dicts = [dict(r) for r in rows]
+            # FTS candidates, best-first (bm25: lower = better).
+            fts_ranked = sorted(fts_dicts, key=lambda r: (r.get('fts_rank') or 0.0))
+            fts_ids = [int(r['id']) for r in fts_ranked]
+
+            # Vector pass — returns memory_ids best-first, or [] when vectors
+            # are unavailable. Kept behind a seam so it can be tested without
+            # the extension and so failures never break keyword search.
+            vec_ids = cls._vector_search(c, q, namespaces, kinds, limit * 4)
+
+            # Load any vector-only hits (not already in the FTS set) while the
+            # connection is still open, honoring the same ns/kind/expiry gate.
+            by_id: Dict[int, Dict[str, Any]] = {int(r['id']): r for r in fts_dicts}
+            if vec_ids:
+                missing = [mid for mid in vec_ids if mid not in by_id]
+                for r in cls._fetch_by_ids(c, missing, namespaces, kinds, now):
+                    by_id[int(r['id'])] = r
+
+        if not vec_ids:
+            # Phase-1 path, unchanged: weighted FTS + importance + recency.
+            scored = [(cls._rerank_score(r, now), r) for r in fts_dicts]
+            scored.sort(key=lambda t: -t[0])
+            out = []
+            for score, r in scored[:limit]:
+                r['_score'] = round(score, 4)
+                out.append(_row_to_dict_from_dict(r))
+            return out
+
+        # Phase-2 path: fuse the two rank orders, then blend with a light
+        # importance/recency nudge so _score stays in the same band callers
+        # (e.g. top_for_prompt's min_score) already expect.
+        rrf = _rrf_fuse(fts_ids, [m for m in vec_ids if m in by_id])
+        if rrf:
+            rrf_max = max(rrf.values())
+        else:
+            rrf_max = 1.0
+        scored = []
+        for mid, row in by_id.items():
+            rrf_norm = (rrf.get(mid, 0.0) / rrf_max) if rrf_max else 0.0
+            scored.append((cls._fused_score(row, rrf_norm, now), row))
         scored.sort(key=lambda t: -t[0])
         out = []
         for score, r in scored[:limit]:
             r['_score'] = round(score, 4)
             out.append(_row_to_dict_from_dict(r))
         return out
+
+    # ── Vector pass (Phase 2) ──────────────────────────────────────────────
+
+    # Cached embedding provider (None = feature disabled / unconfigured). The
+    # sentinel distinguishes "not yet resolved" from "resolved to disabled".
+    _provider: Any = '__unset__'
+
+    @classmethod
+    def embedding_provider(cls):
+        """Resolve and cache the configured embedding provider (or None)."""
+        if cls._provider == '__unset__':
+            try:
+                from .embeddings import get_provider
+                cls._provider = get_provider()
+            except Exception:
+                cls._provider = None
+        return cls._provider
+
+    @classmethod
+    def _vector_search(cls, c, q: str, namespaces, kinds, k: int) -> List[int]:
+        """Embed the query and KNN over vec_memories → memory_ids best-first.
+
+        Returns [] (FTS-only fallback) when the provider is unconfigured, the
+        extension/table are absent, or the embed call fails. Never raises.
+        """
+        provider = cls.embedding_provider()
+        if provider is None:
+            return []
+        if not _store.vectors_available(c):
+            return []
+        try:
+            qvec = provider.embed([q])
+        except Exception:
+            return []
+        if not qvec:
+            return []
+        hits = _store.knn(c, qvec[0], k)
+        if not hits:
+            return []
+        emb_ids = [eid for eid, _ in hits]
+        placeholders = ','.join('?' * len(emb_ids))
+        rows = c.execute(
+            f'SELECT id, memory_id FROM embeddings WHERE id IN ({placeholders})',
+            emb_ids,
+        ).fetchall()
+        eid_to_mem = {int(r['id']): int(r['memory_id']) for r in rows}
+        # Preserve KNN (distance) order.
+        seen = set()
+        ordered: List[int] = []
+        for eid, _dist in hits:
+            mid = eid_to_mem.get(eid)
+            if mid is not None and mid not in seen:
+                seen.add(mid)
+                ordered.append(mid)
+        return ordered
+
+    @staticmethod
+    def _fetch_by_ids(c, ids: List[int], namespaces, kinds, now: float
+                      ) -> List[Dict[str, Any]]:
+        """Load live memory rows by id, honoring the same ns/kind/expiry gate
+        as the FTS query so vector-only hits can't smuggle in filtered rows."""
+        if not ids:
+            return []
+        clauses = ['id IN (' + ','.join('?' * len(ids)) + ')',
+                   'deleted_at IS NULL',
+                   '(expires_at IS NULL OR expires_at > ?)']
+        params: List[Any] = [*ids, now]
+        if namespaces:
+            clauses.append('namespace IN (' + ','.join('?' * len(namespaces)) + ')')
+            params.extend(namespaces)
+        if kinds:
+            clauses.append('kind IN (' + ','.join('?' * len(kinds)) + ')')
+            params.extend(kinds)
+        rows = c.execute(
+            f"SELECT *, 0.0 AS fts_rank FROM memories WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _fused_score(row: Dict[str, Any], rrf_norm: float, now: float) -> float:
+        """Blend normalized RRF (keyword+vector agreement) with importance and
+        recency. Weights mirror _rerank_score's intent but lead with fusion."""
+        importance = float(row.get('importance') or 0.5)
+        updated_at = float(row.get('updated_at') or now)
+        age_days = max(0.0, (now - updated_at) / 86400.0)
+        recency = 1.0 / (1.0 + age_days / 14.0)
+        last_acc = row.get('last_accessed_at')
+        if last_acc:
+            acc_days = max(0.0, (now - float(last_acc)) / 86400.0)
+            recency = max(recency, 1.0 / (1.0 + acc_days / 14.0))
+        return 0.55 * rrf_norm + 0.27 * importance + 0.18 * recency
 
     @staticmethod
     def _search_like(c, q, namespaces, kinds, limit):
@@ -745,11 +884,13 @@ class MemoryManager:
             ).fetchone()[0]
             history = c.execute('SELECT COUNT(*) FROM memory_history').fetchone()[0]
             refs = c.execute('SELECT COUNT(*) FROM memory_refs').fetchone()[0]
+            vec_available = _store.vectors_available(c)
         db_size = 0
         try:
             db_size = os.path.getsize(DB_PATH)
         except OSError:
             pass
+        provider = cls.embedding_provider()
         return {
             'total': total,
             'by_kind': by_kind,
@@ -761,6 +902,15 @@ class MemoryManager:
             'ref_rows': refs,
             'db_size_bytes': db_size,
             'schema_version': 1,
+            # Phase-2 semantic-search observability (#90).
+            'vectors': {
+                'available': vec_available,
+                'provider': getattr(provider, 'name', None),
+                'model': getattr(provider, 'model', None),
+                'dim': getattr(provider, 'dim', None),
+                # Hybrid search is only active when both hold.
+                'active': bool(vec_available and provider is not None),
+            },
         }
 
 
@@ -820,3 +970,20 @@ def _row_to_dict_from_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     if 'tags' in out and isinstance(out['tags'], str):
         out['tags_list'] = [t for t in (s.strip() for s in out['tags'].split(',')) if t]
     return out
+
+
+def _rrf_fuse(*rank_lists: Iterable[int], k: int = 60) -> Dict[int, float]:
+    """Reciprocal-rank fusion over one or more ranked id lists.
+
+    Each list is best-first. An id's fused score is the sum over the lists it
+    appears in of 1/(k + rank), rank being 0-based. The constant k (60 per the
+    original RRF paper) damps the influence of any single list's top slots so
+    an item ranked highly by *both* keyword and vector search outranks one that
+    only one method loved. Ids absent from a list simply contribute nothing for
+    it. Returns {id: score}; callers normalize for a comparable _score.
+    """
+    scores: Dict[int, float] = {}
+    for rank_list in rank_lists:
+        for rank, mid in enumerate(rank_list):
+            scores[mid] = scores.get(mid, 0.0) + 1.0 / (k + rank)
+    return scores
