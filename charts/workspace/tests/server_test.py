@@ -39,6 +39,19 @@ def _fake_tmux_alive(*args, **kwargs):
     return mock.Mock(returncode=0, stdout='', stderr='')
 
 
+def _new_session_shell_cmd(mock_run):
+    """Return the `bash -lc` shell string from the `tmux new-session` call.
+
+    create_task issues a `tmux list-sessions` (concurrency cap, #98) before
+    `tmux new-session`, so callers can't assume new-session is call index 0.
+    """
+    for c in mock_run.call_args_list:
+        argv = c.args[0] if c.args else []
+        if len(argv) >= 2 and argv[0] == 'tmux' and argv[1] == 'new-session':
+            return argv[-1]
+    raise AssertionError('no tmux new-session call was made')
+
+
 def _fake_tmux_dead(*args, **kwargs):
     """subprocess.run stub: pretend the tmux session is gone (has-session
     returns 1) but other tmux operations succeed."""
@@ -348,11 +361,10 @@ class AssistantSelectionTests(unittest.TestCase):
             'hello', assistant='opencode-openrouter',
         )
         self.assertEqual(task['assistant'], 'opencode-openrouter')
-        # The very first subprocess.run call is the tmux new-session that
-        # carries the shell command we care about.
-        first_call = mock_run.call_args_list[0]
-        tmux_argv = first_call.args[0]
-        shell_cmd = tmux_argv[-1]  # last positional arg is the bash -lc string
+        # The tmux new-session call carries the shell command we care about.
+        # (create_task first calls `tmux list-sessions` for the concurrency
+        # cap — issue #98 — so it's no longer call_args_list[0].)
+        shell_cmd = _new_session_shell_cmd(mock_run)
         self.assertIn('opencode --model openrouter/', shell_cmd)
 
     @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
@@ -363,8 +375,7 @@ class AssistantSelectionTests(unittest.TestCase):
             'hello', assistant='opencode-openrouter',
         )
         self.assertEqual(task['assistant'], 'claude')
-        first_call = mock_run.call_args_list[0]
-        shell_cmd = first_call.args[0][-1]
+        shell_cmd = _new_session_shell_cmd(mock_run)
         self.assertIn('&& claude', shell_cmd)
 
 

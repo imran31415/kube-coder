@@ -599,10 +599,47 @@ class ClaudeTaskManager:
             return 'python3 /tmp/browser/harness.py'
         return 'claude'
 
+    # Soft ceiling on concurrently-live tasks created through this manager
+    # (dashboard / desktop / webhook / cron). Protects a small 2-3 CPU pod from
+    # a webhook/cron storm — or a buggy POST loop — spawning unbounded tmux
+    # sessions. The MCP orchestrator enforces its own KC_MAX_SUBAGENTS cap for
+    # spawned sub-agents; this is the HTTP-create equivalent (issue #98).
+    MAX_TASKS = int(os.environ.get('KC_MAX_TASKS', '12'))
+
+    @staticmethod
+    def count_live_tasks():
+        """Count live tmux sessions for dashboard tasks (kube-coder-*)."""
+        r = subprocess.run(
+            ['tmux', 'list-sessions', '-F', '#{session_name}'],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            return 0
+        return sum(1 for n in r.stdout.splitlines() if n.startswith('kube-coder-'))
+
+    @staticmethod
+    def at_capacity():
+        """(at_cap, live, max) — whether the live-task ceiling is reached."""
+        live = ClaudeTaskManager.count_live_tasks()
+        return live >= ClaudeTaskManager.MAX_TASKS, live, ClaudeTaskManager.MAX_TASKS
+
+    @staticmethod
+    def _capacity_rejection():
+        _, live, cap = ClaudeTaskManager.at_capacity()
+        return {
+            'status': 'rejected',
+            'task_id': None,
+            'error': f'concurrent task limit reached ({live}/{cap}); '
+                     'wait for a task to finish or raise KC_MAX_TASKS',
+        }
+
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
                     source=None, disable_memory_injection=False, assistant=None,
                     parent_task_id=None):
+        at_cap, _, _ = ClaudeTaskManager.at_capacity()
+        if at_cap:
+            return ClaudeTaskManager._capacity_rejection()
         ClaudeTaskManager.ensure_tasks_dir()
         assistant = ClaudeTaskManager.resolve_assistant(assistant)
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
@@ -773,6 +810,9 @@ class ClaudeTaskManager:
         list that can be re-attached later, even if the original browser tab
         is closed.
         """
+        at_cap, _, _ = ClaudeTaskManager.at_capacity()
+        if at_cap:
+            return ClaudeTaskManager._capacity_rejection()
         ClaudeTaskManager.ensure_tasks_dir()
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
         session_id = str(uuid.uuid4())
@@ -3793,6 +3833,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             disable_memory_injection=disable_memory_injection,
             assistant=assistant,
         )
+        if task.get('status') == 'rejected':
+            self.send_json({'error': task.get('error')}, 429)
+            return
         self.send_json(task, 201)
 
     def handle_claude_redeliver_hook(self):
@@ -3823,6 +3866,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             pass
         task = ClaudeTaskManager.create_terminal_task(workdir=workdir)
+        if task.get('status') == 'rejected':
+            self.send_json({'error': task.get('error')}, 429)
+            return
         # Pre-arm the ttyd entry script so the next /oauth/terminal/ load
         # attaches to this session instead of dropping to a fresh bash.
         if task.get('status') != 'error':
@@ -4114,6 +4160,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 source=f'desktop:{item_id}',
                 assistant=action.get('assistant'),
             )
+            if task.get('status') == 'rejected':
+                self.send_json({'error': task.get('error')}, 429)
+                return
             if task.get('status') == 'error':
                 self.send_json({'error': task.get('error') or 'task spawn failed'}, 500)
                 return
@@ -4260,6 +4309,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_secret=cfg.get('response_secret'),
             source=f"webhook:{cfg['id']}",
         )
+        if task.get('status') == 'rejected':
+            self.send_json({
+                'error': task.get('error'),
+                'webhook_id': cfg['id'],
+            }, 429)
+            return
         # Propagate task-creation failures (tmux unreachable, fs error) so
         # the upstream sees a 5xx and can retry, rather than a 202 with a
         # task_id that never runs.
@@ -4412,6 +4467,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_secret=cfg.get('response_secret'),
             source=f"cron:{cfg['id']}",
         )
+        if task.get('status') == 'rejected':
+            self.send_json({'error': task.get('error'), 'cron_id': cfg['id']}, 429)
+            return
         EventBroker.publish('trigger.fired', {
             'trigger_type': 'cron',
             'trigger_id': cfg['id'],
