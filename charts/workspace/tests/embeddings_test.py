@@ -103,6 +103,15 @@ class OpenAIEmbedTests(unittest.TestCase):
     def setUp(self):
         self.provider = emb.OpenAIProvider('key', 'text-embedding-3-small', 1024)
 
+    @staticmethod
+    def _fake_httpx(post):
+        # Inject a stand-in `httpx` so the provider's lazy `import httpx`
+        # resolves to it — httpx isn't installed in the CI test runner (it
+        # ships in the image), so these tests must not require the real module.
+        module = types.ModuleType('httpx')
+        module.post = post
+        return module
+
     def test_empty_input_short_circuits(self):
         self.assertEqual(self.provider.embed([]), [])
 
@@ -114,8 +123,8 @@ class OpenAIEmbedTests(unittest.TestCase):
             {'index': 1, 'embedding': [0.3, 0.4]},
             {'index': 0, 'embedding': [0.1, 0.2]},
         ]}
-        import httpx
-        with mock.patch.object(httpx, 'post', return_value=resp) as post:
+        post = mock.Mock(return_value=resp)
+        with mock.patch.dict(sys.modules, {'httpx': self._fake_httpx(post)}):
             out = self.provider.embed(['a', 'b'])
         self.assertEqual(out, [[0.1, 0.2], [0.3, 0.4]])
         body = post.call_args.kwargs['json']
@@ -127,14 +136,14 @@ class OpenAIEmbedTests(unittest.TestCase):
         resp = mock.Mock()
         resp.raise_for_status.return_value = None
         resp.json.return_value = {'data': [{'index': 0, 'embedding': [1.0]}]}
-        import httpx
-        with mock.patch.object(httpx, 'post', return_value=resp) as post:
+        post = mock.Mock(return_value=resp)
+        with mock.patch.dict(sys.modules, {'httpx': self._fake_httpx(post)}):
             p.embed(['x'])
         self.assertTrue(post.call_args.args[0].startswith('http://proxy/v1/embeddings'))
 
     def test_wraps_http_errors(self):
-        import httpx
-        with mock.patch.object(httpx, 'post', side_effect=RuntimeError('net')):
+        post = mock.Mock(side_effect=RuntimeError('net'))
+        with mock.patch.dict(sys.modules, {'httpx': self._fake_httpx(post)}):
             with self.assertRaises(emb.EmbeddingError):
                 self.provider.embed(['a'])
 
