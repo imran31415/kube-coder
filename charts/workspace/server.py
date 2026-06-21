@@ -18,6 +18,7 @@ import queue
 import uuid
 import urllib.parse
 import urllib.request
+import urllib.error
 import http.client
 import fcntl
 
@@ -1198,24 +1199,16 @@ class ClaudeTaskManager:
                 return False
         return True
 
+    # Bounded retries for completion-hook delivery (issue #97).
+    HOOK_MAX_ATTEMPTS = int(os.environ.get('KC_HOOK_MAX_ATTEMPTS', '4'))
+
     @staticmethod
-    def _fire_completion_hook(meta):
-        """POST the task's terminal state to meta['response_url'] in a daemon thread.
-
-        Idempotent: callers set meta['hook_fired_at'] under the meta lock before
-        invoking this, so duplicate transitions (e.g. concurrent reconciles) don't
-        re-send. If response_secret is set, the body is signed with HMAC-SHA256
-        and the digest goes in X-Kube-Coder-Signature-256: sha256=<hex>.
-
-        Network failures are logged and swallowed — the task itself is unaffected.
-        Retries are intentionally not implemented here; if callers need at-least-once
-        delivery they should layer their own queue on top.
-        """
+    def _build_hook_request(meta):
+        """Build (url, body_bytes, headers) for the completion hook, or
+        (None, None, None) when the URL is missing/unsafe."""
         url = meta.get('response_url')
         if not ClaudeTaskManager._is_safe_response_url(url):
-            if url:
-                print(f'[completion-hook] task={meta.get("task_id")} skipped: unsafe URL scheme', file=sys.stderr)
-            return
+            return None, None, None
         try:
             tail_output = ClaudeTaskManager.get_task_output(meta.get('task_id', ''), tail=200) or ''
         except Exception:
@@ -1239,18 +1232,102 @@ class ClaudeTaskManager:
         if secret:
             sig = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
             headers['X-Kube-Coder-Signature-256'] = f'sha256={sig}'
+        return url, body, headers
 
-        task_id = meta.get('task_id', '?')
+    @staticmethod
+    def _record_hook_delivery(task_id, delivery):
+        """Persist completion-hook delivery state on the task meta (best-effort)."""
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        if not os.path.isfile(os.path.join(task_dir, 'task.json')):
+            return
+        try:
+            ClaudeTaskManager._atomic_update_meta(
+                task_dir, lambda m: m.__setitem__('hook_delivery', delivery))
+        except Exception:
+            pass
 
-        def _send():
+    @staticmethod
+    def _deliver_hook(task_id, url, body, headers, max_attempts=None):
+        """POST with bounded exponential-backoff retry; record delivery state.
+
+        On success persists hook_delivery={state:'delivered',...}; on exhaustion
+        persists {state:'failed', last_error,...} (the dead-letter the redeliver
+        endpoint re-attempts). A permanent 4xx (except 429) is not retried.
+        Runs in a daemon thread; never raises.
+        """
+        attempts = max_attempts or ClaudeTaskManager.HOOK_MAX_ATTEMPTS
+        last_err = ''
+        for attempt in range(1, attempts + 1):
             try:
                 req = urllib.request.Request(url, data=body, headers=headers, method='POST')
                 with urllib.request.urlopen(req, timeout=10) as resp:
-                    print(f'[completion-hook] task={task_id} -> {url} ({resp.status})')
+                    status = getattr(resp, 'status', 200)
+                ClaudeTaskManager._record_hook_delivery(task_id, {
+                    'state': 'delivered', 'attempts': attempt,
+                    'status': status, 'delivered_at': time.time(),
+                })
+                print(f'[completion-hook] task={task_id} -> {url} ({status}) attempt {attempt}')
+                return
+            except urllib.error.HTTPError as e:
+                last_err = f'HTTP {e.code}'
+                if 400 <= e.code < 500 and e.code != 429:
+                    break  # permanent client error — don't waste attempts
             except Exception as e:
-                print(f'[completion-hook] task={task_id} -> {url} FAILED: {e}', file=sys.stderr)
+                last_err = f'{type(e).__name__}: {e}'
+            if attempt < attempts:
+                time.sleep(min(30.0, 0.5 * (2 ** (attempt - 1))))
+        ClaudeTaskManager._record_hook_delivery(task_id, {
+            'state': 'failed', 'attempts': attempts,
+            'last_error': last_err, 'last_attempt_at': time.time(),
+        })
+        print(f'[completion-hook] task={task_id} -> {url} FAILED after {attempts}: {last_err}',
+              file=sys.stderr)
 
-        threading.Thread(target=_send, daemon=True).start()
+    @staticmethod
+    def _fire_completion_hook(meta):
+        """Deliver the task's terminal state to meta['response_url'] with
+        bounded retries, from a daemon thread.
+
+        Idempotent: callers set meta['hook_fired_at'] under the meta lock before
+        invoking this, so duplicate transitions (e.g. concurrent reconciles)
+        don't re-send. Delivery is retried with backoff and dead-lettered on
+        exhaustion (see _deliver_hook / redeliver_hook). HMAC signing via
+        response_secret is unchanged.
+        """
+        url, body, headers = ClaudeTaskManager._build_hook_request(meta)
+        if url is None:
+            if meta.get('response_url'):
+                print(f'[completion-hook] task={meta.get("task_id")} skipped: '
+                      'unsafe URL scheme', file=sys.stderr)
+            return
+        threading.Thread(
+            target=ClaudeTaskManager._deliver_hook,
+            args=(meta.get('task_id', '?'), url, body, headers),
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def redeliver_hook(task_id):
+        """Re-attempt a task's completion hook (used by the redeliver endpoint).
+        Returns (ok: bool, message: str)."""
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            return False, 'task not found'
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return False, 'task metadata unreadable'
+        url, body, headers = ClaudeTaskManager._build_hook_request(meta)
+        if url is None:
+            return False, 'task has no (valid) response_url'
+        threading.Thread(
+            target=ClaudeTaskManager._deliver_hook,
+            args=(task_id, url, body, headers),
+            daemon=True,
+        ).start()
+        return True, 'redelivery started'
 
     @staticmethod
     def _reconcile_status(meta, task_dir):
@@ -3718,6 +3795,21 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         )
         self.send_json(task, 201)
 
+    def handle_claude_redeliver_hook(self):
+        """POST /api/claude/tasks/{id}/redeliver-hook — re-attempt a failed
+        completion hook (issue #97). Auth + readonly gated."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._readonly_block():
+            return
+        ok, msg = ClaudeTaskManager.redeliver_hook(self._claude_task_id)
+        if not ok:
+            code = 404 if msg == 'task not found' else 400
+            self.send_json({'error': msg}, code)
+            return
+        self.send_json({'task_id': self._claude_task_id, 'status': msg}, 202)
+
     def handle_claude_create_terminal_task(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -5790,6 +5882,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_rename_task()
+                    return
+                # /api/claude/tasks/{id}/redeliver-hook
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/redeliver-hook$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_redeliver_hook()
                     return
                 # /api/claude/tasks/{id}/prepare-terminal
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/prepare-terminal$', path)

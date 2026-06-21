@@ -300,6 +300,23 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
                 <dd>{t.memory_injected!.map((m) => `${m.namespace}.${m.key}`).join(', ')}</dd>
               </>
             )}
+            {t.hook_delivery && (
+              <>
+                <dt title="Delivery status of the completion hook POSTed to response_url">Hook delivery</dt>
+                <dd>
+                  {t.hook_delivery.state === 'delivered' ? (
+                    <span class="ok">delivered (attempt {t.hook_delivery.attempts})</span>
+                  ) : (
+                    <span class="danger">
+                      failed after {t.hook_delivery.attempts} attempt
+                      {t.hook_delivery.attempts === 1 ? '' : 's'}
+                      {t.hook_delivery.last_error ? ` — ${t.hook_delivery.last_error}` : ''}.
+                      {' '}Retry via <span class="mono">POST /api/claude/tasks/{taskId}/redeliver-hook</span>.
+                    </span>
+                  )}
+                </dd>
+              </>
+            )}
           </dl>
         )}
         {tab === 'subagents' && (
