@@ -77,7 +77,7 @@ Migrations run idempotently on every server boot.
 |---|---|---|
 | `preference` | Stable user prefs ("I prefer Go") | Never decayed |
 | `semantic`   | Facts ("project foo uses postgres") | Decays slowly when unused (Phase 3) |
-| `procedural` | How-tos ("to deploy run `make deploy-imran`") | Decays slowly |
+| `procedural` | How-tos ("to deploy run `make deploy USER=<name>`") | Decays slowly |
 | `episodic`   | Events ("deployed v1.8.0 on 2026-05-10") | TTL-able; consolidated into semantic (Phase 3) |
 
 ---

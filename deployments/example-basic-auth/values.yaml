@@ -1,0 +1,52 @@
+# Example workspace values — HTTP basic-auth variant.
+#
+# Same as example-user but with ingress.auth.type: basic instead of oauth2,
+# for setups that don't want a GitHub OAuth app. This is a tracked, sanitized
+# example — for a real workspace prefer `scripts/new-user.sh <name>`, which
+# scaffolds a gitignored copy under users-private/<name>/. Do not commit real
+# configs.
+namespace: coder
+
+user:
+  name: example-basic-auth
+  pvcSize: 50Gi
+  host: example-basic-auth.dev.scalebase.io
+  env:
+    - name: GIT_USER_NAME
+      value: "Your Name"
+    - name: GIT_USER_EMAIL
+      value: "you@example.com"
+
+image:
+  repository: registry.digitalocean.com/resourceloop/coder
+  tag: devlaptop-v1.0.0
+  pullPolicy: Always
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  auth:
+    type: basic
+    secretName: example-basic-auth-htpasswd
+  tls:
+    enabled: true
+    secretName: example-basic-auth-dev-scalebase-io-tls
+    clusterIssuer: letsencrypt-production
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 6Gi
+
+build:
+  mode: buildkit
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
+
+ssh:
+  enabled: false
+  port: 22
