@@ -65,8 +65,14 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 
 # code-server (VS Code in the browser, MIT-licensed)
 # https://github.com/coder/code-server
+# Pinned for reproducible builds. Bumped 4.123.0 -> 4.125.0 to ship patched
+# vendored deps Trivy flagged: ws 8.20.1 -> 8.21.0 (CVE-2026-48779, HIGH) and
+# js-yaml 4.1.1 -> 4.2.0 (CVE-2026-53550). Note: the deps bundled under
+# lib/vscode/ (undici, ws, tar) track the upstream VS Code build code-server
+# vendors and only move when code-server rebases onto a newer VS Code.
+ARG CODE_SERVER_VERSION=4.125.0
 RUN ARCH=$(dpkg --print-architecture) \
-  && curl -fsSL "https://github.com/coder/code-server/releases/download/v4.123.0/code-server_4.123.0_${ARCH}.deb" -o /tmp/cs.deb \
+  && curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_${ARCH}.deb" -o /tmp/cs.deb \
   && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
 
 # Claude Code CLI (terminal assistant). Bring your own API key (or Bedrock/Vertex).
