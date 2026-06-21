@@ -117,6 +117,31 @@ spec:
         - name: KC_FALLBACK_PROVIDER_NAME
           value: {{ .Values.assistant.fallback.providerName | quote }}
         {{- end }}
+        {{- /* Phase-2 semantic-memory embeddings (#90). Only emitted when a
+               provider is configured; the key is referenced from a Secret. */}}
+        {{- if ne (.Values.memory.embeddings.provider | default "none") "none" }}
+        - name: KC_EMBED_PROVIDER
+          value: {{ .Values.memory.embeddings.provider | quote }}
+        {{- with .Values.memory.embeddings.model }}
+        - name: KC_EMBED_MODEL
+          value: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.memory.embeddings.dim }}
+        - name: KC_EMBED_DIM
+          value: {{ . | quote }}
+        {{- end }}
+        {{- if or .Values.memory.embeddings.apiKey .Values.memory.embeddings.existingSecretName }}
+        - name: {{ if eq .Values.memory.embeddings.provider "openai" }}OPENAI_API_KEY{{ else }}VOYAGE_API_KEY{{ end }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.memory.embeddings.existingSecretName | default (printf "memory-secrets-%s" .Values.user.name) }}
+              key: embedding-api-key
+        {{- end }}
+        {{- with .Values.memory.embeddings.baseUrl }}
+        - name: KC_OPENAI_BASE_URL
+          value: {{ . | quote }}
+        {{- end }}
+        {{- end }}
         {{- if .Values.github.app.appId }}
         - name: GITHUB_APP_ID
           valueFrom:

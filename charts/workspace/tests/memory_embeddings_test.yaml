@@ -1,0 +1,107 @@
+suite: memory embeddings config wiring (#90)
+values:
+  - test-values.yaml
+tests:
+  # --- deployment env ---
+  - it: emits no embedding env by default (provider none)
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_EMBED_PROVIDER
+        any: true
+
+  - it: wires voyage provider env + secret-backed key
+    template: templates/deployment.yaml
+    set:
+      memory.embeddings.provider: voyage
+      memory.embeddings.model: voyage-3
+      memory.embeddings.apiKey: pa-test
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_EMBED_PROVIDER
+            value: voyage
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_EMBED_MODEL
+            value: voyage-3
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VOYAGE_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: memory-secrets-testuser
+                key: embedding-api-key
+
+  - it: uses OPENAI_API_KEY + base url for the openai provider
+    template: templates/deployment.yaml
+    set:
+      memory.embeddings.provider: openai
+      memory.embeddings.apiKey: sk-test
+      memory.embeddings.baseUrl: http://proxy/v1
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: memory-secrets-testuser
+                key: embedding-api-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_OPENAI_BASE_URL
+            value: http://proxy/v1
+
+  - it: references an existing secret when configured
+    template: templates/deployment.yaml
+    set:
+      memory.embeddings.provider: voyage
+      memory.embeddings.existingSecretName: my-embed-secret
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VOYAGE_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: my-embed-secret
+                key: embedding-api-key
+
+  # --- the Secret template ---
+  - it: creates the memory secret when provider + apiKey are set
+    template: templates/memory-secret.yaml
+    set:
+      memory.embeddings.provider: voyage
+      memory.embeddings.apiKey: pa-test
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: metadata.name
+          value: memory-secrets-testuser
+      - equal:
+          path: stringData["embedding-api-key"]
+          value: pa-test
+
+  - it: creates no secret when embeddings are disabled
+    template: templates/memory-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: creates no secret when pointing at an existing one
+    template: templates/memory-secret.yaml
+    set:
+      memory.embeddings.provider: voyage
+      memory.embeddings.apiKey: pa-test
+      memory.embeddings.existingSecretName: my-embed-secret
+    asserts:
+      - hasDocuments:
+          count: 0

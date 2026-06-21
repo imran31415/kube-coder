@@ -169,11 +169,22 @@ assistant:
 # exposed to the dashboard at /api/memory and to claude via the `memory` MCP server.
 # Phase 1 ships with these defaults; phases 2-3 activate by flipping flags here.
 memory:
-  # Embedding provider for semantic recall. Phase 1 is "none" (FTS5 only).
-  # Set to "voyage" once VOYAGE_API_KEY is provided via a user secret.
+  # Embedding provider for semantic recall. Default "none" = FTS5 keyword
+  # search only. Set provider + apiKey to activate Phase-2 hybrid vector
+  # search (a background worker embeds memories; search fuses FTS + vectors).
+  # See docs/persistent-memory.md.
   embeddings:
     provider: "none"        # one of: none | voyage | openai
-    model: ""               # leave blank -> provider default (voyage-3-lite)
+    model: ""               # blank -> provider default (voyage-3 / text-embedding-3-small)
+    dim: ""                 # output dim; blank -> 1024 (matches vec_memories FLOAT[1024])
+    # Provider API key. Supply via a gitignored per-user overlay
+    # (e.g. secrets/<user>/memory.yaml) — never a public values file. The
+    # chart writes it into Secret memory-secrets-<user> and injects it as
+    # VOYAGE_API_KEY / OPENAI_API_KEY. Or point existingSecretName at a
+    # pre-made Secret with key `embedding-api-key`.
+    apiKey: ""
+    existingSecretName: ""
+    baseUrl: ""             # openai-compatible endpoint (self-hosted / proxy)
   # Auto-injection: prefix new task prompts with the top-K relevant memories.
   inject:
     enabled: true
