@@ -1,14 +1,20 @@
+# Example workspace values — OAuth2 auth variant.
+#
+# This is a tracked, sanitized example. To stand up a real workspace, prefer
+# `scripts/new-user.sh <name>` which scaffolds a gitignored copy under
+# users-private/<name>/ with a freshly generated cookieSecret. Real configs
+# must NOT be committed — keep them under users-private/ (gitignored).
 namespace: coder
 
 user:
-  name: imran
+  name: example-user
   pvcSize: 50Gi
-  host: imran.dev.scalebase.io
+  host: example-user.dev.scalebase.io
   env:
     - name: GIT_USER_NAME
-      value: "Imran Ali"
+      value: "Your Name"
     - name: GIT_USER_EMAIL
-      value: "imran@scalebase.io"
+      value: "you@example.com"
 
 image:
   repository: registry.digitalocean.com/resourceloop/coder
@@ -23,21 +29,22 @@ ingress:
     secretName: api-basic-auth
   tls:
     enabled: true
-    secretName: imran-dev-scalebase-io-tls
+    secretName: example-user-dev-scalebase-io-tls
     clusterIssuer: letsencrypt-production
 
 # OAuth2 configuration - To enable OAuth2: set ingress.auth.type to 'oauth2'
-# Actual secrets should be provided via separate secrets file (e.g., secrets/imran/oauth2.yaml)
+# Actual secrets should be provided via a separate gitignored secrets file
+# (e.g. users-private/<name>/secrets/oauth2.yaml).
 oauth2:
   # GitHub user authorization - comma-separated list of GitHub usernames
-  githubUsers: "imran31415"  # Authorized GitHub usernames
+  githubUsers: "your-github-username"  # Authorized GitHub usernames
   # Optional: Restrict to specific GitHub org/team instead of individual users
   # githubOrg: "your-github-org"
   # githubTeam: "your-github-org:your-team"
-  
-  # These will be overridden by secrets file (gitignored)
+
+  # These will be overridden by the secrets file (gitignored)
   cookieSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
-  clientId: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE" 
+  clientId: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
   clientSecret: "PLACEHOLDER-OVERRIDE-WITH-SECRETS-FILE"
 
 resources:
@@ -59,14 +66,14 @@ ssh:
   port: 22
 
 # Claude Code authentication:
-#   Option A (subscription): Leave apiKey empty, run `make shell-imran && claude` once to OAuth login.
-#   Option B (API credits): Set via: helm upgrade ... -f secrets/imran/claude.yaml
+#   Option A (subscription): Leave apiKey empty, run `make shell USER=<name> && claude` once to OAuth login.
+#   Option B (API credits): Set via a gitignored secrets file, e.g. users-private/<name>/secrets/claude.yaml
 # API key takes precedence over OAuth when set.
 claude:
   apiKey: ""
 
 # GitHub App authentication:
-#   Set via: helm upgrade ... -f secrets/imran/github-app.yaml
+#   Set via a gitignored secrets file, e.g. users-private/<name>/secrets/github-app.yaml
 github:
   app:
     appId: ""           # Set via secrets file

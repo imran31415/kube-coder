@@ -52,12 +52,12 @@ This is how Claude Code itself authenticates with Anthropic (separate from the T
 
 1. Deploy without setting `claude.apiKey` (the default):
    ```bash
-   make deploy-imran
+   make deploy USER=<name>
    ```
 
 2. Shell into the pod and run Claude to trigger the OAuth flow:
    ```bash
-   make shell-imran
+   make shell USER=<name>
    claude
    ```
 
@@ -89,7 +89,7 @@ This is how Claude Code itself authenticates with Anthropic (separate from the T
 
 3. Deploy (secrets files are included automatically if they exist):
    ```bash
-   make deploy-imran
+   make deploy USER=<name>
    ```
 
 **Trade-offs:**
@@ -126,7 +126,7 @@ Workspace pods can authenticate with GitHub using a GitHub App, enabling automat
 
 3. Deploy (secrets files are included automatically if they exist):
    ```bash
-   make deploy-imran
+   make deploy USER=<name>
    ```
 
 The token refresh daemon runs as a background process in the pod. New shells (including tmux sessions) automatically pick up the token via `.bashrc` hooks.

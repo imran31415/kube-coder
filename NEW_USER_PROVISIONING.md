@@ -20,9 +20,9 @@ make test     USER=chase    # node/yarn/gh/code-server sanity check
 make rollback USER=chase    # helm rollback
 ```
 
-`deploy-imran` / `deploy-gerard` / etc. still exist as legacy aliases —
-the generic `make deploy USER=<name>` is the preferred path for any new
-workspace.
+Use the generic `make deploy USER=<name>` for every workspace. Tracked,
+sanitized examples live in `deployments/example-user/` (OAuth2) and
+`deployments/example-basic-auth/` (HTTP basic auth).
 
 ## Private workspaces (recommended for personal use)
 

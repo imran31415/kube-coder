@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-imran deploy-gerard deploy-all clean help status logs-imran logs-gerard shell-imran shell-gerard version test-imran test-gerard test-all rollback-imran rollback-gerard deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
 
 # =============================================================================
 # Generic per-user helpers
@@ -100,21 +100,12 @@ deploy-base: ## Deploy base infrastructure
 		--install \
 		--wait
 
-deploy-imran: ## Deploy Imran's workspace (delegates to generic target so all secrets/*.yaml are picked up)
-	@$(MAKE) --no-print-directory deploy USER=imran
-
-deploy-gerard: ## Deploy Gerard's workspace (delegates to generic target so all secrets/*.yaml are picked up)
-	@$(MAKE) --no-print-directory deploy USER=gerard
-
-deploy-all: deploy-base deploy-imran deploy-gerard ## Deploy all components
-
-rollback-imran: ## Rollback Imran's workspace
-	@echo "Rolling back Imran's workspace..."
-	helm rollback imran-workspace --namespace $(NAMESPACE)
-
-rollback-gerard: ## Rollback Gerard's workspace
-	@echo "Rolling back Gerard's workspace..."
-	helm rollback gerard-workspace --namespace $(NAMESPACE)
+# Per-user workspaces use the generic targets (USER=<name>):
+#   make deploy/logs/shell/test/rollback USER=<name>
+# Tracked example values live in deployments/example-user/ (oauth2) and
+# deployments/example-basic-auth/ (basic auth). Real configs belong under
+# users-private/<name>/ (gitignored) — scaffold with `make new-user USER=<name>`.
+deploy-all: deploy-base ## Deploy base infrastructure (per-user: make deploy USER=<name>)
 
 # =============================================================================
 # Monitoring
@@ -139,39 +130,8 @@ version: ## Show current versions and config
 	@echo "  Namespace: $(NAMESPACE)"
 	@echo "  Full tag:  $(IMAGE)"
 
-logs-imran: ## Show logs from Imran's workspace
-	kubectl logs -f -n $(NAMESPACE) deployment/ws-imran -c ide
-
-logs-gerard: ## Show logs from Gerard's workspace
-	kubectl logs -f -n $(NAMESPACE) deployment/ws-gerard -c ide
-
-test-imran: ## Test Imran's workspace
-	@echo "Testing Imran's workspace..."
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- node --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- yarn --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- gh --version | head -1
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- code-server --version | head -1
-	@kubectl exec -n $(NAMESPACE) deployment/ws-imran -c ide -- ante --version | head -1
-
-test-gerard: ## Test Gerard's workspace
-	@echo "Testing Gerard's workspace..."
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- node --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- yarn --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- gh --version | head -1
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- code-server --version | head -1
-	@kubectl exec -n $(NAMESPACE) deployment/ws-gerard -c ide -- ante --version | head -1
-
-test-all: test-imran test-gerard ## Test all workspaces
-
-# =============================================================================
-# Shell Access
-# =============================================================================
-
-shell-imran: ## Shell into Imran's workspace
-	kubectl exec -it -n $(NAMESPACE) deployment/ws-imran -c ide -- /bin/bash
-
-shell-gerard: ## Shell into Gerard's workspace
-	kubectl exec -it -n $(NAMESPACE) deployment/ws-gerard -c ide -- /bin/bash
+# Per-user logs / test / shell are the generic targets:
+#   make logs USER=<name>   make test USER=<name>   make shell USER=<name>
 
 # =============================================================================
 # Generic per-user targets (USER=<name>)
