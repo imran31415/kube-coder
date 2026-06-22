@@ -141,7 +141,7 @@ server automatically. Trigger phrases the model is taught to handle:
 
 Available tools: `memory_remember`, `memory_update`, `memory_recall`,
 `memory_search`, `memory_list`, `memory_link`, `memory_neighbors`,
-`memory_forget`, `memory_stats`.
+`memory_unlink`, `memory_forget`, `memory_stats`.
 
 ### How Claude reads memory
 
@@ -216,7 +216,28 @@ Full endpoint table:
 | POST   | `/api/memory/{ns}/{key}/relations`         | Link two memories |
 | DELETE | `/api/memory/{ns}/{key}/relations/{id}`    | Remove relation |
 | GET    | `/api/memory/stats`                        | Counts + DB size |
+| GET    | `/api/memory/export`                       | JSON dump of live memories + relations (backup/portability) |
+| POST   | `/api/memory/_import`                      | Load an export. Body `{memories,relations,mode?:'merge'\|'skip'}` |
+| POST   | `/api/memory/_purge`                       | Hard-delete soft-deleted rows + VACUUM. Body `{older_than_days?}` |
 | POST   | `/api/memory/_consolidate`                 | Phase 3 — currently a stub |
+
+All mutating endpoints (POST/DELETE) are refused with `403 readonly` when
+`READONLY_MODE=true` (the public demo deploy).
+
+### Lifecycle ops (#107)
+
+Soft-delete only tombstones a row (kept in history). To reclaim space,
+`POST /api/memory/_purge` hard-deletes tombstoned rows — child rows
+(history, refs, embeddings, relations, vectors) cascade — then `VACUUM`s and
+reports `bytes_reclaimed`. Pass `{"older_than_days": 30}` to keep recent
+tombstones. An **optional periodic sweep** runs this automatically when
+`KC_MEMORY_GC_DAYS` is set (>0); it's off by default and runs every
+`KC_MEMORY_GC_INTERVAL_H` hours (default 12).
+
+`GET /api/memory/export` → `POST /api/memory/_import` round-trips a corpus
+faithfully (memories + graph relations, the latter keyed by `(namespace,key)`
+so they remap into a fresh DB) — useful for backup or moving memories between
+workspaces.
 
 ---
 
@@ -387,9 +408,10 @@ Phase 3 list.)
 
 Shipped: SQLite + WAL, FTS5 search, history, refs, graph relations,
 dashboard graph view, MCP tools, opt-in pre-injection, claude-auto sync,
-and Phase-2 semantic recall — background embedding worker + hybrid
-FTS+vector (RRF) ranking, activated by setting an embedding provider.
+Phase-2 semantic recall (background embedding worker + hybrid FTS+vector
+RRF ranking), and lifecycle ops — GC/VACUUM purge, `memory_unlink`, and
+JSON export/import (#107).
 
-Next: background consolidation (dedupe + decay), GC/VACUUM + queue prune
-(#107), nightly backups, encryption-at-rest for `secret`-tagged entries,
-export/import.
+Next: background consolidation (dedupe + decay), nightly backups,
+encryption-at-rest for `secret`-tagged entries, dashboard UI for
+unlink/export/import.

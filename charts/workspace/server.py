@@ -3295,6 +3295,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/memory/stats':
             self.handle_memory_stats()
             return
+        if claude_path == '/api/memory/export':
+            self.handle_memory_export()
+            return
         m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/history$', claude_path)
         if m:
             self.handle_memory_history(m.group(1), m.group(2))
@@ -4778,19 +4781,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         if self._memory_unavailable():
             return
-        # Direct SQL: the manager doesn't expose unlink yet because Phase 1
-        # MCP tool surface doesn't need it. Dashboard only.
         try:
-            with MemoryManager.store().tx() as c:
-                cur = c.execute(
-                    'DELETE FROM relations WHERE id=? AND src_id IN ('
-                    '  SELECT id FROM memories WHERE namespace=? AND key=?'
-                    ')',
-                    (relation_id, namespace, key),
-                )
-                deleted = cur.rowcount
+            deleted = MemoryManager.unlink_by_id(
+                relation_id=relation_id, namespace=namespace, key=key)
         except Exception as e:
             self._memory_error(e); return
+        if deleted:
+            EventBroker.publish('memory.changed', {
+                'op': 'unlink', 'namespace': namespace, 'key': key,
+            })
         self.send_json({'deleted': deleted}, 200 if deleted else 404)
 
     def handle_memory_consolidate(self):
@@ -4805,6 +4804,70 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'status': 'queued',
             'detail': 'consolidation worker activates in Phase 3',
         }, 202)
+
+    def handle_memory_export(self):
+        """GET /api/memory/export — JSON dump of live memories + relations,
+        suitable for backup or moving a corpus between workspaces (#107)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            payload = MemoryManager.export_json()
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json(payload)
+
+    def handle_memory_import(self):
+        """POST /api/memory/_import — load a corpus produced by export. Body:
+        {memories:[...], relations:[...], mode?:'merge'|'skip'}. Mutating, so
+        the do_POST readonly chokepoint already gates it (#107)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not isinstance(data, dict):
+            self.send_json({'error': 'body must be an object'}, 400)
+            return
+        try:
+            res = MemoryManager.import_json(
+                data, mode=data.get('mode', 'merge'),
+                source=self._memory_actor())
+        except Exception as e:
+            self._memory_error(e); return
+        EventBroker.publish('memory.changed', {'op': 'import'})
+        self.send_json({'status': 'ok', 'result': res})
+
+    def handle_memory_purge(self):
+        """POST /api/memory/_purge — hard-delete soft-deleted memories and
+        VACUUM. Body: {older_than_days?: number}. Mutating; readonly-gated by
+        the do_POST chokepoint (#107)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        older = None
+        try:
+            data = self.read_json_body()  # {} when body is empty
+            if isinstance(data, dict) and data.get('older_than_days') is not None:
+                older = float(data['older_than_days'])
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        try:
+            res = MemoryManager.purge_deleted(older_than_days=older)
+        except Exception as e:
+            self._memory_error(e); return
+        EventBroker.publish('memory.changed', {'op': 'purge'})
+        self.send_json({'status': 'ok', 'result': res})
 
     # ── Subagents (spawned child tasks) ──────────────────────────
     # Lists real spawned sub-tasks filtered by parent_task_id.
@@ -5961,6 +6024,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_memory_consolidate()
             elif path == "/api/memory/_sync_claude":
                 self.handle_memory_sync_claude()
+            elif path == "/api/memory/_import":
+                self.handle_memory_import()
+            elif path == "/api/memory/_purge":
+                self.handle_memory_purge()
             # File upload (raw body; X-Dest-Path + X-Filename headers)
             elif path == "/api/files/upload":
                 self.handle_file_upload()
@@ -6653,6 +6720,38 @@ if __name__ == "__main__":
                       '(no provider or sqlite-vec unavailable)')
         except Exception as e:
             print(f'[memory] embedding worker start failed: {e}', file=sys.stderr)
+
+        # Optional periodic GC (#107): hard-purge soft-deleted memories older
+        # than KC_MEMORY_GC_DAYS and VACUUM, so tombstones don't accumulate
+        # unbounded. Off by default (var unset/<=0); manual purge is always
+        # available via POST /api/memory/_purge.
+        try:
+            _gc_days = float(os.environ.get('KC_MEMORY_GC_DAYS', '0') or '0')
+        except (TypeError, ValueError):
+            _gc_days = 0.0
+        if _gc_days > 0:
+            try:
+                _gc_interval_h = float(os.environ.get('KC_MEMORY_GC_INTERVAL_H', '12') or '12')
+            except (TypeError, ValueError):
+                _gc_interval_h = 12.0
+
+            def _gc_loop(days, interval_s):
+                while True:
+                    try:
+                        res = MemoryManager.purge_deleted(older_than_days=days)
+                        if res.get('purged_memories'):
+                            print(f"[memory] gc purged {res['purged_memories']} "
+                                  f"reclaimed {res['bytes_reclaimed']}B")
+                    except Exception as e:
+                        print(f'[memory] gc pass failed: {e}', file=sys.stderr)
+                    time.sleep(interval_s)
+
+            t = threading.Thread(
+                target=_gc_loop, args=(_gc_days, _gc_interval_h * 3600),
+                name='memory-gc', daemon=True)
+            t.start()
+            print(f'[memory] periodic GC started '
+                  f'(>{_gc_days}d every {_gc_interval_h}h)')
 
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless
