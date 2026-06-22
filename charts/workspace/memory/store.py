@@ -22,7 +22,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 DB_PATH = '/home/dev/.claude-memory/memory.db'
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Width of the vec_memories FLOAT[N] column. Embedding providers must emit
 # (or reduce to) this many dimensions — see memory/embeddings.py. A provider
@@ -111,6 +111,37 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "INSERT INTO _meta(key, value) VALUES('schema_version', '1')"
             " ON CONFLICT(key) DO UPDATE SET value=excluded.value"
         )
+
+    if current < 2:
+        _migration_002(conn)
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES('schema_version', '2')"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+
+
+def _migration_002(conn: sqlite3.Connection) -> None:
+    """Guard the FTS delete trigger on live rows only (#107).
+
+    The original memories_fts_delete trigger removed the FTS entry for every
+    deleted row. But the update trigger already removes a row's FTS entry the
+    moment it's soft-deleted (deleted_at set), so hard-deleting that row later
+    (Phase-2 GC / MemoryManager.purge_deleted) double-deleted from the
+    external-content FTS5 index and raised "database disk image is malformed".
+    Re-create the trigger with `WHEN old.deleted_at IS NULL` so it only fires
+    for rows still present in the index (FTS only ever holds live rows).
+    Idempotent: safe to re-run on an already-migrated DB.
+    """
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS memories_fts_delete;
+        CREATE TRIGGER memories_fts_delete
+        AFTER DELETE ON memories
+        WHEN old.deleted_at IS NULL
+        BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, namespace, key, value, tags)
+            VALUES ('delete', old.id, old.namespace, old.key, old.value, old.tags);
+        END;
+    """)
 
 
 def _migration_001(conn: sqlite3.Connection) -> None:

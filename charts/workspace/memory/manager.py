@@ -767,6 +767,56 @@ class MemoryManager:
         return dict(row)
 
     @classmethod
+    def unlink(
+        cls,
+        *,
+        src_namespace: str,
+        src_key: str,
+        dst_namespace: str,
+        dst_key: str,
+        kind: Optional[str] = None,
+    ) -> int:
+        """Delete relation(s) between two memories. Returns the count removed.
+
+        `kind=None` removes every edge from src→dst; a specific kind removes
+        only that edge. Matching is by (namespace, key) so it works the way
+        callers think about memories (the MCP tool can't know numeric ids).
+        """
+        _validate_ns_key(src_namespace, src_key)
+        _validate_ns_key(dst_namespace, dst_key)
+        if kind is not None:
+            _require(bool(_RELATION_KIND_RE.match(kind)),
+                     'relation kind must match [a-zA-Z0-9._:-]{1,64}')
+        sql = (
+            'DELETE FROM relations WHERE '
+            '  src_id IN (SELECT id FROM memories WHERE namespace=? AND key=?) '
+            '  AND dst_id IN (SELECT id FROM memories WHERE namespace=? AND key=?)'
+        )
+        params: List[Any] = [src_namespace, src_key, dst_namespace, dst_key]
+        if kind is not None:
+            sql += ' AND kind=?'
+            params.append(kind)
+        with cls.store().tx() as c:
+            cur = c.execute(sql, params)
+            return cur.rowcount
+
+    @classmethod
+    def unlink_by_id(cls, *, relation_id: int, namespace: str, key: str) -> int:
+        """Delete a single relation by id, scoped to its src memory (so a
+        relation can only be removed via the memory that owns it). Returns the
+        count removed (0 if not found). Used by the dashboard, which lists
+        relations with their numeric ids."""
+        _validate_ns_key(namespace, key)
+        with cls.store().tx() as c:
+            cur = c.execute(
+                'DELETE FROM relations WHERE id=? AND src_id IN ('
+                '  SELECT id FROM memories WHERE namespace=? AND key=?'
+                ')',
+                (int(relation_id), namespace, key),
+            )
+            return cur.rowcount
+
+    @classmethod
     def neighbors(
         cls,
         *,
@@ -901,7 +951,7 @@ class MemoryManager:
             'history_rows': history,
             'ref_rows': refs,
             'db_size_bytes': db_size,
-            'schema_version': 1,
+            'schema_version': _store.SCHEMA_VERSION,
             # Phase-2 semantic-search observability (#90).
             'vectors': {
                 'available': vec_available,
@@ -911,6 +961,189 @@ class MemoryManager:
                 # Hybrid search is only active when both hold.
                 'active': bool(vec_available and provider is not None),
             },
+        }
+
+    # ── Lifecycle ops (#107): GC / export / import ────────────────────────
+
+    # Bound an import so a malformed/huge payload can't blow up the process.
+    MAX_IMPORT_MEMORIES = 100_000
+
+    @classmethod
+    def purge_deleted(cls, *, older_than_days: Optional[float] = None,
+                      vacuum: bool = True) -> Dict[str, Any]:
+        """Hard-delete soft-deleted memories and reclaim space.
+
+        Without GC the store only grows: `soft_delete` tombstones rows
+        forever. This permanently removes rows whose `deleted_at` is set (and,
+        if `older_than_days` is given, older than that cutoff). Child rows
+        (history, refs, embeddings, relations, pending) cascade via the
+        schema's ON DELETE CASCADE; the vec_memories virtual table has no FK
+        so its rows are deleted explicitly first. Orphaned `embeddings_pending`
+        rows are also pruned. A `VACUUM` then returns freed pages to the OS.
+
+        Returns counts + bytes reclaimed. Idempotent: a second call with
+        nothing to purge is a cheap no-op (VACUUM still runs unless skipped).
+        """
+        cutoff = None
+        if older_than_days is not None:
+            cutoff = time.time() - float(older_than_days) * 86400.0
+
+        size_before = cls._db_size()
+        del_clause = 'deleted_at IS NOT NULL'
+        params: List[Any] = []
+        if cutoff is not None:
+            del_clause += ' AND deleted_at < ?'
+            params.append(cutoff)
+
+        with cls.store().tx() as c:
+            victims = [int(r['id']) for r in c.execute(
+                f'SELECT id FROM memories WHERE {del_clause}', params).fetchall()]
+            # Drop vectors for these memories first (no FK on the vec0 table).
+            if victims:
+                emb_ids = [int(r['id']) for r in c.execute(
+                    'SELECT id FROM embeddings WHERE memory_id IN (%s)'
+                    % ','.join('?' * len(victims)), victims).fetchall()]
+                for eid in emb_ids:
+                    _store.delete_vector(c, eid)
+            purged = c.execute(
+                f'DELETE FROM memories WHERE {del_clause}', params).rowcount
+            # Belt-and-suspenders: prune any embeddings_pending row whose memory
+            # no longer exists (cascade already covers purged rows).
+            pruned_pending = c.execute(
+                'DELETE FROM embeddings_pending WHERE memory_id NOT IN '
+                '(SELECT id FROM memories)'
+            ).rowcount
+
+        if vacuum:
+            cls._vacuum()
+        size_after = cls._db_size()
+        return {
+            'purged_memories': purged,
+            'pruned_pending': pruned_pending,
+            'bytes_reclaimed': max(0, size_before - size_after),
+            'db_size_bytes': size_after,
+            'vacuumed': bool(vacuum),
+        }
+
+    @classmethod
+    def _vacuum(cls) -> None:
+        """VACUUM on a fresh autocommit connection — it cannot run inside the
+        BEGIN IMMEDIATE transaction that store().tx() opens."""
+        with cls.store().conn() as c:
+            c.execute('VACUUM')
+
+    @staticmethod
+    def _db_size() -> int:
+        try:
+            return os.path.getsize(DB_PATH)
+        except OSError:
+            return 0
+
+    @classmethod
+    def export_json(cls) -> Dict[str, Any]:
+        """Serialize the live corpus (non-deleted memories + their relations)
+        to a portable dict for backup or moving between workspaces.
+
+        Relations reference memories by (namespace, key) rather than numeric id
+        so an import can faithfully remap them into a fresh DB.
+        """
+        with cls.store().conn() as c:
+            mems = [dict(r) for r in c.execute(
+                'SELECT namespace, key, value, kind, tags, importance, '
+                '       confidence, source, expires_at '
+                'FROM memories WHERE deleted_at IS NULL '
+                'ORDER BY namespace, key'
+            ).fetchall()]
+            rels = [dict(r) for r in c.execute(
+                'SELECT s.namespace AS src_namespace, s.key AS src_key, '
+                '       d.namespace AS dst_namespace, d.key AS dst_key, '
+                '       r.kind, r.weight '
+                'FROM relations r '
+                'JOIN memories s ON s.id = r.src_id '
+                'JOIN memories d ON d.id = r.dst_id '
+                'WHERE s.deleted_at IS NULL AND d.deleted_at IS NULL '
+                'ORDER BY src_namespace, src_key'
+            ).fetchall()]
+        return {
+            'version': 1,
+            'exported_at': time.time(),
+            'memories': mems,
+            'relations': rels,
+        }
+
+    @classmethod
+    def import_json(cls, data: Dict[str, Any], *, mode: str = 'merge',
+                    source: str = 'import') -> Dict[str, Any]:
+        """Load a corpus produced by `export_json`. Round-trips faithfully.
+
+        mode='merge' (default) upserts every memory, overwriting an existing
+        (namespace, key); mode='skip' leaves existing entries untouched.
+        Relations are recreated after all memories exist (duplicates ignored).
+        Returns counts. Validation errors on individual rows are collected, not
+        fatal, so one bad row can't abort the whole import.
+        """
+        _require(isinstance(data, dict), 'import payload must be an object')
+        _require(mode in ('merge', 'skip'), "mode must be 'merge' or 'skip'")
+        mems = data.get('memories') or []
+        rels = data.get('relations') or []
+        _require(isinstance(mems, list) and isinstance(rels, list),
+                 'memories and relations must be arrays')
+        _require(len(mems) <= cls.MAX_IMPORT_MEMORIES,
+                 f'too many memories (max {cls.MAX_IMPORT_MEMORIES})')
+
+        imported = skipped = failed = 0
+        errors: List[str] = []
+        for m in mems:
+            if not isinstance(m, dict):
+                failed += 1
+                continue
+            ns, key = m.get('namespace', ''), m.get('key', '')
+            try:
+                if mode == 'skip' and cls.get(namespace=ns, key=key,
+                                              include_deleted=True) is not None:
+                    skipped += 1
+                    continue
+                cls.upsert(
+                    namespace=ns, key=key, value=m.get('value', ''),
+                    kind=m.get('kind', 'semantic'), tags=m.get('tags', '') or '',
+                    importance=float(m.get('importance', 0.5)),
+                    confidence=float(m.get('confidence', 1.0)),
+                    source=source, expires_at=m.get('expires_at'),
+                )
+                imported += 1
+            except (ValidationError, MemoryError) as e:
+                failed += 1
+                if len(errors) < 25:
+                    errors.append(f'{ns}/{key}: {e}')
+
+        rel_imported = rel_failed = 0
+        for r in rels:
+            if not isinstance(r, dict):
+                rel_failed += 1
+                continue
+            try:
+                cls.link(
+                    src_namespace=r.get('src_namespace', ''),
+                    src_key=r.get('src_key', ''),
+                    dst_namespace=r.get('dst_namespace', ''),
+                    dst_key=r.get('dst_key', ''),
+                    kind=r.get('kind', 'related-to'),
+                    weight=float(r.get('weight', 1.0)),
+                    created_by=source,
+                )
+                rel_imported += 1
+            except Conflict:
+                pass  # relation already present — idempotent
+            except (ValidationError, NotFound, MemoryError):
+                rel_failed += 1
+
+        return {
+            'imported': imported,
+            'skipped': skipped,
+            'failed': failed,
+            'relations_imported': rel_imported,
+            'relations_failed': rel_failed,
+            'errors': errors,
         }
 
 

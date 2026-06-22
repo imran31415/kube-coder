@@ -252,6 +252,28 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        'name': 'memory_unlink',
+        'description': (
+            'Remove a graph relation between two memories (the inverse of '
+            'memory_link). Omit `kind` to remove every edge from src→dst, or '
+            'pass it to remove just that one. Returns how many edges were '
+            'removed (0 if none matched).'
+        ),
+        'inputSchema': {
+            'type': 'object',
+            'required': ['src_namespace', 'src_key',
+                         'dst_namespace', 'dst_key'],
+            'properties': {
+                'src_namespace': {'type': 'string'},
+                'src_key': {'type': 'string'},
+                'dst_namespace': {'type': 'string'},
+                'dst_key': {'type': 'string'},
+                'kind': {'type': 'string', 'description':
+                    'Optional: only remove this relation kind.'},
+            },
+        },
+    },
+    {
         'name': 'memory_forget',
         'description': (
             'Soft-delete a memory. The row stays in history (auditable) but '
@@ -387,6 +409,15 @@ def _tool_neighbors(args: Dict[str, Any]) -> Dict[str, Any]:
     return {'neighbors': rows, 'count': len(rows)}
 
 
+def _tool_unlink(args: Dict[str, Any]) -> Dict[str, Any]:
+    removed = MemoryManager.unlink(
+        src_namespace=args['src_namespace'], src_key=args['src_key'],
+        dst_namespace=args['dst_namespace'], dst_key=args['dst_key'],
+        kind=args.get('kind'),
+    )
+    return {'removed': removed}
+
+
 def _tool_forget(args: Dict[str, Any]) -> Dict[str, Any]:
     row = MemoryManager.soft_delete(
         namespace=args['namespace'], key=args['key'],
@@ -407,6 +438,7 @@ _TOOL_IMPLS = {
     'memory_list':      _tool_list,
     'memory_link':      _tool_link,
     'memory_neighbors': _tool_neighbors,
+    'memory_unlink':    _tool_unlink,
     'memory_forget':    _tool_forget,
     'memory_stats':     _tool_stats,
 }
