@@ -34,10 +34,12 @@ try:
         ValidationError as MemValidationError,
     )
     from memory.sync import ClaudeMemorySyncer
+    from memory.embeddings_worker import EmbeddingWorker
     _MEMORY_AVAILABLE = True
 except Exception as _mem_import_err:  # broken install shouldn't crash the server
     MemoryManager = None  # type: ignore
     ClaudeMemorySyncer = None  # type: ignore
+    EmbeddingWorker = None  # type: ignore
     MemError = MemNotFound = MemConflict = MemValidationError = Exception  # type: ignore
     _MEMORY_AVAILABLE = False
     print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
@@ -4656,6 +4658,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 stats['claude_sync'] = ClaudeMemorySyncer.status()
             except Exception:
                 pass
+            # Surface embedding-worker status so the Memory tab can show the
+            # semantic-search backlog draining (or that it's disabled).
+            try:
+                stats['embedding_worker'] = EmbeddingWorker.status()
+            except Exception:
+                pass
             self.send_json(stats)
         except Exception as e:
             self._memory_error(e)
@@ -6628,6 +6636,23 @@ if __name__ == "__main__":
             print('[memory] claude-auto-memory syncer started (60s)')
         except Exception as e:
             print(f'[memory] syncer start failed: {e}', file=sys.stderr)
+
+        # Start the Phase-2 embedding worker: drains embeddings_pending into
+        # the vec_memories table so search() can fuse keyword + semantic hits.
+        # No-ops (returns False) when no provider is configured or the
+        # sqlite-vec extension is unavailable — Phase-1 deploys are unaffected.
+        try:
+            _embed_interval = int(os.environ.get('KC_EMBED_INTERVAL', '30'))
+        except (TypeError, ValueError):
+            _embed_interval = 30
+        try:
+            if EmbeddingWorker.start(interval_seconds=_embed_interval):
+                print(f'[memory] embedding worker started ({_embed_interval}s)')
+            else:
+                print('[memory] embedding worker disabled '
+                      '(no provider or sqlite-vec unavailable)')
+        except Exception as e:
+            print(f'[memory] embedding worker start failed: {e}', file=sys.stderr)
 
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless

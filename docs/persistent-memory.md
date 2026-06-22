@@ -66,8 +66,10 @@ seeder only manages the keys above and leaves your additions alone.
 - `memory_refs` — read/write log per memory (tasks, dashboard, crons).
 - `relations` — graph edges between memories (Phase 3 surfaces them).
 - `memories_fts` — FTS5 virtual table for keyword search.
-- `embeddings` / `vec_memories` / `embeddings_pending` — wired but
-  inactive in Phase 1 (activated when an embedding provider is set).
+- `embeddings` / `vec_memories` / `embeddings_pending` — semantic-search
+  tables. A background worker drains `embeddings_pending` into the
+  `vec_memories` vec0 table whenever an embedding provider is configured;
+  with `provider: none` they stay empty (FTS5-only).
 
 Migrations run idempotently on every server boot.
 
@@ -90,9 +92,14 @@ memory:
 
 The chart stores the key in Secret `memory-secrets-<user>` and injects it
 into the pod as `VOYAGE_API_KEY` / `OPENAI_API_KEY` (the same Secret-backed
-pattern as the assistant keys — never plaintext in the pod spec). A
-background worker then embeds memories and search fuses FTS + vector hits.
-With `provider: none` (the default) nothing changes — FTS5 only.
+pattern as the assistant keys — never plaintext in the pod spec). On boot the
+`memory-embed-worker` thread drains the `embeddings_pending` queue (every
+`KC_EMBED_INTERVAL` seconds, default 30) into `vec_memories`, and `search()`
+fuses keyword (FTS5) + semantic (vector KNN) hits via reciprocal-rank fusion.
+With `provider: none` (the default) nothing changes — FTS5 only. The
+`/api/memory/stats` response exposes `embedding_worker` (drain progress) and
+`vectors` (provider/model/active) for the dashboard. Embedding vectors must be
+1024-dim to match the `vec_memories FLOAT[1024]` column (`KC_EMBED_DIM`).
 
 ### Memory kinds
 
@@ -379,10 +386,10 @@ Phase 3 list.)
 ## Roadmap
 
 Shipped: SQLite + WAL, FTS5 search, history, refs, graph relations,
-dashboard graph view, MCP tools, opt-in pre-injection (FTS-ranked),
-claude-auto sync.
+dashboard graph view, MCP tools, opt-in pre-injection, claude-auto sync,
+and Phase-2 semantic recall — background embedding worker + hybrid
+FTS+vector (RRF) ranking, activated by setting an embedding provider.
 
-Next: semantic recall via embeddings (Voyage AI / OpenAI — deps are
-pre-installed, value-flip in `values.yaml`), background consolidation
-(dedupe + decay), nightly backups, encryption-at-rest for
-`secret`-tagged entries, export/import.
+Next: background consolidation (dedupe + decay), GC/VACUUM + queue prune
+(#107), nightly backups, encryption-at-rest for `secret`-tagged entries,
+export/import.
