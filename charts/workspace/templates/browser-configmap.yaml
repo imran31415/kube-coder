@@ -30,5 +30,9 @@ data:
 {{ .Files.Get "memory/manager.py" | indent 4 }}
   memory_sync.py: |
 {{ .Files.Get "memory/sync.py" | indent 4 }}
+  memory_embeddings.py: |
+{{ .Files.Get "memory/embeddings.py" | indent 4 }}
+  memory_embeddings_worker.py: |
+{{ .Files.Get "memory/embeddings_worker.py" | indent 4 }}
   mcp_agent_orchestrator.py: |
 {{ .Files.Get "mcp_agent_orchestrator.py" | indent 4 }}

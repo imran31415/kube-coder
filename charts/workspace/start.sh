@@ -545,6 +545,8 @@ install -m 0644 /browser-config/memory__init__.py /tmp/browser/memory/__init__.p
 install -m 0644 /browser-config/memory_store.py    /tmp/browser/memory/store.py
 install -m 0644 /browser-config/memory_manager.py  /tmp/browser/memory/manager.py
 install -m 0644 /browser-config/memory_sync.py     /tmp/browser/memory/sync.py
+install -m 0644 /browser-config/memory_embeddings.py        /tmp/browser/memory/embeddings.py
+install -m 0644 /browser-config/memory_embeddings_worker.py /tmp/browser/memory/embeddings_worker.py
 # Seed the per-user MCP server + user-prompt-submit hook next to the
 # SQLite file so claude config points at PVC-backed paths that survive
 # configmap rotations.
@@ -557,6 +559,8 @@ install -m 0644 /tmp/browser/memory/__init__.py /home/dev/.claude-memory/memory/
 install -m 0644 /tmp/browser/memory/store.py    /home/dev/.claude-memory/memory/store.py
 install -m 0644 /tmp/browser/memory/manager.py  /home/dev/.claude-memory/memory/manager.py
 install -m 0644 /tmp/browser/memory/sync.py     /home/dev/.claude-memory/memory/sync.py
+install -m 0644 /tmp/browser/memory/embeddings.py        /home/dev/.claude-memory/memory/embeddings.py
+install -m 0644 /tmp/browser/memory/embeddings_worker.py /home/dev/.claude-memory/memory/embeddings_worker.py
 # Register the MCP server in the user's claude config (idempotent merge).
 python3 /browser-config/seed_claude_config.py || \
   log_stage "WARNING: seed_claude_config.py failed (memory MCP not registered)"
