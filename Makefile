@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
 
 # =============================================================================
 # Generic per-user helpers
@@ -300,6 +300,20 @@ ship-config: require-user deploy ## Helm upgrade only — for server.py / config
 	@echo "Forcing rollout in case the configmap checksum didn't change..."
 	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
 	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+
+# Cut a release end-to-end: bump versions, build+push the matching
+# devlaptop-<VERSION> image, commit, tag, and (after a y/N confirm) push +
+# publish the GitHub release. VERSION must be passed on the command line
+# (e.g. make release VERSION=v1.3.0); the bare 'v' is optional. Optional
+# NOTES=<file> supplies release notes (otherwise GitHub auto-generates them).
+# Does NOT redeploy workspaces — see the follow-up command it prints.
+release: ## Cut a release (VERSION=x.y.z [NOTES=path]); bumps versions, builds+pushes image, tags, publishes
+	@if [ "$(origin VERSION)" != "command line" ]; then \
+	  echo "ERROR: pass VERSION=<x.y.z> on the command line (e.g. make release VERSION=v1.3.0)."; \
+	  echo "       (VERSION has a default in this Makefile, so it must be set explicitly to release.)"; \
+	  exit 1; \
+	fi
+	@./scripts/release.sh "$(VERSION)" "$(NOTES)"
 
 # =============================================================================
 # workspace-controller (charts/workspace-controller/) — admin console that
