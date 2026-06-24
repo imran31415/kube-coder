@@ -632,6 +632,155 @@ def compute_insights(window_seconds=None):
     return out
 
 
+# --- Cluster capacity rollup -------------------------------------------------
+#
+# "Are my workspaces about to hit the cluster's limits?" The denominator (node
+# allocatable) and every usage number come from Prometheus, NOT the k8s API:
+# the controller's RBAC is a namespace-scoped Role with no `nodes` read (see
+# templates/serviceaccount.yaml), and that boundary is intentional on shared
+# clusters. kube-state-metrics' `kube_node_status_allocatable` gives capacity
+# without any extra grant, and works for every kube-prometheus-stack user.
+#
+# cadvisor container series carry no `node` label, so per-node usage is a join
+# onto `kube_pod_info{namespace,pod,node}` keyed on (namespace, pod). The same
+# `avg by (...)` dedup the per-workspace queries use is applied to the node and
+# pod-info series too, so a cluster scraped by multiple Prometheis isn't double
+# counted. "cluster" usage is all scheduled workload (every namespace) so the
+# operator sees true headroom; "workspace" is just the ws-* pods. Their
+# difference is other tenants sharing the node.
+
+
+def _resource_block(allocatable, workspace, cluster):
+    """One resource's rollup: raw values + percentages of allocatable.
+
+    `other` is non-workspace usage on the same capacity (cluster minus
+    workspace), clamped at 0 so scrape-skew can't render a negative bar.
+    Percentages are None when allocatable is unknown or zero so the UI can show
+    a dash instead of dividing by nothing."""
+    def pct(v):
+        if allocatable and allocatable > 0 and v is not None:
+            return round(100 * v / allocatable, 1)
+        return None
+
+    other = max(0.0, cluster - workspace) if cluster is not None and workspace is not None else None
+    return {
+        'allocatable': allocatable,
+        'workspace': workspace,
+        'cluster': cluster,
+        'other': other,
+        'workspacePct': pct(workspace),
+        'clusterPct': pct(cluster),
+    }
+
+
+def _node_rollup(alloc_cpu, alloc_mem, alloc_pods,
+                 ws_cpu, ws_mem, tot_cpu, tot_mem, pods_ws, pods_tot):
+    """Fold per-node label->value maps into a sorted node list and the cluster
+    totals derived from them (so the cluster row always equals the sum of its
+    nodes — no separate query that could disagree). Pure: no I/O, so the whole
+    shape is unit-testable without a live Prometheus.
+
+    Allocatable defines which nodes exist; usage maps are best-effort and
+    default to 0 for a node that has no matching usage series yet (e.g. a node
+    that just joined, or one running no workspaces)."""
+    nodes = []
+    sums = {'cpu_a': 0.0, 'cpu_w': 0.0, 'cpu_c': 0.0,
+            'mem_a': 0.0, 'mem_w': 0.0, 'mem_c': 0.0,
+            'pod_a': 0, 'pod_w': 0, 'pod_c': 0}
+    have_cpu_a = have_mem_a = False
+    for name in sorted(alloc_cpu):
+        a_cpu, a_mem = alloc_cpu.get(name), alloc_mem.get(name)
+        a_pod = int(alloc_pods.get(name, 0))
+        w_cpu, w_mem = ws_cpu.get(name, 0.0), ws_mem.get(name, 0.0)
+        t_cpu, t_mem = tot_cpu.get(name, 0.0), tot_mem.get(name, 0.0)
+        p_ws, p_tot = int(pods_ws.get(name, 0)), int(pods_tot.get(name, 0))
+        nodes.append({
+            'name': name,
+            'cpu': _resource_block(a_cpu, w_cpu, t_cpu),
+            'memory': _resource_block(a_mem, w_mem, t_mem),
+            'pods': {'allocatable': a_pod or None, 'workspace': p_ws, 'cluster': p_tot},
+        })
+        if a_cpu is not None:
+            sums['cpu_a'] += a_cpu; have_cpu_a = True
+        if a_mem is not None:
+            sums['mem_a'] += a_mem; have_mem_a = True
+        sums['cpu_w'] += w_cpu; sums['cpu_c'] += t_cpu
+        sums['mem_w'] += w_mem; sums['mem_c'] += t_mem
+        sums['pod_a'] += a_pod; sums['pod_w'] += p_ws; sums['pod_c'] += p_tot
+    cluster = {
+        'nodeCount': len(nodes),
+        'cpu': _resource_block(sums['cpu_a'] if have_cpu_a else None, sums['cpu_w'], sums['cpu_c']),
+        'memory': _resource_block(sums['mem_a'] if have_mem_a else None, sums['mem_w'], sums['mem_c']),
+        'pods': {'allocatable': sums['pod_a'] or None, 'workspace': sums['pod_w'], 'cluster': sums['pod_c']},
+    }
+    return nodes, cluster
+
+
+# Bring the `node` label onto per-pod usage by joining on kube_pod_info. The
+# inner expression already reduces to one value per (namespace, pod, container);
+# group_left keeps that many-to-one (many containers per pod) valid.
+def _per_node_usage(usage_inner, pod_filter=''):
+    return (f'sum by (node) (({usage_inner}) '
+            f'* on (namespace, pod) group_left (node) '
+            f'(avg by (namespace, pod, node) (kube_pod_info{{{pod_filter}}})))')
+
+
+def cluster_capacity(range_seconds=3600, step=300):
+    """Cluster/node capacity rollup: per-node allocatable vs workspace vs total
+    usage, the cluster totals, and cluster-level history so spikes are visible.
+
+    Prometheus failures land in `metricsError` (like workspace_metrics) so a
+    transient outage degrades the panel rather than 500-ing the request."""
+    ns = NAMESPACE
+    out = {
+        'generatedAt': int(time.time()),
+        'namespace': ns,
+        'cluster': None,
+        'nodes': [],
+        'history': {
+            'rangeSeconds': range_seconds, 'step': step,
+            'cpu': {'allocatable': [], 'workspace': [], 'cluster': []},
+            'memory': {'allocatable': [], 'workspace': [], 'cluster': []},
+        },
+        'metricsError': None,
+    }
+
+    ws_sel = f'namespace="{ns}",pod=~"ws-.*"'
+    ws_cpu_inner = f'avg by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{{{ws_sel},container!=""}}[5m]))'
+    ws_mem_inner = f'avg by (namespace, pod, container) (container_memory_working_set_bytes{{{ws_sel},container!=""}})'
+    all_cpu_inner = 'avg by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))'
+    all_mem_inner = 'avg by (namespace, pod, container) (container_memory_working_set_bytes{container!="",pod!=""})'
+    alloc_cpu_total = 'sum(avg by (node) (kube_node_status_allocatable{resource="cpu"}))'
+    alloc_mem_total = 'sum(avg by (node) (kube_node_status_allocatable{resource="memory"}))'
+
+    def node_map(expr):
+        return {lbl.get('node', ''): val for lbl, val in prom_instant_multi(expr) if lbl.get('node')}
+
+    try:
+        nodes, cluster = _node_rollup(
+            node_map('avg by (node) (kube_node_status_allocatable{resource="cpu"})'),
+            node_map('avg by (node) (kube_node_status_allocatable{resource="memory"})'),
+            node_map('avg by (node) (kube_node_status_allocatable{resource="pods"})'),
+            node_map(_per_node_usage(ws_cpu_inner, ws_sel)),
+            node_map(_per_node_usage(ws_mem_inner, ws_sel)),
+            node_map(_per_node_usage(all_cpu_inner)),
+            node_map(_per_node_usage(all_mem_inner)),
+            node_map(f'count by (node) (kube_pod_info{{{ws_sel}}})'),
+            node_map('count by (node) (kube_pod_info)'),
+        )
+        out['nodes'] = nodes
+        out['cluster'] = cluster
+        out['history']['cpu']['allocatable'] = prom_range(alloc_cpu_total, range_seconds, step)
+        out['history']['cpu']['workspace'] = prom_range(f'sum({ws_cpu_inner})', range_seconds, step)
+        out['history']['cpu']['cluster'] = prom_range(f'sum({all_cpu_inner})', range_seconds, step)
+        out['history']['memory']['allocatable'] = prom_range(alloc_mem_total, range_seconds, step)
+        out['history']['memory']['workspace'] = prom_range(f'sum({ws_mem_inner})', range_seconds, step)
+        out['history']['memory']['cluster'] = prom_range(f'sum({all_mem_inner})', range_seconds, step)
+    except PromError as exc:
+        out['metricsError'] = str(exc)
+    return out
+
+
 # --- HTTP handler ------------------------------------------------------------
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -735,6 +884,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except KubectlError as exc:
                 sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
+            return
+        if path == '/api/capacity':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            try:
+                rng = int(q.get('range', ['3600'])[0])
+            except ValueError:
+                rng = 3600
+            rng = max(300, min(rng, 2592000))   # 5 min .. 30 days, mirrors /metrics
+            step = max(15, rng // 150)           # ~150 points at any range
+            # Prometheus-only (no kubectl): any backend outage is captured in
+            # the payload's metricsError, so this always returns 200.
+            self.send_json(cluster_capacity(rng, step))
             return
         m = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/metrics$', path)
         if m:

@@ -218,7 +218,7 @@ test-coverage: ## Run tests with terminal coverage summary
 coverage: ## Run all tests with comprehensive coverage reports and HTML output
 	@./scripts/coverage-report.sh
 
-test-all-units: dashboard-web-test python-tests ## Run SPA (Vitest) + server.py (unittest) tests
+test-all-units: dashboard-web-test python-tests controller-web-test controller-python-tests ## Run dashboard SPA + server.py + controller SPA + controller.py tests
 
 # Full end-to-end deploy: image + chart + rolled pod.
 # Two delivery paths feed a pod and we need BOTH for any change:
@@ -288,7 +288,7 @@ ship-config: require-user deploy ## Helm upgrade only — for server.py / config
 # Put these in users-private/_controller/values.yaml (gitignored); any
 # users-private/_controller/secrets/*.yaml are merged in too.
 # =============================================================================
-.PHONY: controller-web controller-web-install deploy-controller ship-controller-config controller-dev require-controller
+.PHONY: controller-web controller-web-install controller-web-test controller-python-tests controller-tests deploy-controller ship-controller-config controller-dev require-controller
 
 WC_DIR := charts/workspace-controller
 WC_WEB_DIR := $(WC_DIR)/web
@@ -297,6 +297,14 @@ controller_secret_flags = $(foreach f,$(wildcard $(CONTROLLER_DIR)/secrets/*.yam
 
 controller-web-install: ## Install controller SPA deps (yarn, node 20)
 	cd $(WC_WEB_DIR) && yarn install
+
+controller-web-test: controller-web-install ## Run controller SPA unit tests (Vitest)
+	cd $(WC_WEB_DIR) && yarn test --reporter=verbose
+
+controller-python-tests: ## Run controller.py unit tests (stdlib unittest, no cluster)
+	cd $(WC_DIR) && python3 -m unittest discover -s tests -p '*_test.py' -v
+
+controller-tests: controller-web-test controller-python-tests ## Run both controller test suites
 
 # vite-plugin-singlefile emits one self-contained index.html; copy it into the
 # chart (web-dist/) where Helm's .Files.Get can read it for the ConfigMap. The
