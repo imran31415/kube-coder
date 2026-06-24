@@ -37,13 +37,12 @@ USER_DIR="$USERS_PRIVATE/$NAME"
 VALUES_OUT="$USER_DIR/values.yaml"
 OAUTH_OUT="$USER_DIR/secrets/oauth2.yaml"
 
-# Image tag for new workspaces. We deliberately default to the shared
-# "rolling latest" tag rather than the Makefile's build VERSION: every
-# workspace pins devlaptop-v1.0.0, which is periodically rebuilt from main
-# (`make ship USER=demo`), so a redeploy/roll picks up the latest code with
-# no per-user tag bumps. Override IMAGE_TAG in the environment if a workspace
-# needs to be pinned to a specific build.
-IMAGE_TAG="${IMAGE_TAG:-v1.0.0}"
+# Image tag for new workspaces. Defaults to the current release image
+# (devlaptop-v<release>), kept in lockstep with the Makefile VERSION and the
+# GitHub release. Each release builds a matching immutable devlaptop-v<X.Y.Z>
+# image; new workspaces pin it so they run the released code. Override
+# IMAGE_TAG in the environment to pin a workspace to a different build.
+IMAGE_TAG="${IMAGE_TAG:-v1.2.0}"
 
 mkdir -p "$USER_DIR/secrets"
 
