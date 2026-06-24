@@ -801,6 +801,37 @@ class MemoryManager:
             return cur.rowcount
 
     @classmethod
+    def relations(cls, *, namespace: str, key: str, limit: int = 200
+                  ) -> List[Dict[str, Any]]:
+        """List the relations touching a memory, with their ids so the UI can
+        unlink them. Each row gives the relation id, kind, weight, direction
+        ('out' = this memory is the src, 'in' = it's the dst), and the other
+        endpoint's (namespace, key). Only 'out' relations are removable via
+        unlink_by_id (it is scoped to the src), which the dashboard reflects.
+        """
+        _validate_ns_key(namespace, key)
+        limit = max(1, min(int(limit), 1000))
+        with cls.store().conn() as c:
+            row = c.execute(
+                'SELECT id FROM memories WHERE namespace=? AND key=? '
+                'AND deleted_at IS NULL', (namespace, key)).fetchone()
+            if not row:
+                return []
+            mid = row['id']
+            rows = c.execute(
+                "SELECT r.id, r.kind, r.weight, r.created_at, "
+                "       CASE WHEN r.src_id=? THEN 'out' ELSE 'in' END AS direction, "
+                "       o.namespace AS other_namespace, o.key AS other_key "
+                "FROM relations r "
+                "JOIN memories o ON o.id = "
+                "     CASE WHEN r.src_id=? THEN r.dst_id ELSE r.src_id END "
+                "WHERE (r.src_id=? OR r.dst_id=?) AND o.deleted_at IS NULL "
+                "ORDER BY direction, o.namespace, o.key LIMIT ?",
+                (mid, mid, mid, mid, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    @classmethod
     def unlink_by_id(cls, *, relation_id: int, namespace: str, key: str) -> int:
         """Delete a single relation by id, scoped to its src memory (so a
         relation can only be removed via the memory that owns it). Returns the

@@ -30,6 +30,9 @@ export type IconName =
   | 'chat'
   | 'terminal'
   | 'link'
+  | 'unlink'
+  | 'download'
+  | 'upload'
   | 'apps'
   | 'desktop';
 
@@ -168,6 +171,21 @@ const PATHS: Record<IconName, JSX.Element> = {
   link: (
     <>
       <path d="M9 11l-2 2a3 3 0 0 1-4-4l2-2M11 9l2-2a3 3 0 0 1 4 4l-2 2M7 13l6-6" />
+    </>
+  ),
+  unlink: (
+    <>
+      <path d="M8 12l-1 1a3 3 0 0 1-4-4l2-2M12 8l1-1a3 3 0 0 1 4 4l-1 1M14 3v2M17 6h-2M3 17l2-2" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M10 3v9M6 9l4 4 4-4M4 16h12" />
+    </>
+  ),
+  upload: (
+    <>
+      <path d="M10 13V4M6 8l4-4 4 4M4 16h12" />
     </>
   ),
   desktop: (

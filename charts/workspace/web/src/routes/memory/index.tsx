@@ -12,6 +12,11 @@ import {
   stopMemoryPolling,
   removeMemory,
   saveMemory,
+  unlinkRelationAndRefresh,
+  exportMemoriesToFile,
+  importMemoriesFromObject,
+  memoryExporting,
+  memoryImporting,
 } from '../../store/memory';
 import { sheetOpen, drawerOpen, type DrawerKey } from '../../store/ui';
 import { useIsMobile } from '../../hooks/useMediaQuery';
@@ -26,9 +31,12 @@ import { MutatorOnly } from '../../components/MutatorOnly';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import {
   getMemoryHistory,
-  getMemoryNeighbors,
+  getMemoryRelations,
   type MemoryRecord,
+  type MemoryRelation,
   type MemoryUpsertInput,
+  type MemoryExport,
+  type MemoryImportMode,
 } from '../../api/memory';
 import { MemoryGraph } from './MemoryGraph';
 import './memory.css';
@@ -87,11 +95,31 @@ export function MemoryRoute() {
             Facts that persist across sessions — {memories.value.length} entries, filterable by namespace and content.
           </p>
         </div>
-        <MutatorOnly>
-          <Button variant="secondary" size="sm" onClick={onNew}>
-            <Icon name="plus" size={12} /> New memory
+        <div class="mem-header-actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void exportMemoriesToFile()}
+            disabled={memoryExporting.value}
+            title="Download all memories + relations as JSON"
+          >
+            <Icon name="download" size={12} /> Export
           </Button>
-        </MutatorOnly>
+          <MutatorOnly>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => (drawerOpen.value = 'memory-import' as DrawerKey)}
+            >
+              <Icon name="upload" size={12} /> Import
+            </Button>
+          </MutatorOnly>
+          <MutatorOnly>
+            <Button variant="secondary" size="sm" onClick={onNew}>
+              <Icon name="plus" size={12} /> New memory
+            </Button>
+          </MutatorOnly>
+        </div>
       </header>
 
       <div class="mem-layout">
@@ -165,6 +193,15 @@ export function MemoryRoute() {
       >
         <MemoryDetail onEdit={onEdit} />
       </BottomSheet>
+
+      <Drawer
+        open={drawerOpen.value === ('memory-import' as DrawerKey)}
+        onClose={() => (drawerOpen.value = null)}
+        title="Import memories"
+        width={480}
+      >
+        <ImportPanel onClose={() => (drawerOpen.value = null)} />
+      </Drawer>
 
       {!isMobile ? (
         <Drawer
@@ -323,14 +360,21 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
   const m = selectedMemory.value;
   const [tab, setTab] = useState<MemTab>('value');
   const [history, setHistory] = useState<MemoryRecord[] | null>(null);
-  const [neighbors, setNeighbors] = useState<{ nodes: MemoryRecord[]; edges: { from_id: number; to_id: number; kind: string; weight: number }[] } | null>(null);
+  const [relations, setRelations] = useState<MemoryRelation[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const cacheKey = useMemo(() => (m ? `${m.namespace}/${m.key}` : ''), [m]);
 
+  function reloadRelations() {
+    if (!m) return;
+    getMemoryRelations(m.namespace, m.key)
+      .then(setRelations)
+      .catch(() => setRelations([]));
+  }
+
   useEffect(() => {
     setHistory(null);
-    setNeighbors(null);
+    setRelations(null);
     setTab('value');
   }, [cacheKey]);
 
@@ -341,12 +385,11 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
         .then((r) => setHistory(r.versions))
         .catch(() => setHistory([]));
     }
-    if (tab === 'relations' && neighbors == null) {
-      getMemoryNeighbors(m.namespace, m.key, 1)
-        .then(setNeighbors)
-        .catch(() => setNeighbors({ nodes: [], edges: [] }));
+    if (tab === 'relations' && relations == null) {
+      reloadRelations();
     }
-  }, [tab, m, history, neighbors]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, m, history, relations]);
 
   if (!m) {
     return (
@@ -406,7 +449,11 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
             class={`td-tab ${tab === id ? 'td-tab-active' : ''}`}
             onClick={() => setTab(id)}
           >
-            {id === 'value' ? 'Value' : id === 'history' ? `History${history ? ` (${history.length})` : ''}` : 'Relations'}
+            {id === 'value'
+              ? 'Value'
+              : id === 'history'
+                ? `History${history ? ` (${history.length})` : ''}`
+                : `Relations${relations ? ` (${relations.length})` : ''}`}
           </button>
         ))}
       </nav>
@@ -446,33 +493,127 @@ function MemoryDetail({ onEdit }: { onEdit: (m: MemoryRecord) => void }) {
       )}
       {tab === 'relations' && (
         <div class="md-tab-body">
-          {neighbors == null ? (
+          {relations == null ? (
             <p class="muted">Loading…</p>
-          ) : (neighbors.edges?.length ?? 0) === 0 ? (
+          ) : relations.length === 0 ? (
             <p class="muted">No relations recorded for this entry yet.</p>
           ) : (
             <ul class="md-relations">
-              {neighbors.edges!.map((e) => {
-                const outgoing = e.from_id === m.id;
-                const other = (neighbors.nodes ?? []).find((n) => n.id === (outgoing ? e.to_id : e.from_id));
-                // Show direction explicitly so the user can tell whether
-                // this memory references the other (→) or is referenced
-                // by it (←). Previously both directions rendered as →
-                // which silently misrepresented incoming edges.
-                return (
-                  <li key={`${e.from_id}-${e.to_id}-${e.kind}`}>
-                    <Pill tone="info" mono>{e.kind}</Pill>
-                    {outgoing ? ' → ' : ' ← '}
-                    <span class="mono">{other ? `${other.namespace}.${other.key}` : '?'}</span>
-                    <span class="muted mono"> · weight {e.weight.toFixed(2)}</span>
-                  </li>
-                );
-              })}
+              {relations.map((r) => (
+                <li key={r.id} class="md-relation">
+                  <span class="md-relation-edge">
+                    <Pill tone="info" mono>{r.kind}</Pill>
+                    {/* Direction: → this memory references the other; ←
+                        it is referenced by it. Only outgoing ('out') edges
+                        are removable from here (unlink is scoped to the src),
+                        so the incoming ones omit the button. */}
+                    {r.direction === 'out' ? ' → ' : ' ← '}
+                    <span class="mono">{r.other_namespace}.{r.other_key}</span>
+                    <span class="muted mono"> · w{r.weight.toFixed(2)}</span>
+                  </span>
+                  {r.direction === 'out' && (
+                    <MutatorOnly>
+                      <button
+                        class="md-relation-unlink"
+                        title="Remove this relation"
+                        aria-label={`Remove relation ${r.kind} to ${r.other_namespace}.${r.other_key}`}
+                        onClick={async () => {
+                          const ok = await unlinkRelationAndRefresh(m.namespace, m.key, r.id);
+                          if (ok) reloadRelations();
+                        }}
+                      >
+                        <Icon name="unlink" size={13} />
+                      </button>
+                    </MutatorOnly>
+                  )}
+                </li>
+              ))}
             </ul>
           )}
         </div>
       )}
     </article>
+  );
+}
+
+function ImportPanel({ onClose }: { onClose: () => void }) {
+  const [parsed, setParsed] = useState<MemoryExport | null>(null);
+  const [fileName, setFileName] = useState('');
+  const [mode, setMode] = useState<MemoryImportMode>('merge');
+  const [error, setError] = useState<string | null>(null);
+
+  function onFile(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError(null);
+    setParsed(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result)) as MemoryExport;
+        if (!data || !Array.isArray(data.memories)) {
+          throw new Error('not a memory export (missing "memories" array)');
+        }
+        setParsed(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'invalid JSON file');
+      }
+    };
+    reader.onerror = () => setError('could not read file');
+    reader.readAsText(file);
+  }
+
+  const count = parsed?.memories?.length ?? 0;
+  const relCount = parsed?.relations?.length ?? 0;
+
+  return (
+    <div class="mf">
+      <p class="muted">
+        Load a corpus exported from this or another workspace. Memories are
+        matched by <span class="mono">namespace.key</span>.
+      </p>
+
+      <label class="mf-field">
+        <span class="mf-label">Export file (.json)</span>
+        <input type="file" accept="application/json,.json" onChange={onFile} />
+      </label>
+
+      {error && <p class="md-import-error">⚠ {error}</p>}
+      {parsed && (
+        <p class="muted">
+          <span class="mono">{fileName}</span> — {count} memories, {relCount} relations
+        </p>
+      )}
+
+      <fieldset class="mf-field mem-import-mode">
+        <span class="mf-label">On conflict</span>
+        <label class="mem-radio">
+          <input type="radio" name="import-mode" checked={mode === 'merge'} onChange={() => setMode('merge')} />
+          <span><strong>Merge</strong> — overwrite existing entries</span>
+        </label>
+        <label class="mem-radio">
+          <input type="radio" name="import-mode" checked={mode === 'skip'} onChange={() => setMode('skip')} />
+          <span><strong>Skip</strong> — keep existing, add only new</span>
+        </label>
+      </fieldset>
+
+      <div class="mf-actions">
+        <Button variant="ghost" type="button" onClick={onClose}>Cancel</Button>
+        <Button
+          variant="primary"
+          type="button"
+          disabled={!parsed || memoryImporting.value}
+          onClick={async () => {
+            if (!parsed) return;
+            const ok = await importMemoriesFromObject(parsed, mode);
+            if (ok) onClose();
+          }}
+        >
+          <Icon name="upload" size={14} /> Import {count > 0 ? count : ''}
+        </Button>
+      </div>
+    </div>
   );
 }
 

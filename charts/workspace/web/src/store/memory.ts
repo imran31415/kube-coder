@@ -9,8 +9,13 @@ import {
   getMemory,
   upsertMemory as apiUpsert,
   deleteMemory as apiDelete,
+  unlinkRelation as apiUnlinkRelation,
+  exportMemory as apiExport,
+  importMemory as apiImport,
   type MemoryRecord,
   type MemoryUpsertInput,
+  type MemoryExport,
+  type MemoryImportMode,
 } from '../api/memory';
 import { pushToast } from './ui';
 
@@ -118,6 +123,71 @@ export async function removeMemory(ns: string, key: string): Promise<void> {
     await refreshMemories();
   } catch (err) {
     pushToast(err instanceof Error ? err.message : 'Delete failed', { kind: 'danger' });
+  }
+}
+
+// ── Lifecycle ops (#134): unlink relation, export, import ───────────────────
+
+export async function unlinkRelationAndRefresh(
+  ns: string,
+  key: string,
+  relationId: number,
+): Promise<boolean> {
+  try {
+    await apiUnlinkRelation(ns, key, relationId);
+    pushToast('Relation removed', { kind: 'warn' });
+    return true;
+  } catch (err) {
+    pushToast(err instanceof Error ? err.message : 'Unlink failed', { kind: 'danger' });
+    return false;
+  }
+}
+
+export const memoryExporting = signal(false);
+export const memoryImporting = signal(false);
+
+export async function exportMemoriesToFile(): Promise<void> {
+  memoryExporting.value = true;
+  try {
+    const data = await apiExport();
+    if (typeof document === 'undefined') return;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.download = `kube-coder-memory-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    pushToast(`Exported ${data.memories?.length ?? 0} memories`, { kind: 'success' });
+  } catch (err) {
+    pushToast(err instanceof Error ? err.message : 'Export failed', { kind: 'danger' });
+  } finally {
+    memoryExporting.value = false;
+  }
+}
+
+export async function importMemoriesFromObject(
+  payload: MemoryExport,
+  mode: MemoryImportMode,
+): Promise<boolean> {
+  memoryImporting.value = true;
+  try {
+    const res = await apiImport(payload, mode);
+    const parts = [`${res.imported} imported`];
+    if (res.skipped) parts.push(`${res.skipped} skipped`);
+    if (res.failed) parts.push(`${res.failed} failed`);
+    if (res.relations_imported) parts.push(`${res.relations_imported} relations`);
+    pushToast(parts.join(', '), { kind: res.failed ? 'warn' : 'success' });
+    await refreshMemories();
+    return res.failed === 0;
+  } catch (err) {
+    pushToast(err instanceof Error ? err.message : 'Import failed', { kind: 'danger' });
+    return false;
+  } finally {
+    memoryImporting.value = false;
   }
 }
 
