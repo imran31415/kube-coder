@@ -4,7 +4,11 @@ namespace: coder
 # User configuration
 user:
   name: ""
-  pvcSize: 50Gi
+  # Home-volume size. 20Gi is a sensible default for a dev workspace; bump
+  # per-user in their values.yaml if they need more. Note: PVCs can grow but
+  # not shrink, so raising this later is fine — lowering it won't reclaim an
+  # already-provisioned volume.
+  pvcSize: 20Gi
   host: ""
   env:
     - name: GIT_USER_NAME
@@ -73,14 +77,22 @@ readOnly: false
 # is intended as documentation.
 demoShowAll: false
 
-# Resource limits and requests
+# Resource limits and requests.
+#
+# Burstable by design: requests are a lean *scheduling floor* sized for a
+# mostly-idle dev workspace (typical usage is well under 250m CPU), while
+# limits stay generous so builds/tests can still burst to a couple of cores
+# and a few GB. Keeping requests low is what lets a node pack ~10 workspaces
+# instead of ~3 — scheduling reserves requests, not limits. A workspace that
+# genuinely needs a higher baseline should override requests in its own
+# values.yaml rather than raising this shared default.
 resources:
   requests:
-    cpu: "1"
-    memory: 2Gi
+    cpu: "250m"
+    memory: 1Gi
   limits:
     cpu: "2"
-    memory: 6Gi
+    memory: 4Gi
 
 # Build configuration.
 #

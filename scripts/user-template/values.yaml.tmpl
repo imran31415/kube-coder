@@ -16,7 +16,7 @@ namespace: coder
 
 user:
   name: __USER__
-  pvcSize: 50Gi
+  pvcSize: 20Gi
   host: __USER__.dev.scalebase.io   # CHANGE ME — must resolve to ingress IP
   env:
     - name: GIT_USER_NAME
@@ -58,12 +58,15 @@ oauth2:
   clientSecret: "OVERRIDE-IN-SECRETS-OAUTH2-YAML"
 
 resources:
+  # Burstable: lean requests (scheduling floor for a mostly-idle workspace)
+  # with generous limits for build/test bursts. Raise requests here only if
+  # this workspace needs a higher guaranteed baseline.
   requests:
-    cpu: "1"
-    memory: 2Gi
+    cpu: "250m"
+    memory: 1Gi
   limits:
     cpu: "2"
-    memory: 6Gi
+    memory: 4Gi
 
 build:
   mode: buildkit
