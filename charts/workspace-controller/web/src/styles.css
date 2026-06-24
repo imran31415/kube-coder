@@ -508,3 +508,248 @@ body {
   color: var(--muted);
   margin-right: 0.3rem;
 }
+
+/* --- Cluster capacity panel ------------------------------------------------ */
+.cap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.1rem 1.1rem;
+  margin-bottom: 1.25rem;
+}
+
+.cap-hd {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.cap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.cap-toggle h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.cap-sub {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.cap-ranges {
+  display: flex;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+
+.chip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+
+.chip:hover {
+  border-color: #3a3a42;
+}
+
+.chip.on {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(110, 168, 254, 0.12);
+}
+
+.cap-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+
+@media (max-width: 640px) {
+  .cap-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cap-metric-hd,
+.cap-chart-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.cap-metric-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.cap-metric-val {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+
+/* Stacked capacity bar */
+.capbar-track {
+  position: relative;
+  display: flex;
+  height: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.capbar-seg {
+  height: 100%;
+}
+
+.capbar-seg.ws {
+  background: #56d364;
+}
+
+.capbar-seg.other {
+  background: #4a4a55;
+}
+
+.capbar.t-warn .capbar-seg.ws {
+  background: #e3b341;
+}
+
+.capbar.t-crit .capbar-seg.ws {
+  background: #f85149;
+}
+
+.capbar.unknown .capbar-track {
+  background: repeating-linear-gradient(45deg, var(--panel-2), var(--panel-2) 6px, #232329 6px, #232329 12px);
+}
+
+.capbar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+  margin-top: 0.35rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+
+.capbar-head {
+  margin-left: auto;
+  color: var(--text);
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 0.25rem;
+  vertical-align: baseline;
+}
+
+.dot.ws {
+  background: #56d364;
+}
+
+.dot.other {
+  background: #6ea8fe;
+}
+
+.dot.ceil {
+  background: #f85149;
+}
+
+.cap-chart {
+  margin-top: 1.25rem;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+
+.cap-nodes {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+}
+
+.cap-nodes-hd {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.6rem;
+}
+
+.cap-node {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid #202026;
+}
+
+.cap-node:first-of-type {
+  border-top: none;
+}
+
+.cap-node-name {
+  font-size: 0.8rem;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  word-break: break-all;
+}
+
+.cap-node-pods {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-top: 0.2rem;
+}
+
+.cap-node-bars {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.cap-node-bar {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.cap-node-tag {
+  font-size: 0.72rem;
+  color: var(--muted);
+  padding-top: 1px;
+}
+
+@media (max-width: 640px) {
+  .cap-node {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+}

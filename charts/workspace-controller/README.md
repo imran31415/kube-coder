@@ -14,6 +14,14 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
 - **Usage metrics** — an expandable mini dashboard per row plus a detail page
   (`#/w/<user>`) with a 1h/6h/24h/7d selector showing CPU, memory, disk, network,
   uptime, and a rough cost estimate, sourced from the in-cluster Prometheus.
+- **Cluster capacity** — a top-level rollup (`GET /api/capacity`) showing how
+  workspace usage stacks against node allocatable capacity, cluster-wide and
+  per-node, with a history chart so you can spot a previous spike or see how
+  close you are to running out of headroom. Capacity (`kube_node_status_allocatable`)
+  and usage both come from Prometheus, so it needs **no extra RBAC** — the
+  controller's Role still can't read `nodes` (see below). On a shared cluster the
+  bar separates *workspace* usage from *other tenants* sharing the same nodes, so
+  "total usage vs allocatable" is honest headroom rather than workspaces alone.
 
 ## Architecture
 

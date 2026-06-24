@@ -6,6 +6,7 @@ import { route, detailUser } from './router';
 import { MetricsPanel } from './components/MetricsPanel';
 import { WorkspaceDetail } from './components/WorkspaceDetail';
 import { InsightsBar } from './components/InsightsBar';
+import { CapacityPanel } from './components/CapacityPanel';
 
 // The single workspace whose inline metrics panel is expanded (null = collapsed).
 const expanded = signal<string | null>(null);
@@ -40,6 +41,8 @@ function WorkspaceList() {
       </header>
 
       <InsightsBar />
+
+      <CapacityPanel />
 
       {error.value && (
         <div class="banner err" role="alert">
