@@ -48,6 +48,10 @@ _Running a fullstack Go app in split plane mode with claude_
 _Running a librefang agent along with the librefang UI dashboard in split plane mode_
 <img width="1441" height="885" alt="image" src="https://github.com/user-attachments/assets/8b30e4ab-aeeb-486b-87c3-16c912c966cf" />
 
+_Controller dashbaord for cluster wide multi-tenant user workspace management _
+<img width="252" height="618" alt="image" src="https://github.com/user-attachments/assets/c67b5c2f-aafa-430f-9456-e909800910d9" />
+
+
 ---
 
 ## What's in a Workspace
