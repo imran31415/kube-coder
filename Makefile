@@ -193,7 +193,7 @@ delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name
 	@echo "WARNING: permanently deletes workspace '$(USER)' from namespace '$(NAMESPACE)':"
 	@echo "  helm release : $(USER)-workspace"
 	@echo "  PVC + DATA   : ws-$(USER)-home   (IRREVERSIBLE — the home volume is destroyed)"
-	@echo "  TLS secret   : $(USER)-dev-scalebase-io-tls"
+	@echo "  secrets      : $(USER)-dev-scalebase-io-tls, $(USER)-basic-auth"
 	@echo "  + all pods / services / ingress / configmaps in that release"
 	@printf "Type the workspace name '%s' to confirm: " "$(USER)"
 	@read confirm; \
@@ -202,8 +202,8 @@ delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name
 	helm uninstall $(USER)-workspace --namespace $(NAMESPACE) || true; \
 	echo "==> deleting PVC ws-$(USER)-home (and its underlying volume)"; \
 	kubectl delete pvc ws-$(USER)-home --namespace $(NAMESPACE) --ignore-not-found; \
-	echo "==> deleting TLS secret $(USER)-dev-scalebase-io-tls (if present)"; \
-	kubectl delete secret $(USER)-dev-scalebase-io-tls --namespace $(NAMESPACE) --ignore-not-found; \
+	echo "==> deleting leftover secrets (TLS + basic-auth, if present)"; \
+	kubectl delete secret $(USER)-dev-scalebase-io-tls $(USER)-basic-auth --namespace $(NAMESPACE) --ignore-not-found; \
 	echo "Done. '$(USER)' removed from the cluster."; \
 	echo "NOTE: users-private/$(USER)/ (local config) and the GitHub OAuth app are untouched — delete those manually if desired."
 
