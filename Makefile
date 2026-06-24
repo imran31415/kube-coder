@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
 
 # =============================================================================
 # Generic per-user helpers
@@ -177,6 +177,35 @@ test: require-user ## Sanity-test any user's workspace (USER=<name>)
 
 rollback: require-user ## Rollback any user's workspace (USER=<name>)
 	helm rollback $(USER)-workspace --namespace $(NAMESPACE)
+
+# Permanently delete a workspace AND its home volume. Operates purely on
+# cluster resources by name ($(USER)-workspace / ws-$(USER)-home), so it also
+# cleans up orphans whose users-private/<name>/ dir is already gone — that's
+# why it deliberately does NOT depend on require-user (no values dir needed).
+# Guard: you must retype the workspace name at the prompt before anything is
+# touched. Skips local config + the GitHub OAuth app (remove those by hand).
+delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name to confirm
+	@if [ -z "$(USER)" ] || [ "$(origin USER)" = "environment" ]; then \
+	  echo "ERROR: pass USER=<name> explicitly on the command line (e.g. make delete-user USER=oldname)."; \
+	  echo "       (\$$USER is also your shell login name, so it is ignored here to avoid deleting the wrong workspace.)"; \
+	  exit 1; \
+	fi
+	@echo "WARNING: permanently deletes workspace '$(USER)' from namespace '$(NAMESPACE)':"
+	@echo "  helm release : $(USER)-workspace"
+	@echo "  PVC + DATA   : ws-$(USER)-home   (IRREVERSIBLE — the home volume is destroyed)"
+	@echo "  TLS secret   : $(USER)-dev-scalebase-io-tls"
+	@echo "  + all pods / services / ingress / configmaps in that release"
+	@printf "Type the workspace name '%s' to confirm: " "$(USER)"
+	@read confirm; \
+	if [ "$$confirm" != "$(USER)" ]; then echo "Aborted — input did not match '$(USER)'."; exit 1; fi; \
+	echo "==> helm uninstall $(USER)-workspace"; \
+	helm uninstall $(USER)-workspace --namespace $(NAMESPACE) || true; \
+	echo "==> deleting PVC ws-$(USER)-home (and its underlying volume)"; \
+	kubectl delete pvc ws-$(USER)-home --namespace $(NAMESPACE) --ignore-not-found; \
+	echo "==> deleting TLS secret $(USER)-dev-scalebase-io-tls (if present)"; \
+	kubectl delete secret $(USER)-dev-scalebase-io-tls --namespace $(NAMESPACE) --ignore-not-found; \
+	echo "Done. '$(USER)' removed from the cluster."; \
+	echo "NOTE: users-private/$(USER)/ (local config) and the GitHub OAuth app are untouched — delete those manually if desired."
 
 # =============================================================================
 # Dashboard SPA (charts/workspace/web/)
