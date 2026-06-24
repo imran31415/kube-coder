@@ -38,6 +38,9 @@ kube-coder delivers **per-user, isolated development environments** that combine
 
 ## Example Screenshots 
 
+_Running claude code_
+<img width="1493" height="842" alt="image" src="https://github.com/user-attachments/assets/9ba348fb-12e9-48d7-8834-83e1f20a343f" />
+
 
 _Running a fullstack python app in split plane mode with terminal_
 <img width="1512" height="864" alt="kube-coder workspace interface" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
