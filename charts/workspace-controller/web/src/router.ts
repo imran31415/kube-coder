@@ -22,3 +22,21 @@ export function detailUser(path: string): string | null {
   const m = /^\/w\/([a-z0-9-]{1,41})$/.exec(path);
   return m ? m[1] : null;
 }
+
+/** True for the provision form/status routes (/provision, /provision/<slug>). */
+export function isProvisionRoute(path: string): boolean {
+  return path === '/provision' || path.startsWith('/provision/') || path.startsWith('/provision?');
+}
+
+/** The slug being watched on /provision/<slug>, or null on the bare form. */
+export function provisionSlug(path: string): string | null {
+  const m = /^\/provision\/([a-z0-9-]{1,41})/.exec(path);
+  return m ? m[1] : null;
+}
+
+/** The ?error=… message the manifest callback redirects back with, or null. */
+export function provisionError(path: string): string | null {
+  const q = path.indexOf('?');
+  if (q < 0) return null;
+  return new URLSearchParams(path.slice(q + 1)).get('error');
+}

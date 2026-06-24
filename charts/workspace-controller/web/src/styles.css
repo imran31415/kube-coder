@@ -753,3 +753,194 @@ body {
     gap: 0.5rem;
   }
 }
+
+/* ---- provisioning ---- */
+.hdr-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.banner.warn {
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  color: #e3b341;
+}
+
+.prov-form {
+  margin-bottom: 1.25rem;
+}
+
+.field {
+  display: block;
+}
+
+.field-label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.field-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.input {
+  font: inherit;
+  font-size: 0.9rem;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.prov-preview {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.prov-user {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.prov-avatar {
+  border-radius: 50%;
+  flex: none;
+}
+
+.prov-name {
+  font-weight: 600;
+}
+
+.prov-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.prov-advanced {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.5rem 0;
+}
+
+.prov-go {
+  align-self: flex-start;
+  min-width: 0;
+}
+
+.prov-status {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.prov-stage {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.prov-stage-title {
+  font-weight: 600;
+}
+
+.prov-spinner {
+  font-size: 1.4rem;
+  line-height: 1;
+  flex: none;
+}
+
+.stage-progress .prov-spinner {
+  color: var(--accent);
+  animation: prov-spin 1.4s linear infinite;
+}
+
+.stage-ok .prov-spinner {
+  color: #56d364;
+}
+
+.stage-err .prov-spinner {
+  color: #ff7b72;
+}
+
+@keyframes prov-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- resource (limits) editor ---- */
+.res-edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 1rem 0 0.25rem;
+}
+
+.res-edit-note {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.res-edit-note.err {
+  color: #ff7b72;
+}
+
+.res-editor {
+  margin: 1rem 0 0.25rem;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.res-editor-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.res-editor-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .res-editor-fields {
+    grid-template-columns: 1fr;
+  }
+}

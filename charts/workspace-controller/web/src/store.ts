@@ -6,6 +6,7 @@ import {
   startWorkspace,
   stopWorkspace,
 } from './api/workspaces';
+import { type ProvisionConfig, getProvisionConfig } from './api/provision';
 
 // Shared workspace list state + start/stop actions, used by both the list view
 // and the detail page. Module-level signals survive route changes and remounts.
@@ -15,6 +16,18 @@ export const loaded = signal<boolean>(false);
 export const error = signal<string | null>(null);
 // Usernames with an in-flight start/stop — buttons disabled until the next poll.
 export const busy = signal<Set<string>>(new Set());
+
+// Provisioning availability, fetched once on load. null = not yet known; the
+// "New workspace" entry point only shows when enabled.
+export const provisionConfig = signal<ProvisionConfig | null>(null);
+
+export async function loadProvisionConfig(): Promise<void> {
+  try {
+    provisionConfig.value = await getProvisionConfig();
+  } catch {
+    provisionConfig.value = { enabled: false, workspaceDomain: '', githubAppOrg: '' };
+  }
+}
 
 export function findWorkspace(user: string): Workspace | undefined {
   return workspaces.value.find((w) => w.user === user);

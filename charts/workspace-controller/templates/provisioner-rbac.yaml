@@ -1,0 +1,75 @@
+{{- if .Values.provision.enabled }}
+# The privileged half of provisioning. A dedicated ServiceAccount the
+# short-lived provisioner Job runs as — it holds every create/update/delete the
+# `workspace` chart needs to `helm upgrade --install` a new workspace. The
+# always-on, internet-facing controller pod NEVER gets these verbs; it only
+# `create`s a Job (see serviceaccount.yaml) that assumes this identity, so the
+# blast radius of a controller compromise stays "can start Jobs", not "can
+# rewrite every tenant's Deployment + read every Secret".
+#
+# Still namespace-scoped (not a ClusterRole): on this shared ~20-tenant DOKS
+# cluster a cluster-wide grant of these verbs would be a cross-tenant kill
+# switch, the same reasoning the workspace build Role and the controller Role
+# already codify.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.provision.serviceAccount }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.provision.serviceAccount }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+rules:
+# The workspace Deployment + its oauth2-proxy Deployment, plus scale subresource
+# (helm's --wait reads rollout status).
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/scale", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Service, PVC, ConfigMaps, the per-user Secrets the chart renders, and the
+# Helm release-state Secret (Helm 3 stores releases as Secrets in the namespace).
+- apiGroups: [""]
+  resources: ["services", "persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Ingresses for the workspace host + oauth2 routes.
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# The workspace chart ships its own per-user build Role/RoleBinding; Helm must be
+# able to create them. (RBAC create is itself privileged — it lives only here.)
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Read pods so `helm --wait` and any troubleshooting can observe rollout.
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "events"]
+  verbs: ["get", "list", "watch"]
+{{- if .Values.provision.networkPolicies }}
+# Only when the workspace chart's networkpolicy.yaml is enabled for tenants.
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.provision.serviceAccount }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.provision.serviceAccount }}
+subjects:
+- kind: ServiceAccount
+  name: {{ .Values.provision.serviceAccount }}
+  namespace: {{ .Values.namespace }}
+{{- end }}

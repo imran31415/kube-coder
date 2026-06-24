@@ -77,6 +77,51 @@ spec:
           value: {{ .Values.controller.metrics.cost.memGbHour | quote }}
         - name: COST_STORAGE_GB_MONTH
           value: {{ .Values.controller.metrics.cost.storageGbMonth | quote }}
+        # The controller's own image ref, reused as the default provisioner Job
+        # image (it already carries kubectl/git/make/curl).
+        - name: CONTROLLER_IMAGE
+          value: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+        {{- if .Values.provision.enabled }}
+        # --- Self-service provisioning (see values.yaml `provision`) ---
+        - name: CONTROLLER_HOST
+          value: {{ required "controller.host is required when provision.enabled" .Values.controller.host | quote }}
+        - name: WORKSPACE_DOMAIN
+          value: {{ required "provision.workspaceDomain is required when provision.enabled" .Values.provision.workspaceDomain | quote }}
+        - name: GITHUB_APP_ORG
+          value: {{ .Values.provision.githubOrg | quote }}
+        - name: GITOPS_REPO
+          value: {{ required "provision.gitops.repo is required when provision.enabled" .Values.provision.gitops.repo | quote }}
+        - name: GITOPS_BRANCH
+          value: {{ .Values.provision.gitops.branch | quote }}
+        - name: CHART_REPO
+          value: {{ .Values.provision.chart.repo | quote }}
+        - name: CHART_REF
+          value: {{ .Values.provision.chart.ref | quote }}
+        - name: PROVISIONER_SERVICE_ACCOUNT
+          value: {{ .Values.provision.serviceAccount | quote }}
+        - name: PROVISIONER_PULL_SECRET
+          value: {{ .Values.controller.image.pullSecretName | quote }}
+        - name: WORKSPACE_IMAGE_TAG
+          value: {{ .Values.provision.workspaceImageTag | quote }}
+        {{- if .Values.provision.image }}
+        - name: PROVISIONER_IMAGE
+          value: {{ .Values.provision.image | quote }}
+        {{- end }}
+        # Runtime credentials: git push token + the HMAC key that signs the
+        # manifest-flow state param. From the chart-rendered Secret (see
+        # provisioner-secret.yaml) or provision.existingSecretName if set.
+        {{- $provSecret := .Values.provision.existingSecretName | default "workspace-controller-provision" }}
+        - name: GITOPS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ $provSecret }}
+              key: git-token
+        - name: PROVISION_STATE_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ $provSecret }}
+              key: state-secret
+        {{- end }}
         ports:
         - name: http
           containerPort: 8080

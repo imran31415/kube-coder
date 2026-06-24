@@ -22,6 +22,23 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
   controller's Role still can't read `nodes` (see below). On a shared cluster the
   bar separates *workspace* usage from *other tenants* sharing the same nodes, so
   "total usage vs allocatable" is honest headroom rather than workspaces alone.
+- **Edit CPU/memory limits** — the detail page has an *Edit limits* control that
+  patches the `ide` container's CPU + memory limits in place
+  (`POST /api/workspaces/<user>/resources`). Like start/stop it's a live
+  `kubectl patch` (a strategic merge that touches only that container's `limits`,
+  leaving `requests` and other containers alone) — so it takes effect immediately
+  by rolling the pod, and like start/stop a later `helm upgrade` resets it;
+  durable changes still belong in the workspace's `values.yaml`. Bounded by
+  `MAX_CPU_LIMIT_CORES` / `MAX_MEM_LIMIT` so a typo can't request an
+  unschedulable pod.
+- **Provision a workspace** *(optional, off by default)* — type a GitHub
+  username and the controller registers a **GitHub App** for them via the
+  manifest flow (one in-browser confirmation click), pushes rendered
+  `values.yaml` + `secrets/oauth2.yaml` to a private GitOps repo, and launches a
+  short-lived **privileged Job** that runs `helm upgrade`. The always-on
+  controller never holds workspace write power itself — it only validates input,
+  does the manifest exchange, pushes to git, and `create`s the Job (which assumes
+  a separate `workspace-provisioner` ServiceAccount). See **Provisioning** below.
 
 ## Architecture
 
@@ -42,9 +59,13 @@ ingress ──▶ oauth2-proxy (reverse-proxy, --github-user gate) ──▶ con
   backend, so the trusted header can't be forged by other pods in the namespace.
 - **RBAC** — namespace-scoped Role (never ClusterRole): `deployments`
   (get/list/watch) + the separate `deployments/scale` subresource
-  (get/update/patch), plus `pods`/`ingresses`/`persistentvolumeclaims` reads for
-  status, links, and disk size. No `metrics.k8s.io` (this cluster has no
-  metrics-server — metrics come from Prometheus over HTTP, needing no k8s RBAC).
+  (get/update/patch) + `deployments` `patch` (for in-place limit edits), plus
+  `pods`/`ingresses`/`persistentvolumeclaims` reads for status, links, and disk
+  size. No `metrics.k8s.io` (this cluster has no metrics-server — metrics come
+  from Prometheus over HTTP, needing no k8s RBAC). When `provision.enabled`, the
+  controller additionally gets `batch/jobs` (get/list/watch/**create**) — and a
+  *separate* `workspace-provisioner` SA gets the broad create/update/delete the
+  Job needs, so that power never sits on the internet-facing controller pod.
 
 ## Prerequisites (one-time)
 
@@ -65,6 +86,59 @@ make ship-controller-config   # build SPA → helm upgrade → roll the pod
 Other targets: `make controller-web` (build SPA only), `make deploy-controller`
 (helm upgrade only), `make controller-dev` (run the backend locally against your
 kubeconfig; listing is read-only and safe).
+
+## Provisioning (optional)
+
+Off unless `provision.enabled=true` and every field below is supplied; otherwise
+the *New workspace* button is hidden and the endpoints return `501`.
+
+**Flow.** Admin enters a username → controller validates it against the GitHub
+API → the SPA POSTs a GitHub App *manifest* to `github.com` → admin clicks
+*Create GitHub App* → GitHub redirects to `/api/provision/github/callback` with a
+one-time code → the controller exchanges it for the app's `client_id` /
+`client_secret`, generates a cookie secret, renders + pushes
+`users-private/<slug>/{values.yaml,secrets/oauth2.yaml}` to the GitOps repo, and
+launches the provisioner Job, which `make deploy`s the workspace. The SPA polls
+`/api/provision/<slug>/status` until the pod is running.
+
+GitHub has **no API to create classic OAuth Apps**, which is why this uses
+**GitHub Apps** — their `client_id`/`client_secret` drive the exact same
+`oauth2-proxy --provider=github` login, so nothing downstream changes.
+
+**One-time setup** — run the scaffold, then follow its printed steps. Full
+walkthrough in [`docs/PROVISIONING.md`](../../docs/PROVISIONING.md):
+
+```sh
+scripts/setup-controller-provisioning.sh \
+  --domain dev.example.io \
+  --gitops-repo github.com/<you>/kube-coder-users.git
+```
+
+It generates the `state-secret`, writes the gitignored
+`users-private/_controller/secrets/provision.yaml`, and prints the `provision:`
+block to add to your controller values plus the remaining manual steps:
+
+- Wildcard DNS `*.<provision.workspaceDomain>` pointing at the ingress.
+- A **private** GitOps repo (`provision.gitops.repo`) with an initial commit.
+- A push token for that repo (Contents: RW) + GitHub API read, in `provision.gitToken`.
+- The signed-in admin must be able to create GitHub Apps under their account (or
+  `provision.githubOrg`).
+
+> ⚠️ Generated config (including the client secret + cookie secret) is committed
+> to the GitOps repo. Keep it private; layering sealed-secrets/SOPS is recommended
+> (point `provision.existingSecretName` at a Secret you manage out-of-band).
+
+| Provisioning key | Purpose |
+|---|---|
+| `provision.enabled` | Master switch (default `false`) |
+| `provision.workspaceDomain` | `<login>.<domain>` host for new workspaces |
+| `provision.githubOrg` | Org to create the GitHub Apps under (empty = admin's account) |
+| `provision.gitops.repo` / `.branch` | Private repo (host/path, no scheme) the config is pushed to |
+| `provision.chart.repo` / `.ref` | Where the Job pulls the `workspace` chart from (your fork if customised) |
+| `provision.gitToken` / `.stateSecret` | Runtime creds — set via the gitignored secrets overlay |
+| `provision.existingSecretName` | Use a Secret you manage instead of chart-rendering one |
+| `provision.serviceAccount` | SA the privileged Job runs as |
+| `provision.image` | Job image (empty = controller image; installs helm on the fly) |
 
 ## Key values
 

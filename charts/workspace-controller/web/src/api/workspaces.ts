@@ -80,3 +80,10 @@ export const startWorkspace = (user: string) =>
 
 export const stopWorkspace = (user: string) =>
   apiPost<{ ok: true; user: string; desiredReplicas: number }>(`/api/workspaces/${user}/stop`);
+
+/** Patch the workspace's ide-container CPU/memory limits. Triggers a rollout. */
+export const setWorkspaceResources = (user: string, limits: { cpu?: string; memory?: string }) =>
+  apiPost<{ ok: true; user: string; limits: { cpu?: string; memory?: string } }>(
+    `/api/workspaces/${user}/resources`,
+    limits,
+  );
