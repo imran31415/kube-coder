@@ -247,6 +247,25 @@
 .md-relations { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .md-relations li { padding: 6px 0; border-bottom: 1px solid var(--border); }
 .md-relations li:last-child { border-bottom: 0; }
+.md-relation { display: flex; align-items: center; justify-content: space-between; gap: var(--size-2); }
+.md-relation-edge { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-relation-unlink {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer;
+}
+.md-relation-unlink:hover { color: var(--danger, #f87171); border-color: var(--border); background: var(--surface-2); }
+
+/* Memory header actions (Export / Import / New) */
+.mem-header-actions { display: flex; align-items: center; gap: var(--size-2); flex-wrap: wrap; }
+
+/* Import drawer */
+.mem-import-mode { gap: 8px; }
+.mem-radio { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+.mem-radio input { margin: 0; }
+.md-import-error { color: var(--danger, #f87171); font-size: 12px; }
 
 /* Form */
 .mf { display: flex; flex-direction: column; gap: var(--size-3); }

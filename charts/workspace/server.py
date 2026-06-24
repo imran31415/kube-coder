@@ -3306,6 +3306,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if m:
             self.handle_memory_refs(m.group(1), m.group(2))
             return
+        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations$', claude_path)
+        if m:
+            self.handle_memory_relations(m.group(1), m.group(2))
+            return
         m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/neighbors$', claude_path)
         if m:
             self.handle_memory_neighbors(m.group(1), m.group(2), memory_query)
@@ -4629,6 +4633,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._memory_error(e); return
         self.send_json({'refs': rows, 'count': len(rows)})
+
+    def handle_memory_relations(self, namespace, key):
+        """GET /api/memory/{ns}/{key}/relations — the memory's graph edges with
+        ids, so the dashboard can render + unlink them (#134)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._memory_unavailable():
+            return
+        try:
+            rows = MemoryManager.relations(namespace=namespace, key=key)
+        except Exception as e:
+            self._memory_error(e); return
+        self.send_json({'relations': rows, 'count': len(rows)})
 
     def handle_memory_neighbors(self, namespace, key, query):
         if not self.check_claude_auth():

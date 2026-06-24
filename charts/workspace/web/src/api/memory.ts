@@ -81,6 +81,58 @@ export const upsertMemory = (input: MemoryUpsertInput) =>
 export const deleteMemory = (ns: string, key: string) =>
   apiDelete<{ ok: true }>(`/api/memory/${encodeURIComponent(ns)}/${encodeURIComponent(key)}`);
 
+// ── Relations (graph edges) — #134 ──────────────────────────────────────────
+
+export interface MemoryRelation {
+  id: number;
+  kind: string;
+  weight: number;
+  created_at: number;
+  // 'out' = this memory is the relation's source (and so removable from here);
+  // 'in'  = this memory is the target (remove it from the other endpoint).
+  direction: 'out' | 'in';
+  other_namespace: string;
+  other_key: string;
+}
+
+export const getMemoryRelations = (ns: string, key: string) =>
+  apiGet<{ relations: MemoryRelation[]; count: number }>(
+    `/api/memory/${encodeURIComponent(ns)}/${encodeURIComponent(key)}/relations`,
+  ).then((r) => safeArray(r.relations) as MemoryRelation[]);
+
+export const unlinkRelation = (ns: string, key: string, relationId: number) =>
+  apiDelete<{ deleted: number }>(
+    `/api/memory/${encodeURIComponent(ns)}/${encodeURIComponent(key)}/relations/${relationId}`,
+  );
+
+// ── Export / import (backup + portability) — #134 ───────────────────────────
+
+export interface MemoryExport {
+  version: number;
+  exported_at: number;
+  memories: unknown[];
+  relations: unknown[];
+}
+
+export type MemoryImportMode = 'merge' | 'skip';
+
+export interface MemoryImportResult {
+  imported: number;
+  skipped: number;
+  failed: number;
+  relations_imported: number;
+  relations_failed: number;
+  errors: string[];
+}
+
+export const exportMemory = () => apiGet<MemoryExport>('/api/memory/export');
+
+export const importMemory = (payload: MemoryExport, mode: MemoryImportMode = 'merge') =>
+  apiPost<{ status: string; result: MemoryImportResult }>('/api/memory/_import', {
+    ...payload,
+    mode,
+  }).then((r) => r.result);
+
 export interface MemoryStats {
   total: number;
   by_namespace: Record<string, number>;

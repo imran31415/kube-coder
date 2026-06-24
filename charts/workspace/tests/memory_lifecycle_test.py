@@ -82,6 +82,27 @@ class UnlinkTests(LifecycleTestCase):
                                        dst_namespace='b', dst_key='y')
         self.assertEqual(removed, 0)
 
+    def test_relations_lists_with_ids_and_direction(self):
+        rel = MemoryManager.link(src_namespace='a', src_key='x',
+                                 dst_namespace='b', dst_key='y', kind='related-to')
+        # From a/x the edge is outgoing; from b/y it's incoming.
+        out = MemoryManager.relations(namespace='a', key='x')
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]['id'], rel['id'])
+        self.assertEqual(out[0]['direction'], 'out')
+        self.assertEqual((out[0]['other_namespace'], out[0]['other_key']),
+                         ('b', 'y'))
+        inc = MemoryManager.relations(namespace='b', key='y')
+        self.assertEqual(inc[0]['direction'], 'in')
+        self.assertEqual((inc[0]['other_namespace'], inc[0]['other_key']),
+                         ('a', 'x'))
+
+    def test_relations_excludes_edges_to_deleted(self):
+        MemoryManager.link(src_namespace='a', src_key='x',
+                           dst_namespace='b', dst_key='y')
+        MemoryManager.soft_delete(namespace='b', key='y')
+        self.assertEqual(MemoryManager.relations(namespace='a', key='x'), [])
+
     def test_unlink_by_id_scoped_to_src(self):
         rel = MemoryManager.link(src_namespace='a', src_key='x',
                                  dst_namespace='b', dst_key='y')
