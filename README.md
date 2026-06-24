@@ -33,27 +33,33 @@ kube-coder delivers **per-user, isolated development environments** that combine
 
 [Documentation & Limited Public Demo](https://demo-public.dev.scalebase.io/docs)
 
-## Subredddit: 
+## Subreddit
 - https://www.reddit.com/r/kubecoder/
 
-## Example Screenshots 
+## Example Screenshots
 
-_Running claude code_
-<img width="1493" height="842" alt="image" src="https://github.com/user-attachments/assets/9ba348fb-12e9-48d7-8834-83e1f20a343f" />
-
-
-_Running a fullstack python app in split plane mode with terminal_
-<img width="1512" height="864" alt="kube-coder workspace interface" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
-
-_Running a fullstack Go app in split plane mode with claude_
-<img width="1441" height="863" alt="image" src="https://github.com/user-attachments/assets/9901202e-a11b-4013-ab94-32745d2bc8f5" />
-
-_Running a librefang agent along with the librefang UI dashboard in split plane mode_
-<img width="1441" height="885" alt="image" src="https://github.com/user-attachments/assets/8b30e4ab-aeeb-486b-87c3-16c912c966cf" />
-
-_Controller dashbaord for cluster wide multi-tenant user workspace management _
-<img width="252" height="618" alt="image" src="https://github.com/user-attachments/assets/c67b5c2f-aafa-430f-9456-e909800910d9" />
-
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img width="100%" alt="Fullstack Python app in split-pane with terminal" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
+      <br/><sub><b>Fullstack Python</b> — split-pane editor with live terminal</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img width="100%" alt="Fullstack Go app in split-pane with Claude" src="https://github.com/user-attachments/assets/9901202e-a11b-4013-ab94-32745d2bc8f5" />
+      <br/><sub><b>Fullstack Go</b> — split-pane editor with Claude Code</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img width="100%" alt="LibreFang agent running alongside its UI dashboard" src="https://github.com/user-attachments/assets/8b30e4ab-aeeb-486b-87c3-16c912c966cf" />
+      <br/><sub><b>LibreFang agent</b> — agent + its UI dashboard in split-pane</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img height="300" alt="Multi-tenant controller dashboard" src="https://github.com/user-attachments/assets/c67b5c2f-aafa-430f-9456-e909800910d9" />
+      <br/><sub><b>Controller dashboard</b> — cluster-wide multi-tenant management</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -285,12 +291,25 @@ All three live under `Triggers` in the dashboard. Mutual references between task
 
 ## Pluggable AI Assistants
 
-Configure per-workspace via `assistant.provider` in values.yaml:
+Every build session — and every orchestrator sub-agent — picks its assistant at create-time, so you can mix them freely in a single workspace. Keys live in `users-private/<name>/secrets/assistant.yaml` (gitignored); the public-repo defaults are empty, so it ships Claude-only out of the box.
 
-- **`claude`** (default) — Anthropic Claude Code with your API key
-- **`opencode`** — OpenRouter or any OpenAI-compatible base URL via on-disk config written at pod start
+| Assistant | Backend | Configure with |
+|---|---|---|
+| **Claude Code** (default) | Anthropic API key or subscription login | `claude.apiKey`, or `make shell USER=<name>` → `claude` to log in once |
+| **Ante** | Antigma's terminal-native agent; defaults to **DeepSeek v3.2 via OpenRouter** | `assistant.openrouter.apiKey` (CLI pre-installed — no separate key) |
+| **OpenCode → OpenRouter** | any OpenRouter model (default `anthropic/claude-sonnet-4`) | `assistant.openrouter.apiKey` + `model` |
+| **OpenCode → DeepSeek** | DeepSeek native API (`deepseek-chat` / `deepseek-reasoner`) | `assistant.deepseek.apiKey` |
+| **LibreFang** | open-source agent OS; reuses whatever provider keys are set | `assistant.librefang.agent` |
 
-Each build session picks its assistant at create-time; you can mix Claude and OpenCode sessions in the same workspace.
+(A narrow in-pod `kc-harness` against a local/fallback model is also available for advanced setups.)
+
+### A "Claude-like" agent without an Anthropic key — Ante + DeepSeek
+
+Pair the **[Ante](https://ante.run/)** CLI — a terminal-native, tool-using coding agent pre-installed in every workspace — with **DeepSeek** and you get a Claude-Code-style experience: autonomous multi-step edits, shell/file tools, and the **same MCP memory + orchestrator servers** Claude uses, at a fraction of the cost.
+
+- Set **`OPENROUTER_API_KEY`** (`assistant.openrouter.apiKey`) and Ante automatically defaults to **`deepseek/deepseek-v3.2`** (~$0.23 / $0.34 per 1M input/output tokens). Override per workspace with `KC_ANTE_MODEL`.
+- It's fast and cheap enough to be the **default background sub-agent** in the orchestrator, and in practice handles real coding tasks well — a solid daily driver when you'd rather not spend Claude tokens.
+- Prefer DeepSeek's native API? Set **`DEEPSEEK_API_KEY`** (`assistant.deepseek.apiKey`) and choose the **DeepSeek** assistant (OpenCode → `deepseek-chat`).
 
 ---
 
