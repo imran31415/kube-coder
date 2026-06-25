@@ -6,6 +6,8 @@ helpers, so these run with no cluster and no network.
 Run from charts/workspace-controller:
     python3 -m unittest discover -s tests -p '*_test.py' -v
 """
+import base64
+import json
 import os
 import sys
 import unittest
@@ -169,6 +171,170 @@ class ClusterCapacityTest(unittest.TestCase):
         self.assertEqual(cap['metricsError'], 'prometheus unreachable')
         self.assertIsNone(cap['cluster'])
         self.assertEqual(cap['nodes'], [])
+
+
+class ProvisionPureLogicTest(unittest.TestCase):
+    """Pure-logic provisioning helpers: state signing, the GitHub App manifest,
+    cookie-secret shape, and values rendering. No network, no cluster."""
+
+    def setUp(self):
+        controller.PROVISION_STATE_SECRET = 'unit-test-hmac-key'
+        controller.CONTROLLER_HOST = 'controller.dev.scalebase.io'
+        controller.WORKSPACE_DOMAIN = 'dev.scalebase.io'
+        controller.GITHUB_APP_ORG = ''
+
+    def test_slugify_lowercases(self):
+        self.assertEqual(controller.slugify('Chase-31415'), 'chase-31415')
+
+    def test_login_regex_accepts_valid_rejects_invalid(self):
+        self.assertTrue(controller._GH_LOGIN_RE.match('octocat'))
+        self.assertTrue(controller._GH_LOGIN_RE.match('a-b-c1'))
+        self.assertFalse(controller._GH_LOGIN_RE.match('-bad'))
+        self.assertFalse(controller._GH_LOGIN_RE.match('bad-'))
+        self.assertFalse(controller._GH_LOGIN_RE.match('has space'))
+        self.assertFalse(controller._GH_LOGIN_RE.match('under_score'))
+
+    def test_state_roundtrip(self):
+        payload = {'login': 'Octo', 'host': 'octo.dev.scalebase.io'}
+        token = controller.sign_state(payload)
+        out = controller.verify_state(token)
+        self.assertEqual(out['login'], 'Octo')
+        self.assertEqual(out['host'], 'octo.dev.scalebase.io')
+
+    def test_state_tamper_rejected(self):
+        token = controller.sign_state({'login': 'octo'})
+        raw, sig = token.split('.', 1)
+        tampered = base64.urlsafe_b64encode(b'{"login":"admin","exp":9999999999}').rstrip(b'=').decode() + '.' + sig
+        with self.assertRaises(ValueError):
+            controller.verify_state(tampered)
+
+    def test_state_expiry(self):
+        # Sign with a TTL in the past so the token is born expired.
+        orig = controller.STATE_TTL
+        try:
+            controller.STATE_TTL = -1
+            token = controller.sign_state({'login': 'octo'})
+            with self.assertRaises(ValueError):
+                controller.verify_state(token)
+        finally:
+            controller.STATE_TTL = orig
+
+    def test_app_manifest_callback_and_redirect(self):
+        m = controller.build_app_manifest('Chase-31415', 'chase-31415.dev.scalebase.io')
+        self.assertEqual(m['callback_urls'], ['https://chase-31415.dev.scalebase.io/oauth2/callback'])
+        self.assertEqual(m['redirect_url'], 'https://controller.dev.scalebase.io/api/provision/github/callback')
+        self.assertFalse(m['public'])
+        self.assertLessEqual(len(m['name']), 34)
+
+    def test_manifest_post_url_personal_vs_org(self):
+        self.assertTrue(controller.manifest_post_url('S').startswith('https://github.com/settings/apps/new?state='))
+        controller.GITHUB_APP_ORG = 'acme'
+        self.assertIn('/organizations/acme/settings/apps/new', controller.manifest_post_url('S'))
+
+    def test_cookie_secret_shape(self):
+        s = controller.gen_cookie_secret()
+        self.assertEqual(len(s), 32)
+        self.assertTrue(s.isalnum())
+
+    def test_render_values_yaml_is_valid_and_has_fields(self):
+        opts = {'login': 'Octo', 'slug': 'octo', 'host': 'octo.dev.scalebase.io',
+                'pvcSize': '30Gi', 'gitName': 'Octo Cat', 'gitEmail': 'octo@example.com',
+                'imageTag': 'v9.9.9'}
+        text = controller.render_values_yaml(opts, 'Iv1.clientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
+        # Validate it parses as YAML and carries the access gate + host.
+        try:
+            import yaml  # PyYAML may not be installed in CI; fall back to substring checks.
+            doc = yaml.safe_load(text)
+            self.assertEqual(doc['user']['name'], 'octo')
+            self.assertEqual(doc['user']['host'], 'octo.dev.scalebase.io')
+            self.assertEqual(doc['user']['pvcSize'], '30Gi')
+            self.assertEqual(doc['oauth2']['githubUsers'], 'Octo')   # login, case-preserved
+            self.assertEqual(doc['oauth2']['clientId'], 'Iv1.clientid')
+            self.assertEqual(doc['image']['tag'], 'devlaptop-v9.9.9')
+            self.assertEqual(doc['ingress']['tls']['secretName'], 'octo-dev-scalebase-io-tls')
+            self.assertEqual(doc['ingress']['auth']['type'], 'oauth2')
+            # values.yaml carries only the placeholder; the real secret is
+            # split out into secrets/oauth2.yaml (render_oauth_secret_yaml).
+            self.assertEqual(doc['oauth2']['clientSecret'], 'OVERRIDE-IN-SECRETS-OAUTH2-YAML')
+        except ImportError:
+            self.assertIn('name: octo', text)
+            self.assertIn('host: octo.dev.scalebase.io', text)
+            self.assertIn('githubUsers: "Octo"', text)
+            self.assertIn('devlaptop-v9.9.9', text)
+
+    def test_oauth_secret_yaml_holds_only_secret(self):
+        text = controller.render_oauth_secret_yaml('supersecret')
+        self.assertIn('clientSecret: "supersecret"', text)
+        self.assertNotIn('clientId', text)
+
+    def test_job_manifest_uses_provisioner_sa_and_slug(self):
+        controller.PROVISIONER_IMAGE = 'example/img:1'
+        controller.PROVISIONER_SA = 'workspace-provisioner'
+        controller.NAMESPACE = 'coder'
+        job = controller.build_job_manifest('octo')
+        self.assertEqual(job['kind'], 'Job')
+        self.assertEqual(job['spec']['template']['spec']['serviceAccountName'], 'workspace-provisioner')
+        self.assertEqual(job['metadata']['labels']['provisionUser'], 'octo')
+        env = {e['name']: e.get('value') for e in job['spec']['template']['spec']['containers'][0]['env']}
+        self.assertEqual(env['SLUG'], 'octo')
+        self.assertIn('ttlSecondsAfterFinished', job['spec'])
+        self.assertEqual(job['spec']['template']['spec']['restartPolicy'], 'Never')
+
+
+class ResourceLimitTest(unittest.TestCase):
+    """Validation + strategic-merge patch construction for in-place limit edits."""
+
+    def setUp(self):
+        controller.MAX_CPU_LIMIT_CORES = 16.0
+        controller.MAX_MEM_LIMIT = '64Gi'
+        controller.WORKSPACE_CONTAINER = 'ide'
+        controller.WORKSPACE_PREFIX = 'ws-'
+        # Pretend the workspace exists so the existence guard passes.
+        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [{'deployment': 'ws-octo'}]}
+
+    def test_validate_cpu_accepts_cores_and_millicores(self):
+        self.assertEqual(controller._validate_cpu('2'), '2')
+        self.assertEqual(controller._validate_cpu('500m'), '500m')
+
+    def test_validate_cpu_rejects_bad_and_over_cap(self):
+        with self.assertRaises(ValueError):
+            controller._validate_cpu('2x')
+        with self.assertRaises(ValueError):
+            controller._validate_cpu('99')        # over 16-core cap
+
+    def test_validate_mem_accepts_units_rejects_over_cap(self):
+        self.assertEqual(controller._validate_mem('4Gi'), '4Gi')
+        self.assertEqual(controller._validate_mem('512Mi'), '512Mi')
+        with self.assertRaises(ValueError):
+            controller._validate_mem('4 gigs')
+        with self.assertRaises(ValueError):
+            controller._validate_mem('128Gi')     # over 64Gi cap
+
+    def test_set_resources_builds_strategic_patch_for_ide(self):
+        captured = {}
+        controller._kubectl_run = lambda args: captured.setdefault('args', args)
+        limits = controller.set_workspace_resources('octo', '2', '4Gi')
+        self.assertEqual(limits, {'cpu': '2', 'memory': '4Gi'})
+        args = captured['args']
+        self.assertEqual(args[0], 'patch')
+        self.assertEqual(args[1], 'deployment/ws-octo')
+        self.assertIn('--type=strategic', args)
+        patch = json.loads(args[args.index('-p') + 1])
+        container = patch['spec']['template']['spec']['containers'][0]
+        self.assertEqual(container['name'], 'ide')
+        self.assertEqual(container['resources']['limits'], {'cpu': '2', 'memory': '4Gi'})
+        # requests must not be touched by the patch.
+        self.assertNotIn('requests', container['resources'])
+
+    def test_set_resources_requires_at_least_one(self):
+        controller._kubectl_run = lambda args: None
+        with self.assertRaises(ValueError):
+            controller.set_workspace_resources('octo', None, None)
+
+    def test_set_resources_unknown_workspace_raises_lookup(self):
+        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': []}
+        with self.assertRaises(LookupError):
+            controller.set_workspace_resources('octo', '2', None)
 
 
 if __name__ == '__main__':

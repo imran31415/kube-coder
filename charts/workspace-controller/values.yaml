@@ -71,3 +71,58 @@ oauth2:
   githubUsers: ""
   githubOrg: ""
   githubTeam: ""
+
+# Self-service provisioning: an admin types a GitHub username in the console and
+# the controller (1) registers a GitHub App for them via the manifest flow, (2)
+# pushes rendered values+secrets to a private GitOps repo, and (3) launches a
+# privileged Job that `helm upgrade`s the workspace. OFF by default — the
+# controller stays a least-privileged list/scale console until you opt in and
+# supply every field below.
+provision:
+  enabled: false
+
+  # Base domain new workspaces are created under: <login>.<workspaceDomain>.
+  # Requires wildcard DNS (*.<workspaceDomain>) pointing at the ingress.
+  workspaceDomain: ""              # e.g. dev.scalebase.io
+
+  # Create the per-user GitHub Apps under this org. Empty => the signed-in
+  # admin's personal account. The admin must be able to create apps there.
+  githubOrg: ""
+
+  # Private repo (host/path, no scheme) holding generated users-private/<u>/
+  # values + secrets. The controller pushes here; the Job clones it.
+  gitops:
+    repo: ""                       # e.g. github.com/imran31415/kube-coder-users.git
+    branch: main
+
+  # Repo + ref the provisioner Job pulls the workspace Helm chart from. Point
+  # these at YOUR fork if you've customised the workspace chart.
+  chart:
+    repo: https://github.com/imran31415/kube-coder.git
+    ref: main
+
+  # Runtime credentials. Put these in users-private/_controller/secrets/provision.yaml
+  # (gitignored) — the chart renders them into a Secret, the same way oauth2
+  # credentials flow. `scripts/setup-controller-provisioning.sh` scaffolds this
+  # file and generates stateSecret for you.
+  gitToken: ""                     # token with push to gitops.repo + GitHub API read
+  stateSecret: ""                  # random HMAC key signing the manifest-flow state param
+
+  # Optional: reference a pre-existing Secret (keys: git-token, state-secret)
+  # instead of having the chart create one from gitToken/stateSecret above —
+  # e.g. if you manage it with sealed-secrets/SOPS.
+  existingSecretName: ""
+
+  # ServiceAccount the privileged Job runs as (created by provisioner-rbac.yaml).
+  serviceAccount: workspace-provisioner
+
+  # Whether the workspace chart's NetworkPolicies are in play (grants the Job
+  # networkpolicies verbs). Leave false unless tenants use them.
+  networkPolicies: false
+
+  # Image the Job runs. Empty => the controller image (has kubectl/git/make/curl;
+  # installs helm on the fly). Override only if you bake a dedicated tool image.
+  image: ""
+
+  # Default tag new workspaces run; the chart prefixes it with `devlaptop-`.
+  workspaceImageTag: ""

@@ -2,6 +2,11 @@
 
 This guide explains how to provision a new user workspace with OAuth2 authentication in the remote development environment.
 
+> **Prefer a UI?** The workspace-controller dashboard can do all of the below
+> from a GitHub username — registering the GitHub App, writing the config, and
+> deploying — via a one-click setup. See [docs/PROVISIONING.md](docs/PROVISIONING.md).
+> The manual flow here is still the source of truth and the fallback.
+
 ## TL;DR — generic per-user commands
 
 Every per-user command takes `USER=<name>` and auto-resolves the values

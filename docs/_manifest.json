@@ -40,6 +40,13 @@
         { "id": "files", "title": "Files", "file": "in-app/files.md", "summary": "Files tab tour, upload limits, where data lives, the persistence model." },
         { "id": "browser", "title": "Browser & VNC", "file": "in-app/browser.md", "summary": "Headless Firefox/Chrome on the virtual display, the VNC viewer, kiosk mode." }
       ]
+    },
+    {
+      "id": "administration",
+      "title": "Administration",
+      "pages": [
+        { "id": "provisioning", "title": "Workspace provisioning", "file": "PROVISIONING.md", "summary": "Self-service: provision a workspace from a GitHub username via the controller — GitHub App manifest flow, private GitOps repo, the provisioner Job, and the one-time setup." }
+      ]
     }
   ]
 }

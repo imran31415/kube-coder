@@ -1,9 +1,28 @@
 import { useEffect, useState } from 'preact/hooks';
-import { type Series, type WorkspaceMetrics, getWorkspaceMetrics } from '../api/workspaces';
+import {
+  type Series,
+  type WorkspaceMetrics,
+  getWorkspaceMetrics,
+  setWorkspaceResources,
+} from '../api/workspaces';
 import { findWorkspace, toggle, busy } from '../store';
 import { navigate } from '../router';
 import { Chart } from './Chart';
 import { fmtBytes, fmtCores, fmtPct, fmtRate, fmtUptime, fmtUsd, tone } from '../format';
+
+/** Bytes → a k8s memory quantity for prefilling the editor (e.g. 4Gi, 512Mi). */
+function toMemQty(bytes: number | null): string {
+  if (!bytes || bytes <= 0) return '';
+  const gi = bytes / 1024 ** 3;
+  if (gi >= 1) return `${Number.isInteger(gi) ? gi : gi.toFixed(1)}Gi`;
+  return `${Math.round(bytes / 1024 ** 2)}Mi`;
+}
+
+/** Cores → a k8s CPU quantity (e.g. 2, or 500m for sub-core). */
+function toCpuQty(cores: number | null): string {
+  if (cores == null || cores <= 0) return '';
+  return Number.isInteger(cores) ? String(cores) : `${Math.round(cores * 1000)}m`;
+}
 
 const RANGES = [
   { label: '1h', seconds: 3600 },
@@ -17,6 +36,8 @@ export function WorkspaceDetail({ user }: { user: string }) {
   const [m, setM] = useState<WorkspaceMetrics | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bumped after a resource edit to force an immediate metrics refetch.
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -40,7 +61,7 @@ export function WorkspaceDetail({ user }: { user: string }) {
       alive = false;
       window.clearInterval(id);
     };
-  }, [user, rangeSec]);
+  }, [user, rangeSec, reloadKey]);
 
   const ws = findWorkspace(user);
   const isBusy = busy.value.has(user);
@@ -126,6 +147,13 @@ export function WorkspaceDetail({ user }: { user: string }) {
             />
           </div>
 
+          <ResourceEditor
+            user={user}
+            cpuLimit={m.cpu.limitCores}
+            memLimit={m.memory.limitBytes}
+            onSaved={() => setReloadKey((k) => k + 1)}
+          />
+
           <div class="detail-foot">
             <div>
               <span class="foot-k">Est. cost</span>{' '}
@@ -174,5 +202,92 @@ function MetricSection({
       </div>
       <Chart points={series} color={color} fmt={fmt} />
     </section>
+  );
+}
+
+function ResourceEditor({
+  user,
+  cpuLimit,
+  memLimit,
+  onSaved,
+}: {
+  user: string;
+  cpuLimit: number | null;
+  memLimit: number | null;
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [cpu, setCpu] = useState('');
+  const [memory, setMemory] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  function start() {
+    setCpu(toCpuQty(cpuLimit));
+    setMemory(toMemQty(memLimit));
+    setErr(null);
+    setDone(false);
+    setOpen(true);
+  }
+
+  async function save() {
+    if (
+      !window.confirm(
+        `Apply new limits to ${user}? This patches the deployment and restarts ` +
+          `the pod — any live terminal sessions or running tasks will be lost.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      await setWorkspaceResources(user, { cpu: cpu.trim() || undefined, memory: memory.trim() || undefined });
+      setDone(true);
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div class="res-edit-bar">
+        <button class="btn ghost" onClick={start}>
+          Edit limits
+        </button>
+        {done && <span class="res-edit-note">Limits updated — pod is rolling out.</span>}
+        {err && <span class="res-edit-note err">{err}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div class="res-editor">
+      <div class="res-editor-fields">
+        <label class="field">
+          <span class="field-label">CPU limit</span>
+          <input class="input" value={cpu} placeholder="2 or 500m" onInput={(e) => setCpu((e.target as HTMLInputElement).value)} />
+        </label>
+        <label class="field">
+          <span class="field-label">Memory limit</span>
+          <input class="input" value={memory} placeholder="4Gi or 512Mi" onInput={(e) => setMemory((e.target as HTMLInputElement).value)} />
+        </label>
+      </div>
+      {err && <div class="banner err">{err}</div>}
+      <p class="sub">Changing limits restarts the pod. Requests are left unchanged; durable changes belong in values.yaml.</p>
+      <div class="res-editor-actions">
+        <button class="btn start" disabled={saving} onClick={save}>
+          {saving ? 'Applying…' : 'Apply & restart'}
+        </button>
+        <button class="btn ghost" disabled={saving} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }

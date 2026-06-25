@@ -1,12 +1,23 @@
 import { useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { type Workspace, type WorkspaceState } from './api/workspaces';
-import { workspaces, namespace, loaded, error, busy, refresh, toggle } from './store';
-import { route, detailUser } from './router';
+import {
+  workspaces,
+  namespace,
+  loaded,
+  error,
+  busy,
+  refresh,
+  toggle,
+  provisionConfig,
+  loadProvisionConfig,
+} from './store';
+import { route, detailUser, isProvisionRoute, navigate } from './router';
 import { MetricsPanel } from './components/MetricsPanel';
 import { WorkspaceDetail } from './components/WorkspaceDetail';
 import { InsightsBar } from './components/InsightsBar';
 import { CapacityPanel } from './components/CapacityPanel';
+import { ProvisionForm } from './components/ProvisionForm';
 
 // The single workspace whose inline metrics panel is expanded (null = collapsed).
 const expanded = signal<string | null>(null);
@@ -15,11 +26,14 @@ export function App() {
   // The 5s list poll runs for the whole app lifetime (both views need state).
   useEffect(() => {
     void refresh();
+    void loadProvisionConfig();
     const id = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(id);
   }, []);
 
-  const user = detailUser(route.value);
+  const path = route.value;
+  if (isProvisionRoute(path)) return <ProvisionForm />;
+  const user = detailUser(path);
   return user ? <WorkspaceDetail user={user} /> : <WorkspaceList />;
 }
 
@@ -35,9 +49,16 @@ function WorkspaceList() {
             Start or stop a workspace, or open one for detailed usage metrics.
           </p>
         </div>
-        <button class="btn ghost" onClick={() => void refresh()}>
-          Refresh
-        </button>
+        <div class="hdr-actions">
+          {provisionConfig.value?.enabled && (
+            <button class="btn start" onClick={() => navigate('/provision')}>
+              + New workspace
+            </button>
+          )}
+          <button class="btn ghost" onClick={() => void refresh()}>
+            Refresh
+          </button>
+        </div>
       </header>
 
       <InsightsBar />

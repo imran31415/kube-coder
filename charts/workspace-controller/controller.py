@@ -16,16 +16,21 @@ web/src/api/client.ts) so the auth cookie attaches; we strip that prefix here.
 
 Stdlib only — no third-party deps, so it runs on the unmodified coder image.
 """
+import base64
 import datetime
+import hashlib
 import http.server
 import hmac
 import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -246,6 +251,73 @@ def scale_workspace(user, replicas):
         raise LookupError(name)
     _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'])
     return name
+
+
+# --- Resource limits ---------------------------------------------------------
+#
+# Bump a live workspace's CPU/memory limits straight on the Deployment, the same
+# immediate-kubectl style as start/stop (no Helm at runtime). The patch targets
+# only the `ide` container by name via a strategic merge, so the workspace's
+# other containers and its `requests` are left untouched. Like start/stop, this
+# mutates live state that a later `helm upgrade` would reset — durable changes
+# still belong in the workspace's values.yaml.
+
+# The user-facing workspace container; the metrics panel limits come from here.
+WORKSPACE_CONTAINER = os.environ.get('WORKSPACE_CONTAINER', 'ide')
+# Guardrails so a fat-fingered limit can't request an unschedulable pod. Tunable.
+# MAX_MEM_LIMIT is parsed lazily in _validate_mem (parse_bytes is defined below).
+MAX_CPU_LIMIT_CORES = float(os.environ.get('MAX_CPU_LIMIT_CORES', '16'))
+MAX_MEM_LIMIT = os.environ.get('MAX_MEM_LIMIT', '64Gi')
+_CPU_QTY_RE = re.compile(r'^\d+(\.\d+)?m?$')
+_MEM_QTY_RE = re.compile(r'^\d+(\.\d+)?(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$')
+
+
+def _validate_cpu(q):
+    q = str(q).strip()
+    if not _CPU_QTY_RE.match(q):
+        raise ValueError(f'invalid CPU quantity: {q!r} (e.g. "500m" or "2")')
+    cores = parse_cpu(q)
+    if cores is None or cores <= 0:
+        raise ValueError('CPU limit must be > 0')
+    if cores > MAX_CPU_LIMIT_CORES:
+        raise ValueError(f'CPU limit {q} exceeds max {MAX_CPU_LIMIT_CORES} cores')
+    return q
+
+
+def _validate_mem(q):
+    q = str(q).strip()
+    if not _MEM_QTY_RE.match(q):
+        raise ValueError(f'invalid memory quantity: {q!r} (e.g. "4Gi" or "512Mi")')
+    b = parse_bytes(q)
+    if b is None or b <= 0:
+        raise ValueError('memory limit must be > 0')
+    cap = parse_bytes(MAX_MEM_LIMIT)
+    if cap and b > cap:
+        raise ValueError(f'memory limit {q} exceeds max {MAX_MEM_LIMIT}')
+    return q
+
+
+def set_workspace_resources(user, cpu_limit, mem_limit):
+    """Patch the ide container's CPU+memory limits. At least one must be given."""
+    if not _USER_RE.match(user):
+        raise ValueError('invalid workspace name')
+    limits = {}
+    if cpu_limit not in (None, ''):
+        limits['cpu'] = _validate_cpu(cpu_limit)
+    if mem_limit not in (None, ''):
+        limits['memory'] = _validate_mem(mem_limit)
+    if not limits:
+        raise ValueError('provide a cpu and/or memory limit')
+    name = f'{WORKSPACE_PREFIX}{user}'
+    existing = {w['deployment'] for w in list_workspaces()['workspaces']}
+    if name not in existing:
+        raise LookupError(name)
+    # Strategic merge: containers are merged by `name`, and the limits map merges
+    # key-wise, so only the keys we send change and `requests` stays as-is.
+    patch = {'spec': {'template': {'spec': {'containers': [
+        {'name': WORKSPACE_CONTAINER, 'resources': {'limits': limits}}]}}}}
+    _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)])
+    return limits
 
 
 # --- Metrics (Prometheus) ----------------------------------------------------
@@ -781,6 +853,463 @@ def cluster_capacity(range_seconds=3600, step=300):
     return out
 
 
+# --- Provisioning ------------------------------------------------------------
+#
+# Self-service onboarding: an admin types a GitHub username and we (1) register
+# a GitHub App for that user via the App Manifest flow — the only programmatic
+# path GitHub offers, since classic OAuth Apps have no creation API — (2) write
+# the rendered workspace values + secrets to a private GitOps repo, and (3)
+# launch a short-lived, privileged Job that runs `helm upgrade`. The always-on
+# controller never holds write power over workspaces: it only validates input,
+# does the manifest exchange, pushes to git, and creates the Job.
+#
+# The GitHub App's client_id/client_secret are a drop-in for the classic OAuth
+# App creds oauth2-proxy already consumes (it speaks --provider=github either
+# way), so nothing downstream changes.
+
+# Host of this controller, used to build the manifest redirect_url GitHub sends
+# the admin back to (e.g. controller.dev.scalebase.io).
+CONTROLLER_HOST = os.environ.get('CONTROLLER_HOST', '').strip()
+# New workspaces are created at <login>.<domain> (e.g. dev.scalebase.io). The
+# wildcard *.<domain> already resolves to the ingress, so no DNS step is needed.
+WORKSPACE_DOMAIN = os.environ.get('WORKSPACE_DOMAIN', '').strip()
+# Create the per-user GitHub Apps under this org; empty => the signed-in admin's
+# personal account (settings/apps/new vs organizations/<org>/settings/apps/new).
+GITHUB_APP_ORG = os.environ.get('GITHUB_APP_ORG', '').strip()
+# Private repo holding generated values+secrets, host/path only (no scheme), e.g.
+# github.com/imran31415/kube-coder-users.git. The controller pushes; the Job clones.
+GITOPS_REPO = os.environ.get('GITOPS_REPO', '').strip()
+GITOPS_BRANCH = os.environ.get('GITOPS_BRANCH', 'main').strip()
+# Token (GitHub App installation token or PAT) with push access to GITOPS_REPO
+# and read on the GitHub API. Injected from a Secret; empty => provisioning off.
+GITOPS_TOKEN = os.environ.get('GITOPS_TOKEN', '').strip()
+# HMAC key that signs the manifest-flow `state` param so the callback can trust
+# the user/options it round-trips through GitHub without server-side storage
+# (the controller runs 2 replicas with no shared state).
+PROVISION_STATE_SECRET = os.environ.get('PROVISION_STATE_SECRET', '').strip()
+# Repo + ref the provisioner Job pulls the workspace Helm chart from.
+CHART_REPO = os.environ.get('CHART_REPO', 'https://github.com/imran31415/kube-coder.git').strip()
+CHART_REF = os.environ.get('CHART_REF', 'main').strip()
+# Image the provisioner Job runs (needs git+make+kubectl; installs helm on the
+# fly if absent). Defaults to the controller's own image.
+PROVISIONER_IMAGE = os.environ.get('PROVISIONER_IMAGE', '').strip()
+PROVISIONER_SA = os.environ.get('PROVISIONER_SERVICE_ACCOUNT', 'workspace-provisioner').strip()
+PROVISIONER_PULL_SECRET = os.environ.get('PROVISIONER_PULL_SECRET', '').strip()
+# Tag the new workspace runs; the chart prefixes it with `devlaptop-`.
+WORKSPACE_IMAGE_TAG = os.environ.get('WORKSPACE_IMAGE_TAG', '').strip()
+GITHUB_API = 'https://api.github.com'
+GITHUB_TIMEOUT = int(os.environ.get('GITHUB_TIMEOUT', '15'))
+STATE_TTL = int(os.environ.get('PROVISION_STATE_TTL', '900'))  # 15 min
+# GitHub login: alphanumeric or single hyphens, max 39. Lowercased it is always
+# a valid DNS label (used for ws-<slug> and <slug>.<domain>).
+_GH_LOGIN_RE = re.compile(r'^[a-zA-Z0-9](?:-?[a-zA-Z0-9]){0,38}$')
+
+
+def provisioning_enabled():
+    """All the wiring a real provision needs; if any is missing we 501 cleanly
+    rather than half-run. The manifest exchange itself needs no token, but the
+    git push and GitHub user lookup do."""
+    return bool(CONTROLLER_HOST and WORKSPACE_DOMAIN and GITOPS_REPO
+                and GITOPS_TOKEN and PROVISION_STATE_SECRET)
+
+
+class GithubError(RuntimeError):
+    def __init__(self, message, status=0, detail=''):
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
+
+
+class ProvisionError(RuntimeError):
+    pass
+
+
+def _github_api(method, path, token=None, body=None):
+    """Minimal GitHub REST call (stdlib only). Raises GithubError on failure."""
+    url = path if path.startswith('http') else f'{GITHUB_API}{path}'
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header('Accept', 'application/vnd.github+json')
+    req.add_header('User-Agent', 'workspace-controller')
+    req.add_header('X-GitHub-Api-Version', '2022-11-28')
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    if data is not None:
+        req.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(req, timeout=GITHUB_TIMEOUT) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', 'replace')[:500]
+        raise GithubError(f'github {method} {path} -> HTTP {exc.code}', exc.code, detail)
+    except (OSError, ValueError) as exc:  # URLError/timeout subclass OSError
+        raise GithubError(f'github {method} {path} failed: {exc}')
+
+
+def slugify(login):
+    """Workspace slug from a GitHub login: lowercased. GitHub logins are already
+    DNS-label-safe (alphanumeric + single hyphens), so this is all that's needed."""
+    return login.lower()
+
+
+def validate_github_user(login):
+    """Confirm the login is a real GitHub user account and pull display fields."""
+    if not _GH_LOGIN_RE.match(login):
+        raise ValueError('invalid github username')
+    u = _github_api('GET', f'/users/{login}', token=GITOPS_TOKEN or None)
+    if u.get('type') != 'User':
+        raise ValueError(f'{login} is a {u.get("type", "non-user")}, not a user account')
+    slug = slugify(u['login'])
+    return {
+        'login': u['login'],
+        'slug': slug,
+        'name': u.get('name') or u['login'],
+        'email': u.get('email') or '',
+        'avatarUrl': u.get('avatar_url'),
+        'host': f'{slug}.{WORKSPACE_DOMAIN}',
+        'exists': workspace_exists(slug),
+    }
+
+
+def workspace_exists(slug):
+    try:
+        _kubectl_json(['get', f'deployment/{WORKSPACE_PREFIX}{slug}'])
+        return True
+    except KubectlError:
+        return False
+
+
+def sign_state(payload):
+    """Self-contained signed token so the manifest callback trusts its inputs
+    without server-side state (2 replicas, no shared store)."""
+    body = dict(payload)
+    body['exp'] = int(time.time()) + STATE_TTL
+    raw = base64.urlsafe_b64encode(json.dumps(body, separators=(',', ':')).encode()).rstrip(b'=')
+    sig = hmac.new(PROVISION_STATE_SECRET.encode(), raw, hashlib.sha256).hexdigest()[:32]
+    return raw.decode() + '.' + sig
+
+
+def verify_state(token):
+    try:
+        raw, sig = token.split('.', 1)
+    except ValueError:
+        raise ValueError('malformed state')
+    expect = hmac.new(PROVISION_STATE_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(sig, expect):
+        raise ValueError('bad state signature')
+    payload = json.loads(base64.urlsafe_b64decode(raw + '==='))
+    if int(payload.get('exp', 0)) < int(time.time()):
+        raise ValueError('state expired — restart the provision flow')
+    return payload
+
+
+def build_app_manifest(login, host):
+    """GitHub App manifest. The callback_urls entry is the per-workspace OAuth
+    redirect oauth2-proxy expects; default_permissions stays minimal because we
+    only use the app for user login, never installation/API access."""
+    slug = slugify(login)
+    return {
+        'name': f'kube-coder-{slug}'[:34],   # GitHub App names: max 34 chars, globally unique
+        'url': f'https://{host}',
+        'redirect_url': f'https://{CONTROLLER_HOST}/api/provision/github/callback',
+        'callback_urls': [f'https://{host}/oauth2/callback'],
+        'public': False,
+        'default_permissions': {'emails': 'read'},
+        'default_events': [],
+    }
+
+
+def manifest_post_url(state):
+    base = (f'https://github.com/organizations/{GITHUB_APP_ORG}/settings/apps/new'
+            if GITHUB_APP_ORG else 'https://github.com/settings/apps/new')
+    return f'{base}?state={urllib.parse.quote(state)}'
+
+
+def exchange_manifest_code(code):
+    """Trade the one-time manifest code for the app's credentials. This endpoint
+    authenticates via the code itself, so no token is required."""
+    resp = _github_api('POST', f'/app-manifests/{code}/conversions')
+    return {
+        'appId': resp.get('id'),
+        'slug': resp.get('slug'),
+        'clientId': resp['client_id'],
+        'clientSecret': resp['client_secret'],
+        'htmlUrl': resp.get('html_url'),
+    }
+
+
+def gen_cookie_secret():
+    """32 alphanumeric chars for oauth2-proxy's AES cookie key, matching the
+    shape scripts/new-user.sh generates with openssl."""
+    pool = ''.join(c for c in base64.b64encode(os.urandom(64)).decode() if c.isalnum())
+    if len(pool) < 32:                       # astronomically unlikely; retry to be safe
+        return gen_cookie_secret()
+    return pool[:32]
+
+
+def render_values_yaml(opts, client_id, cookie_secret):
+    """Render the workspace values.yaml. Mirrors scripts/user-template/
+    values.yaml.tmpl so a provisioned workspace is byte-compatible with a
+    hand-scaffolded one — kept here (not read from disk) because the controller
+    image ships only this file via ConfigMap."""
+    slug = opts['slug']
+    host = opts['host']
+    tag = opts.get('imageTag') or WORKSPACE_IMAGE_TAG or 'v1.0.0'
+    pvc = opts.get('pvcSize') or '20Gi'
+    res = opts.get('resources') or {}
+    req_cpu = (res.get('requests') or {}).get('cpu', '250m')
+    req_mem = (res.get('requests') or {}).get('memory', '1Gi')
+    lim_cpu = (res.get('limits') or {}).get('cpu', '2')
+    lim_mem = (res.get('limits') or {}).get('memory', '4Gi')
+    git_name = opts.get('gitName') or opts['login']
+    git_email = opts.get('gitEmail') or f'{opts["login"]}@users.noreply.github.com'
+    # github-user allowlist is the access gate: only this login may sign in.
+    return f"""# Workspace values for {slug} — generated by workspace-controller provisioning.
+namespace: {NAMESPACE}
+
+user:
+  name: {slug}
+  pvcSize: {pvc}
+  host: {host}
+  env:
+    - name: GIT_USER_NAME
+      value: {json.dumps(git_name)}
+    - name: GIT_USER_EMAIL
+      value: {json.dumps(git_email)}
+
+image:
+  repository: registry.digitalocean.com/resourceloop/coder
+  tag: devlaptop-{tag}
+  pullPolicy: Always
+  pullSecretName: regcred
+
+ingress:
+  className: nginx
+  auth:
+    type: oauth2
+    secretName: api-basic-auth
+  tls:
+    enabled: true
+    secretName: {slug}-{WORKSPACE_DOMAIN.replace('.', '-')}-tls
+    clusterIssuer: letsencrypt-production
+
+oauth2:
+  githubUsers: {json.dumps(opts['login'])}
+  cookieSecret: {json.dumps(cookie_secret)}
+  clientId: {json.dumps(client_id)}
+  clientSecret: "OVERRIDE-IN-SECRETS-OAUTH2-YAML"
+
+resources:
+  requests:
+    cpu: {json.dumps(req_cpu)}
+    memory: {json.dumps(req_mem)}
+  limits:
+    cpu: {json.dumps(lim_cpu)}
+    memory: {json.dumps(lim_mem)}
+
+build:
+  mode: buildkit
+  kanikoImage: gcr.io/kaniko-project/executor:latest
+  pushSecretName: regcred
+  defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
+
+ssh:
+  enabled: false
+  port: 22
+
+claude:
+  apiKey: ""
+
+github:
+  app:
+    appId: ""
+    installationId: ""
+    privateKey: ""
+"""
+
+
+def render_oauth_secret_yaml(client_secret):
+    """The one secret value, split out so values.yaml stays secret-free (mirrors
+    the users-private/<u>/secrets/oauth2.yaml convention)."""
+    return f"""# Generated by workspace-controller — do not edit by hand.
+oauth2:
+  clientSecret: {json.dumps(client_secret)}
+"""
+
+
+def gitops_publish(opts, client_id, client_secret, cookie_secret):
+    """Clone the private GitOps repo, write users-private/<slug>/{values,secrets},
+    commit and push. Returns the values+secret file paths (relative) the Job reads."""
+    slug = opts['slug']
+    values_yaml = render_values_yaml(opts, client_id, cookie_secret)
+    oauth_yaml = render_oauth_secret_yaml(client_secret)
+    workdir = tempfile.mkdtemp(prefix='gitops-', dir='/tmp')
+    try:
+        # x-access-token:<token> is GitHub's documented Basic-auth form for App
+        # installation tokens and PATs alike. Confined to this pod's process table.
+        repo_url = f'https://x-access-token:{GITOPS_TOKEN}@{GITOPS_REPO}'
+        _git(['clone', '--depth', '1', '-b', GITOPS_BRANCH, repo_url, workdir])
+        udir = os.path.join(workdir, 'users-private', slug)
+        os.makedirs(os.path.join(udir, 'secrets'), exist_ok=True)
+        with open(os.path.join(udir, 'values.yaml'), 'w') as f:
+            f.write(values_yaml)
+        with open(os.path.join(udir, 'secrets', 'oauth2.yaml'), 'w') as f:
+            f.write(oauth_yaml)
+        _git(['-C', workdir, 'add', '-A'])
+        # Nothing to commit if re-provisioning identical config — treat as success.
+        status = _git(['-C', workdir, 'status', '--porcelain'])
+        if status.strip():
+            _git(['-C', workdir,
+                  '-c', 'user.email=controller@kube-coder',
+                  '-c', 'user.name=workspace-controller',
+                  'commit', '-m', f'provision: {slug}'])
+            _git(['-C', workdir, 'push', 'origin', GITOPS_BRANCH])
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _redact(text):
+    """Strip the git token from any text before it reaches a client or log —
+    git error output echoes the token-bearing clone URL on failure."""
+    if GITOPS_TOKEN and text:
+        text = text.replace(GITOPS_TOKEN, '***')
+    return text
+
+
+def _git(args):
+    proc = subprocess.run(['git', *args], capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise ProvisionError(f'git {args[0]} failed: {_redact(proc.stderr.strip())[:300]}')
+    return proc.stdout
+
+
+# The Job clones the chart repo + the private config repo, assembles the
+# users-private dir the Makefile expects, ensures helm is on PATH, then runs the
+# same `make deploy` an operator would. Everything privileged lives here, not in
+# the controller.
+PROVISION_JOB_SCRIPT = r"""
+set -euo pipefail
+export HOME=/tmp
+mkdir -p /tmp/bin
+export PATH="/tmp/bin:$PATH"
+if ! command -v helm >/dev/null 2>&1; then
+  echo "helm not found — installing to /tmp/bin"
+  curl -fsSL https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz | tar -xz -C /tmp
+  install -m 0755 /tmp/linux-amd64/helm /tmp/bin/helm
+fi
+git clone --depth 1 -b "$CHART_REF" "$CHART_REPO" /tmp/kc
+git clone --depth 1 -b "$GITOPS_BRANCH" "https://x-access-token:${GITOPS_TOKEN}@${GITOPS_REPO}" /tmp/cfg
+mkdir -p /tmp/kc/users-private
+cp -r "/tmp/cfg/users-private/${SLUG}" "/tmp/kc/users-private/${SLUG}"
+cd /tmp/kc
+make deploy USER="${SLUG}" NAMESPACE="${NAMESPACE}"
+"""
+
+
+def build_job_manifest(slug):
+    name = f'provision-{slug}-{int(time.time())}'[:63]
+    image = PROVISIONER_IMAGE or f'{os.environ.get("CONTROLLER_IMAGE", "")}' or ''
+    env = [
+        {'name': 'SLUG', 'value': slug},
+        {'name': 'NAMESPACE', 'value': NAMESPACE},
+        {'name': 'CHART_REPO', 'value': CHART_REPO},
+        {'name': 'CHART_REF', 'value': CHART_REF},
+        {'name': 'GITOPS_REPO', 'value': GITOPS_REPO},
+        {'name': 'GITOPS_BRANCH', 'value': GITOPS_BRANCH},
+        {'name': 'GITOPS_TOKEN', 'value': GITOPS_TOKEN},
+    ]
+    container = {
+        'name': 'provision',
+        'image': image,
+        'command': ['bash', '-c', PROVISION_JOB_SCRIPT],
+        'env': env,
+        'resources': {'requests': {'cpu': '100m', 'memory': '256Mi'},
+                      'limits': {'cpu': '1', 'memory': '1Gi'}},
+    }
+    pod_spec = {
+        'serviceAccountName': PROVISIONER_SA,
+        'restartPolicy': 'Never',
+        'containers': [container],
+    }
+    if PROVISIONER_PULL_SECRET:
+        pod_spec['imagePullSecrets'] = [{'name': PROVISIONER_PULL_SECRET}]
+    return {
+        'apiVersion': 'batch/v1',
+        'kind': 'Job',
+        'metadata': {
+            'name': name,
+            'namespace': NAMESPACE,
+            'labels': {'app': 'workspace-provisioner', 'provisionUser': slug},
+        },
+        'spec': {
+            'backoffLimit': 1,
+            'ttlSecondsAfterFinished': 3600,    # auto-clean an hour after finish
+            'activeDeadlineSeconds': 900,
+            'template': {
+                'metadata': {'labels': {'app': 'workspace-provisioner', 'provisionUser': slug}},
+                'spec': pod_spec,
+            },
+        },
+    }
+
+
+def _kubectl_apply(manifest):
+    cmd = ['kubectl', 'apply', '-n', NAMESPACE, '-f', '-']
+    proc = subprocess.run(cmd, input=json.dumps(manifest), capture_output=True,
+                          text=True, timeout=KUBECTL_TIMEOUT)
+    if proc.returncode != 0:
+        raise KubectlError('kubectl apply failed', proc.stderr.strip())
+    return proc.stdout.strip()
+
+
+def create_provision_job(slug):
+    return _kubectl_apply(build_job_manifest(slug))
+
+
+def provision_status(slug):
+    """Latest provisioning Job for this user + the resulting workspace state."""
+    jobs = _kubectl_json(['get', 'jobs', '-l', f'provisionUser={slug}']).get('items', [])
+    job_state, message = 'none', ''
+    if jobs:
+        jobs.sort(key=lambda j: j.get('metadata', {}).get('creationTimestamp', ''))
+        st = jobs[-1].get('status', {})
+        if st.get('succeeded'):
+            job_state = 'succeeded'
+        elif st.get('failed'):
+            job_state, message = 'failed', 'provisioner Job failed — see Job logs'
+        elif st.get('active'):
+            job_state = 'running'
+        else:
+            job_state = 'pending'
+    ws = next((w for w in list_workspaces()['workspaces'] if w['user'] == slug), None)
+    return {
+        'slug': slug,
+        'job': job_state,
+        'message': message,
+        'workspace': ws,
+        'url': ws['url'] if ws else f'https://{slug}.{WORKSPACE_DOMAIN}/',
+    }
+
+
+def do_provision(state_payload, creds):
+    """Back half of the flow, run from the manifest callback: render config, push
+    to git, launch the Job. `creds` come from the manifest exchange."""
+    opts = {
+        'login': state_payload['login'],
+        'slug': slugify(state_payload['login']),
+        'host': state_payload['host'],
+        'pvcSize': state_payload.get('pvcSize'),
+        'resources': state_payload.get('resources'),
+        'gitName': state_payload.get('gitName'),
+        'gitEmail': state_payload.get('gitEmail'),
+        'imageTag': state_payload.get('imageTag'),
+    }
+    cookie_secret = gen_cookie_secret()
+    gitops_publish(opts, creds['clientId'], creds['clientSecret'], cookie_secret)
+    create_provision_job(opts['slug'])
+    return opts['slug']
+
+
 # --- HTTP handler ------------------------------------------------------------
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -924,13 +1453,156 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
+        if path == '/api/provision/config':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            self.send_json({
+                'enabled': provisioning_enabled(),
+                'workspaceDomain': WORKSPACE_DOMAIN,
+                'githubAppOrg': GITHUB_APP_ORG,
+            })
+            return
+        if path == '/api/provision/validate':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            if not provisioning_enabled():
+                self.send_json({'error': 'provisioning not configured'}, 501)
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            login = (q.get('user', ['']) or [''])[0].strip()
+            try:
+                self.send_json(validate_github_user(login))
+            except ValueError as exc:
+                self.send_json({'error': str(exc)}, 400)
+            except GithubError as exc:
+                code = 404 if exc.status == 404 else 502
+                self.send_json({'error': f'github lookup failed: {exc}'}, code)
+            return
+        if path == '/api/provision/github/callback':
+            # Browser redirect from GitHub after the admin confirms the manifest.
+            # Authenticated by the controller's own oauth2 cookie (same host).
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            self.handle_manifest_callback()
+            return
+        m = re.match(r'^/api/provision/([a-z0-9-]{1,41})/status$', path)
+        if m:
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            if not provisioning_enabled():
+                self.send_json({'error': 'provisioning not configured'}, 501)
+                return
+            try:
+                self.send_json(provision_status(m.group(1)))
+            except KubectlError as exc:
+                self.send_json({'error': str(exc)}, 502)
+            return
         if path.startswith('/api/'):
             self.send_json({'error': 'not found'}, 404)
             return
         self.serve_spa(path)
 
+    def handle_manifest_callback(self):
+        """Exchange the manifest code, then render+push+launch the Job, and
+        redirect the SPA to the live status view. Errors land back on the
+        provision form with a message rather than a bare JSON page."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        code = (q.get('code', ['']) or [''])[0]
+        state = (q.get('state', ['']) or [''])[0]
+        try:
+            payload = verify_state(state)
+        except ValueError as exc:
+            self.send_spa_redirect(f'/#/provision?error={urllib.parse.quote(str(exc))}')
+            return
+        if not code:
+            self.send_spa_redirect('/#/provision?error=missing+code')
+            return
+        try:
+            creds = exchange_manifest_code(code)
+            slug = do_provision(payload, creds)
+        except (GithubError, ProvisionError, KubectlError) as exc:
+            sys.stderr.write(f'[controller] provision failed: {exc}\n')
+            self.send_spa_redirect(f'/#/provision?error={urllib.parse.quote(str(exc)[:200])}')
+            return
+        self.send_spa_redirect(f'/#/provision/{slug}')
+
+    def send_spa_redirect(self, location):
+        self.send_response(302)
+        self.send_header('Location', location)
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+
+    def handle_manifest_start(self):
+        """Validate the requested user + options and return the GitHub App
+        manifest the SPA auto-POSTs to GitHub, plus the signed state that carries
+        those options through to the callback."""
+        try:
+            body = self.read_json_body()
+        except ValueError:
+            self.send_json({'error': 'invalid body'}, 400)
+            return
+        login = str(body.get('user', '')).strip()
+        try:
+            info = validate_github_user(login)
+        except ValueError as exc:
+            self.send_json({'error': str(exc)}, 400)
+            return
+        except GithubError as exc:
+            self.send_json({'error': f'github lookup failed: {exc}'}, 502)
+            return
+        state_payload = {
+            'login': info['login'],
+            'host': info['host'],
+            'pvcSize': body.get('pvcSize'),
+            'resources': body.get('resources'),
+            'gitName': body.get('gitName') or info['name'],
+            'gitEmail': body.get('gitEmail') or info['email'],
+            'imageTag': body.get('imageTag'),
+        }
+        state = sign_state(state_payload)
+        self.send_json({
+            'action': manifest_post_url(state),
+            'manifest': json.dumps(build_app_manifest(info['login'], info['host'])),
+            'state': state,
+            'host': info['host'],
+        })
+
     def do_POST(self):
         path = self._norm_path()
+        if path == '/api/provision/github/manifest':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            if not provisioning_enabled():
+                self.send_json({'error': 'provisioning not configured'}, 501)
+                return
+            self.handle_manifest_start()
+            return
+        rm = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/resources$', path)
+        if rm:
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            user = rm.group(1)
+            try:
+                body = self.read_json_body()
+                limits = set_workspace_resources(user, body.get('cpu'), body.get('memory'))
+            except ValueError as exc:
+                self.send_json({'error': str(exc)}, 400)
+                return
+            except LookupError:
+                self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
+                return
+            except KubectlError as exc:
+                sys.stderr.write(f'[controller] set resources {user}: {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
+                return
+            self.send_json({'ok': True, 'user': user, 'limits': limits})
+            return
         m = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/(start|stop)$', path)
         if not m:
             self.send_json({'error': 'not found'}, 404)
