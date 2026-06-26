@@ -51,6 +51,13 @@ rules:
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Kubernetes privilege-escalation prevention: to *create* the per-user build Role
+# (which grants batch jobs/cronjobs for Triggers), the provisioner must itself
+# hold a superset of those verbs. Its other rules already cover the build Role's
+# secrets + pods grants; batch is the only addition needed.
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 # Read pods so `helm --wait` and any troubleshooting can observe rollout.
 - apiGroups: [""]
   resources: ["pods", "pods/log", "events"]
