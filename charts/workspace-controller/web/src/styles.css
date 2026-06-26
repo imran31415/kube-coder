@@ -859,6 +859,13 @@ body {
   align-items: flex-start;
 }
 
+.prov-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .prov-stage {
   display: flex;
   align-items: center;

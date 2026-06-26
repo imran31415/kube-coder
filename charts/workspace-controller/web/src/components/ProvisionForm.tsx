@@ -213,6 +213,7 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
 function ProvisionStatusView({ slug }: { slug: string }) {
   const [status, setStatus] = useState<ProvisionStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -233,8 +234,25 @@ function ProvisionStatusView({ slug }: { slug: string }) {
   }, [slug]);
 
   const job = status?.job ?? 'pending';
-  const ready = status?.workspace?.state === 'running';
-  const phase = jobPhase(job, ready);
+  // A failed provisioner Job must win over a still-running pod: a half-applied
+  // deploy (pod up, but helm/RBAC failed mid-rollout) is NOT "ready".
+  const ready = status?.workspace?.state === 'running' && job !== 'failed';
+  const partial = job === 'failed' && status?.workspace?.state === 'running';
+  const phase = jobPhase(job, ready, partial);
+
+  // Relaunch the deploy Job from the saved GitOps config — no GitHub step, no
+  // re-typing. The poll loop picks up the new Job state from here.
+  async function onRetry() {
+    setRetrying(true);
+    setErr(null);
+    try {
+      setStatus(await deployExisting(slug));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   return (
     <div class="app">
@@ -261,16 +279,21 @@ function ProvisionStatusView({ slug }: { slug: string }) {
           </a>
         )}
         {job === 'failed' && (
-          <button class="btn" onClick={() => navigate('/provision')}>
-            Try again
-          </button>
+          <div class="prov-actions">
+            <button class="btn start prov-go" type="button" disabled={retrying} onClick={onRetry}>
+              {retrying ? 'Retrying…' : partial ? 'Finish deploy' : 'Retry deploy'}
+            </button>
+            <button class="btn ghost" type="button" onClick={() => navigate('/provision')}>
+              Start over
+            </button>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function jobPhase(job: ProvisionStatus['job'], ready: boolean): { title: string; detail: string; tone: 'progress' | 'ok' | 'err' } {
+function jobPhase(job: ProvisionStatus['job'], ready: boolean, partial = false): { title: string; detail: string; tone: 'progress' | 'ok' | 'err' } {
   if (ready) return { title: 'Workspace ready', detail: 'The pod is running.', tone: 'ok' };
   switch (job) {
     case 'succeeded':
@@ -278,7 +301,9 @@ function jobPhase(job: ProvisionStatus['job'], ready: boolean): { title: string;
     case 'running':
       return { title: 'Deploying workspace', detail: 'Running helm upgrade…', tone: 'progress' };
     case 'failed':
-      return { title: 'Provisioning failed', detail: 'See the provisioner Job logs.', tone: 'err' };
+      return partial
+        ? { title: 'Provisioning incomplete', detail: 'The pod is up but the deploy failed mid-rollout — click Finish deploy to complete it.', tone: 'err' }
+        : { title: 'Provisioning failed', detail: 'See the provisioner Job logs.', tone: 'err' };
     default:
       return { title: 'Starting provisioner', detail: 'Launching the deploy Job…', tone: 'progress' };
   }
