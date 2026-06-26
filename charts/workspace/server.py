@@ -482,10 +482,11 @@ class ClaudeTaskManager:
     # Assistant options surfaced in the dashboard dropdown:
     #   1. Claude Code   — always available (anthropic-hosted)
     #   2. Ante CLI      — always available (pre-installed in the image)
-    #   3. LibreFang     — agent-OS CLI; listed when its binary is present
-    #   4. OpenRouter    — OpenCode CLI proxied through OpenRouter
-    #   5. DeepSeek      — OpenCode CLI against DeepSeek's native API
-    #   6. Opensource GPU — kc-harness against the configured Ollama endpoint
+    #   3. Google Gemini — `gemini` CLI; listed when GEMINI_API_KEY is set
+    #   4. LibreFang     — agent-OS CLI; listed when its binary is present
+    #   5. OpenRouter    — OpenCode CLI proxied through OpenRouter
+    #   6. DeepSeek      — OpenCode CLI against DeepSeek's native API
+    #   7. Opensource GPU — kc-harness against the configured Ollama endpoint
     # The legacy `opencode-fallback` assistant was retired in favour of
     # kc-harness: same endpoint, narrow tool surface, XML-aware parser, so
     # small local models actually execute tools instead of describing them.
@@ -497,6 +498,12 @@ class ClaudeTaskManager:
         'ante': {
             'id': 'ante',
             'label': 'Ante CLI',
+        },
+        # Google Gemini — the open-source `gemini` CLI (npm @google/gemini-cli),
+        # pre-installed in the image. Listed only when GEMINI_API_KEY is set.
+        'gemini': {
+            'id': 'gemini',
+            'label': 'Google Gemini',
         },
         # LibreFang — open-source agent OS (https://librefang.ai). Tasks talk
         # to its registry-bundled "coder" agent via `librefang chat`; the CLI
@@ -526,6 +533,13 @@ class ClaudeTaskManager:
     def available_assistants():
         out = [dict(ClaudeTaskManager.ASSISTANTS['claude'], default=True)]
         out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
+        # Google Gemini — surfaced only when a Gemini API key is present, so the
+        # dropdown never advertises an option that would die for lack of creds.
+        if os.environ.get('GEMINI_API_KEY'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['gemini'],
+                model=os.environ.get('KC_GEMINI_MODEL', 'gemini-2.5-pro'),
+            ))
         # LibreFang — listed only when its CLI is actually resolvable (older
         # images predate it, and /usr/local/bin/librefang is a symlink to a
         # PVC path that start.sh seeds), so the dropdown never advertises a
@@ -564,6 +578,12 @@ class ClaudeTaskManager:
     def assistant_command(assistant):
         if assistant == 'ante':
             return 'ante'
+        if assistant == 'gemini':
+            # Interactive Gemini REPL for the dashboard pane. KC_GEMINI_MODEL
+            # picks the model; quoted so a hostile env var can't break out of
+            # the `bash -lc` shell_cmd built downstream in create_task().
+            model = os.environ.get('KC_GEMINI_MODEL', 'gemini-2.5-pro')
+            return f'gemini -m {_shell_quote(model)}'
         if assistant == 'librefang':
             # Interactive chat REPL with the registry's "coder" agent (synced
             # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT

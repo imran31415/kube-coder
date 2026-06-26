@@ -297,6 +297,7 @@ Every build session — and every orchestrator sub-agent — picks its assistant
 |---|---|---|
 | **Claude Code** (default) | Anthropic API key or subscription login | `claude.apiKey`, or `make shell USER=<name>` → `claude` to log in once |
 | **Ante** | Antigma's terminal-native agent; defaults to **DeepSeek v3.2 via OpenRouter** | `assistant.openrouter.apiKey` (CLI pre-installed — no separate key) |
+| **Google Gemini** | Google's open-source `gemini` CLI against the native Gemini API (default `gemini-2.5-pro`) | `assistant.gemini.apiKey` (+ optional `model`) |
 | **OpenCode → OpenRouter** | any OpenRouter model (default `anthropic/claude-sonnet-4`) | `assistant.openrouter.apiKey` + `model` |
 | **OpenCode → DeepSeek** | DeepSeek native API (`deepseek-chat` / `deepseek-reasoner`) | `assistant.deepseek.apiKey` |
 | **LibreFang** | open-source agent OS; reuses whatever provider keys are set | `assistant.librefang.agent` |

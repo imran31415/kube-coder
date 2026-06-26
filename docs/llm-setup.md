@@ -14,6 +14,7 @@ backs it.
 | Id                     | Label             | Backed by                              | Use it for                                          |
 | ---------------------- | ----------------- | -------------------------------------- | --------------------------------------------------- |
 | `claude`               | Claude Code       | Anthropic API (`claude` CLI in pod)    | Default. Full agentic work.                         |
+| `gemini`               | Google Gemini     | Gemini API (`gemini` CLI in pod)       | Native Google models; generous free tier.           |
 | `opencode-openrouter`  | OpenRouter        | `opencode` CLI → OpenRouter            | Claude-class behaviour without Anthropic billing.   |
 | `kc-harness`           | Opensource GPU    | In-pod Python loop → Ollama (or any OpenAI-compatible endpoint) | Self-hosted open models on a GPU droplet.           |
 
@@ -73,6 +74,33 @@ Wiring:
   loader silently drop the rest.
 - `assistant_command('opencode-openrouter')` returns
   `opencode --model openrouter/<model>`.
+
+## Google Gemini
+
+Runs Google's open-source `gemini` CLI inside the pane against the native
+Gemini API. The dashboard surfaces it as the `Google Gemini` option only
+when a Gemini API key is configured.
+
+```yaml
+# secrets/<user>/assistant.yaml (gitignored)
+assistant:
+  gemini:
+    apiKey: "AIza…"          # https://aistudio.google.com/apikey
+    model: "gemini-2.5-pro"  # or gemini-2.5-flash
+```
+
+Wiring:
+
+- Helm renders `GEMINI_API_KEY` (from the assistant secret) and
+  `KC_GEMINI_MODEL` env vars on the pod (see
+  `charts/workspace/templates/deployment.yaml`).
+- The `gemini` CLI is npm-installed in the image (`@google/gemini-cli`),
+  so there's no on-disk config to write — it auto-discovers the key from
+  `GEMINI_API_KEY`.
+- `assistant_command('gemini')` returns `gemini -m <model>` (interactive
+  dashboard REPL). The agent-orchestrator's headless path runs
+  `gemini --yolo -m <model> -p <prompt>` so spawned sub-agents complete
+  unattended and report an exit code.
 
 ## Opensource GPU (`kc-harness`)
 

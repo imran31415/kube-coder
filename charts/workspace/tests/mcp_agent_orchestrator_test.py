@@ -47,6 +47,28 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertIn('--yolo', cmd)
         self.assertIn("'write tests'", cmd)
 
+    def test_headless_gemini_has_print_yolo_and_model(self):
+        cmd = orch._assistant_command('gemini', 'write tests', headless=True)
+        self.assertIn('gemini', cmd)
+        self.assertIn('-p', cmd)
+        self.assertIn('--yolo', cmd)
+        self.assertIn('-m', cmd)
+        self.assertIn('gemini-2.5-pro', cmd)
+        self.assertIn("'write tests'", cmd)
+
+    def test_interactive_gemini_is_model_repl_without_prompt(self):
+        cmd = orch._assistant_command('gemini', 'ignored', headless=False)
+        self.assertEqual(cmd, 'gemini -m gemini-2.5-pro')
+        self.assertNotIn('ignored', cmd)
+
+    def test_gemini_model_env_override(self):
+        os.environ['KC_GEMINI_MODEL'] = 'gemini-2.5-flash'
+        try:
+            cmd = orch._assistant_command('gemini', 'x', headless=True)
+            self.assertIn('gemini-2.5-flash', cmd)
+        finally:
+            os.environ.pop('KC_GEMINI_MODEL', None)
+
     def test_headless_librefang_ensures_daemon_then_messages(self):
         cmd = orch._assistant_command('librefang', 'write tests', headless=True)
         # One-shot mode is `librefang message <agent> <prompt>` …
