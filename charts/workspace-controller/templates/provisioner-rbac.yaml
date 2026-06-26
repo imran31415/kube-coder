@@ -37,9 +37,14 @@ rules:
 - apiGroups: [""]
   resources: ["services", "persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Ingresses for the workspace host + oauth2 routes.
+# Ingresses for the workspace host + oauth2 routes, plus the per-workspace
+# NetworkPolicy the chart always renders (denies cross-tenant ingress to the pods).
 - apiGroups: ["networking.k8s.io"]
-  resources: ["ingresses"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# The oauth2-proxy PodDisruptionBudget the chart ships for its HA proxy pair.
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 # The workspace chart ships its own per-user build Role/RoleBinding; Helm must be
 # able to create them. (RBAC create is itself privileged — it lives only here.)
@@ -50,12 +55,6 @@ rules:
 - apiGroups: [""]
   resources: ["pods", "pods/log", "events"]
   verbs: ["get", "list", "watch"]
-{{- if .Values.provision.networkPolicies }}
-# Only when the workspace chart's networkpolicy.yaml is enabled for tenants.
-- apiGroups: ["networking.k8s.io"]
-  resources: ["networkpolicies"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -133,6 +133,11 @@ if command -v kubectl >/dev/null 2>&1; then
   NS=${NS:-coder}
   if kubectl get ns "$NS" >/dev/null 2>&1; then
     pass "namespace exists: $NS"
+  elif kubectl get serviceaccount default -n "$NS" >/dev/null 2>&1; then
+    # `get namespaces` is cluster-scoped; under namespaced RBAC (e.g. the
+    # provisioner Job's Role) it's forbidden even when the namespace exists.
+    # Fall back to a namespaced probe — every namespace has a `default` SA.
+    pass "namespace exists: $NS (verified via namespaced probe)"
   else
     fail "namespace '$NS' does not exist — kubectl create namespace $NS"
   fi

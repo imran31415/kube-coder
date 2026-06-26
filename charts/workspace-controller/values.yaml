@@ -116,10 +116,6 @@ provision:
   # ServiceAccount the privileged Job runs as (created by provisioner-rbac.yaml).
   serviceAccount: workspace-provisioner
 
-  # Whether the workspace chart's NetworkPolicies are in play (grants the Job
-  # networkpolicies verbs). Leave false unless tenants use them.
-  networkPolicies: false
-
   # Image the Job runs. Empty => the controller image (has kubectl/git/make/curl;
   # installs helm on the fly). Override only if you bake a dedicated tool image.
   image: ""
