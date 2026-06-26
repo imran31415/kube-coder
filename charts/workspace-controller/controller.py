@@ -968,6 +968,10 @@ def validate_github_user(login):
         'avatarUrl': u.get('avatar_url'),
         'host': f'{slug}.{WORKSPACE_DOMAIN}',
         'exists': workspace_exists(slug),
+        # True if the GitHub App was already registered + its config pushed to
+        # the GitOps repo on a previous attempt. Lets the UI skip the (globally
+        # unique, would-collide) App-creation step and deploy from saved config.
+        'configExists': gitops_config_exists(slug),
     }
 
 
@@ -1166,6 +1170,30 @@ def gitops_publish(opts, client_id, client_secret, cookie_secret):
             _git(['-C', workdir, 'push', 'origin', GITOPS_BRANCH])
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _gitops_owner_repo():
+    """`owner/repo` from GITOPS_REPO (`host/owner/repo.git`, no scheme)."""
+    p = GITOPS_REPO.split('/', 1)[1] if '/' in GITOPS_REPO else GITOPS_REPO
+    return p[:-4] if p.endswith('.git') else p
+
+
+def gitops_config_exists(slug):
+    """True if the GitOps repo already holds rendered config for this slug — i.e.
+    the GitHub App was registered on a previous attempt. A retry can then skip
+    App creation (the name is globally unique and would collide) and deploy from
+    the saved config. Defensive: any lookup failure returns False, falling back
+    to the normal App-creation flow."""
+    if not (GITOPS_REPO and GITOPS_TOKEN):
+        return False
+    path = f'/repos/{_gitops_owner_repo()}/contents/users-private/{slug}/values.yaml?ref={GITOPS_BRANCH}'
+    try:
+        _github_api('GET', path, token=GITOPS_TOKEN)
+        return True
+    except GithubError as exc:
+        if getattr(exc, 'status', None) != 404:
+            sys.stderr.write(f'[controller] gitops_config_exists({slug}) check failed: {exc}\n')
+        return False
 
 
 def _redact(text):
@@ -1581,6 +1609,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': 'provisioning not configured'}, 501)
                 return
             self.handle_manifest_start()
+            return
+        dm = re.match(r'^/api/provision/([a-z0-9-]{1,41})/deploy$', path)
+        if dm:
+            # Idempotent re-deploy: the GitHub App + config already exist in the
+            # GitOps repo (e.g. a retry after a failed Job), so skip the manifest
+            # flow entirely and just relaunch the Job against the saved config.
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            if not provisioning_enabled():
+                self.send_json({'error': 'provisioning not configured'}, 501)
+                return
+            slug = dm.group(1)
+            if not gitops_config_exists(slug):
+                self.send_json({'error': f'no saved config for {slug} in the GitOps repo — register the GitHub App first'}, 409)
+                return
+            try:
+                create_provision_job(slug)
+                self.send_json(provision_status(slug))
+            except KubectlError as exc:
+                self.send_json({'error': str(exc)}, 502)
             return
         rm = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/resources$', path)
         if rm:

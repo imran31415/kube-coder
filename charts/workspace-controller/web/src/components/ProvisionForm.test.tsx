@@ -7,6 +7,7 @@ import type { ManifestResponse, ValidateUserResponse } from '../api/provision';
 // cross-test failures. `respondValidate` / `submitted` steer behaviour.
 let respondValidate: () => Promise<ValidateUserResponse>;
 const submitted: ManifestResponse[] = [];
+const deployed: string[] = [];
 vi.mock('../api/provision', async (orig) => ({
   ...(await orig<typeof import('../api/provision')>()),
   validateUser: () => respondValidate(),
@@ -14,6 +15,10 @@ vi.mock('../api/provision', async (orig) => ({
     Promise.resolve({ action: 'https://github.com/settings/apps/new?state=s', manifest: '{}', state: 's', host: 'octo.dev.scalebase.io' }),
   submitManifestToGithub: (m: ManifestResponse) => {
     submitted.push(m);
+  },
+  deployExisting: (slug: string) => {
+    deployed.push(slug);
+    return Promise.resolve({ slug, job: 'pending', message: '', workspace: null, url: '' });
   },
 }));
 
@@ -28,6 +33,7 @@ const sampleUser = (over: Partial<ValidateUserResponse> = {}): ValidateUserRespo
   avatarUrl: null,
   host: 'octocat.dev.scalebase.io',
   exists: false,
+  configExists: false,
   ...over,
 });
 
@@ -37,6 +43,7 @@ describe('ProvisionForm (create view)', () => {
     provisionConfig.value = { enabled: true, workspaceDomain: 'dev.scalebase.io', githubAppOrg: '' };
     respondValidate = () => Promise.resolve(sampleUser());
     submitted.length = 0;
+    deployed.length = 0;
   });
 
   it('looks up a username and shows the preview with the derived host', async () => {
@@ -63,6 +70,18 @@ describe('ProvisionForm (create view)', () => {
     fireEvent.click(screen.getByText(/Register GitHub App/));
     await waitFor(() => expect(submitted).toHaveLength(1));
     expect(submitted[0].action).toContain('github.com/settings/apps/new');
+  });
+
+  it('deploys from saved config (skips the manifest) when configExists', async () => {
+    respondValidate = () => Promise.resolve(sampleUser({ configExists: true, slug: 'octocat' }));
+    render(<ProvisionForm />);
+    fireEvent.input(screen.getByPlaceholderText('octocat'), { target: { value: 'octocat' } });
+    fireEvent.click(screen.getByText('Look up'));
+    await waitFor(() => expect(screen.getByText('Deploy workspace')).toBeInTheDocument());
+    expect(screen.queryByText(/Register GitHub App/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Deploy workspace'));
+    await waitFor(() => expect(deployed).toEqual(['octocat']));
+    expect(submitted).toHaveLength(0);
   });
 
   it('shows a disabled-state message when provisioning is off', () => {

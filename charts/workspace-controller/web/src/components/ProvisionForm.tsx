@@ -4,6 +4,7 @@ import { provisionConfig } from '../store';
 import {
   type ProvisionStatus,
   type ValidateUserResponse,
+  deployExisting,
   getProvisionStatus,
   startManifest,
   submitManifestToGithub,
@@ -93,6 +94,21 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
     }
   }
 
+  // The GitHub App + config already exist (e.g. a retry after a failed Job):
+  // skip the manifest detour and relaunch the deploy Job from saved config.
+  async function onDeployExisting() {
+    if (!info) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      await deployExisting(info.slug);
+      navigate(`/provision/${info.slug}`);
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : String(e2));
+      setSubmitting(false);
+    }
+  }
+
   const domainHint = cfg?.workspaceDomain ? `<username>.${cfg.workspaceDomain}` : 'the workspace domain';
 
   return (
@@ -167,13 +183,27 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
             </div>
           )}
 
-          <p class="sub">
-            Next: GitHub opens to confirm a new App named <code>kube-coder-{info.slug}</code>. Click{' '}
-            <strong>Create GitHub App</strong> and you'll be returned here to watch the rollout.
-          </p>
-          <button class="btn start prov-go" type="button" disabled={submitting} onClick={onProvision}>
-            {submitting ? 'Opening GitHub…' : 'Register GitHub App & provision'}
-          </button>
+          {info.configExists ? (
+            <>
+              <p class="sub">
+                A GitHub App named <code>kube-coder-{info.slug}</code> is already registered and its
+                config is saved — no GitHub step needed. Deploy straight from the saved config.
+              </p>
+              <button class="btn start prov-go" type="button" disabled={submitting} onClick={onDeployExisting}>
+                {submitting ? 'Starting…' : 'Deploy workspace'}
+              </button>
+            </>
+          ) : (
+            <>
+              <p class="sub">
+                Next: GitHub opens to confirm a new App named <code>kube-coder-{info.slug}</code>. Click{' '}
+                <strong>Create GitHub App</strong> and you'll be returned here to watch the rollout.
+              </p>
+              <button class="btn start prov-go" type="button" disabled={submitting} onClick={onProvision}>
+                {submitting ? 'Opening GitHub…' : 'Register GitHub App & provision'}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

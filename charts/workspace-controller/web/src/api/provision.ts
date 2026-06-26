@@ -26,6 +26,9 @@ export interface ValidateUserResponse {
   host: string;
   /** True if a workspace for this slug already exists (provision = re-deploy). */
   exists: boolean;
+  /** True if the GitHub App + config were already pushed to the GitOps repo on a
+   * prior attempt — deploy from saved config instead of re-registering the App. */
+  configExists: boolean;
 }
 
 export const validateUser = (user: string) =>
@@ -67,6 +70,13 @@ export interface ProvisionStatus {
 
 export const getProvisionStatus = (slug: string) =>
   apiGet<ProvisionStatus>(`/api/provision/${slug}/status`);
+
+/**
+ * Deploy from already-saved GitOps config (the GitHub App was registered on a
+ * prior attempt). Skips the manifest detour and just relaunches the Job.
+ */
+export const deployExisting = (slug: string) =>
+  apiPost<ProvisionStatus>(`/api/provision/${slug}/deploy`, {});
 
 /**
  * Hand off to GitHub: build a hidden form and submit it so the browser does a
