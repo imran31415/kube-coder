@@ -160,6 +160,13 @@ assistant:
   deepseek:
     apiKey: ""                            # DEEPSEEK_API_KEY
     model: "deepseek-chat"                # or "deepseek-reasoner"
+  # Google Gemini (https://github.com/google-gemini/gemini-cli) — Google's
+  # open-source agentic CLI, pre-installed in the image. Becomes a per-task
+  # choice in the dashboard whenever apiKey is set. Get a key at
+  # https://aistudio.google.com/apikey.
+  gemini:
+    apiKey: ""                            # GEMINI_API_KEY
+    model: "gemini-2.5-pro"               # KC_GEMINI_MODEL (e.g. gemini-2.5-flash)
   # LibreFang (https://librefang.ai) — open-source agent OS. The CLI is
   # pre-installed in the image (like Ante) and reuses whatever provider keys
   # are configured elsewhere (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so

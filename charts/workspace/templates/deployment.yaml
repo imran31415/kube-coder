@@ -95,6 +95,15 @@ spec:
         - name: KC_DEEPSEEK_MODEL
           value: {{ .Values.assistant.deepseek.model | quote }}
         {{- end }}
+        {{- if (.Values.assistant.gemini).apiKey }}
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: assistant-secrets-{{ .Values.user.name }}
+              key: gemini-api-key
+        - name: KC_GEMINI_MODEL
+          value: {{ .Values.assistant.gemini.model | quote }}
+        {{- end }}
         {{- if (.Values.assistant.librefang).agent }}
         - name: KC_LIBREFANG_AGENT
           value: {{ .Values.assistant.librefang.agent | quote }}

@@ -90,6 +90,13 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 ARG OPENCODE_VERSION=1.17.4
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
+# Gemini CLI — Google's open-source agentic coding CLI. Selected per-task in
+# the dashboard (surfaced as the `gemini` assistant when GEMINI_API_KEY is set)
+# and spawnable via the agent-orchestrator. npm-installed like Claude/OpenCode,
+# so it lives in the image with no PVC seeding. https://github.com/google-gemini/gemini-cli
+ARG GEMINI_CLI_VERSION=latest
+RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION}
+
 # Ante CLI — terminal-native AI coding agent from Antigma Labs.
 # Distributed as a single self-contained binary. install.sh installs it to
 # $HOME/.ante/bin (/root/.ante/bin in this root build stage). We keep the real

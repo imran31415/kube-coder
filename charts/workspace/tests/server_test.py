@@ -227,6 +227,7 @@ class AssistantSelectionTests(unittest.TestCase):
         # the resolver looks at.
         self._saved_env = {k: os.environ.pop(k) for k in (
             'OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
+            'GEMINI_API_KEY', 'KC_GEMINI_MODEL',
             'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
             'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
             'KC_LIBREFANG_AGENT',
@@ -240,6 +241,7 @@ class AssistantSelectionTests(unittest.TestCase):
         # Restore env
         for k in ('OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
                   'DEEPSEEK_API_KEY', 'KC_DEEPSEEK_MODEL',
+                  'GEMINI_API_KEY', 'KC_GEMINI_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
                   'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
                   'KC_LIBREFANG_AGENT'):
@@ -304,6 +306,36 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertEqual(len(match), 1)
         self.assertEqual(match[0]['label'], 'DeepSeek')
         self.assertEqual(match[0]['model'], 'deepseek-chat')
+
+    def test_gemini_listed_only_when_env_set(self):
+        # Not listed without a key …
+        ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+        self.assertNotIn('gemini', ids)
+        # … listed (with resolved model) once GEMINI_API_KEY is present.
+        os.environ['GEMINI_API_KEY'] = 'AIza-test'
+        match = [a for a in server.ClaudeTaskManager.available_assistants()
+                 if a['id'] == 'gemini']
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]['label'], 'Google Gemini')
+        self.assertEqual(match[0]['model'], 'gemini-2.5-pro')
+        os.environ['KC_GEMINI_MODEL'] = 'gemini-2.5-flash'
+        match = [a for a in server.ClaudeTaskManager.available_assistants()
+                 if a['id'] == 'gemini']
+        self.assertEqual(match[0]['model'], 'gemini-2.5-flash')
+
+    def test_resolve_gemini_requires_env(self):
+        self.assertEqual(server.ClaudeTaskManager.resolve_assistant('gemini'), 'claude')
+        os.environ['GEMINI_API_KEY'] = 'AIza-test'
+        self.assertEqual(server.ClaudeTaskManager.resolve_assistant('gemini'), 'gemini')
+
+    def test_command_gemini_runs_model_repl(self):
+        cmd = server.ClaudeTaskManager.assistant_command('gemini')
+        self.assertEqual(cmd, "gemini -m gemini-2.5-pro")
+        os.environ['KC_GEMINI_MODEL'] = 'gemini-2.5-flash'
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('gemini'),
+            "gemini -m gemini-2.5-flash",
+        )
 
     def test_kc_harness_listed_when_fallback_env_set(self):
         # kc-harness is the third assistant; appears whenever an Ollama-style

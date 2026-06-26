@@ -38,6 +38,12 @@ This document describes all environment variables used by kube-coder components.
 | `DEEPSEEK_API_KEY` | - | DeepSeek API key. |
 | `KC_DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek model identifier. |
 
+#### Gemini Integration
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GEMINI_API_KEY` | - | Google Gemini API key. Lights up the **Google Gemini** assistant in the dashboard. Get one at https://aistudio.google.com/apikey. |
+| `KC_GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model the `gemini` CLI runs against (e.g. `gemini-2.5-flash`). |
+
 #### LibreFang Integration
 | Variable | Default | Description |
 |----------|---------|-------------|
