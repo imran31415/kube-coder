@@ -90,12 +90,19 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 ARG OPENCODE_VERSION=1.17.4
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
-# Gemini CLI — Google's open-source agentic coding CLI. Selected per-task in
-# the dashboard (surfaced as the `gemini` assistant when GEMINI_API_KEY is set)
-# and spawnable via the agent-orchestrator. npm-installed like Claude/OpenCode,
-# so it lives in the image with no PVC seeding. https://github.com/google-gemini/gemini-cli
-ARG GEMINI_CLI_VERSION=latest
-RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION}
+# Antigravity CLI (agy) — Google's terminal-native coding agent. Selected
+# per-task in the dashboard (the `antigravity` assistant) and spawnable via the
+# agent-orchestrator. Auth is OAuth Google Sign-In (no API key) — the user runs
+# `agy` once in the pod to log in. Same PVC-persistence pattern as Ante below:
+# we install the binary to /opt/antigravity/agy and make /usr/local/bin/agy a
+# *symlink* to the PVC-backed path /home/dev/.antigravity/bin/agy that start.sh
+# seeds on boot — a writable, persistent location for the binary across pod
+# restarts (the pod blocks runtime sudo). The official installer (curl|bash,
+# --dir to place the binary) is the only distribution channel, same mechanism
+# as Ante/LibreFang. https://antigravity.google
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt/antigravity \
+    && test -x /opt/antigravity/agy \
+    && ln -sfn /home/dev/.antigravity/bin/agy /usr/local/bin/agy
 
 # Ante CLI — terminal-native AI coding agent from Antigma Labs.
 # Distributed as a single self-contained binary. install.sh installs it to

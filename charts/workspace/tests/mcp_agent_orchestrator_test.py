@@ -47,27 +47,26 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertIn('--yolo', cmd)
         self.assertIn("'write tests'", cmd)
 
-    def test_headless_gemini_has_print_yolo_and_model(self):
-        cmd = orch._assistant_command('gemini', 'write tests', headless=True)
-        self.assertIn('gemini', cmd)
+    def test_headless_antigravity_has_print_and_skip_permissions(self):
+        cmd = orch._assistant_command('antigravity', 'write tests', headless=True)
+        self.assertIn('agy', cmd)
         self.assertIn('-p', cmd)
-        self.assertIn('--yolo', cmd)
-        self.assertIn('-m', cmd)
-        self.assertIn('gemini-2.5-pro', cmd)
+        self.assertIn('--dangerously-skip-permissions', cmd)
         self.assertIn("'write tests'", cmd)
 
-    def test_interactive_gemini_is_model_repl_without_prompt(self):
-        cmd = orch._assistant_command('gemini', 'ignored', headless=False)
-        self.assertEqual(cmd, 'gemini -m gemini-2.5-pro')
+    def test_interactive_antigravity_is_bare_repl_without_prompt(self):
+        cmd = orch._assistant_command('antigravity', 'ignored', headless=False)
+        self.assertEqual(cmd, 'agy')
         self.assertNotIn('ignored', cmd)
 
-    def test_gemini_model_env_override(self):
-        os.environ['KC_GEMINI_MODEL'] = 'gemini-2.5-flash'
+    def test_antigravity_model_env_override(self):
+        os.environ['KC_ANTIGRAVITY_MODEL'] = 'gemini-3-pro'
         try:
-            cmd = orch._assistant_command('gemini', 'x', headless=True)
-            self.assertIn('gemini-2.5-flash', cmd)
+            cmd = orch._assistant_command('antigravity', 'x', headless=True)
+            self.assertIn('--model', cmd)
+            self.assertIn('gemini-3-pro', cmd)
         finally:
-            os.environ.pop('KC_GEMINI_MODEL', None)
+            os.environ.pop('KC_ANTIGRAVITY_MODEL', None)
 
     def test_headless_librefang_ensures_daemon_then_messages(self):
         cmd = orch._assistant_command('librefang', 'write tests', headless=True)

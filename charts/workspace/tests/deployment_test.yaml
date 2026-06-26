@@ -237,25 +237,16 @@ tests:
             name: KC_DEEPSEEK_MODEL
             value: "deepseek-chat"
 
-  - it: injects Gemini env when gemini.apiKey is set
+  - it: injects Antigravity model env when antigravity.model is set (OAuth — no API key)
     template: templates/deployment.yaml
     set:
-      assistant.gemini.apiKey: AIza-test
-      assistant.gemini.model: gemini-2.5-flash
+      assistant.antigravity.model: gemini-3-pro
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: GEMINI_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: assistant-secrets-testuser
-                key: gemini-api-key
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: KC_GEMINI_MODEL
-            value: "gemini-2.5-flash"
+            name: KC_ANTIGRAVITY_MODEL
+            value: "gemini-3-pro"
 
   - it: injects fallback env when fallback.baseUrl is set
     template: templates/deployment.yaml

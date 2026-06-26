@@ -239,7 +239,7 @@ def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
 # Assistants with a non-interactive one-shot "print" mode that exits when
 # the task is done. Anything not listed has no reliable headless interface
 # (kc-harness) and is always run interactively (prompt pasted into the REPL).
-_HEADLESS_CAPABLE = {'claude', 'ante', 'gemini', 'librefang', 'opencode-openrouter', 'opencode-deepseek'}
+_HEADLESS_CAPABLE = {'claude', 'ante', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek'}
 
 
 def _opencode_model(assistant: str) -> str:
@@ -248,10 +248,10 @@ def _opencode_model(assistant: str) -> str:
     return 'openrouter/' + os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
 
 
-def _gemini_model() -> str:
-    """Model the Gemini CLI runs against (KC_GEMINI_MODEL, default
-    gemini-2.5-pro — the CLI's own default)."""
-    return os.environ.get('KC_GEMINI_MODEL', 'gemini-2.5-pro')
+def _antigravity_model() -> str:
+    """Optional model the Antigravity CLI (agy) runs against, from
+    KC_ANTIGRAVITY_MODEL. Empty => let agy pick its own default."""
+    return os.environ.get('KC_ANTIGRAVITY_MODEL', '')
 
 
 def _librefang_agent() -> str:
@@ -294,8 +294,9 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         # Interactive REPL — prompt delivered via tmux paste by the caller.
         if assistant in ('opencode-openrouter', 'opencode-deepseek'):
             return f'opencode --model {_shell_quote(_opencode_model(assistant))}'
-        if assistant == 'gemini':
-            return f'gemini -m {_shell_quote(_gemini_model())}'
+        if assistant == 'antigravity':
+            m = _antigravity_model()
+            return f'agy --model {_shell_quote(m)}' if m else 'agy'
         if assistant == 'kc-harness':
             return 'python3 /tmp/browser/harness.py'
         if assistant == 'librefang':
@@ -310,11 +311,13 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         return f'claude --dangerously-skip-permissions -p {q}'
     if assistant == 'ante':
         return f'ante --yolo -p {q}'
-    if assistant == 'gemini':
-        # `gemini -p` is the CLI's one-shot mode (prompt on the command line,
-        # exits when done). --yolo auto-approves tool calls for the unattended
-        # sub-agent, matching claude/ante above.
-        return f'gemini --yolo -m {_shell_quote(_gemini_model())} -p {q}'
+    if assistant == 'antigravity':
+        # `agy -p` is the CLI's one-shot print mode (prompt on the command line,
+        # exits when done). --dangerously-skip-permissions auto-approves tool
+        # calls for the unattended sub-agent, matching claude above.
+        m = _antigravity_model()
+        model_flag = f'--model {_shell_quote(m)} ' if m else ''
+        return f'agy --dangerously-skip-permissions {model_flag}-p {q}'
     if assistant == 'librefang':
         # `librefang message` is the CLI's one-shot mode but requires the
         # daemon (see _librefang_daemon_bootstrap()).
@@ -353,7 +356,7 @@ def _wait_pane_ready(session_name: str, min_delay: float = 1.5,
 _ASSISTANTS_LIST = [
     {'id': 'claude', 'label': 'Claude Code'},
     {'id': 'ante', 'label': 'Ante CLI'},
-    {'id': 'gemini', 'label': 'Google Gemini'},
+    {'id': 'antigravity', 'label': 'Antigravity'},
     {'id': 'librefang', 'label': 'LibreFang'},
     {'id': 'opencode-openrouter', 'label': 'OpenRouter'},
     {'id': 'opencode-deepseek', 'label': 'DeepSeek'},
@@ -736,7 +739,7 @@ TOOLS: Dict[str, Any] = {
                     'assistant': {
                         'type': 'string',
                         'description': 'Which agent to spawn',
-                        'enum': ['ante', 'claude', 'gemini', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'kc-harness'],
+                        'enum': ['ante', 'claude', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'kc-harness'],
                         'default': 'ante',
                     },
                     'mode': {

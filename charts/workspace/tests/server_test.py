@@ -25,6 +25,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from unittest import mock
 
 # Import server.py from the parent directory.
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -227,7 +228,7 @@ class AssistantSelectionTests(unittest.TestCase):
         # the resolver looks at.
         self._saved_env = {k: os.environ.pop(k) for k in (
             'OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
-            'GEMINI_API_KEY', 'KC_GEMINI_MODEL',
+            'KC_ANTIGRAVITY_MODEL',
             'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
             'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
             'KC_LIBREFANG_AGENT',
@@ -241,7 +242,7 @@ class AssistantSelectionTests(unittest.TestCase):
         # Restore env
         for k in ('OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
                   'DEEPSEEK_API_KEY', 'KC_DEEPSEEK_MODEL',
-                  'GEMINI_API_KEY', 'KC_GEMINI_MODEL',
+                  'KC_ANTIGRAVITY_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
                   'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
                   'KC_LIBREFANG_AGENT'):
@@ -307,34 +308,34 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertEqual(match[0]['label'], 'DeepSeek')
         self.assertEqual(match[0]['model'], 'deepseek-chat')
 
-    def test_gemini_listed_only_when_env_set(self):
-        # Not listed without a key …
-        ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
-        self.assertNotIn('gemini', ids)
-        # … listed (with resolved model) once GEMINI_API_KEY is present.
-        os.environ['GEMINI_API_KEY'] = 'AIza-test'
-        match = [a for a in server.ClaudeTaskManager.available_assistants()
-                 if a['id'] == 'gemini']
-        self.assertEqual(len(match), 1)
-        self.assertEqual(match[0]['label'], 'Google Gemini')
-        self.assertEqual(match[0]['model'], 'gemini-2.5-pro')
-        os.environ['KC_GEMINI_MODEL'] = 'gemini-2.5-flash'
-        match = [a for a in server.ClaudeTaskManager.available_assistants()
-                 if a['id'] == 'gemini']
-        self.assertEqual(match[0]['model'], 'gemini-2.5-flash')
+    def test_antigravity_listed_when_agy_present(self):
+        # Antigravity is OAuth (no API key); listed only when the agy binary is
+        # resolvable. Not listed when it isn't …
+        with mock.patch('server.shutil.which', return_value=None):
+            ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+            self.assertNotIn('antigravity', ids)
+        # … listed once the agy CLI is present.
+        with mock.patch('server.shutil.which',
+                        side_effect=lambda c: '/usr/local/bin/agy' if c == 'agy' else None):
+            match = [a for a in server.ClaudeTaskManager.available_assistants()
+                     if a['id'] == 'antigravity']
+            self.assertEqual(len(match), 1)
+            self.assertEqual(match[0]['label'], 'Antigravity')
 
-    def test_resolve_gemini_requires_env(self):
-        self.assertEqual(server.ClaudeTaskManager.resolve_assistant('gemini'), 'claude')
-        os.environ['GEMINI_API_KEY'] = 'AIza-test'
-        self.assertEqual(server.ClaudeTaskManager.resolve_assistant('gemini'), 'gemini')
+    def test_resolve_antigravity_requires_binary(self):
+        with mock.patch('server.shutil.which', return_value=None):
+            self.assertEqual(server.ClaudeTaskManager.resolve_assistant('antigravity'), 'claude')
+        with mock.patch('server.shutil.which',
+                        side_effect=lambda c: '/usr/local/bin/agy' if c == 'agy' else None):
+            self.assertEqual(server.ClaudeTaskManager.resolve_assistant('antigravity'), 'antigravity')
 
-    def test_command_gemini_runs_model_repl(self):
-        cmd = server.ClaudeTaskManager.assistant_command('gemini')
-        self.assertEqual(cmd, "gemini -m gemini-2.5-pro")
-        os.environ['KC_GEMINI_MODEL'] = 'gemini-2.5-flash'
+    def test_command_antigravity_runs_bare_repl(self):
+        cmd = server.ClaudeTaskManager.assistant_command('antigravity')
+        self.assertEqual(cmd, "agy")
+        os.environ['KC_ANTIGRAVITY_MODEL'] = 'gemini-3-pro'
         self.assertEqual(
-            server.ClaudeTaskManager.assistant_command('gemini'),
-            "gemini -m gemini-2.5-flash",
+            server.ClaudeTaskManager.assistant_command('antigravity'),
+            "agy --model gemini-3-pro",
         )
 
     def test_kc_harness_listed_when_fallback_env_set(self):

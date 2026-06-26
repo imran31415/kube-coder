@@ -426,6 +426,38 @@ if [ -f /opt/ante/ante ]; then
   fi
 fi
 
+# Antigravity CLI (agy): seed the binary + persist its OAuth login across pod
+# restarts. The binary is seeded from the image's /opt/antigravity/agy to the
+# PVC path /home/dev/.antigravity/bin/agy that /usr/local/bin/agy (a build-time
+# symlink) points at — same idiom as ~/.ante above. agy stores its login + config
+# under ~/.gemini, so — like ~/.claude — point that at a PVC-backed dir so a
+# one-time `agy` login survives restarts.
+ANTIGRAVITY_TARGET=/home/dev/.antigravity
+mkdir -p "$ANTIGRAVITY_TARGET/bin"
+if [ -f /opt/antigravity/agy ]; then
+  if [ ! -e "$ANTIGRAVITY_TARGET/bin/agy" ] || ! cmp -s /opt/antigravity/agy "$ANTIGRAVITY_TARGET/bin/agy"; then
+    install -m 0755 /opt/antigravity/agy "$ANTIGRAVITY_TARGET/bin/agy" 2>/dev/null \
+      || cp -p /opt/antigravity/agy "$ANTIGRAVITY_TARGET/bin/agy" 2>/dev/null || true
+  fi
+fi
+GEMINI_TARGET=/home/dev/.gemini
+mkdir -p "$GEMINI_TARGET"
+for HOME_DIR in /home/ubuntu; do
+  [ -d "$HOME_DIR" ] || continue
+  LINK="$HOME_DIR/.gemini"
+  [ "$LINK" = "$GEMINI_TARGET" ] && continue
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$GEMINI_TARGET" ]; then
+    continue
+  fi
+  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+    cp -an "$LINK"/. "$GEMINI_TARGET"/ 2>/dev/null || true
+    rm -rf "$LINK"
+  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    rm -f "$LINK"
+  fi
+  ln -sfn "$GEMINI_TARGET" "$LINK" 2>/dev/null || true
+done
+
 # Persist LibreFang's home across pod restarts — same pattern as ~/.ante
 # above. LibreFang keeps everything (config.toml, agents, sessions, the
 # registry cache, and the binary at bin/librefang) under ~/.librefang, so

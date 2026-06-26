@@ -482,7 +482,7 @@ class ClaudeTaskManager:
     # Assistant options surfaced in the dashboard dropdown:
     #   1. Claude Code   — always available (anthropic-hosted)
     #   2. Ante CLI      — always available (pre-installed in the image)
-    #   3. Google Gemini — `gemini` CLI; listed when GEMINI_API_KEY is set
+    #   3. Antigravity   — `agy` CLI; listed when its binary is present (OAuth login)
     #   4. LibreFang     — agent-OS CLI; listed when its binary is present
     #   5. OpenRouter    — OpenCode CLI proxied through OpenRouter
     #   6. DeepSeek      — OpenCode CLI against DeepSeek's native API
@@ -499,11 +499,11 @@ class ClaudeTaskManager:
             'id': 'ante',
             'label': 'Ante CLI',
         },
-        # Google Gemini — the open-source `gemini` CLI (npm @google/gemini-cli),
-        # pre-installed in the image. Listed only when GEMINI_API_KEY is set.
-        'gemini': {
-            'id': 'gemini',
-            'label': 'Google Gemini',
+        # Antigravity — Google's `agy` CLI, pre-installed in the image. OAuth
+        # login (no API key), so it's listed whenever its binary is resolvable.
+        'antigravity': {
+            'id': 'antigravity',
+            'label': 'Antigravity',
         },
         # LibreFang — open-source agent OS (https://librefang.ai). Tasks talk
         # to its registry-bundled "coder" agent via `librefang chat`; the CLI
@@ -533,12 +533,14 @@ class ClaudeTaskManager:
     def available_assistants():
         out = [dict(ClaudeTaskManager.ASSISTANTS['claude'], default=True)]
         out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
-        # Google Gemini — surfaced only when a Gemini API key is present, so the
-        # dropdown never advertises an option that would die for lack of creds.
-        if os.environ.get('GEMINI_API_KEY'):
+        # Antigravity — listed only when its `agy` CLI is actually resolvable
+        # (older images predate it; /usr/local/bin/agy is a symlink to a PVC path
+        # start.sh seeds). Auth is OAuth (`agy` login once in the pod), so there's
+        # no key to gate on — binary presence is the right signal.
+        if shutil.which('agy'):
             out.append(dict(
-                ClaudeTaskManager.ASSISTANTS['gemini'],
-                model=os.environ.get('KC_GEMINI_MODEL', 'gemini-2.5-pro'),
+                ClaudeTaskManager.ASSISTANTS['antigravity'],
+                model=os.environ.get('KC_ANTIGRAVITY_MODEL', ''),
             ))
         # LibreFang — listed only when its CLI is actually resolvable (older
         # images predate it, and /usr/local/bin/librefang is a symlink to a
@@ -578,12 +580,13 @@ class ClaudeTaskManager:
     def assistant_command(assistant):
         if assistant == 'ante':
             return 'ante'
-        if assistant == 'gemini':
-            # Interactive Gemini REPL for the dashboard pane. KC_GEMINI_MODEL
-            # picks the model; quoted so a hostile env var can't break out of
-            # the `bash -lc` shell_cmd built downstream in create_task().
-            model = os.environ.get('KC_GEMINI_MODEL', 'gemini-2.5-pro')
-            return f'gemini -m {_shell_quote(model)}'
+        if assistant == 'antigravity':
+            # Interactive Antigravity (agy) REPL for the dashboard pane. Optional
+            # model via KC_ANTIGRAVITY_MODEL (agy picks a sensible default
+            # otherwise); quoted so a hostile env var can't break out of the
+            # `bash -lc` shell_cmd built downstream in create_task().
+            model = os.environ.get('KC_ANTIGRAVITY_MODEL', '')
+            return f'agy --model {_shell_quote(model)}' if model else 'agy'
         if assistant == 'librefang':
             # Interactive chat REPL with the registry's "coder" agent (synced
             # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT
