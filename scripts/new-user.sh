@@ -55,11 +55,18 @@ mkdir -p "$USER_DIR/secrets"
 # entropy, well above any sane threshold.
 COOKIE_SECRET=$(openssl rand -base64 64 | tr -d '\n=+/' | head -c 32)
 
+# Shared OpenRouter secret name so new workspaces get OpenRouter cluster-wide
+# without a per-user key. Operators set KC_SHARED_ASSISTANT_SECRET to the Secret
+# they created (key: openrouter-api-key); blank by default keeps the public repo
+# free of any deploy-specific secret names.
+SHARED_ASSISTANT_SECRET="${KC_SHARED_ASSISTANT_SECRET:-}"
+
 substitute() {
   # Read tmpl from stdin, substitute placeholders, write to stdout.
   sed -e "s|__USER__|$NAME|g" \
       -e "s|__DATE__|$(date -u +%Y-%m-%d)|g" \
       -e "s|__IMAGE_TAG__|$IMAGE_TAG|g" \
+      -e "s|__SHARED_ASSISTANT_SECRET__|$SHARED_ASSISTANT_SECRET|g" \
       -e "s|__COOKIE_SECRET__|$COOKIE_SECRET|g"
 }
 

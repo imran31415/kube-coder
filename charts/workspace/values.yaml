@@ -152,8 +152,13 @@ claude:
 assistant:
   # OpenCode → OpenRouter (https://openrouter.ai)
   openrouter:
-    apiKey: ""                            # OPENROUTER_API_KEY
+    apiKey: ""                            # OPENROUTER_API_KEY (per-user; takes precedence)
     model: "anthropic/claude-sonnet-4"
+    # Optional shared OpenRouter secret so EVERY workspace gets OpenRouter
+    # without a per-user key: create one Secret (key: openrouter-api-key) in the
+    # namespace and name it here. A per-user apiKey above still wins. Empty by
+    # default — set per deployment (e.g. in the new-user scaffold).
+    sharedSecretName: ""
   # OpenCode → DeepSeek (https://api.deepseek.com)
   # DeepSeek is a first-class OpenCode provider: the CLI auto-discovers
   # the key from $DEEPSEEK_API_KEY, so no on-disk provider stub is needed.

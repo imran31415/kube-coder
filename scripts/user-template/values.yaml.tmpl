@@ -85,6 +85,14 @@ ssh:
 claude:
   apiKey: ""
 
+# Alternate assistants. OpenRouter is offered to every workspace via a shared
+# cluster secret (assistant.openrouter.sharedSecretName) — pre-filled here from
+# the KC_SHARED_ASSISTANT_SECRET env at scaffold time, blank otherwise. A
+# per-user key in secrets/assistant.yaml still takes precedence.
+assistant:
+  openrouter:
+    sharedSecretName: "__SHARED_ASSISTANT_SECRET__"
+
 # GitHub App for repo access:
 #   Drop credentials in users-private/__USER__/secrets/github-app.yaml.
 #   Each workspace gets its OWN GitHub App, not a shared one — anyone with

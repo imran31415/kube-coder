@@ -217,6 +217,20 @@ tests:
             name: KC_OPENROUTER_MODEL
             value: "anthropic/claude-sonnet-4"
 
+  - it: injects OpenRouter env from the shared secret when sharedSecretName is set (no per-user key)
+    template: templates/deployment.yaml
+    set:
+      assistant.openrouter.sharedSecretName: coder-shared-assistant
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENROUTER_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: coder-shared-assistant
+                key: openrouter-api-key
+
   - it: injects DeepSeek env when deepseek.apiKey is set
     template: templates/deployment.yaml
     set:

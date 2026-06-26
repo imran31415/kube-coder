@@ -77,11 +77,17 @@ spec:
               name: claude-secrets-{{ .Values.user.name }}
               key: anthropic-api-key
         {{- end }}
-        {{- if .Values.assistant.openrouter.apiKey }}
+        {{- if or .Values.assistant.openrouter.apiKey .Values.assistant.openrouter.sharedSecretName }}
         - name: OPENROUTER_API_KEY
           valueFrom:
             secretKeyRef:
+              {{- if .Values.assistant.openrouter.apiKey }}
               name: assistant-secrets-{{ .Values.user.name }}
+              {{- else }}
+              # Shared OpenRouter key for all workspaces — a per-user
+              # assistant.openrouter.apiKey (above) takes precedence when set.
+              name: {{ .Values.assistant.openrouter.sharedSecretName }}
+              {{- end }}
               key: openrouter-api-key
         - name: KC_OPENROUTER_MODEL
           value: {{ .Values.assistant.openrouter.model | quote }}
