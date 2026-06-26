@@ -38,7 +38,7 @@ IMAGE_NAME := devlaptop
 # Fallback tag for user-less `make build` / `make push` / `make clean` only.
 # `make ship USER=<x>` does NOT use this — it derives the tag from that user's
 # values.yaml via $(user_image) so build and deploy stay in lockstep.
-VERSION := v1.2.0
+VERSION := v1.3.0
 PLATFORM := linux/amd64
 NAMESPACE := coder
 
