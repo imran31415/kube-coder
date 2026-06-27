@@ -20,6 +20,8 @@ data:
 {{ .Files.Get "memory_inject_hook.py" | indent 4 }}
   seed_claude_config.py: |
 {{ .Files.Get "seed_claude_config.py" | indent 4 }}
+  playwright_reaper.py: |
+{{ .Files.Get "playwright_reaper.py" | indent 4 }}
   seed_demo.py: |
 {{ .Files.Get "seed_demo.py" | indent 4 }}
   memory__init__.py: |
