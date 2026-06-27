@@ -16,6 +16,12 @@ spec:
     metadata:
       labels:
         app: ws-{{ .Values.user.name }}
+        {{- if .Values.update.selfServeSecretName }}
+        # Lets the controller's NetworkPolicy admit this pod to its token-gated
+        # self-serve port (8081) for version self-updates. Only applied when
+        # self-serve is enabled, so it grants no reachability otherwise.
+        kube-coder.dev/component: workspace
+        {{- end }}
       annotations:
         checksum/browser-config: {{ include (print $.Template.BasePath "/browser-configmap.yaml") . | sha256sum }}
         checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
@@ -178,6 +184,19 @@ spec:
           value: {{ .Values.readOnly | default false | quote }}
         - name: AUTH_MODE
           value: {{ .Values.ingress.auth.type | default "basic" | quote }}
+        {{- if .Values.update.selfServeSecretName }}
+        # Self-serve version updates: the workspace backend brokers to the
+        # controller's token-gated self-serve listener over the in-cluster
+        # Service. The URL defaults to the controller Service on its self-serve
+        # port; the token comes from the shared Secret named in values.
+        - name: CONTROLLER_SELF_SERVE_URL
+          value: {{ .Values.update.controllerUrl | default (printf "http://workspace-controller.%s.svc.cluster.local:8081" .Values.namespace) | quote }}
+        - name: CONTROLLER_SELF_SERVE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.update.selfServeSecretName }}
+              key: self-serve-token
+        {{- end }}
         # DEMO_SHOW_ALL=true makes the SPA render mutation UI (dimmed +
         # click-intercepted) instead of hiding it, so the public demo shows
         # the full surface. Server still 403s every write. Presentation-only;

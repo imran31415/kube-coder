@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'preact/hooks';
 import {
   type Series,
+  type Workspace,
   type WorkspaceMetrics,
   getWorkspaceMetrics,
   setWorkspaceResources,
+  updateWorkspace,
 } from '../api/workspaces';
-import { findWorkspace, toggle, busy } from '../store';
+import { findWorkspace, toggle, busy, latestVersion } from '../store';
 import { navigate } from '../router';
 import { Chart } from './Chart';
 import { fmtBytes, fmtCores, fmtPct, fmtRate, fmtUptime, fmtUsd, tone } from '../format';
@@ -154,6 +156,8 @@ export function WorkspaceDetail({ user }: { user: string }) {
             onSaved={() => setReloadKey((k) => k + 1)}
           />
 
+          {ws && <UpdatesCard ws={ws} onUpdated={() => setReloadKey((k) => k + 1)} />}
+
           <div class="detail-foot">
             <div>
               <span class="foot-k">Est. cost</span>{' '}
@@ -288,6 +292,67 @@ function ResourceEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+function UpdatesCard({ ws, onUpdated }: { ws: Workspace; onUpdated: () => void }) {
+  const [busyUpdate, setBusyUpdate] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const latest = latestVersion.value;
+  const current = ws.version ?? 'unknown';
+
+  async function run() {
+    if (
+      !window.confirm(
+        `Restart ${ws.user} and pull ${latest ?? 'the latest release'}? The pod ` +
+          `restarts — running processes and unsaved in-memory state are lost; the ` +
+          `/home/dev disk (PVC) is preserved.`,
+      )
+    ) {
+      return;
+    }
+    setBusyUpdate(true);
+    setErr(null);
+    setNote(null);
+    try {
+      const r = await updateWorkspace(ws.user);
+      setNote(
+        `Updating ${r.fromVersion ?? '?'} → ${r.toVersion}. Pod is rolling out` +
+          (r.persisted ? ' (pinned in GitOps).' : '.'),
+      );
+      onUpdated();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyUpdate(false);
+    }
+  }
+
+  return (
+    <div class="updates-card">
+      <div class="updates-row">
+        <div>
+          <span class="field-label">Version</span>
+          <div class="updates-version">
+            {current}
+            {ws.updateAvailable && latest && <span class="updates-arrow">→ {latest}</span>}
+          </div>
+        </div>
+        <button class="btn start" disabled={busyUpdate || !ws.updateAvailable} onClick={run}>
+          {busyUpdate ? 'Updating…' : ws.updateAvailable ? 'Restart & update' : 'Up to date'}
+        </button>
+      </div>
+      <p class="sub">
+        {ws.updateAvailable
+          ? `A newer release (${latest}) is available. Updating patches the image tag and restarts the pod.`
+          : latest
+            ? `Running the latest release (${latest}).`
+            : 'Latest-release lookup unavailable.'}
+      </p>
+      {note && <div class="res-edit-note">{note}</div>}
+      {err && <div class="banner err">{err}</div>}
     </div>
   );
 }

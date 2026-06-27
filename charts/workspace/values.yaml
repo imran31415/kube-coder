@@ -77,6 +77,20 @@ readOnly: false
 # is intended as documentation.
 demoShowAll: false
 
+# Self-serve version updates: lets a user update their OWN workspace to the
+# latest release from the dashboard's Settings → Updates section. The workspace
+# has no kube access, so the action is brokered to the workspace-controller's
+# token-gated self-serve listener. Opt-in: create one Secret in the namespace
+# with key `self-serve-token`, name it here AND in the controller chart's
+# `controller.update.selfServeSecretName`. Empty (default) => the Updates
+# section reports "self-serve unavailable" and admins update from the controller
+# dashboard instead.
+update:
+  selfServeSecretName: ""
+  # Override the controller self-serve URL. Defaults to the in-cluster Service
+  # on its self-serve port: http://workspace-controller.<namespace>.svc.cluster.local:8081
+  controllerUrl: ""
+
 # Resource limits and requests.
 #
 # Burstable by design: requests are a lean *scheduling floor* sized for a

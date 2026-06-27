@@ -13,3 +13,11 @@ spec:
     port: 8080
     targetPort: 8080
     protocol: TCP
+  {{- if .Values.controller.update.selfServeSecretName }}
+  # Token-gated self-serve listener: reached by workspace pods directly (the
+  # admin :8080 path stays oauth2-only). See deployment/networkpolicy.
+  - name: self-serve
+    port: 8081
+    targetPort: 8081
+    protocol: TCP
+  {{- end }}

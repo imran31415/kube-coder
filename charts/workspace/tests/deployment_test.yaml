@@ -231,6 +231,51 @@ tests:
                 name: coder-shared-assistant
                 key: openrouter-api-key
 
+  - it: should NOT wire self-serve updates by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONTROLLER_SELF_SERVE_URL
+            value: ""
+      - notExists:
+          path: spec.template.metadata.labels["kube-coder.dev/component"]
+
+  - it: wires the controller broker env + pod label when self-serve is enabled
+    template: templates/deployment.yaml
+    set:
+      update.selfServeSecretName: kc-self-serve
+    asserts:
+      - equal:
+          path: spec.template.metadata.labels["kube-coder.dev/component"]
+          value: workspace
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONTROLLER_SELF_SERVE_URL
+            value: http://workspace-controller.test.svc.cluster.local:8081
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONTROLLER_SELF_SERVE_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: kc-self-serve
+                key: self-serve-token
+
+  - it: honours an explicit controllerUrl override for self-serve
+    template: templates/deployment.yaml
+    set:
+      update.selfServeSecretName: kc-self-serve
+      update.controllerUrl: http://my-controller:9000
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONTROLLER_SELF_SERVE_URL
+            value: http://my-controller:9000
+
   - it: injects DeepSeek env when deepseek.apiKey is set
     template: templates/deployment.yaml
     set:

@@ -23,7 +23,8 @@ spec:
   policyTypes:
   - Ingress
   ingress:
-  # Only the controller's own oauth2-proxy may reach the backend.
+  # Only the controller's own oauth2-proxy may reach the admin backend (8080),
+  # which trusts X-Forwarded-User. This is the trust pin described above.
   - from:
     - podSelector:
         matchLabels:
@@ -31,6 +32,18 @@ spec:
     ports:
     - protocol: TCP
       port: 8080
+  {{- if .Values.controller.update.selfServeSecretName }}
+  # Workspace pods may reach ONLY the self-serve listener (8081), which trusts
+  # the shared token instead of any identity header — so a workspace can
+  # self-update but can never forge an admin X-Forwarded-User against 8080.
+  - from:
+    - podSelector:
+        matchLabels:
+          kube-coder.dev/component: workspace
+    ports:
+    - protocol: TCP
+      port: 8081
+  {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

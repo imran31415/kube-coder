@@ -36,6 +36,33 @@ tests:
             protocol: TCP
             port: 8080
 
+  - it: should not open the self-serve port by default
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+
+  - it: should let workspace pods reach only the self-serve port when enabled
+    documentIndex: 0
+    set:
+      controller.update.selfServeSecretName: kc-self-serve
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 2
+      - contains:
+          path: spec.ingress[1].from
+          content:
+            podSelector:
+              matchLabels:
+                kube-coder.dev/component: workspace
+      - contains:
+          path: spec.ingress[1].ports
+          content:
+            protocol: TCP
+            port: 8081
+
   - it: should pin only nginx-ingress as the oauth2-proxy traffic source
     documentIndex: 1
     asserts:

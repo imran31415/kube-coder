@@ -23,11 +23,21 @@ export interface Workspace {
   pods: PodSummary[];
   /** Short human-readable status, e.g. "1/1 ready" or "CrashLoopBackOff". */
   detail: string;
+  /** Full ide-container image ref, or null. */
+  image: string | null;
+  /** Raw image tag, e.g. "devlaptop-v1.4.0", or null. */
+  imageTag: string | null;
+  /** Semver version parsed from the tag, e.g. "v1.4.0"; null if not pinned. */
+  version: string | null;
+  /** True when a newer release exists than this workspace's version. */
+  updateAvailable: boolean;
 }
 
 export interface WorkspacesResponse {
   namespace: string;
   workspaces: Workspace[];
+  /** Latest released version ("v1.4.0"), or null when the lookup failed. */
+  latestVersion: string | null;
 }
 
 export const listWorkspaces = () => apiGet<WorkspacesResponse>('/api/workspaces');
@@ -87,3 +97,22 @@ export const setWorkspaceResources = (user: string, limits: { cpu?: string; memo
     `/api/workspaces/${user}/resources`,
     limits,
   );
+
+export interface UpdateResult {
+  ok: true;
+  user: string;
+  fromVersion: string | null;
+  toVersion: string;
+  imageTag: string;
+  image: string;
+  rolled: boolean;
+  persisted: boolean;
+  persistError: string | null;
+}
+
+/**
+ * Restart the workspace onto a release image (latest by default). Patches the
+ * live Deployment and, when GitOps is configured, persists the new tag.
+ */
+export const updateWorkspace = (user: string, version?: string) =>
+  apiPost<UpdateResult>(`/api/workspaces/${user}/update`, version ? { version } : {});

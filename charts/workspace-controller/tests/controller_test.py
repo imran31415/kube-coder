@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import sys
+import types
 import unittest
 
 # controller.py lives one dir up; import it without installing anything.
@@ -335,6 +336,238 @@ class ResourceLimitTest(unittest.TestCase):
         controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': []}
         with self.assertRaises(LookupError):
             controller.set_workspace_resources('octo', '2', None)
+
+
+class VersionParsingTest(unittest.TestCase):
+    def test_parse_version(self):
+        self.assertEqual(controller.parse_version('v1.4.0'), (1, 4, 0))
+        self.assertEqual(controller.parse_version('1.4.0'), (1, 4, 0))
+        self.assertEqual(controller.parse_version(' v2.10.3 '), (2, 10, 3))
+        self.assertIsNone(controller.parse_version('latest'))
+        self.assertIsNone(controller.parse_version('v1.4'))
+        self.assertIsNone(controller.parse_version(None))
+
+    def test_version_from_image(self):
+        tag, ver = controller.version_from_image(
+            'registry.digitalocean.com/resourceloop/coder:devlaptop-v1.4.0')
+        self.assertEqual(tag, 'devlaptop-v1.4.0')
+        self.assertEqual(ver, 'v1.4.0')
+        # Non-semver tag => tag returned, version None.
+        tag, ver = controller.version_from_image('repo/coder:latest')
+        self.assertEqual(tag, 'latest')
+        self.assertIsNone(ver)
+        # No tag / empty.
+        self.assertEqual(controller.version_from_image('repo/coder'), (None, None))
+        self.assertEqual(controller.version_from_image(''), (None, None))
+
+    def test_update_available(self):
+        self.assertTrue(controller.update_available('v1.3.0', 'v1.4.0'))
+        self.assertTrue(controller.update_available('1.3.9', '1.4.0'))
+        self.assertFalse(controller.update_available('v1.4.0', 'v1.4.0'))
+        self.assertFalse(controller.update_available('v1.5.0', 'v1.4.0'))
+        # Unknown either side => not offered.
+        self.assertFalse(controller.update_available(None, 'v1.4.0'))
+        self.assertFalse(controller.update_available('v1.4.0', None))
+
+
+class LatestVersionCacheTest(unittest.TestCase):
+    def setUp(self):
+        self._orig_api = controller._github_api
+        controller._latest_cache = {'ts': 0.0, 'version': None}
+        controller.RELEASE_CHECK_TTL = 600
+
+    def tearDown(self):
+        controller._github_api = self._orig_api
+
+    def test_fetches_then_caches(self):
+        calls = []
+        controller._github_api = lambda m, p, token=None: (calls.append(p) or {'tag_name': 'v1.4.0'})
+        self.assertEqual(controller.latest_version(), 'v1.4.0')
+        self.assertEqual(controller.latest_version(), 'v1.4.0')
+        self.assertEqual(len(calls), 1)  # second call served from cache
+        self.assertIn('/repos/', calls[0])
+
+    def test_api_failure_returns_cached_or_none(self):
+        def boom(m, p, token=None):
+            raise controller.GithubError('down', 503)
+        controller._github_api = boom
+        self.assertIsNone(controller.latest_version())  # no prior cache
+        # Now seed a cached value, expire it, and confirm failure keeps it.
+        controller._latest_cache = {'ts': 0.0, 'version': 'v1.3.0'}
+        controller.RELEASE_CHECK_TTL = 0
+        self.assertEqual(controller.latest_version(), 'v1.3.0')
+
+    def test_non_semver_tag_ignored(self):
+        controller._github_api = lambda m, p, token=None: {'tag_name': 'nightly'}
+        self.assertIsNone(controller.latest_version())
+
+
+class DecorateUpdatesTest(unittest.TestCase):
+    def setUp(self):
+        self._orig = controller.latest_version
+        controller.latest_version = lambda: 'v1.4.0'
+
+    def tearDown(self):
+        controller.latest_version = self._orig
+
+    def test_adds_latest_and_flags(self):
+        resp = {'workspaces': [
+            {'user': 'a', 'version': 'v1.3.0'},
+            {'user': 'b', 'version': 'v1.4.0'},
+            {'user': 'c', 'version': None},
+        ]}
+        out = controller.decorate_with_updates(resp)
+        self.assertEqual(out['latestVersion'], 'v1.4.0')
+        flags = {w['user']: w['updateAvailable'] for w in out['workspaces']}
+        self.assertEqual(flags, {'a': True, 'b': False, 'c': False})
+
+
+class SwapImageTagTest(unittest.TestCase):
+    def test_swaps_only_devlaptop_tag_line(self):
+        content = (
+            'image:\n'
+            '  repository: registry/coder\n'
+            '  tag: devlaptop-v1.3.0\n'
+            '  pullPolicy: Always\n'
+            'somethingElse:\n'
+            '  tag: keep-me\n'  # unrelated tag: must be left alone
+        )
+        new, changed = controller._swap_image_tag(content, 'devlaptop-v1.4.0')
+        self.assertTrue(changed)
+        self.assertIn('  tag: devlaptop-v1.4.0\n', new)
+        self.assertIn('  tag: keep-me\n', new)  # untouched
+        self.assertNotIn('devlaptop-v1.3.0', new)
+
+    def test_no_change_when_already_current(self):
+        content = 'image:\n  tag: devlaptop-v1.4.0\n'
+        new, changed = controller._swap_image_tag(content, 'devlaptop-v1.4.0')
+        self.assertFalse(changed)
+        self.assertEqual(new, content)
+
+    def test_no_devlaptop_tag_present(self):
+        content = 'image:\n  tag: latest\n'
+        _, changed = controller._swap_image_tag(content, 'devlaptop-v1.4.0')
+        self.assertFalse(changed)
+
+
+class SetWorkspaceImageTest(unittest.TestCase):
+    def setUp(self):
+        controller.WORKSPACE_CONTAINER = 'ide'
+        controller.WORKSPACE_PREFIX = 'ws-'
+        controller.IMAGE_TAG_PREFIX = 'devlaptop-'
+        self._orig_list = controller.list_workspaces
+        self._orig_run = controller._kubectl_run
+        self._orig_latest = controller.latest_version
+        self._orig_gitops_repo = controller.GITOPS_REPO
+        self._orig_gitops_token = controller.GITOPS_TOKEN
+        controller.GITOPS_REPO = ''       # persistence off by default in tests
+        controller.GITOPS_TOKEN = ''
+        controller.latest_version = lambda: 'v1.4.0'
+        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [
+            {'deployment': 'ws-octo', 'version': 'v1.3.0',
+             'image': 'registry/coder:devlaptop-v1.3.0', 'imageTag': 'devlaptop-v1.3.0'}]}
+
+    def tearDown(self):
+        controller.list_workspaces = self._orig_list
+        controller._kubectl_run = self._orig_run
+        controller.latest_version = self._orig_latest
+        controller.GITOPS_REPO = self._orig_gitops_repo
+        controller.GITOPS_TOKEN = self._orig_gitops_token
+
+    def test_patches_image_to_latest(self):
+        captured = {}
+        controller._kubectl_run = lambda args: captured.setdefault('args', args)
+        result = controller.set_workspace_image('octo')
+        args = captured['args']
+        self.assertEqual(args[0], 'patch')
+        self.assertEqual(args[1], 'deployment/ws-octo')
+        self.assertIn('--type=strategic', args)
+        patch = json.loads(args[args.index('-p') + 1])
+        container = patch['spec']['template']['spec']['containers'][0]
+        self.assertEqual(container['name'], 'ide')
+        self.assertEqual(container['image'], 'registry/coder:devlaptop-v1.4.0')
+        self.assertEqual(result['fromVersion'], 'v1.3.0')
+        self.assertEqual(result['toVersion'], 'v1.4.0')
+        self.assertTrue(result['rolled'])
+        self.assertFalse(result['persisted'])
+
+    def test_explicit_version_overrides_latest(self):
+        captured = {}
+        controller._kubectl_run = lambda args: captured.setdefault('args', args)
+        controller.set_workspace_image('octo', 'v1.3.5')
+        patch = json.loads(captured['args'][captured['args'].index('-p') + 1])
+        self.assertEqual(patch['spec']['template']['spec']['containers'][0]['image'],
+                         'registry/coder:devlaptop-v1.3.5')
+
+    def test_noop_when_already_on_target(self):
+        ran = {'called': False}
+        controller._kubectl_run = lambda args: ran.update(called=True)
+        result = controller.set_workspace_image('octo', 'v1.3.0')  # already on v1.3.0
+        self.assertFalse(ran['called'])   # no patch issued
+        self.assertFalse(result['rolled'])
+
+    def test_unknown_target_raises(self):
+        controller.latest_version = lambda: None
+        with self.assertRaises(ValueError):
+            controller.set_workspace_image('octo')          # no version anywhere
+
+    def test_unknown_workspace_raises_lookup(self):
+        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': []}
+        with self.assertRaises(LookupError):
+            controller.set_workspace_image('octo', 'v1.4.0')
+
+    def test_persist_path_invoked_when_gitops_configured(self):
+        controller._kubectl_run = lambda args: None
+        controller.GITOPS_REPO = 'github.com/o/r.git'
+        controller.GITOPS_TOKEN = 'tok'
+        seen = {}
+        self.addCleanup(setattr, controller, 'gitops_update_image_tag',
+                        controller.gitops_update_image_tag)
+        controller.gitops_update_image_tag = lambda slug, tag: seen.update(slug=slug, tag=tag) or True
+        result = controller.set_workspace_image('octo')
+        self.assertEqual(seen, {'slug': 'octo', 'tag': 'devlaptop-v1.4.0'})
+        self.assertTrue(result['persisted'])
+
+
+class RestrictedListenerTest(unittest.TestCase):
+    """The self-serve listener must 404 every admin/header-trusting route so a
+    workspace pod that can reach it can never drive the admin API."""
+
+    class _Stub:
+        def __init__(self, restricted):
+            self.server = types.SimpleNamespace(restricted=restricted)
+            self.sent = None
+
+        def send_json(self, body, code):
+            self.sent = (code, body)
+
+    def block(self, restricted, path, allowed_re):
+        stub = self._Stub(restricted)
+        handled = controller.Handler._restricted_block(stub, path, allowed_re)
+        return handled, stub.sent
+
+    def test_unrestricted_never_blocks(self):
+        handled, sent = self.block(False, '/api/workspaces', controller._SELF_SERVE_GET_RE)
+        self.assertFalse(handled)
+        self.assertIsNone(sent)
+
+    def test_restricted_blocks_admin_routes(self):
+        for path in ('/api/workspaces', '/api/workspaces/octo/stop',
+                     '/api/insights', '/'):
+            handled, sent = self.block(True, path, controller._SELF_SERVE_GET_RE)
+            self.assertTrue(handled, f'{path} should be blocked')
+            self.assertEqual(sent[0], 404)
+
+    def test_restricted_allows_self_serve_and_health(self):
+        for path in ('/api/self/workspaces/octo/version', '/health'):
+            handled, _ = self.block(True, path, controller._SELF_SERVE_GET_RE)
+            self.assertFalse(handled, f'{path} should pass through')
+
+    def test_self_serve_route_regexes(self):
+        self.assertTrue(controller._SELF_SERVE_GET_RE.match('/api/self/workspaces/octo/version'))
+        self.assertTrue(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo-1/update'))
+        self.assertIsNone(controller._SELF_SERVE_GET_RE.match('/api/workspaces/octo/version'))
+        self.assertIsNone(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo/stop'))
 
 
 if __name__ == '__main__':

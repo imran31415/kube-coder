@@ -81,6 +81,23 @@ spec:
         # image (it already carries kubectl/git/make/curl).
         - name: CONTROLLER_IMAGE
           value: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+        # --- Workspace version updates (see values.yaml `controller.update`) ---
+        # Repo whose GitHub Releases define "latest"; tag_name vX.Y.Z maps to
+        # the devlaptop-vX.Y.Z image. Drives the dashboard's update badge.
+        - name: RELEASE_REPO
+          value: {{ .Values.controller.update.releaseRepo | quote }}
+        {{- if .Values.controller.update.selfServeSecretName }}
+        # Self-serve: a workspace's own backend brokers an update for ITS OWN
+        # workspace via the token-gated listener on SELF_SERVE_PORT (a separate
+        # port from the admin API — see networkpolicy.yaml for why).
+        - name: SELF_SERVE_PORT
+          value: "8081"
+        - name: SELF_SERVE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.controller.update.selfServeSecretName }}
+              key: self-serve-token
+        {{- end }}
         {{- if .Values.provision.enabled }}
         # --- Self-service provisioning (see values.yaml `provision`) ---
         - name: CONTROLLER_HOST
@@ -125,6 +142,10 @@ spec:
         ports:
         - name: http
           containerPort: 8080
+        {{- if .Values.controller.update.selfServeSecretName }}
+        - name: self-serve
+          containerPort: 8081
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /health
