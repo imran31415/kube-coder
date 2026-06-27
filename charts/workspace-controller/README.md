@@ -31,6 +31,16 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
   durable changes still belong in the workspace's `values.yaml`. Bounded by
   `MAX_CPU_LIMIT_CORES` / `MAX_MEM_LIMIT` so a typo can't request an
   unschedulable pod.
+- **Restart & pull latest** — when a newer release exists, the row shows an
+  *update* badge and the detail page an **Updates** card that repoints the
+  workspace at the latest image (`POST /api/workspaces/<user>/update`). "Latest"
+  comes from the GitHub Releases of `RELEASE_REPO`; the live Deployment is patched
+  and, when GitOps is configured, the new tag is also committed to the user's
+  `values.yaml` so it survives the next reconcile. End users can self-update their
+  own workspace from the workspace dashboard when self-serve is enabled — that path
+  runs on a **separate, token-gated listener** so it never touches the admin API.
+  See [docs/workspace-updates.md](../../docs/workspace-updates.md) for enablement
+  and an end-to-end validation walkthrough.
 - **Provision a workspace** *(optional, off by default)* — type a GitHub
   username and the controller registers a **GitHub App** for them via the
   manifest flow (one in-browser confirmation click), pushes rendered
