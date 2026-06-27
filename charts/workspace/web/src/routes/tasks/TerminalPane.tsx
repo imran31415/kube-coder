@@ -21,8 +21,33 @@ export interface TerminalPaneProps {
 const LAST_PORT_KEY = 'kc.previewPort';
 const LAST_PATH_KEY = 'kc.previewPath';
 const LAST_MODE_KEY = 'kc.previewMode';
+const LAST_DEVICE_KEY = 'kc.previewDevice';
+const LAST_CUSTOM_W_KEY = 'kc.previewCustomW';
+const LAST_CUSTOM_H_KEY = 'kc.previewCustomH';
 
 type PreviewMode = 'app' | 'browser';
+
+/** A responsive-preview device preset. Dimensions are CSS pixels at the
+ *  device's natural (portrait) orientation — the rotate toggle swaps them.
+ *  'responsive' (fill the pane) and 'custom' (user-entered) live outside
+ *  this table as special device ids. */
+interface DevicePreset {
+  id: string;
+  label: string;
+  w: number;
+  h: number;
+}
+const DEVICE_PRESETS: DevicePreset[] = [
+  { id: 'iphone-se', label: 'iPhone SE', w: 375, h: 667 },
+  { id: 'iphone-15', label: 'iPhone 15', w: 393, h: 852 },
+  { id: 'pixel-7', label: 'Pixel 7', w: 412, h: 915 },
+  { id: 'ipad-mini', label: 'iPad mini', w: 768, h: 1024 },
+  { id: 'ipad-pro', label: 'iPad Pro 11"', w: 834, h: 1194 },
+  { id: 'desktop', label: 'Desktop', w: 1280, h: 800 },
+];
+// Breathing room (px) kept around a device frame when scaling it to fit
+// the preview pane, so the device's drop-shadow isn't flush to the edge.
+const DEVICE_STAGE_PAD = 24;
 
 // Mirrors AppEmbed's iframe sandbox: same-origin so cookies/localStorage
 // work for typical dev servers, scripts/forms/popups/downloads for normal
@@ -100,6 +125,29 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const vncRef = useRef<HTMLIFrameElement | null>(null);
   const appRef = useRef<HTMLIFrameElement | null>(null);
 
+  // Responsive-preview device: which viewport size the App iframe is sized
+  // to. 'responsive' fills the pane (the original behaviour); a preset id or
+  // 'custom' constrains the iframe to fixed dimensions and scales-to-fit.
+  // Persisted per workspace so the next Preview open inherits the choice.
+  const [deviceId, setDeviceId] = useState<string>(() => {
+    try { return localStorage.getItem(LAST_DEVICE_KEY) ?? 'responsive'; }
+    catch { return 'responsive'; }
+  });
+  const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
+  const [customW, setCustomW] = useState<string>(() => {
+    try { return localStorage.getItem(LAST_CUSTOM_W_KEY) ?? '390'; }
+    catch { return '390'; }
+  });
+  const [customH, setCustomH] = useState<string>(() => {
+    try { return localStorage.getItem(LAST_CUSTOM_H_KEY) ?? '844'; }
+    catch { return '844'; }
+  });
+  // The device frame is centered in this stage and scaled down when it
+  // wouldn't otherwise fit; we observe the stage's live size to compute the
+  // scale. Only meaningful when a fixed device size is active.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+
   // The side-by-side split doesn't fit on phones, so on mobile the Preview
   // shows ONE pane at a time — the live session (terminal) or the app preview
   // — chosen via the segmented control. Defaults to the app so the user lands
@@ -141,6 +189,17 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   useEffect(() => {
     try { localStorage.setItem(LAST_MODE_KEY, mode); } catch { /* noop */ }
   }, [mode]);
+
+  // Persist the responsive-preview device + custom dimensions.
+  useEffect(() => {
+    try { localStorage.setItem(LAST_DEVICE_KEY, deviceId); } catch { /* noop */ }
+  }, [deviceId]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAST_CUSTOM_W_KEY, customW);
+      localStorage.setItem(LAST_CUSTOM_H_KEY, customH);
+    } catch { /* noop */ }
+  }, [customW, customH]);
 
   // Tappable URL strip — refreshed every ~4s from the task's tmux pane.
   // Skipped in Preview (withVnc) mode since the VNC viewer is the primary
@@ -337,6 +396,44 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const showBrowser = showPreview && mode === 'browser';
   const fs = previewFullscreen.value;
 
+  // Resolve the active device into base (portrait) dimensions, then apply
+  // orientation. A device of 0×0 (or 'responsive') means "fill the pane".
+  const activePreset = DEVICE_PRESETS.find((p) => p.id === deviceId);
+  let baseW = 0;
+  let baseH = 0;
+  if (deviceId === 'custom') {
+    baseW = parseInt(customW, 10) || 0;
+    baseH = parseInt(customH, 10) || 0;
+  } else if (activePreset) {
+    baseW = activePreset.w;
+    baseH = activePreset.h;
+  }
+  // Device sizing is a desktop affordance — on a phone the pane is already
+  // tiny, so we always fill it there (and hide the control).
+  const deviceActive = !isMobile && deviceId !== 'responsive' && baseW > 0 && baseH > 0;
+  const [deviceW, deviceH] = orientation === 'landscape' ? [baseH, baseW] : [baseW, baseH];
+  // Scale the device frame down to fit the stage (never up past 1:1). Until
+  // the stage has been measured, render at 1:1 to avoid a flash of tiny.
+  const fit = stageSize.w > 0 && stageSize.h > 0
+    ? Math.min(1, (stageSize.w - DEVICE_STAGE_PAD) / deviceW, (stageSize.h - DEVICE_STAGE_PAD) / deviceH)
+    : 1;
+  const deviceScale = deviceActive ? Math.max(0.1, fit) : 1;
+
+  // Track the stage size so the scale-to-fit recomputes on layout changes
+  // (window resize, fullscreen toggle, split reflow). Only attached while a
+  // fixed device size is active and the App pane is showing.
+  useEffect(() => {
+    if (!deviceActive || !showApp) return;
+    const el = stageRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r) setStageSize({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [deviceActive, showApp]);
+
   return (
     <div class={`term-pane ${withVnc ? 'term-pane-split' : ''}`}>
       {/* Preview-only control strip. Desktop: source toggle (App | Browser) +
@@ -432,6 +529,65 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               </button>
             </div>
           )}
+          {/* Responsive-preview size: pick a device preset (or a custom
+              width×height) to constrain the App iframe. Desktop only — the
+              mobile pane is already a single small viewport. */}
+          {showApp && !isMobile && (
+            <div class="term-pane-device" role="group" aria-label="Preview size">
+              <select
+                class="term-pane-device-select mono"
+                value={deviceId}
+                onChange={(e) => setDeviceId((e.target as HTMLSelectElement).value)}
+                aria-label="Device preset"
+                title="Preview the app at a device viewport size"
+              >
+                <option value="responsive">Responsive</option>
+                {DEVICE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label} · {p.w}×{p.h}</option>
+                ))}
+                <option value="custom">Custom…</option>
+              </select>
+              {deviceId === 'custom' && (
+                <span class="term-pane-device-custom">
+                  <input
+                    type="number"
+                    class="term-pane-device-dim mono"
+                    min={50}
+                    max={3840}
+                    value={customW}
+                    onInput={(e) => setCustomW((e.target as HTMLInputElement).value)}
+                    aria-label="Custom width (px)"
+                  />
+                  <span class="term-pane-device-x" aria-hidden="true">×</span>
+                  <input
+                    type="number"
+                    class="term-pane-device-dim mono"
+                    min={50}
+                    max={3840}
+                    value={customH}
+                    onInput={(e) => setCustomH((e.target as HTMLInputElement).value)}
+                    aria-label="Custom height (px)"
+                  />
+                </span>
+              )}
+              {deviceActive && (
+                <button
+                  type="button"
+                  class="term-pane-navbtn"
+                  onClick={() => setOrientation((o) => (o === 'portrait' ? 'landscape' : 'portrait'))}
+                  title={orientation === 'portrait' ? 'Rotate to landscape' : 'Rotate to portrait'}
+                  aria-label="Rotate orientation"
+                >
+                  ⤢
+                </button>
+              )}
+              {deviceActive && (
+                <span class="term-pane-device-readout mono" aria-live="polite">
+                  {deviceW}×{deviceH}{deviceScale < 1 ? ` · ${Math.round(deviceScale * 100)}%` : ''}
+                </span>
+              )}
+            </div>
+          )}
           {showPreview && (
             <button
               type="button"
@@ -521,15 +677,28 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
             </div>
           )}
           {withVnc && showApp && (
-            <iframe
-              ref={appRef}
-              key={`app-${taskId}-${appReloadKey}`}
-              class="term-pane-iframe term-pane-iframe-app"
-              src={proxyUrl(appPort, appPath)}
-              title="App preview"
-              sandbox={APP_FRAME_SANDBOX}
-              allow="clipboard-read; clipboard-write"
-            />
+            // The iframe stays a single element across responsive↔device
+            // switches (the stage/frame wrappers are always present) so the
+            // app isn't reloaded just by resizing — only port/path changes,
+            // which bump appReloadKey, remount it.
+            <div class={`term-pane-device-stage ${deviceActive ? '' : 'is-responsive'}`} ref={stageRef}>
+              <div
+                class="term-pane-device-frame"
+                style={deviceActive
+                  ? { width: `${deviceW}px`, height: `${deviceH}px`, transform: `scale(${deviceScale})` }
+                  : undefined}
+              >
+                <iframe
+                  ref={appRef}
+                  key={`app-${taskId}-${appReloadKey}`}
+                  class="term-pane-iframe term-pane-iframe-app term-pane-iframe-device"
+                  src={proxyUrl(appPort, appPath)}
+                  title="App preview"
+                  sandbox={APP_FRAME_SANDBOX}
+                  allow="clipboard-read; clipboard-write"
+                />
+              </div>
+            </div>
           )}
           {withVnc && showBrowser && vncSrc && (
             <iframe
