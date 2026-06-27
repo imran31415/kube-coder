@@ -61,12 +61,19 @@ COOKIE_SECRET=$(openssl rand -base64 64 | tr -d '\n=+/' | head -c 32)
 # free of any deploy-specific secret names.
 SHARED_ASSISTANT_SECRET="${KC_SHARED_ASSISTANT_SECRET:-}"
 
+# Shared self-serve-update token Secret name (#147), so new workspaces can
+# update themselves from their dashboard. Operators set KC_SELF_SERVE_SECRET to
+# the Secret they created (key: self-serve-token); blank by default keeps the
+# public repo free of any deploy-specific secret names.
+SELF_SERVE_SECRET="${KC_SELF_SERVE_SECRET:-}"
+
 substitute() {
   # Read tmpl from stdin, substitute placeholders, write to stdout.
   sed -e "s|__USER__|$NAME|g" \
       -e "s|__DATE__|$(date -u +%Y-%m-%d)|g" \
       -e "s|__IMAGE_TAG__|$IMAGE_TAG|g" \
       -e "s|__SHARED_ASSISTANT_SECRET__|$SHARED_ASSISTANT_SECRET|g" \
+      -e "s|__SELF_SERVE_SECRET__|$SELF_SERVE_SECRET|g" \
       -e "s|__COOKIE_SECRET__|$COOKIE_SECRET|g"
 }
 

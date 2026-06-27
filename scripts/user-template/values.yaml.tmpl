@@ -93,6 +93,13 @@ assistant:
   openrouter:
     sharedSecretName: "__SHARED_ASSISTANT_SECRET__"
 
+# Self-serve updates (#147): lets this workspace update ITSELF to the latest
+# release from its own dashboard. Names the shared self-serve token Secret —
+# must match controller.update.selfServeSecretName. Pre-filled from the
+# KC_SELF_SERVE_SECRET env at scaffold time, blank otherwise (feature off).
+update:
+  selfServeSecretName: "__SELF_SERVE_SECRET__"
+
 # GitHub App for repo access:
 #   Drop credentials in users-private/__USER__/secrets/github-app.yaml.
 #   Each workspace gets its OWN GitHub App, not a shared one — anyone with
