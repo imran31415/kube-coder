@@ -2060,14 +2060,21 @@ class CronManager:
 
     @staticmethod
     def detect_user():
-        """Derive the workspace username from the pod hostname.
-        Pods are named ws-<user>-<podhash>; the kaniko wrapper does the same.
-        Falls back to env var WORKSPACE_USER if hostname doesn't match."""
+        """Workspace username. Prefer the authoritative WORKSPACE_USER env (set
+        by the chart from user.name); otherwise parse the pod hostname. A
+        Deployment names pods ws-<user>-<replicaset-hash>-<pod-suffix> (TWO hash
+        segments) — strip both — falling back to the single-suffix form used by
+        bare pods / the kaniko wrapper."""
+        u = os.environ.get('WORKSPACE_USER', '').strip()
+        if u:
+            return u
         host = os.uname().nodename
-        m = re.match(r'^ws-([a-z0-9-]+?)-[a-z0-9]+$', host)
-        if m:
-            return m.group(1)
-        return os.environ.get('WORKSPACE_USER', 'unknown')
+        for pat in (r'^ws-([a-z0-9-]+?)-[a-z0-9]+-[a-z0-9]+$',
+                    r'^ws-([a-z0-9-]+?)-[a-z0-9]+$'):
+            m = re.match(pat, host)
+            if m:
+                return m.group(1)
+        return 'unknown'
 
     @staticmethod
     def detect_namespace():

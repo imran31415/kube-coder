@@ -76,6 +76,11 @@ spec:
         {{- with .Values.user.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        # Authoritative workspace identity for self-serve update / cron brokering.
+        # Avoids parsing the pod hostname, whose two hash suffixes (ReplicaSet +
+        # pod) a regex strips incorrectly.
+        - name: WORKSPACE_USER
+          value: {{ .Values.user.name | quote }}
         {{- if .Values.claude.apiKey }}
         - name: ANTHROPIC_API_KEY
           valueFrom:

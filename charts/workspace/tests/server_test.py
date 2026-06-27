@@ -1270,5 +1270,38 @@ class WaitingQuiescenceTests(unittest.TestCase):
         self.assertGreater(meta['last_activity_at'], before)
 
 
+class DetectUserTests(unittest.TestCase):
+    """Regression: a Deployment pod has TWO hash suffixes; the broker must
+    resolve `ws-imran-<rs>-<pod>` to `imran`, not `imran-<rs>`."""
+
+    def setUp(self):
+        self._saved = os.environ.pop('WORKSPACE_USER', None)
+
+    def tearDown(self):
+        os.environ.pop('WORKSPACE_USER', None)
+        if self._saved is not None:
+            os.environ['WORKSPACE_USER'] = self._saved
+
+    def _host(self, name):
+        return mock.patch('os.uname', return_value=os.uname_result(('', name, '', '', '')))
+
+    def test_prefers_workspace_user_env(self):
+        os.environ['WORKSPACE_USER'] = 'imran'
+        with self._host('ws-imran-6747b9f89c-hd7m9'):
+            self.assertEqual(server.CronManager.detect_user(), 'imran')
+
+    def test_strips_both_deployment_hash_suffixes(self):
+        with self._host('ws-imran-6747b9f89c-hd7m9'):
+            self.assertEqual(server.CronManager.detect_user(), 'imran')
+
+    def test_hyphenated_username(self):
+        with self._host('ws-wwmullerjr-dotcom-6747b9f89c-hd7m9'):
+            self.assertEqual(server.CronManager.detect_user(), 'wwmullerjr-dotcom')
+
+    def test_single_suffix_fallback(self):
+        with self._host('ws-imran-abc123'):
+            self.assertEqual(server.CronManager.detect_user(), 'imran')
+
+
 if __name__ == '__main__':
     unittest.main()
