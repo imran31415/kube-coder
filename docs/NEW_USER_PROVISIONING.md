@@ -4,7 +4,7 @@ This guide explains how to provision a new user workspace with OAuth2 authentica
 
 > **Prefer a UI?** The workspace-controller dashboard can do all of the below
 > from a GitHub username — registering the GitHub App, writing the config, and
-> deploying — via a one-click setup. See [docs/PROVISIONING.md](docs/PROVISIONING.md).
+> deploying — via a one-click setup. See [PROVISIONING.md](PROVISIONING.md).
 > The manual flow here is still the source of truth and the fallback.
 
 ## TL;DR — generic per-user commands
@@ -483,7 +483,7 @@ kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:608
 
 ## 📚 Additional Resources
 
-- [Main README](./README.md) - Overview and general setup
+- [Main README](../README.md) - Overview and general setup
 - [Helm Documentation](https://helm.sh/docs/)
 - [Kubernetes Documentation](https://kubernetes.io/docs/)
 - [OAuth2 Proxy Documentation](https://oauth2-proxy.github.io/oauth2-proxy/)

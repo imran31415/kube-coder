@@ -317,7 +317,7 @@ Then remove their DNS record and the GitHub OAuth app.
 | `validate-user` fails | it tells you which check failed (placeholders, cookie length, DNS, regcred, base release) — fix and re-run |
 | Pod `ContainerCreating` forever | confirm `make deploy-base` ran and `base-infrastructure` is installed |
 
-Full provisioning reference (resource sizing, org/team restrictions, lifecycle checklists): https://github.com/imran31415/kube-coder/blob/main/NEW_USER_PROVISIONING.md
+Full provisioning reference (resource sizing, org/team restrictions, lifecycle checklists): https://github.com/imran31415/kube-coder/blob/main/docs/NEW_USER_PROVISIONING.md
 
 ---
 

@@ -106,7 +106,7 @@ kube-coder runs two ways — pick the one that fits:
 | Needs | Docker + minikube | a cluster, registry, DNS, GitHub OAuth |
 | Auth | http basic (`admin`/`admin`) | GitHub OAuth2 (or basic) |
 | TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
-| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [NEW_USER_PROVISIONING.md](NEW_USER_PROVISIONING.md) |
+| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md) |
 
 > **📖 Step-by-step walkthroughs** — follow-along, manual-style guides for each path:
 > - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
@@ -167,7 +167,7 @@ make deploy-base                  # base-infrastructure helm release
 # Scaffold a private workspace under users-private/<name>/ — generates
 # values.yaml, mints an OAuth2 cookie secret, and prints a checklist of
 # the manual fields you still need to fill in (DNS host, GitHub App
-# creds, optional assistant keys). See NEW_USER_PROVISIONING.md.
+# creds, optional assistant keys). See docs/NEW_USER_PROVISIONING.md.
 make new-user USER=<name>
 $EDITOR users-private/<name>/values.yaml
 
@@ -183,7 +183,7 @@ make shell  USER=<name>
 make test   USER=<name>
 ```
 
-The script `setup.sh` walks first-time users through GitHub OAuth, DNS, and Claude credentials interactively for the basic-auth flow (older path).
+The script `scripts/setup.sh` walks first-time users through GitHub OAuth, DNS, and Claude credentials interactively for the basic-auth flow (older path).
 
 ---
 

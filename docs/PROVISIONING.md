@@ -3,7 +3,7 @@
 The **workspace-controller** dashboard can provision a brand-new workspace from
 a GitHub username: it registers a GitHub App for the user, writes the rendered
 config to a private GitOps repo, and runs `helm upgrade` — turning the manual
-[New User Provisioning](../NEW_USER_PROVISIONING.md) checklist into a form
+[New User Provisioning](NEW_USER_PROVISIONING.md) checklist into a form
 submission.
 
 This is **off by default** and self-hostable: every endpoint is your cluster,
