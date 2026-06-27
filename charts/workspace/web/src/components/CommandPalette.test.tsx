@@ -46,4 +46,19 @@ describe('CommandPalette', () => {
     within(dialog).getByText('Go to Memory').click();
     expect(paletteOpen.value).toBe(false);
   });
+
+  it('tracks the active option via aria-activedescendant and roves on ArrowDown', () => {
+    paletteOpen.value = true;
+    render(<CommandPalette />);
+    const input = screen.getByRole('combobox') as HTMLInputElement;
+    // First row is active by default and the input points at it.
+    expect(input.getAttribute('aria-activedescendant')).toBe('palette-opt-0');
+    const firstOption = document.getElementById('palette-opt-0');
+    expect(firstOption?.getAttribute('aria-selected')).toBe('true');
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input.getAttribute('aria-activedescendant')).toBe('palette-opt-1');
+    expect(document.getElementById('palette-opt-1')?.getAttribute('aria-selected')).toBe('true');
+    expect(document.getElementById('palette-opt-0')?.getAttribute('aria-selected')).toBe('false');
+  });
 });

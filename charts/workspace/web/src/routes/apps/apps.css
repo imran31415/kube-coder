@@ -49,22 +49,8 @@
 }
 
 /* --- pin dialog --- */
-.apps-modal-backdrop {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 100;
-  display: flex; align-items: center; justify-content: center;
-  padding: var(--size-3);
-}
-.apps-modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg, 8px);
-  padding: var(--size-4);
-  width: min(440px, 100%);
-  display: flex; flex-direction: column; gap: var(--size-3);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
-}
+/* Chrome (backdrop + box) now comes from the shared <Modal> primitive; only
+   the pin-form's inner layout classes live here. */
 .apps-modal-title { margin: 0; font-size: 16px; }
 .apps-modal-hint { font-size: 12.5px; margin: 0; }
 .apps-modal-row {

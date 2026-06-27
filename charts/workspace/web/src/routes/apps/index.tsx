@@ -9,6 +9,7 @@ import { Icon } from '../../components/Icon';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { Modal } from '../../components/Modal';
 import {
   type AppEntry,
   listApps,
@@ -271,68 +272,60 @@ function PinDialog({
   };
 
   return (
-    <div class="apps-modal-backdrop" onClick={onClose} role="presentation">
-      <div
-        class="apps-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Pin port"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 class="apps-modal-title">Pin a port</h2>
-        <p class="muted apps-modal-hint">
-          Pinned ports stay listed even when the app isn't running, and you
-          can give them a friendly name.
-        </p>
-        <div class="apps-modal-row">
-          <label class="apps-modal-label">
-            Port
-            <Input
-              type="number"
-              min={1}
-              max={65535}
-              value={draft.port}
-              onInput={(e) =>
-                onChange({ ...draft, port: (e.target as HTMLInputElement).value })
-              }
-              placeholder="e.g. 3000"
-            />
-          </label>
-          <label class="apps-modal-label">
-            Name
-            <Input
-              value={draft.name}
-              onInput={(e) =>
-                onChange({ ...draft, name: (e.target as HTMLInputElement).value })
-              }
-              placeholder="e.g. Django app"
-              maxLength={80}
-            />
-          </label>
-        </div>
-        <label class="apps-modal-check">
-          <input
-            type="checkbox"
-            checked={draft.strip_prefix}
-            onChange={(e) =>
-              onChange({ ...draft, strip_prefix: (e.target as HTMLInputElement).checked })
+    <Modal open onClose={onClose} label="Pin a port" width={440}>
+      <h2 class="apps-modal-title">Pin a port</h2>
+      <p class="muted apps-modal-hint">
+        Pinned ports stay listed even when the app isn't running, and you
+        can give them a friendly name.
+      </p>
+      <div class="apps-modal-row">
+        <label class="apps-modal-label">
+          Port
+          <Input
+            type="number"
+            min={1}
+            max={65535}
+            value={draft.port}
+            onInput={(e) =>
+              onChange({ ...draft, port: (e.target as HTMLInputElement).value })
             }
+            placeholder="e.g. 3000"
           />
-          <span>
-            Keep proxy prefix (for Vite-style dev servers configured with{' '}
-            <code>--base /api/app-proxy/&lt;port&gt;/</code>)
-          </span>
         </label>
-        {err && <div class="apps-modal-err" role="alert">{err}</div>}
-        <div class="apps-modal-actions">
-          <Button variant="ghost" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Pinning…' : 'Pin port'}
-          </Button>
-        </div>
+        <label class="apps-modal-label">
+          Name
+          <Input
+            value={draft.name}
+            onInput={(e) =>
+              onChange({ ...draft, name: (e.target as HTMLInputElement).value })
+            }
+            placeholder="e.g. Django app"
+            maxLength={80}
+          />
+        </label>
       </div>
-    </div>
+      <label class="apps-modal-check">
+        <input
+          type="checkbox"
+          checked={draft.strip_prefix}
+          onChange={(e) =>
+            onChange({ ...draft, strip_prefix: (e.target as HTMLInputElement).checked })
+          }
+        />
+        <span>
+          Keep proxy prefix (for Vite-style dev servers configured with{' '}
+          <code>--base /api/app-proxy/&lt;port&gt;/</code>)
+        </span>
+      </label>
+      {err && <div class="apps-modal-err" role="alert">{err}</div>}
+      <div class="apps-modal-actions">
+        <Button variant="ghost" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={submit} disabled={saving}>
+          {saving ? 'Pinning…' : 'Pin port'}
+        </Button>
+      </div>
+    </Modal>
   );
 }

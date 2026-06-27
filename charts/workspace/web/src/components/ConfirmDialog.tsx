@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
+import { useFocusTrap } from '../hooks/useFocusTrap';
+import { Portal } from './Portal';
 import { Button } from './primitives/Button';
 import './ConfirmDialog.css';
 
@@ -36,6 +38,7 @@ export function ConfirmDialog({
   useEscape(open, onCancel);
   useScrollLock(open);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(open, dialogRef);
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => {
@@ -45,22 +48,24 @@ export function ConfirmDialog({
   }, [open]);
   if (!open) return null;
   return (
-    <div class="cd-scrim" onClick={onCancel}>
-      <div ref={dialogRef} class="cd-dialog" role="alertdialog" aria-modal="true" aria-labelledby="cd-title" onClick={(e) => e.stopPropagation()}>
-        <h2 id="cd-title" class="cd-title">{title}</h2>
-        {body && <p class="cd-body">{body}</p>}
-        <div class="cd-actions">
-          <Button variant="secondary" onClick={onCancel}>{cancelLabel}</Button>
-          <Button
-            variant={destructive ? 'danger' : 'primary'}
-            class="cd-confirm"
-            onClick={onConfirm}
-          >
-            {confirmLabel}
-          </Button>
+    <Portal>
+      <div class="cd-scrim" onClick={onCancel}>
+        <div ref={dialogRef} class="cd-dialog" role="alertdialog" aria-modal="true" aria-labelledby="cd-title" onClick={(e) => e.stopPropagation()}>
+          <h2 id="cd-title" class="cd-title">{title}</h2>
+          {body && <p class="cd-body">{body}</p>}
+          <div class="cd-actions">
+            <Button variant="secondary" onClick={onCancel}>{cancelLabel}</Button>
+            <Button
+              variant={destructive ? 'danger' : 'primary'}
+              class="cd-confirm"
+              onClick={onConfirm}
+            >
+              {confirmLabel}
+            </Button>
+          </div>
         </div>
       </div>
-    </div>
+    </Portal>
   );
 }
 
@@ -93,8 +98,10 @@ export function PromptDialog({
 }: PromptDialogProps) {
   const [value, setValue] = useState(initial);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
   useEscape(open, onCancel);
   useScrollLock(open);
+  useFocusTrap(open, formRef);
   useEffect(() => {
     if (open) {
       setValue(initial);
@@ -103,30 +110,33 @@ export function PromptDialog({
   }, [open, initial]);
   if (!open) return null;
   return (
-    <div class="cd-scrim" onClick={onCancel}>
-      <form
-        class="cd-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="pd-title"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={(e) => { e.preventDefault(); onConfirm(value.trim()); }}
-      >
-        <h2 id="pd-title" class="cd-title">{title}</h2>
-        {body && <p class="cd-body">{body}</p>}
-        <input
-          ref={inputRef}
-          class="cd-input"
-          type="text"
-          value={value}
-          placeholder={placeholder}
-          onInput={(e) => setValue((e.target as HTMLInputElement).value)}
-        />
-        <div class="cd-actions">
-          <Button variant="secondary" type="button" onClick={onCancel}>{cancelLabel}</Button>
-          <Button variant="primary" type="submit" disabled={!value.trim()}>{confirmLabel}</Button>
-        </div>
-      </form>
-    </div>
+    <Portal>
+      <div class="cd-scrim" onClick={onCancel}>
+        <form
+          ref={formRef}
+          class="cd-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pd-title"
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => { e.preventDefault(); onConfirm(value.trim()); }}
+        >
+          <h2 id="pd-title" class="cd-title">{title}</h2>
+          {body && <p class="cd-body">{body}</p>}
+          <input
+            ref={inputRef}
+            class="cd-input"
+            type="text"
+            value={value}
+            placeholder={placeholder}
+            onInput={(e) => setValue((e.target as HTMLInputElement).value)}
+          />
+          <div class="cd-actions">
+            <Button variant="secondary" type="button" onClick={onCancel}>{cancelLabel}</Button>
+            <Button variant="primary" type="submit" disabled={!value.trim()}>{confirmLabel}</Button>
+          </div>
+        </form>
+      </div>
+    </Portal>
   );
 }

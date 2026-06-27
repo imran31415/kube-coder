@@ -8,6 +8,7 @@ import { triggers, fire } from '../store/triggers';
 import { flatPages, loadManifest, manifest } from '../store/docs';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { Icon, type IconName } from './Icon';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import './CommandPalette.css';
@@ -147,8 +148,10 @@ export function CommandPalette() {
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const paletteRef = useRef<HTMLDivElement | null>(null);
   useEscape(open, () => (paletteOpen.value = false));
   useScrollLock(open);
+  useFocusTrap(open, paletteRef);
 
   const entries = useMemo(
     () => [...staticActions(), ...dataEntries(isMobile)],
@@ -199,9 +202,16 @@ export function CommandPalette() {
 
   if (!open) return null;
 
+  // `active` can momentarily exceed the freshly-filtered list (arrow down, then
+  // type to narrow). A post-render effect re-clamps it, but derive a clamped
+  // index for *this* render so aria-activedescendant never points at a
+  // non-existent option id and a row is always marked selected.
+  const activeIdx = filtered.length > 0 ? Math.min(active, filtered.length - 1) : 0;
+  const activeId = filtered.length > 0 ? `palette-opt-${activeIdx}` : undefined;
+
   return (
     <div class="palette-scrim" onClick={() => (paletteOpen.value = false)}>
-      <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
+      <div ref={paletteRef} class="palette" role="dialog" aria-modal="true" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
         <div class="palette-input-row">
           <Icon name="search" size={16} />
           <input
@@ -212,11 +222,16 @@ export function CommandPalette() {
             placeholder="Search tasks, memories, triggers, actions…"
             onInput={(e) => setQ((e.target as HTMLInputElement).value)}
             onKeyDown={onKey}
+            role="combobox"
+            aria-expanded={true}
+            aria-controls="palette-listbox"
+            aria-activedescendant={activeId}
+            aria-autocomplete="list"
             autoFocus
           />
           <kbd class="palette-kbd">esc</kbd>
         </div>
-        <div class="palette-list" role="listbox">
+        <div id="palette-listbox" class="palette-list" role="listbox">
           {groups.length === 0 && <div class="palette-empty muted">No matches.</div>}
           {groups.map(([group, items]) => (
             <div key={group}>
@@ -226,9 +241,10 @@ export function CommandPalette() {
                 return (
                   <button
                     key={e.id}
+                    id={`palette-opt-${flatIdx}`}
                     role="option"
-                    aria-selected={flatIdx === active}
-                    class={`palette-row ${flatIdx === active ? 'palette-row-active' : ''}`}
+                    aria-selected={flatIdx === activeIdx}
+                    class={`palette-row ${flatIdx === activeIdx ? 'palette-row-active' : ''}`}
                     onMouseEnter={() => setActive(flatIdx)}
                     onClick={() => { e.onSelect(); paletteOpen.value = false; }}
                     data-group={group}
