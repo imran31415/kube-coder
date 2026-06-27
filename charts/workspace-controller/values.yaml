@@ -32,6 +32,23 @@ controller:
   # this list. Leave empty to trust the oauth2-proxy --github-user gate alone.
   adminUsers: ""
 
+  # Workspace version updates: surface "update available" per workspace and let
+  # a confirmed action restart it onto the latest release image. The live
+  # Deployment is patched immediately; when provisioning's GitOps repo is
+  # configured the new tag is also committed to the user's values.yaml so it
+  # survives the next reconcile.
+  update:
+    # Repo whose GitHub Releases define "latest". Its release tag (vX.Y.Z) maps
+    # to the workspace image tag devlaptop-vX.Y.Z.
+    releaseRepo: "imran31415/kube-coder"
+    # Opt-in end-user self-serve: lets a user update their OWN workspace from
+    # the per-workspace dashboard (brokered by the workspace backend over a
+    # token-gated, separate controller port — never the admin API). Create one
+    # Secret in the namespace with key `self-serve-token`, then name it here AND
+    # in the workspace chart's `update.selfServeSecretName`. Empty (default) =>
+    # self-serve off; admins still update any workspace from this dashboard.
+    selfServeSecretName: ""
+
   resources:
     requests:
       cpu: 50m

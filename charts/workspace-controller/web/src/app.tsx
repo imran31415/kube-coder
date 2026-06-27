@@ -108,9 +108,15 @@ function Row({ ws }: { ws: Workspace }) {
               ws.user
             )}
             <Pill state={ws.state} />
+            {ws.updateAvailable && (
+              <span class="pill pill-update" title={`Update available: ${ws.version} → latest`}>
+                update
+              </span>
+            )}
           </div>
           <div class="row-meta">
             {ws.deployment} · {ws.detail}
+            {ws.version ? ` · ${ws.version}` : ''}
           </div>
         </div>
         <button

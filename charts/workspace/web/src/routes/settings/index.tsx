@@ -4,6 +4,7 @@ import { Icon } from '../../components/Icon';
 import { GitSection } from './GitSection';
 import { BrowserSection } from './BrowserSection';
 import { MetricsSection } from './MetricsSection';
+import { UpdatesSection } from './UpdatesSection';
 import './settings.css';
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -69,6 +70,8 @@ export function SettingsRoute() {
       </section>
 
       <MetricsSection />
+
+      <UpdatesSection />
 
       <GitSection />
 

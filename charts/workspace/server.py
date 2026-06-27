@@ -84,6 +84,13 @@ STREAM_MAX_SECONDS = int(os.environ.get('STREAM_MAX_SECONDS', '1800'))
 # us into a probe of the cloud metadata service or in-cluster services.
 # Set ALLOW_INTERNAL_HOOKS=true to opt back in (single-user trusted deploy).
 ALLOW_INTERNAL_HOOKS = os.environ.get('ALLOW_INTERNAL_HOOKS', 'false').lower() == 'true'
+# Self-serve version updates are brokered to the workspace-controller, which
+# owns the kube access this pod lacks. The controller exposes a token-gated
+# self-serve listener reached over the in-cluster Service. Both are injected by
+# the chart only when the operator opts in (names a shared Secret); empty => the
+# dashboard's Updates section reports "self-serve unavailable".
+CONTROLLER_SELF_SERVE_URL = os.environ.get('CONTROLLER_SELF_SERVE_URL', '').strip().rstrip('/')
+CONTROLLER_SELF_SERVE_TOKEN = os.environ.get('CONTROLLER_SELF_SERVE_TOKEN', '').strip()
 
 def _check_safety_invariants():
     if AUTH_MODE == 'none' and not READONLY_MODE:
@@ -2443,6 +2450,55 @@ spec:
         return ok, cfg
 
 
+class UpdateManager:
+    """Brokers workspace version checks/updates to the workspace-controller.
+
+    The workspace pod has no Kubernetes access, so it cannot read its own image
+    tag or patch its Deployment. The controller can; it exposes a token-gated
+    self-serve listener (a separate port from its admin API) that authorizes
+    actions on the workspace the caller names. We always name OUR OWN user, so a
+    user can only ever update their own workspace. Returns (status, payload)
+    tuples mirroring the controller's responses; never raises on a network
+    error (degrades to a 502 payload)."""
+
+    TIMEOUT = int(os.environ.get('CONTROLLER_TIMEOUT', '15'))
+
+    @staticmethod
+    def enabled():
+        return bool(CONTROLLER_SELF_SERVE_URL and CONTROLLER_SELF_SERVE_TOKEN)
+
+    @staticmethod
+    def _request(method, suffix, body=None):
+        user = CronManager.detect_user()
+        url = f'{CONTROLLER_SELF_SERVE_URL}/api/self/workspaces/{user}/{suffix}'
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header('X-KC-Service-Token', CONTROLLER_SELF_SERVE_TOKEN)
+        req.add_header('Accept', 'application/json')
+        if data is not None:
+            req.add_header('Content-Type', 'application/json')
+        try:
+            with urllib.request.urlopen(req, timeout=UpdateManager.TIMEOUT) as resp:
+                return resp.status, json.load(resp)
+        except urllib.error.HTTPError as exc:
+            try:
+                payload = json.load(exc)
+            except (ValueError, OSError):
+                payload = {'error': f'controller HTTP {exc.code}'}
+            return exc.code, payload
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return 502, {'error': f'controller unreachable: {exc}'}
+
+    @staticmethod
+    def get_version():
+        return UpdateManager._request('GET', 'version')
+
+    @staticmethod
+    def do_update(version=None):
+        body = {'version': version} if version else {}
+        return UpdateManager._request('POST', 'update', body=body)
+
+
 class DesktopManager:
     """Backs the /api/desktop endpoints — the customizable launcher grid on
     the Desktop tab. Single JSON file at /home/dev/.kube-coder/desktop.json
@@ -3202,6 +3258,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         elif self.path == "/api/github/config":
             self.send_git_config()
+            return
+        elif self.path == "/api/workspace/version":
+            self.send_workspace_version()
             return
         elif self.path == "/vnc" or self.path == "/vnc/":
             self.send_vnc_viewer()
@@ -6031,6 +6090,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.launch_chrome()
             elif path == "/api/test-firefox":
                 self.test_chrome()
+            elif path == "/api/workspace/update":
+                self.handle_workspace_update()
             # GitHub configuration endpoints
             elif path == "/api/github/ssh/generate":
                 self.handle_ssh_generate()
@@ -6306,6 +6367,43 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(json.dumps(config).encode())
+
+    def send_workspace_version(self):
+        """Current vs latest workspace version, brokered from the controller.
+        Auth-gated (exposes the workspace's image version). Returns
+        {available:false} cleanly when self-serve updates aren't wired, so the
+        SPA can simply hide the section instead of erroring."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not UpdateManager.enabled():
+            self.send_json({'available': False,
+                            'reason': 'self-serve updates not configured'})
+            return
+        status, payload = UpdateManager.get_version()
+        if status == 200:
+            self.send_json({'available': True, **payload})
+        else:
+            self.send_json({'available': True, 'error': payload.get('error', 'controller error')},
+                           status if status >= 400 else 502)
+
+    def handle_workspace_update(self):
+        """Broker a 'restart and pull latest' for THIS workspace to the
+        controller. The controller authorizes the action on our own user."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not UpdateManager.enabled():
+            self.send_json({'error': 'self-serve updates not configured'}, 501)
+            return
+        try:
+            n = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(n).decode('utf-8') if 0 < n <= MAX_REQUEST_BODY_BYTES else ''
+            data = json.loads(raw) if raw else {}
+        except (ValueError, OSError):
+            data = {}
+        status, payload = UpdateManager.do_update(data.get('version') or None)
+        self.send_json(payload, status)
 
     def handle_ssh_generate(self):
         """Handle SSH key generation request"""

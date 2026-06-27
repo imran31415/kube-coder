@@ -14,6 +14,8 @@ export const workspaces = signal<Workspace[]>([]);
 export const namespace = signal<string>('');
 export const loaded = signal<boolean>(false);
 export const error = signal<string | null>(null);
+// Latest released version ("v1.4.0"), or null when the lookup failed.
+export const latestVersion = signal<string | null>(null);
 // Usernames with an in-flight start/stop — buttons disabled until the next poll.
 export const busy = signal<Set<string>>(new Set());
 
@@ -38,6 +40,7 @@ export async function refresh(): Promise<void> {
     const res = await listWorkspaces();
     workspaces.value = res.workspaces;
     namespace.value = res.namespace;
+    latestVersion.value = res.latestVersion;
     error.value = null;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);

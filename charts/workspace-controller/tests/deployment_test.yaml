@@ -119,6 +119,48 @@ tests:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.path
           value: /livez
 
+  - it: should always set RELEASE_REPO for the update check
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: RELEASE_REPO
+            value: imran31415/kube-coder
+
+  - it: should NOT expose the self-serve port or token by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: self-serve
+            containerPort: 8081
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SELF_SERVE_PORT
+            value: "8081"
+
+  - it: should wire the self-serve listener + token when a secret is named
+    template: templates/deployment.yaml
+    set:
+      controller.update.selfServeSecretName: kc-self-serve
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: self-serve
+            containerPort: 8081
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SELF_SERVE_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: kc-self-serve
+                key: self-serve-token
+
   - it: should mount the controller code + SPA from ConfigMaps
     template: templates/deployment.yaml
     asserts:

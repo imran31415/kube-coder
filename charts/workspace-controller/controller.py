@@ -226,6 +226,8 @@ def list_workspaces():
         detail = next((p['reason'] for p in pods if p.get('reason')), None)
         if detail is None:
             detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
+        image = _workspace_image(dep)
+        image_tag, version = version_from_image(image)
         out.append({
             'user': user,
             'deployment': name,
@@ -235,6 +237,9 @@ def list_workspaces():
             'url': f'https://{host}/' if host else None,
             'pods': pods,
             'detail': detail,
+            'image': image,
+            'imageTag': image_tag,
+            'version': version,
         })
     out.sort(key=lambda w: w['user'])
     return {'namespace': NAMESPACE, 'workspaces': out}
@@ -318,6 +323,244 @@ def set_workspace_resources(user, cpu_limit, mem_limit):
         {'name': WORKSPACE_CONTAINER, 'resources': {'limits': limits}}]}}}}
     _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)])
     return limits
+
+
+# --- Version / image-tag updates ---------------------------------------------
+#
+# Workspaces run a pinned image tag (registry.../coder:devlaptop-v<X.Y.Z>). A
+# release publishes a matching `devlaptop-v<X.Y.Z>` image and a GitHub release
+# tagged `v<X.Y.Z>`. "Update" = repoint a workspace at the latest tag: patch the
+# live Deployment (immediate rollout; pullPolicy Always pulls the new image)
+# and, when GitOps is configured, also commit the new tag to the user's
+# values.yaml so the change survives the next `helm upgrade` reconcile. Both
+# operations are a `deployments[patch]` / a git push — no new RBAC.
+
+# Repo whose GitHub Releases define "latest". Its release `tag_name` is
+# `v<X.Y.Z>`; the workspace image tag is that prefixed with `devlaptop-`.
+RELEASE_REPO = os.environ.get('RELEASE_REPO', 'imran31415/kube-coder').strip()
+# Cache the latest-release lookup: the unauthenticated GitHub API allows only
+# 60 req/hr/IP and the dashboard polls, so a TTL keeps us well clear across the
+# 2 controller replicas. A token (GITOPS_TOKEN) raises the ceiling further.
+RELEASE_CHECK_TTL = int(os.environ.get('RELEASE_CHECK_TTL', '600'))  # 10 min
+# Prefix the chart prepends to a version to form the image tag.
+IMAGE_TAG_PREFIX = os.environ.get('IMAGE_TAG_PREFIX', 'devlaptop-')
+# Fallback image repository if a Deployment somehow carries a tagless image.
+DEFAULT_IMAGE_REPO = os.environ.get(
+    'WORKSPACE_IMAGE_REPO', 'registry.digitalocean.com/resourceloop/coder').strip()
+# Shared secret that lets a workspace's own backend (server.py) broker a
+# self-service version update for ITS OWN workspace without an admin. The
+# workspace calls the in-cluster controller Service directly (bypassing the
+# oauth2 admin gate) and presents this token; we then authorize the action on
+# the user it names. Empty => self-serve disabled (admin-only).
+SELF_SERVE_TOKEN = os.environ.get('SELF_SERVE_TOKEN', '').strip()
+# The self-serve endpoints listen on a SEPARATE port from the admin API. This
+# is a security boundary, not a convenience: the admin API on PORT trusts the
+# oauth2-proxy's X-Forwarded-User header, so its NetworkPolicy pins ingress to
+# the oauth2-proxy alone. The self-serve port instead trusts ONLY the shared
+# token (never an identity header) and is the only port workspace pods are
+# allowed to reach — so a workspace can self-update but can never forge an
+# admin header against PORT. See templates/networkpolicy.yaml.
+SELF_SERVE_PORT = int(os.environ.get('SELF_SERVE_PORT', '8081'))
+
+# Routes permitted on the restricted self-serve listener. Anything else 404s
+# there, so the header-trusting admin routes remain unreachable from workspace
+# pods even though the same Handler class implements them.
+_SELF_SERVE_GET_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/version$')
+_SELF_SERVE_POST_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/update$')
+
+_SEMVER_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)$')
+
+
+def parse_version(s):
+    """'v1.4.0' / '1.4.0' -> (1, 4, 0); None if it isn't MAJOR.MINOR.PATCH."""
+    if not s:
+        return None
+    m = _SEMVER_RE.match(str(s).strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def version_from_image(image):
+    """(raw_tag, semver_str) for a workspace image ref, or (tag|None, None).
+
+    'registry/coder:devlaptop-v1.4.0' -> ('devlaptop-v1.4.0', 'v1.4.0').
+    The version is only returned when it parses as semver, so a 'latest' or
+    digest-pinned image yields (tag, None) and reads as "version unknown".
+    """
+    if not image or ':' not in image:
+        return (None, None)
+    tag = image.rsplit(':', 1)[1]
+    ver = tag[len(IMAGE_TAG_PREFIX):] if tag.startswith(IMAGE_TAG_PREFIX) else tag
+    return (tag, ver if parse_version(ver) else None)
+
+
+def update_available(current, latest):
+    """True iff both parse as semver and current is strictly older than latest."""
+    c, l = parse_version(current), parse_version(latest)
+    return bool(c and l and c < l)
+
+
+_latest_cache = {'ts': 0.0, 'version': None}
+
+
+def latest_version(force=False):
+    """Latest released version string ('v1.4.0'), cached for RELEASE_CHECK_TTL.
+
+    Best-effort: any GitHub API failure returns the last cached value (or None)
+    rather than raising, so the dashboard degrades to "no update info" instead
+    of erroring. The timestamp is refreshed even on failure so a down API isn't
+    hammered every request.
+    """
+    now = time.time()
+    if (not force and _latest_cache['version'] is not None
+            and now - _latest_cache['ts'] < RELEASE_CHECK_TTL):
+        return _latest_cache['version']
+    try:
+        rel = _github_api('GET', f'/repos/{RELEASE_REPO}/releases/latest',
+                          token=GITOPS_TOKEN or None)
+        tag = (rel or {}).get('tag_name')
+        if parse_version(tag):
+            _latest_cache['version'] = tag
+    except GithubError as exc:
+        sys.stderr.write(f'[controller] latest_version lookup failed: {exc}\n')
+    _latest_cache['ts'] = now
+    return _latest_cache['version']
+
+
+def _workspace_image(dep):
+    """The ide container's image from a Deployment (falls back to container 0)."""
+    containers = (dep.get('spec', {}).get('template', {})
+                  .get('spec', {}).get('containers', []) or [])
+    for c in containers:
+        if c.get('name') == WORKSPACE_CONTAINER:
+            return c.get('image')
+    return containers[0].get('image') if containers else None
+
+
+def decorate_with_updates(resp):
+    """Add latestVersion + per-workspace updateAvailable to a list response.
+
+    Kept out of list_workspaces() itself so the internal existence checks in
+    scale/resources/update never trigger a (cached, but still potentially
+    networked) release lookup. Mutates and returns `resp`.
+    """
+    latest = latest_version()
+    resp['latestVersion'] = latest
+    for w in resp.get('workspaces', []):
+        w['updateAvailable'] = update_available(w.get('version'), latest)
+    return resp
+
+
+def _swap_image_tag(content, new_tag):
+    """Rewrite the image.tag line in a values.yaml body. Returns (new_content,
+    changed). Only a `tag:` line whose value is a devlaptop-* image tag is
+    touched, so an unrelated `tag:` key elsewhere in the file is never matched.
+    """
+    pattern = r'(?m)^(\s*tag:[ \t]*)' + re.escape(IMAGE_TAG_PREFIX) + r'\S+([ \t]*)$'
+    new_content, n = re.subn(pattern, r'\g<1>' + new_tag + r'\g<2>', content, count=1)
+    return (new_content, n > 0 and new_content != content)
+
+
+def gitops_update_image_tag(slug, new_tag):
+    """Repoint just the image.tag in an existing user's values.yaml in the
+    GitOps repo. Returns True if a change was committed+pushed, False if the
+    repo/file/tag-line was absent or already current. Raises ProvisionError on
+    a git failure. Mirrors gitops_publish's clone+commit+push, but edits a
+    single line rather than rewriting the whole file."""
+    if not (GITOPS_REPO and GITOPS_TOKEN):
+        return False
+    workdir = tempfile.mkdtemp(prefix='gitops-img-', dir='/tmp')
+    try:
+        repo_url = f'https://x-access-token:{GITOPS_TOKEN}@{GITOPS_REPO}'
+        _git(['clone', '--depth', '1', '-b', GITOPS_BRANCH, repo_url, workdir])
+        vpath = os.path.join(workdir, 'users-private', slug, 'values.yaml')
+        if not os.path.isfile(vpath):
+            return False
+        with open(vpath) as f:
+            content = f.read()
+        new_content, changed = _swap_image_tag(content, new_tag)
+        if not changed:
+            return False
+        with open(vpath, 'w') as f:
+            f.write(new_content)
+        _git(['-C', workdir, 'add', '-A'])
+        if not _git(['-C', workdir, 'status', '--porcelain']).strip():
+            return False
+        _git(['-C', workdir,
+              '-c', 'user.email=controller@kube-coder',
+              '-c', 'user.name=workspace-controller',
+              'commit', '-m', f'update {slug} image to {new_tag}'])
+        _git(['-C', workdir, 'push', 'origin', GITOPS_BRANCH])
+        return True
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def set_workspace_image(user, target_version=None, persist=True):
+    """Repoint a workspace at a release version.
+
+    Patches the live Deployment's ide-container image tag (an immediate rollout)
+    and, when GitOps is configured and persist=True, also commits the new tag to
+    the user's values.yaml so it survives the next reconcile. target_version
+    defaults to the latest release. Returns a result dict.
+    """
+    if not _USER_RE.match(user):
+        raise ValueError('invalid workspace name')
+    target = (target_version or latest_version() or '').strip()
+    if not parse_version(target):
+        raise ValueError('no target version available (latest release unknown)')
+    name = f'{WORKSPACE_PREFIX}{user}'
+    wss = {w['deployment']: w for w in list_workspaces()['workspaces']}
+    ws = wss.get(name)
+    if ws is None:
+        raise LookupError(name)
+    current_image = ws.get('image') or ''
+    current_ver = ws.get('version')
+    repo = current_image.rsplit(':', 1)[0] if ':' in current_image else (
+        current_image or DEFAULT_IMAGE_REPO)
+    new_tag = f'{IMAGE_TAG_PREFIX}{target}'
+    new_image = f'{repo}:{new_tag}'
+    already = (current_ver is not None and parse_version(current_ver) == parse_version(target))
+    if not already:
+        patch = {'spec': {'template': {'spec': {'containers': [
+            {'name': WORKSPACE_CONTAINER, 'image': new_image}]}}}}
+        _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)])
+    persisted = False
+    persist_error = None
+    if persist and GITOPS_REPO and GITOPS_TOKEN:
+        try:
+            persisted = gitops_update_image_tag(user, new_tag)
+        except (ProvisionError, GithubError) as exc:
+            persist_error = str(exc)
+            sys.stderr.write(f'[controller] gitops image update {user}->{new_tag} failed: {exc}\n')
+    return {
+        'user': user,
+        'fromVersion': current_ver,
+        'toVersion': target,
+        'imageTag': new_tag,
+        'image': new_image,
+        'rolled': not already,
+        'persisted': persisted,
+        'persistError': persist_error,
+    }
+
+
+def workspace_version_info(user):
+    """Current vs latest version for one workspace (for the self-serve GET)."""
+    if not _USER_RE.match(user):
+        raise ValueError('invalid workspace name')
+    name = f'{WORKSPACE_PREFIX}{user}'
+    ws = {w['deployment']: w for w in list_workspaces()['workspaces']}.get(name)
+    if ws is None:
+        raise LookupError(name)
+    latest = latest_version()
+    return {
+        'user': user,
+        'version': ws.get('version'),
+        'imageTag': ws.get('imageTag'),
+        'latestVersion': latest,
+        'updateAvailable': update_available(ws.get('version'), latest),
+        'state': ws.get('state'),
+    }
 
 
 # --- Metrics (Prometheus) ----------------------------------------------------
@@ -1403,6 +1646,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         return False
 
+    def check_service_token(self):
+        """True if the request carries the shared self-serve token.
+
+        This is the auth for the in-cluster `/api/self/*` endpoints a
+        workspace's own backend brokers to (bypassing the oauth2 admin gate via
+        the controller's internal Service). Constant-time compare; disabled
+        cleanly when SELF_SERVE_TOKEN is unset.
+        """
+        if not SELF_SERVE_TOKEN:
+            return False
+        tok = self.headers.get('X-KC-Service-Token', '')
+        return bool(tok) and hmac.compare_digest(tok, SELF_SERVE_TOKEN)
+
     def _norm_path(self):
         """Strip query + the SPA's /oauth prefix; return the upstream path."""
         path = urllib.parse.urlsplit(self.path).path
@@ -1414,8 +1670,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ----- routing -----
 
+    def _restricted_block(self, path, allowed_re):
+        """On the self-serve-only listener, 404 anything that isn't a health
+        check or an allowed self-serve route. Returns True if it handled (and
+        blocked) the request. Keeps the admin/header-trusting routes — which the
+        same Handler implements — unreachable from workspace pods."""
+        if not getattr(self.server, 'restricted', False):
+            return False
+        if path in ('/health', '/livez', '/healthz') or allowed_re.match(path):
+            return False
+        self.send_json({'error': 'not found'}, 404)
+        return True
+
     def do_GET(self):
         path = self._norm_path()
+        if self._restricted_block(path, _SELF_SERVE_GET_RE):
+            return
         if path in ('/health', '/livez', '/healthz'):
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -1427,9 +1697,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
             try:
-                self.send_json(list_workspaces())
+                self.send_json(decorate_with_updates(list_workspaces()))
             except KubectlError as exc:
                 sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
+            return
+        # Self-serve (workspace-brokered): current vs latest version for one
+        # workspace, gated by the shared service token instead of admin.
+        sv = re.match(r'^/api/self/workspaces/([a-z0-9-]{1,41})/version$', path)
+        if sv:
+            if not self.check_service_token():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            user = sv.group(1)
+            try:
+                self.send_json(workspace_version_info(user))
+            except ValueError as exc:
+                self.send_json({'error': str(exc)}, 400)
+            except LookupError:
+                self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
+            except KubectlError as exc:
+                sys.stderr.write(f'[controller] self version {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/insights':
@@ -1601,6 +1889,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = self._norm_path()
+        if self._restricted_block(path, _SELF_SERVE_POST_RE):
+            return
         if path == '/api/provision/github/manifest':
             if not self.check_admin():
                 self.send_json({'error': 'unauthorized'}, 401)
@@ -1651,6 +1941,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, 'user': user, 'limits': limits})
+            return
+        # Restart-and-update: repoint the workspace at a release version (latest
+        # by default). Admin route (oauth2-gated) and the workspace-brokered
+        # self-serve route (shared-token-gated) share one handler.
+        um = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/update$', path)
+        sm = re.match(r'^/api/self/workspaces/([a-z0-9-]{1,41})/update$', path)
+        if um or sm:
+            if um and not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            if sm and not self.check_service_token():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            user = (um or sm).group(1)
+            try:
+                body = self.read_json_body()
+                result = set_workspace_image(user, body.get('version'))
+            except ValueError as exc:
+                self.send_json({'error': str(exc)}, 400)
+                return
+            except LookupError:
+                self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
+                return
+            except KubectlError as exc:
+                sys.stderr.write(f'[controller] update {user}: {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
+                return
+            self.send_json({'ok': True, **result})
             return
         m = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/(start|stop)$', path)
         if not m:
@@ -1715,6 +2033,20 @@ def main():
     if DEV_TOKEN:
         print('[controller] WARNING: CONTROLLER_DEV_TOKEN set — bearer-token auth bypass '
               'is enabled. Local dev only.', file=sys.stderr)
+    # Restricted self-serve listener (token-gated, no header trust) on a
+    # separate port so workspace pods can self-update without ever being able
+    # to reach the header-trusting admin API. Only started when a token is set.
+    if SELF_SERVE_TOKEN:
+        import threading
+        self_httpd = http.server.ThreadingHTTPServer(('0.0.0.0', SELF_SERVE_PORT), Handler)
+        self_httpd.restricted = True
+        t = threading.Thread(target=self_httpd.serve_forever, daemon=True)
+        t.start()
+        print(f'[controller] self-serve listening on 0.0.0.0:{SELF_SERVE_PORT} (token-gated)',
+              file=sys.stderr)
+    else:
+        print('[controller] self-serve disabled (SELF_SERVE_TOKEN unset)', file=sys.stderr)
+
     httpd = http.server.ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
     print(f'[controller] listening on 0.0.0.0:{PORT}', file=sys.stderr)
     try:

@@ -45,7 +45,8 @@
       "id": "administration",
       "title": "Administration",
       "pages": [
-        { "id": "provisioning", "title": "Workspace provisioning", "file": "PROVISIONING.md", "summary": "Self-service: provision a workspace from a GitHub username via the controller — GitHub App manifest flow, private GitOps repo, the provisioner Job, and the one-time setup." }
+        { "id": "provisioning", "title": "Workspace provisioning", "file": "PROVISIONING.md", "summary": "Self-service: provision a workspace from a GitHub username via the controller — GitHub App manifest flow, private GitOps repo, the provisioner Job, and the one-time setup." },
+        { "id": "workspace-updates", "title": "Workspace version updates", "file": "workspace-updates.md", "summary": "Restart-and-pull-latest: the admin (controller dashboard) and opt-in self-serve (workspace Settings) update flows, the separate token-gated listener, how to enable it, and an end-to-end validation walkthrough." }
       ]
     }
   ]
