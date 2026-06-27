@@ -705,16 +705,22 @@ while true; do
     fi
   fi
 
-  # Every 5 min: reap orphan chromium/headless_shell processes adopted by
-  # PID 1. Playwright MCP and similar tools can leak these when a claude
-  # session crashes without cleaning up its browser context.
+  # Every 5 min: reap leaked Playwright MCP browsers. The reaper (a) kills
+  # crash-orphans (Firefox/chromium reparented to PID 1 — closing the gap
+  # the old chromium-only awk had against the Firefox we actually ship) and
+  # (b) sweeps Playwright browser trees that have burned ~no CPU for several
+  # consecutive sweeps (idle ~30 min), which is the real leak: an idle
+  # browser parked under a live MCP node for days holding ~1.3 GB. A browser
+  # being actively driven bursts CPU on every tool call and is never killed;
+  # the MCP relaunches a fresh browser on the next browser tool call. See
+  # https://github.com/imran31415/kube-coder/issues/143. State persists in
+  # /tmp across sweeps; decision logic is unit-tested in
+  # tests/playwright_reaper_test.py.
   if [ $((tick % 10)) -eq 0 ]; then
-    ps -eo pid,ppid,comm,args 2>/dev/null \
-      | awk '$2==1 && ($3 ~ /chrome|chromium|headless_shell/ || $0 ~ /--remote-debugging-port/) {print $1}' \
-      | while read -r orphan_pid; do
-          log_stage "reaping orphan browser PID $orphan_pid"
-          kill -TERM "$orphan_pid" 2>/dev/null || true
-        done
+    if [ -f /tmp/browser/playwright_reaper.py ]; then
+      python3 /tmp/browser/playwright_reaper.py 2>&1 \
+        | while read -r line; do log_stage "$line"; done
+    fi
   fi
 
   if ! pgrep -f "python3 server.py" > /dev/null; then
