@@ -202,7 +202,12 @@ export function CommandPalette() {
 
   if (!open) return null;
 
-  const activeId = filtered.length > 0 ? `palette-opt-${active}` : undefined;
+  // `active` can momentarily exceed the freshly-filtered list (arrow down, then
+  // type to narrow). A post-render effect re-clamps it, but derive a clamped
+  // index for *this* render so aria-activedescendant never points at a
+  // non-existent option id and a row is always marked selected.
+  const activeIdx = filtered.length > 0 ? Math.min(active, filtered.length - 1) : 0;
+  const activeId = filtered.length > 0 ? `palette-opt-${activeIdx}` : undefined;
 
   return (
     <div class="palette-scrim" onClick={() => (paletteOpen.value = false)}>
@@ -238,8 +243,8 @@ export function CommandPalette() {
                     key={e.id}
                     id={`palette-opt-${flatIdx}`}
                     role="option"
-                    aria-selected={flatIdx === active}
-                    class={`palette-row ${flatIdx === active ? 'palette-row-active' : ''}`}
+                    aria-selected={flatIdx === activeIdx}
+                    class={`palette-row ${flatIdx === activeIdx ? 'palette-row-active' : ''}`}
                     onMouseEnter={() => setActive(flatIdx)}
                     onClick={() => { e.onSelect(); paletteOpen.value = false; }}
                     data-group={group}

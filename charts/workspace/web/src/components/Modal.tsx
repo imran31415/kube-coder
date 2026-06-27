@@ -3,6 +3,7 @@ import { useRef } from 'preact/hooks';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { Portal } from './Portal';
 import './Modal.css';
 
 export interface ModalProps {
@@ -45,19 +46,21 @@ export function Modal({
   useFocusTrap(open, ref);
   if (!open) return null;
   return (
-    <div class="modal-scrim" onClick={onClose} role="presentation">
-      <div
-        ref={ref}
-        class={`modal-dialog ${className ?? ''}`.trim()}
-        style={{ maxWidth: `${width}px` }}
-        role={role}
-        aria-modal="true"
-        aria-label={label}
-        aria-labelledby={labelledBy}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {children}
+    <Portal>
+      <div class="modal-scrim" onClick={onClose} role="presentation">
+        <div
+          ref={ref}
+          class={`modal-dialog ${className ?? ''}`.trim()}
+          style={{ maxWidth: `${width}px` }}
+          role={role}
+          aria-modal="true"
+          aria-label={label}
+          aria-labelledby={labelledBy}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {children}
+        </div>
       </div>
-    </div>
+    </Portal>
   );
 }

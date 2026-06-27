@@ -31,7 +31,7 @@ describe('Modal', () => {
 
   it('closes on Esc and on scrim click but not on inner click', () => {
     const onClose = vi.fn();
-    const { container } = render(
+    render(
       <Modal open onClose={onClose} label="X">
         <button type="button">inside</button>
       </Modal>,
@@ -43,8 +43,34 @@ describe('Modal', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    (container.querySelector('.modal-scrim') as HTMLElement).click();
+    // Portaled to <body>, so query the document, not the render container.
+    (document.querySelector('.modal-scrim') as HTMLElement).click();
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('portals out of .app-content so the inert background never disables it', () => {
+    // Regression for the inert self-disable bug: the dialog must NOT live inside
+    // the `.app-content` subtree that useFocusTrap marks `inert`, or it would
+    // render but be unfocusable/unclickable in a real browser.
+    function Harness({ open }: { open: boolean }) {
+      return (
+        <div class="app-content">
+          <Modal open={open} onClose={() => {}} label="X">
+            <button type="button">inside</button>
+          </Modal>
+        </div>
+      );
+    }
+    const { rerender } = render(<Harness open={false} />);
+    rerender(<Harness open />);
+
+    const appContent = document.querySelector('.app-content') as HTMLElement;
+    expect(appContent.hasAttribute('inert')).toBe(true);
+
+    const insideBtn = screen.getByText('inside');
+    // The dialog is portaled to <body>, a sibling of the inert subtree.
+    expect(appContent.contains(insideBtn)).toBe(false);
+    expect(insideBtn.closest('[inert]')).toBeNull();
   });
 
   it('restores focus to the opener when it closes', () => {

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { Portal } from './Portal';
 import { Button } from './primitives/Button';
 import { Icon } from './Icon';
 import './BottomSheet.css';
@@ -52,7 +53,7 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
   }
 
   return (
-    <>
+    <Portal>
       <div
         class={`sheet-scrim ${open ? 'sheet-scrim-open' : ''}`}
         onClick={onClose}
@@ -128,6 +129,6 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
         )}
         <div class={`sheet-body ${!title ? 'sheet-body-flush' : ''}`}>{children}</div>
       </section>
-    </>
+    </Portal>
   );
 }

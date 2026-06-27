@@ -3,6 +3,7 @@ import { useRef } from 'preact/hooks';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { Portal } from './Portal';
 import { Button } from './primitives/Button';
 import { Icon } from './Icon';
 import './Drawer.css';
@@ -21,7 +22,7 @@ export function Drawer({ open, onClose, title, children, width = 420 }: DrawerPr
   useScrollLock(open);
   useFocusTrap(open, ref);
   return (
-    <>
+    <Portal>
       <div
         class={`drawer-scrim ${open ? 'drawer-scrim-open' : ''}`}
         onClick={onClose}
@@ -44,6 +45,6 @@ export function Drawer({ open, onClose, title, children, width = 420 }: DrawerPr
         </div>
         <div class="drawer-body">{children}</div>
       </aside>
-    </>
+    </Portal>
   );
 }
