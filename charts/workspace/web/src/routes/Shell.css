@@ -4,6 +4,16 @@
   flex-direction: column;
 }
 
+/* Wraps the Shell chrome (Topbar + body + BottomNav) so a modal sibling can
+   toggle `inert` on it. Must fill the shell as its own flex column so the
+   nested `.app-body { flex: 1 }` keeps stretching as before. */
+.app-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .app-body {
   flex: 1;
   display: flex;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { Button } from './primitives/Button';
 import './ConfirmDialog.css';
 
@@ -36,6 +37,7 @@ export function ConfirmDialog({
   useEscape(open, onCancel);
   useScrollLock(open);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(open, dialogRef);
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => {
@@ -93,8 +95,10 @@ export function PromptDialog({
 }: PromptDialogProps) {
   const [value, setValue] = useState(initial);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
   useEscape(open, onCancel);
   useScrollLock(open);
+  useFocusTrap(open, formRef);
   useEffect(() => {
     if (open) {
       setValue(initial);
@@ -105,6 +109,7 @@ export function PromptDialog({
   return (
     <div class="cd-scrim" onClick={onCancel}>
       <form
+        ref={formRef}
         class="cd-dialog"
         role="dialog"
         aria-modal="true"

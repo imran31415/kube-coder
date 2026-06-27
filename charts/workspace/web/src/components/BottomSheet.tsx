@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useEscape } from '../hooks/useEscape';
 import { useScrollLock } from '../hooks/useScrollLock';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { Button } from './primitives/Button';
 import { Icon } from './Icon';
 import './BottomSheet.css';
@@ -22,8 +23,10 @@ const SNAP_PCT: Record<Snap, number> = {
 };
 
 export function BottomSheet({ open, onClose, title, initialSnap = 'peek', children }: BottomSheetProps) {
+  const ref = useRef<HTMLElement | null>(null);
   useEscape(open, onClose);
   useScrollLock(open);
+  useFocusTrap(open, ref);
   const [snap, setSnap] = useState<Snap>(initialSnap);
   const dragStartY = useRef<number | null>(null);
   const dragStartSnap = useRef<Snap>(initialSnap);
@@ -56,6 +59,7 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
         aria-hidden={!open}
       />
       <section
+        ref={ref}
         class={`sheet ${open ? 'sheet-open' : ''} sheet-snap-${snap}`}
         role="dialog"
         aria-modal="true"

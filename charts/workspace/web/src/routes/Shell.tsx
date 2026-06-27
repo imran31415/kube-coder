@@ -64,16 +64,20 @@ export function Shell() {
 
   return (
     <div class="app-shell" data-active-route={route.path}>
-      <Topbar />
-      <div class="app-body">
-        <Rail />
-        <main class="app-main" tabIndex={-1}>
-          <Suspense fallback={<div class="route-loading" aria-busy="true" aria-label="Loading…" />}>
-            <RouteComponent />
-          </Suspense>
-        </main>
+      {/* The Shell chrome lives inside `.app-content` so an open modal — a
+          sibling below — can mark it `inert` without disabling itself. */}
+      <div class="app-content">
+        <Topbar />
+        <div class="app-body">
+          <Rail />
+          <main class="app-main" tabIndex={-1}>
+            <Suspense fallback={<div class="route-loading" aria-busy="true" aria-label="Loading…" />}>
+              <RouteComponent />
+            </Suspense>
+          </main>
+        </div>
+        <BottomNav />
       </div>
-      <BottomNav />
       <CommandPalette />
       <ShortcutsHelp />
       <Onboarding />

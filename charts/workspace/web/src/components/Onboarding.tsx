@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { githubStatus, setGitConfig, generateSshKey, type GitHubStatus } from '../api/github';
 import { createTask } from '../store/tasks';
 import { navigate } from '../store/router';
@@ -18,6 +19,8 @@ export function Onboarding() {
   const [email, setEmail] = useState('');
   const [prompt, setPrompt] = useState('Take a tour of /home/dev and tell me what kind of projects are here.');
   const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(show, ref);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -167,7 +170,7 @@ export function Onboarding() {
   const s = steps[step];
 
   return (
-    <div class="ob-scrim" role="dialog" aria-modal="true" aria-label={`Onboarding: ${s.title}`}>
+    <div ref={ref} class="ob-scrim" role="dialog" aria-modal="true" aria-label={`Onboarding: ${s.title}`}>
       <div class="ob">
         <header class="ob-header">
           <span class="ob-step muted mono">Step {step + 1} of {steps.length}</span>
