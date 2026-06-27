@@ -1,0 +1,47 @@
+suite: browser/VNC stack gating (browser.enabled)
+templates:
+  - templates/workspace-entrypoint-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: starts the X/VNC stack when browser.enabled=true
+    set:
+      browser.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "Xvfb :99 -screen"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "x11vnc -display :99"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "websockify --web=/usr/share/novnc"
+
+  - it: skips the X/VNC stack when browser.enabled=false
+    set:
+      browser.enabled: false
+    asserts:
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "Xvfb :99 -screen"
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "x11vnc -display :99"
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "websockify --web=/usr/share/novnc"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "browser/VNC stack disabled"
+
+  - it: also gates the supervisor websockify restart when disabled
+    set:
+      browser.enabled: false
+    asserts:
+      # The only websockify reference left should be the cleanup pkill, never a
+      # (re)launch, so the loop doesn't thrash trying to restart a stack that
+      # was never started.
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "restarting websockify"

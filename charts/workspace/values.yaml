@@ -148,6 +148,19 @@ ssh:
 codeServer:
   enabled: true
 
+# In-pod virtual-desktop browser stack (Xvfb + fluxbox + x11vnc + websockify)
+# is on by default. It backs the dashboard's "Launch browser" button and the
+# Preview pane's *Browser* mode (noVNC), plus any GUI app on DISPLAY=:99.
+# Set enabled=false to skip it entirely and reclaim its ~95MB idle baseline
+# (measured: Xvfb ~31MB + websockify ~38MB + x11vnc ~15MB + fluxbox ~11MB).
+# The Preview pane's default *App* mode renders target apps through a
+# reverse-proxy iframe and does NOT depend on this stack — only the explicit
+# Browser toggle and GUI apps do. Firefox itself is already on-demand
+# (launched via the dashboard, not at boot), so this gates only the always-on
+# X/VNC scaffolding.
+browser:
+  enabled: true
+
 # Claude Code configuration
 # Two auth methods are supported:
 #   1. OAuth (subscription): Leave apiKey empty, run `claude` in the pod once to login interactively.
