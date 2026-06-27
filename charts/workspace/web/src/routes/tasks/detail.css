@@ -782,6 +782,72 @@
    unlike the dark VNC framebuffer). */
 .term-pane-iframe-app { background: var(--bg); }
 
+/* Responsive-preview device control: preset <select> + optional custom
+   width×height inputs + rotate + a size readout, in the toolbar strip. */
+.term-pane-device {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2);
+  flex-shrink: 0;
+}
+.term-pane-device-select {
+  appearance: auto;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.term-pane-device-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.term-pane-device-custom { display: inline-flex; align-items: center; gap: 4px; }
+.term-pane-device-dim {
+  width: 56px;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.term-pane-device-dim:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.term-pane-device-x { color: var(--text-muted); font-size: 11px; }
+.term-pane-device-readout { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+
+/* Stage: centers the device frame and clips it when scaled to fit. In
+   'responsive' mode it collapses to a plain full-bleed pane so the App
+   iframe fills it exactly as before. */
+.term-pane-device-stage {
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg);
+}
+.term-pane-device-stage.is-responsive { display: block; }
+.term-pane-device-frame {
+  flex: 0 0 auto;
+  transform-origin: center center;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--border), 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+.term-pane-device-stage.is-responsive .term-pane-device-frame {
+  width: 100%;
+  height: 100%;
+  box-shadow: none;
+  background: transparent;
+}
+/* Inside a fixed-size device frame the iframe fills the frame; drop the
+   360px floor so short (landscape) devices aren't forced taller. */
+.term-pane-iframe-device { min-height: 0; }
+
 /* App navigation (back / forward / reload) + fullscreen toggle — compact
    icon buttons in the preview control strip. */
 .term-pane-navbtns { display: inline-flex; gap: 2px; }
