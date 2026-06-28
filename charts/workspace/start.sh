@@ -267,6 +267,7 @@ ttyd --port 7681 --interface 0.0.0.0 $TTYD_WRITABLE \
   -w /home/dev \
   /terminal-scripts/terminal-entry.sh > /tmp/ttyd.log 2>&1 &
 
+{{- if .Values.browser.enabled }}
 log_stage "starting Xvfb / fluxbox / x11vnc"
 export DISPLAY=:99
 rm -f /tmp/.X99-lock
@@ -336,6 +337,9 @@ sleep 1
 websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
   > /tmp/websockify.log 2>&1 &
 sleep 2
+{{- else }}
+log_stage "browser/VNC stack disabled (browser.enabled=false); skipping Xvfb/fluxbox/x11vnc/websockify"
+{{- end }}
 
 log_stage "preparing persistent memory subsystem"
 # Persist Claude Code's own file-based auto-memory across pod restarts
@@ -747,6 +751,7 @@ while true; do
       -w /home/dev \
       /terminal-scripts/terminal-entry.sh >> /tmp/ttyd.log 2>&1 &
   fi
+  {{- if .Values.browser.enabled }}
   if ! netstat -tln 2>/dev/null | grep -q :6081; then
     log_stage "restarting websockify"
     pkill -f websockify || true
@@ -754,4 +759,5 @@ while true; do
     websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
       >> /tmp/websockify.log 2>&1 &
   fi
+  {{- end }}
 done
