@@ -449,6 +449,10 @@ class ClaudeTaskManager:
 
     TASKS_DIR = '/home/dev/.claude-tasks'
     TOKEN_FILE = '/home/dev/.claude-tasks/.api-token'
+    # Claude Code's per-user config; we pre-accept folder-trust here so a freshly
+    # launched interactive task doesn't block on the trust dialog (see
+    # _ensure_claude_trust).
+    CLAUDE_CONFIG_PATH = os.path.expanduser('~/.claude.json')
 
     @staticmethod
     def ensure_tasks_dir():
@@ -766,6 +770,12 @@ class ClaudeTaskManager:
         # or a custom fallback endpoint) when those providers are configured
         # on the workspace and the caller passes the matching `assistant`
         # value. See ClaudeTaskManager.assistant_command().
+        # Pre-accept Claude's folder-trust dialog for this workdir so the
+        # auto-pasted initial prompt below isn't swallowed by it (see
+        # _ensure_claude_trust). Only relevant for the Claude CLI.
+        if assistant == 'claude':
+            ClaudeTaskManager._ensure_claude_trust(workdir)
+
         cli_cmd = ClaudeTaskManager.assistant_command(assistant)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
         tmux_cmd = [
@@ -797,7 +807,10 @@ class ClaudeTaskManager:
         # Send the initial prompt to the interactive claude session after it starts
         # Use tmux load-buffer + paste-buffer for clean multi-line handling
         def send_prompt():
-            time.sleep(3)  # Wait for claude to initialize
+            # Wait for the assistant's TUI to finish drawing before pasting,
+            # rather than a blind fixed delay. Pasting into a half-drawn screen
+            # (banner, MCP download, or a leftover dialog) drops the prompt.
+            ClaudeTaskManager._wait_for_pane_ready(session_name)
             try:
                 subprocess.run(
                     ['tmux', 'load-buffer', '-b', f'prompt-{task_id}', prompt_file],
@@ -811,10 +824,22 @@ class ClaudeTaskManager:
                 # Enter — otherwise Enter can be absorbed into the paste and the
                 # prompt never submits. See send_followup for details.
                 time.sleep(0.4)
+                before = ClaudeTaskManager._capture_pane(session_name)
                 subprocess.run(
                     ['tmux', 'send-keys', '-t', session_name, 'Enter'],
                     capture_output=True, text=True,
                 )
+                # Verify submission: a successful submit changes the screen (the
+                # input clears / the assistant starts working). If nothing moved,
+                # the Enter was likely absorbed into the bracketed paste — nudge
+                # it once more. An extra Enter on an empty input is a no-op.
+                time.sleep(0.8)
+                after = ClaudeTaskManager._capture_pane(session_name)
+                if before is not None and after == before:
+                    subprocess.run(
+                        ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                        capture_output=True, text=True,
+                    )
                 subprocess.run(
                     ['tmux', 'delete-buffer', '-b', f'prompt-{task_id}'],
                     capture_output=True, text=True,
@@ -1252,6 +1277,100 @@ class ClaudeTaskManager:
                 return meta
             finally:
                 fcntl.flock(lockf, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _ensure_claude_trust(workdir, config_path=None):
+        """Pre-accept Claude Code's folder-trust + onboarding for `workdir`.
+
+        A freshly launched interactive `claude` shows "Do you trust the files
+        in this folder?" the first time it runs in a directory. The initial
+        prompt is auto-pasted shortly after launch (send_prompt), so without
+        this the paste lands in the trust dialog and the following Enter just
+        dismisses it — the prompt is silently lost.
+
+        We seed top-level `hasCompletedOnboarding` and
+        `projects[workdir].hasTrustDialogAccepted` in ~/.claude.json. Idempotent:
+        only writes when a value is actually missing, so steady-state launches
+        do zero writes and don't race a live Claude rewriting the same file.
+        Best-effort — never raises, never clobbers an unreadable/invalid config.
+
+        Returns True if the file was written, False otherwise.
+        """
+        path = config_path or ClaudeTaskManager.CLAUDE_CONFIG_PATH
+        lock_path = path + '.kc.lock'
+        try:
+            with open(lock_path, 'a') as lockf:
+                fcntl.flock(lockf, fcntl.LOCK_EX)
+                try:
+                    try:
+                        with open(path, 'r') as f:
+                            cfg = json.load(f)
+                    except FileNotFoundError:
+                        cfg = {}
+                    if not isinstance(cfg, dict):
+                        # Don't overwrite a config we don't understand.
+                        return False
+
+                    changed = False
+                    if cfg.get('hasCompletedOnboarding') is not True:
+                        cfg['hasCompletedOnboarding'] = True
+                        changed = True
+                    projects = cfg.get('projects')
+                    if not isinstance(projects, dict):
+                        projects = {}
+                        cfg['projects'] = projects
+                    proj = projects.get(workdir)
+                    if not isinstance(proj, dict):
+                        proj = {}
+                        projects[workdir] = proj
+                    if proj.get('hasTrustDialogAccepted') is not True:
+                        proj['hasTrustDialogAccepted'] = True
+                        changed = True
+
+                    if not changed:
+                        return False
+                    tmp = path + '.kc.tmp'
+                    with open(tmp, 'w') as f:
+                        json.dump(cfg, f, indent=2)
+                    os.replace(tmp, path)
+                    return True
+                finally:
+                    fcntl.flock(lockf, fcntl.LOCK_UN)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f'[ClaudeTaskManager] trust-seed for {workdir} failed: {e}',
+                  file=sys.stderr)
+            return False
+
+    @staticmethod
+    def _capture_pane(session_name):
+        """Return the rendered tmux pane text, or None if capture failed."""
+        r = subprocess.run(
+            ['tmux', 'capture-pane', '-p', '-t', session_name],
+            capture_output=True, text=True,
+        )
+        return r.stdout if r.returncode == 0 else None
+
+    @staticmethod
+    def _wait_for_pane_ready(session_name, floor=2.0, ceiling=12.0, interval=0.6):
+        """Block until the session's rendered screen settles, then return.
+
+        Replaces a blind fixed delay before pasting the initial prompt. A
+        freshly spawned CLI may still be drawing its banner or downloading MCP
+        servers; pasting into a half-drawn TUI can drop the prompt. We wait at
+        least `floor` seconds, then return once two consecutive captures
+        `interval` apart are identical (the screen stopped changing), giving up
+        after `ceiling` seconds so a perpetually-animating UI still gets the
+        prompt. Best-effort; safe if capture fails (falls back to the timeout).
+        """
+        time.sleep(floor)
+        deadline = time.time() + max(0.0, ceiling - floor)
+        prev = ClaudeTaskManager._capture_pane(session_name)
+        while time.time() < deadline:
+            time.sleep(interval)
+            cur = ClaudeTaskManager._capture_pane(session_name)
+            if cur is not None and cur == prev:
+                return
+            prev = cur
 
     @staticmethod
     def _is_safe_response_url(url):
