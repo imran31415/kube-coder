@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -253,6 +253,48 @@ dashboard-web-test: dashboard-web-install ## Run SPA unit tests (Vitest)
 
 dashboard-web-clean: ## Remove SPA build artifacts
 	rm -rf $(WEB_DIR)/dist $(WEB_DIR)/node_modules
+
+# =============================================================================
+# Mobile app (mobile/  — Expo / React Native, built & shipped via EAS)
+# =============================================================================
+
+MOBILE_DIR := mobile
+
+mobile-install: ## Install mobile app deps (Expo SDK, npm)
+	cd $(MOBILE_DIR) && npm install
+
+mobile-typecheck: mobile-install ## Type-check the mobile app (tsc --noEmit)
+	cd $(MOBILE_DIR) && npm run typecheck
+
+mobile-web: mobile-install ## Run the app in a browser (react-native-web)
+	cd $(MOBILE_DIR) && npm run web
+
+mobile-export-web: mobile-install ## Export the demo/mock web build → mobile/dist
+	cd $(MOBILE_DIR) && npm run export:web
+
+mobile-screenshots: mobile-install ## Capture store-sized screenshots → ios-assets/ + android-assets/
+	cd $(MOBILE_DIR) && npx playwright install chromium >/dev/null 2>&1 || true
+	cd $(MOBILE_DIR) && npm run screenshots
+	@echo ""
+	@echo "Screenshots written to ios-assets/ and android-assets/"
+
+# Cloud builds via EAS. Requires `eas login` once (or EXPO_TOKEN in CI) and an
+# EAS project (`eas init`, or EAS_PROJECT_ID + EAS_OWNER env vars). iOS is built
+# on EAS macOS workers, so no local Mac is needed to produce the .ipa.
+mobile-build: mobile-typecheck ## EAS production build for iOS + Android
+	cd $(MOBILE_DIR) && npx eas-cli build --profile production --platform all
+
+mobile-build-ios: mobile-typecheck ## EAS production build, iOS only (.ipa)
+	cd $(MOBILE_DIR) && npx eas-cli build --profile production --platform ios
+
+mobile-build-android: mobile-typecheck ## EAS production build, Android only (.aab)
+	cd $(MOBILE_DIR) && npx eas-cli build --profile production --platform android
+
+mobile-submit-ios: ## Upload the latest iOS production build to App Store Connect
+	cd $(MOBILE_DIR) && npx eas-cli submit --profile production --platform ios
+
+mobile-clean: ## Remove mobile build artifacts and deps
+	rm -rf $(MOBILE_DIR)/dist $(MOBILE_DIR)/node_modules $(MOBILE_DIR)/.expo
 
 python-tests: ## Run server.py unit + integration tests
 	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v
