@@ -53,14 +53,62 @@ the UI is fully populated with no backend — used for screenshots and previews.
 
 ## Screenshots (store assets)
 
+Generating the App Store / Play Store screenshots is a **single, reusable,
+deterministic command** — no device, simulator, or live workspace required:
+
 ```bash
+make mobile-screenshots      # from the repo root  (preferred)
+# or, from this directory:
 npm run screenshots
 ```
 
-Exports the web build in mock mode and drives it with Playwright/Chromium at
-exact App Store / Play Store device pixel sizes, writing PNGs to
-`../ios-assets/` and `../android-assets/`. Device matrix lives in
-`scripts/screenshots.mjs`.
+Output lands in [`../ios-assets/`](../ios-assets) and
+[`../android-assets/`](../android-assets), one folder per device class, ready to
+upload to App Store Connect / Play Console (each has its own README mapping
+folders → store requirements).
+
+### How it works
+
+`scripts/screenshots.mjs` is a small pipeline:
+
+1. **Export** the app's web build in demo mode
+   (`EXPO_PUBLIC_MOCK=1 expo export --platform web` → `dist/`), so the UI is
+   fully populated from `src/mock/` with no backend.
+2. **Serve** `dist/` on a local port.
+3. For every entry in the **`DEVICES` matrix**, launch headless Chromium
+   (Playwright) at that device's CSS viewport × `deviceScaleFactor` — which
+   yields the *exact* pixel size each store expects — then walk the app's
+   **screen steps** (tasks → task detail → new task → memory → metrics),
+   saving a PNG per screen.
+
+Everything is deterministic apart from relative-time labels ("1m ago"), so
+re-running only changes those few frames.
+
+### The variation matrix (single source of truth)
+
+The set of variations lives in one array near the top of
+`scripts/screenshots.mjs`. Each row defines one device class:
+
+```js
+// device CSS viewport × scale = final PNG pixels (the store-required size)
+const DEVICES = [
+  { platform: 'ios',     name: 'iphone-6.7', w: 430,  h: 932,  scale: 3 }, // 1290×2796
+  { platform: 'ios',     name: 'iphone-6.5', w: 414,  h: 896,  scale: 3 }, // 1242×2688
+  { platform: 'ios',     name: 'ipad-12.9',  w: 1024, h: 1366, scale: 2 }, // 2048×2732
+  { platform: 'android', name: 'phone',      w: 360,  h: 640,  scale: 3 }, // 1080×1920
+  { platform: 'android', name: 'tablet-10',  w: 800,  h: 1280, scale: 2 }, // 1600×2560
+];
+```
+
+These 5 classes (× 5 screens = 25 images) cover what both stores **require**.
+To add another variation — a new device size, or a second pass once a light
+theme exists — **add one row** here (and, for a new screen, one step in the
+`shots()` function) and re-run the command. `make mobile-screenshots` discovers
+everything from this matrix; nothing else changes.
+
+> Tooling note: the script uses Playwright + `serve-handler` (dev dependencies).
+> `make mobile-screenshots` runs `npx playwright install chromium` first so the
+> headless browser is present in CI.
 
 ## Build for the stores (EAS)
 
