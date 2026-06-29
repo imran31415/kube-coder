@@ -96,6 +96,26 @@ The dashboard is fully responsive. Below 720px the Rail collapses into a BottomN
 
 Mobile users experience an optimized interface with touch-friendly controls and intuitive navigation patterns suitable for on-the-go development environment management.
 
+---
+
+## Mobile App (iOS & Android)
+
+Beyond the responsive web dashboard, kube-coder ships a **native Expo / React Native app** ([`mobile/`](mobile/)) to drive your workspace from your phone: list / create / message / kill Claude & OpenCode sessions, tail their **color terminal output** with a control-key shortcut bar (Shift-Tab, Esc, arrows, Ctrl-C, Paste), search the persistent memory, and watch live metrics — all over the workspace's Bearer-token API. It points at **any** kube-coder host: a cloud workspace, or a local minikube one via `make mobile-forward`.
+
+```bash
+cd mobile && npm install
+npm run ios          # iOS Simulator   (or: npm run android / npm run web)
+```
+
+On the first screen, enter your **workspace host** + **API token** — copy both from the dashboard's **Settings → Mobile app** panel. Store builds + assets use EAS and the screenshot pipeline:
+
+```bash
+make mobile-build         # EAS cloud build (iOS .ipa + Android .aab — no Mac needed)
+make mobile-screenshots   # regenerate App Store / Play Store screenshots
+```
+
+Full walkthrough — connecting to any host (incl. localhost/minikube), iOS/Android specifics, and store submission: **[mobile/README.md](mobile/README.md)**.
+
 ## Quick Start
 
 kube-coder runs two ways — pick the one that fits:
@@ -422,6 +442,8 @@ users-private/             # gitignored; the _controller bootstrap config lives 
 .users/                    # gitignored checkout of the GitOps store (make users-sync)
                            #   ← provisioned workspace config (values + secrets) lives here
 devlaptop/Dockerfile       # workspace image (Vite SPA baked into /opt/dashboard-dist)
+mobile/                    # native Expo / React Native app (iOS + Android, EAS builds)
+ios-assets/, android-assets/  # generated App Store / Play Store screenshots
 secrets/                   # template + per-user secret YAMLs
 Makefile                   # all common commands (`make help`)
 ```

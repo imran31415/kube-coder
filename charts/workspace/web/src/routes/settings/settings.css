@@ -209,3 +209,11 @@
 }
 .health-cell-name { font-weight: 500; }
 .health-cell-port { font-size: 11px; }
+
+/* Mobile section: a read-only value field that flexes wide, with its Copy /
+   Reveal buttons sitting inline beside it. Wraps on narrow viewports. */
+.settings-copy-row {
+  flex-wrap: wrap;
+  gap: var(--size-2);
+}
+.settings-copy-row .input { flex: 1 1 220px; min-width: 0; font-family: var(--font-mono, monospace); }

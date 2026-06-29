@@ -5,6 +5,7 @@ import { GitSection } from './GitSection';
 import { BrowserSection } from './BrowserSection';
 import { MetricsSection } from './MetricsSection';
 import { UpdatesSection } from './UpdatesSection';
+import { MobileSection } from './MobileSection';
 import './settings.css';
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -68,6 +69,8 @@ export function SettingsRoute() {
           </div>
         </div>
       </section>
+
+      <MobileSection />
 
       <MetricsSection />
 

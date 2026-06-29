@@ -1,6 +1,10 @@
 {{- if eq .Values.ingress.auth.type "oauth2" }}
-# Ingress for Claude Task API - no OAuth2 proxy, uses Bearer token auth instead.
-# This allows programmatic access (curl, scripts) without a browser session.
+# Ingress for the workspace API — no OAuth2 proxy, Bearer-token auth instead.
+# This is what the mobile app + scripts/curl use without a browser session: the
+# task API (/api/claude/*), the memory store (/api/memory*), and the /metrics +
+# /health probes. All are served by BrowserHandler on port 6080.
+# Auth: /api/claude, /api/memory and /metrics verify the Bearer token
+# (check_claude_auth); only /health is unauthenticated (a plain liveness probe).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -12,7 +16,7 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    nginx.ingress.kubernetes.io/rewrite-target: /api/claude/$1
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -30,7 +34,10 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /api/claude/(.*)
+      # The capture group is re-applied by rewrite-target (/$1), so the path
+      # reaches BrowserHandler unchanged. Covers the task API, memory store, and
+      # the metrics/health probes the mobile client polls.
+      - path: /(api/claude/.*|api/memory.*|metrics|health)
         pathType: ImplementationSpecific
         backend:
           service:

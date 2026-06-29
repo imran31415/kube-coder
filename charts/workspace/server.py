@@ -1065,7 +1065,7 @@ class ClaudeTaskManager:
         return meta
 
     @staticmethod
-    def get_task_output(task_id, tail=None):
+    def get_task_output(task_id, tail=None, ansi=False):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         meta_path = os.path.join(task_dir, 'task.json')
         if not os.path.isfile(meta_path):
@@ -1074,15 +1074,17 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
 
-        # For live sessions, capture the tmux pane content
+        # For live sessions, capture the tmux pane content. `-e` preserves the
+        # SGR color escape sequences so a client that renders ANSI (the mobile
+        # app) gets syntax-highlighted output; without it tmux emits plain text.
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
-        result = subprocess.run(
-            # -J joins wrapped lines, so URLs the assistant prints that
-            # overflow the 220-col pane come back as one logical line —
-            # critical for the SPA's URL-detection strip in the Terminal tab.
-            ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-200'],
-            capture_output=True, text=True,
-        )
+        # -J joins wrapped lines, so URLs the assistant prints that overflow the
+        # 220-col pane come back as one logical line — critical for the SPA's
+        # URL-detection strip in the Terminal tab.
+        cmd = ['tmux', 'capture-pane', '-J', '-t', session_name, '-p', '-S', '-200']
+        if ansi:
+            cmd.insert(1, '-e')
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             output = result.stdout
             if tail:
@@ -1090,14 +1092,13 @@ class ClaudeTaskManager:
                 return '\n'.join(lines[-tail:])
             return output
 
-        # Fallback to output.log if session is gone
+        # Fallback to output.log if session is gone (raw stream — has ANSI; strip
+        # unless the caller asked to keep it).
         output_path = os.path.join(task_dir, 'output.log')
         if os.path.exists(output_path):
             with open(output_path, 'r', errors='replace') as f:
-                if tail:
-                    lines = f.readlines()
-                    return ''.join(lines[-tail:])
-                return f.read()
+                raw = ''.join(f.readlines()[-tail:]) if tail else f.read()
+            return raw if ansi else strip_ansi(raw)
         return '(no output available)'
 
     @staticmethod
@@ -3834,15 +3835,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        # Parse ?tail=N from query string
+        # Parse ?tail=N and ?ansi=1 from query string
         tail = None
+        ansi = False
         if '?' in self.path:
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
             tail_val = params.get('tail', [None])[0]
             if tail_val and tail_val.isdigit():
                 tail = int(tail_val)
-        output = ClaudeTaskManager.get_task_output(self._claude_task_id, tail=tail)
+            ansi = params.get('ansi', ['0'])[0] in ('1', 'true')
+        output = ClaudeTaskManager.get_task_output(self._claude_task_id, tail=tail, ansi=ansi)
         if output is None:
             self.send_json({'error': 'Task or output not found'}, 404)
             return
@@ -4301,6 +4304,48 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             }, 500)
             return
         self.send_json({'ok': True, 'mode': action})
+
+    # Named tmux keys a mobile client can send without a physical keyboard.
+    # Whitelisted so the request body can never become an arbitrary tmux command.
+    _KEYMAP = {
+        'shift-tab': 'BTab',  # Claude Code's mode switch (auto-accept etc.)
+        'tab': 'Tab',
+        'escape': 'Escape',
+        'enter': 'Enter',
+        'up': 'Up', 'down': 'Down', 'left': 'Left', 'right': 'Right',
+        'ctrl-c': 'C-c',
+        'space': 'Space',
+    }
+
+    def handle_claude_send_key(self):
+        """Send a single control key (Shift-Tab, Esc, arrows, Ctrl-C, …) to the
+        live tmux session, for mobile clients with no physical keyboard."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except ValueError:
+            self.send_json({'error': 'invalid body'}, 400)
+            return
+        key = str(data.get('key', '')).strip().lower()
+        tmux_key = self._KEYMAP.get(key)
+        if not tmux_key:
+            self.send_json({'error': 'unsupported key; allowed: ' + ', '.join(sorted(self._KEYMAP))}, 400)
+            return
+        task = ClaudeTaskManager.get_task(self._claude_task_id)
+        if task is None:
+            self.send_json({'error': 'Task not found'}, 404)
+            return
+        session_name = task.get('tmux_session', f'kube-coder-{self._claude_task_id}')
+        result = subprocess.run(
+            ['tmux', 'send-keys', '-t', session_name, tmux_key],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            self.send_json({'error': result.stderr.strip() or 'tmux send-keys failed'}, 500)
+            return
+        self.send_json({'ok': True, 'key': key})
 
     # ── Desktop launcher handlers ──────────────────────────────────────
     # All reads (GET /api/desktop, /api/desktop/{id}) pass through
@@ -6292,6 +6337,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_scroll_mode()
+                    return
+                # /api/claude/tasks/{id}/key — send one control key to the session
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/key$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_send_key()
                     return
                 # Desktop launcher per-item routes
                 # PUT-like update (POST + id == "update"); /launch fires
