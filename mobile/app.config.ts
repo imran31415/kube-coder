@@ -22,13 +22,22 @@ const config: ExpoConfig = {
     bundleIdentifier: 'app.kubecoder.mobile',
     buildNumber: '1',
     infoPlist: {
-      // The app talks to a user-supplied https workspace host; no cleartext.
       ITSAppUsesNonExemptEncryption: false,
+      // The user points the app at THEIR OWN kube-coder host. Production hosts
+      // are HTTPS (cert-manager), but a self-hosted or local (minikube,
+      // port-forwarded) workspace is plain HTTP on a LAN/localhost address — so
+      // we allow arbitrary loads. Hosts are operator-supplied, never hardcoded.
+      NSAppTransportSecurity: {
+        NSAllowsArbitraryLoads: true,
+        NSAllowsLocalNetworking: true,
+      },
     },
   },
   android: {
     package: 'app.kubecoder.mobile',
     versionCode: 1,
+    // Cleartext HTTP is enabled via the expo-build-properties plugin below
+    // (same rationale as the iOS ATS exception above: self-hosted / localhost).
     adaptiveIcon: {
       foregroundImage: './assets/android-icon-foreground.png',
       backgroundColor: '#0b0d10',
@@ -40,6 +49,12 @@ const config: ExpoConfig = {
   },
   plugins: [
     'expo-secure-store',
+    [
+      // Allow plain-HTTP requests on Android (self-hosted / localhost minikube
+      // workspaces). Production cloud hosts still use HTTPS.
+      'expo-build-properties',
+      { android: { usesCleartextTraffic: true } },
+    ],
     [
       'expo-splash-screen',
       {

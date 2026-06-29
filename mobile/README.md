@@ -42,9 +42,40 @@ npm run web               # run in a browser (react-native-web)
 npm start                 # Expo dev server (scan QR with Expo Go on a device)
 ```
 
-The app's first screen asks for your **workspace host** (`https://you.kube-coder…`)
-and an **API token**. Get the token from your dashboard (sign in, Settings tab),
-paste it in — it is stored in the device keychain/keystore via `expo-secure-store`.
+## Connect to a workspace
+
+The host is **fully configurable** — point the app at any kube-coder workspace.
+The first screen takes a **host** and an **API token** (from the dashboard →
+Settings tab); the token is stored in the device keychain/keystore via
+`expo-secure-store`. The app talks to the workspace's Bearer-token API
+(`charts/workspace/templates/ingress-claude-api.yaml` — tasks, memory, metrics,
+health on port 6080), never the OAuth-gated browser routes. Tasks, memory and
+metrics require the token; `/health` is a public liveness probe.
+
+**Cloud / public host** (the normal case):
+
+```
+Host:  https://<your-login>.<your-domain>     # e.g. https://imran.dev.scalebase.io
+Token: <copy from that workspace's dashboard → Settings>
+```
+
+**Local / minikube / any cluster without a public host** — port-forward the
+workspace's API port to your machine, then point the app at localhost:
+
+```bash
+make mobile-forward USER=<name>            # kubectl port-forward svc/ws-<name> 6080:6080
+```
+```
+Host:  http://localhost:6080               # iOS Simulator (shares the Mac's network)
+       http://<your-Mac-LAN-IP>:6080       # physical device, or Android emulator
+Token: kubectl -n <ns> exec deploy/ws-<name> -c ide -- cat /home/dev/.claude-tasks/.api-token
+```
+
+> **HTTP is allowed on purpose.** Production hosts are HTTPS (cert-manager), but
+> a self-hosted or port-forwarded workspace is plain HTTP on a LAN/localhost
+> address. iOS ATS (`NSAllowsArbitraryLoads` + `NSAllowsLocalNetworking`) and
+> Android cleartext (`expo-build-properties → usesCleartextTraffic`) are enabled
+> in `app.config.ts` so both platforms can reach those hosts.
 
 ### Demo / mock mode
 

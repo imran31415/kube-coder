@@ -269,6 +269,22 @@ mobile-typecheck: mobile-install ## Type-check the mobile app (tsc --noEmit)
 mobile-web: mobile-install ## Run the app in a browser (react-native-web)
 	cd $(MOBILE_DIR) && npm run web
 
+mobile-ios: mobile-install ## Run the app in the iOS Simulator via Expo Go
+	cd $(MOBILE_DIR) && npm run ios
+
+mobile-android: mobile-install ## Run the app in the Android emulator via Expo Go
+	cd $(MOBILE_DIR) && npm run android
+
+# Expose a running workspace's Bearer API (BrowserHandler on 6080) to localhost
+# so the mobile app can connect without a public host — the path for a local
+# minikube workspace, or any cluster, when you don't want to use the public DNS.
+mobile-forward: ## Port-forward a workspace's API (6080) to localhost for the app (USER=<name> [NAMESPACE=coder])
+	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make mobile-forward USER=imran)"; exit 1; fi
+	@echo "Forwarding http://localhost:6080 -> ws-$(USER) (namespace $(NAMESPACE), context $$(kubectl config current-context))"
+	@echo "  App host:  http://localhost:6080 (iOS simulator)  |  http://<your-Mac-LAN-IP>:6080 (physical device / Android emulator)"
+	@echo "  API token: kubectl -n $(NAMESPACE) exec deploy/ws-$(USER) -c ide -- cat /home/dev/.claude-tasks/.api-token"
+	kubectl -n $(NAMESPACE) port-forward svc/ws-$(USER) 6080:6080
+
 mobile-export-web: mobile-install ## Export the demo/mock web build → mobile/dist
 	cd $(MOBILE_DIR) && npm run export:web
 

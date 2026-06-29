@@ -25,7 +25,7 @@ export default function OnboardingScreen() {
   async function connect() {
     setError(null);
     if (!/^https?:\/\//.test(host.trim())) {
-      setError('Host must start with https://');
+      setError('Host must start with http:// or https://');
       return;
     }
     if (!token.trim()) {
@@ -101,8 +101,10 @@ export default function OnboardingScreen() {
             <Button title="Connect" onPress={connect} loading={busy} style={{ marginTop: space.xl }} />
 
             <Text style={styles.hint}>
-              Open your dashboard in a browser, sign in, and copy the API token from
-              the Settings tab. Your token is stored securely on this device.
+              Point this at any kube-coder workspace: a cloud host
+              (https://you.example.com) or a local one (http://localhost:6080 via
+              kubectl port-forward). Copy the API token from your dashboard's
+              Settings tab — it is stored securely on this device.
             </Text>
           </View>
         </ScrollView>
