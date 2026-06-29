@@ -302,8 +302,11 @@ def _validate_mem(q):
     return q
 
 
-def set_workspace_resources(user, cpu_limit, mem_limit):
-    """Patch the ide container's CPU+memory limits. At least one must be given."""
+def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
+    """Patch the ide container's CPU+memory limits (immediate) and, when GitOps is
+    configured and persist=True, also commit them to the user's values.yaml so the
+    change survives the next reconcile — same write-back as set_workspace_image.
+    At least one limit must be given. Returns a result dict."""
     if not _USER_RE.match(user):
         raise ValueError('invalid workspace name')
     limits = {}
@@ -322,7 +325,15 @@ def set_workspace_resources(user, cpu_limit, mem_limit):
     patch = {'spec': {'template': {'spec': {'containers': [
         {'name': WORKSPACE_CONTAINER, 'resources': {'limits': limits}}]}}}}
     _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)])
-    return limits
+    persisted = False
+    persist_error = None
+    if persist and GITOPS_REPO and GITOPS_TOKEN:
+        try:
+            persisted = gitops_update_resources(user, limits)
+        except (ProvisionError, GithubError) as exc:
+            persist_error = str(exc)
+            sys.stderr.write(f'[controller] gitops resource update {user} failed: {exc}\n')
+    return {'user': user, 'limits': limits, 'persisted': persisted, 'persistError': persist_error}
 
 
 # --- Version / image-tag updates ---------------------------------------------
@@ -460,15 +471,61 @@ def _swap_image_tag(content, new_tag):
     return (new_content, n > 0 and new_content != content)
 
 
-def gitops_update_image_tag(slug, new_tag):
-    """Repoint just the image.tag in an existing user's values.yaml in the
-    GitOps repo. Returns True if a change was committed+pushed, False if the
-    repo/file/tag-line was absent or already current. Raises ProvisionError on
-    a git failure. Mirrors gitops_publish's clone+commit+push, but edits a
-    single line rather than rewriting the whole file."""
+def _swap_resource_limits(content, limits):
+    """Rewrite cpu/memory values inside the `resources.limits` block of a
+    values.yaml body. `limits` may carry 'cpu' and/or 'memory'. Only the
+    `limits:` sub-block is touched — the `requests:` block just above it (same
+    keys) is left alone. Returns (new_content, changed). Line/regex based to
+    avoid a YAML dependency, matching _swap_image_tag's approach.
+    """
+    if not limits:
+        return content, False
+    # Isolate the `limits:` header and the deeper-indented body that follows it,
+    # ending at the first line whose indent returns to <= the header's.
+    m = re.search(r'(?m)^([ \t]*)limits:[ \t]*$', content)
+    if not m:
+        return content, False
+    header_indent = len(m.group(1))
+    nl = content.find('\n', m.end())
+    if nl == -1:
+        return content, False
+    body_start = nl + 1
+    i = body_start
+    while i < len(content):
+        end = content.find('\n', i)
+        end = len(content) if end == -1 else end + 1
+        line = content[i:end]
+        if line.strip() != '':
+            indent = len(line) - len(line.lstrip(' \t'))
+            if indent <= header_indent:       # dedent → limits block ended
+                break
+        i = end
+    body = content[body_start:i]
+    new_body = body
+    changed = False
+    for key in ('cpu', 'memory'):
+        val = limits.get(key)
+        if val is None:
+            continue
+        pat = r'(?m)^([ \t]*' + key + r':[ \t]*).*$'
+        new_body2, n = re.subn(pat, lambda mm, v=val: mm.group(1) + f'"{v}"', new_body, count=1)
+        if n and new_body2 != new_body:
+            new_body = new_body2
+            changed = True
+    if not changed:
+        return content, False
+    return content[:body_start] + new_body + content[i:], True
+
+
+def _gitops_edit_values(slug, edit, commit_msg):
+    """Shared clone→edit→commit→push spine for per-field GitOps updates. Clones
+    the repo, applies `edit` (content -> (new_content, changed)) to the user's
+    values.yaml, and commits+pushes iff it changed. Returns True if a change was
+    pushed, False if the repo/file was absent or nothing changed. Raises
+    ProvisionError on a git failure."""
     if not (GITOPS_REPO and GITOPS_TOKEN):
         return False
-    workdir = tempfile.mkdtemp(prefix='gitops-img-', dir='/tmp')
+    workdir = tempfile.mkdtemp(prefix='gitops-edit-', dir='/tmp')
     try:
         repo_url = f'https://x-access-token:{GITOPS_TOKEN}@{GITOPS_REPO}'
         _git(['clone', '--depth', '1', '-b', GITOPS_BRANCH, repo_url, workdir])
@@ -477,7 +534,7 @@ def gitops_update_image_tag(slug, new_tag):
             return False
         with open(vpath) as f:
             content = f.read()
-        new_content, changed = _swap_image_tag(content, new_tag)
+        new_content, changed = edit(content)
         if not changed:
             return False
         with open(vpath, 'w') as f:
@@ -488,11 +545,26 @@ def gitops_update_image_tag(slug, new_tag):
         _git(['-C', workdir,
               '-c', 'user.email=controller@kube-coder',
               '-c', 'user.name=workspace-controller',
-              'commit', '-m', f'update {slug} image to {new_tag}'])
+              'commit', '-m', commit_msg])
         _git(['-C', workdir, 'push', 'origin', GITOPS_BRANCH])
         return True
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def gitops_update_image_tag(slug, new_tag):
+    """Repoint just the image.tag in an existing user's values.yaml in the GitOps
+    repo. Returns True iff a change was committed+pushed."""
+    return _gitops_edit_values(slug, lambda c: _swap_image_tag(c, new_tag),
+                               f'update {slug} image to {new_tag}')
+
+
+def gitops_update_resources(slug, limits):
+    """Persist cpu/memory limit edits to an existing user's values.yaml in the
+    GitOps repo so they survive the next reconcile. Returns True iff pushed."""
+    summary = ', '.join(f'{k}={v}' for k, v in limits.items())
+    return _gitops_edit_values(slug, lambda c: _swap_resource_limits(c, limits),
+                               f'update {slug} resource limits ({summary})')
 
 
 def set_workspace_image(user, target_version=None, persist=True):
@@ -1848,7 +1920,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             user = rm.group(1)
             try:
                 body = self.read_json_body()
-                limits = set_workspace_resources(user, body.get('cpu'), body.get('memory'))
+                result = set_workspace_resources(user, body.get('cpu'), body.get('memory'))
             except ValueError as exc:
                 self.send_json({'error': str(exc)}, 400)
                 return
@@ -1859,7 +1931,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 sys.stderr.write(f'[controller] set resources {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
-            self.send_json({'ok': True, 'user': user, 'limits': limits})
+            self.send_json({'ok': True, 'user': user, 'limits': result['limits'],
+                            'persisted': result['persisted'], 'persistError': result['persistError']})
             return
         # Restart-and-update: repoint the workspace at a release version (latest
         # by default). Admin route (oauth2-gated) and the workspace-brokered

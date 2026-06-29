@@ -279,6 +279,7 @@ class ResourceLimitTest(unittest.TestCase):
         controller.MAX_MEM_LIMIT = '64Gi'
         controller.WORKSPACE_CONTAINER = 'ide'
         controller.WORKSPACE_PREFIX = 'ws-'
+        controller.GITOPS_REPO = ''        # persistence off by default in tests
         # Pretend the workspace exists so the existence guard passes.
         controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [{'deployment': 'ws-octo'}]}
 
@@ -303,8 +304,10 @@ class ResourceLimitTest(unittest.TestCase):
     def test_set_resources_builds_strategic_patch_for_ide(self):
         captured = {}
         controller._kubectl_run = lambda args: captured.setdefault('args', args)
-        limits = controller.set_workspace_resources('octo', '2', '4Gi')
-        self.assertEqual(limits, {'cpu': '2', 'memory': '4Gi'})
+        result = controller.set_workspace_resources('octo', '2', '4Gi')
+        self.assertEqual(result['limits'], {'cpu': '2', 'memory': '4Gi'})
+        self.assertFalse(result['persisted'])        # GITOPS_REPO unset → no write-back
+        self.assertIsNone(result['persistError'])
         args = captured['args']
         self.assertEqual(args[0], 'patch')
         self.assertEqual(args[1], 'deployment/ws-octo')
@@ -325,6 +328,47 @@ class ResourceLimitTest(unittest.TestCase):
         controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': []}
         with self.assertRaises(LookupError):
             controller.set_workspace_resources('octo', '2', None)
+
+    def test_set_resources_persists_to_gitops_when_configured(self):
+        controller._kubectl_run = lambda args: None
+        controller.GITOPS_REPO = 'github.com/x/y.git'
+        controller.GITOPS_TOKEN = 'tok'
+        self.addCleanup(setattr, controller, 'GITOPS_TOKEN', controller.GITOPS_TOKEN)
+        self.addCleanup(setattr, controller, 'gitops_update_resources',
+                        controller.gitops_update_resources)
+        seen = {}
+        controller.gitops_update_resources = lambda slug, limits: seen.update(slug=slug, limits=limits) or True
+        result = controller.set_workspace_resources('octo', '4', '8Gi')
+        self.assertEqual(seen, {'slug': 'octo', 'limits': {'cpu': '4', 'memory': '8Gi'}})
+        self.assertTrue(result['persisted'])
+
+    _RES_YAML = (
+        'resources:\n'
+        '  requests:\n'
+        '    cpu: "250m"\n'
+        '    memory: 1Gi\n'
+        '  limits:\n'
+        '    cpu: "2"\n'
+        '    memory: 4Gi\n'
+        '\nbuild:\n  mode: buildkit\n'
+    )
+
+    def test_swap_resource_limits_edits_only_limits(self):
+        out, changed = controller._swap_resource_limits(self._RES_YAML, {'cpu': '4', 'memory': '8Gi'})
+        self.assertTrue(changed)
+        # limits updated …
+        self.assertIn('  limits:\n    cpu: "4"\n    memory: "8Gi"\n', out)
+        # … requests left exactly as-is.
+        self.assertIn('  requests:\n    cpu: "250m"\n    memory: 1Gi\n', out)
+
+    def test_swap_resource_limits_partial_and_noop(self):
+        out, changed = controller._swap_resource_limits(self._RES_YAML, {'cpu': '8'})
+        self.assertTrue(changed)
+        self.assertIn('  limits:\n    cpu: "8"\n    memory: 4Gi\n', out)  # memory untouched
+        # No limits block → no change.
+        out2, changed2 = controller._swap_resource_limits('user:\n  name: octo\n', {'cpu': '8'})
+        self.assertFalse(changed2)
+        self.assertEqual(out2, 'user:\n  name: octo\n')
 
 
 class VersionParsingTest(unittest.TestCase):

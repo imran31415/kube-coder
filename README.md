@@ -151,44 +151,62 @@ Everything targets the minikube context explicitly, so it never touches a remote
 
 - Kubernetes 1.19+ with `kubectl` configured
 - Helm 3.0+
-- An nginx-ingress controller
-- A GitHub OAuth App (for oauth2-proxy)
+- An nginx-ingress controller (note its external IP)
+- **Wildcard DNS** — `*.<your-domain>` pointing at that ingress IP, so every `<login>.<your-domain>` workspace resolves with no per-user DNS
+- A GitHub OAuth App for the **controller console** (oauth2-proxy); per-user OAuth Apps are created during onboarding, above
+- A **private GitHub repo** to hold provisioned workspace config (the GitOps store) + a token that can push to it
 - A `regcred` image-pull Secret in the target namespace pointing at your registry (we use `registry.digitalocean.com/<org>/<repo>`)
 
-#### One-time: Base Infrastructure
+#### One-time setup
 
 ```bash
-make deploy-base                  # base-infrastructure helm release
+make deploy-base                  # base infra: nginx-ingress, oauth2-proxy, cert-manager
+make ship-controller-config       # the admin console (workspace-controller)
 ```
 
-#### Onboard a User
+Two things make self-service onboarding work; you set them once:
+
+- **Wildcard DNS.** Point `*.<your-domain>` (e.g. `*.dev.example.com`) at your nginx-ingress controller's external IP. Every workspace lives at `<github-login>.<your-domain>`, so the wildcard means **no per-user DNS** — a new user's host resolves the moment they're created, and **cert-manager + Let's Encrypt** issues that host's TLS certificate automatically on first request.
+- **The console's own GitHub OAuth App + admin allowlist.** Gates the dashboard at `controller.<your-domain>`; only the GitHub logins you allowlist may administer workspaces. One-time controller config is in **[docs/PROVISIONING.md](docs/PROVISIONING.md)**.
+
+#### Onboard a user — the 2-minute dashboard flow
+
+> **Scenario.** Dana (`@dana-codes`) joins the team Monday morning and needs a full cloud workspace before standup. Here's the whole flow.
+
+1. **Open the console** at `https://controller.<your-domain>` → click **New workspace**.
+2. **Look up the user.** Type `dana-codes` and hit **Look up**. The controller confirms it's a real GitHub account and shows the host it will create: `dana-codes.<your-domain>`.
+3. **Create a GitHub OAuth App** — the one manual step, because GitHub has no API to create these. The form shows the exact values; in GitHub → *Settings → Developer settings → **OAuth Apps** → New OAuth App*:
+   - **Homepage URL:** `https://dana-codes.<your-domain>`
+   - **Authorization callback URL:** `https://dana-codes.<your-domain>/oauth2/callback`
+   - **Register application** → **Generate a new client secret**.
+   > ⚠️ It must be an **OAuth App** (Client ID starts with `Ov…`) — *not* a GitHub App (`Iv…`), which silently 404s the login.
+4. **Paste & create.** Drop the **Client ID** and **Client Secret** into the form → **Create workspace**. The controller commits Dana's config to your private GitOps repo and launches a provisioner Job; the page streams the rollout live: *Starting provisioner → Deploying workspace → **Workspace ready***.
+5. **Hand it off.** Click **Open dana-codes ↗** to confirm, then send Dana her URL: `https://dana-codes.<your-domain>`. She signs in with her own GitHub account — she, and only she, is on this workspace's allowlist — and lands in VS Code, a persistent terminal, and Claude Code. Elapsed time: a couple of minutes, most of it the image pull.
+
+**What happened when you clicked Create:** the controller validated the GitHub user, rendered a `values.yaml` + secret and committed them to the GitOps repo (the single source of truth), then ran a one-shot privileged Job that `helm upgrade`s the workspace chart — pod, Service, ingress, PVC, and a dedicated oauth2-proxy pinned to Dana's login. Wildcard DNS already resolves her host; cert-manager mints the TLS cert on first hit. Nothing else to wire.
+
+#### Manage a user — request limits, updates, lifecycle
+
+All per-workspace, in the same console:
+
+- **Right-size their resources.** Open a workspace → **Edit limits** → set CPU / memory (e.g. bump Dana to `4` cores / `8Gi` for a heavy build). Applying it patches the live pod **and commits the new limits back to the GitOps repo**, so the change is durable across redeploys instead of being silently reverted on the next reconcile. (It restarts the pod, so it warns you first.) Live CPU/mem/disk usage and an estimated monthly cost sit right above the control.
+- **Keep them current.** Each workspace shows its running release and an **update** action that rolls it to the latest version — the new image tag is written back to GitOps too. Users can also self-update from their own dashboard.
+- **Pause to save spend.** **Stop** scales the pod to zero (compute freed, PVC + data preserved); **Start** brings it back unchanged.
+
+#### Automation / break-glass: the CLI
+
+The same workspaces are fully operable from the Makefile — for scripting, CI, or when the console is unavailable. Config lives in the GitOps repo; `make users-sync` checks it out locally so the CLI and the console share one source of truth:
 
 ```bash
-# Workspace config lives in one place: the private GitOps repo
-# (provision.gitops.repo). Sync a local checkout into .users/ first.
-make users-sync
-
-# Scaffold a workspace into the GitOps checkout — generates values.yaml,
-# mints an OAuth2 cookie secret, and prints a checklist of the manual
-# fields you still need to fill in (DNS host, GitHub OAuth App creds,
-# optional assistant keys). See docs/NEW_USER_PROVISIONING.md.
-make new-user USER=<name>
-$EDITOR .users/users-private/<name>/values.yaml
-git -C .users add -A && git -C .users commit -m "add <name>" && git -C .users push
-
-# Pre-deploy sanity check (DNS, image pull, base release)
-make validate-user USER=<name>
-
-# Deploy the workspace
-make deploy USER=<name>
-
-# Tail logs / shell in / sanity-test
-make logs   USER=<name>
-make shell  USER=<name>
-make test   USER=<name>
+make users-sync                   # pull the GitOps config store into .users/
+make new-user      USER=<name>    # scaffold a workspace (prints the OAuth-App checklist + a cookie secret)
+make validate-user USER=<name>    # placeholder / DNS / cluster-prereq sanity check
+make deploy        USER=<name>    # helm upgrade --install
+make logs|shell|test USER=<name>  # operate a running workspace
+make stop|start    USER=<name>    # scale to zero / back
 ```
 
-The script `scripts/setup.sh` walks first-time users through GitHub OAuth, DNS, and Claude credentials interactively for the basic-auth flow (older path).
+Full CLI walkthrough: **[docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md)**.
 
 ---
 
@@ -399,8 +417,10 @@ charts/
         │   └── api/       # typed fetch wrappers (client.ts, tasks.ts, metrics.ts)
         ├── scripts/shoot.mjs   # playwright screenshots
         └── package.json   # node 20, yarn 1.22.x
-deployments/               # public per-user values.yaml + secrets
-users-private/             # gitignored per-user values.yaml + secrets
+deployments/               # public sample per-user values.yaml + secrets
+users-private/             # gitignored; the _controller bootstrap config lives here
+.users/                    # gitignored checkout of the GitOps store (make users-sync)
+                           #   ← provisioned workspace config (values + secrets) lives here
 devlaptop/Dockerfile       # workspace image (Vite SPA baked into /opt/dashboard-dist)
 secrets/                   # template + per-user secret YAMLs
 Makefile                   # all common commands (`make help`)
