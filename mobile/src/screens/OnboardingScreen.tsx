@@ -103,8 +103,9 @@ export default function OnboardingScreen() {
             <Text style={styles.hint}>
               Point this at any kube-coder workspace: a cloud host
               (https://you.example.com) or a local one (http://localhost:6080 via
-              kubectl port-forward). Copy the API token from your dashboard's
-              Settings tab — it is stored securely on this device.
+              kubectl port-forward). Get the host + token from your dashboard →
+              Settings → Mobile app → Copy. Your token is stored securely on this
+              device.
             </Text>
           </View>
         </ScrollView>

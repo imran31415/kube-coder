@@ -45,9 +45,10 @@ npm start                 # Expo dev server (scan QR with Expo Go on a device)
 ## Connect to a workspace
 
 The host is **fully configurable** — point the app at any kube-coder workspace.
-The first screen takes a **host** and an **API token** (from the dashboard →
-Settings tab); the token is stored in the device keychain/keystore via
-`expo-secure-store`. The app talks to the workspace's Bearer-token API
+The first screen takes a **host** and an **API token**, both of which the
+dashboard hands you: open the workspace in a browser → **Settings → Mobile app**
+→ Copy the host and token. The token is stored in the device keychain/keystore
+via `expo-secure-store`. The app talks to the workspace's Bearer-token API
 (`charts/workspace/templates/ingress-claude-api.yaml` — tasks, memory, metrics,
 health on port 6080), never the OAuth-gated browser routes. Tasks, memory and
 metrics require the token; `/health` is a public liveness probe.
