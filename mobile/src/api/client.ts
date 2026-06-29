@@ -95,13 +95,34 @@ export async function ping(): Promise<boolean> {
 
 // ---- Tasks -----------------------------------------------------------------
 
+// The server (and the dashboard SPA) name the task id `task_id`; the app uses
+// `id` internally. Adapt the server shape here so the screens + mock data stay
+// on one consistent shape. Without this, `id` is undefined → list keys break and
+// the detail fetch hits /api/claude/tasks/ (empty id) → 404 → stuck loading.
+//
+// Status is also normalized to the app's canonical set: the server emits
+// `waiting-for-input` / `completed`, but the status pill + the "active"
+// (can-send-a-message) checks expect `waiting` / `done`.
+function normStatus(s: string | undefined): string {
+  if (s === 'waiting-for-input' || s === 'waiting_for_input' || s === 'waiting_input') return 'waiting';
+  if (s === 'completed') return 'done';
+  return s ?? '';
+}
+
+function withId<T extends { id?: string; task_id?: string; status?: string }>(
+  t: T,
+): T & { id: string; status: string } {
+  return { ...t, id: t.task_id ?? t.id ?? '', status: normStatus(t.status) };
+}
+
 export async function listTasks(): Promise<TaskSummary[]> {
   if (getConfig().mock) {
     await delay(120);
     return [...mockTasks];
   }
   const data = await request<{ tasks?: TaskSummary[] } | TaskSummary[]>('/api/claude/tasks');
-  return Array.isArray(data) ? data : data.tasks ?? [];
+  const list = Array.isArray(data) ? data : data.tasks ?? [];
+  return list.map(withId);
 }
 
 export async function getTask(id: string): Promise<TaskDetail> {
@@ -111,7 +132,20 @@ export async function getTask(id: string): Promise<TaskDetail> {
     if (!d) throw new ApiError('Task not found', 404);
     return d;
   }
-  return request<TaskDetail>(`/api/claude/tasks/${id}`);
+  return withId(await request<TaskDetail>(`/api/claude/tasks/${id}`));
+}
+
+// The /output endpoint returns a raw tmux pane capture, which includes the
+// pane's empty trailing rows. A terminal emulator (the web app) renders those
+// as normal empty space, but a plain <Text> shows big vertical gaps. Strip
+// trailing spaces per line, collapse runs of blank lines, and trim the ends.
+function cleanPaneOutput(s: string): string {
+  return s
+    .replace(/[ \t]+$/gm, '') // trailing whitespace per line
+    .replace(/^[ \t]*[─━—–\-=_]{3,}[ \t]*$/gm, '') // drop Claude TUI divider rules (────/----)
+    .replace(/\n{3,}/g, '\n\n') // collapse 3+ blank lines → one
+    .replace(/^\s*\n/, '') // leading blank lines
+    .replace(/\s+$/, ''); // trailing blank lines/space
 }
 
 export async function getTaskOutput(id: string, tail = 200): Promise<string> {
@@ -122,7 +156,7 @@ export async function getTaskOutput(id: string, tail = 200): Promise<string> {
   const data = await request<{ output?: string } | string>(`/api/claude/tasks/${id}/output`, {
     query: { tail },
   });
-  return typeof data === 'string' ? data : data.output ?? '';
+  return cleanPaneOutput(typeof data === 'string' ? data : data.output ?? '');
 }
 
 export async function createTask(input: {
@@ -143,7 +177,7 @@ export async function createTask(input: {
     mockTasks.unshift(t);
     return t;
   }
-  return request<TaskSummary>('/api/claude/tasks', { method: 'POST', body: input });
+  return withId(await request<TaskSummary>('/api/claude/tasks', { method: 'POST', body: input }));
 }
 
 export async function sendMessage(id: string, prompt: string): Promise<void> {
@@ -173,18 +207,60 @@ export async function listMemory(): Promise<MemoryRecord[]> {
     await delay(120);
     return [...mockMemory];
   }
-  const data = await request<{ entries?: MemoryRecord[] } | MemoryRecord[]>('/api/memory');
-  return Array.isArray(data) ? data : data.entries ?? [];
+  // The server wraps records under `memories`; accept `entries` too defensively.
+  const data = await request<{ memories?: RawMemory[]; entries?: RawMemory[] } | RawMemory[]>(
+    '/api/memory',
+  );
+  const recs = Array.isArray(data) ? data : data.memories ?? data.entries ?? [];
+  return recs.map(normalizeMemory);
+}
+
+// The server sends `tags` as a comma-joined string and the real array under
+// `tags_list`; the app wants `tags: string[]`. Normalize so MemoryScreen's
+// `tags.map()` doesn't crash on a string ("undefined is not a function").
+type RawMemory = Omit<MemoryRecord, 'tags'> & { tags?: unknown; tags_list?: string[] };
+
+function normalizeMemory(m: RawMemory): MemoryRecord {
+  const tags = Array.isArray(m.tags_list)
+    ? m.tags_list
+    : Array.isArray(m.tags)
+      ? (m.tags as string[])
+      : typeof m.tags === 'string' && m.tags.trim()
+        ? m.tags.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+  return { ...m, tags };
 }
 
 // ---- Metrics / health ------------------------------------------------------
+
+// server.py /metrics is nested ({cpu:{usage_percent}, memory:{used_mb,total_mb},
+// disk:{used_gb,total_gb}}); the app + mock use a flat shape. Flatten here.
+interface RawMetrics {
+  cpu?: { usage_percent?: number };
+  memory?: { used_mb?: number; total_mb?: number };
+  disk?: { used_gb?: number; total_gb?: number };
+}
 
 export async function getMetrics(): Promise<Metrics> {
   if (getConfig().mock) {
     await delay(100);
     return mockMetrics;
   }
-  return request<Metrics>('/metrics');
+  const d = await request<RawMetrics>('/metrics');
+  return {
+    cpu_percent: d.cpu?.usage_percent ?? 0,
+    memory_used_mb: d.memory?.used_mb ?? 0,
+    memory_total_mb: d.memory?.total_mb ?? 0,
+    disk_used_gb: d.disk?.used_gb ?? 0,
+    disk_total_gb: d.disk?.total_gb ?? 0,
+  };
+}
+
+// server.py /health is { status, services: { vscode, terminal, browser } }; the
+// app wants flat booleans. Map services → flat + derive `ok` from status.
+interface RawHealth {
+  status?: string;
+  services?: { vscode?: boolean; terminal?: boolean; browser?: boolean };
 }
 
 export async function getHealth(): Promise<Health> {
@@ -192,5 +268,11 @@ export async function getHealth(): Promise<Health> {
     await delay(100);
     return mockHealth;
   }
-  return request<Health>('/health');
+  const d = await request<RawHealth>('/health');
+  return {
+    vscode: d.services?.vscode,
+    terminal: d.services?.terminal,
+    browser: d.services?.browser,
+    ok: d.status === 'healthy',
+  };
 }

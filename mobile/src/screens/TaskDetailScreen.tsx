@@ -39,6 +39,7 @@ export default function TaskDetailScreen() {
   const [output, setOutput] = useState('');
   const [msg, setMsg] = useState('');
   const [sending, setSending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
@@ -46,8 +47,11 @@ export default function TaskDetailScreen() {
       const [t, o] = await Promise.all([getTask(id), getTaskOutput(id)]);
       setTask(t);
       setOutput(o);
-    } catch {
-      /* keep last good */
+      setErr(null);
+    } catch (e) {
+      // Keep the last good data during polling; surface a message only so the
+      // initial load doesn't hang on "Loading…" forever if it genuinely fails.
+      setErr(e instanceof Error ? e.message : 'Failed to load task');
     }
   }, [id]);
 
@@ -104,7 +108,7 @@ export default function TaskDetailScreen() {
     }
   }
 
-  if (!task) return <Loading label="Loading task…" />;
+  if (!task) return <Loading label={err ? "Couldn't load task — retrying…" : 'Loading task…'} />;
 
   const note = finishedNote(task.status);
 
