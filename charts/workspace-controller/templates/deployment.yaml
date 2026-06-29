@@ -118,6 +118,13 @@ spec:
           value: {{ .Values.controller.image.pullSecretName | quote }}
         - name: WORKSPACE_IMAGE_TAG
           value: {{ .Values.provision.workspaceImageTag | quote }}
+        # Shared cluster Secrets projected into each provisioned workspace so the
+        # console path matches a hand-scaffolded one (self-serve updates + shared
+        # OpenRouter). Blank => that feature stays off.
+        - name: WORKSPACE_SELF_SERVE_SECRET
+          value: {{ .Values.provision.workspaceSelfServeSecret | quote }}
+        - name: WORKSPACE_ASSISTANT_SECRET
+          value: {{ .Values.provision.workspaceAssistantSecret | quote }}
         {{- if .Values.provision.image }}
         - name: PROVISIONER_IMAGE
           value: {{ .Values.provision.image | quote }}

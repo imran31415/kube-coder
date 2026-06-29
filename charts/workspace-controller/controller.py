@@ -1133,6 +1133,12 @@ PROVISIONER_SA = os.environ.get('PROVISIONER_SERVICE_ACCOUNT', 'workspace-provis
 PROVISIONER_PULL_SECRET = os.environ.get('PROVISIONER_PULL_SECRET', '').strip()
 # Tag the new workspace runs; the chart prefixes it with `devlaptop-`.
 WORKSPACE_IMAGE_TAG = os.environ.get('WORKSPACE_IMAGE_TAG', '').strip()
+# Shared cluster Secret names projected into each provisioned workspace so the
+# console path matches a hand-scaffolded one (scripts/user-template): the
+# self-serve-update token (update.selfServeSecretName) and the shared OpenRouter
+# key (assistant.openrouter.sharedSecretName). Blank => that feature stays off.
+WORKSPACE_SELF_SERVE_SECRET = os.environ.get('WORKSPACE_SELF_SERVE_SECRET', '').strip()
+WORKSPACE_ASSISTANT_SECRET = os.environ.get('WORKSPACE_ASSISTANT_SECRET', '').strip()
 GITHUB_API = 'https://api.github.com'
 GITHUB_TIMEOUT = int(os.environ.get('GITHUB_TIMEOUT', '15'))
 # GitHub login: alphanumeric or single hyphens, max 39. Lowercased it is always
@@ -1321,6 +1327,13 @@ ssh:
 
 claude:
   apiKey: ""
+
+assistant:
+  openrouter:
+    sharedSecretName: {json.dumps(WORKSPACE_ASSISTANT_SECRET)}
+
+update:
+  selfServeSecretName: {json.dumps(WORKSPACE_SELF_SERVE_SECRET)}
 
 github:
   app:

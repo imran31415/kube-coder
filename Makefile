@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down
 
 # =============================================================================
 # Generic per-user helpers
@@ -17,9 +17,14 @@
 #   make test     USER=chase
 #   make rollback USER=chase
 
-user_dir = $(firstword $(wildcard ./deployments/$(1) ./users-private/$(1)))
+# Resolve a user's config across roots, first match wins: legacy ./deployments,
+# this repo's ./users-private, then ./.users (a checkout of the GitOps repo via
+# `make users-sync`). The GitOps checkout is the unifying store — once a user is
+# migrated there and removed from ./users-private, the same `make` targets keep
+# working against the synced copy.
+user_dir = $(firstword $(wildcard ./deployments/$(1) ./users-private/$(1) ./.users/users-private/$(1)))
 values_file = $(call user_dir,$(1))/values.yaml
-secrets_dir = $(firstword $(wildcard ./secrets/$(1) ./users-private/$(1)/secrets))
+secrets_dir = $(firstword $(wildcard ./secrets/$(1) ./users-private/$(1)/secrets ./.users/users-private/$(1)/secrets))
 # Build a `-f path` arg for every *.yaml inside the resolved secrets dir.
 secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 
@@ -141,11 +146,32 @@ version: ## Show current versions and config
 require-user:
 	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make deploy USER=chase)"; exit 1; fi
 	@if [ -z "$(call user_dir,$(USER))" ]; then \
-	  echo "ERROR: no values.yaml for '$(USER)' under deployments/ or users-private/"; exit 1; fi
+	  echo "ERROR: no values.yaml for '$(USER)' under deployments/, users-private/, or .users/ (run 'make users-sync' to fetch GitOps config)"; exit 1; fi
 
 new-user: ## Scaffold a private workspace (USER=<name>); generates values.yaml + cookieSecret + checklist
 	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make new-user USER=chase)"; exit 1; fi
 	@./scripts/new-user.sh $(USER)
+
+# GitOps workspace-config repo (host/path, no scheme) — the unifying store the
+# controller's provisioner also pushes to. Kept out of this public Makefile:
+# resolved from the gitignored controller values, or override with KC_USERS_REPO.
+USERS_DIR := .users
+USERS_REPO ?= $(KC_USERS_REPO)
+ifeq ($(USERS_REPO),)
+USERS_REPO := $(shell awk '/^[[:space:]]*gitops:/{f=1} f&&/repo:/{print $$2; exit}' users-private/_controller/values.yaml 2>/dev/null)
+endif
+
+users-sync: ## Clone/pull the GitOps workspace-config repo into .users/ (set KC_USERS_REPO or _controller provision.gitops.repo)
+	@if [ -z "$(USERS_REPO)" ]; then \
+	  echo "ERROR: GitOps repo unknown. Set KC_USERS_REPO=github.com/<org>/<repo>.git,"; \
+	  echo "       or provision.gitops.repo in users-private/_controller/values.yaml."; exit 1; fi
+	@if [ -d $(USERS_DIR)/.git ]; then \
+	  echo "Pulling latest workspace config into $(USERS_DIR)/ ..."; \
+	  git -C $(USERS_DIR) pull --ff-only; \
+	else \
+	  echo "Cloning $(USERS_REPO) into $(USERS_DIR)/ ..."; \
+	  git clone https://$(USERS_REPO) $(USERS_DIR); \
+	fi
 
 validate-user: ## Pre-deploy sanity check (USER=<name>); placeholders, DNS, cluster prereqs
 	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make validate-user USER=chase)"; exit 1; fi
