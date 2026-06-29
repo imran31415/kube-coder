@@ -135,28 +135,27 @@ export async function getTask(id: string): Promise<TaskDetail> {
   return withId(await request<TaskDetail>(`/api/claude/tasks/${id}`));
 }
 
-// The /output endpoint returns a raw tmux pane capture, which includes the
-// pane's empty trailing rows. A terminal emulator (the web app) renders those
-// as normal empty space, but a plain <Text> shows big vertical gaps. Strip
-// trailing spaces per line, collapse runs of blank lines, and trim the ends.
-function cleanPaneOutput(s: string): string {
-  return s
-    .replace(/[ \t]+$/gm, '') // trailing whitespace per line
-    .replace(/^[ \t]*[─━—–\-=_]{3,}[ \t]*$/gm, '') // drop Claude TUI divider rules (────/----)
-    .replace(/\n{3,}/g, '\n\n') // collapse 3+ blank lines → one
-    .replace(/^\s*\n/, '') // leading blank lines
-    .replace(/\s+$/, ''); // trailing blank lines/space
-}
-
 export async function getTaskOutput(id: string, tail = 200): Promise<string> {
   if (getConfig().mock) {
     await delay(80);
     return mockTaskDetail(id)?.output ?? '';
   }
+  // ansi=1 keeps the SGR color escapes; the detail view parses + cleans them
+  // (util/ansi → parseAnsiLines: colored spans, divider rules + blank runs dropped).
   const data = await request<{ output?: string } | string>(`/api/claude/tasks/${id}/output`, {
-    query: { tail },
+    query: { tail, ansi: 1 },
   });
-  return cleanPaneOutput(typeof data === 'string' ? data : data.output ?? '');
+  return typeof data === 'string' ? data : data.output ?? '';
+}
+
+/** Send one control key (shift-tab, escape, up, down, enter, ctrl-c, …) to the
+ * live session — for the mobile key bar (no physical keyboard). */
+export async function sendKey(id: string, key: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(60);
+    return;
+  }
+  await request(`/api/claude/tasks/${id}/key`, { method: 'POST', body: { key } });
 }
 
 export async function createTask(input: {

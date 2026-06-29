@@ -1,7 +1,7 @@
 /** Task detail: live-tailed output + follow-up composer. */
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -13,11 +13,25 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getTask, getTaskOutput, killTask, sendMessage } from '../api/client';
+import * as Clipboard from 'expo-clipboard';
+import { getTask, getTaskOutput, killTask, sendKey, sendMessage } from '../api/client';
 import { Button, Loading, StatusPill } from '../components/ui';
 import type { TaskDetail } from '../api/types';
 import type { TasksStackParams } from '../navigation';
+import { parseAnsiLines } from '../util/ansi';
 import { colors, font, radius, space, statusColor } from '../theme';
+
+// Mobile key bar: control keys you can't type into the composer. Paste pulls the
+// clipboard into the input; the rest go straight to the live tmux session.
+const KEY_BAR: { label: string; key?: string; paste?: boolean }[] = [
+  { label: 'Paste', paste: true },
+  { label: '⇧⇥ Mode', key: 'shift-tab' },
+  { label: 'Esc', key: 'escape' },
+  { label: '↑', key: 'up' },
+  { label: '↓', key: 'down' },
+  { label: '⏎', key: 'enter' },
+  { label: '⌃C', key: 'ctrl-c' },
+];
 import { confirmAction } from '../util/confirm';
 
 function finishedNote(status: string): { icon: keyof typeof Ionicons.glyphMap; text: string } {
@@ -62,6 +76,23 @@ export default function TaskDetailScreen() {
   }, [load]);
 
   const active = task?.status === 'running' || task?.status === 'waiting';
+  const lines = useMemo(() => parseAnsiLines(output), [output]);
+
+  async function onKeyBar(item: (typeof KEY_BAR)[number]) {
+    if (item.paste) {
+      const clip = await Clipboard.getStringAsync().catch(() => '');
+      if (clip) setMsg((m) => (m ? `${m}${clip}` : clip));
+      return;
+    }
+    if (item.key) {
+      try {
+        await sendKey(id, item.key);
+        await load(); // reflect the session's reaction quickly
+      } catch {
+        /* transient — the next poll will catch up */
+      }
+    }
+  }
 
   const promptKill = useCallback(() => {
     confirmAction({
@@ -136,11 +167,45 @@ export default function TaskDetailScreen() {
           contentContainerStyle={styles.termContent}
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
         >
-          <Text style={styles.termText}>{output || '(no output yet)'}</Text>
+          {lines.length === 0 ? (
+            <Text style={styles.termText}>(no output yet)</Text>
+          ) : (
+            lines.map((line, i) => (
+              <Text key={i} style={styles.termText}>
+                {line.length === 0
+                  ? ' '
+                  : line.map((seg, j) => (
+                      <Text
+                        key={j}
+                        style={{
+                          color: seg.color ?? '#c8d3df',
+                          fontWeight: seg.bold ? '700' : '400',
+                          opacity: seg.dim ? 0.6 : 1,
+                        }}
+                      >
+                        {seg.text}
+                      </Text>
+                    ))}
+              </Text>
+            ))
+          )}
         </ScrollView>
 
         {active ? (
-          <View style={styles.composer}>
+          <View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.keyBar}
+            >
+              {KEY_BAR.map((k) => (
+                <Pressable key={k.label} style={styles.keyBtn} onPress={() => onKeyBar(k)}>
+                  <Text style={styles.keyBtnText}>{k.label}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <View style={styles.composer}>
             <TextInput
               value={msg}
               onChangeText={setMsg}
@@ -149,14 +214,15 @@ export default function TaskDetailScreen() {
               style={styles.composerInput}
               multiline
             />
-            <Button
-              title="Send"
-              icon="arrow-up"
-              onPress={send}
-              loading={sending}
-              disabled={!msg.trim()}
-              style={styles.sendBtn}
-            />
+              <Button
+                title="Send"
+                icon="arrow-up"
+                onPress={send}
+                loading={sending}
+                disabled={!msg.trim()}
+                style={styles.sendBtn}
+              />
+            </View>
           </View>
         ) : (
           <View style={styles.finishedBar}>
@@ -180,6 +246,21 @@ const styles = StyleSheet.create({
   term: { flex: 1, backgroundColor: '#08090b' },
   termContent: { padding: space.lg },
   termText: { color: '#c8d3df', fontFamily: font.mono, fontSize: font.size.sm, lineHeight: 19 },
+  keyBar: {
+    flexDirection: 'row',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingTop: space.sm,
+  },
+  keyBtn: {
+    paddingHorizontal: space.md,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  keyBtnText: { color: colors.text, fontSize: font.size.sm, fontWeight: '600' },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
