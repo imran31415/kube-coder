@@ -10,10 +10,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Button, Label } from '../components/ui';
 import { ping } from '../api/client';
 import { getConfig, saveConnection } from '../store/config';
-import { colors, font, radius, space } from '../theme';
+import { colors, font, gradients, radius, space } from '../theme';
 
 export default function OnboardingScreen() {
   const [host, setHost] = useState('');
@@ -58,9 +59,14 @@ export default function OnboardingScreen() {
       >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.logoWrap}>
-            <View style={styles.logo}>
+            <LinearGradient
+              colors={gradients.brand}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.logo}
+            >
               <Text style={styles.logoText}>{'</>'}</Text>
-            </View>
+            </LinearGradient>
             <Text style={styles.title}>kube-coder</Text>
             <Text style={styles.subtitle}>Connect to your workspace</Text>
           </View>
@@ -110,15 +116,14 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, justifyContent: 'center', padding: space.xl },
   logoWrap: { alignItems: 'center', marginBottom: space.xxl },
   logo: {
-    width: 72,
-    height: 72,
-    borderRadius: radius.lg,
-    backgroundColor: colors.accent,
+    width: 76,
+    height: 76,
+    borderRadius: radius.xl,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: space.md,
+    marginBottom: space.lg,
   },
-  logoText: { color: colors.accentText, fontSize: 28, fontWeight: '800' },
+  logoText: { color: colors.accentText, fontSize: 28, fontWeight: '900' },
   title: { color: colors.text, fontSize: font.size.xxl, fontWeight: '800' },
   subtitle: { color: colors.textMuted, fontSize: font.size.md, marginTop: space.xs },
   form: { gap: space.xs },

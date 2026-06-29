@@ -2,7 +2,7 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, Card, Label } from '../components/ui';
+import { Button, Card, Label, ScreenHeader } from '../components/ui';
 import { clearConnection } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { colors, font, space } from '../theme';
@@ -13,10 +13,8 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Settings</Text>
-      </View>
-      <ScrollView contentContainerStyle={styles.list}>
+      <ScreenHeader title="Settings" subtitle="Connection & about" />
+      <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
         <Card style={{ gap: space.md }}>
           <View>
             <Label>Workspace host</Label>
@@ -53,9 +51,7 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm },
-  title: { color: colors.text, fontSize: font.size.xxl, fontWeight: '800' },
-  list: { padding: space.lg, gap: space.md },
+  list: { paddingHorizontal: space.lg, paddingBottom: space.xl, gap: space.md },
   value: { color: colors.text, fontSize: font.size.md },
   demoBadge: {
     backgroundColor: colors.warning + '22',

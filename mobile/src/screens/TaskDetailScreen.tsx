@@ -103,6 +103,7 @@ export default function TaskDetailScreen() {
           />
           <Button
             title="Send"
+            icon="arrow-up"
             onPress={send}
             loading={sending}
             disabled={!active || !msg.trim()}
@@ -112,7 +113,7 @@ export default function TaskDetailScreen() {
 
         <View style={styles.actions}>
           {active ? (
-            <Button title="Kill task" variant="danger" onPress={kill} style={{ flex: 1 }} />
+            <Button title="Kill task" icon="stop-circle-outline" variant="danger" onPress={kill} style={{ flex: 1 }} />
           ) : (
             <Button title="Back to tasks" variant="secondary" onPress={() => nav.goBack()} style={{ flex: 1 }} />
           )}

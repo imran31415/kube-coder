@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getHealth, getMetrics } from '../api/client';
-import { Card, Loading } from '../components/ui';
+import { Card, Loading, ScreenHeader } from '../components/ui';
 import type { Health, Metrics } from '../api/types';
 import { colors, font, radius, space } from '../theme';
 
@@ -73,10 +73,8 @@ export default function MetricsScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Metrics</Text>
-      </View>
-      <ScrollView contentContainerStyle={styles.list}>
+      <ScreenHeader title="Metrics" subtitle="Live workspace resources" />
+      <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
         <Gauge label="CPU" used={Math.round(m.cpu_percent)} total={100} unit="%" pct={m.cpu_percent} color={colors.accent} />
         <Gauge label="Memory" used={Math.round(m.memory_used_mb)} total={Math.round(m.memory_total_mb)} unit="MB" pct={memPct} color={colors.warning} />
         <Gauge label="Disk" used={Math.round(m.disk_used_gb)} total={Math.round(m.disk_total_gb)} unit="GB" pct={diskPct} color={colors.success} />
@@ -100,9 +98,7 @@ export default function MetricsScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm },
-  title: { color: colors.text, fontSize: font.size.xxl, fontWeight: '800' },
-  list: { padding: space.lg, gap: space.md },
+  list: { paddingHorizontal: space.lg, paddingBottom: space.xl, gap: space.md },
   gaugeTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   gaugeLabel: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
   gaugeVal: { color: colors.text, fontSize: font.size.lg, fontWeight: '700' },

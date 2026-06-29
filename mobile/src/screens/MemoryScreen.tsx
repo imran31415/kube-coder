@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { listMemory } from '../api/client';
-import { Card, EmptyState, Loading } from '../components/ui';
+import { Card, EmptyState, Loading, ScreenHeader } from '../components/ui';
 import type { MemoryRecord } from '../api/types';
 import { colors, font, radius, space } from '../theme';
 
@@ -18,18 +18,21 @@ export default function MemoryScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Memory</Text>
-      </View>
+      <ScreenHeader title="Memory" subtitle="What your workspace remembers" />
       {items === null ? (
         <Loading label="Loading memory…" />
       ) : items.length === 0 ? (
-        <EmptyState title="No memory entries" subtitle="Facts you ask the workspace to remember show up here." />
+        <EmptyState
+          icon="bookmark-outline"
+          title="No memory entries"
+          subtitle="Facts you ask the workspace to remember show up here."
+        />
       ) : (
         <FlatList
           data={items}
           keyExtractor={(m) => `${m.namespace}/${m.key}`}
           contentContainerStyle={styles.list}
+          showsVerticalScrollIndicator={false}
           renderItem={({ item }) => (
             <Card style={{ gap: space.sm }}>
               <Text style={styles.ns}>
@@ -56,9 +59,7 @@ export default function MemoryScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.sm },
-  title: { color: colors.text, fontSize: font.size.xxl, fontWeight: '800' },
-  list: { padding: space.lg, gap: space.md },
+  list: { paddingHorizontal: space.lg, paddingBottom: space.xl, gap: space.md },
   ns: { color: colors.accent, fontSize: font.size.sm, fontWeight: '700', fontFamily: font.mono },
   key: { color: colors.textMuted, fontWeight: '400' },
   value: { color: colors.text, fontSize: font.size.md, lineHeight: 21 },

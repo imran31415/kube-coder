@@ -70,7 +70,7 @@ async function shots(page, device, outDir) {
   await tab(page, 'Tasks');
 
   // 3) New task form
-  await page.getByText('+ New', { exact: true }).click();
+  await page.getByText('New', { exact: true }).click();
   await sleep(800);
   await shot('03-new-task.png');
   await tab(page, 'Tasks');

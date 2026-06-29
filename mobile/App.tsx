@@ -6,6 +6,7 @@
  * build (EXPO_PUBLIC_MOCK=1) skips onboarding and starts straight in the app
  * with mock data.
  */
+import { Ionicons } from '@expo/vector-icons';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -63,20 +64,12 @@ function TasksStack() {
 
 const Tab = createBottomTabNavigator();
 
-const GLYPHS: Record<string, string> = {
-  Tasks: '◧',
-  Memory: '◆',
-  Metrics: '▲',
-  Settings: '⚙',
+const TAB_ICONS: Record<string, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]> = {
+  Tasks: ['layers-outline', 'layers'],
+  Memory: ['bookmark-outline', 'bookmark'],
+  Metrics: ['stats-chart-outline', 'stats-chart'],
+  Settings: ['settings-outline', 'settings'],
 };
-
-function TabIcon({ route, focused }: { route: string; focused: boolean }) {
-  return (
-    <Text style={[styles.tabIcon, { color: focused ? colors.accent : colors.textFaint }]}>
-      {GLYPHS[route] ?? '•'}
-    </Text>
-  );
-}
 
 function MainTabs() {
   return (
@@ -86,8 +79,11 @@ function MainTabs() {
         tabBarStyle: styles.tabBar,
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.textFaint,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-        tabBarIcon: ({ focused }) => <TabIcon route={route.name} focused={focused} />,
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginTop: -2 },
+        tabBarIcon: ({ focused, color }) => {
+          const [outline, filled] = TAB_ICONS[route.name] ?? ['ellipse-outline', 'ellipse'];
+          return <Ionicons name={focused ? filled : outline} size={22} color={color} />;
+        },
       })}
     >
       <Tab.Screen name="Tasks" component={TasksStack} />
@@ -128,11 +124,10 @@ const styles = StyleSheet.create({
   tabBar: {
     backgroundColor: colors.bgElevated,
     borderTopColor: colors.border,
-    height: 64,
-    paddingBottom: 8,
-    paddingTop: 6,
+    height: 66,
+    paddingBottom: 9,
+    paddingTop: 8,
   },
-  tabIcon: { fontSize: 20, lineHeight: 24 },
   boot: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
   bootText: { color: colors.text, fontSize: font.size.xl, fontWeight: '800' },
 });

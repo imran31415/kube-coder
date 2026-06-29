@@ -76,6 +76,7 @@ export default function NewTaskScreen() {
 
           <Button
             title="Start task"
+            icon="rocket-outline"
             onPress={submit}
             loading={busy}
             disabled={!prompt.trim()}
