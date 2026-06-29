@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 12.0.0",
-    "appVersionSource": "local"
+    "appVersionSource": "remote"
   },
   "build": {
     "development": {
@@ -22,11 +22,10 @@
   },
   "submit": {
     "production": {
-      "ios": {
-        "appleId": "APPLE_ID_PLACEHOLDER",
-        "ascAppId": "ASC_APP_ID_PLACEHOLDER",
-        "appleTeamId": "APPLE_TEAM_ID_PLACEHOLDER"
-      },
+      // iOS submit credentials (Apple ID, ascAppId, appleTeamId) are personal
+      // and must NOT be committed to this open-source repo. EAS prompts for them
+      // interactively and auto-detects the ascAppId once you pick the app. To
+      // pin them locally, create an untracked eas.json override or pass flags.
       "android": {
         "serviceAccountKeyPath": "./play-service-account.json",
         "track": "internal"
