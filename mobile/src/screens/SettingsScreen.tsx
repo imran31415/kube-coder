@@ -6,10 +6,21 @@ import { Button, Card, Label, ScreenHeader } from '../components/ui';
 import { clearConnection } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { colors, font, space } from '../theme';
+import { confirmAction } from '../util/confirm';
 
 export default function SettingsScreen() {
   const cfg = useConfig();
   const masked = cfg.token ? cfg.token.slice(0, 4) + '••••••••' + cfg.token.slice(-2) : '';
+
+  function disconnect() {
+    confirmAction({
+      title: 'Disconnect this workspace?',
+      message: 'Your saved host and API token will be removed from this device.',
+      confirmLabel: 'Disconnect',
+      destructive: true,
+      onConfirm: clearConnection,
+    });
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -34,8 +45,9 @@ export default function SettingsScreen() {
         {!cfg.mock ? (
           <Button
             title="Disconnect"
+            icon="log-out-outline"
             variant="danger"
-            onPress={clearConnection}
+            onPress={disconnect}
             style={{ marginTop: space.sm }}
           />
         ) : null}
