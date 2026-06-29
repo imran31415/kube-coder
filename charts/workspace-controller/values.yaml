@@ -138,3 +138,8 @@ provision:
 
   # Default tag new workspaces run; the chart prefixes it with `devlaptop-`.
   workspaceImageTag: ""
+
+  # Shared cluster Secret names projected into every provisioned workspace so the
+  # console path matches a hand-scaffolded one. Blank => that feature stays off.
+  workspaceSelfServeSecret: ""     # self-serve update token (== update.selfServeSecretName)
+  workspaceAssistantSecret: ""     # shared OpenRouter key (== assistant.openrouter.sharedSecretName)

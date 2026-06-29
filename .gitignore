@@ -28,6 +28,11 @@ secrets/
 # of git. See docs/NEW_USER_PROVISIONING.md → "Private workspaces".
 users-private/
 
+# Local checkout of the GitOps workspace-config repo (provision.gitops.repo),
+# synced via `make users-sync`. The single source of truth for provisioned
+# workspaces; `make deploy/ship USER=<u>` resolves config from here too.
+.users/
+
 # Ad-hoc patches / diffs produced by `git format-patch` or `git diff` for
 # local review. These shouldn't be committed; the canonical change-history
 # lives in `git log`.

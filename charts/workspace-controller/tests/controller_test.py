@@ -222,6 +222,9 @@ class ProvisionPureLogicTest(unittest.TestCase):
         opts = {'login': 'Octo', 'slug': 'octo', 'host': 'octo.dev.scalebase.io',
                 'pvcSize': '30Gi', 'gitName': 'Octo Cat', 'gitEmail': 'octo@example.com',
                 'imageTag': 'v9.9.9'}
+        # Shared-secret projection (parity with the hand-scaffolded template).
+        controller.WORKSPACE_SELF_SERVE_SECRET = 'kc-self-serve'
+        controller.WORKSPACE_ASSISTANT_SECRET = 'coder-shared-assistant'
         text = controller.render_values_yaml(opts, 'Ov23liexampleclientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
         # Validate it parses as YAML and carries the access gate + host.
         try:
@@ -238,11 +241,16 @@ class ProvisionPureLogicTest(unittest.TestCase):
             # values.yaml carries only the placeholder; the real secret is
             # split out into secrets/oauth2.yaml (render_oauth_secret_yaml).
             self.assertEqual(doc['oauth2']['clientSecret'], 'OVERRIDE-IN-SECRETS-OAUTH2-YAML')
+            # Parity blocks: self-serve updates + shared OpenRouter projected in.
+            self.assertEqual(doc['update']['selfServeSecretName'], 'kc-self-serve')
+            self.assertEqual(doc['assistant']['openrouter']['sharedSecretName'], 'coder-shared-assistant')
         except ImportError:
             self.assertIn('name: octo', text)
             self.assertIn('host: octo.dev.scalebase.io', text)
             self.assertIn('githubUsers: "Octo"', text)
             self.assertIn('devlaptop-v9.9.9', text)
+            self.assertIn('selfServeSecretName: "kc-self-serve"', text)
+            self.assertIn('sharedSecretName: "coder-shared-assistant"', text)
 
     def test_oauth_secret_yaml_holds_only_secret(self):
         text = controller.render_oauth_secret_yaml('supersecret')
