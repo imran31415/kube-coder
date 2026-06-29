@@ -1,22 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact';
-import type { ManifestResponse, ProvisionStatus, ValidateUserResponse } from '../api/provision';
+import type { ProvisionOptions, ProvisionStatus, ValidateUserResponse } from '../api/provision';
 
 // Plain-function module mock (not vi.fn spies) for the same reason CapacityPanel
 // uses one: deferred promise settles tracked by a spy can surface as spurious
-// cross-test failures. `respondValidate` / `submitted` steer behaviour.
+// cross-test failures. `respondValidate` / `created` steer behaviour.
 let respondValidate: () => Promise<ValidateUserResponse>;
 let respondStatus: () => Promise<ProvisionStatus>;
-const submitted: ManifestResponse[] = [];
+const created: ProvisionOptions[] = [];
 const deployed: string[] = [];
 vi.mock('../api/provision', async (orig) => ({
   ...(await orig<typeof import('../api/provision')>()),
   validateUser: () => respondValidate(),
   getProvisionStatus: () => respondStatus(),
-  startManifest: () =>
-    Promise.resolve({ action: 'https://github.com/settings/apps/new?state=s', manifest: '{}', state: 's', host: 'octo.dev.scalebase.io' }),
-  submitManifestToGithub: (m: ManifestResponse) => {
-    submitted.push(m);
+  createProvision: (opts: ProvisionOptions) => {
+    created.push(opts);
+    return Promise.resolve({ slug: opts.user, job: 'pending', message: '', workspace: null, url: '' });
   },
   deployExisting: (slug: string) => {
     deployed.push(slug);
@@ -42,10 +41,10 @@ const sampleUser = (over: Partial<ValidateUserResponse> = {}): ValidateUserRespo
 describe('ProvisionForm (create view)', () => {
   beforeEach(() => {
     location.hash = '#/provision';
-    provisionConfig.value = { enabled: true, workspaceDomain: 'dev.scalebase.io', githubAppOrg: '' };
+    provisionConfig.value = { enabled: true, workspaceDomain: 'dev.scalebase.io', oauthAppNewUrl: 'https://github.com/settings/applications/new' };
     respondValidate = () => Promise.resolve(sampleUser());
     respondStatus = () => Promise.resolve({ slug: 'octocat', job: 'pending', message: '', workspace: null, url: '' });
-    submitted.length = 0;
+    created.length = 0;
     deployed.length = 0;
   });
 
@@ -65,26 +64,34 @@ describe('ProvisionForm (create view)', () => {
     await waitFor(() => expect(screen.getByText(/already exists/)).toBeInTheDocument());
   });
 
-  it('hands the manifest off to GitHub on provision', async () => {
+  it('shows the OAuth App callback URL and creates with the pasted creds', async () => {
     render(<ProvisionForm />);
     fireEvent.input(screen.getByPlaceholderText('octocat'), { target: { value: 'octocat' } });
     fireEvent.click(screen.getByText('Look up'));
     await waitFor(() => expect(screen.getByText('Octo Cat')).toBeInTheDocument());
-    fireEvent.click(screen.getByText(/Register GitHub App/));
-    await waitFor(() => expect(submitted).toHaveLength(1));
-    expect(submitted[0].action).toContain('github.com/settings/apps/new');
+    // The exact callback URL to register must be shown.
+    expect(screen.getByText('https://octocat.dev.scalebase.io/oauth2/callback')).toBeInTheDocument();
+    // Create is gated on both creds being present.
+    const createBtn = screen.getByText('Create workspace') as HTMLButtonElement;
+    expect(createBtn.disabled).toBe(true);
+    fireEvent.input(screen.getByPlaceholderText('Ov23li…'), { target: { value: 'Ov23liexampleid' } });
+    fireEvent.input(screen.getByPlaceholderText('paste the generated secret'), { target: { value: 'shhh-secret' } });
+    expect(createBtn.disabled).toBe(false);
+    fireEvent.click(createBtn);
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toMatchObject({ user: 'octocat', clientId: 'Ov23liexampleid', clientSecret: 'shhh-secret' });
   });
 
-  it('deploys from saved config (skips the manifest) when configExists', async () => {
+  it('deploys from saved config (skips the creds form) when configExists', async () => {
     respondValidate = () => Promise.resolve(sampleUser({ configExists: true, slug: 'octocat' }));
     render(<ProvisionForm />);
     fireEvent.input(screen.getByPlaceholderText('octocat'), { target: { value: 'octocat' } });
     fireEvent.click(screen.getByText('Look up'));
     await waitFor(() => expect(screen.getByText('Deploy workspace')).toBeInTheDocument());
-    expect(screen.queryByText(/Register GitHub App/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Create workspace')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Deploy workspace'));
     await waitFor(() => expect(deployed).toEqual(['octocat']));
-    expect(submitted).toHaveLength(0);
+    expect(created).toHaveLength(0);
   });
 
   it('treats a failed Job as incomplete (not ready) even when a pod is running, and finishes the deploy', async () => {
@@ -105,7 +112,7 @@ describe('ProvisionForm (create view)', () => {
   });
 
   it('shows a disabled-state message when provisioning is off', () => {
-    provisionConfig.value = { enabled: false, workspaceDomain: '', githubAppOrg: '' };
+    provisionConfig.value = { enabled: false, workspaceDomain: '', oauthAppNewUrl: '' };
     render(<ProvisionForm />);
     expect(screen.getByText(/Provisioning is not configured/)).toBeInTheDocument();
   });

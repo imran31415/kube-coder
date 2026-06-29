@@ -100,12 +100,10 @@ spec:
         {{- end }}
         {{- if .Values.provision.enabled }}
         # --- Self-service provisioning (see values.yaml `provision`) ---
-        - name: CONTROLLER_HOST
-          value: {{ required "controller.host is required when provision.enabled" .Values.controller.host | quote }}
+        # The admin creates a GitHub OAuth App by hand and pastes its Client ID +
+        # Secret per workspace; the controller only needs the GitOps push token.
         - name: WORKSPACE_DOMAIN
           value: {{ required "provision.workspaceDomain is required when provision.enabled" .Values.provision.workspaceDomain | quote }}
-        - name: GITHUB_APP_ORG
-          value: {{ .Values.provision.githubOrg | quote }}
         - name: GITOPS_REPO
           value: {{ required "provision.gitops.repo is required when provision.enabled" .Values.provision.gitops.repo | quote }}
         - name: GITOPS_BRANCH
@@ -124,20 +122,14 @@ spec:
         - name: PROVISIONER_IMAGE
           value: {{ .Values.provision.image | quote }}
         {{- end }}
-        # Runtime credentials: git push token + the HMAC key that signs the
-        # manifest-flow state param. From the chart-rendered Secret (see
-        # provisioner-secret.yaml) or provision.existingSecretName if set.
+        # Runtime credential: the git push token, from the chart-rendered Secret
+        # (see provisioner-secret.yaml) or provision.existingSecretName if set.
         {{- $provSecret := .Values.provision.existingSecretName | default "workspace-controller-provision" }}
         - name: GITOPS_TOKEN
           valueFrom:
             secretKeyRef:
               name: {{ $provSecret }}
               key: git-token
-        - name: PROVISION_STATE_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: {{ $provSecret }}
-              key: state-secret
         {{- end }}
         ports:
         - name: http

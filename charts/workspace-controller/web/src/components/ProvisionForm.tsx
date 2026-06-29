@@ -4,10 +4,9 @@ import { provisionConfig } from '../store';
 import {
   type ProvisionStatus,
   type ValidateUserResponse,
+  createProvision,
   deployExisting,
   getProvisionStatus,
-  startManifest,
-  submitManifestToGithub,
   validateUser,
 } from '../api/provision';
 
@@ -44,6 +43,8 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
   const [pvcSize, setPvcSize] = useState('20Gi');
   const [gitName, setGitName] = useState('');
   const [gitEmail, setGitEmail] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
 
   if (cfg && !cfg.enabled) {
     return (
@@ -80,22 +81,23 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
     setSubmitting(true);
     setErr(null);
     try {
-      const m = await startManifest({
+      await createProvision({
         user: info.login,
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
         pvcSize: pvcSize.trim() || undefined,
         gitName: gitName.trim() || undefined,
         gitEmail: gitEmail.trim() || undefined,
       });
-      // Navigates the browser to GitHub's "Create GitHub App" confirmation.
-      submitManifestToGithub(m);
+      navigate(`/provision/${info.slug}`);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
       setSubmitting(false);
     }
   }
 
-  // The GitHub App + config already exist (e.g. a retry after a failed Job):
-  // skip the manifest detour and relaunch the deploy Job from saved config.
+  // The OAuth creds + config already exist (e.g. a retry after a failed Job):
+  // skip re-entering the creds and relaunch the deploy Job from saved config.
   async function onDeployExisting() {
     if (!info) return;
     setSubmitting(true);
@@ -113,7 +115,7 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
 
   return (
     <div class="app">
-      <Header subtitle={`Enter a GitHub username. We register a GitHub App for them, then deploy a workspace at ${domainHint}.`} />
+      <Header subtitle={`Look up a GitHub user, create a GitHub OAuth App for them, and paste its credentials. The workspace deploys at ${domainHint}.`} />
 
       {err && (
         <div class="banner err" role="alert">
@@ -186,23 +188,71 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
           {info.configExists ? (
             <>
               <p class="sub">
-                A GitHub App named <code>kube-coder-{info.slug}</code> is already registered and its
-                config is saved — no GitHub step needed. Deploy straight from the saved config.
+                OAuth credentials for <code>{info.slug}</code> are already saved — no GitHub step
+                needed. Deploy straight from the saved config.
               </p>
               <button class="btn start prov-go" type="button" disabled={submitting} onClick={onDeployExisting}>
                 {submitting ? 'Starting…' : 'Deploy workspace'}
               </button>
             </>
           ) : (
-            <>
-              <p class="sub">
-                Next: GitHub opens to confirm a new App named <code>kube-coder-{info.slug}</code>. Click{' '}
-                <strong>Create GitHub App</strong> and you'll be returned here to watch the rollout.
-              </p>
-              <button class="btn start prov-go" type="button" disabled={submitting} onClick={onProvision}>
-                {submitting ? 'Opening GitHub…' : 'Register GitHub App & provision'}
+            <div class="prov-oauth">
+              <p class="field-label">Create a GitHub OAuth App, then paste its credentials</p>
+              <ol class="prov-steps">
+                <li>
+                  Open{' '}
+                  <a href={cfg?.oauthAppNewUrl || 'https://github.com/settings/applications/new'} target="_blank" rel="noopener">
+                    GitHub → New OAuth App ↗
+                  </a>{' '}
+                  (must be an <strong>OAuth App</strong>, not a GitHub App).
+                </li>
+                <li>
+                  Set <strong>Homepage URL</strong> to <code>https://{info.host}</code>.
+                </li>
+                <li>
+                  Set <strong>Authorization callback URL</strong> to exactly{' '}
+                  <code>https://{info.host}/oauth2/callback</code>.
+                </li>
+                <li>
+                  Click <strong>Register application</strong>, then{' '}
+                  <strong>Generate a new client secret</strong>, and paste both below.
+                </li>
+              </ol>
+
+              <label class="field">
+                <span class="field-label">Client ID</span>
+                <input
+                  class="input"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck={false}
+                  placeholder="Ov23li…"
+                  value={clientId}
+                  onInput={(e) => setClientId((e.target as HTMLInputElement).value)}
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">Client secret</span>
+                <input
+                  class="input"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck={false}
+                  placeholder="paste the generated secret"
+                  value={clientSecret}
+                  onInput={(e) => setClientSecret((e.target as HTMLInputElement).value)}
+                />
+              </label>
+
+              <button
+                class="btn start prov-go"
+                type="button"
+                disabled={submitting || !clientId.trim() || !clientSecret.trim()}
+                onClick={onProvision}
+              >
+                {submitting ? 'Creating…' : 'Create workspace'}
               </button>
-            </>
+            </div>
           )}
         </div>
       )}

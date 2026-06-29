@@ -27,7 +27,7 @@ export async function loadProvisionConfig(): Promise<void> {
   try {
     provisionConfig.value = await getProvisionConfig();
   } catch {
-    provisionConfig.value = { enabled: false, workspaceDomain: '', githubAppOrg: '' };
+    provisionConfig.value = { enabled: false, workspaceDomain: '', oauthAppNewUrl: '' };
   }
 }
 

@@ -1098,27 +1098,24 @@ def cluster_capacity(range_seconds=3600, step=300):
 
 # --- Provisioning ------------------------------------------------------------
 #
-# Self-service onboarding: an admin types a GitHub username and we (1) register
-# a GitHub App for that user via the App Manifest flow — the only programmatic
-# path GitHub offers, since classic OAuth Apps have no creation API — (2) write
-# the rendered workspace values + secrets to a private GitOps repo, and (3)
-# launch a short-lived, privileged Job that runs `helm upgrade`. The always-on
-# controller never holds write power over workspaces: it only validates input,
-# does the manifest exchange, pushes to git, and creates the Job.
+# Self-service onboarding: an admin types a GitHub username, creates a GitHub
+# OAuth App by hand (callback https://<slug>.<domain>/oauth2/callback) and pastes
+# its Client ID + Secret into the console. The controller then (1) writes the
+# rendered workspace values + secrets to a private GitOps repo and (2) launches a
+# short-lived, privileged Job that runs `helm upgrade`. The always-on controller
+# never holds write power over workspaces: it only validates input, pushes to
+# git, and creates the Job.
 #
-# The GitHub App's client_id/client_secret are a drop-in for the classic OAuth
-# App creds oauth2-proxy already consumes (it speaks --provider=github either
-# way), so nothing downstream changes.
+# It MUST be an OAuth App, not a GitHub App: oauth2-proxy --provider=github drives
+# the OAuth-App web flow, and GitHub returns its 404 page when the authorize URL
+# carries a GitHub-App client id (the `Iv…` prefix). OAuth App client ids start
+# with `Ov…` (or are 20-hex on legacy apps); validate_oauth_creds rejects the
+# `Iv…` mistake. GitHub exposes no API to create classic OAuth Apps — that is the
+# whole reason this one step is manual rather than a button.
 
-# Host of this controller, used to build the manifest redirect_url GitHub sends
-# the admin back to (e.g. controller.dev.scalebase.io).
-CONTROLLER_HOST = os.environ.get('CONTROLLER_HOST', '').strip()
 # New workspaces are created at <login>.<domain> (e.g. dev.scalebase.io). The
 # wildcard *.<domain> already resolves to the ingress, so no DNS step is needed.
 WORKSPACE_DOMAIN = os.environ.get('WORKSPACE_DOMAIN', '').strip()
-# Create the per-user GitHub Apps under this org; empty => the signed-in admin's
-# personal account (settings/apps/new vs organizations/<org>/settings/apps/new).
-GITHUB_APP_ORG = os.environ.get('GITHUB_APP_ORG', '').strip()
 # Private repo holding generated values+secrets, host/path only (no scheme), e.g.
 # github.com/imran31415/kube-coder-users.git. The controller pushes; the Job clones.
 GITOPS_REPO = os.environ.get('GITOPS_REPO', '').strip()
@@ -1126,10 +1123,6 @@ GITOPS_BRANCH = os.environ.get('GITOPS_BRANCH', 'main').strip()
 # Token (GitHub App installation token or PAT) with push access to GITOPS_REPO
 # and read on the GitHub API. Injected from a Secret; empty => provisioning off.
 GITOPS_TOKEN = os.environ.get('GITOPS_TOKEN', '').strip()
-# HMAC key that signs the manifest-flow `state` param so the callback can trust
-# the user/options it round-trips through GitHub without server-side storage
-# (the controller runs 2 replicas with no shared state).
-PROVISION_STATE_SECRET = os.environ.get('PROVISION_STATE_SECRET', '').strip()
 # Repo + ref the provisioner Job pulls the workspace Helm chart from.
 CHART_REPO = os.environ.get('CHART_REPO', 'https://github.com/imran31415/kube-coder.git').strip()
 CHART_REF = os.environ.get('CHART_REF', 'main').strip()
@@ -1142,7 +1135,6 @@ PROVISIONER_PULL_SECRET = os.environ.get('PROVISIONER_PULL_SECRET', '').strip()
 WORKSPACE_IMAGE_TAG = os.environ.get('WORKSPACE_IMAGE_TAG', '').strip()
 GITHUB_API = 'https://api.github.com'
 GITHUB_TIMEOUT = int(os.environ.get('GITHUB_TIMEOUT', '15'))
-STATE_TTL = int(os.environ.get('PROVISION_STATE_TTL', '900'))  # 15 min
 # GitHub login: alphanumeric or single hyphens, max 39. Lowercased it is always
 # a valid DNS label (used for ws-<slug> and <slug>.<domain>).
 _GH_LOGIN_RE = re.compile(r'^[a-zA-Z0-9](?:-?[a-zA-Z0-9]){0,38}$')
@@ -1150,10 +1142,9 @@ _GH_LOGIN_RE = re.compile(r'^[a-zA-Z0-9](?:-?[a-zA-Z0-9]){0,38}$')
 
 def provisioning_enabled():
     """All the wiring a real provision needs; if any is missing we 501 cleanly
-    rather than half-run. The manifest exchange itself needs no token, but the
-    git push and GitHub user lookup do."""
-    return bool(CONTROLLER_HOST and WORKSPACE_DOMAIN and GITOPS_REPO
-                and GITOPS_TOKEN and PROVISION_STATE_SECRET)
+    rather than half-run. Both the git push and the GitHub user lookup need the
+    token; the OAuth App creds come from the admin per request, not from env."""
+    return bool(WORKSPACE_DOMAIN and GITOPS_REPO and GITOPS_TOKEN)
 
 
 class GithubError(RuntimeError):
@@ -1211,9 +1202,9 @@ def validate_github_user(login):
         'avatarUrl': u.get('avatar_url'),
         'host': f'{slug}.{WORKSPACE_DOMAIN}',
         'exists': workspace_exists(slug),
-        # True if the GitHub App was already registered + its config pushed to
-        # the GitOps repo on a previous attempt. Lets the UI skip the (globally
-        # unique, would-collide) App-creation step and deploy from saved config.
+        # True if the OAuth App creds + config were already pushed to the GitOps
+        # repo on a previous attempt. Lets the UI skip re-entering the creds and
+        # deploy straight from the saved config.
         'configExists': gitops_config_exists(slug),
     }
 
@@ -1226,63 +1217,27 @@ def workspace_exists(slug):
         return False
 
 
-def sign_state(payload):
-    """Self-contained signed token so the manifest callback trusts its inputs
-    without server-side state (2 replicas, no shared store)."""
-    body = dict(payload)
-    body['exp'] = int(time.time()) + STATE_TTL
-    raw = base64.urlsafe_b64encode(json.dumps(body, separators=(',', ':')).encode()).rstrip(b'=')
-    sig = hmac.new(PROVISION_STATE_SECRET.encode(), raw, hashlib.sha256).hexdigest()[:32]
-    return raw.decode() + '.' + sig
+def oauth_callback_url(host):
+    """The Authorization callback URL the admin must register on the OAuth App —
+    exactly what oauth2-proxy expects for this workspace's host."""
+    return f'https://{host}/oauth2/callback'
 
 
-def verify_state(token):
-    try:
-        raw, sig = token.split('.', 1)
-    except ValueError:
-        raise ValueError('malformed state')
-    expect = hmac.new(PROVISION_STATE_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
-    if not hmac.compare_digest(sig, expect):
-        raise ValueError('bad state signature')
-    payload = json.loads(base64.urlsafe_b64decode(raw + '==='))
-    if int(payload.get('exp', 0)) < int(time.time()):
-        raise ValueError('state expired — restart the provision flow')
-    return payload
-
-
-def build_app_manifest(login, host):
-    """GitHub App manifest. The callback_urls entry is the per-workspace OAuth
-    redirect oauth2-proxy expects; default_permissions stays minimal because we
-    only use the app for user login, never installation/API access."""
-    slug = slugify(login)
-    return {
-        'name': f'kube-coder-{slug}'[:34],   # GitHub App names: max 34 chars, globally unique
-        'url': f'https://{host}',
-        'redirect_url': f'https://{CONTROLLER_HOST}/api/provision/github/callback',
-        'callback_urls': [f'https://{host}/oauth2/callback'],
-        'public': False,
-        'default_permissions': {'emails': 'read'},
-        'default_events': [],
-    }
-
-
-def manifest_post_url(state):
-    base = (f'https://github.com/organizations/{GITHUB_APP_ORG}/settings/apps/new'
-            if GITHUB_APP_ORG else 'https://github.com/settings/apps/new')
-    return f'{base}?state={urllib.parse.quote(state)}'
-
-
-def exchange_manifest_code(code):
-    """Trade the one-time manifest code for the app's credentials. This endpoint
-    authenticates via the code itself, so no token is required."""
-    resp = _github_api('POST', f'/app-manifests/{code}/conversions')
-    return {
-        'appId': resp.get('id'),
-        'slug': resp.get('slug'),
-        'clientId': resp['client_id'],
-        'clientSecret': resp['client_secret'],
-        'htmlUrl': resp.get('html_url'),
-    }
+def validate_oauth_creds(client_id, client_secret):
+    """Sanity-check a pasted GitHub OAuth App Client ID + Secret. We can't fully
+    verify them without running the OAuth dance, but we can reject the blanks and
+    the one mistake that silently breaks login: a GitHub *App* client id (the
+    `Iv…` prefix), which 404s oauth2-proxy's --provider=github. Real OAuth App
+    ids start with `Ov…` (or are 20-hex on legacy apps). Returns the trimmed pair."""
+    cid = (client_id or '').strip()
+    secret = (client_secret or '').strip()
+    if not cid or not secret:
+        raise ValueError('GitHub OAuth App Client ID and Client Secret are both required')
+    if cid.lower().startswith('iv'):
+        raise ValueError('that is a GitHub App Client ID (starts with "Iv…") — create an '
+                         'OAuth App instead (Settings → Developer settings → OAuth Apps); '
+                         'its Client ID starts with "Ov…".')
+    return cid, secret
 
 
 def gen_cookie_secret():
@@ -1423,10 +1378,9 @@ def _gitops_owner_repo():
 
 def gitops_config_exists(slug):
     """True if the GitOps repo already holds rendered config for this slug — i.e.
-    the GitHub App was registered on a previous attempt. A retry can then skip
-    App creation (the name is globally unique and would collide) and deploy from
-    the saved config. Defensive: any lookup failure returns False, falling back
-    to the normal App-creation flow."""
+    the OAuth creds were saved on a previous attempt. A retry can then skip
+    re-entering the creds and deploy straight from the saved config. Defensive:
+    any lookup failure returns False, falling back to the normal create flow."""
     if not (GITOPS_REPO and GITOPS_TOKEN):
         return False
     path = f'/repos/{_gitops_owner_repo()}/contents/users-private/{slug}/values.yaml?ref={GITOPS_BRANCH}'
@@ -1562,21 +1516,24 @@ def provision_status(slug):
     }
 
 
-def do_provision(state_payload, creds):
-    """Back half of the flow, run from the manifest callback: render config, push
-    to git, launch the Job. `creds` come from the manifest exchange."""
+def provision_workspace(login, client_id, client_secret, opts_in):
+    """Validate the user + the operator-supplied OAuth App creds, render+push the
+    workspace config to the GitOps repo, and launch the deploy Job. Returns the
+    slug. Raises ValueError on bad input, GithubError on the user lookup."""
+    info = validate_github_user(login)            # confirms a real user, derives slug/host
+    cid, secret = validate_oauth_creds(client_id, client_secret)
     opts = {
-        'login': state_payload['login'],
-        'slug': slugify(state_payload['login']),
-        'host': state_payload['host'],
-        'pvcSize': state_payload.get('pvcSize'),
-        'resources': state_payload.get('resources'),
-        'gitName': state_payload.get('gitName'),
-        'gitEmail': state_payload.get('gitEmail'),
-        'imageTag': state_payload.get('imageTag'),
+        'login': info['login'],
+        'slug': info['slug'],
+        'host': info['host'],
+        'pvcSize': opts_in.get('pvcSize'),
+        'resources': opts_in.get('resources'),
+        'gitName': opts_in.get('gitName') or info['name'],
+        'gitEmail': opts_in.get('gitEmail') or info['email'],
+        'imageTag': opts_in.get('imageTag'),
     }
     cookie_secret = gen_cookie_secret()
-    gitops_publish(opts, creds['clientId'], creds['clientSecret'], cookie_secret)
+    gitops_publish(opts, cid, secret, cookie_secret)
     create_provision_job(opts['slug'])
     return opts['slug']
 
@@ -1776,7 +1733,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({
                 'enabled': provisioning_enabled(),
                 'workspaceDomain': WORKSPACE_DOMAIN,
-                'githubAppOrg': GITHUB_APP_ORG,
+                # Where the admin creates the OAuth App they'll paste creds from.
+                'oauthAppNewUrl': 'https://github.com/settings/applications/new',
             })
             return
         if path == '/api/provision/validate':
@@ -1796,14 +1754,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 code = 404 if exc.status == 404 else 502
                 self.send_json({'error': f'github lookup failed: {exc}'}, code)
             return
-        if path == '/api/provision/github/callback':
-            # Browser redirect from GitHub after the admin confirms the manifest.
-            # Authenticated by the controller's own oauth2 cookie (same host).
-            if not self.check_admin():
-                self.send_json({'error': 'unauthorized'}, 401)
-                return
-            self.handle_manifest_callback()
-            return
         m = re.match(r'^/api/provision/([a-z0-9-]{1,41})/status$', path)
         if m:
             if not self.check_admin():
@@ -1822,40 +1772,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         self.serve_spa(path)
 
-    def handle_manifest_callback(self):
-        """Exchange the manifest code, then render+push+launch the Job, and
-        redirect the SPA to the live status view. Errors land back on the
-        provision form with a message rather than a bare JSON page."""
-        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-        code = (q.get('code', ['']) or [''])[0]
-        state = (q.get('state', ['']) or [''])[0]
-        try:
-            payload = verify_state(state)
-        except ValueError as exc:
-            self.send_spa_redirect(f'/#/provision?error={urllib.parse.quote(str(exc))}')
-            return
-        if not code:
-            self.send_spa_redirect('/#/provision?error=missing+code')
-            return
-        try:
-            creds = exchange_manifest_code(code)
-            slug = do_provision(payload, creds)
-        except (GithubError, ProvisionError, KubectlError) as exc:
-            sys.stderr.write(f'[controller] provision failed: {exc}\n')
-            self.send_spa_redirect(f'/#/provision?error={urllib.parse.quote(str(exc)[:200])}')
-            return
-        self.send_spa_redirect(f'/#/provision/{slug}')
-
-    def send_spa_redirect(self, location):
-        self.send_response(302)
-        self.send_header('Location', location)
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
-
-    def handle_manifest_start(self):
-        """Validate the requested user + options and return the GitHub App
-        manifest the SPA auto-POSTs to GitHub, plus the signed state that carries
-        those options through to the callback."""
+    def handle_provision_create(self):
+        """Provision from operator-supplied OAuth App creds: validate the user +
+        creds, push config to the GitOps repo, launch the deploy Job, and return
+        the initial status so the SPA can switch straight to the live poller."""
         try:
             body = self.read_json_body()
         except ValueError:
@@ -1863,48 +1783,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         login = str(body.get('user', '')).strip()
         try:
-            info = validate_github_user(login)
+            slug = provision_workspace(login, body.get('clientId'), body.get('clientSecret'), body)
+            self.send_json(provision_status(slug))
         except ValueError as exc:
             self.send_json({'error': str(exc)}, 400)
-            return
         except GithubError as exc:
             self.send_json({'error': f'github lookup failed: {exc}'}, 502)
-            return
-        state_payload = {
-            'login': info['login'],
-            'host': info['host'],
-            'pvcSize': body.get('pvcSize'),
-            'resources': body.get('resources'),
-            'gitName': body.get('gitName') or info['name'],
-            'gitEmail': body.get('gitEmail') or info['email'],
-            'imageTag': body.get('imageTag'),
-        }
-        state = sign_state(state_payload)
-        self.send_json({
-            'action': manifest_post_url(state),
-            'manifest': json.dumps(build_app_manifest(info['login'], info['host'])),
-            'state': state,
-            'host': info['host'],
-        })
+        except (ProvisionError, KubectlError) as exc:
+            sys.stderr.write(f'[controller] provision failed: {exc}\n')
+            self.send_json({'error': str(exc)[:200]}, 502)
 
     def do_POST(self):
         path = self._norm_path()
         if self._restricted_block(path, _SELF_SERVE_POST_RE):
             return
-        if path == '/api/provision/github/manifest':
+        if path == '/api/provision/create':
             if not self.check_admin():
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
             if not provisioning_enabled():
                 self.send_json({'error': 'provisioning not configured'}, 501)
                 return
-            self.handle_manifest_start()
+            self.handle_provision_create()
             return
         dm = re.match(r'^/api/provision/([a-z0-9-]{1,41})/deploy$', path)
         if dm:
-            # Idempotent re-deploy: the GitHub App + config already exist in the
-            # GitOps repo (e.g. a retry after a failed Job), so skip the manifest
-            # flow entirely and just relaunch the Job against the saved config.
+            # Idempotent re-deploy: the OAuth creds + config already exist in the
+            # GitOps repo (e.g. a retry after a failed Job), so skip the create
+            # form entirely and just relaunch the Job against the saved config.
             if not self.check_admin():
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
@@ -1913,7 +1819,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             slug = dm.group(1)
             if not gitops_config_exists(slug):
-                self.send_json({'error': f'no saved config for {slug} in the GitOps repo — register the GitHub App first'}, 409)
+                self.send_json({'error': f'no saved config for {slug} in the GitOps repo — create the workspace with its OAuth App creds first'}, 409)
                 return
             try:
                 create_provision_job(slug)
