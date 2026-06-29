@@ -164,12 +164,17 @@ make deploy-base                  # base-infrastructure helm release
 #### Onboard a User
 
 ```bash
-# Scaffold a private workspace under users-private/<name>/ — generates
-# values.yaml, mints an OAuth2 cookie secret, and prints a checklist of
-# the manual fields you still need to fill in (DNS host, GitHub App
-# creds, optional assistant keys). See docs/NEW_USER_PROVISIONING.md.
+# Workspace config lives in one place: the private GitOps repo
+# (provision.gitops.repo). Sync a local checkout into .users/ first.
+make users-sync
+
+# Scaffold a workspace into the GitOps checkout — generates values.yaml,
+# mints an OAuth2 cookie secret, and prints a checklist of the manual
+# fields you still need to fill in (DNS host, GitHub OAuth App creds,
+# optional assistant keys). See docs/NEW_USER_PROVISIONING.md.
 make new-user USER=<name>
-$EDITOR users-private/<name>/values.yaml
+$EDITOR .users/users-private/<name>/values.yaml
+git -C .users add -A && git -C .users commit -m "add <name>" && git -C .users push
 
 # Pre-deploy sanity check (DNS, image pull, base release)
 make validate-user USER=<name>

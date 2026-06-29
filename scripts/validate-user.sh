@@ -35,9 +35,13 @@ fail() { echo "  [FAIL] $*"; FAIL_COUNT=$((FAIL_COUNT+1)); }
 
 echo "validate-user: $NAME"
 
-# 1. Locate values.yaml + secrets dir.
+# 1. Locate values.yaml + secrets dir. Resolve across the same roots, in the
+# same order, as the Makefile: legacy deployments/, this repo's users-private/,
+# then the GitOps checkout .users/ (synced via `make users-sync`) — the unifying
+# store that holds every provisioned workspace.
 PUBLIC_DIR="$ROOT/deployments/$NAME"
 PRIVATE_DIR="$ROOT/users-private/$NAME"
+GITOPS_DIR="$ROOT/.users/users-private/$NAME"
 USER_DIR=""
 SECRETS_DIR=""
 if [ -f "$PUBLIC_DIR/values.yaml" ]; then
@@ -46,11 +50,14 @@ if [ -f "$PUBLIC_DIR/values.yaml" ]; then
 elif [ -f "$PRIVATE_DIR/values.yaml" ]; then
   USER_DIR="$PRIVATE_DIR"
   SECRETS_DIR="$PRIVATE_DIR/secrets"
+elif [ -f "$GITOPS_DIR/values.yaml" ]; then
+  USER_DIR="$GITOPS_DIR"
+  SECRETS_DIR="$GITOPS_DIR/secrets"
 fi
 if [ -z "$USER_DIR" ]; then
-  fail "no values.yaml found under deployments/$NAME/ or users-private/$NAME/"
+  fail "no values.yaml found under deployments/$NAME/, users-private/$NAME/, or .users/users-private/$NAME/"
   echo
-  echo "Tip: run 'scripts/new-user.sh $NAME' to scaffold one."
+  echo "Tip: run 'make users-sync' to fetch GitOps config, or 'scripts/new-user.sh $NAME' to scaffold one."
   exit 1
 fi
 pass "values dir: $USER_DIR"

@@ -7,15 +7,22 @@ This guide explains how to provision a new user workspace with OAuth2 authentica
 > deploying — via a one-click setup. See [PROVISIONING.md](PROVISIONING.md).
 > The manual flow here is still the source of truth and the fallback.
 
+> **Unified store.** All workspace config now lives in one private **GitOps
+> repo** (`provision.gitops.repo`). Run `make users-sync` once to clone it into
+> a gitignored `.users/`; the controller's self-service path pushes to the same
+> repo. `new-user.sh` scaffolds there, and per-user `make` targets resolve it
+> automatically — so the console and the CLI share a single source of truth.
+
 ## TL;DR — generic per-user commands
 
 Every per-user command takes `USER=<name>` and auto-resolves the values
-file + secrets from one of two locations:
+file + secrets from the first of these that matches:
 
 | Location | When to use it | Committed? |
 |---|---|---|
 | `deployments/<user>/` + `secrets/<user>/`     | Workspaces visible in the public repo (placeholders only; real secrets stay in `secrets/`, which is gitignored). | values committed, secrets gitignored |
-| `users-private/<user>/` + `users-private/<user>/secrets/` | Private workspaces — neither values nor secrets are tracked. The whole `users-private/` tree is gitignored. | not committed |
+| `users-private/<user>/` + `users-private/<user>/secrets/` | Legacy in-repo private workspaces + the `_controller` bootstrap config. Gitignored. | not committed |
+| `.users/users-private/<user>/` | The GitOps store (`make users-sync`) — the canonical home for every provisioned workspace. Gitignored checkout. | in the GitOps repo |
 
 ```bash
 make deploy   USER=chase    # helm upgrade --install (auto-includes secrets)
@@ -34,19 +41,20 @@ sanitized examples live in `deployments/example-user/` (OAuth2) and
 Three commands provision a new private workspace end-to-end:
 
 ```bash
-make new-user      USER=<name>     # scaffold users-private/<name>/{values.yaml,secrets/oauth2.yaml}
+make users-sync                    # clone/pull the GitOps store into .users/
+make new-user      USER=<name>     # scaffold .users/users-private/<name>/{values.yaml,secrets/oauth2.yaml}
                                    # + generates a fresh cookieSecret
                                    # + prints a setup checklist (OAuth app URLs, fields to edit)
 # … now edit the "CHANGE ME" lines and drop your OAuth client_secret
-#   into users-private/<name>/secrets/oauth2.yaml.
+#   into .users/users-private/<name>/secrets/oauth2.yaml, then commit + push .users/.
 make validate-user USER=<name>     # placeholder scan + DNS + cluster prereq check (fails non-zero on issues)
 make deploy        USER=<name>     # helm upgrade --install (validate-user runs automatically first)
 ```
 
-What gets created under `users-private/<name>/`:
+What gets created under `.users/users-private/<name>/`:
 
 ```
-users-private/<name>/
+.users/users-private/<name>/
 ├── values.yaml          # CHANGE-ME-laden, cookieSecret pre-generated
 └── secrets/
     └── oauth2.yaml      # holds the GitHub OAuth client secret
@@ -75,12 +83,13 @@ they're auto-included in the helm deploy:
 
 ### Gitignored — by design
 
-The entire `users-private/` tree is excluded in `/.gitignore`. `git
-status` won't show any of it. If you want the configs versioned, point
-it at a separate private git repo:
+Both the `users-private/` tree and the `.users/` GitOps checkout are excluded
+in `/.gitignore`, so `git status` in this repo never shows workspace config or
+secrets. Versioning lives in the **GitOps repo** instead: scaffold into
+`.users/` (a checkout of it), then commit + push there.
 
 ```bash
-cd users-private && git init && git remote add origin git@github.com:you/kube-coder-private.git
+git -C .users add -A && git -C .users commit -m "add <name>" && git -C .users push
 ```
 
 ## 📋 Prerequisites

@@ -20,11 +20,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE_DIR="$ROOT/scripts/user-template"
-USERS_PRIVATE="$ROOT/users-private"
+# Scaffold into the GitOps checkout (.users/, synced via `make users-sync`) — the
+# single source of truth for provisioned workspaces. The operator commits+pushes
+# it, then `make deploy USER=<name>`. Override USERS_PRIVATE for legacy in-repo
+# scaffolding (e.g. the _controller bootstrap config).
+USERS_PRIVATE="${USERS_PRIVATE:-$ROOT/.users/users-private}"
 
 if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
   echo "Usage: $0 <username>" >&2
   exit 2
+fi
+
+if [ ! -d "$ROOT/.users/.git" ] && [ "$USERS_PRIVATE" = "$ROOT/.users/users-private" ]; then
+  echo "ERROR: $ROOT/.users is not a GitOps checkout yet — run 'make users-sync' first" >&2
+  echo "       (or set USERS_PRIVATE=<dir> to scaffold elsewhere)." >&2
+  exit 1
 fi
 
 NAME="$1"
@@ -102,28 +112,32 @@ Files written:
 
 NEXT STEPS
 
-1. Create a GitHub OAuth app for this workspace:
+1. Create a GitHub OAuth App (NOT a GitHub App) for this workspace:
      https://github.com/settings/developers → New OAuth App
      Homepage URL:  https://$NAME.dev.scalebase.io
      Callback URL:  https://$NAME.dev.scalebase.io/oauth2/callback
+   (its Client ID starts with "Ov…"; a GitHub App "Iv…" id 404s oauth2-proxy.)
 
-2. Edit users-private/$NAME/values.yaml — fix every line with "CHANGE ME":
+2. Edit $USER_DIR/values.yaml — fix every line with "CHANGE ME":
      • user.host               (must resolve to your ingress IP via DNS)
      • user.env GIT_USER_NAME  / GIT_USER_EMAIL
      • oauth2.githubUsers      (comma-separated GH usernames to allow)
-     • oauth2.clientId         (from the OAuth app)
+     • oauth2.clientId         (from the OAuth app, "Ov…")
 
-3. Edit users-private/$NAME/secrets/oauth2.yaml:
+3. Edit $USER_DIR/secrets/oauth2.yaml:
      • oauth2.clientSecret     (from the OAuth app)
 
-4. (Optional) Drop additional secrets into users-private/$NAME/secrets/:
+4. (Optional) Drop additional secrets into $USER_DIR/secrets/:
      • claude.yaml             (API key)
      • github-app.yaml         (private-repo auth)
 
-5. Validate, then deploy:
+5. Commit + push the GitOps repo so the config is durable:
+     git -C $ROOT/.users add -A && git -C $ROOT/.users commit -m "add $NAME" && git -C $ROOT/.users push
+
+6. Validate, then deploy:
      make validate-user USER=$NAME
      make deploy        USER=$NAME
 
-Everything under users-private/ is gitignored — none of this lands in
-your public repo.
+The GitOps checkout (.users/) and this repo's users-private/ are both
+gitignored — none of this lands in the public repo.
 EOF
