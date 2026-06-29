@@ -21,11 +21,19 @@ export interface Config {
 // EXPO_PUBLIC_MOCK=1 forces demo mode at build time (screenshot/web build).
 const FORCE_MOCK = process.env.EXPO_PUBLIC_MOCK === '1';
 
+// EXPO_PUBLIC_HOST + EXPO_PUBLIC_TOKEN pre-seed a real connection at launch,
+// skipping onboarding — for CI/e2e, a kiosk device, or a quick local test.
+// Both must be set; the token comes from the env, never hardcoded. Ignored when
+// mock mode is on.
+const FORCE_HOST = (process.env.EXPO_PUBLIC_HOST ?? '').trim().replace(/\/+$/, '');
+const FORCE_TOKEN = (process.env.EXPO_PUBLIC_TOKEN ?? '').trim();
+const FORCE_CONN = !FORCE_MOCK && !!FORCE_HOST && !!FORCE_TOKEN;
+
 let state: Config = {
-  host: FORCE_MOCK ? 'https://demo.kube-coder.app' : '',
-  token: FORCE_MOCK ? 'demo-token' : '',
+  host: FORCE_MOCK ? 'https://demo.kube-coder.app' : FORCE_CONN ? FORCE_HOST : '',
+  token: FORCE_MOCK ? 'demo-token' : FORCE_CONN ? FORCE_TOKEN : '',
   mock: FORCE_MOCK,
-  loaded: FORCE_MOCK, // mock build needs no async hydration
+  loaded: FORCE_MOCK || FORCE_CONN, // a seeded build needs no async hydration
 };
 
 type Listener = (c: Config) => void;

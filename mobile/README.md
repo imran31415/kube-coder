@@ -83,6 +83,20 @@ Token: kubectl -n <ns> exec deploy/ws-<name> -c ide -- cat /home/dev/.claude-tas
 `EXPO_PUBLIC_MOCK=1` skips onboarding and serves fake tasks/memory/metrics so
 the UI is fully populated with no backend — used for screenshots and previews.
 
+### Pre-seeding a connection (CI / e2e / kiosk)
+
+Set `EXPO_PUBLIC_HOST` + `EXPO_PUBLIC_TOKEN` to skip onboarding and connect to a
+real workspace on launch — handy for automated tests, a kiosk device, or a quick
+local check. Both must be set; the token comes from the env, never hardcoded:
+
+```bash
+EXPO_PUBLIC_HOST=https://imran.dev.scalebase.io \
+  EXPO_PUBLIC_TOKEN="$(kubectl -n coder exec deploy/ws-imran -c ide -- cat /home/dev/.claude-tasks/.api-token)" \
+  npm run ios
+```
+
+These are read only when set (production builds leave them unset → normal onboarding).
+
 ## Screenshots (store assets)
 
 Generating the App Store / Play Store screenshots is a **single, reusable,
