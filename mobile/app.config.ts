@@ -66,10 +66,12 @@ const config: ExpoConfig = {
   ],
   extra: {
     eas: {
-      projectId: process.env.EAS_PROJECT_ID ?? undefined,
+      // EAS project for @develop.imran/kube-coder-mobile. Override with
+      // EAS_PROJECT_ID in CI to target a different project.
+      projectId: process.env.EAS_PROJECT_ID ?? 'af01c72e-2764-4cfe-833c-df306dc4d3cd',
     },
   },
-  owner: process.env.EAS_OWNER ?? undefined,
+  owner: process.env.EAS_OWNER ?? 'develop.imran',
 };
 
 export default config;
