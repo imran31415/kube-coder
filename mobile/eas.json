@@ -22,6 +22,10 @@
   },
   "submit": {
     "production": {
+      // iOS submit credentials (Apple ID, ascAppId, appleTeamId) are personal
+      // and must NOT be committed to this open-source repo. EAS prompts for them
+      // interactively and auto-detects the ascAppId once you pick the app. To
+      // pin them locally, create an untracked eas.json override or pass flags.
       "android": {
         "serviceAccountKeyPath": "./play-service-account.json",
         "track": "internal"
