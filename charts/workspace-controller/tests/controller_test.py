@@ -175,14 +175,11 @@ class ClusterCapacityTest(unittest.TestCase):
 
 
 class ProvisionPureLogicTest(unittest.TestCase):
-    """Pure-logic provisioning helpers: state signing, the GitHub App manifest,
-    cookie-secret shape, and values rendering. No network, no cluster."""
+    """Pure-logic provisioning helpers: OAuth-cred validation, cookie-secret
+    shape, and values rendering. No network, no cluster."""
 
     def setUp(self):
-        controller.PROVISION_STATE_SECRET = 'unit-test-hmac-key'
-        controller.CONTROLLER_HOST = 'controller.dev.scalebase.io'
         controller.WORKSPACE_DOMAIN = 'dev.scalebase.io'
-        controller.GITHUB_APP_ORG = ''
 
     def test_slugify_lowercases(self):
         self.assertEqual(controller.slugify('Chase-31415'), 'chase-31415')
@@ -195,42 +192,26 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertFalse(controller._GH_LOGIN_RE.match('has space'))
         self.assertFalse(controller._GH_LOGIN_RE.match('under_score'))
 
-    def test_state_roundtrip(self):
-        payload = {'login': 'Octo', 'host': 'octo.dev.scalebase.io'}
-        token = controller.sign_state(payload)
-        out = controller.verify_state(token)
-        self.assertEqual(out['login'], 'Octo')
-        self.assertEqual(out['host'], 'octo.dev.scalebase.io')
+    def test_oauth_callback_url(self):
+        self.assertEqual(controller.oauth_callback_url('octo.dev.scalebase.io'),
+                         'https://octo.dev.scalebase.io/oauth2/callback')
 
-    def test_state_tamper_rejected(self):
-        token = controller.sign_state({'login': 'octo'})
-        raw, sig = token.split('.', 1)
-        tampered = base64.urlsafe_b64encode(b'{"login":"admin","exp":9999999999}').rstrip(b'=').decode() + '.' + sig
+    def test_validate_oauth_creds_accepts_oauth_app(self):
+        cid, secret = controller.validate_oauth_creds('  Ov23liExampleId  ', '  shh-secret ')
+        self.assertEqual(cid, 'Ov23liExampleId')   # trimmed
+        self.assertEqual(secret, 'shh-secret')
+
+    def test_validate_oauth_creds_requires_both(self):
         with self.assertRaises(ValueError):
-            controller.verify_state(tampered)
+            controller.validate_oauth_creds('', 'secret')
+        with self.assertRaises(ValueError):
+            controller.validate_oauth_creds('Ov23li', '   ')
 
-    def test_state_expiry(self):
-        # Sign with a TTL in the past so the token is born expired.
-        orig = controller.STATE_TTL
-        try:
-            controller.STATE_TTL = -1
-            token = controller.sign_state({'login': 'octo'})
-            with self.assertRaises(ValueError):
-                controller.verify_state(token)
-        finally:
-            controller.STATE_TTL = orig
-
-    def test_app_manifest_callback_and_redirect(self):
-        m = controller.build_app_manifest('Chase-31415', 'chase-31415.dev.scalebase.io')
-        self.assertEqual(m['callback_urls'], ['https://chase-31415.dev.scalebase.io/oauth2/callback'])
-        self.assertEqual(m['redirect_url'], 'https://controller.dev.scalebase.io/api/provision/github/callback')
-        self.assertFalse(m['public'])
-        self.assertLessEqual(len(m['name']), 34)
-
-    def test_manifest_post_url_personal_vs_org(self):
-        self.assertTrue(controller.manifest_post_url('S').startswith('https://github.com/settings/apps/new?state='))
-        controller.GITHUB_APP_ORG = 'acme'
-        self.assertIn('/organizations/acme/settings/apps/new', controller.manifest_post_url('S'))
+    def test_validate_oauth_creds_rejects_github_app_id(self):
+        # The exact misconfig that 404s oauth2-proxy: a GitHub App client id.
+        with self.assertRaises(ValueError) as ctx:
+            controller.validate_oauth_creds('Iv23liO7CFQE11YsmG0N', 'secret')
+        self.assertIn('OAuth App', str(ctx.exception))
 
     def test_cookie_secret_shape(self):
         s = controller.gen_cookie_secret()
@@ -241,7 +222,7 @@ class ProvisionPureLogicTest(unittest.TestCase):
         opts = {'login': 'Octo', 'slug': 'octo', 'host': 'octo.dev.scalebase.io',
                 'pvcSize': '30Gi', 'gitName': 'Octo Cat', 'gitEmail': 'octo@example.com',
                 'imageTag': 'v9.9.9'}
-        text = controller.render_values_yaml(opts, 'Iv1.clientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
+        text = controller.render_values_yaml(opts, 'Ov23liexampleclientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
         # Validate it parses as YAML and carries the access gate + host.
         try:
             import yaml  # PyYAML may not be installed in CI; fall back to substring checks.
@@ -250,7 +231,7 @@ class ProvisionPureLogicTest(unittest.TestCase):
             self.assertEqual(doc['user']['host'], 'octo.dev.scalebase.io')
             self.assertEqual(doc['user']['pvcSize'], '30Gi')
             self.assertEqual(doc['oauth2']['githubUsers'], 'Octo')   # login, case-preserved
-            self.assertEqual(doc['oauth2']['clientId'], 'Iv1.clientid')
+            self.assertEqual(doc['oauth2']['clientId'], 'Ov23liexampleclientid')
             self.assertEqual(doc['image']['tag'], 'devlaptop-v9.9.9')
             self.assertEqual(doc['ingress']['tls']['secretName'], 'octo-dev-scalebase-io-tls')
             self.assertEqual(doc['ingress']['auth']['type'], 'oauth2')

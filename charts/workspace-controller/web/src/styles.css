@@ -858,6 +858,27 @@ body {
   min-width: 0;
 }
 
+.prov-oauth {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--border, #2a2a32);
+}
+
+.prov-steps {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  color: var(--text-muted, #9aa0ac);
+  line-height: 1.45;
+}
+
+.prov-steps code {
+  word-break: break-all;
+}
+
 .prov-status {
   display: flex;
   flex-direction: column;
