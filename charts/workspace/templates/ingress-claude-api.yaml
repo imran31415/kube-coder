@@ -20,6 +20,16 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Defense-in-depth: unlike the oauth2 ingresses, this Bearer-only path is not
+    # fronted by oauth2-proxy and does not re-set the identity headers from an
+    # authenticated /oauth2/auth subrequest. Clear any client-supplied identity
+    # headers so the Bearer token is the only credential honored here.
+    # (Requires ingress-nginx `allow-snippet-annotations: "true"`.)
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header X-Auth-Request-User "";
+      proxy_set_header X-Auth-Request-Email "";
+      proxy_set_header X-Auth-Request-Access-Token "";
+      proxy_set_header Remote-User "";
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
