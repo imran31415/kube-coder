@@ -3324,6 +3324,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        self._consume_bearer_marker()
         # Normalize path: strip /oauth and /browser prefixes from ingress
         # rewrites, AND strip the query string before matching routes.
         # Without dropping the query string, deep-link URLs like
@@ -3630,7 +3631,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         ingress cannot be exploited by client-supplied headers."""
         if self.headers.get('Authorization', ''):
             return True
-        if TRUSTED_PROXY and self.headers.get('Remote-User', ''):
+        if TRUSTED_PROXY and not getattr(self, '_bearer_only', False) \
+                and self.headers.get('Remote-User', ''):
             return True
         return False
     
@@ -3656,6 +3658,34 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif path == '/browser':
             path = '/'
         return path
+
+    def _consume_bearer_marker(self):
+        """Detect + strip the Bearer-only ingress marker and flag the request.
+
+        The dedicated Bearer-token API ingress (ingress-claude-api.yaml) routes
+        through a leading `/bearer-api/` marker that NO oauth2-proxy-fronted
+        path ever uses. Its presence means the request arrived via the ingress
+        that is *not* authenticated by oauth2-proxy — so upstream identity
+        headers (X-Auth-Request-*, Remote-User) must never be trusted for it,
+        regardless of ingress header hygiene. The Bearer token is then the only
+        accepted credential (see check_claude_auth / check_oauth_only).
+
+        This is defense-in-depth for the trusted-proxy header model: even if an
+        operator's ingress-nginx has `allow-snippet-annotations` disabled (so the
+        header-stripping configuration-snippet on that ingress is a no-op), a
+        forged X-Auth-Request-User on the Bearer path is still rejected here.
+
+        We strip the marker from self.path so all existing routing / prefix
+        logic is unchanged. Requests without the marker (dashboard via
+        /oauth/*, in-pod localhost calls, k8s probes) are untouched.
+        """
+        p = self.path or ''
+        if p.startswith('/bearer-api/'):
+            self.path = p[len('/bearer-api'):]
+            self._bearer_only = True
+        elif p == '/bearer-api':
+            self.path = '/'
+            self._bearer_only = True
 
     def check_claude_auth(self, allow_none_mode=True):
         """Returns True if request is authenticated via OAuth2 headers OR valid bearer token.
@@ -3694,7 +3724,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # TRUSTED_PROXY / Bearer paths below.
         if AUTH_MODE == 'basic':
             return True
-        if TRUSTED_PROXY:
+        # _bearer_only requests arrived via the Bearer-token ingress (marked by
+        # _consume_bearer_marker), which is NOT fronted by oauth2-proxy — so
+        # identity headers on that path are untrusted and only a Bearer token
+        # authenticates. This holds even if the ingress failed to strip them.
+        if TRUSTED_PROXY and not getattr(self, '_bearer_only', False):
             if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
                 return True
             if self.headers.get('Remote-User', ''):
@@ -3707,8 +3741,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     def check_oauth_only(self):
         """Returns True only if request has OAuth2 proxy headers (not bearer token).
-        Only honored when TRUSTED_PROXY=true; otherwise returns False."""
-        if not TRUSTED_PROXY:
+        Only honored when TRUSTED_PROXY=true; otherwise returns False.
+
+        Never honored for _bearer_only requests (Bearer-token ingress): that path
+        is not fronted by oauth2-proxy, so its identity headers are untrusted."""
+        if not TRUSTED_PROXY or getattr(self, '_bearer_only', False):
             return False
         if self.headers.get('X-Auth-Request-User') or self.headers.get('X-Auth-Request-Email'):
             return True
@@ -3753,6 +3790,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         return True
 
     def do_DELETE(self):
+        self._consume_bearer_marker()
         if self._readonly_block():
             return
         try:
@@ -6073,6 +6111,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # so embedded apps (and their Try-it-out clients) work.
 
     def do_PUT(self):
+        self._consume_bearer_marker()
         if self._readonly_block():
             return
         path = self._strip_route_prefix(self.path)
@@ -6082,6 +6121,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_PATCH(self):
+        self._consume_bearer_marker()
         if self._readonly_block():
             return
         path = self._strip_route_prefix(self.path)
@@ -6091,6 +6131,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_HEAD(self):
+        self._consume_bearer_marker()
         path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'HEAD'):
             return
@@ -6235,6 +6276,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(error_html.encode())
     
     def do_POST(self):
+        self._consume_bearer_marker()
         if self._readonly_block():
             return
         try:

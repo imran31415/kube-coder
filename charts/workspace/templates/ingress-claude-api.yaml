@@ -16,15 +16,20 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    # Route through a /bearer-api/ marker prefix. server.py's
+    # _consume_bearer_marker() strips it and flags the request "bearer-only", so
+    # it never trusts upstream identity headers (X-Auth-Request-*, Remote-User)
+    # on this path — the Bearer token is the only accepted credential. This is
+    # the primary, deployment-independent guard against a forged identity header
+    # here (rewrite-target is core nginx, unlike snippet annotations below).
+    nginx.ingress.kubernetes.io/rewrite-target: /bearer-api/$1
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    # Defense-in-depth: unlike the oauth2 ingresses, this Bearer-only path is not
-    # fronted by oauth2-proxy and does not re-set the identity headers from an
-    # authenticated /oauth2/auth subrequest. Clear any client-supplied identity
-    # headers so the Bearer token is the only credential honored here.
-    # (Requires ingress-nginx `allow-snippet-annotations: "true"`.)
+    # Belt-and-suspenders: also strip the identity headers at the edge so they
+    # never reach the pod. Requires ingress-nginx `allow-snippet-annotations:
+    # "true"` (off by default in newer ingress-nginx); the /bearer-api/ marker
+    # above enforces the same guarantee server-side even when snippets are off.
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header X-Auth-Request-User "";
       proxy_set_header X-Auth-Request-Email "";

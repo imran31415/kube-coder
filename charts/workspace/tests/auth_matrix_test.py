@@ -107,5 +107,84 @@ class LegacyAuthGateTests(unittest.TestCase):
         self._expect_401('/api/github/cli/complete-auth')
 
 
+def _get(url, headers=None):
+    req = urllib.request.Request(url, method='GET')
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    return urllib.request.urlopen(req, timeout=5)
+
+
+class BearerMarkerAuthTests(unittest.TestCase):
+    """The Bearer-token API ingress routes through a `/bearer-api/` marker so
+    server.py never trusts upstream identity headers on that path (they can be
+    forged — that ingress is not fronted by oauth2-proxy). Requests reaching the
+    pod as bare `/api/*` (via the oauth2 ingress) still trust validated headers
+    so the dashboard keeps working."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.mkdtemp(prefix='kc-bearer-')
+        cls._auth_mode_save = server.AUTH_MODE
+        cls._trusted_save = server.TRUSTED_PROXY
+        cls._verify_save = server.ClaudeTaskManager.verify_token
+        cls._tasks_dir_save = server.ClaudeTaskManager.TASKS_DIR
+        server.AUTH_MODE = 'oauth2'
+        server.TRUSTED_PROXY = True
+        server.ClaudeTaskManager.TASKS_DIR = cls.tmpdir
+        server.ClaudeTaskManager.verify_token = staticmethod(lambda t: t == 'good-token')
+        cls.port = _free_port()
+        cls.httpd = http.server.ThreadingHTTPServer(
+            ('127.0.0.1', cls.port), server.BrowserHandler,
+        )
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        server.AUTH_MODE = cls._auth_mode_save
+        server.TRUSTED_PROXY = cls._trusted_save
+        server.ClaudeTaskManager.verify_token = cls._verify_save
+        server.ClaudeTaskManager.TASKS_DIR = cls._tasks_dir_save
+        import shutil
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def _url(self, path):
+        return f'http://127.0.0.1:{self.port}{path}'
+
+    def test_validated_header_on_plain_api_authenticates(self):
+        # Dashboard path: reaches the pod as bare /api/* (oauth2 ingress rewrites
+        # /oauth/api/* -> /api/*) with a proxy-validated identity header.
+        with _get(self._url('/api/claude/tasks'),
+                  {'X-Auth-Request-User': 'realuser'}) as r:
+            self.assertEqual(r.status, 200)
+
+    def test_forged_header_on_bearer_marker_is_rejected(self):
+        # The exploit: a client-supplied identity header on the Bearer ingress.
+        try:
+            with _get(self._url('/bearer-api/api/claude/tasks'),
+                      {'X-Auth-Request-User': 'attacker'}) as r:
+                self.fail(f'expected 401, got {r.status}')
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 401)
+
+    def test_bearer_token_on_marker_authenticates(self):
+        # Legit programmatic client: Bearer token on the Bearer ingress. Also
+        # proves the /bearer-api/ marker is stripped so routing still matches.
+        with _get(self._url('/bearer-api/api/claude/tasks'),
+                  {'Authorization': 'Bearer good-token'}) as r:
+            self.assertEqual(r.status, 200)
+
+    def test_forged_header_plus_bad_token_on_marker_is_rejected(self):
+        try:
+            with _get(self._url('/bearer-api/api/claude/tasks'),
+                      {'X-Auth-Request-User': 'attacker',
+                       'Authorization': 'Bearer nope'}) as r:
+                self.fail(f'expected 401, got {r.status}')
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 401)
+
+
 if __name__ == '__main__':
     unittest.main()
