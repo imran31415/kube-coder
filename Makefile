@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -264,6 +264,39 @@ delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name
 	fi; \
 	echo "Done. '$(USER)' removed from the cluster."; \
 	echo "NOTE: users-private/$(USER)/ (local config) and the GitHub OAuth app are untouched — delete those manually if desired."
+
+# =============================================================================
+# Per-workspace namespace migration (#103)
+# =============================================================================
+# Move existing workspaces out of the shared control-plane namespace into their
+# own ws-<user> namespace. Wraps scripts/migrate-user-namespace.sh.
+#
+#   make migrate-user USER=<name>              # copy the home volume only (safe, reversible)
+#   make migrate-user USER=<name> CUTOVER=1    # + repoint values.yaml & deploy into ws-<name>
+#   make migrate-user USER=<name> DECOMMISSION=1  # + delete the old copy (destructive)
+#   make migrate-user USER=<name> DRY_RUN=1    # print every action, touch nothing
+#   make migrate-all [CUTOVER=1] [DECOMMISSION=1] [SRC=coder]  # every workspace in SRC
+#
+# Migrate-all discovers every ws-<user> Deployment currently in SRC (default
+# $(NAMESPACE)) and runs migrate-user for each. Start with a DRY_RUN=1 pass.
+SRC ?= $(NAMESPACE)
+MIGRATE_FLAGS = --src-namespace $(SRC) \
+	$(if $(filter 1 true yes,$(DRY_RUN)),--dry-run,) \
+	$(if $(filter 1 true yes,$(CUTOVER)),--cutover,) \
+	$(if $(filter 1 true yes,$(DECOMMISSION)),--decommission,)
+
+migrate-user: require-user ## Migrate one workspace to its own namespace (USER=<name> [CUTOVER=1] [DECOMMISSION=1] [DRY_RUN=1])
+	@./scripts/migrate-user-namespace.sh "$(USER)" $(MIGRATE_FLAGS)
+
+migrate-all: ## Migrate every workspace in SRC (default $(NAMESPACE)) to its own namespace ([CUTOVER=1] [DECOMMISSION=1] [DRY_RUN=1] [SRC=coder])
+	@users="$$(kubectl get deploy -n $(SRC) -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | sed -n 's/^ws-//p')"; \
+	if [ -z "$$users" ]; then echo "No ws-* workspaces found in namespace '$(SRC)'."; exit 0; fi; \
+	echo "Workspaces to migrate from '$(SRC)':"; echo "$$users" | sed 's/^/  - /'; \
+	for u in $$users; do \
+	  echo ""; echo "########## migrate $$u ##########"; \
+	  ./scripts/migrate-user-namespace.sh "$$u" $(MIGRATE_FLAGS) || { echo "migrate $$u FAILED — stopping."; exit 1; }; \
+	done; \
+	echo ""; echo "migrate-all complete."
 
 # =============================================================================
 # Dashboard SPA (charts/workspace/web/)

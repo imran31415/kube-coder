@@ -3,30 +3,38 @@
 # `coder` namespace into its own per-user namespace `ws-<user>` (issue #103).
 #
 # Usage:
-#   scripts/migrate-user-namespace.sh <user> [--src-namespace coder] [--dry-run] [--keep-old]
+#   scripts/migrate-user-namespace.sh <user> [flags]
+#     --dry-run         print every action, touch nothing
+#     --src-namespace N  source namespace (default: coder)
+#     --cutover         after the copy, repoint the user's values.yaml at
+#                       ws-<user> and `make deploy` into it (+verify)
+#     --decommission    after cutover, delete the OLD coder release + PVC
+#                       (destructive; implies --cutover)
 #
-# What it does (idempotent where it can be):
-#   1. Preflight — confirm the workspace exists in the source namespace and the
-#      target namespace does not already hold a conflicting workspace.
-#   2. Scale the source workspace to 0 so its home PVC is quiescent.
-#   3. Create + label the ws-<user> namespace and copy the regcred image-pull
-#      Secret into it (via ensure-workspace-namespace.sh).
-#   4. Create a new home PVC (ws-<user>-home) in the target namespace, same size.
-#   5. Copy the home volume across namespaces with a tar-pipe between two helper
-#      pods — PVCs are namespace-scoped and cannot be moved, so the data is
-#      streamed, not remounted.
-#   6. Print the remaining cutover steps (deploy into the new namespace, verify,
-#      then delete the old objects) — those are left to you to run deliberately.
+# Phases (each builds on the previous; pick how far to go):
+#   COPY (always): preflight; scale source to 0; create+label ws-<user> ns +
+#     copy regcred; create the new ws-<user>-home PVC (same size); tar-pipe the
+#     home volume across namespaces (PVCs are namespace-scoped and cannot be
+#     moved, so the data is streamed between two helper pods). Fully reversible.
+#   CUTOVER (--cutover): set `namespace: ws-<user>` in the user's values.yaml
+#     and `make deploy USER=<user>` (installs base-infra into ws-<user>, rolls
+#     the pod onto the migrated PVC), then verify /home/dev. The old copy is
+#     left scaled-to-0 in the source namespace for rollback.
+#   DECOMMISSION (--decommission): reclaim the old copy (helm uninstall + delete
+#     the old PVC). This is the only destructive step.
 #
-# This script NEVER deletes the source workspace or its PVC. Cutover + cleanup
-# are manual on purpose: verify the new workspace first, then remove the old.
+# Without --cutover the source is left intact and stopped, so COPY alone is
+# safe to run ahead of time and cut over later.
 #
-# See docs/PER_WORKSPACE_NAMESPACE_MIGRATION.md for the full runbook.
+# See docs/PER_WORKSPACE_NAMESPACE_MIGRATION.md for the full runbook, and
+# `make migrate-user` / `make migrate-all` for the convenience wrappers.
 set -euo pipefail
 
 USER_SLUG=""
 SRC_NS="coder"
 DRY_RUN=0
+CUTOVER=0        # after the copy: repoint values.yaml + `make deploy` into ws-<user>
+DECOMMISSION=0   # after cutover: delete the OLD coder release + PVC (destructive; implies --cutover)
 HELPER_IMAGE="${MIGRATION_HELPER_IMAGE:-busybox:1.36}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -36,20 +44,32 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --src-namespace) SRC_NS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    --cutover) CUTOVER=1; shift ;;
+    --decommission) DECOMMISSION=1; CUTOVER=1; shift ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     -*) die "unknown flag: $1" ;;
     *) [ -z "$USER_SLUG" ] && USER_SLUG="$1" && shift || die "unexpected arg: $1" ;;
   esac
 done
 
-[ -n "$USER_SLUG" ] || die "usage: migrate-user-namespace.sh <user> [--src-namespace coder] [--dry-run]"
+[ -n "$USER_SLUG" ] || die "usage: migrate-user-namespace.sh <user> [--src-namespace coder] [--cutover] [--decommission] [--dry-run]"
 
 WS="ws-${USER_SLUG}"
 DST_NS="ws-${USER_SLUG}"
 PVC="ws-${USER_SLUG}-home"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo "=== migrate $WS : $SRC_NS -> $DST_NS (dry-run=$DRY_RUN) ==="
+# Resolve the user's values.yaml the same way the Makefile does (first match
+# wins): committed deployments/, private users-private/, then the GitOps
+# checkout .users/. Only needed for --cutover (repoint the namespace field).
+resolve_values_file() {
+  for d in "$ROOT/deployments/$1" "$ROOT/users-private/$1" "$ROOT/.users/users-private/$1"; do
+    [ -f "$d/values.yaml" ] && { echo "$d/values.yaml"; return 0; }
+  done
+  return 1
+}
+
+echo "=== migrate $WS : $SRC_NS -> $DST_NS (dry-run=$DRY_RUN cutover=$CUTOVER decommission=$DECOMMISSION) ==="
 
 # 1. Preflight.
 kubectl get deployment "$WS" -n "$SRC_NS" >/dev/null 2>&1 \
@@ -138,19 +158,62 @@ else
   kubectl delete pod "$DST_POD" -n "$DST_NS" --ignore-not-found
 fi
 
-cat <<NEXT
+echo "=== data migrated ($SRC_NS -> $DST_NS) ==="
 
-=== data migrated. Remaining cutover steps (run deliberately) ===
-  1. Point the workspace config at the new namespace and deploy:
-       # in the user's values.yaml (GitOps repo / users-private/<user>):
-       namespace: ${DST_NS}
+if [ "$CUTOVER" != 1 ]; then
+  cat <<NEXT
+
+Copy done (source left intact + stopped, so this is fully reversible).
+Finish the cutover when ready — re-run with --cutover to automate it, or by hand:
+  1. Set 'namespace: ${DST_NS}' in the user's values.yaml, then:
        make deploy USER=${USER_SLUG}
-     (make deploy installs base-infrastructure into ${DST_NS} and rolls the pod
-      onto the migrated PVC.)
-  2. Verify the workspace is healthy in ${DST_NS} and the home dir is intact:
-       kubectl -n ${DST_NS} exec deploy/${WS} -c ide -- ls -la /home/dev
-  3. Once satisfied, remove the OLD namespace copy:
+  2. Verify: kubectl -n ${DST_NS} exec deploy/${WS} -c ide -- ls -la /home/dev
+  3. Decommission the old copy (or re-run with --decommission):
        helm uninstall ${USER_SLUG}-workspace -n ${SRC_NS} || true
        kubectl delete pvc ${PVC} -n ${SRC_NS}
-       # (leave shared ${SRC_NS} objects — controller, base-infra — in place)
 NEXT
+  exit 0
+fi
+
+# --- Cutover: repoint the config at ws-<user> and deploy into it -------------
+echo "--- cutover: repointing config + deploying into $DST_NS ---"
+VALUES="$(resolve_values_file "$USER_SLUG" || true)"
+if [ -n "$VALUES" ]; then
+  cur_ns="$(awk '/^namespace:/{print $2; exit}' "$VALUES")"
+  if [ "$cur_ns" = "$DST_NS" ]; then
+    echo "values.yaml already targets $DST_NS ($VALUES)"
+  else
+    echo "updating namespace: $cur_ns -> $DST_NS in $VALUES"
+    run sed -i "s|^namespace:.*|namespace: ${DST_NS}|" "$VALUES"
+    echo "NOTE: commit this values.yaml change to the GitOps repo so the next reconcile is a no-op."
+  fi
+else
+  echo "WARNING: no values.yaml found for '$USER_SLUG' under deployments/, users-private/, or .users/." >&2
+  echo "         'make deploy' will fall back to the ws-<user> convention, but nothing will be committed to GitOps." >&2
+fi
+
+run make -C "$ROOT" deploy USER="$USER_SLUG"
+
+if [ "$DRY_RUN" != 1 ]; then
+  echo "--- verify: home dir in $DST_NS ---"
+  kubectl -n "$DST_NS" exec "deploy/${WS}" -c ide -- ls -la /home/dev | head -20 || \
+    echo "WARNING: could not list /home/dev yet — pod may still be starting; check manually." >&2
+fi
+
+if [ "$DECOMMISSION" != 1 ]; then
+  cat <<NEXT
+
+Cutover complete — ${WS} is now running in ${DST_NS} on the migrated volume.
+The OLD copy in ${SRC_NS} is still present (scaled to 0) for rollback. Once
+you're satisfied, reclaim it (or re-run with --decommission):
+  helm uninstall ${USER_SLUG}-workspace -n ${SRC_NS} || true
+  kubectl delete pvc ${PVC} -n ${SRC_NS}
+NEXT
+  exit 0
+fi
+
+# --- Decommission: reclaim the old coder copy (destructive) ------------------
+echo "--- decommission: removing old copy in $SRC_NS ---"
+run helm uninstall "${USER_SLUG}-workspace" -n "$SRC_NS" || true
+run kubectl delete pvc "$PVC" -n "$SRC_NS" --ignore-not-found
+echo "=== ${USER_SLUG} fully migrated to ${DST_NS} and decommissioned from ${SRC_NS} ==="

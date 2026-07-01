@@ -38,67 +38,64 @@ working — migrate tenants one at a time with no console downtime.
 2. Confirm the controller can still see the existing `coder`-resident
    workspaces in its dashboard (discovery falls back to `coder`).
 
-## Migrate one tenant
+## The easy path: `make migrate-user` / `make migrate-all`
 
 A home PVC is namespace-scoped and **cannot be moved** — its data must be
-copied. `scripts/migrate-user-namespace.sh` automates the safe parts (quiesce →
-create namespace + regcred → new PVC → tar-pipe the home volume) and stops
-before anything destructive.
+copied. The migration is wrapped in two Make targets so you rarely touch the
+script directly. Everything is **reversible until the final decommission step**,
+and each phase is opt-in via a flag.
 
 ```bash
-# Dry-run first — prints every action without touching the cluster:
-scripts/migrate-user-namespace.sh <user> --dry-run
+# Always dry-run first — prints every action, touches nothing:
+make migrate-user USER=<name> CUTOVER=1 DRY_RUN=1
 
-# Then for real:
-scripts/migrate-user-namespace.sh <user>
+# Copy only (safe to run ahead of time; source stays up-to-0 for rollback):
+make migrate-user USER=<name>
+
+# Copy + cut over (repoint values.yaml → ws-<name>, deploy into it, verify):
+make migrate-user USER=<name> CUTOVER=1
+
+# The whole thing, including reclaiming the old copy (destructive last step):
+make migrate-user USER=<name> DECOMMISSION=1
 ```
 
-The script:
+Migrate the **entire fleet** at once — it discovers every `ws-*` Deployment in
+the source namespace (default `coder`) and runs the same phases for each:
 
-1. Scales `ws-<user>` in `coder` to 0 (so the home volume is quiescent).
-2. Creates + labels the `ws-<user>` namespace and copies `regcred` into it.
-3. Creates a new `ws-<user>-home` PVC (same size) in `ws-<user>`.
-4. Streams `/home/dev` from the old PVC to the new one via two helper pods
-   (`kubectl exec … tar -cf - | kubectl exec -i … tar -xf -`).
+```bash
+make migrate-all DRY_RUN=1 CUTOVER=1     # preview the whole fleet
+make migrate-all CUTOVER=1               # copy + cut over every workspace
+make migrate-all DECOMMISSION=1          # …and reclaim the old copies
+```
 
-It then prints — but does **not** run — the cutover steps.
+### The three phases (what each flag does)
 
-### Cutover (run deliberately, after the copy)
+| Phase | Flag | Actions | Reversible? |
+|-------|------|---------|-------------|
+| **Copy** | *(default)* | Scale source to 0 → create+label `ws-<user>` ns + copy `regcred` → new `ws-<user>-home` PVC → tar-pipe `/home/dev` across namespaces | ✅ source untouched |
+| **Cutover** | `CUTOVER=1` | Set `namespace: ws-<user>` in the user's values.yaml → `make deploy USER=<user>` (installs base-infra into `ws-<user>`, rolls the pod onto the migrated PVC) → verify `/home/dev` | ✅ old copy left scaled-to-0 |
+| **Decommission** | `DECOMMISSION=1` | `helm uninstall` + delete the old `ws-<user>-home` PVC in the source namespace | ❌ destructive |
 
-1. Point the tenant's config at the new namespace and deploy:
+The tenant's only downtime is the copy window (source is scaled to 0 while
+`/home/dev` streams between two helper pods). `coder` stays as the control-plane
+namespace — the controller, `base-infrastructure`, and `regcred` live there
+permanently; only the per-user workspaces relocate.
 
-   ```bash
-   # in the user's values.yaml (GitOps repo .users/users-private/<user>/ or
-   # users-private/<user>/): change the namespace field to ws-<user>
-   namespace: ws-<user>
-   ```
-   ```bash
-   make deploy USER=<user>
-   ```
+> **Commit the GitOps change.** `CUTOVER` edits the user's `values.yaml`
+> `namespace:` field in your resolved config dir (`deployments/`,
+> `users-private/`, or the `.users/` GitOps checkout). Commit + push that change
+> so the next reconcile is a no-op rather than reverting the move.
 
-   `make deploy` creates/labels the namespace (idempotent), copies `regcred`,
-   installs `base-infrastructure` (the `kaniko-wrapper` ConfigMap the pod mounts)
-   into `ws-<user>`, then rolls the workspace onto the migrated PVC.
+### Doing it by hand (equivalent to the phases above)
 
-2. Verify health and that the home directory survived:
-
-   ```bash
-   kubectl -n ws-<user> get pods
-   kubectl -n ws-<user> exec deploy/ws-<user> -c ide -- ls -la /home/dev
-   ```
-
-3. Once satisfied, remove the old `coder` copy:
-
-   ```bash
-   helm uninstall <user>-workspace -n coder || true
-   kubectl delete pvc ws-<user>-home -n coder
-   ```
-
-   Leave the shared `coder` objects (the controller, `base-infrastructure`,
-   `regcred`) in place — `coder` remains the control-plane namespace.
-
-4. Commit the `namespace: ws-<user>` change to the GitOps repo so the next
-   reconcile is a no-op rather than reverting the move.
+```bash
+scripts/migrate-user-namespace.sh <user>              # copy
+# then set namespace: ws-<user> in the values.yaml and:
+make deploy USER=<user>                               # cutover
+kubectl -n ws-<user> exec deploy/ws-<user> -c ide -- ls -la /home/dev   # verify
+helm uninstall <user>-workspace -n coder || true      # decommission
+kubectl delete pvc ws-<user>-home -n coder
+```
 
 ## Rollback
 
