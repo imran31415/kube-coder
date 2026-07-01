@@ -4,7 +4,7 @@
 # `scripts/new-user.sh <name>` which scaffolds a gitignored copy under
 # users-private/<name>/ with a freshly generated cookieSecret. Real configs
 # must NOT be committed — keep them under users-private/ (gitignored).
-namespace: coder
+namespace: ws-example-user
 
 user:
   name: example-user

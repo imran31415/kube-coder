@@ -7,10 +7,16 @@
 # blast radius of a controller compromise stays "can start Jobs", not "can
 # rewrite every tenant's Deployment + read every Secret".
 #
-# Still namespace-scoped (not a ClusterRole): on this shared ~20-tenant DOKS
-# cluster a cluster-wide grant of these verbs would be a cross-tenant kill
-# switch, the same reasoning the workspace build Role and the controller Role
-# already codify.
+# Cluster-scoped under per-workspace namespaces (#103): standing up a new
+# tenant now means CREATING its `ws-<user>` Namespace and stamping the workspace
+# objects (Deployment, Secrets, quota, RBAC, the regcred image-pull Secret)
+# into it. Namespace creation is inherently cluster-scoped, and RBAC cannot
+# scope `create` to a namespace that does not exist yet — so this identity is a
+# ClusterRole/ClusterRoleBinding. The mitigations that keep this acceptable:
+#   * it belongs to a short-lived Job, not the always-on controller;
+#   * the controller can only *launch* that Job (namespaced `create jobs`),
+#     never assume its verbs directly;
+#   * provisioning is opt-in (provision.enabled) and off by default.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -20,22 +26,31 @@ metadata:
     {{- include "wc.labels" . | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: {{ .Values.provision.serviceAccount }}
-  namespace: {{ .Values.namespace }}
   labels:
     {{- include "wc.labels" . | nindent 4 }}
 rules:
+# Create + label the per-workspace Namespace itself. `delete` supports the
+# migration/decommission runbook (tearing a tenant's namespace back down).
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 # The workspace Deployment + its oauth2-proxy Deployment, plus scale subresource
 # (helm's --wait reads rollout status).
 - apiGroups: ["apps"]
   resources: ["deployments", "deployments/scale", "replicasets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Service, PVC, ConfigMaps, the per-user Secrets the chart renders, and the
-# Helm release-state Secret (Helm 3 stores releases as Secrets in the namespace).
+# Service, PVC, ConfigMaps, the per-user Secrets the chart renders (incl. the
+# regcred image-pull Secret copied into each new namespace), and the Helm
+# release-state Secret (Helm 3 stores releases as Secrets in the namespace).
 - apiGroups: [""]
   resources: ["services", "persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Per-namespace ResourceQuota + LimitRange the workspace chart renders (#103/#95).
+- apiGroups: [""]
+  resources: ["resourcequotas", "limitranges"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 # Ingresses for the workspace host + oauth2 routes, plus the per-workspace
 # NetworkPolicy the chart always renders (denies cross-tenant ingress to the pods).
@@ -46,8 +61,9 @@ rules:
 - apiGroups: ["policy"]
   resources: ["poddisruptionbudgets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# The workspace chart ships its own per-user build Role/RoleBinding; Helm must be
-# able to create them. (RBAC create is itself privileged — it lives only here.)
+# The workspace chart ships its own per-user build Role/RoleBinding AND the
+# controller RoleBinding (controller-rbac.yaml); Helm must be able to create
+# them. (RBAC create is itself privileged — it lives only here.)
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -64,15 +80,14 @@ rules:
   verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: {{ .Values.provision.serviceAccount }}
-  namespace: {{ .Values.namespace }}
   labels:
     {{- include "wc.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: {{ .Values.provision.serviceAccount }}
 subjects:
 - kind: ServiceAccount

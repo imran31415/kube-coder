@@ -3,6 +3,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: ws-{{ .Values.user.name }}-home
   namespace: {{ .Values.namespace }}
+  annotations:
+    # The home volume is the user's data — never let a `helm uninstall`
+    # (rollback of a failed install, decommission-by-mistake, …) delete it.
+    # Reclaiming it is always an explicit `kubectl delete pvc`.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

@@ -1,4 +1,15 @@
 # Workspace configuration
+#
+# Each workspace gets its OWN namespace, `ws-<user>` (issue #103) — the same
+# string as the Deployment/ServiceAccount. This is what makes tenant isolation
+# real: a workspace pod's ServiceAccount can only see Secrets/pods in its own
+# namespace, so the predictable-secret-name cross-tenant read that the shared
+# `coder` namespace allowed is closed by construction.
+#
+# The scaffold (scripts/new-user.sh), the controller provisioner, and
+# `make deploy` all set this to `ws-<user>` and create+label the namespace
+# out-of-band before `helm install`. The default below is only a fallback for
+# bare `helm template`/`helm install` invocations.
 namespace: coder
 
 # User configuration
@@ -30,6 +41,12 @@ image:
 #     "none"   — bare TLS; anyone can hit it (use only with readOnly: true)
 ingress:
   className: nginx
+  # Emit a configuration-snippet on the Bearer-API ingress that strips identity
+  # headers at the edge. Only enable on clusters whose ingress-nginx allows
+  # snippet annotations — with snippets disabled (this cluster: CVE-2021-25742
+  # hardening) the admission webhook rejects the whole Ingress. Off by default;
+  # the /bearer-api/ rewrite marker gives the same guarantee server-side.
+  identityHeaderStripSnippet: false
   auth:
     type: basic
     secretName: ""
@@ -88,8 +105,14 @@ demoShowAll: false
 update:
   selfServeSecretName: ""
   # Override the controller self-serve URL. Defaults to the in-cluster Service
-  # on its self-serve port: http://workspace-controller.<namespace>.svc.cluster.local:8081
+  # on its self-serve port, in the controller's own namespace (below):
+  # http://workspace-controller.<controllerNamespace>.svc.cluster.local:8081
   controllerUrl: ""
+  # Namespace the workspace-controller Service lives in. With per-workspace
+  # namespaces the workspace no longer shares a namespace with the controller,
+  # so the self-serve URL must target the control-plane namespace explicitly
+  # rather than deriving it from this workspace's `.Values.namespace`.
+  controllerNamespace: coder
 
 # Resource limits and requests.
 #
@@ -107,6 +130,46 @@ resources:
   limits:
     cpu: "2"
     memory: 4Gi
+
+# Per-namespace ResourceQuota + LimitRange (see templates/resourcequota.yaml).
+# Now that each workspace owns its namespace, the quota bounds a single tenant
+# instead of a shared pool. Sized to hold the workspace pod AT ITS LIMITS —
+# ide (3 CPU / 4Gi) + the privileged `dind` build sidecar (2 CPU / 4Gi, present
+# whenever build.mode adds docker-in-docker) + the oauth2-proxy pair + one
+# in-flight build Job — with headroom. The earlier 4 CPU / 8Gi ceiling could
+# not admit a dind workspace at all (5 CPU pod alone), which stalled the #103
+# migration for demo. These are ceilings, not reservations: a lighter (kaniko /
+# no-dind) workspace only ever requests what it uses, so the higher cap costs no
+# scheduled capacity. Ties into #95 — override per user for heavier workloads.
+quota:
+  enabled: true
+  requestsCpu: "2"
+  requestsMemory: 3Gi
+  limitsCpu: "8"
+  limitsMemory: 12Gi
+  pods: "20"
+  # LimitRange defaults applied to any container that omits its own
+  # requests/limits (e.g. ad-hoc build Jobs), so nothing runs unbounded.
+  limitRange:
+    enabled: true
+    defaultRequestCpu: "100m"
+    defaultRequestMemory: 256Mi
+    defaultLimitCpu: "1"
+    defaultLimitMemory: 1Gi
+
+# Cross-namespace access for the workspace-controller admin console. With
+# per-workspace namespaces the controller runs in its own control-plane
+# namespace and reaches this workspace via a RoleBinding the chart renders here
+# (templates/controller-rbac.yaml), binding the controller's ServiceAccount to
+# the cluster-defined `workspace-controller` ClusterRole — scoped to THIS
+# namespace only (no cluster-wide scale grant). Disable if you wire controller
+# RBAC out-of-band.
+controller:
+  namespace: coder
+  serviceAccount: workspace-controller
+  clusterRole: workspace-controller
+  rbac:
+    enabled: true
 
 # Build configuration.
 #

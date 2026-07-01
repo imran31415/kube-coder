@@ -8,10 +8,15 @@ directly and skip the oauth2-proxy. This policy denies all ingress to
 the workspace + oauth2-proxy pods except from the nginx ingress
 controller namespace, which is the only legitimate path.
 
-Same-namespace ingress is also denied: workspaces should never talk to
-each other inside the `coder` namespace. Each workspace's pods only need
-to reach the outside world (GitHub, registries, model providers) and
-their own sidecars on localhost — neither is affected by this policy.
+Cross-workspace ingress is denied: workspaces should never talk to each
+other. Under per-workspace namespaces (issue #103) another tenant is in a
+different namespace, and this policy admits ingress only from the
+ingress-nginx namespace — so a pod in ws-<other> is denied by default.
+(The rule also holds if two workspaces ever share a namespace: the
+allow-list is the ingress controller alone, not same-namespace pods.)
+Each workspace's pods only need to reach the outside world (GitHub,
+registries, model providers) and their own sidecars on localhost —
+neither is affected by this policy.
 
 Egress is intentionally NOT restricted here. Tightening egress requires
 a per-cluster allowlist (kube-dns, kube-apiserver, registries, model

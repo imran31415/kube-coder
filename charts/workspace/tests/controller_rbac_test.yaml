@@ -1,0 +1,59 @@
+suite: per-tenant controller RoleBinding (#103)
+templates:
+  - templates/controller-rbac.yaml
+tests:
+  - it: binds the controller SA to the ClusterRole, scoped to this namespace
+    set:
+      user.name: alice
+      namespace: ws-alice
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: metadata.name
+          value: ws-alice-controller
+      - equal:
+          path: metadata.namespace
+          value: ws-alice
+      - equal:
+          path: roleRef.kind
+          value: ClusterRole
+      - equal:
+          path: roleRef.name
+          value: workspace-controller
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: workspace-controller
+      - equal:
+          path: subjects[0].namespace
+          value: coder
+
+  - it: honours a custom controller namespace + serviceAccount + clusterRole
+    set:
+      user.name: alice
+      namespace: ws-alice
+      controller.namespace: kube-coder-system
+      controller.serviceAccount: kc-controller
+      controller.clusterRole: kc-workspace-admin
+    asserts:
+      - equal:
+          path: roleRef.name
+          value: kc-workspace-admin
+      - equal:
+          path: subjects[0].name
+          value: kc-controller
+      - equal:
+          path: subjects[0].namespace
+          value: kube-coder-system
+
+  - it: renders nothing when controller RBAC is disabled
+    set:
+      user.name: alice
+      namespace: ws-alice
+      controller.rbac.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

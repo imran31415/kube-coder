@@ -225,12 +225,19 @@ class ProvisionPureLogicTest(unittest.TestCase):
         # Shared-secret projection (parity with the hand-scaffolded template).
         controller.WORKSPACE_SELF_SERVE_SECRET = 'kc-self-serve'
         controller.WORKSPACE_ASSISTANT_SECRET = 'coder-shared-assistant'
+        controller.NAMESPACE = 'coder'   # control-plane namespace the controller runs in
         text = controller.render_values_yaml(opts, 'Ov23liexampleclientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
         # Validate it parses as YAML and carries the access gate + host.
         try:
             import yaml  # PyYAML may not be installed in CI; fall back to substring checks.
             doc = yaml.safe_load(text)
             self.assertEqual(doc['user']['name'], 'octo')
+            # Per-workspace namespace (#103): lands in its own ws-<slug> namespace,
+            # and points back at the control-plane namespace for controller RBAC +
+            # self-serve URL resolution.
+            self.assertEqual(doc['namespace'], 'ws-octo')
+            self.assertEqual(doc['controller']['namespace'], 'coder')
+            self.assertEqual(doc['update']['controllerNamespace'], 'coder')
             self.assertEqual(doc['user']['host'], 'octo.dev.scalebase.io')
             self.assertEqual(doc['user']['pvcSize'], '30Gi')
             self.assertEqual(doc['oauth2']['githubUsers'], 'Octo')   # login, case-preserved
@@ -251,6 +258,8 @@ class ProvisionPureLogicTest(unittest.TestCase):
             self.assertIn('devlaptop-v9.9.9', text)
             self.assertIn('selfServeSecretName: "kc-self-serve"', text)
             self.assertIn('sharedSecretName: "coder-shared-assistant"', text)
+            self.assertIn('namespace: ws-octo', text)
+            self.assertIn('controllerNamespace: coder', text)
 
     def test_oauth_secret_yaml_holds_only_secret(self):
         text = controller.render_oauth_secret_yaml('supersecret')
@@ -267,6 +276,11 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertEqual(job['metadata']['labels']['provisionUser'], 'octo')
         env = {e['name']: e.get('value') for e in job['spec']['template']['spec']['containers'][0]['env']}
         self.assertEqual(env['SLUG'], 'octo')
+        # The Job runs in the control-plane namespace (regcred source) but deploys
+        # the workspace into its own ws-<slug> namespace (#103).
+        self.assertEqual(job['metadata']['namespace'], 'coder')
+        self.assertEqual(env['NAMESPACE'], 'coder')
+        self.assertEqual(env['WS_NAMESPACE'], 'ws-octo')
         self.assertIn('ttlSecondsAfterFinished', job['spec'])
         self.assertEqual(job['spec']['template']['spec']['restartPolicy'], 'Never')
 
@@ -280,8 +294,10 @@ class ResourceLimitTest(unittest.TestCase):
         controller.WORKSPACE_CONTAINER = 'ide'
         controller.WORKSPACE_PREFIX = 'ws-'
         controller.GITOPS_REPO = ''        # persistence off by default in tests
-        # Pretend the workspace exists so the existence guard passes.
-        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [{'deployment': 'ws-octo'}]}
+        # Pretend the workspace exists so the existence guard passes. Under
+        # per-workspace namespaces (#103) it lives in its own ws-octo namespace.
+        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [
+            {'deployment': 'ws-octo', 'namespace': 'ws-octo'}]}
 
     def test_validate_cpu_accepts_cores_and_millicores(self):
         self.assertEqual(controller._validate_cpu('2'), '2')
@@ -303,7 +319,7 @@ class ResourceLimitTest(unittest.TestCase):
 
     def test_set_resources_builds_strategic_patch_for_ide(self):
         captured = {}
-        controller._kubectl_run = lambda args: captured.setdefault('args', args)
+        controller._kubectl_run = lambda args, namespace=None: captured.update(args=args, namespace=namespace)
         result = controller.set_workspace_resources('octo', '2', '4Gi')
         self.assertEqual(result['limits'], {'cpu': '2', 'memory': '4Gi'})
         self.assertFalse(result['persisted'])        # GITOPS_REPO unset → no write-back
@@ -311,6 +327,8 @@ class ResourceLimitTest(unittest.TestCase):
         args = captured['args']
         self.assertEqual(args[0], 'patch')
         self.assertEqual(args[1], 'deployment/ws-octo')
+        # Patch must target the workspace's own namespace (#103), not the controller's.
+        self.assertEqual(captured['namespace'], 'ws-octo')
         self.assertIn('--type=strategic', args)
         patch = json.loads(args[args.index('-p') + 1])
         container = patch['spec']['template']['spec']['containers'][0]
@@ -320,7 +338,7 @@ class ResourceLimitTest(unittest.TestCase):
         self.assertNotIn('requests', container['resources'])
 
     def test_set_resources_requires_at_least_one(self):
-        controller._kubectl_run = lambda args: None
+        controller._kubectl_run = lambda args, namespace=None: None
         with self.assertRaises(ValueError):
             controller.set_workspace_resources('octo', None, None)
 
@@ -330,7 +348,7 @@ class ResourceLimitTest(unittest.TestCase):
             controller.set_workspace_resources('octo', '2', None)
 
     def test_set_resources_persists_to_gitops_when_configured(self):
-        controller._kubectl_run = lambda args: None
+        controller._kubectl_run = lambda args, namespace=None: None
         controller.GITOPS_REPO = 'github.com/x/y.git'
         controller.GITOPS_TOKEN = 'tok'
         self.addCleanup(setattr, controller, 'GITOPS_TOKEN', controller.GITOPS_TOKEN)
@@ -497,7 +515,7 @@ class SetWorkspaceImageTest(unittest.TestCase):
         controller.GITOPS_TOKEN = ''
         controller.latest_version = lambda: 'v1.4.0'
         controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [
-            {'deployment': 'ws-octo', 'version': 'v1.3.0',
+            {'deployment': 'ws-octo', 'namespace': 'ws-octo', 'version': 'v1.3.0',
              'image': 'registry/coder:devlaptop-v1.3.0', 'imageTag': 'devlaptop-v1.3.0'}]}
 
     def tearDown(self):
@@ -509,11 +527,13 @@ class SetWorkspaceImageTest(unittest.TestCase):
 
     def test_patches_image_to_latest(self):
         captured = {}
-        controller._kubectl_run = lambda args: captured.setdefault('args', args)
+        controller._kubectl_run = lambda args, namespace=None: captured.update(args=args, namespace=namespace)
         result = controller.set_workspace_image('octo')
         args = captured['args']
         self.assertEqual(args[0], 'patch')
         self.assertEqual(args[1], 'deployment/ws-octo')
+        # Patch targets the workspace's own namespace (#103).
+        self.assertEqual(captured['namespace'], 'ws-octo')
         self.assertIn('--type=strategic', args)
         patch = json.loads(args[args.index('-p') + 1])
         container = patch['spec']['template']['spec']['containers'][0]
@@ -526,7 +546,7 @@ class SetWorkspaceImageTest(unittest.TestCase):
 
     def test_explicit_version_overrides_latest(self):
         captured = {}
-        controller._kubectl_run = lambda args: captured.setdefault('args', args)
+        controller._kubectl_run = lambda args, namespace=None: captured.setdefault('args', args)
         controller.set_workspace_image('octo', 'v1.3.5')
         patch = json.loads(captured['args'][captured['args'].index('-p') + 1])
         self.assertEqual(patch['spec']['template']['spec']['containers'][0]['image'],
@@ -534,7 +554,7 @@ class SetWorkspaceImageTest(unittest.TestCase):
 
     def test_noop_when_already_on_target(self):
         ran = {'called': False}
-        controller._kubectl_run = lambda args: ran.update(called=True)
+        controller._kubectl_run = lambda args, namespace=None: ran.update(called=True)
         result = controller.set_workspace_image('octo', 'v1.3.0')  # already on v1.3.0
         self.assertFalse(ran['called'])   # no patch issued
         self.assertFalse(result['rolled'])
@@ -550,7 +570,7 @@ class SetWorkspaceImageTest(unittest.TestCase):
             controller.set_workspace_image('octo', 'v1.4.0')
 
     def test_persist_path_invoked_when_gitops_configured(self):
-        controller._kubectl_run = lambda args: None
+        controller._kubectl_run = lambda args, namespace=None: None
         controller.GITOPS_REPO = 'github.com/o/r.git'
         controller.GITOPS_TOKEN = 'tok'
         seen = {}
@@ -601,6 +621,88 @@ class RestrictedListenerTest(unittest.TestCase):
         self.assertTrue(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo-1/update'))
         self.assertIsNone(controller._SELF_SERVE_GET_RE.match('/api/workspaces/octo/version'))
         self.assertIsNone(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo/stop'))
+
+
+class PerWorkspaceNamespaceTest(unittest.TestCase):
+    """#103 — the controller must discover + address workspaces across their
+    own per-user namespaces, not one shared namespace. kubectl is faked."""
+
+    def setUp(self):
+        controller.NAMESPACE = 'coder'
+        controller.WORKSPACE_PREFIX = 'ws-'
+        self._orig_json = controller._kubectl_json
+
+    def tearDown(self):
+        controller._kubectl_json = self._orig_json
+
+    def test_ns_for_user_matches_workspace_name(self):
+        self.assertEqual(controller.ns_for_user('octo'), 'ws-octo')
+
+    def test_prom_ns_selector_spans_workspace_and_control_plane(self):
+        sel = controller._ws_prom_ns_selector()
+        self.assertIn('ws', sel)           # per-user namespaces (ws-<user>)
+        self.assertIn('coder', sel)        # + not-yet-migrated fallback
+        self.assertTrue(sel.startswith('namespace=~'))
+
+    def test_discover_namespaces_filters_to_ws_and_includes_own(self):
+        controller._kubectl_json = lambda args, namespace=None: {'items': [
+            {'metadata': {'name': 'ws-alice'}},
+            {'metadata': {'name': 'ws-bob'}},
+            {'metadata': {'name': 'kube-system'}},   # not a workspace
+            {'metadata': {'name': 'ingress-nginx'}},
+        ]} if args == ['get', 'namespaces'] else {'items': []}
+        found = controller.discover_workspace_namespaces()
+        self.assertIn('ws-alice', found)
+        self.assertIn('ws-bob', found)
+        self.assertIn('coder', found)      # the controller's own namespace, always
+        self.assertNotIn('kube-system', found)
+
+    def test_discover_namespaces_degrades_to_own_when_list_denied(self):
+        def denied(args, namespace=None):
+            raise controller.KubectlError('forbidden')
+        controller._kubectl_json = denied
+        self.assertEqual(controller.discover_workspace_namespaces(), ['coder'])
+
+    def test_list_workspaces_reports_each_workspaces_own_namespace(self):
+        # One deployment per tenant namespace; the payload must carry that ns so
+        # start/stop/patch target the right place.
+        def fake(args, namespace=None):
+            if args == ['get', 'namespaces']:
+                return {'items': [{'metadata': {'name': 'ws-alice'}},
+                                  {'metadata': {'name': 'ws-bob'}}]}
+            if args == ['get', 'deployments']:
+                if namespace == 'ws-alice':
+                    return {'items': [_dep('ws-alice')]}
+                if namespace == 'ws-bob':
+                    return {'items': [_dep('ws-bob')]}
+            return {'items': []}
+        controller._kubectl_json = fake
+        out = controller.list_workspaces()
+        by_user = {w['user']: w for w in out['workspaces']}
+        self.assertEqual(set(by_user), {'alice', 'bob'})
+        self.assertEqual(by_user['alice']['namespace'], 'ws-alice')
+        self.assertEqual(by_user['bob']['namespace'], 'ws-bob')
+
+    def test_workspace_exists_checks_the_per_user_namespace(self):
+        seen = {}
+        def fake(args, namespace=None):
+            seen.setdefault('ns', []).append(namespace)
+            if namespace == 'ws-octo':
+                return {'metadata': {'name': 'ws-octo'}}
+            raise controller.KubectlError('not found')
+        controller._kubectl_json = fake
+        self.assertTrue(controller.workspace_exists('octo'))
+        self.assertIn('ws-octo', seen['ns'])
+
+
+def _dep(name):
+    """Minimal workspace Deployment object as kubectl -o json would return it."""
+    return {
+        'metadata': {'name': name, 'namespace': name, 'generation': 1},
+        'spec': {'replicas': 1, 'template': {'spec': {'containers': [
+            {'name': 'ide', 'image': 'registry/coder:devlaptop-v1.0.0'}]}}},
+        'status': {'readyReplicas': 1, 'observedGeneration': 1},
+    }
 
 
 if __name__ == '__main__':
