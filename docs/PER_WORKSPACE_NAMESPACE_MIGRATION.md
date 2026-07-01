@@ -68,6 +68,24 @@ make migrate-all CUTOVER=1               # copy + cut over every workspace
 make migrate-all DECOMMISSION=1          # …and reclaim the old copies
 ```
 
+Check progress at any time (read-only) — which workspaces are already in their
+own namespace vs still in the shared source namespace:
+
+```bash
+make migrate-status
+```
+```
+=== workspace namespace migration status (source: coder) ===
+  USER                   NAMESPACE                STATUS
+  alice                  coder                    PENDING (shared coder)
+  bob                    ws-bob                   migrated
+
+  1 migrated / 1 pending / 2 total
+```
+
+(A workspace mid-migration — copied but not yet decommissioned — shows on both
+rows: `ws-<user>` migrated and `coder` pending, until you decommission the old.)
+
 ### The three phases (what each flag does)
 
 | Phase | Flag | Actions | Reversible? |

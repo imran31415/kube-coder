@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -287,6 +287,18 @@ MIGRATE_FLAGS = --src-namespace $(SRC) \
 
 migrate-user: require-user ## Migrate one workspace to its own namespace (USER=<name> [CUTOVER=1] [DECOMMISSION=1] [DRY_RUN=1])
 	@./scripts/migrate-user-namespace.sh "$(USER)" $(MIGRATE_FLAGS)
+
+migrate-status: ## Show migration progress: which workspaces are in their own namespace vs still in SRC (default $(NAMESPACE))
+	@echo "=== workspace namespace migration status (source: $(SRC)) ==="
+	@kubectl get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+	  | awk -v src='$(SRC)' 'BEGIN{printf "  %-22s %-24s %s\n","USER","NAMESPACE","STATUS"} \
+	      $$2 ~ /^ws-/ { user=substr($$2,4); ns=$$1; total++; \
+	        if(ns==$$2){st="migrated"; mig++} \
+	        else if(ns==src){st="PENDING (shared "src")"; pend++} \
+	        else {st="other"; oth++} \
+	        printf "  %-22s %-24s %s\n", user, ns, st } \
+	      END{ if(total==0) print "  (no ws-* workspaces found)"; \
+	           else printf "\n  %d migrated / %d pending / %d total\n", mig, pend, total }'
 
 migrate-all: ## Migrate every workspace in SRC (default $(NAMESPACE)) to its own namespace ([CUTOVER=1] [DECOMMISSION=1] [DRY_RUN=1] [SRC=coder])
 	@users="$$(kubectl get deploy -n $(SRC) -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | sed -n 's/^ws-//p')"; \
