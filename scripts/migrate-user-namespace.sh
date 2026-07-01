@@ -209,7 +209,9 @@ fi
 # Delete them before deploying; rollback recreates them via a deploy with
 # values.yaml pointed back at SRC_NS.
 echo "--- removing old ingresses in $SRC_NS (they hold the hostname) ---"
-run kubectl delete ingress -n "$SRC_NS" -l "app=$WS" --ignore-not-found
+# Two label families: the workspace's own ingresses (app=ws-<user>) and the
+# oauth2-proxy one (app=oauth2-proxy-<user>) rendered for oauth2 workspaces.
+run kubectl delete ingress -n "$SRC_NS" -l "app in ($WS, oauth2-proxy-$USER_SLUG)" --ignore-not-found
 
 run make -C "$ROOT" deploy USER="$USER_SLUG"
 
