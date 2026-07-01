@@ -41,6 +41,12 @@ image:
 #     "none"   — bare TLS; anyone can hit it (use only with readOnly: true)
 ingress:
   className: nginx
+  # Emit a configuration-snippet on the Bearer-API ingress that strips identity
+  # headers at the edge. Only enable on clusters whose ingress-nginx allows
+  # snippet annotations — with snippets disabled (this cluster: CVE-2021-25742
+  # hardening) the admission webhook rejects the whole Ingress. Off by default;
+  # the /bearer-api/ rewrite marker gives the same guarantee server-side.
+  identityHeaderStripSnippet: false
   auth:
     type: basic
     secretName: ""
@@ -127,15 +133,20 @@ resources:
 
 # Per-namespace ResourceQuota + LimitRange (see templates/resourcequota.yaml).
 # Now that each workspace owns its namespace, the quota bounds a single tenant
-# instead of a shared pool. Sized to hold the workspace pod + its oauth2-proxy
-# pair + one in-flight Kaniko build Job at their limits, with headroom. Ties
-# into #95 — override per user for heavier workloads.
+# instead of a shared pool. Sized to hold the workspace pod AT ITS LIMITS —
+# ide (3 CPU / 4Gi) + the privileged `dind` build sidecar (2 CPU / 4Gi, present
+# whenever build.mode adds docker-in-docker) + the oauth2-proxy pair + one
+# in-flight build Job — with headroom. The earlier 4 CPU / 8Gi ceiling could
+# not admit a dind workspace at all (5 CPU pod alone), which stalled the #103
+# migration for demo. These are ceilings, not reservations: a lighter (kaniko /
+# no-dind) workspace only ever requests what it uses, so the higher cap costs no
+# scheduled capacity. Ties into #95 — override per user for heavier workloads.
 quota:
   enabled: true
-  requestsCpu: "1"
-  requestsMemory: 2Gi
-  limitsCpu: "4"
-  limitsMemory: 8Gi
+  requestsCpu: "2"
+  requestsMemory: 3Gi
+  limitsCpu: "8"
+  limitsMemory: 12Gi
   pods: "20"
   # LimitRange defaults applied to any container that omits its own
   # requests/limits (e.g. ad-hoc build Jobs), so nothing runs unbounded.
