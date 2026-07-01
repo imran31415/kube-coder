@@ -12,7 +12,9 @@
 # Run `make validate-user USER=__USER__` to verify these are set before
 # attempting a deploy.
 
-namespace: coder
+# Each workspace gets its own namespace (issue #103) — `make deploy` and the
+# controller create+label it and seed regcred + base-infra before install.
+namespace: ws-__USER__
 
 user:
   name: __USER__

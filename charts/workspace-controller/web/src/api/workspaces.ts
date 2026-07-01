@@ -15,6 +15,8 @@ export interface Workspace {
   user: string;
   /** The Kubernetes Deployment name, e.g. ws-imran. */
   deployment: string;
+  /** The workspace's own namespace, e.g. ws-imran (per-workspace isolation, #103). */
+  namespace: string;
   state: WorkspaceState;
   desiredReplicas: number;
   readyReplicas: number;
@@ -47,6 +49,8 @@ export type Series = [number, number][];
 
 export interface WorkspaceMetrics {
   user: string;
+  /** The namespace this workspace's metrics were read from (#103). */
+  namespace: string;
   running: boolean;
   cpu: { cores: number | null; limitCores: number | null; pct: number | null };
   memory: { bytes: number | null; limitBytes: number | null; pct: number | null };

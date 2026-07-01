@@ -45,8 +45,8 @@ function WorkspaceList() {
         <div>
           <h1>Workspaces</h1>
           <p class="sub">
-            {namespace.value ? `namespace ${namespace.value} · ` : ''}
-            Start or stop a workspace, or open one for detailed usage metrics.
+            {namespace.value ? `control plane: ${namespace.value} · ` : ''}
+            Each workspace runs in its own namespace. Start or stop one, or open it for detailed usage metrics.
           </p>
         </div>
         <div class="hdr-actions">
@@ -72,7 +72,7 @@ function WorkspaceList() {
       )}
 
       {loaded.value && rows.length === 0 && !error.value ? (
-        <div class="empty">No workspaces found in this namespace.</div>
+        <div class="empty">No workspaces found.</div>
       ) : (
         <ul class="list" aria-label="Workspaces">
           {rows.map((w) => (
@@ -115,7 +115,7 @@ function Row({ ws }: { ws: Workspace }) {
             )}
           </div>
           <div class="row-meta">
-            {ws.deployment} · {ws.detail}
+            {ws.namespace} · {ws.detail}
             {ws.version ? ` · ${ws.version}` : ''}
           </div>
         </div>

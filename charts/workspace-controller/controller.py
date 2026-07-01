@@ -89,9 +89,25 @@ INSIGHTS_WINDOW = int(os.environ.get('INSIGHTS_WINDOW_SECONDS', '21600'))  # 6h
 INSIGHTS_IDLE_CPU_CORES = float(os.environ.get('INSIGHTS_IDLE_CPU_CORES', '0.05'))
 
 # Deployment name must look like <prefix><user>; <user> is lowercase
-# DNS-label-ish. This is also the canonical "is this a workspace" test.
+# DNS-label-ish. This is also the canonical "is this a workspace" test. Under
+# per-workspace namespaces the namespace carries the same ws-<user> name, so
+# the same regex classifies both a workspace Deployment and its namespace.
 _NAME_RE = re.compile(r'^' + re.escape(WORKSPACE_PREFIX) + r'([a-z0-9][a-z0-9-]{0,40})$')
 _USER_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
+
+
+def ns_for_user(user):
+    """The per-workspace namespace for a user — same string as the workspace's
+    Deployment/ServiceAccount (ws-<user>, issue #103)."""
+    return f'{WORKSPACE_PREFIX}{user}'
+
+
+def _ws_prom_ns_selector():
+    """PromQL namespace matcher covering every workspace namespace. Workspaces
+    live in per-user ws-<user> namespaces (#103); the controller's own namespace
+    is OR'd in so a workspace not yet migrated off the shared namespace still
+    shows in fleet metrics. Paired with a pod=~"ws-.*" filter at each call site."""
+    return f'namespace=~"{re.escape(WORKSPACE_PREFIX)}.*|{re.escape(NAMESPACE)}"'
 
 
 class KubectlError(RuntimeError):
@@ -100,13 +116,17 @@ class KubectlError(RuntimeError):
         self.stderr = stderr
 
 
-def _kubectl_json(args, _attempts=2):
+def _kubectl_json(args, _attempts=2, namespace=None):
     """Run `kubectl <args> -o json -n <ns>` and parse stdout.
+
+    Under per-workspace namespaces (#103) callers pass the target workspace's
+    namespace; `namespace=None` falls back to the controller's own namespace
+    (control-plane reads/writes: provisioning Jobs, coder-resident workspaces).
 
     Retries once on failure: kubectl's discovery cache is cold right after a pod
     start and several read endpoints fire concurrently on page load, which can
     make the first call fail transiently. These are read-only, so a retry is safe."""
-    cmd = ['kubectl', *args, '-n', NAMESPACE, '-o', 'json']
+    cmd = ['kubectl', *args, '-n', namespace or NAMESPACE, '-o', 'json']
     last = None
     for attempt in range(_attempts):
         try:
@@ -128,9 +148,12 @@ def _kubectl_json(args, _attempts=2):
     raise last
 
 
-def _kubectl_run(args):
-    """Run a mutating kubectl command; raise KubectlError on failure."""
-    cmd = ['kubectl', *args, '-n', NAMESPACE]
+def _kubectl_run(args, namespace=None):
+    """Run a mutating kubectl command; raise KubectlError on failure.
+
+    `namespace=None` targets the controller's own namespace; per-workspace
+    mutations (scale/patch) pass the workspace's resolved namespace (#103)."""
+    cmd = ['kubectl', *args, '-n', namespace or NAMESPACE]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT)
     except FileNotFoundError:
@@ -183,14 +206,45 @@ def _classify(desired, ready, obs_gen, gen, pods):
     return 'transitioning'
 
 
+def discover_workspace_namespaces():
+    """Namespaces that may hold a workspace: every ws-<user> namespace plus the
+    controller's own (covers a workspace not yet migrated off the shared
+    namespace). Falls back to just the controller namespace if listing
+    namespaces is denied/unavailable, so the console still works against the
+    pre-#103 shared-namespace layout."""
+    found = {NAMESPACE}
+    try:
+        for ns in _kubectl_json(['get', 'namespaces']).get('items', []):
+            name = ns.get('metadata', {}).get('name', '')
+            if _NAME_RE.match(name):
+                found.add(name)
+    except KubectlError:
+        pass
+    return sorted(found)
+
+
+def _collect(resource):
+    """Concatenate `kubectl get <resource>` items across all workspace
+    namespaces. Every item keeps its own metadata.namespace so callers can tell
+    workspaces apart. A per-namespace read failure is skipped, not fatal — one
+    unreadable tenant namespace shouldn't blank the whole console."""
+    items = []
+    for ns in discover_workspace_namespaces():
+        try:
+            items.extend(_kubectl_json(['get', resource], namespace=ns).get('items', []))
+        except KubectlError:
+            continue
+    return items
+
+
 def list_workspaces():
-    deps = _kubectl_json(['get', 'deployments']).get('items', [])
-    all_pods = _kubectl_json(['get', 'pods']).get('items', [])
+    deps = _collect('deployments')
+    all_pods = _collect('pods')
     # Hosts are best-effort; if the RBAC for ingresses is absent or the call
     # fails we still return the list, just without clickable URLs.
     hosts = {}
     try:
-        for ing in _kubectl_json(['get', 'ingress']).get('items', []):
+        for ing in _collect('ingress'):
             app = ing.get('metadata', {}).get('labels', {}).get('app')
             if not app or app in hosts:
                 continue
@@ -231,6 +285,7 @@ def list_workspaces():
         out.append({
             'user': user,
             'deployment': name,
+            'namespace': dep.get('metadata', {}).get('namespace', NAMESPACE),
             'state': state,
             'desiredReplicas': desired,
             'readyReplicas': ready,
@@ -245,16 +300,26 @@ def list_workspaces():
     return {'namespace': NAMESPACE, 'workspaces': out}
 
 
-def scale_workspace(user, replicas):
+def _find_workspace(user):
+    """The workspace dict (incl. its namespace) for a user from the live
+    listing, or LookupError. Ensures we only ever mutate something the console
+    would actually show, and in the namespace it really lives in (#103)."""
     if not _USER_RE.match(user):
         raise ValueError('invalid workspace name')
     name = f'{WORKSPACE_PREFIX}{user}'
+    for w in list_workspaces()['workspaces']:
+        if w['deployment'] == name:
+            return w
+    raise LookupError(name)
+
+
+def scale_workspace(user, replicas):
     # Confirm the deployment exists (and is actually a workspace) before
     # touching it — never scale something the listing wouldn't show.
-    existing = {w['deployment'] for w in list_workspaces()['workspaces']}
-    if name not in existing:
-        raise LookupError(name)
-    _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'])
+    ws = _find_workspace(user)
+    name = ws['deployment']
+    _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'],
+                 namespace=ws['namespace'])
     return name
 
 
@@ -316,15 +381,14 @@ def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
         limits['memory'] = _validate_mem(mem_limit)
     if not limits:
         raise ValueError('provide a cpu and/or memory limit')
-    name = f'{WORKSPACE_PREFIX}{user}'
-    existing = {w['deployment'] for w in list_workspaces()['workspaces']}
-    if name not in existing:
-        raise LookupError(name)
+    ws = _find_workspace(user)
+    name = ws['deployment']
     # Strategic merge: containers are merged by `name`, and the limits map merges
     # key-wise, so only the keys we send change and `requests` stays as-is.
     patch = {'spec': {'template': {'spec': {'containers': [
         {'name': WORKSPACE_CONTAINER, 'resources': {'limits': limits}}]}}}}
-    _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)])
+    _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)],
+                 namespace=ws['namespace'])
     persisted = False
     persist_error = None
     if persist and GITOPS_REPO and GITOPS_TOKEN:
@@ -595,7 +659,8 @@ def set_workspace_image(user, target_version=None, persist=True):
     if not already:
         patch = {'spec': {'template': {'spec': {'containers': [
             {'name': WORKSPACE_CONTAINER, 'image': new_image}]}}}}
-        _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)])
+        _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)],
+                     namespace=ws.get('namespace'))
     persisted = False
     persist_error = None
     if persist and GITOPS_REPO and GITOPS_TOKEN:
@@ -731,10 +796,21 @@ def workspace_metrics(user, range_seconds=3600, step=300):
     transient outage degrades the panel instead of erroring the whole request.
     """
     name = f'{WORKSPACE_PREFIX}{user}'
-    try:
-        dep = _kubectl_json(['get', f'deployment/{name}'])
-    except KubectlError as exc:
-        raise LookupError(name) from exc
+    # Resolve which namespace this workspace lives in: its own ws-<user>
+    # namespace (#103), falling back to the controller's namespace for a
+    # workspace not yet migrated. The resolved ns scopes both the k8s reads
+    # below and the Prometheus selectors further down.
+    dep, ns = None, None
+    candidates = [ns_for_user(user)] + ([NAMESPACE] if NAMESPACE != ns_for_user(user) else [])
+    for cand in candidates:
+        try:
+            dep = _kubectl_json(['get', f'deployment/{name}'], namespace=cand)
+            ns = cand
+            break
+        except KubectlError:
+            continue
+    if dep is None:
+        raise LookupError(name)
 
     spec = dep.get('spec', {})
     desired = spec.get('replicas', 1)
@@ -746,7 +822,7 @@ def workspace_metrics(user, range_seconds=3600, step=300):
 
     pvc_bytes = None
     try:
-        pvc = _kubectl_json(['get', f'pvc/{name}-home'])
+        pvc = _kubectl_json(['get', f'pvc/{name}-home'], namespace=ns)
         cap = ((pvc.get('status', {}).get('capacity', {}) or {}).get('storage')
                or (pvc.get('spec', {}).get('resources', {}).get('requests', {}) or {}).get('storage'))
         pvc_bytes = parse_bytes(cap)
@@ -754,9 +830,10 @@ def workspace_metrics(user, range_seconds=3600, step=300):
         pass
 
     pod_re = f'{name}-.*'
-    ns = NAMESPACE
+    # ns resolved above (the workspace's own namespace).
     out = {
         'user': user,
+        'namespace': ns,
         'running': desired >= 1,
         'cpu': {'cores': None, 'limitCores': cpu_limit, 'pct': None},
         'memory': {'bytes': None, 'limitBytes': mem_limit, 'pct': None},
@@ -923,18 +1000,14 @@ def compute_insights(window_seconds=None):
     out = {'generatedAt': int(time.time()), 'windowSeconds': window, 'advisories': [], 'error': None}
 
     try:
-        deps = _kubectl_json(['get', 'deployments']).get('items', [])
-        pods = _kubectl_json(['get', 'pods']).get('items', [])
+        deps = _collect('deployments')
+        pods = _collect('pods')
     except KubectlError as exc:
         out['error'] = str(exc)
         return out
     # PVC sizes are only needed for disk %-used and storage-cost tips — best
     # effort so a missing read (or RBAC gap) degrades those tips, not all of them.
-    pvcs = []
-    try:
-        pvcs = _kubectl_json(['get', 'pvc']).get('items', [])
-    except KubectlError:
-        pass
+    pvcs = _collect('pvc')
 
     pvc_cap = {}
     for p in pvcs:
@@ -987,23 +1060,23 @@ def compute_insights(window_seconds=None):
             'uptime': uptime, 'restarts': restarts, 'reason': reason,
         }
 
-    ns = NAMESPACE
+    ns_sel = _ws_prom_ns_selector()
     cpu_by_user, mem_by_user, disk_by_user = {}, {}, {}
     try:
         for metric, vals in prom_range_multi(
-                f'sum by (pod) (avg by (pod, container) (rate(container_cpu_usage_seconds_total{{namespace="{ns}",pod=~"ws-.*",container!=""}}[5m])))',
+                f'sum by (pod) (avg by (pod, container) (rate(container_cpu_usage_seconds_total{{{ns_sel},pod=~"ws-.*",container!=""}}[5m])))',
                 window, step):
             u = _user_for_pod(metric.get('pod', ''), names)
             if u:
                 cpu_by_user[u] = vals
         for metric, vals in prom_range_multi(
-                f'sum by (pod) (avg by (pod, container) (container_memory_working_set_bytes{{namespace="{ns}",pod=~"ws-.*",container!=""}}))',
+                f'sum by (pod) (avg by (pod, container) (container_memory_working_set_bytes{{{ns_sel},pod=~"ws-.*",container!=""}}))',
                 window, step):
             u = _user_for_pod(metric.get('pod', ''), names)
             if u:
                 mem_by_user[u] = vals
         for metric, val in prom_instant_multi(
-                f'max by (persistentvolumeclaim) (kubelet_volume_stats_used_bytes{{namespace="{ns}",persistentvolumeclaim=~"ws-.*-home"}})'):
+                f'max by (persistentvolumeclaim) (kubelet_volume_stats_used_bytes{{{ns_sel},persistentvolumeclaim=~"ws-.*-home"}})'):
             pvc_name = metric.get('persistentvolumeclaim', '')
             u = names.get(pvc_name[:-5]) if pvc_name.endswith('-home') else None
             if u:
@@ -1118,10 +1191,9 @@ def cluster_capacity(range_seconds=3600, step=300):
 
     Prometheus failures land in `metricsError` (like workspace_metrics) so a
     transient outage degrades the panel rather than 500-ing the request."""
-    ns = NAMESPACE
     out = {
         'generatedAt': int(time.time()),
-        'namespace': ns,
+        'namespace': NAMESPACE,
         'cluster': None,
         'nodes': [],
         'history': {
@@ -1132,7 +1204,8 @@ def cluster_capacity(range_seconds=3600, step=300):
         'metricsError': None,
     }
 
-    ws_sel = f'namespace="{ns}",pod=~"ws-.*"'
+    # Workspace band spans every per-user namespace (#103), not one shared ns.
+    ws_sel = f'{_ws_prom_ns_selector()},pod=~"ws-.*"'
     ws_cpu_inner = f'avg by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{{{ws_sel},container!=""}}[5m]))'
     ws_mem_inner = f'avg by (namespace, pod, container) (container_memory_working_set_bytes{{{ws_sel},container!=""}})'
     all_cpu_inner = 'avg by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))'
@@ -1288,11 +1361,17 @@ def validate_github_user(login):
 
 
 def workspace_exists(slug):
-    try:
-        _kubectl_json(['get', f'deployment/{WORKSPACE_PREFIX}{slug}'])
-        return True
-    except KubectlError:
-        return False
+    # A workspace lives in its own ws-<slug> namespace (#103); check there first,
+    # then the control-plane namespace for one not yet migrated. Used to block
+    # double-provisioning, so a match in EITHER namespace counts as "exists".
+    name = f'{WORKSPACE_PREFIX}{slug}'
+    for ns in (ns_for_user(slug), NAMESPACE):
+        try:
+            _kubectl_json(['get', f'deployment/{name}'], namespace=ns)
+            return True
+        except KubectlError:
+            continue
+    return False
 
 
 def oauth_callback_url(host):
@@ -1344,8 +1423,15 @@ def render_values_yaml(opts, client_id, cookie_secret):
     git_name = opts.get('gitName') or opts['login']
     git_email = opts.get('gitEmail') or f'{opts["login"]}@users.noreply.github.com'
     # github-user allowlist is the access gate: only this login may sign in.
+    # Per-workspace namespace (#103): the workspace lands in its OWN ws-<slug>
+    # namespace, and `controller.namespace` / `update.controllerNamespace` point
+    # back at the control-plane namespace the controller runs in so its RoleBinding
+    # subject + self-serve URL resolve correctly across namespaces.
     return f"""# Workspace values for {slug} — generated by workspace-controller provisioning.
-namespace: {NAMESPACE}
+namespace: {ns_for_user(slug)}
+
+controller:
+  namespace: {NAMESPACE}
 
 user:
   name: {slug}
@@ -1406,6 +1492,7 @@ assistant:
 
 update:
   selfServeSecretName: {json.dumps(WORKSPACE_SELF_SERVE_SECRET)}
+  controllerNamespace: {NAMESPACE}
 
 github:
   app:
@@ -1512,7 +1599,10 @@ git clone --depth 1 -b "$GITOPS_BRANCH" "https://x-access-token:${GITOPS_TOKEN}@
 mkdir -p /tmp/kc/users-private
 cp -r "/tmp/cfg/users-private/${SLUG}" "/tmp/kc/users-private/${SLUG}"
 cd /tmp/kc
-make deploy USER="${SLUG}" NAMESPACE="${NAMESPACE}"
+# Per-workspace namespace (#103): deploy into ws-<slug>, and copy the regcred
+# image-pull Secret from the control-plane namespace into it. `make deploy`
+# creates+labels the namespace and replicates regcred (see REGCRED_SRC_NAMESPACE).
+make deploy USER="${SLUG}" NAMESPACE="${WS_NAMESPACE}" REGCRED_SRC_NAMESPACE="${NAMESPACE}"
 """
 
 
@@ -1521,7 +1611,10 @@ def build_job_manifest(slug):
     image = PROVISIONER_IMAGE or f'{os.environ.get("CONTROLLER_IMAGE", "")}' or ''
     env = [
         {'name': 'SLUG', 'value': slug},
+        # NAMESPACE = the control-plane namespace the Job runs in (regcred source);
+        # WS_NAMESPACE = the workspace's own per-user namespace it deploys into (#103).
         {'name': 'NAMESPACE', 'value': NAMESPACE},
+        {'name': 'WS_NAMESPACE', 'value': ns_for_user(slug)},
         {'name': 'CHART_REPO', 'value': CHART_REPO},
         {'name': 'CHART_REF', 'value': CHART_REF},
         {'name': 'GITOPS_REPO', 'value': GITOPS_REPO},

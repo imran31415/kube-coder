@@ -5,7 +5,7 @@
 # example — for a real workspace prefer `scripts/new-user.sh <name>`, which
 # scaffolds a gitignored copy under users-private/<name>/. Do not commit real
 # configs.
-namespace: coder
+namespace: ws-example-basic-auth
 
 user:
   name: example-basic-auth

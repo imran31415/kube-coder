@@ -10,7 +10,7 @@
 # See docs/local-development.md for the full walkthrough. Everything here is
 # safe to commit — it contains no secrets. Add your own Claude / assistant
 # keys to a gitignored overlay (secrets/local/*.yaml) if you want them.
-namespace: coder
+namespace: ws-local
 
 user:
   name: local

@@ -85,7 +85,7 @@ export function WorkspaceDetail({ user }: { user: string }) {
           </a>
           <h1>{user}</h1>
           <p class="sub">
-            {ws ? ws.deployment : `ws-${user}`}
+            {ws?.namespace ?? m?.namespace ?? `ws-${user}`}
             {m ? ` · ${running ? 'running' : 'stopped'}` : ''}
             {m?.uptimeSeconds != null ? ` · up ${fmtUptime(m.uptimeSeconds)}` : ''}
           </p>

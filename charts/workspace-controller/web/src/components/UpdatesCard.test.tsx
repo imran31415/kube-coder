@@ -30,6 +30,7 @@ import { workspaces, latestVersion } from '../store';
 
 const sampleMetrics = (): WorkspaceMetrics => ({
   user: 'octo',
+  namespace: 'ws-octo',
   running: true,
   cpu: { cores: 0.1, limitCores: 2, pct: 5 },
   memory: { bytes: 1e9, limitBytes: 4e9, pct: 25 },
@@ -44,6 +45,7 @@ const sampleMetrics = (): WorkspaceMetrics => ({
 const ws = (over: Partial<Workspace> = {}): Workspace => ({
   user: 'octo',
   deployment: 'ws-octo',
+  namespace: 'ws-octo',
   state: 'running',
   desiredReplicas: 1,
   readyReplicas: 1,

@@ -250,11 +250,15 @@ tests:
       - equal:
           path: spec.template.metadata.labels["kube-coder.dev/component"]
           value: workspace
+      # Per-workspace namespaces (#103): the workspace no longer shares a
+      # namespace with the controller, so the self-serve URL targets the
+      # control-plane namespace (controllerNamespace, default "coder") — NOT
+      # this workspace's own .Values.namespace.
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: CONTROLLER_SELF_SERVE_URL
-            value: http://workspace-controller.test.svc.cluster.local:8081
+            value: http://workspace-controller.coder.svc.cluster.local:8081
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -263,6 +267,18 @@ tests:
               secretKeyRef:
                 name: kc-self-serve
                 key: self-serve-token
+
+  - it: targets controllerNamespace for the default self-serve URL
+    template: templates/deployment.yaml
+    set:
+      update.selfServeSecretName: kc-self-serve
+      update.controllerNamespace: kube-coder-system
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONTROLLER_SELF_SERVE_URL
+            value: http://workspace-controller.kube-coder-system.svc.cluster.local:8081
 
   - it: honours an explicit controllerUrl override for self-serve
     template: templates/deployment.yaml

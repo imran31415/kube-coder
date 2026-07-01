@@ -36,7 +36,19 @@ spec:
   # Workspace pods may reach ONLY the self-serve listener (8081), which trusts
   # the shared token instead of any identity header — so a workspace can
   # self-update but can never forge an admin X-Forwarded-User against 8080.
+  #
+  # Under per-workspace namespaces (#103) the workspace pod lives in its own
+  # `ws-<user>` namespace, so a same-namespace podSelector alone would no longer
+  # admit it. The first `from` matches workspace-labelled pods in any tenant
+  # namespace (labelled kube-coder.dev/managed=true at creation); the second is
+  # a same-namespace fallback for a workspace still resident here mid-migration.
   - from:
+    - namespaceSelector:
+        matchLabels:
+          kube-coder.dev/managed: "true"
+      podSelector:
+        matchLabels:
+          kube-coder.dev/component: workspace
     - podSelector:
         matchLabels:
           kube-coder.dev/component: workspace

@@ -1,0 +1,86 @@
+suite: provisioner RBAC (#103 per-workspace namespaces)
+templates:
+  - templates/provisioner-rbac.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: renders nothing unless provisioning is enabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # With provisioning on, docs are: 0 ServiceAccount, 1 ClusterRole,
+  # 2 ClusterRoleBinding — all cluster-scoped so the Job can create namespaces.
+  - it: is a ClusterRole (not a namespaced Role) so it can create per-workspace namespaces
+    set:
+      provision.enabled: true
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: kind
+          value: ClusterRole
+      - equal:
+          path: metadata.name
+          value: workspace-provisioner
+      - notExists:
+          path: metadata.namespace
+
+  - it: grants namespace create/delete for standing up + tearing down tenants
+    set:
+      provision.enabled: true
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: kind
+          value: ClusterRole
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["namespaces"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["resourcequotas", "limitranges"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: can create the regcred image-pull Secret + RBAC in the new namespace
+    set:
+      provision.enabled: true
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["services", "persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["rbac.authorization.k8s.io"]
+            resources: ["roles", "rolebindings"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: binds the ClusterRole to the provisioner SA in the controller namespace
+    set:
+      provision.enabled: true
+    documentIndex: 2
+    asserts:
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+      - equal:
+          path: roleRef.kind
+          value: ClusterRole
+      - equal:
+          path: roleRef.name
+          value: workspace-provisioner
+      - contains:
+          path: subjects
+          content:
+            kind: ServiceAccount
+            name: workspace-provisioner
+            namespace: test
