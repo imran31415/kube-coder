@@ -22,11 +22,6 @@
   },
   "submit": {
     "production": {
-      "ios": {
-        "appleId": "APPLE_ID_PLACEHOLDER",
-        "ascAppId": "ASC_APP_ID_PLACEHOLDER",
-        "appleTeamId": "APPLE_TEAM_ID_PLACEHOLDER"
-      },
       "android": {
         "serviceAccountKeyPath": "./play-service-account.json",
         "track": "internal"
