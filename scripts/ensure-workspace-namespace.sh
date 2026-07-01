@@ -33,19 +33,28 @@ metadata:
     kube-coder.dev/user: ${USER_SLUG}
 YAML
 
-# Copy the image-pull Secret from the control-plane namespace into the tenant
-# namespace, unless it's already there. Strip namespace-bound metadata so the
-# object applies cleanly into the destination.
-if kubectl get secret "$REGCRED_NAME" -n "$NS" >/dev/null 2>&1; then
-  echo "==> $REGCRED_NAME already present in $NS"
-elif kubectl get secret "$REGCRED_NAME" -n "$REGCRED_SRC" >/dev/null 2>&1; then
-  echo "==> copying $REGCRED_NAME from $REGCRED_SRC into $NS"
-  # Strip namespace-bound + server-managed metadata so the object applies cleanly
-  # into the destination namespace (python3 ships in the coder/provisioner image).
-  kubectl get secret "$REGCRED_NAME" -n "$REGCRED_SRC" -o json \
-    | python3 -c 'import sys, json; d = json.load(sys.stdin); m = d.get("metadata", {}); [m.pop(k, None) for k in ("namespace", "resourceVersion", "uid", "creationTimestamp", "selfLink", "managedFields", "ownerReferences", "generation")]; d["metadata"] = m; d.pop("status", None); json.dump(d, sys.stdout)' \
-    | kubectl apply -n "$NS" -f -
-else
-  echo "WARNING: image-pull secret '$REGCRED_NAME' not found in '$REGCRED_SRC';" \
-       "the workspace pod may fail to pull its image. Create it in $NS by hand." >&2
-fi
+# Copy a cluster-shared Secret from the control-plane namespace into the tenant
+# namespace, unless it's already there. Strips namespace-bound + server-managed
+# metadata so the object applies cleanly into the destination (python3 ships in
+# the coder/provisioner image).
+copy_secret() {  # name required(1|0)
+  local name="$1" required="$2"
+  if kubectl get secret "$name" -n "$NS" >/dev/null 2>&1; then
+    echo "==> $name already present in $NS"
+  elif kubectl get secret "$name" -n "$REGCRED_SRC" >/dev/null 2>&1; then
+    echo "==> copying $name from $REGCRED_SRC into $NS"
+    kubectl get secret "$name" -n "$REGCRED_SRC" -o json \
+      | python3 -c 'import sys, json; d = json.load(sys.stdin); m = d.get("metadata", {}); [m.pop(k, None) for k in ("namespace", "resourceVersion", "uid", "creationTimestamp", "selfLink", "managedFields", "ownerReferences", "generation")]; d["metadata"] = m; d.pop("status", None); json.dump(d, sys.stdout)' \
+      | kubectl apply -n "$NS" -f -
+  elif [ "$required" = 1 ]; then
+    echo "WARNING: secret '$name' not found in '$REGCRED_SRC';" \
+         "the workspace pod may fail without it. Create it in $NS by hand." >&2
+  fi
+}
+
+# Image-pull Secret — required for the pod to pull from the private registry.
+copy_secret "$REGCRED_NAME" 1
+# Self-serve update token (controller's kc-self-serve). Workspaces whose values
+# set update.selfServeSecretName mount it; without a per-namespace copy the pod
+# dies with CreateContainerConfigError. Optional: skip silently if absent.
+copy_secret "${SELF_SERVE_SECRET_NAME:-kc-self-serve}" 0

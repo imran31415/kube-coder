@@ -100,6 +100,9 @@ if kubectl get pvc "$PVC" -n "$DST_NS" >/dev/null 2>&1; then
 elif [ "$DRY_RUN" = 1 ]; then
   echo "DRY-RUN> kubectl apply -f - (PersistentVolumeClaim $PVC, $SIZE, in $DST_NS)"
 else
+  # The workspace chart templates this PVC, so the cutover's `helm install`
+  # must ADOPT the pre-created one — Helm only does that when these ownership
+  # labels/annotations are present (else: "invalid ownership metadata").
   kubectl apply -f - <<YAML
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -108,6 +111,10 @@ metadata:
   namespace: ${DST_NS}
   labels:
     app: ${WS}
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: ${USER_SLUG}-workspace
+    meta.helm.sh/release-namespace: ${DST_NS}
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
@@ -184,13 +191,25 @@ if [ -n "$VALUES" ]; then
     echo "values.yaml already targets $DST_NS ($VALUES)"
   else
     echo "updating namespace: $cur_ns -> $DST_NS in $VALUES"
-    run sed -i "s|^namespace:.*|namespace: ${DST_NS}|" "$VALUES"
+    # sed -i needs an explicit (empty-suffix) backup arg on BSD/macOS; use a
+    # real .bak suffix + rm so the same line runs on GNU sed too.
+    run sed -i.bak "s|^namespace:.*|namespace: ${DST_NS}|" "$VALUES"
+    run rm -f "${VALUES}.bak"
     echo "NOTE: commit this values.yaml change to the GitOps repo so the next reconcile is a no-op."
   fi
 else
   echo "WARNING: no values.yaml found for '$USER_SLUG' under deployments/, users-private/, or .users/." >&2
   echo "         'make deploy' will fall back to the ws-<user> convention, but nothing will be committed to GitOps." >&2
 fi
+
+# The old release's ingresses still claim the workspace hostname from SRC_NS.
+# ingress-nginx rejects a same-host/path rule from a second namespace (older
+# wins), so the new ingress would never receive traffic — and cert-manager
+# couldn't solve the ACME challenge for the new namespace-scoped TLS secret.
+# Delete them before deploying; rollback recreates them via a deploy with
+# values.yaml pointed back at SRC_NS.
+echo "--- removing old ingresses in $SRC_NS (they hold the hostname) ---"
+run kubectl delete ingress -n "$SRC_NS" -l "app=$WS" --ignore-not-found
 
 run make -C "$ROOT" deploy USER="$USER_SLUG"
 
