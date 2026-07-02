@@ -23,6 +23,11 @@ export function detailUser(path: string): string | null {
   return m ? m[1] : null;
 }
 
+/** The full cluster-resources drill-down (capacity history + per-node + insights). */
+export function isCapacityRoute(path: string): boolean {
+  return path === '/capacity';
+}
+
 /** True for the provision form/status routes (/provision, /provision/<slug>). */
 export function isProvisionRoute(path: string): boolean {
   return path === '/provision' || path.startsWith('/provision/') || path.startsWith('/provision?');

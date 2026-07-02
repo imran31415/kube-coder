@@ -12,11 +12,12 @@ import {
   provisionConfig,
   loadProvisionConfig,
 } from './store';
-import { route, detailUser, isProvisionRoute, navigate } from './router';
+import { route, detailUser, isProvisionRoute, isCapacityRoute, navigate } from './router';
 import { MetricsPanel } from './components/MetricsPanel';
 import { WorkspaceDetail } from './components/WorkspaceDetail';
 import { InsightsBar } from './components/InsightsBar';
 import { CapacityPanel } from './components/CapacityPanel';
+import { HealthSummary } from './components/HealthSummary';
 import { ProvisionForm } from './components/ProvisionForm';
 
 // The single workspace whose inline metrics panel is expanded (null = collapsed).
@@ -33,8 +34,31 @@ export function App() {
 
   const path = route.value;
   if (isProvisionRoute(path)) return <ProvisionForm />;
+  if (isCapacityRoute(path)) return <CapacityView />;
   const user = detailUser(path);
   return user ? <WorkspaceDetail user={user} /> : <WorkspaceList />;
+}
+
+// The cluster-resources drill-down: the full capacity panel (per-node + range
+// history) and the insights advisories. These run the heavy Prometheus queries,
+// so they live here — reached from the summary page's health card — instead of
+// firing on every dashboard load.
+function CapacityView() {
+  return (
+    <div class="app">
+      <header class="hdr">
+        <div>
+          <button class="crumb" onClick={() => navigate('/')}>← Workspaces</button>
+          <h1>Cluster resources</h1>
+          <p class="sub">
+            Live capacity across all nodes, usage history, and per-workspace advisories.
+          </p>
+        </div>
+      </header>
+      <InsightsBar />
+      <CapacityPanel />
+    </div>
+  );
 }
 
 function WorkspaceList() {
@@ -61,9 +85,7 @@ function WorkspaceList() {
         </div>
       </header>
 
-      <InsightsBar />
-
-      <CapacityPanel />
+      <HealthSummary />
 
       {error.value && (
         <div class="banner err" role="alert">

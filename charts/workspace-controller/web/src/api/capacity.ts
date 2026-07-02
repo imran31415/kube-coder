@@ -61,3 +61,20 @@ export interface CapacityResponse {
 
 export const getCapacity = (rangeSeconds = 3600) =>
   apiGet<CapacityResponse>('/api/capacity', { range: rangeSeconds });
+
+/** Overall cluster traffic-light for the landing page. */
+export type HealthStatus = 'ok' | 'warn' | 'crit' | 'unknown';
+
+/** Cheap cluster-health summary (controller.py:cluster_health) — cluster CPU +
+ *  memory rollups and a status from a handful of instant queries, with no
+ *  per-node breakdown or range history. Backs the summary page so it doesn't
+ *  fire the heavy capacity/insights queries on every load. */
+export interface ClusterHealthResponse {
+  generatedAt: number;
+  namespace: string;
+  cluster: { nodeCount: number; cpu: ResourceRollup; memory: ResourceRollup } | null;
+  status: HealthStatus;
+  metricsError: string | null;
+}
+
+export const getCapacitySummary = () => apiGet<ClusterHealthResponse>('/api/capacity/summary');

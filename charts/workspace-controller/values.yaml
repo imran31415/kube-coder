@@ -49,13 +49,18 @@ controller:
     # self-serve off; admins still update any workspace from this dashboard.
     selfServeSecretName: ""
 
+  # The controller buffers Prometheus range-query results in memory (capacity
+  # history + per-workspace insights over hours) across concurrent request
+  # threads, so 256Mi OOM-killed it under dashboard load (intermittent 502s).
+  # Bumped for headroom; the lazy-loading dashboard (summary page + drill-downs)
+  # keeps steady-state well under this.
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
-      cpu: 200m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
 
   # Per-workspace usage metrics come from the in-cluster Prometheus (this
   # cluster has no metrics-server). Empty disables the metrics panel cleanly.

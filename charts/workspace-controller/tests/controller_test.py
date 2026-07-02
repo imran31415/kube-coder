@@ -174,6 +174,70 @@ class ClusterCapacityTest(unittest.TestCase):
         self.assertEqual(cap['nodes'], [])
 
 
+class HealthStatusTest(unittest.TestCase):
+    def test_worst_percentage_drives_the_light(self):
+        ok, warn, crit = {'clusterPct': 50.0}, {'clusterPct': 80.0}, {'clusterPct': 95.0}
+        self.assertEqual(controller._health_status(ok, ok), 'ok')
+        self.assertEqual(controller._health_status(ok, warn), 'warn')   # worst wins
+        self.assertEqual(controller._health_status(warn, crit), 'crit')
+
+    def test_boundaries(self):
+        self.assertEqual(controller._health_status({'clusterPct': 74.9}), 'ok')
+        self.assertEqual(controller._health_status({'clusterPct': 75.0}), 'warn')
+        self.assertEqual(controller._health_status({'clusterPct': 89.9}), 'warn')
+        self.assertEqual(controller._health_status({'clusterPct': 90.0}), 'crit')
+
+    def test_unknown_when_no_percentage(self):
+        self.assertEqual(controller._health_status({'clusterPct': None}, None), 'unknown')
+
+
+class ClusterHealthTest(unittest.TestCase):
+    """The cheap landing-page summary: instant scalars only, no range/per-node."""
+
+    def setUp(self):
+        self._scalar = controller.prom_scalar
+
+    def tearDown(self):
+        controller.prom_scalar = self._scalar
+
+    def test_summary_shape_is_cheap(self):
+        def fake_scalar(expr):
+            if 'kube_node_status_allocatable{resource="cpu"}' in expr:
+                return 4.0
+            if 'kube_node_status_allocatable{resource="memory"}' in expr:
+                return 8e9
+            if 'count by (node) (kube_node_status_allocatable)' in expr:
+                return 1.0
+            if 'pod=~"ws-.*"' in expr and 'container_cpu' in expr:
+                return 1.0
+            if 'pod=~"ws-.*"' in expr:
+                return 2e9
+            if 'container_cpu' in expr:
+                return 2.0
+            return 4e9
+
+        controller.prom_scalar = fake_scalar
+        h = controller.cluster_health()
+        self.assertIsNone(h['metricsError'])
+        self.assertEqual(h['cluster']['nodeCount'], 1)
+        self.assertEqual(h['cluster']['cpu']['allocatable'], 4.0)
+        self.assertEqual(h['cluster']['cpu']['clusterPct'], 50.0)  # 2.0 / 4.0
+        self.assertEqual(h['cluster']['memory']['clusterPct'], 50.0)
+        self.assertEqual(h['status'], 'ok')
+        # The whole point: no range history and no per-node breakdown.
+        self.assertNotIn('history', h)
+        self.assertNotIn('nodes', h)
+
+    def test_prom_error_captured_not_raised(self):
+        def boom(expr):
+            raise controller.PromError('prometheus unreachable')
+        controller.prom_scalar = boom
+        h = controller.cluster_health()
+        self.assertEqual(h['metricsError'], 'prometheus unreachable')
+        self.assertIsNone(h['cluster'])
+        self.assertEqual(h['status'], 'unknown')
+
+
 class ProvisionPureLogicTest(unittest.TestCase):
     """Pure-logic provisioning helpers: OAuth-cred validation, cookie-secret
     shape, and values rendering. No network, no cluster."""
