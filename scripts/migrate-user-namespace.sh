@@ -123,24 +123,40 @@ spec:
 YAML
 fi
 
-# 5. Copy the home volume across namespaces via a tar-pipe between helper pods.
-echo "--- copying home volume ($SRC_NS -> $DST_NS) ---"
+# 5. Copy the home volume across namespaces.
+#
+# The data streams pod-to-pod over the CLUSTER network (src helper -> dst helper
+# via netcat), not through a local `kubectl exec | kubectl exec` pipe. The old
+# tar-pipe routed every byte through this laptop's two long-lived exec streams,
+# so a single blip between here and the remote API server killed the transfer —
+# fine for a 5Gi/20Gi volume, but a 50Gi copy reliably dropped with a websocket
+# 1006 close. Here the laptop only creates the pods and polls for completion; the
+# bytes never leave the cluster, so the copy no longer depends on local
+# connection stability. The dst helper carries the migration label (not the
+# workspace app= label), so the workspace NetworkPolicy doesn't select it and
+# cross-namespace ingress from the src helper is allowed.
+echo "--- copying home volume ($SRC_NS -> $DST_NS, in-cluster pod-to-pod) ---"
 SRC_POD="migrate-src-${USER_SLUG}"
 DST_POD="migrate-dst-${USER_SLUG}"
-helper_pod() {  # name namespace
+COPY_PORT="${MIGRATION_COPY_PORT:-2000}"
+
+# dst: listen once, extract into the volume. The `&&` gates on tar's exit, so the
+# pod only reaches Succeeded when extraction actually completed (a truncated
+# stream fails tar -> pod Failed, never a silent partial copy).
+dst_pod() {
   cat <<YAML
 apiVersion: v1
 kind: Pod
 metadata:
-  name: $1
-  namespace: $2
+  name: ${DST_POD}
+  namespace: ${DST_NS}
   labels: { app: kube-coder-migration }
 spec:
   restartPolicy: Never
   containers:
   - name: helper
     image: ${HELPER_IMAGE}
-    command: ["sh", "-c", "sleep 3600"]
+    command: ["sh", "-c", "nc -l -p ${COPY_PORT} | tar -C /home/dev -xf - && echo COPY_RECV_OK"]
     volumeMounts:
     - { name: home, mountPath: /home/dev }
   volumes:
@@ -149,18 +165,60 @@ spec:
 YAML
 }
 
+# src: connect to the dst pod IP and stream the volume. pipefail makes a tar
+# read error (not just nc's exit) fail the pod. A short connect-retry covers the
+# race between "dst pod Running" and "nc actually listening".
+src_pod() {  # dst_ip
+  cat <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${SRC_POD}
+  namespace: ${SRC_NS}
+  labels: { app: kube-coder-migration }
+spec:
+  restartPolicy: Never
+  containers:
+  - name: helper
+    image: ${HELPER_IMAGE}
+    command: ["sh", "-c", "set -o pipefail; i=0; while [ \$i -lt 30 ]; do tar -C /home/dev -cf - . | nc $1 ${COPY_PORT} && exit 0; i=\$((i+1)); echo waiting-for-receiver; sleep 2; done; echo connect-failed >&2; exit 1"]
+    volumeMounts:
+    - { name: home, mountPath: /home/dev }
+  volumes:
+  - name: home
+    persistentVolumeClaim: { claimName: ${PVC} }
+YAML
+}
+
+wait_pod_done() {  # name namespace  -> prints phase, returns 0 if Succeeded
+  local name="$1" ns="$2" phase=""
+  kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$name" -n "$ns" --timeout=3600s >/dev/null 2>&1 && { echo Succeeded; return 0; }
+  phase="$(kubectl get pod "$name" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null)"
+  echo "${phase:-Unknown}"
+  [ "$phase" = "Succeeded" ]
+}
+
 if [ "$DRY_RUN" = 1 ]; then
-  echo "DRY-RUN> start helper pod $SRC_POD in $SRC_NS + $DST_POD in $DST_NS"
-  echo "DRY-RUN> kubectl exec $SRC_POD -- tar -C /home/dev -cf - . | kubectl exec -i $DST_POD -- tar -C /home/dev -xf -"
+  echo "DRY-RUN> start dst helper $DST_POD in $DST_NS (nc -l -p $COPY_PORT | tar -x)"
+  echo "DRY-RUN> start src helper $SRC_POD in $SRC_NS (tar -cf - . | nc <dst-ip> $COPY_PORT)"
+  echo "DRY-RUN> wait for both pods to reach Succeeded, then delete them"
 else
-  helper_pod "$SRC_POD" "$SRC_NS" | kubectl apply -f -
-  helper_pod "$DST_POD" "$DST_NS" | kubectl apply -f -
-  kubectl wait --for=condition=ready pod "$SRC_POD" -n "$SRC_NS" --timeout=120s
-  kubectl wait --for=condition=ready pod "$DST_POD" -n "$DST_NS" --timeout=120s
-  echo "streaming /home/dev (this can take a while for large volumes)..."
-  kubectl exec -n "$SRC_NS" "$SRC_POD" -- tar -C /home/dev -cf - . \
-    | kubectl exec -i -n "$DST_NS" "$DST_POD" -- tar -C /home/dev -xf -
-  echo "copy complete — removing helper pods"
+  dst_pod | kubectl apply -f -
+  kubectl wait --for=jsonpath='{.status.phase}'=Running "pod/$DST_POD" -n "$DST_NS" --timeout=120s
+  DST_IP="$(kubectl get pod "$DST_POD" -n "$DST_NS" -o jsonpath='{.status.podIP}')"
+  [ -n "$DST_IP" ] || die "could not resolve dst helper pod IP"
+  echo "receiver ready at $DST_IP:$COPY_PORT — streaming /home/dev (in-cluster; large volumes take a while)..."
+  src_pod "$DST_IP" | kubectl apply -f -
+
+  src_phase="$(wait_pod_done "$SRC_POD" "$SRC_NS")"; src_ok=$?
+  dst_phase="$(wait_pod_done "$DST_POD" "$DST_NS")"; dst_ok=$?
+  if [ "$src_ok" -ne 0 ] || [ "$dst_ok" -ne 0 ]; then
+    echo "ERROR: copy failed (src=$src_phase dst=$dst_phase). Logs:" >&2
+    kubectl logs "$SRC_POD" -n "$SRC_NS" --tail=20 2>/dev/null | sed 's/^/  src| /' >&2 || true
+    kubectl logs "$DST_POD" -n "$DST_NS" --tail=20 2>/dev/null | sed 's/^/  dst| /' >&2 || true
+    die "home volume copy did not complete — source left intact, nothing cut over"
+  fi
+  echo "copy complete (src=$src_phase dst=$dst_phase) — removing helper pods"
   kubectl delete pod "$SRC_POD" -n "$SRC_NS" --ignore-not-found
   kubectl delete pod "$DST_POD" -n "$DST_NS" --ignore-not-found
 fi
