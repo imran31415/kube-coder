@@ -1,0 +1,80 @@
+suite: per-namespace ResourceQuota + LimitRange (#103)
+templates:
+  - templates/resourcequota.yaml
+tests:
+  - it: renders a ResourceQuota in the workspace's own namespace
+    set:
+      user.name: alice
+      namespace: ws-alice
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: ResourceQuota
+      - equal:
+          path: metadata.name
+          value: ws-alice-quota
+      - equal:
+          path: metadata.namespace
+          value: ws-alice
+      - equal:
+          path: spec.hard["requests.cpu"]
+          value: "1"
+      - equal:
+          path: spec.hard["limits.memory"]
+          value: 8Gi
+      - equal:
+          path: spec.hard.pods
+          value: "20"
+
+  - it: renders a LimitRange with container defaults
+    set:
+      user.name: alice
+      namespace: ws-alice
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: LimitRange
+      - equal:
+          path: metadata.namespace
+          value: ws-alice
+      - equal:
+          path: spec.limits[0].default.cpu
+          value: "1"
+      - equal:
+          path: spec.limits[0].defaultRequest.memory
+          value: 256Mi
+
+  - it: honours quota overrides
+    set:
+      user.name: alice
+      namespace: ws-alice
+      quota.limitsCpu: "8"
+      quota.requestsMemory: 4Gi
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.hard["limits.cpu"]
+          value: "8"
+      - equal:
+          path: spec.hard["requests.memory"]
+          value: 4Gi
+
+  - it: renders nothing when quota is disabled
+    set:
+      user.name: alice
+      namespace: ws-alice
+      quota.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: drops the LimitRange but keeps the quota when limitRange is disabled
+    set:
+      user.name: alice
+      namespace: ws-alice
+      quota.limitRange.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ResourceQuota

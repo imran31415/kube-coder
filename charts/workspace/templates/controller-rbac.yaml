@@ -1,0 +1,34 @@
+{{- if .Values.controller.rbac.enabled }}
+{{/*
+Cross-namespace access for the admin console.
+
+With per-workspace namespaces the workspace-controller runs in its own
+control-plane namespace ({{ .Values.controller.namespace }}) while this
+workspace lives in ws-{{ .Values.user.name }}. The controller therefore can't
+reach this Deployment through its own namespaced Role anymore.
+
+This RoleBinding grants the controller's ServiceAccount the cluster-defined
+`{{ .Values.controller.clusterRole }}` ClusterRole, but ONLY within this
+namespace. A RoleBinding that references a ClusterRole scopes those verbs to
+the RoleBinding's namespace — so the controller gets list/scale/patch on this
+one tenant's workspace and nothing cluster-wide. This is the deliberate
+alternative to a cluster-wide `deployments/scale` grant (a cross-tenant kill
+switch); mutate power is handed out one namespace at a time, by the tenant's
+own chart.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ws-{{ .Values.user.name }}-controller
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.controller.clusterRole }}
+subjects:
+- kind: ServiceAccount
+  name: {{ .Values.controller.serviceAccount }}
+  namespace: {{ .Values.controller.namespace }}
+{{- end }}

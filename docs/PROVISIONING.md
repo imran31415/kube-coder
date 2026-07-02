@@ -10,6 +10,12 @@ This is **off by default** and self-hostable: every endpoint is your cluster,
 your GitOps repo, your GitHub Apps. Nothing is shared with the kube-coder
 project. This guide is the end-to-end setup.
 
+> **Per-workspace namespaces (#103):** each provisioned workspace lands in its
+> own `ws-<user>` namespace with scoped RBAC + a `ResourceQuota`/`LimitRange`.
+> The provisioner creates and seeds that namespace (regcred, base-infra) for
+> you. Migrating pre-existing `coder`-resident workspaces? See
+> [Per-workspace namespace migration](PER_WORKSPACE_NAMESPACE_MIGRATION.md).
+
 ---
 
 ## How it works
@@ -157,9 +163,10 @@ then leave `provision.gitToken` / `provision.stateSecret` empty.
 |---|---|
 | "New workspace" button missing | `provision.enabled` false, or required values unset → `/api/provision/config` reports `enabled:false`. |
 | Validation says "github lookup failed" | `gitToken` can't read the GitHub API, or the username doesn't exist. |
-| Stuck on "Starting provisioner" | Inspect the Job: `kubectl -n coder logs job/provision-<slug>-<ts>`. |
+| Stuck on "Starting provisioner" | Inspect the Job (runs in the control-plane namespace): `kubectl -n coder logs job/provision-<slug>-<ts>`. |
 | Job fails cloning the GitOps repo | Token lacks push/clone access, or the repo has no initial commit on `branch`. |
-| Workspace pod never ready | Chart deploy issue — same as a manual `make deploy`; check `kubectl -n coder describe deploy ws-<slug>`. |
+| Workspace pod never ready | Chart deploy issue — same as a manual `make deploy`; the workspace lives in its OWN namespace (#103): `kubectl -n ws-<slug> describe deploy ws-<slug>`. |
+| Provision Job forbidden creating the namespace | The provisioner needs its cluster-scoped grants — redeploy the controller chart so the `workspace-provisioner` ClusterRole/ClusterRoleBinding exist. |
 | Limit edits revert after a redeploy | Expected: in-place edits are live `kubectl patch` (like start/stop); durable changes go in the workspace `values.yaml`. |
 
 The provisioner Job runs the same `make deploy USER=<slug>` you would run by

@@ -238,6 +238,21 @@ body {
   margin-left: 0.25rem;
 }
 
+/* Namespace-isolation badges (#103): teal = migrated to its own namespace,
+   amber outline = still in the shared control-plane namespace. */
+.pill-isolated {
+  background: rgba(45, 212, 191, 0.16);
+  color: #2dd4bf;
+  margin-left: 0.25rem;
+}
+
+.pill-shared {
+  background: rgba(210, 153, 34, 0.14);
+  color: #e3b341;
+  margin-left: 0.25rem;
+  border: 1px dashed rgba(210, 153, 34, 0.5);
+}
+
 .btn {
   font: inherit;
   font-size: 0.85rem;

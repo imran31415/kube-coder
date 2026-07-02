@@ -137,7 +137,13 @@ fi
 # 5. Cluster prereqs (only checked if kubectl is reachable).
 if command -v kubectl >/dev/null 2>&1; then
   NS=$(awk '/^namespace:/{print $2; exit}' "$VALUES")
-  NS=${NS:-coder}
+  # Per-#103 each workspace owns a ws-<user> namespace; default to that
+  # convention if the file somehow omits it.
+  NS=${NS:-ws-$NAME}
+  # The namespace + regcred + base-infrastructure are all created by
+  # `make deploy` (it runs scripts/ensure-workspace-namespace.sh and installs
+  # base-infra into the tenant namespace). So for a not-yet-deployed workspace
+  # their absence is EXPECTED — report it as info, never a hard failure.
   if kubectl get ns "$NS" >/dev/null 2>&1; then
     pass "namespace exists: $NS"
   elif kubectl get serviceaccount default -n "$NS" >/dev/null 2>&1; then
@@ -146,18 +152,18 @@ if command -v kubectl >/dev/null 2>&1; then
     # Fall back to a namespaced probe — every namespace has a `default` SA.
     pass "namespace exists: $NS (verified via namespaced probe)"
   else
-    fail "namespace '$NS' does not exist — kubectl create namespace $NS"
+    warn "namespace '$NS' does not exist yet — 'make deploy USER=$NAME' will create it (#103)"
   fi
   if kubectl get secret regcred -n "$NS" >/dev/null 2>&1; then
     pass "image pull secret 'regcred' present in $NS"
   else
-    warn "image pull secret 'regcred' missing in $NS — workspace may fail to pull the image"
+    warn "image pull secret 'regcred' not yet in $NS — 'make deploy' copies it from the control-plane namespace (REGCRED_SRC_NAMESPACE)"
   fi
   if command -v helm >/dev/null 2>&1; then
     if helm status base-infrastructure -n "$NS" >/dev/null 2>&1; then
-      pass "base-infrastructure helm release is deployed"
+      pass "base-infrastructure helm release is deployed in $NS"
     else
-      warn "base-infrastructure release missing — run 'make deploy-base' first"
+      warn "base-infrastructure not yet in $NS — 'make deploy' installs it into the tenant namespace (#103)"
     fi
   fi
 else

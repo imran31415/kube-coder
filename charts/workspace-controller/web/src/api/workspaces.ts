@@ -15,6 +15,16 @@ export interface Workspace {
   user: string;
   /** The Kubernetes Deployment name, e.g. ws-imran. */
   deployment: string;
+  /** The workspace's own namespace, e.g. ws-imran (per-workspace isolation, #103). */
+  namespace: string;
+  /**
+   * True when the workspace has been migrated to its own per-user namespace
+   * (#103); false when it still lives in the shared control-plane namespace
+   * (not yet migrated, or a leftover rollback copy). Drives the UI badge that
+   * keeps a migrated workspace and its old shared-namespace copy visually
+   * distinct instead of looking like accidental duplicates.
+   */
+  isolated: boolean;
   state: WorkspaceState;
   desiredReplicas: number;
   readyReplicas: number;
@@ -47,6 +57,8 @@ export type Series = [number, number][];
 
 export interface WorkspaceMetrics {
   user: string;
+  /** The namespace this workspace's metrics were read from (#103). */
+  namespace: string;
   running: boolean;
   cpu: { cores: number | null; limitCores: number | null; pct: number | null };
   memory: { bytes: number | null; limitBytes: number | null; pct: number | null };

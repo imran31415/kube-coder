@@ -26,15 +26,19 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- if .Values.ingress.identityHeaderStripSnippet }}
     # Belt-and-suspenders: also strip the identity headers at the edge so they
     # never reach the pod. Requires ingress-nginx `allow-snippet-annotations:
-    # "true"` (off by default in newer ingress-nginx); the /bearer-api/ marker
-    # above enforces the same guarantee server-side even when snippets are off.
+    # "true"` — this cluster runs with snippets DISABLED (CVE-2021-25742
+    # hardening, see _helpers.tpl) and its admission webhook REJECTS the whole
+    # Ingress if this is set, so it defaults off. The /bearer-api/ marker above
+    # enforces the same guarantee server-side regardless.
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header X-Auth-Request-User "";
       proxy_set_header X-Auth-Request-Email "";
       proxy_set_header X-Auth-Request-Access-Token "";
       proxy_set_header Remote-User "";
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

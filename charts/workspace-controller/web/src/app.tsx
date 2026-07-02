@@ -45,8 +45,8 @@ function WorkspaceList() {
         <div>
           <h1>Workspaces</h1>
           <p class="sub">
-            {namespace.value ? `namespace ${namespace.value} · ` : ''}
-            Start or stop a workspace, or open one for detailed usage metrics.
+            {namespace.value ? `control plane: ${namespace.value} · ` : ''}
+            Each workspace runs in its own namespace. Start or stop one, or open it for detailed usage metrics.
           </p>
         </div>
         <div class="hdr-actions">
@@ -72,7 +72,7 @@ function WorkspaceList() {
       )}
 
       {loaded.value && rows.length === 0 && !error.value ? (
-        <div class="empty">No workspaces found in this namespace.</div>
+        <div class="empty">No workspaces found.</div>
       ) : (
         <ul class="list" aria-label="Workspaces">
           {rows.map((w) => (
@@ -108,6 +108,7 @@ function Row({ ws }: { ws: Workspace }) {
               ws.user
             )}
             <Pill state={ws.state} />
+            <IsolationPill isolated={ws.isolated} namespace={ws.namespace} />
             {ws.updateAvailable && (
               <span class="pill pill-update" title={`Update available: ${ws.version} → latest`}>
                 update
@@ -115,7 +116,7 @@ function Row({ ws }: { ws: Workspace }) {
             )}
           </div>
           <div class="row-meta">
-            {ws.deployment} · {ws.detail}
+            {ws.namespace} · {ws.detail}
             {ws.version ? ` · ${ws.version}` : ''}
           </div>
         </div>
@@ -138,4 +139,22 @@ function Row({ ws }: { ws: Workspace }) {
 
 function Pill({ state }: { state: WorkspaceState }) {
   return <span class={`pill pill-${state}`}>{state}</span>;
+}
+
+// Distinguishes a workspace migrated to its own namespace (#103) from one still
+// in the shared control-plane namespace — so a migrated workspace and the
+// scaled-to-0 copy left behind in `coder` don't read as accidental duplicates.
+function IsolationPill({ isolated, namespace }: { isolated: boolean; namespace: string }) {
+  return isolated ? (
+    <span class="pill pill-isolated" title={`Isolated in its own namespace (${namespace})`}>
+      isolated
+    </span>
+  ) : (
+    <span
+      class="pill pill-shared"
+      title={`Still in the shared control-plane namespace (${namespace}) — not yet migrated, or a leftover copy of a migrated workspace`}
+    >
+      shared
+    </span>
+  );
 }

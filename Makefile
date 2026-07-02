@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -37,6 +37,14 @@ secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 # unchanged tag. Empty when a workspace pins no image.tag in its values.
 user_image = $(shell awk '/^image:/{i=1;next} i&&/^[^[:space:]]/{exit} i&&/^[[:space:]]*repository:[[:space:]]*/{r=$$2} i&&/^[[:space:]]*tag:[[:space:]]*/{t=$$2} END{if(r&&t)print r":"t}' $(call values_file,$(1)))
 
+# Namespace a user's workspace lives in. Single source of truth is the
+# `namespace:` field in their values.yaml (set to ws-<user> by the scaffold and
+# the controller); falls back to the ws-<user> convention when the file is
+# absent (e.g. orphan cleanup). This is what lets each tenant own an isolated
+# namespace (#103) while the same targets keep working. The control-plane
+# NAMESPACE below stays for cluster-shared releases (base infra, controller).
+ws_namespace = $(shell ns=$$(awk '/^namespace:/{print $$2; exit}' $(call values_file,$(1)) 2>/dev/null); echo "$${ns:-ws-$(1)}")
+
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
 IMAGE_NAME := devlaptop
@@ -45,7 +53,14 @@ IMAGE_NAME := devlaptop
 # values.yaml via $(user_image) so build and deploy stay in lockstep.
 VERSION := v1.7.0
 PLATFORM := linux/amd64
+# Control-plane namespace: the shared base-infrastructure + workspace-controller
+# releases live here. Per-#103 individual workspaces live in their OWN ws-<user>
+# namespace (see ws_namespace above), NOT here.
 NAMESPACE := coder
+# Namespace the shared regcred image-pull Secret is copied FROM when standing up
+# a new per-workspace namespace (#103). Override if your registry secret lives
+# elsewhere.
+REGCRED_SRC_NAMESPACE ?= $(NAMESPACE)
 
 # Docker image full name
 IMAGE := $(REGISTRY):$(IMAGE_NAME)-$(VERSION)
@@ -117,14 +132,17 @@ deploy-all: deploy-base ## Deploy base infrastructure (per-user: make deploy USE
 # =============================================================================
 
 status: ## Check deployment status
-	@echo "=== Helm Releases ==="
+	@echo "=== Helm Releases (control-plane: $(NAMESPACE)) ==="
 	@helm list -n $(NAMESPACE)
 	@echo ""
-	@echo "=== Pods ==="
-	@kubectl get pods -n $(NAMESPACE)
+	@echo "=== Workspace namespaces (#103) ==="
+	@kubectl get ns -l kube-coder.dev/managed=true 2>/dev/null || echo "(none labelled kube-coder.dev/managed)"
 	@echo ""
-	@echo "=== Ingresses ==="
-	@kubectl get ingress -n $(NAMESPACE) --no-headers | awk '{print $$1, $$3}'
+	@echo "=== Workspace pods (all per-user namespaces) ==="
+	@kubectl get pods -A 2>/dev/null | awk 'NR==1 || $$1 ~ /^ws-/'
+	@echo ""
+	@echo "=== Workspace ingresses ==="
+	@kubectl get ingress -A --no-headers 2>/dev/null | awk '$$1 ~ /^ws-/ {print $$1, $$2, $$4}'
 
 version: ## Show current versions and config
 	@echo "Current configuration:"
@@ -178,31 +196,39 @@ validate-user: ## Pre-deploy sanity check (USER=<name>); placeholders, DNS, clus
 	@./scripts/validate-user.sh $(USER)
 
 deploy: require-user validate-user ## Deploy any user's workspace (USER=<name>); auto-finds values.yaml + secrets
-	@echo "Deploying $(USER)'s workspace from $(call values_file,$(USER))..."
+	@echo "Deploying $(USER)'s workspace into namespace $(call ws_namespace,$(USER)) from $(call values_file,$(USER))..."
+	@# Per-#103: create+label the tenant namespace and seed the shared prereqs
+	@# (regcred image-pull Secret, then the base-infra kaniko-wrapper ConfigMap
+	@# the pod mounts) BEFORE the workspace chart lands.
+	@./scripts/ensure-workspace-namespace.sh "$(call ws_namespace,$(USER))" "$(USER)" "$(REGCRED_SRC_NAMESPACE)"
+	helm upgrade base-infrastructure ./charts/base-infrastructure \
+		--namespace $(call ws_namespace,$(USER)) \
+		--set namespace=$(call ws_namespace,$(USER)) \
+		--install
 	helm upgrade $(USER)-workspace ./charts/workspace \
 		-f $(call values_file,$(USER)) \
 		$(call secret_flags,$(USER)) \
-		--namespace $(NAMESPACE) \
+		--namespace $(call ws_namespace,$(USER)) \
 		--install \
 		--wait \
 		--timeout 8m
 
 logs: require-user ## Tail logs for any user's workspace (USER=<name>)
-	kubectl logs -f -n $(NAMESPACE) deployment/ws-$(USER) -c ide
+	kubectl logs -f -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide
 
 shell: require-user ## Shell into any user's workspace (USER=<name>)
-	kubectl exec -it -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- /bin/bash
+	kubectl exec -it -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide -- /bin/bash
 
 test: require-user ## Sanity-test any user's workspace (USER=<name>)
 	@echo "Testing $(USER)'s workspace..."
-	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- node --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- yarn --version
-	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- gh --version | head -1
-	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- code-server --version | head -1
-	@kubectl exec -n $(NAMESPACE) deployment/ws-$(USER) -c ide -- ante --version | head -1
+	@kubectl exec -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide -- node --version
+	@kubectl exec -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide -- yarn --version
+	@kubectl exec -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide -- gh --version | head -1
+	@kubectl exec -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide -- code-server --version | head -1
+	@kubectl exec -n $(call ws_namespace,$(USER)) deployment/ws-$(USER) -c ide -- ante --version | head -1
 
 rollback: require-user ## Rollback any user's workspace (USER=<name>)
-	helm rollback $(USER)-workspace --namespace $(NAMESPACE)
+	helm rollback $(USER)-workspace --namespace $(call ws_namespace,$(USER))
 
 # Permanently delete a workspace AND its home volume. Operates purely on
 # cluster resources by name ($(USER)-workspace / ws-$(USER)-home), so it also
@@ -216,22 +242,73 @@ delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name
 	  echo "       (\$$USER is also your shell login name, so it is ignored here to avoid deleting the wrong workspace.)"; \
 	  exit 1; \
 	fi
-	@echo "WARNING: permanently deletes workspace '$(USER)' from namespace '$(NAMESPACE)':"
+	@echo "WARNING: permanently deletes workspace '$(USER)' from namespace '$(call ws_namespace,$(USER))':"
 	@echo "  helm release : $(USER)-workspace"
 	@echo "  PVC + DATA   : ws-$(USER)-home   (IRREVERSIBLE — the home volume is destroyed)"
-	@echo "  secrets      : $(USER)-dev-scalebase-io-tls, $(USER)-basic-auth"
-	@echo "  + all pods / services / ingress / configmaps in that release"
+	@echo "  namespace    : $(call ws_namespace,$(USER))   (deleted last — removes any leftover objects)"
+	@echo "  + all pods / services / ingress / configmaps / secrets in that namespace"
 	@printf "Type the workspace name '%s' to confirm: " "$(USER)"
 	@read confirm; \
 	if [ "$$confirm" != "$(USER)" ]; then echo "Aborted — input did not match '$(USER)'."; exit 1; fi; \
+	ns=$(call ws_namespace,$(USER)); \
 	echo "==> helm uninstall $(USER)-workspace"; \
-	helm uninstall $(USER)-workspace --namespace $(NAMESPACE) || true; \
+	helm uninstall $(USER)-workspace --namespace $$ns || true; \
 	echo "==> deleting PVC ws-$(USER)-home (and its underlying volume)"; \
-	kubectl delete pvc ws-$(USER)-home --namespace $(NAMESPACE) --ignore-not-found; \
-	echo "==> deleting leftover secrets (TLS + basic-auth, if present)"; \
-	kubectl delete secret $(USER)-dev-scalebase-io-tls $(USER)-basic-auth --namespace $(NAMESPACE) --ignore-not-found; \
+	kubectl delete pvc ws-$(USER)-home --namespace $$ns --ignore-not-found; \
+	if [ "$$ns" != "$(NAMESPACE)" ]; then \
+	  echo "==> deleting the per-workspace namespace $$ns (removes all remaining objects)"; \
+	  kubectl delete namespace $$ns --ignore-not-found; \
+	else \
+	  echo "==> deleting leftover secrets (TLS + basic-auth, if present)"; \
+	  kubectl delete secret $(USER)-dev-scalebase-io-tls $(USER)-basic-auth --namespace $$ns --ignore-not-found; \
+	fi; \
 	echo "Done. '$(USER)' removed from the cluster."; \
 	echo "NOTE: users-private/$(USER)/ (local config) and the GitHub OAuth app are untouched — delete those manually if desired."
+
+# =============================================================================
+# Per-workspace namespace migration (#103)
+# =============================================================================
+# Move existing workspaces out of the shared control-plane namespace into their
+# own ws-<user> namespace. Wraps scripts/migrate-user-namespace.sh.
+#
+#   make migrate-user USER=<name>              # copy the home volume only (safe, reversible)
+#   make migrate-user USER=<name> CUTOVER=1    # + repoint values.yaml & deploy into ws-<name>
+#   make migrate-user USER=<name> DECOMMISSION=1  # + delete the old copy (destructive)
+#   make migrate-user USER=<name> DRY_RUN=1    # print every action, touch nothing
+#   make migrate-all [CUTOVER=1] [DECOMMISSION=1] [SRC=coder]  # every workspace in SRC
+#
+# Migrate-all discovers every ws-<user> Deployment currently in SRC (default
+# $(NAMESPACE)) and runs migrate-user for each. Start with a DRY_RUN=1 pass.
+SRC ?= $(NAMESPACE)
+MIGRATE_FLAGS = --src-namespace $(SRC) \
+	$(if $(filter 1 true yes,$(DRY_RUN)),--dry-run,) \
+	$(if $(filter 1 true yes,$(CUTOVER)),--cutover,) \
+	$(if $(filter 1 true yes,$(DECOMMISSION)),--decommission,)
+
+migrate-user: require-user ## Migrate one workspace to its own namespace (USER=<name> [CUTOVER=1] [DECOMMISSION=1] [DRY_RUN=1])
+	@./scripts/migrate-user-namespace.sh "$(USER)" $(MIGRATE_FLAGS)
+
+migrate-status: ## Show migration progress: which workspaces are in their own namespace vs still in SRC (default $(NAMESPACE))
+	@echo "=== workspace namespace migration status (source: $(SRC)) ==="
+	@kubectl get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+	  | awk -v src='$(SRC)' 'BEGIN{printf "  %-22s %-24s %s\n","USER","NAMESPACE","STATUS"} \
+	      $$2 ~ /^ws-/ { user=substr($$2,4); ns=$$1; total++; \
+	        if(ns==$$2){st="migrated"; mig++} \
+	        else if(ns==src){st="PENDING (shared "src")"; pend++} \
+	        else {st="other"; oth++} \
+	        printf "  %-22s %-24s %s\n", user, ns, st } \
+	      END{ if(total==0) print "  (no ws-* workspaces found)"; \
+	           else printf "\n  %d migrated / %d pending / %d total\n", mig, pend, total }'
+
+migrate-all: ## Migrate every workspace in SRC (default $(NAMESPACE)) to its own namespace ([CUTOVER=1] [DECOMMISSION=1] [DRY_RUN=1] [SRC=coder])
+	@users="$$(kubectl get deploy -n $(SRC) -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | sed -n 's/^ws-//p')"; \
+	if [ -z "$$users" ]; then echo "No ws-* workspaces found in namespace '$(SRC)'."; exit 0; fi; \
+	echo "Workspaces to migrate from '$(SRC)':"; echo "$$users" | sed 's/^/  - /'; \
+	for u in $$users; do \
+	  echo ""; echo "########## migrate $$u ##########"; \
+	  ./scripts/migrate-user-namespace.sh "$$u" $(MIGRATE_FLAGS) || { echo "migrate $$u FAILED — stopping."; exit 1; }; \
+	done; \
+	echo ""; echo "migrate-all complete."
 
 # =============================================================================
 # Dashboard SPA (charts/workspace/web/)
@@ -278,12 +355,12 @@ mobile-android: mobile-install ## Run the app in the Android emulator via Expo G
 # Expose a running workspace's Bearer API (BrowserHandler on 6080) to localhost
 # so the mobile app can connect without a public host — the path for a local
 # minikube workspace, or any cluster, when you don't want to use the public DNS.
-mobile-forward: ## Port-forward a workspace's API (6080) to localhost for the app (USER=<name> [NAMESPACE=coder])
+mobile-forward: ## Port-forward a workspace's API (6080) to localhost for the app (USER=<name>)
 	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make mobile-forward USER=imran)"; exit 1; fi
-	@echo "Forwarding http://localhost:6080 -> ws-$(USER) (namespace $(NAMESPACE), context $$(kubectl config current-context))"
+	@echo "Forwarding http://localhost:6080 -> ws-$(USER) (namespace $(call ws_namespace,$(USER)), context $$(kubectl config current-context))"
 	@echo "  App host:  http://localhost:6080 (iOS simulator)  |  http://<your-Mac-LAN-IP>:6080 (physical device / Android emulator)"
-	@echo "  API token: kubectl -n $(NAMESPACE) exec deploy/ws-$(USER) -c ide -- cat /home/dev/.claude-tasks/.api-token"
-	kubectl -n $(NAMESPACE) port-forward svc/ws-$(USER) 6080:6080
+	@echo "  API token: kubectl -n $(call ws_namespace,$(USER)) exec deploy/ws-$(USER) -c ide -- cat /home/dev/.claude-tasks/.api-token"
+	kubectl -n $(call ws_namespace,$(USER)) port-forward svc/ws-$(USER) 6080:6080
 
 mobile-export-web: mobile-install ## Export the demo/mock web build → mobile/dist
 	cd $(MOBILE_DIR) && npm run export:web
@@ -362,28 +439,28 @@ ship: require-user validate-user ## Full deploy: build+push the user's image tag
 	$(MAKE) --no-print-directory push IMAGE="$$img"
 	@$(MAKE) --no-print-directory deploy USER=$(USER)
 	@echo "Forcing rollout restart so $(USER)'s pod re-pulls the image..."
-	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
-	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+	kubectl rollout restart deployment/ws-$(USER) -n $(call ws_namespace,$(USER))
+	kubectl rollout status deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --timeout=180s
 
 # Stop / start a workspace pod without touching the helm release. PVC + secrets +
 # ingress + cookieSecret all stay; just the pod is gone. Reversible.
 stop: require-user ## Scale a user's pod to 0 — turns off the workspace, preserves data (USER=<name>)
 	@echo "Scaling ws-$(USER) to 0 replicas (workspace is being turned off)..."
-	kubectl scale deployment/ws-$(USER) -n $(NAMESPACE) --replicas=0
-	kubectl get deployment/ws-$(USER) -n $(NAMESPACE)
+	kubectl scale deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --replicas=0
+	kubectl get deployment/ws-$(USER) -n $(call ws_namespace,$(USER))
 
 start: require-user ## Scale a user's pod back to 1 — turns on a previously stopped workspace (USER=<name>)
 	@echo "Scaling ws-$(USER) back to 1 replica..."
-	kubectl scale deployment/ws-$(USER) -n $(NAMESPACE) --replicas=1
-	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+	kubectl scale deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --replicas=1
+	kubectl rollout status deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --timeout=180s
 
 # Just the configmap path — refreshes server.py + dashboard.html in the pod
 # without rebuilding the Docker image. Faster than `make ship` for backend
 # changes; doesn't pick up SPA/Dockerfile changes (use `ship` for those).
 ship-config: require-user deploy ## Helm upgrade only — for server.py / configmap changes (USER=<name>)
 	@echo "Forcing rollout in case the configmap checksum didn't change..."
-	kubectl rollout restart deployment/ws-$(USER) -n $(NAMESPACE)
-	kubectl rollout status deployment/ws-$(USER) -n $(NAMESPACE) --timeout=180s
+	kubectl rollout restart deployment/ws-$(USER) -n $(call ws_namespace,$(USER))
+	kubectl rollout status deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --timeout=180s
 
 # Cut a release end-to-end: bump versions, build+push the matching
 # devlaptop-<VERSION> image, commit, tag, and (after a y/N confirm) push +
@@ -498,6 +575,9 @@ LOCAL_AUTH_SECRET := kube-coder-basic-auth
 LOCAL_AUTH_USER   := admin
 LOCAL_AUTH_PASS   := admin
 LOCAL_RELEASE     := local-workspace
+# The local workspace lives in its own namespace too (#103), matching the
+# `namespace:` field in deployments/local/values.yaml.
+LOCAL_NS          := ws-local
 # Host arch -> docker platform. Native arm64 on Apple Silicon avoids emulation.
 LOCAL_ARCH        := $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 # Bind every kubectl/helm call to the minikube context, never the current one.
@@ -526,23 +606,23 @@ local-build: ## Build the workspace image for your host arch directly inside min
 	minikube image build -t $(LOCAL_IMAGE) -f devlaptop/Dockerfile -p $(LOCAL_PROFILE) .
 
 local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the local cluster
-	$(LOCAL_KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
+	$(LOCAL_KUBECTL) create namespace $(LOCAL_NS) --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
 	@printf '%s:%s\n' "$(LOCAL_AUTH_USER)" "$$(openssl passwd -apr1 $(LOCAL_AUTH_PASS))" > /tmp/kc-local-htpasswd
-	$(LOCAL_KUBECTL) -n $(NAMESPACE) create secret generic $(LOCAL_AUTH_SECRET) \
+	$(LOCAL_KUBECTL) -n $(LOCAL_NS) create secret generic $(LOCAL_AUTH_SECRET) \
 		--from-file=auth=/tmp/kc-local-htpasswd --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
 	@rm -f /tmp/kc-local-htpasswd
 	@echo "basic-auth secret '$(LOCAL_AUTH_SECRET)' ready (user: $(LOCAL_AUTH_USER) / pass: $(LOCAL_AUTH_PASS))"
 
 local-deploy: ## Deploy base-infrastructure + the workspace to the local cluster
 	$(LOCAL_HELM) upgrade base-infrastructure ./charts/base-infrastructure \
-		--namespace $(NAMESPACE) --install --wait --timeout 3m
+		--namespace $(LOCAL_NS) --set namespace=$(LOCAL_NS) --install --wait --timeout 3m
 	$(LOCAL_HELM) upgrade $(LOCAL_RELEASE) ./charts/workspace \
-		-f $(LOCAL_VALUES) --namespace $(NAMESPACE) --install --wait --timeout 5m
+		-f $(LOCAL_VALUES) --namespace $(LOCAL_NS) --install --wait --timeout 5m
 	# Force a rollout so a freshly `local-build`-loaded image is picked up:
 	# the tag (kube-coder:local) doesn't change, so helm sees no diff and the
 	# pod would otherwise keep the old image even though minikube reloaded it.
-	$(LOCAL_KUBECTL) -n $(NAMESPACE) rollout restart deployment/ws-local
-	$(LOCAL_KUBECTL) -n $(NAMESPACE) rollout status deployment/ws-local --timeout=180s
+	$(LOCAL_KUBECTL) -n $(LOCAL_NS) rollout restart deployment/ws-local
+	$(LOCAL_KUBECTL) -n $(LOCAL_NS) rollout status deployment/ws-local --timeout=180s
 
 local-forward: ## Port-forward the local ingress controller to localhost:8080 (blocking; Ctrl-C to stop)
 	@echo "Forwarding http://$(LOCAL_HOST):8080 -> ingress-nginx. Ensure /etc/hosts maps $(LOCAL_HOST) -> 127.0.0.1 (see 'make local-info')."
@@ -558,10 +638,10 @@ local-info: ## Print local access details (/etc/hosts line, URL, credentials)
 	@echo "3. Open:        http://$(LOCAL_HOST):8080/"
 	@echo "4. Basic auth:  $(LOCAL_AUTH_USER) / $(LOCAL_AUTH_PASS)"
 	@echo ""
-	@echo "Logs:  $(LOCAL_KUBECTL) -n $(NAMESPACE) logs -f deploy/ws-local -c ide"
-	@echo "Shell: $(LOCAL_KUBECTL) -n $(NAMESPACE) exec -it deploy/ws-local -c ide -- bash"
+	@echo "Logs:  $(LOCAL_KUBECTL) -n $(LOCAL_NS) logs -f deploy/ws-local -c ide"
+	@echo "Shell: $(LOCAL_KUBECTL) -n $(LOCAL_NS) exec -it deploy/ws-local -c ide -- bash"
 
 local-down: ## Remove the local workspace (add DELETE=1 to also delete the minikube cluster)
-	-$(LOCAL_HELM) uninstall $(LOCAL_RELEASE) -n $(NAMESPACE)
-	-$(LOCAL_HELM) uninstall base-infrastructure -n $(NAMESPACE)
+	-$(LOCAL_HELM) uninstall $(LOCAL_RELEASE) -n $(LOCAL_NS)
+	-$(LOCAL_HELM) uninstall base-infrastructure -n $(LOCAL_NS)
 	@if [ "$(DELETE)" = "1" ]; then echo "Deleting minikube profile $(LOCAL_PROFILE)..."; minikube delete -p $(LOCAL_PROFILE); else echo "Cluster kept. Run 'make local-down DELETE=1' to delete the minikube profile."; fi

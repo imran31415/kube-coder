@@ -1,0 +1,49 @@
+{{- if .Values.quota.enabled }}
+{{/*
+Per-namespace ResourceQuota + LimitRange.
+
+Now that each workspace lives in its OWN namespace (ws-<user>), a quota here
+bounds a single tenant: it can't exhaust cluster capacity or starve co-tenants,
+and — unlike the shared-namespace model — the cap is per-user rather than a
+lump sum every tenant competes for. The LimitRange supplies default
+requests/limits to any pod that omits them (notably ad-hoc Kaniko build Jobs
+launched by `docker-build`), so nothing runs unbounded or unschedulable.
+
+Sized to comfortably hold the workspace pod (+ its oauth2-proxy pair and one
+in-flight build Job) at their limits, with headroom. Override per user in
+their values.yaml for heavier workloads. Ties into #95.
+*/}}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ws-{{ .Values.user.name }}-quota
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.quota.requestsCpu | quote }}
+    requests.memory: {{ .Values.quota.requestsMemory | quote }}
+    limits.cpu: {{ .Values.quota.limitsCpu | quote }}
+    limits.memory: {{ .Values.quota.limitsMemory | quote }}
+    pods: {{ .Values.quota.pods | quote }}
+{{- if .Values.quota.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: ws-{{ .Values.user.name }}-limits
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: {{ .Values.quota.limitRange.defaultLimitCpu | quote }}
+      memory: {{ .Values.quota.limitRange.defaultLimitMemory | quote }}
+    defaultRequest:
+      cpu: {{ .Values.quota.limitRange.defaultRequestCpu | quote }}
+      memory: {{ .Values.quota.limitRange.defaultRequestMemory | quote }}
+{{- end }}
+{{- end }}

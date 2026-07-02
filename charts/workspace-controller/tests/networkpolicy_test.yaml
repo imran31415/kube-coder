@@ -51,6 +51,18 @@ tests:
       - lengthEqual:
           path: spec.ingress
           count: 2
+      # Cross-namespace (#103): workspace-labelled pods in any managed ws-<user>
+      # namespace may reach 8081. AND-semantics within one `from` entry.
+      - contains:
+          path: spec.ingress[1].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kube-coder.dev/managed: "true"
+            podSelector:
+              matchLabels:
+                kube-coder.dev/component: workspace
+      # Same-namespace fallback for a workspace still resident here mid-migration.
       - contains:
           path: spec.ingress[1].from
           content:

@@ -129,7 +129,7 @@ mkdir -p secrets/john
 Create `deployments/john/values.yaml`:
 
 ```yaml
-namespace: coder
+namespace: ws-john   # each workspace gets its own namespace (#103)
 
 user:
   name: john
@@ -194,7 +194,7 @@ ssh:
 If using OAuth2 authentication, create `deployments/john/values-oauth2.yaml`:
 
 ```yaml
-namespace: coder
+namespace: ws-john   # each workspace gets its own namespace (#103)
 
 user:
   name: john
@@ -256,7 +256,7 @@ ssh:
 ```bash
 # Create basic auth credentials
 htpasswd -c john-auth admin
-kubectl create secret generic john-basic-auth --from-file=auth=john-auth -n coder
+kubectl create secret generic john-basic-auth --from-file=auth=john-auth -n ws-john
 
 # Clean up temporary file
 rm john-auth
@@ -367,17 +367,17 @@ oauth2:
 
 ### 1. Check Pod Status
 ```bash
-kubectl get pods -n coder -l app=ws-john
+kubectl get pods -n ws-john -l app=ws-john
 ```
 
 ### 2. Check Ingress
 ```bash
-kubectl get ingress -n coder | grep john
+kubectl get ingress -n ws-john | grep john
 ```
 
 ### 3. Check Certificates
 ```bash
-kubectl get certificate -n coder | grep john
+kubectl get certificate -n ws-john | grep john
 ```
 
 ### 4. Access the Workspace
@@ -398,23 +398,23 @@ kubectl get certificate -n coder | grep john
 
 ```bash
 # Check user's deployment status
-helm status john-workspace -n coder
+helm status john-workspace -n ws-john
 
 # View user's logs
-kubectl logs -f -n coder deployment/ws-john -c ide
+kubectl logs -f -n ws-john deployment/ws-john -c ide
 
 # Shell into user's workspace
-kubectl exec -it -n coder deployment/ws-john -c ide -- /bin/bash
+kubectl exec -it -n ws-john deployment/ws-john -c ide -- /bin/bash
 
 # Restart user's workspace
-kubectl delete pod -n coder -l app=ws-john
+kubectl delete pod -n ws-john -l app=ws-john
 
 # Update user's configuration
 helm upgrade john-workspace charts/workspace/ -f deployments/john/values.yaml --namespace coder
 
 # Remove user's workspace
-helm uninstall john-workspace -n coder
-kubectl delete pvc ws-john-home -n coder  # WARNING: Deletes user data
+helm uninstall john-workspace -n ws-john
+kubectl delete pvc ws-john-home -n ws-john  # WARNING: Deletes user data
 ```
 
 ## 📊 Resource Planning
@@ -437,38 +437,38 @@ kubectl delete pvc ws-john-home -n coder  # WARNING: Deletes user data
 
 1. **Pod stuck in Pending**
    ```bash
-   kubectl describe pod -n coder -l app=ws-john
+   kubectl describe pod -n ws-john -l app=ws-john
    # Check for resource constraints or PVC issues
    ```
 
 2. **Certificate not ready**
    ```bash
-   kubectl describe certificate john-dev-company-com-tls -n coder
+   kubectl describe certificate john-dev-company-com-tls -n ws-john
    # Check DNS and cert-manager logs
    ```
 
 3. **OAuth2 authentication failures**
    ```bash
-   kubectl logs -n coder -l app=oauth2-proxy-john
+   kubectl logs -n ws-john -l app=oauth2-proxy-john
    # Check GitHub OAuth app configuration
    ```
 
 4. **Storage issues**
    ```bash
-   kubectl get pvc -n coder | grep john
-   kubectl describe pvc ws-john-home -n coder
+   kubectl get pvc -n ws-john | grep john
+   kubectl describe pvc ws-john-home -n ws-john
    ```
 
 ### Health Checks
 
 ```bash
 # Overall workspace health
-kubectl get pods,pvc,ingress,certificate -n coder | grep john
+kubectl get pods,pvc,ingress,certificate -n ws-john | grep john
 
 # Service connectivity
-kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:8080
-kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:7681
-kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:6080
+kubectl exec -n ws-john deployment/ws-john -c ide -- curl -sI http://localhost:8080
+kubectl exec -n ws-john deployment/ws-john -c ide -- curl -sI http://localhost:7681
+kubectl exec -n ws-john deployment/ws-john -c ide -- curl -sI http://localhost:6080
 ```
 
 ## 🔄 User Lifecycle
@@ -484,8 +484,8 @@ kubectl exec -n coder deployment/ws-john -c ide -- curl -sI http://localhost:608
 
 ### Offboarding Checklist
 - [ ] Backup user data if needed
-- [ ] Remove workspace deployment: `helm uninstall john-workspace -n coder`
-- [ ] Delete persistent data: `kubectl delete pvc ws-john-home -n coder`
+- [ ] Remove workspace deployment: `helm uninstall john-workspace -n ws-john`
+- [ ] Delete persistent data: `kubectl delete pvc ws-john-home -n ws-john`
 - [ ] Remove DNS records
 - [ ] Clean up OAuth2 secrets (if used)
 - [ ] Archive user configuration files

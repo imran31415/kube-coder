@@ -195,7 +195,7 @@ spec:
         # Service. The URL defaults to the controller Service on its self-serve
         # port; the token comes from the shared Secret named in values.
         - name: CONTROLLER_SELF_SERVE_URL
-          value: {{ .Values.update.controllerUrl | default (printf "http://workspace-controller.%s.svc.cluster.local:8081" .Values.namespace) | quote }}
+          value: {{ .Values.update.controllerUrl | default (printf "http://workspace-controller.%s.svc.cluster.local:8081" (.Values.update.controllerNamespace | default "coder")) | quote }}
         - name: CONTROLLER_SELF_SERVE_TOKEN
           valueFrom:
             secretKeyRef:
