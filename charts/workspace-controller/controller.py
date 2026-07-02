@@ -1256,6 +1256,61 @@ def cluster_capacity(range_seconds=3600, step=300):
     return out
 
 
+def _health_status(*blocks):
+    """Overall traffic-light from the worst cluster-usage percentage across the
+    given rollups: ok < 75% <= warn < 90% <= crit. 'unknown' when no rollup has
+    a percentage (allocatable missing)."""
+    worst = None
+    for b in blocks:
+        p = (b or {}).get('clusterPct')
+        if p is not None:
+            worst = p if worst is None else max(worst, p)
+    if worst is None:
+        return 'unknown'
+    if worst >= 90:
+        return 'crit'
+    if worst >= 75:
+        return 'warn'
+    return 'ok'
+
+
+def cluster_health():
+    """Cheap cluster-health summary for the dashboard landing page: cluster CPU +
+    memory rollups and an overall traffic-light status, from a handful of INSTANT
+    Prometheus queries.
+
+    Deliberately does NOT run the per-node breakdown or the range-history queries
+    that cluster_capacity does — those are the memory/latency-heavy part and now
+    load only on the /capacity drill-down. Keeping the landing page down to these
+    ~7 instant scalars is what stops the burst of heavy queries (and the OOM/502s)
+    on every dashboard load. Prometheus failures degrade to metricsError."""
+    out = {
+        'generatedAt': int(time.time()),
+        'namespace': NAMESPACE,
+        'cluster': None,
+        'status': 'unknown',
+        'metricsError': None,
+    }
+    ws_sel = f'{_ws_prom_ns_selector()},pod=~"ws-.*"'
+    ws_cpu_inner = f'avg by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{{{ws_sel},container!=""}}[5m]))'
+    ws_mem_inner = f'avg by (namespace, pod, container) (container_memory_working_set_bytes{{{ws_sel},container!=""}})'
+    all_cpu_inner = 'avg by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))'
+    all_mem_inner = 'avg by (namespace, pod, container) (container_memory_working_set_bytes{container!="",pod!=""})'
+    try:
+        alloc_cpu = prom_scalar('sum(avg by (node) (kube_node_status_allocatable{resource="cpu"}))')
+        alloc_mem = prom_scalar('sum(avg by (node) (kube_node_status_allocatable{resource="memory"}))')
+        node_count = prom_scalar('count(count by (node) (kube_node_status_allocatable))')
+        cpu = _resource_block(alloc_cpu, prom_scalar(f'sum({ws_cpu_inner})') or 0.0,
+                              prom_scalar(f'sum({all_cpu_inner})') or 0.0)
+        mem = _resource_block(alloc_mem, prom_scalar(f'sum({ws_mem_inner})') or 0.0,
+                              prom_scalar(f'sum({all_mem_inner})') or 0.0)
+        out['cluster'] = {'nodeCount': int(node_count or 0), 'cpu': cpu, 'memory': mem}
+        out['status'] = _health_status(cpu, mem)
+    except PromError as exc:
+        out['metricsError'] = str(exc)
+    return out
+
+
 # --- Provisioning ------------------------------------------------------------
 #
 # Self-service onboarding: an admin types a GitHub username, creates a GitHub
@@ -1879,6 +1934,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except KubectlError as exc:
                 sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
+            return
+        if path == '/api/capacity/summary':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            # Cheap instant-only rollup for the landing page — no range history,
+            # no per-node. Prometheus-only, so any outage lands in metricsError
+            # and this still returns 200.
+            self.send_json(cluster_health())
             return
         if path == '/api/capacity':
             if not self.check_admin():

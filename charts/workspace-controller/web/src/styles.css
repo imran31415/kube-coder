@@ -91,6 +91,87 @@ body {
   border-color: #3a3a42;
 }
 
+/* Landing-page cluster-health card — one cheap call, links to the full
+   cluster-resources drill-down. */
+.health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 0.7rem 1rem;
+  margin-bottom: 1.25rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.health:hover {
+  border-color: #3a3a42;
+}
+.health-main {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.health-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: none;
+}
+.dot-ok {
+  background: #56d364;
+  box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.16);
+}
+.dot-warn {
+  background: #e3b341;
+  box-shadow: 0 0 0 3px rgba(210, 153, 34, 0.16);
+}
+.dot-crit {
+  background: #ff7b72;
+  box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.16);
+}
+.dot-unknown {
+  background: var(--muted);
+}
+.health-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.health-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  font-size: 0.82rem;
+}
+.health-stat.muted {
+  color: var(--muted);
+}
+.health-cta {
+  color: #58a6ff;
+  font-weight: 600;
+}
+
+/* Back breadcrumb on drill-down pages. */
+.crumb {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  margin-bottom: 0.4rem;
+  cursor: pointer;
+}
+.crumb:hover {
+  color: var(--text);
+}
+
 .insight-icon {
   flex: none;
 }
