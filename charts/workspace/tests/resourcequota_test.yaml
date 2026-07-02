@@ -18,10 +18,13 @@ tests:
           value: ws-alice
       - equal:
           path: spec.hard["requests.cpu"]
-          value: "1"
+          value: "2"
+      - equal:
+          path: spec.hard["limits.cpu"]
+          value: "8"
       - equal:
           path: spec.hard["limits.memory"]
-          value: 8Gi
+          value: 12Gi
       - equal:
           path: spec.hard.pods
           value: "20"
@@ -48,16 +51,18 @@ tests:
     set:
       user.name: alice
       namespace: ws-alice
-      quota.limitsCpu: "8"
-      quota.requestsMemory: 4Gi
+      # Distinct from the chart defaults (8 / 3Gi) so this actually proves the
+      # override path, not just a coincidental match.
+      quota.limitsCpu: "16"
+      quota.requestsMemory: 6Gi
     documentIndex: 0
     asserts:
       - equal:
           path: spec.hard["limits.cpu"]
-          value: "8"
+          value: "16"
       - equal:
           path: spec.hard["requests.memory"]
-          value: 4Gi
+          value: 6Gi
 
   - it: renders nothing when quota is disabled
     set:
