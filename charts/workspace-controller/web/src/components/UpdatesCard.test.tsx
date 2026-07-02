@@ -46,6 +46,7 @@ const ws = (over: Partial<Workspace> = {}): Workspace => ({
   user: 'octo',
   deployment: 'ws-octo',
   namespace: 'ws-octo',
+  isolated: true,
   state: 'running',
   desiredReplicas: 1,
   readyReplicas: 1,

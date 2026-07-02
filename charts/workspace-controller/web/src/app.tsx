@@ -108,6 +108,7 @@ function Row({ ws }: { ws: Workspace }) {
               ws.user
             )}
             <Pill state={ws.state} />
+            <IsolationPill isolated={ws.isolated} namespace={ws.namespace} />
             {ws.updateAvailable && (
               <span class="pill pill-update" title={`Update available: ${ws.version} → latest`}>
                 update
@@ -138,4 +139,22 @@ function Row({ ws }: { ws: Workspace }) {
 
 function Pill({ state }: { state: WorkspaceState }) {
   return <span class={`pill pill-${state}`}>{state}</span>;
+}
+
+// Distinguishes a workspace migrated to its own namespace (#103) from one still
+// in the shared control-plane namespace — so a migrated workspace and the
+// scaled-to-0 copy left behind in `coder` don't read as accidental duplicates.
+function IsolationPill({ isolated, namespace }: { isolated: boolean; namespace: string }) {
+  return isolated ? (
+    <span class="pill pill-isolated" title={`Isolated in its own namespace (${namespace})`}>
+      isolated
+    </span>
+  ) : (
+    <span
+      class="pill pill-shared"
+      title={`Still in the shared control-plane namespace (${namespace}) — not yet migrated, or a leftover copy of a migrated workspace`}
+    >
+      shared
+    </span>
+  );
 }

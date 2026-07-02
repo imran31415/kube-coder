@@ -102,12 +102,20 @@ def ns_for_user(user):
     return f'{WORKSPACE_PREFIX}{user}'
 
 
+def _re2_literal(s):
+    """Escape a literal for embedding in a PromQL (RE2) regex. Unlike
+    re.escape, the hyphen is left UNescaped: Prometheus/RE2 rejects `\\-`
+    outside a character class with an HTTP 400, and `-` is already a literal
+    there. Escapes only the RE2 metacharacters that actually need it."""
+    return re.sub(r'[.^$*+?()\[\]{}|\\]', lambda m: '\\' + m.group(0), s)
+
+
 def _ws_prom_ns_selector():
     """PromQL namespace matcher covering every workspace namespace. Workspaces
     live in per-user ws-<user> namespaces (#103); the controller's own namespace
     is OR'd in so a workspace not yet migrated off the shared namespace still
     shows in fleet metrics. Paired with a pod=~"ws-.*" filter at each call site."""
-    return f'namespace=~"{re.escape(WORKSPACE_PREFIX)}.*|{re.escape(NAMESPACE)}"'
+    return f'namespace=~"{_re2_literal(WORKSPACE_PREFIX)}.*|{_re2_literal(NAMESPACE)}"'
 
 
 class KubectlError(RuntimeError):
@@ -282,10 +290,17 @@ def list_workspaces():
             detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
         image = _workspace_image(dep)
         image_tag, version = version_from_image(image)
+        ws_ns = dep.get('metadata', {}).get('namespace', NAMESPACE)
         out.append({
             'user': user,
             'deployment': name,
-            'namespace': dep.get('metadata', {}).get('namespace', NAMESPACE),
+            'namespace': ws_ns,
+            # Isolated == migrated to its own per-user namespace (#103). A
+            # workspace still in the control-plane namespace ($NAMESPACE) is
+            # either not-yet-migrated or a leftover scaled-to-0 rollback copy —
+            # the SPA badges these differently so the two don't look like
+            # accidental duplicates during a migration.
+            'isolated': ws_ns != NAMESPACE,
             'state': state,
             'desiredReplicas': desired,
             'readyReplicas': ready,

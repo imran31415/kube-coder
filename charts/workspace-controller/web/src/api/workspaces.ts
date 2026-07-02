@@ -17,6 +17,14 @@ export interface Workspace {
   deployment: string;
   /** The workspace's own namespace, e.g. ws-imran (per-workspace isolation, #103). */
   namespace: string;
+  /**
+   * True when the workspace has been migrated to its own per-user namespace
+   * (#103); false when it still lives in the shared control-plane namespace
+   * (not yet migrated, or a leftover rollback copy). Drives the UI badge that
+   * keeps a migrated workspace and its old shared-namespace copy visually
+   * distinct instead of looking like accidental duplicates.
+   */
+  isolated: boolean;
   state: WorkspaceState;
   desiredReplicas: number;
   readyReplicas: number;

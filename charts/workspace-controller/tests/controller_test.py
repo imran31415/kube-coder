@@ -643,6 +643,18 @@ class PerWorkspaceNamespaceTest(unittest.TestCase):
         self.assertIn('ws', sel)           # per-user namespaces (ws-<user>)
         self.assertIn('coder', sel)        # + not-yet-migrated fallback
         self.assertTrue(sel.startswith('namespace=~'))
+        # Regression: the hyphen must NOT be backslash-escaped. Prometheus/RE2
+        # rejects `\-` outside a character class with an HTTP 400, which broke
+        # the whole cluster-capacity panel. re.escape() produced `ws\-`; the
+        # selector must embed a bare `ws-`.
+        self.assertIn('ws-', sel)
+        self.assertNotIn('\\-', sel)
+
+    def test_re2_literal_leaves_hyphen_but_escapes_metachars(self):
+        # Hyphen stays literal (RE2-safe outside a char class); real
+        # metacharacters are escaped so a crafted prefix can't break the query.
+        self.assertEqual(controller._re2_literal('ws-'), 'ws-')
+        self.assertEqual(controller._re2_literal('a.b+c'), 'a\\.b\\+c')
 
     def test_discover_namespaces_filters_to_ws_and_includes_own(self):
         controller._kubectl_json = lambda args, namespace=None: {'items': [
