@@ -1,4 +1,4 @@
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { type Workspace, type WorkspaceState } from './api/workspaces';
 import {
@@ -61,8 +61,48 @@ function CapacityView() {
   );
 }
 
+const PAGE_SIZE = 10;
+type StateFilter = 'all' | 'running' | 'stopped';
+type NsFilter = 'all' | 'isolated' | 'shared';
+
 function WorkspaceList() {
   const rows = workspaces.value;
+  const [query, setQuery] = useState('');
+  const [stateF, setStateF] = useState<StateFilter>('all');
+  const [nsF, setNsF] = useState<NsFilter>('all');
+  const [page, setPage] = useState(0);
+
+  const q = query.trim().toLowerCase();
+  const filtered = rows.filter((w) => {
+    // "running" groups every active state (running/transitioning/degraded) —
+    // the useful split for an operator is active-vs-stopped, not the exact pill.
+    if (stateF === 'running' && w.state === 'stopped') return false;
+    if (stateF === 'stopped' && w.state !== 'stopped') return false;
+    if (nsF === 'isolated' && !w.isolated) return false;
+    if (nsF === 'shared' && w.isolated) return false;
+    if (!q) return true;
+    return (
+      w.user.toLowerCase().includes(q) ||
+      w.namespace.toLowerCase().includes(q) ||
+      (w.version ?? '').toLowerCase().includes(q)
+    );
+  });
+
+  // Clamp the page against the current filtered length so shrinking the result
+  // set (typing, or a workspace disappearing on poll) can't strand an empty page.
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const cur = Math.min(page, pageCount - 1);
+  const start = cur * PAGE_SIZE;
+  const pageRows = filtered.slice(start, start + PAGE_SIZE);
+  // Any filter change resets to the first page so results are visible.
+  const withReset = <T,>(setter: (v: T) => void, v: T) => {
+    setter(v);
+    setPage(0);
+  };
+
+  const stateChips: StateFilter[] = ['all', 'running', 'stopped'];
+  const nsChips: NsFilter[] = ['all', 'isolated', 'shared'];
+
   return (
     <div class="app">
       <header class="hdr">
@@ -93,14 +133,62 @@ function WorkspaceList() {
         </div>
       )}
 
+      <div class="filters">
+        <input
+          class="search"
+          type="search"
+          placeholder="Search user, namespace, or version…"
+          aria-label="Search workspaces"
+          value={query}
+          onInput={(e) => withReset(setQuery, (e.target as HTMLInputElement).value)}
+        />
+        <div class="filter-group" role="group" aria-label="Filter by state">
+          {stateChips.map((s) => (
+            <button key={s} class={`chip ${stateF === s ? 'on' : ''}`} onClick={() => withReset(setStateF, s)}>
+              {s === 'all' ? 'All' : s[0].toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div class="filter-group" role="group" aria-label="Filter by namespace isolation">
+          {nsChips.map((s) => (
+            <button key={s} class={`chip ${nsF === s ? 'on' : ''}`} onClick={() => withReset(setNsF, s)}>
+              {s === 'all' ? 'Any ns' : s[0].toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {loaded.value && rows.length === 0 && !error.value ? (
         <div class="empty">No workspaces found.</div>
+      ) : filtered.length === 0 ? (
+        <div class="empty">No workspaces match your search or filters.</div>
       ) : (
-        <ul class="list" aria-label="Workspaces">
-          {rows.map((w) => (
-            <Row key={w.deployment} ws={w} />
-          ))}
-        </ul>
+        <>
+          <ul class="list" aria-label="Workspaces">
+            {pageRows.map((w) => (
+              <Row key={w.deployment} ws={w} />
+            ))}
+          </ul>
+          <div class="pager">
+            <span class="pager-info">
+              {start + 1}–{Math.min(start + PAGE_SIZE, filtered.length)} of {filtered.length}
+              {filtered.length !== rows.length ? ` (filtered from ${rows.length})` : ''}
+            </span>
+            {filtered.length > PAGE_SIZE && (
+              <div class="pager-btns">
+                <button class="btn ghost" disabled={cur === 0} onClick={() => setPage(cur - 1)}>
+                  ← Prev
+                </button>
+                <span class="pager-pos">
+                  Page {cur + 1} / {pageCount}
+                </span>
+                <button class="btn ghost" disabled={cur >= pageCount - 1} onClick={() => setPage(cur + 1)}>
+                  Next →
+                </button>
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
