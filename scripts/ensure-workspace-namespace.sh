@@ -58,3 +58,9 @@ copy_secret "$REGCRED_NAME" 1
 # set update.selfServeSecretName mount it; without a per-namespace copy the pod
 # dies with CreateContainerConfigError. Optional: skip silently if absent.
 copy_secret "${SELF_SERVE_SECRET_NAME:-kc-self-serve}" 0
+# Shared assistant secret (openrouter key). Provisioned workspaces reference it
+# via assistant.openrouter.sharedSecretName (default coder-shared-assistant) as
+# a pre-existing shared Secret the chart does NOT create; per-namespace isolation
+# (#103) means it must be copied in or the ide container hits
+# CreateContainerConfigError. Optional: skip silently if absent.
+copy_secret "${ASSISTANT_SHARED_SECRET_NAME:-coder-shared-assistant}" 0
