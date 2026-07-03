@@ -22,10 +22,10 @@ metadata:
     app: ws-{{ .Values.user.name }}
 spec:
   hard:
-    requests.cpu: {{ .Values.quota.requestsCpu | quote }}
-    requests.memory: {{ .Values.quota.requestsMemory | quote }}
-    limits.cpu: {{ .Values.quota.limitsCpu | quote }}
-    limits.memory: {{ .Values.quota.limitsMemory | quote }}
+    requests.cpu: {{ include "workspace.quotaRequestsCpu" . | trim | quote }}
+    requests.memory: {{ include "workspace.quotaRequestsMemory" . | trim | quote }}
+    limits.cpu: {{ include "workspace.quotaLimitsCpu" . | trim | quote }}
+    limits.memory: {{ include "workspace.quotaLimitsMemory" . | trim | quote }}
     pods: {{ .Values.quota.pods | quote }}
 {{- if .Values.quota.limitRange.enabled }}
 ---
