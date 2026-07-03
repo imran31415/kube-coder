@@ -21,6 +21,7 @@ import TaskDetailScreen from './src/screens/TaskDetailScreen';
 import NewTaskScreen from './src/screens/NewTaskScreen';
 import AppsScreen from './src/screens/AppsScreen';
 import AppViewScreen from './src/screens/AppViewScreen';
+import DesktopScreen from './src/screens/DesktopScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
 import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
@@ -78,6 +79,7 @@ const Tab = createBottomTabNavigator();
 
 const TAB_ICONS: Record<string, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]> = {
   Tasks: ['layers-outline', 'layers'],
+  Desktop: ['grid-outline', 'grid'],
   Apps: ['globe-outline', 'globe'],
   Memory: ['bookmark-outline', 'bookmark'],
   Metrics: ['stats-chart-outline', 'stats-chart'],
@@ -100,6 +102,7 @@ function MainTabs() {
       })}
     >
       <Tab.Screen name="Tasks" component={TasksStack} />
+      <Tab.Screen name="Desktop" component={DesktopScreen} />
       <Tab.Screen name="Apps" component={AppsStack} />
       <Tab.Screen name="Memory" component={MemoryScreen} />
       <Tab.Screen name="Metrics" component={MetricsScreen} />

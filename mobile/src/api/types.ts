@@ -40,6 +40,44 @@ export interface Health {
   ok?: boolean;
 }
 
+/** Desktop launcher (mirrors /api/desktop — the web dashboard's Desktop tab). */
+export type DesktopActionType = 'task' | 'url' | 'shell';
+
+export interface DesktopActionTask {
+  type: 'task';
+  prompt: string;
+  workdir?: string;
+  assistant?: string;
+}
+export interface DesktopActionUrl {
+  type: 'url';
+  url: string;
+  target: 'blank' | 'self';
+}
+export interface DesktopActionShell {
+  type: 'shell';
+  command: string;
+  timeout?: number;
+}
+export type DesktopAction = DesktopActionTask | DesktopActionUrl | DesktopActionShell;
+
+export interface DesktopItem {
+  id: string;
+  label: string;
+  /** Emoji/text, or "icon:NAME" for a named line icon. */
+  icon: string;
+  /** Web-only keyboard shortcut; preserved (not editable) on mobile. */
+  hotkey?: string;
+  action: DesktopAction;
+}
+
+export type DesktopItemDraft = Omit<DesktopItem, 'id'>;
+
+export type LaunchResult =
+  | { kind: 'task'; task_id: string }
+  | { kind: 'shell'; exit_code: number; stdout: string; stderr: string }
+  | { kind: 'url'; url: string; target: 'blank' | 'self' };
+
 /** One entry on the Applications tab (mirrors /api/apps). */
 export interface AppEntry {
   port: number;

@@ -6,7 +6,15 @@
  * Timestamps are offsets from load time so the relative labels ("90s ago",
  * "1h ago") read realistically whenever screenshots are regenerated.
  */
-import type { AppEntry, Health, MemoryRecord, Metrics, TaskDetail, TaskSummary } from '../api/types';
+import type {
+  AppEntry,
+  DesktopItem,
+  Health,
+  MemoryRecord,
+  Metrics,
+  TaskDetail,
+  TaskSummary,
+} from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -164,6 +172,28 @@ export const mockHealth: Health = {
   browser: false,
   ok: true,
 };
+
+export const mockDesktop: DesktopItem[] = [
+  {
+    id: 'seed-build',
+    label: 'Fix flaky test',
+    icon: 'icon:chat',
+    action: { type: 'task', prompt: 'Find and fix the flaky integration test', workdir: '/home/dev/kube-coder' },
+  },
+  {
+    id: 'seed-store',
+    label: 'Storefront',
+    icon: '🛍️',
+    action: { type: 'url', url: 'https://demo-public.dev.scalebase.io', target: 'blank' },
+  },
+  {
+    id: 'seed-tests',
+    label: 'Run tests',
+    icon: 'icon:terminal',
+    hotkey: 'cmd+shift+t',
+    action: { type: 'shell', command: 'cd ~/kube-coder && make python-tests' },
+  },
+];
 
 export const mockApps: AppEntry[] = [
   {
