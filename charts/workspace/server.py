@@ -4302,9 +4302,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         token = ClaudeTaskManager.get_or_create_token()
         self.send_json({'token': token})
 
-    # Only ever bounce the WebView into the app proxy — anything else would be
-    # an open redirect on an authenticated endpoint.
-    _APP_SESSION_NEXT_RE = re.compile(r'^/api/app-proxy/\d+(/.*)?$')
+    # Only ever bounce the WebView into the app proxy or the terminal proxy —
+    # anything else would be an open redirect on an authenticated endpoint.
+    _APP_SESSION_NEXT_RE = re.compile(r'^/api/(app-proxy/\d+|terminal-proxy)(/.*)?$')
 
     def handle_app_session_mint(self):
         """GET /api/claude/apps/session?next=/api/app-proxy/<port>/
@@ -5792,7 +5792,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         """
         m = re.match(r'^/api/app-proxy/(\d+)(/.*)?$', claude_path)
         if not m:
-            return False
+            return self._dispatch_terminal_proxy(claude_path, method)
         port = int(m.group(1))
         upstream_path = m.group(2) or '/'
         # Preserve the original query string (stripped from claude_path
@@ -5808,7 +5808,29 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self._proxy_app_request(port, upstream_path, method=method)
         return True
 
-    def _proxy_app_websocket(self, port, upstream_path):
+    # ttyd's in-pod port. Reserved in AppsManager.INTERNAL_PORTS (users can't
+    # pin/expose it via the generic app proxy); this dedicated route is how the
+    # mobile app embeds the live terminal, behind the same Bearer/app-session
+    # auth as the app proxy.
+    TTYD_PORT = 7681
+
+    def _dispatch_terminal_proxy(self, claude_path, method):
+        """Match /api/terminal-proxy/... and forward to ttyd (HTTP + WS)."""
+        m = re.match(r'^/api/terminal-proxy(/.*)?$', claude_path)
+        if not m:
+            return False
+        upstream_path = m.group(1) or '/'
+        qs = self.path.split('?', 1)
+        if len(qs) == 2:
+            upstream_path = upstream_path + '?' + qs[1]
+        if method == 'GET' and self.headers.get('Upgrade', '').lower() == 'websocket':
+            self._proxy_app_websocket(self.TTYD_PORT, upstream_path, allow_internal=True)
+            return True
+        self._proxy_app_request(self.TTYD_PORT, upstream_path, method=method,
+                                prefix='/api/terminal-proxy', allow_internal=True)
+        return True
+
+    def _proxy_app_websocket(self, port, upstream_path, allow_internal=False):
         """Hijack the underlying TCP socket and relay a WebSocket session
         between the client and the upstream app.
 
@@ -5818,12 +5840,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         the socket. We never call `self.send_response()` ourselves — the
         upstream's 101 response is relayed verbatim so the client sees the
         real Sec-WebSocket-Accept handshake.
+
+        allow_internal backs the fixed internal routes (ttyd via
+        /api/terminal-proxy): skips the is_proxyable reserved-port gate and
+        always strips the route prefix (internal upstreams serve from root).
         """
         if not self.check_app_proxy_auth():
             self.send_response(401)
             self.end_headers()
             return
-        ok, reason = AppsManager.is_proxyable(port)
+        ok, reason = (True, '') if allow_internal else AppsManager.is_proxyable(port)
         if not ok:
             self.send_response(403)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
@@ -5833,7 +5859,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
         # Compute the forwarded path the same way the HTTP proxy does.
         prefix = f'/api/app-proxy/{port}'
-        pin = AppsManager.get_pin(port) or {}
+        pin = {} if allow_internal else (AppsManager.get_pin(port) or {})
         keep_prefix = bool(pin.get('strip_prefix', False))
         if not keep_prefix:
             forwarded_path = upstream_path or '/'
@@ -5966,7 +5992,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             pass
 
-    def _proxy_app_request(self, port, upstream_path, method='GET'):
+    def _proxy_app_request(self, port, upstream_path, method='GET', prefix=None,
+                           allow_internal=False):
         """Reverse-proxy a request to http://127.0.0.1:<port><upstream_path>.
 
         Streams the response body via read1+flush so SSE/chunked responses
@@ -5982,31 +6009,41 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         - pinned port with strip_prefix=False: pass the full path through
           (the Vite-style case where the dev server only matches its own
           --base prefix).
+
+        `prefix` + `allow_internal` back the fixed internal routes (the
+        /api/terminal-proxy → ttyd:7681 path the mobile app embeds): a custom
+        prefix keeps the trailing-slash normalization honest, allow_internal
+        skips the is_proxyable listener/reserved-port gate (the route is
+        pinned server-side to a workspace service, never user input), and the
+        HTML/Location rewrites are skipped — ttyd's assets are relative.
         """
         if not self.check_app_proxy_auth():
             self.send_response(401)
             self.end_headers()
             return
-        ok, reason = AppsManager.is_proxyable(port)
-        if not ok:
-            self.send_response(403)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write((reason + '\n').encode())
-            return
+        internal_route = prefix is not None
+        if not allow_internal:
+            ok, reason = AppsManager.is_proxyable(port)
+            if not ok:
+                self.send_response(403)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write((reason + '\n').encode())
+                return
+        prefix = prefix or f'/api/app-proxy/{port}'
 
         # Trailing-slash 301 so relative URLs resolve against the prefix root.
         if upstream_path in ('', '/'):
             normalized = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
-            if normalized == f'/api/app-proxy/{port}':
+            if normalized == prefix:
                 self.send_response(301)
-                self.send_header('Location', f'/api/app-proxy/{port}/')
+                self.send_header('Location', f'{prefix}/')
                 self.end_headers()
                 return
 
-        # Apply the prefix-stripping rule based on the pin's flag.
-        prefix = f'/api/app-proxy/{port}'
-        pin = AppsManager.get_pin(port) or {}
+        # Apply the prefix-stripping rule based on the pin's flag. Internal
+        # routes always strip — their upstreams serve from the root.
+        pin = {} if internal_route else (AppsManager.get_pin(port) or {})
         keep_prefix = bool(pin.get('strip_prefix', False))  # default: strip
         if not keep_prefix:
             # Strip the proxy prefix from the path we forward upstream.
@@ -6079,6 +6116,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             method != 'HEAD'
             and resp.status == 200
             and 'text/html' in ctype.lower()
+            # Internal routes (ttyd) serve relative assets; the rewriter
+            # would re-prefix them onto /api/app-proxy/<port> — wrong route.
+            and not internal_route
         )
         rewritten = self._rewrite_proxied_html(resp.read(), port) if rewrite_body else None
 
@@ -6114,7 +6154,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     if not has_script_src:
                         parts.append("script-src 'self' 'unsafe-inline'")
                     v = '; '.join(parts)
-            if kl == 'location':
+            if kl == 'location' and not internal_route:
                 v = self._rewrite_location_header(v, port)
             self.send_header(k, v)
         if rewritten is not None:

@@ -180,6 +180,36 @@ export async function sendKey(id: string, key: string): Promise<void> {
   await request(`/api/claude/tasks/${id}/key`, { method: 'POST', body: { key } });
 }
 
+/** Point the workspace's shared ttyd entrypoint at this task's tmux session
+ * (writes the one-shot pending file terminal-entry.sh claims). Call right
+ * before mounting the terminal WebView. session_ready=false ⇒ the tmux
+ * session is gone (finished task) and the caller should render the archived
+ * output instead. */
+export async function prepareTerminal(
+  id: string,
+): Promise<{ ok: boolean; session?: string; session_ready?: boolean }> {
+  if (getConfig().mock) {
+    await delay(80);
+    return { ok: true, session: `claude-${id}`, session_ready: false };
+  }
+  return request(`/api/claude/tasks/${id}/prepare-terminal`, { method: 'POST', body: {} });
+}
+
+/**
+ * URL + headers for embedding the live ttyd terminal in a WebView — same
+ * session-cookie bootstrap as appEmbedSource, landing on /api/terminal-proxy/
+ * (server.py's fixed proxy to ttyd:7681). Cache-busted so ttyd re-runs its
+ * entrypoint (which attaches the pending tmux session) on every mount.
+ */
+export function terminalEmbedSource(): { uri: string; headers: Record<string, string> } {
+  const { host, token } = getConfig();
+  const next = encodeURIComponent(`/api/terminal-proxy/?t=${Date.now()}`);
+  return {
+    uri: `${host.replace(/\/+$/, '')}/api/claude/apps/session?next=${next}`,
+    headers: { Authorization: `Bearer ${token}` },
+  };
+}
+
 export async function createTask(input: {
   prompt: string;
   workdir?: string;
