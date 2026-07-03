@@ -9,8 +9,8 @@ with `make mobile-screenshots` (from the repo root).
 | `phone/`      | Android phone       | 1080 × 1920  | 2–8 phone screenshots required  |
 | `tablet-10/`  | Android 10" tablet  | 1600 × 2560  | Optional (recommended)          |
 
-Screens captured per device: `01-tasks`, `02-task-detail`, `03-new-task`,
-`04-memory`, `05-metrics`.
+Screens captured per device: `01-tasks`, `02-task-detail`, `03-desktop`,
+`04-apps`, `05-new-task`, `06-memory`, `07-metrics`.
 
 Play accepts 320–3840 px per side with a max 2:1 aspect ratio; the sizes above
 satisfy that. Upload under Play Console → Store listing → Phone / Tablet

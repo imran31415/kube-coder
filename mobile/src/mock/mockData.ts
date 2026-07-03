@@ -39,6 +39,15 @@ export const mockTasks: TaskSummary[] = [
     waiting_for_input: true,
   },
   {
+    id: 'p7q8r9',
+    prompt: 'Polish the onboarding animation and add haptics to the connect button',
+    status: 'running',
+    assistant: 'ante',
+    workdir: '/home/dev/storefront',
+    created_at: NOW - 240,
+    updated_at: NOW - 12,
+  },
+  {
     id: 'g7h8i9',
     prompt: 'Write integration tests for the webhook receiver',
     status: 'done',
@@ -192,6 +201,24 @@ export const mockDesktop: DesktopItem[] = [
     icon: 'icon:terminal',
     hotkey: 'cmd+shift+t',
     action: { type: 'shell', command: 'cd ~/kube-coder && make python-tests' },
+  },
+  {
+    id: 'seed-deploy',
+    label: 'Deploy staging',
+    icon: '🚀',
+    action: { type: 'shell', command: 'cd ~/storefront && make deploy-staging' },
+  },
+  {
+    id: 'seed-standup',
+    label: 'Standup notes',
+    icon: 'icon:memory',
+    action: { type: 'task', prompt: 'Summarize yesterday’s commits into standup notes', workdir: '/home/dev' },
+  },
+  {
+    id: 'seed-docs',
+    label: 'Docs',
+    icon: 'icon:docs',
+    action: { type: 'url', url: 'https://github.com/imran31415/kube-coder#readme', target: 'blank' },
   },
 ];
 
