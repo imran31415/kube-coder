@@ -1,7 +1,7 @@
 /** Task detail: live-tailed output + follow-up composer. */
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -20,6 +20,7 @@ import type { TaskDetail } from '../api/types';
 import type { TasksStackParams } from '../navigation';
 import { parseAnsiLines } from '../util/ansi';
 import { colors, font, radius, space, statusColor } from '../theme';
+import { usePolling } from '../util/usePolling';
 
 // Mobile key bar: control keys you can't type into the composer. Paste pulls the
 // clipboard into the input; the rest go straight to the live tmux session.
@@ -54,7 +55,11 @@ export default function TaskDetailScreen() {
   const [msg, setMsg] = useState('');
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [sendErr, setSendErr] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // Only auto-follow new output while the user is pinned near the bottom —
+  // force-scrolling while they read scrollback makes the log unreadable.
+  const pinnedToBottom = useRef(true);
 
   const load = useCallback(async () => {
     try {
@@ -69,11 +74,7 @@ export default function TaskDetailScreen() {
     }
   }, [id]);
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  }, [load]);
+  usePolling(load, 3000);
 
   const active = task?.status === 'running' || task?.status === 'waiting';
   const lines = useMemo(() => parseAnsiLines(output), [output]);
@@ -130,10 +131,15 @@ export default function TaskDetailScreen() {
   async function send() {
     if (!msg.trim()) return;
     setSending(true);
+    setSendErr(null);
     try {
       await sendMessage(id, msg.trim());
       setMsg('');
       await load();
+    } catch (e) {
+      // Keep the draft so the user can retry; a silent failure here looks
+      // exactly like a hung assistant.
+      setSendErr(e instanceof Error ? e.message : 'Failed to send');
     } finally {
       setSending(false);
     }
@@ -165,7 +171,15 @@ export default function TaskDetailScreen() {
           ref={scrollRef}
           style={styles.term}
           contentContainerStyle={styles.termContent}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+          scrollEventThrottle={64}
+          onScroll={(e) => {
+            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+            pinnedToBottom.current =
+              contentOffset.y + layoutMeasurement.height >= contentSize.height - 40;
+          }}
+          onContentSizeChange={() => {
+            if (pinnedToBottom.current) scrollRef.current?.scrollToEnd({ animated: false });
+          }}
         >
           {lines.length === 0 ? (
             <Text style={styles.termText}>(no output yet)</Text>
@@ -205,15 +219,20 @@ export default function TaskDetailScreen() {
                 </Pressable>
               ))}
             </ScrollView>
+            {sendErr ? (
+              <Text style={styles.sendErr} accessibilityRole="alert">
+                Couldn't send: {sendErr}
+              </Text>
+            ) : null}
             <View style={styles.composer}>
-            <TextInput
-              value={msg}
-              onChangeText={setMsg}
-              placeholder="Send a follow-up…"
-              placeholderTextColor={colors.textFaint}
-              style={styles.composerInput}
-              multiline
-            />
+              <TextInput
+                value={msg}
+                onChangeText={setMsg}
+                placeholder="Send a follow-up…"
+                placeholderTextColor={colors.textFaint}
+                style={styles.composerInput}
+                multiline
+              />
               <Button
                 title="Send"
                 icon="arrow-up"
@@ -283,6 +302,12 @@ const styles = StyleSheet.create({
     fontSize: font.size.md,
   },
   sendBtn: { paddingHorizontal: space.lg },
+  sendErr: {
+    color: colors.danger,
+    fontSize: font.size.xs,
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+  },
   finishedBar: {
     flexDirection: 'row',
     alignItems: 'center',

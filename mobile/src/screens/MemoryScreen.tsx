@@ -1,10 +1,11 @@
 /** Persistent memory browser (read-only) — searchable, compact rows. */
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { listMemory } from '../api/client';
-import { EmptyState, Loading, ScreenHeader } from '../components/ui';
+import { EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
 import type { MemoryRecord } from '../api/types';
 import { colors, font, radius, space } from '../theme';
 
@@ -14,12 +15,32 @@ export default function MemoryScreen() {
   const [items, setItems] = useState<MemoryRecord[] | null>(null);
   const [query, setQuery] = useState('');
   const [openKey, setOpenKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    listMemory()
-      .then(setItems)
-      .catch(() => setItems([]));
+  const load = useCallback(async () => {
+    try {
+      setItems(await listMemory());
+      setError(null);
+    } catch (e) {
+      // A failed load must not masquerade as "no memory entries".
+      setError((e as Error).message);
+      setItems((prev) => prev ?? []);
+    }
   }, []);
+
+  // Memories change as tasks run; refetch whenever the tab regains focus.
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
 
   const filtered = useMemo(() => {
     if (!items) return null;
@@ -54,14 +75,20 @@ export default function MemoryScreen() {
         </View>
       ) : null}
 
+      {error && items !== null && items.length > 0 ? <ErrorBanner message={error} /> : null}
+
       {filtered === null ? (
         <Loading label="Loading memory…" />
       ) : items && items.length === 0 ? (
-        <EmptyState
-          icon="bookmark-outline"
-          title="No memory entries"
-          subtitle="Facts you ask the workspace to remember show up here."
-        />
+        error ? (
+          <EmptyState icon="cloud-offline-outline" title="Couldn't load memory" subtitle={error} />
+        ) : (
+          <EmptyState
+            icon="bookmark-outline"
+            title="No memory entries"
+            subtitle="Facts you ask the workspace to remember show up here."
+          />
+        )
       ) : filtered.length === 0 ? (
         <EmptyState icon="search-outline" title="No matches" subtitle={`Nothing matches “${query.trim()}”.`} />
       ) : (
@@ -72,6 +99,9 @@ export default function MemoryScreen() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
+          }
           ListHeaderComponent={
             <Text style={styles.count}>
               {filtered.length} {filtered.length === 1 ? 'entry' : 'entries'}

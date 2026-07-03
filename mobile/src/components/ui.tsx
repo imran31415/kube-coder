@@ -182,6 +182,19 @@ export function Label({ children, style }: { children: React.ReactNode; style?: 
   return <Text style={[styles.label, style]}>{children}</Text>;
 }
 
+/** Inline, non-blocking error strip. Shown when a screen still has (stale)
+ *  data to display — a full-screen error state would throw that away. */
+export function ErrorBanner({ message }: { message: string }) {
+  return (
+    <View style={styles.errBanner} accessibilityRole="alert">
+      <Ionicons name="cloud-offline-outline" size={15} color={colors.danger} />
+      <Text style={styles.errBannerText} numberOfLines={2}>
+        {message}
+      </Text>
+    </View>
+  );
+}
+
 export { Ionicons };
 
 const styles = StyleSheet.create({
@@ -249,4 +262,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     marginBottom: space.sm,
   },
+  errBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginHorizontal: space.lg,
+    marginBottom: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.danger + '55',
+    backgroundColor: colors.danger + '14',
+  },
+  errBannerText: { flex: 1, color: colors.danger, fontSize: font.size.sm },
 });

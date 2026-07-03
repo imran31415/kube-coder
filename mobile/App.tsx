@@ -19,10 +19,12 @@ import OnboardingScreen from './src/screens/OnboardingScreen';
 import TasksScreen from './src/screens/TasksScreen';
 import TaskDetailScreen from './src/screens/TaskDetailScreen';
 import NewTaskScreen from './src/screens/NewTaskScreen';
+import AppsScreen from './src/screens/AppsScreen';
+import AppViewScreen from './src/screens/AppViewScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
 import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
-import type { TasksStackParams } from './src/navigation';
+import type { AppsStackParams, TasksStackParams } from './src/navigation';
 import { hydrate, isConfigured } from './src/store/config';
 import { useConfig } from './src/store/useConfig';
 import { colors, font } from './src/theme';
@@ -62,10 +64,21 @@ function TasksStack() {
   );
 }
 
+const AppsStackNav = createNativeStackNavigator<AppsStackParams>();
+function AppsStack() {
+  return (
+    <AppsStackNav.Navigator screenOptions={headerOptions}>
+      <AppsStackNav.Screen name="AppList" component={AppsScreen} options={{ headerShown: false }} />
+      <AppsStackNav.Screen name="AppView" component={AppViewScreen} options={{ title: 'App' }} />
+    </AppsStackNav.Navigator>
+  );
+}
+
 const Tab = createBottomTabNavigator();
 
 const TAB_ICONS: Record<string, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]> = {
   Tasks: ['layers-outline', 'layers'],
+  Apps: ['globe-outline', 'globe'],
   Memory: ['bookmark-outline', 'bookmark'],
   Metrics: ['stats-chart-outline', 'stats-chart'],
   Settings: ['settings-outline', 'settings'],
@@ -87,6 +100,7 @@ function MainTabs() {
       })}
     >
       <Tab.Screen name="Tasks" component={TasksStack} />
+      <Tab.Screen name="Apps" component={AppsStack} />
       <Tab.Screen name="Memory" component={MemoryScreen} />
       <Tab.Screen name="Metrics" component={MetricsScreen} />
       <Tab.Screen name="Settings" component={SettingsScreen} />
@@ -121,12 +135,13 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  // No fixed height/paddingBottom: bottom-tabs sizes itself around the
+  // home-indicator inset, and a hardcoded 66px bar crowds the indicator on
+  // devices that have one (and wastes space on ones that don't).
   tabBar: {
     backgroundColor: colors.bgElevated,
     borderTopColor: colors.border,
-    height: 66,
-    paddingBottom: 9,
-    paddingTop: 8,
+    paddingTop: 6,
   },
   boot: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
   bootText: { color: colors.text, fontSize: font.size.xl, fontWeight: '800' },
