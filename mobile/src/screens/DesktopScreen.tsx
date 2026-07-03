@@ -26,6 +26,7 @@ import {
   updateDesktopItem,
 } from '../api/client';
 import { DesktopEditorSheet } from '../components/DesktopEditorSheet';
+import { getConfig } from '../store/config';
 import { EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
 import type { DesktopItem, DesktopItemDraft } from '../api/types';
 import { colors, font, radius, shadow, space } from '../theme';
@@ -66,6 +67,50 @@ function actionSubtitle(item: DesktopItem): string {
   return a.command;
 }
 
+/** Where a url-icon should land INSIDE the app, or null for the browser.
+ *
+ * Desktop icons are shared with the web dashboard, whose seeds store its own
+ * routes ('/tasks', '/memory', …). On mobile those pages ARE tabs — bouncing
+ * the user out to Safari for them is jarring — so dashboard routes (relative,
+ * or absolute on the connected workspace host, with or without the /oauth
+ * prefix) map to the matching tab. Anything unmapped (external links, or web
+ * routes with no mobile equivalent like /files, /docs, /triggers) still opens
+ * in the browser.
+ */
+function inAppTarget(url: string): { tab: string; params?: object } | null {
+  let path = url;
+  if (!path.startsWith('/')) {
+    try {
+      const u = new URL(url);
+      const workspace = new URL(getConfig().host);
+      if (u.host !== workspace.host) return null;
+      path = u.pathname;
+    } catch {
+      return null;
+    }
+  }
+  path = path.replace(/^\/oauth(?=\/|$)/, '');
+  const [head, sub] = path.split('/').filter(Boolean);
+  switch (head) {
+    case undefined:
+      return { tab: 'Tasks' }; // '/' — the dashboard home
+    case 'tasks':
+      return sub
+        ? { tab: 'Tasks', params: { screen: 'TaskDetail', params: { id: sub } } }
+        : { tab: 'Tasks', params: { screen: 'TaskList' } };
+    case 'memory':
+      return { tab: 'Memory' };
+    case 'apps':
+      return { tab: 'Apps', params: { screen: 'AppList' } };
+    case 'desktop':
+      return { tab: 'Desktop' };
+    case 'settings':
+      return { tab: 'Settings' };
+    default:
+      return null;
+  }
+}
+
 export default function DesktopScreen() {
   // Cross-tab navigation (launched tasks open in the Tasks stack).
   const nav = useNavigation<{ navigate: (tab: string, opts?: object) => void }>();
@@ -96,11 +141,16 @@ export default function DesktopScreen() {
   };
 
   async function launch(item: DesktopItem) {
-    // URL icons open directly, same as the web (no server roundtrip). Relative
-    // URLs are dashboard routes (the web seeds '/tasks', '/settings', …) —
-    // resolve them against the workspace's oauth-authenticated dashboard.
+    // URL icons open directly, same as the web (no server roundtrip). Dashboard
+    // routes with a mobile tab stay in-app; everything else goes to the
+    // browser (relative routes resolved against the oauth'd dashboard).
     if (item.action.type === 'url') {
       const u = item.action.url;
+      const target = inAppTarget(u);
+      if (target) {
+        nav.navigate(target.tab, target.params);
+        return;
+      }
       void Linking.openURL(u.startsWith('/') ? dashboardUrl(u) : u);
       return;
     }
