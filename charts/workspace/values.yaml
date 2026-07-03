@@ -133,21 +133,31 @@ resources:
 
 # Per-namespace ResourceQuota + LimitRange (see templates/resourcequota.yaml).
 # Now that each workspace owns its namespace, the quota bounds a single tenant
-# instead of a shared pool. Sized to hold the workspace pod AT ITS LIMITS —
-# ide (3 CPU / 4Gi) + the privileged `dind` build sidecar (2 CPU / 4Gi, present
-# whenever build.mode adds docker-in-docker) + the oauth2-proxy pair + one
-# in-flight build Job — with headroom. The earlier 4 CPU / 8Gi ceiling could
-# not admit a dind workspace at all (5 CPU pod alone), which stalled the #103
-# migration for demo. These are ceilings, not reservations: a lighter (kaniko /
-# no-dind) workspace only ever requests what it uses, so the higher cap costs no
-# scheduled capacity. Ties into #95 — override per user for heavier workloads.
+# instead of a shared pool.
+#
+# The four requests/limits caps below default to "" => AUTO-DERIVED from the
+# workspace pod's own resources: the sum across ide + the privileged `dind`
+# build sidecar (present when build.mode=buildkit), plus a fixed overhead for
+# the oauth2-proxy pair, one in-flight build Job, and the cert-manager ACME
+# solver. This keeps the quota correct as a workspace's ide/dind limits change,
+# instead of a static ceiling a heavier workspace could exhaust by itself —
+# which starved oauth2-proxy + cert-manager and took a workspace's ingress/TLS
+# down on migration (#103). Pin any field to override the derived value. These
+# are ceilings, not reservations, so a lighter (kaniko / no-dind) workspace only
+# requests what it uses. Ties into #95.
 quota:
   enabled: true
-  requestsCpu: "2"
-  requestsMemory: 3Gi
-  limitsCpu: "8"
-  limitsMemory: 12Gi
+  requestsCpu: ""      # "" => derive (ide+dind requests + overheadReq*)
+  requestsMemory: ""
+  limitsCpu: ""        # "" => derive (ide+dind limits + overhead*)
+  limitsMemory: ""
   pods: "20"
+  # Headroom added on top of the derived pod sum (oauth2-proxy pair + one build
+  # Job + ACME solver + margin). Tune if your auxiliary pods differ.
+  overheadCpuMilli: 2000
+  overheadMemoryMi: 4096
+  overheadReqCpuMilli: 500
+  overheadReqMemoryMi: 1024
   # LimitRange defaults applied to any container that omits its own
   # requests/limits (e.g. ad-hoc build Jobs), so nothing runs unbounded.
   limitRange:

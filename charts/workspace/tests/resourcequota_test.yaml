@@ -2,7 +2,9 @@ suite: per-namespace ResourceQuota + LimitRange (#103)
 templates:
   - templates/resourcequota.yaml
 tests:
-  - it: renders a ResourceQuota in the workspace's own namespace
+  - it: derives the quota from the pod's resources (default kaniko workspace)
+    # ide 4Gi/2 (chart default), no dind. limits = ide + overhead (2000m/4096Mi);
+    # requests = ide requests 250m/1Gi + overheadReq (500m/1024Mi).
     set:
       user.name: alice
       namespace: ws-alice
@@ -18,16 +20,48 @@ tests:
           value: ws-alice
       - equal:
           path: spec.hard["requests.cpu"]
-          value: "2"
+          value: "750m"
+      - equal:
+          path: spec.hard["requests.memory"]
+          value: 2048Mi
       - equal:
           path: spec.hard["limits.cpu"]
-          value: "8"
+          value: "4000m"
       - equal:
           path: spec.hard["limits.memory"]
-          value: 12Gi
+          value: 8192Mi
       - equal:
           path: spec.hard.pods
           value: "20"
+
+  - it: adds the dind sidecar to the derived quota (buildkit)
+    # ide 4Gi/2 + dind 4Gi/2 + overhead 4Gi/2 = 12288Mi / 6000m.
+    set:
+      user.name: alice
+      namespace: ws-alice
+      build.mode: buildkit
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.hard["limits.cpu"]
+          value: "6000m"
+      - equal:
+          path: spec.hard["limits.memory"]
+          value: 12288Mi
+
+  - it: scales the quota with a heavier ide (no manual override needed)
+    # ide 8Gi + dind 4Gi + overhead 4Gi = 16384Mi (16Gi) — the value that used
+    # to require a hand-set quota override.
+    set:
+      user.name: alice
+      namespace: ws-alice
+      build.mode: buildkit
+      resources.limits.memory: 8Gi
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.hard["limits.memory"]
+          value: 16384Mi
 
   - it: renders a LimitRange with container defaults
     set:
@@ -51,8 +85,8 @@ tests:
     set:
       user.name: alice
       namespace: ws-alice
-      # Distinct from the chart defaults (8 / 3Gi) so this actually proves the
-      # override path, not just a coincidental match.
+      # An explicit value pins the quota, bypassing derivation. Distinct from any
+      # derived value so this proves the override path, not a coincidental match.
       quota.limitsCpu: "16"
       quota.requestsMemory: 6Gi
     documentIndex: 0
