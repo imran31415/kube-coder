@@ -15,13 +15,14 @@
  */
 import { getConfig } from '../store/config';
 import {
+  mockApps,
   mockHealth,
   mockMemory,
   mockMetrics,
   mockTaskDetail,
   mockTasks,
 } from '../mock/mockData';
-import type { Health, MemoryRecord, Metrics, TaskDetail, TaskSummary } from './types';
+import type { AppEntry, Health, MemoryRecord, Metrics, TaskDetail, TaskSummary } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -50,10 +51,16 @@ function buildUrl(host: string, path: string, query?: ReqOpts['query']): string 
   return url;
 }
 
+// A stalled connection should fail visibly, not spin forever — polling screens
+// recover on the next tick, and one-shot actions surface a real error.
+const REQUEST_TIMEOUT_MS = 15000;
+
 async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   const { host, token } = getConfig();
   if (!host || !token) throw new ApiError('Not configured', 0);
   const url = buildUrl(host, path, opts.query);
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -64,9 +71,13 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
         ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: abort.signal,
     });
   } catch (e) {
-    throw new ApiError(`Network error: ${(e as Error).message}`, 0);
+    const aborted = (e as Error).name === 'AbortError';
+    throw new ApiError(aborted ? 'Request timed out' : `Network error: ${(e as Error).message}`, 0);
+  } finally {
+    clearTimeout(timer);
   }
   const ctype = res.headers.get('Content-Type') || '';
   const parsed: unknown = ctype.includes('application/json')
@@ -228,6 +239,41 @@ function normalizeMemory(m: RawMemory): MemoryRecord {
         ? m.tags.split(',').map((s) => s.trim()).filter(Boolean)
         : [];
   return { ...m, tags };
+}
+
+// ---- Applications ------------------------------------------------------------
+
+/** Apps running in the workspace (auto-discovered listeners + pins). */
+export async function listApps(): Promise<AppEntry[]> {
+  if (getConfig().mock) {
+    await delay(120);
+    return [...mockApps];
+  }
+  const data = await request<{ apps?: AppEntry[] }>('/api/apps');
+  return data.apps ?? [];
+}
+
+/**
+ * URL + headers for embedding an app in the WebView.
+ *
+ * A WebView only attaches headers to its FIRST request, so we point it at the
+ * Bearer-authenticated session bootstrap (/api/claude/apps/session): the server
+ * validates the token, sets a short-lived app-session cookie scoped to the app
+ * proxy, and 302s into /api/app-proxy/<port>/. Every sub-resource the embedded
+ * app loads after that authenticates via the cookie the WebView just stored.
+ */
+export function appEmbedSource(port: number): { uri: string; headers: Record<string, string> } {
+  const { host, token } = getConfig();
+  const next = encodeURIComponent(`/api/app-proxy/${port}/`);
+  return {
+    uri: `${host.replace(/\/+$/, '')}/api/claude/apps/session?next=${next}`,
+    headers: { Authorization: `Bearer ${token}` },
+  };
+}
+
+/** Plain proxy URL for an app — for "open in browser". */
+export function appProxyUrl(port: number): string {
+  return `${getConfig().host.replace(/\/+$/, '')}/api/app-proxy/${port}/`;
 }
 
 // ---- Metrics / health ------------------------------------------------------

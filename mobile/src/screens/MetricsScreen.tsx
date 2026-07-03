@@ -1,11 +1,15 @@
 /** Workspace metrics + service health. */
-import React, { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getHealth, getMetrics } from '../api/client';
-import { Card, Loading, ScreenHeader } from '../components/ui';
+import { Card, EmptyState, Loading, ScreenHeader } from '../components/ui';
 import type { Health, Metrics } from '../api/types';
 import { colors, font, radius, space } from '../theme';
+import { usePolling } from '../util/usePolling';
+
+/** Percentage that stays sane when the denominator is missing or zero. */
+const pctOf = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
 
 function Bar({ pct, color }: { pct: number; color: string }) {
   return (
@@ -44,26 +48,45 @@ function Gauge({ label, used, total, unit, pct, color }: {
 export default function MetricsScreen() {
   const [m, setM] = useState<Metrics | null>(null);
   const [h, setH] = useState<Health | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const [metrics, health] = await Promise.all([
-      getMetrics().catch(() => null),
-      getHealth().catch(() => null),
-    ]);
-    if (metrics) setM(metrics);
-    if (health) setH(health);
+    try {
+      const [metrics, health] = await Promise.all([getMetrics(), getHealth().catch(() => null)]);
+      setM(metrics);
+      if (health) setH(health);
+      setError(null);
+    } catch (e) {
+      // Keep the last good gauges through a blip; only a never-loaded screen
+      // falls through to the full-screen error below.
+      setError((e as Error).message);
+    }
   }, []);
 
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, [load]);
+  usePolling(load, 5000);
 
-  if (!m) return <Loading label="Loading metrics…" />;
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
 
-  const memPct = (m.memory_used_mb / m.memory_total_mb) * 100;
-  const diskPct = (m.disk_used_gb / m.disk_total_gb) * 100;
+  if (!m) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <ScreenHeader title="Metrics" subtitle="Live workspace resources" />
+        {error ? (
+          <EmptyState icon="cloud-offline-outline" title="Couldn't load metrics" subtitle={error} />
+        ) : (
+          <Loading label="Loading metrics…" />
+        )}
+      </SafeAreaView>
+    );
+  }
+
+  const memPct = pctOf(m.memory_used_mb, m.memory_total_mb);
+  const diskPct = pctOf(m.disk_used_gb, m.disk_total_gb);
 
   const services: [string, boolean | undefined][] = [
     ['VS Code', h?.vscode],
@@ -74,7 +97,13 @@ export default function MetricsScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScreenHeader title="Metrics" subtitle="Live workspace resources" />
-      <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
+        }
+      >
         <Gauge label="CPU" used={Math.round(m.cpu_percent)} total={100} unit="%" pct={m.cpu_percent} color={colors.accent} />
         <Gauge label="Memory" used={Math.round(m.memory_used_mb)} total={Math.round(m.memory_total_mb)} unit="MB" pct={memPct} color={colors.warning} />
         <Gauge label="Disk" used={Math.round(m.disk_used_gb)} total={Math.round(m.disk_total_gb)} unit="GB" pct={diskPct} color={colors.success} />

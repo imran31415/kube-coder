@@ -480,6 +480,57 @@ class ClaudeTaskManager:
             stored = f.read().strip()
         return secrets.compare_digest(token, stored)
 
+    # ── App-proxy sessions (mobile WebView) ──────────────────────────────
+    # A native WebView can attach an Authorization header to its FIRST request
+    # only — every sub-resource (script/css/XHR/websocket) an embedded app
+    # loads goes out headerless and would 401 against the app proxy. The web
+    # dashboard doesn't have this problem because oauth2-proxy's session
+    # cookie rides on every request. These sessions give the Bearer-token
+    # client the same property: one Bearer-authenticated mint request sets a
+    # short-lived, HMAC-signed cookie that check_app_proxy_auth() accepts —
+    # for /api/apps + /api/app-proxy/* ONLY, never the general API. The HMAC
+    # is keyed off the stored Bearer token, so regenerating the token also
+    # invalidates every outstanding app session. Stateless: nothing to store
+    # or clean up.
+    APP_SESSION_TTL_SECONDS = 12 * 3600
+
+    @staticmethod
+    def _app_session_sig(expiry_ts):
+        """HMAC for an app session, or None when no Bearer token exists yet
+        (nothing to key off — mint is Bearer-gated, so this only happens for
+        verify, which must then reject)."""
+        if not os.path.exists(ClaudeTaskManager.TOKEN_FILE):
+            return None
+        with open(ClaudeTaskManager.TOKEN_FILE, 'r') as f:
+            key = f.read().strip().encode('utf-8')
+        if not key:
+            return None
+        msg = f'app-session:{expiry_ts}'.encode('utf-8')
+        return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def mint_app_session():
+        """-> 'expiry.sig' cookie value, valid for APP_SESSION_TTL_SECONDS."""
+        expiry = int(time.time()) + ClaudeTaskManager.APP_SESSION_TTL_SECONDS
+        sig = ClaudeTaskManager._app_session_sig(expiry)
+        if sig is None:
+            # Bearer auth passed, so a token exists unless AUTH_MODE=none —
+            # where the proxy is open anyway and the cookie value is inert.
+            return f'{expiry}.none'
+        return f'{expiry}.{sig}'
+
+    @staticmethod
+    def verify_app_session(value):
+        try:
+            expiry_s, sig = value.split('.', 1)
+            expiry = int(expiry_s)
+        except (ValueError, AttributeError):
+            return False
+        if expiry < time.time():
+            return False
+        expect = ClaudeTaskManager._app_session_sig(expiry)
+        return expect is not None and hmac.compare_digest(sig, expect)
+
     @staticmethod
     def regenerate_token():
         ClaudeTaskManager.ensure_tasks_dir()
@@ -3437,6 +3488,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/claude/auth/token':
             self.handle_claude_get_token()
             return
+        elif claude_path == '/api/claude/apps/session':
+            self.handle_app_session_mint()
+            return
         elif claude_path == '/api/claude/assistants':
             self.handle_claude_list_assistants()
             return
@@ -3752,6 +3806,28 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if self.headers.get('Remote-User', ''):
             return True
         return False
+
+    APP_SESSION_COOKIE = 'kc_app_session'
+
+    def _app_session_cookie_value(self):
+        """The kc_app_session cookie's value from the request, or ''."""
+        for part in self.headers.get('Cookie', '').split(';'):
+            name, _, value = part.strip().partition('=')
+            if name == self.APP_SESSION_COOKIE:
+                return value
+        return ''
+
+    def check_app_proxy_auth(self):
+        """Auth for the apps list + app proxy ONLY: everything
+        check_claude_auth accepts, plus a valid short-lived app-session
+        cookie (minted by /api/claude/apps/session for the mobile WebView,
+        whose sub-resource requests can't carry an Authorization header).
+        The cookie is deliberately NOT accepted anywhere else — an exfiltrated
+        session grants the embedded-app surface, not the workspace API."""
+        if self.check_claude_auth():
+            return True
+        value = self._app_session_cookie_value()
+        return bool(value) and ClaudeTaskManager.verify_app_session(value)
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode('utf-8')
@@ -4225,6 +4301,39 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         token = ClaudeTaskManager.get_or_create_token()
         self.send_json({'token': token})
+
+    # Only ever bounce the WebView into the app proxy — anything else would be
+    # an open redirect on an authenticated endpoint.
+    _APP_SESSION_NEXT_RE = re.compile(r'^/api/app-proxy/\d+(/.*)?$')
+
+    def handle_app_session_mint(self):
+        """GET /api/claude/apps/session?next=/api/app-proxy/<port>/
+
+        Bearer-authenticated bootstrap for embedding an app in a native
+        WebView: validates the caller, mints a short-lived app-session cookie
+        (see ClaudeTaskManager.mint_app_session) and 302s to `next`. The
+        WebView attaches its Authorization header to this one request, stores
+        the Set-Cookie, follows the redirect, and every sub-resource the
+        embedded app loads from then on authenticates via the cookie."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlsplit(self.path).query
+        next_path = (urllib.parse.parse_qs(qs).get('next') or [''])[0]
+        if not self._APP_SESSION_NEXT_RE.match(next_path):
+            self.send_json({'error': 'next must be an /api/app-proxy/<port>/ path'}, 400)
+            return
+        value = ClaudeTaskManager.mint_app_session()
+        # Secure only when the edge says HTTPS — a hard Secure flag would break
+        # local http (kubectl port-forward) development.
+        secure = '; Secure' if self.headers.get('X-Forwarded-Proto', '') == 'https' else ''
+        cookie = (f'{self.APP_SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; '
+                  f'Max-Age={ClaudeTaskManager.APP_SESSION_TTL_SECONDS}{secure}')
+        self.send_response(302)
+        self.send_header('Set-Cookie', cookie)
+        self.send_header('Location', next_path)
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
 
     def handle_claude_list_assistants(self):
         if not self.check_claude_auth():
@@ -5710,7 +5819,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         upstream's 101 response is relayed verbatim so the client sees the
         real Sec-WebSocket-Accept handshake.
         """
-        if not self.check_claude_auth():
+        if not self.check_app_proxy_auth():
             self.send_response(401)
             self.end_headers()
             return
@@ -5874,7 +5983,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
           (the Vite-style case where the dev server only matches its own
           --base prefix).
         """
-        if not self.check_claude_auth():
+        if not self.check_app_proxy_auth():
             self.send_response(401)
             self.end_headers()
             return
@@ -6045,7 +6154,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # --- Apps API (list + pin CRUD) ---
 
     def _handle_apps_list(self):
-        if not self.check_claude_auth():
+        if not self.check_app_proxy_auth():
             self.send_response(401)
             self.end_headers()
             return

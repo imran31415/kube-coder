@@ -39,3 +39,16 @@ export interface Health {
   browser?: boolean;
   ok?: boolean;
 }
+
+/** One entry on the Applications tab (mirrors /api/apps). */
+export interface AppEntry {
+  port: number;
+  /** Pinned name, or '' for an auto-discovered listener. */
+  name: string;
+  pinned: boolean;
+  /** running (listening now) | stopped (pinned, not listening) | blocked (reserved port). */
+  status: 'running' | 'stopped' | 'blocked';
+  strip_prefix: boolean;
+  /** Bind address from /proc/net/tcp, e.g. "127.0.0.1". */
+  addr: string;
+}

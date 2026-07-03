@@ -8,3 +8,11 @@ export type TasksStackParams = {
 };
 
 export type TasksNav = NativeStackNavigationProp<TasksStackParams>;
+
+/** Stack routes for the Apps tab. */
+export type AppsStackParams = {
+  AppList: undefined;
+  AppView: { port: number; name: string };
+};
+
+export type AppsNav = NativeStackNavigationProp<AppsStackParams>;

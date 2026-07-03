@@ -6,7 +6,7 @@
  * Timestamps are offsets from load time so the relative labels ("90s ago",
  * "1h ago") read realistically whenever screenshots are regenerated.
  */
-import type { Health, MemoryRecord, Metrics, TaskDetail, TaskSummary } from '../api/types';
+import type { AppEntry, Health, MemoryRecord, Metrics, TaskDetail, TaskSummary } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -164,3 +164,30 @@ export const mockHealth: Health = {
   browser: false,
   ok: true,
 };
+
+export const mockApps: AppEntry[] = [
+  {
+    port: 3000,
+    name: 'storefront',
+    pinned: true,
+    status: 'running',
+    strip_prefix: false,
+    addr: '127.0.0.1',
+  },
+  {
+    port: 8080,
+    name: '',
+    pinned: false,
+    status: 'running',
+    strip_prefix: false,
+    addr: '127.0.0.1',
+  },
+  {
+    port: 5173,
+    name: 'admin-ui',
+    pinned: true,
+    status: 'stopped',
+    strip_prefix: true,
+    addr: '127.0.0.1',
+  },
+];

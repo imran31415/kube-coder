@@ -25,13 +25,19 @@ export default function NewTaskScreen() {
   const [workdir, setWorkdir] = useState('/home/dev');
   const [assistant, setAssistant] = useState('claude');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function submit() {
     if (!prompt.trim()) return;
     setBusy(true);
+    setError(null);
     try {
       const t = await createTask({ prompt: prompt.trim(), workdir, assistant });
       nav.replace('TaskDetail', { id: t.id });
+    } catch (e) {
+      // The prompt stays in the form — surface why it didn't start instead of
+      // silently doing nothing.
+      setError(e instanceof Error ? e.message : 'Failed to start the task');
     } finally {
       setBusy(false);
     }
@@ -74,13 +80,19 @@ export default function NewTaskScreen() {
             ))}
           </View>
 
+          {error ? (
+            <Text style={styles.error} accessibilityRole="alert">
+              {error}
+            </Text>
+          ) : null}
+
           <Button
             title="Start task"
             icon="rocket-outline"
             onPress={submit}
             loading={busy}
             disabled={!prompt.trim()}
-            style={{ marginTop: space.xxl }}
+            style={{ marginTop: error ? space.md : space.xxl }}
           />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -125,4 +137,5 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.accent + '22', borderColor: colors.accent },
   chipText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '500' },
   chipTextActive: { color: colors.accent, fontWeight: '700' },
+  error: { color: colors.danger, fontSize: font.size.sm, marginTop: space.xl, lineHeight: 19 },
 });

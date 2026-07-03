@@ -2,16 +2,17 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { listTasks } from '../api/client';
-import { Card, EmptyState, Loading, ScreenHeader, StatusPill } from '../components/ui';
+import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StatusPill } from '../components/ui';
 import { getConfig } from '../store/config';
 import type { TasksNav } from '../navigation';
 import type { TaskSummary } from '../api/types';
 import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { relativeTime } from '../util/format';
+import { usePolling } from '../util/usePolling';
 
 function hostLabel(): string {
   const h = getConfig().host;
@@ -41,11 +42,7 @@ export default function TasksScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 4000);
-    return () => clearInterval(id);
-  }, [load]);
+  usePolling(load, 4000);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -60,7 +57,7 @@ export default function TasksScreen() {
       <ScreenHeader
         brand
         title="kube-coder"
-        subtitle={error ? error : `${hostLabel()}${running ? `  ·  ${running} active` : ''}`}
+        subtitle={`${hostLabel()}${running ? `  ·  ${running} active` : ''}`}
         right={
           <Pressable onPress={() => nav.navigate('NewTask')}>
             <LinearGradient
@@ -76,14 +73,20 @@ export default function TasksScreen() {
         }
       />
 
+      {error && tasks !== null && tasks.length > 0 ? <ErrorBanner message={error} /> : null}
+
       {tasks === null ? (
         <Loading label="Loading tasks…" />
       ) : tasks.length === 0 ? (
-        <EmptyState
-          icon="rocket-outline"
-          title="No tasks yet"
-          subtitle="Tap New to start a Claude task on your workspace — it runs remotely and you can follow along here."
-        />
+        error ? (
+          <EmptyState icon="cloud-offline-outline" title="Couldn't reach your workspace" subtitle={error} />
+        ) : (
+          <EmptyState
+            icon="rocket-outline"
+            title="No tasks yet"
+            subtitle="Tap New to start a Claude task on your workspace — it runs remotely and you can follow along here."
+          />
+        )
       ) : (
         <FlatList
           data={tasks}
