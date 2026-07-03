@@ -271,9 +271,19 @@ export function appEmbedSource(port: number): { uri: string; headers: Record<str
   };
 }
 
-/** Plain proxy URL for an app — for "open in browser". */
+/** Bare proxy URL (Bearer/cookie auth only) — the WebView's post-bootstrap
+ *  destination. A plain browser can't authenticate against this. */
 export function appProxyUrl(port: number): string {
   return `${getConfig().host.replace(/\/+$/, '')}/api/app-proxy/${port}/`;
+}
+
+/** Browser-facing proxy URL for "open in browser": the /oauth-prefixed route
+ *  (same one the web dashboard uses), where the user's oauth2 session cookie —
+ *  or a GitHub login redirect — authenticates. The bare Bearer-only URL renders
+ *  a blank 401 in a browser. Works for the public demo too (its ingress serves
+ *  /oauth/* unauthenticated). */
+export function appBrowserUrl(port: number): string {
+  return `${getConfig().host.replace(/\/+$/, '')}/oauth/api/app-proxy/${port}/`;
 }
 
 // ---- Metrics / health ------------------------------------------------------

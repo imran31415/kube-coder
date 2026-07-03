@@ -4,7 +4,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { appEmbedSource, appProxyUrl } from '../api/client';
+import { appBrowserUrl, appEmbedSource, appProxyUrl } from '../api/client';
 import { Button } from '../components/ui';
 import { getConfig } from '../store/config';
 import type { AppsStackParams } from '../navigation';
@@ -44,7 +44,7 @@ export default function AppViewScreen() {
             <Ionicons name="refresh" size={20} color={colors.text} />
           </Pressable>
           <Pressable
-            onPress={() => void Linking.openURL(appProxyUrl(port))}
+            onPress={() => void Linking.openURL(appBrowserUrl(port))}
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Open in browser"
