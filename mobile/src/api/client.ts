@@ -16,13 +16,24 @@
 import { getConfig } from '../store/config';
 import {
   mockApps,
+  mockDesktop,
   mockHealth,
   mockMemory,
   mockMetrics,
   mockTaskDetail,
   mockTasks,
 } from '../mock/mockData';
-import type { AppEntry, Health, MemoryRecord, Metrics, TaskDetail, TaskSummary } from './types';
+import type {
+  AppEntry,
+  DesktopItem,
+  DesktopItemDraft,
+  Health,
+  LaunchResult,
+  MemoryRecord,
+  Metrics,
+  TaskDetail,
+  TaskSummary,
+} from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -241,6 +252,83 @@ function normalizeMemory(m: RawMemory): MemoryRecord {
   return { ...m, tags };
 }
 
+// ---- Desktop launcher --------------------------------------------------------
+
+export async function listDesktop(): Promise<DesktopItem[]> {
+  if (getConfig().mock) {
+    await delay(120);
+    return [...mockDesktop];
+  }
+  const data = await request<{ items?: DesktopItem[] }>('/api/desktop');
+  return data.items ?? [];
+}
+
+export async function createDesktopItem(draft: DesktopItemDraft): Promise<DesktopItem> {
+  if (getConfig().mock) {
+    await delay(120);
+    const item: DesktopItem = { ...draft, id: Math.random().toString(36).slice(2, 10) };
+    mockDesktop.push(item);
+    return item;
+  }
+  return request<DesktopItem>('/api/desktop', { method: 'POST', body: draft });
+}
+
+export async function updateDesktopItem(id: string, draft: DesktopItemDraft): Promise<DesktopItem> {
+  if (getConfig().mock) {
+    await delay(120);
+    const i = mockDesktop.findIndex((d) => d.id === id);
+    const item: DesktopItem = { ...draft, id };
+    if (i >= 0) mockDesktop[i] = item;
+    return item;
+  }
+  return request<DesktopItem>(`/api/desktop/${id}`, { method: 'POST', body: draft });
+}
+
+export async function deleteDesktopItem(id: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(100);
+    const i = mockDesktop.findIndex((d) => d.id === id);
+    if (i >= 0) mockDesktop.splice(i, 1);
+    return;
+  }
+  await request(`/api/desktop/${id}`, { method: 'DELETE' });
+}
+
+export async function reorderDesktop(orderedIds: string[]): Promise<DesktopItem[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    mockDesktop.sort((a, b) => orderedIds.indexOf(a.id) - orderedIds.indexOf(b.id));
+    return [...mockDesktop];
+  }
+  const data = await request<{ items?: DesktopItem[] }>('/api/desktop/_reorder', {
+    method: 'POST',
+    body: { order: orderedIds },
+  });
+  return data.items ?? [];
+}
+
+/** Run a task/shell icon server-side (url icons open client-side, same as web). */
+export async function launchDesktopItem(id: string): Promise<LaunchResult> {
+  if (getConfig().mock) {
+    await delay(200);
+    const item = mockDesktop.find((d) => d.id === id);
+    if (item?.action.type === 'shell') {
+      return { kind: 'shell', exit_code: 0, stdout: 'ok\n', stderr: '' };
+    }
+    const t: TaskSummary = {
+      id: Math.random().toString(36).slice(2, 8),
+      prompt: item?.action.type === 'task' ? item.action.prompt : 'demo task',
+      status: 'running',
+      assistant: 'claude',
+      workdir: '/home/dev',
+      created_at: Math.floor(Date.now() / 1000),
+    };
+    mockTasks.unshift(t);
+    return { kind: 'task', task_id: t.id };
+  }
+  return request<LaunchResult>(`/api/desktop/${id}/launch`, { method: 'POST', body: {} });
+}
+
 // ---- Applications ------------------------------------------------------------
 
 /** Apps running in the workspace (auto-discovered listeners + pins). */
@@ -284,6 +372,13 @@ export function appProxyUrl(port: number): string {
  *  /oauth/* unauthenticated). */
 export function appBrowserUrl(port: number): string {
   return `${getConfig().host.replace(/\/+$/, '')}/oauth/api/app-proxy/${port}/`;
+}
+
+/** Browser URL for a workspace dashboard route ('/tasks', '/settings', …) —
+ *  the oauth-authenticated SPA. Used by Desktop url-icons that store the web
+ *  dashboard's relative routes. */
+export function dashboardUrl(route: string): string {
+  return `${getConfig().host.replace(/\/+$/, '')}/oauth${route.startsWith('/') ? route : `/${route}`}`;
 }
 
 // ---- Metrics / health ------------------------------------------------------

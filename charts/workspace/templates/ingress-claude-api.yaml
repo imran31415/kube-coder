@@ -59,7 +59,7 @@ spec:
       # surface (list + reverse proxy + the WebView session bootstrap under
       # api/claude/) — the app proxy accepts a Bearer token or the scoped
       # kc_app_session cookie it mints (see server.py check_app_proxy_auth).
-      - path: /(api/claude/.*|api/memory.*|api/apps|api/app-proxy/.*|metrics|health)
+      - path: /(api/claude/.*|api/memory.*|api/apps|api/app-proxy/.*|api/desktop.*|metrics|health)
         pathType: ImplementationSpecific
         backend:
           service:
