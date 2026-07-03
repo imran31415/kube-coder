@@ -64,6 +64,8 @@ kube-coder delivers **per-user, isolated development environments** that combine
 ---
 
 ## What's in a Workspace
+<img width="567" height="406" alt="image" src="https://github.com/user-attachments/assets/68a4bca3-637d-49f3-90f9-a773a9bde319" />
+
 
 | Surface | Capabilities | Access URL |
 |---|---|---|
@@ -91,6 +93,8 @@ The next-generation dashboard at `/` is a single-page Preact app delivering unif
 The dashboard includes a persistent top bar showing real-time CPU, memory, and disk usage metrics, along with quick-access buttons for VS Code and creating new terminal sessions.
 
 ### Mobile Experience
+<img width="500" height="580" alt="image" src="https://github.com/user-attachments/assets/d2f2e7ad-7939-4ad1-9623-d9fa1d4e3278" />
+
 
 The dashboard is fully responsive. Below 720px the Rail collapses into a BottomNav (Build / Memory / Triggers / More), the detail pane moves into a swipe-able bottom sheet, and the topbar slims to just brand + search + the two primary actions (VS Code, New terminal).
 
@@ -206,6 +210,13 @@ Two things make self-service onboarding work; you set them once:
 **What happened when you clicked Create:** the controller validated the GitHub user, rendered a `values.yaml` + secret and committed them to the GitOps repo (the single source of truth), then ran a one-shot privileged Job that `helm upgrade`s the workspace chart — pod, Service, ingress, PVC, and a dedicated oauth2-proxy pinned to Dana's login. Wildcard DNS already resolves her host; cert-manager mints the TLS cert on first hit. Nothing else to wire.
 
 #### Manage a user — request limits, updates, lifecycle
+
+<img width="406" height="292" alt="image" src="https://github.com/user-attachments/assets/c82035dc-2c67-4aae-ac39-5041f7a4e7f5" />
+
+<img width="375" height="556" alt="image" src="https://github.com/user-attachments/assets/261df033-7576-43f1-b094-8aea551acc6f" />
+
+
+
 
 All per-workspace, in the same console:
 
