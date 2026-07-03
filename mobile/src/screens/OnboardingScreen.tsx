@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button, Label } from '../components/ui';
 import { ping } from '../api/client';
-import { getConfig, saveConnection } from '../store/config';
+import { DEMO_HOST, getConfig, saveConnection } from '../store/config';
 import { colors, font, gradients, radius, space } from '../theme';
 
 export default function OnboardingScreen() {
@@ -48,6 +48,22 @@ export default function OnboardingScreen() {
       setBusy(false);
       // keep fields populated if we rolled back
       if (getConfig().host) return;
+    }
+  }
+
+  async function connectDemo() {
+    setError(null);
+    setBusy(true);
+    // The public demo is read-only (AUTH_MODE=none), so the token is ignored —
+    // a placeholder satisfies the client's "configured" check.
+    await saveConnection(DEMO_HOST, 'public-demo');
+    try {
+      await ping();
+    } catch (e) {
+      setError(`Couldn't reach the demo: ${(e as Error).message}`);
+      await saveConnection('', '');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -100,6 +116,20 @@ export default function OnboardingScreen() {
 
             <Button title="Connect" onPress={connect} loading={busy} style={{ marginTop: space.xl }} />
 
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>or</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            <Button
+              title="Explore the public demo"
+              variant="secondary"
+              onPress={connectDemo}
+              disabled={busy}
+            />
+            <Text style={styles.demoNote}>Read-only · no account or token needed</Text>
+
             <Text style={styles.hint}>
               Point this at any kube-coder workspace: a cloud host
               (https://you.example.com) or a local one (http://localhost:6080 via
@@ -141,5 +171,9 @@ const styles = StyleSheet.create({
     height: 50,
   },
   error: { color: colors.danger, fontSize: font.size.sm, marginTop: space.md },
+  divider: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginVertical: space.lg },
+  dividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  dividerText: { color: colors.textFaint, fontSize: font.size.sm },
+  demoNote: { color: colors.textFaint, fontSize: font.size.xs, textAlign: 'center', marginTop: space.sm },
   hint: { color: colors.textFaint, fontSize: font.size.sm, marginTop: space.xl, lineHeight: 19 },
 });
