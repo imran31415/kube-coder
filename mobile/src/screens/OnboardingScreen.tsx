@@ -13,12 +13,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button, Label } from '../components/ui';
 import { ping } from '../api/client';
-import { getConfig, saveConnection } from '../store/config';
+import { DEMO_HOST, getConfig, saveConnection } from '../store/config';
 import { colors, font, gradients, radius, space } from '../theme';
-
-// The project's public, read-only demo workspace (AUTH_MODE=none) — open without
-// an account. Override for a fork via EXPO_PUBLIC_DEMO_HOST.
-const DEMO_HOST = process.env.EXPO_PUBLIC_DEMO_HOST || 'https://demo-public.dev.scalebase.io';
 
 export default function OnboardingScreen() {
   const [host, setHost] = useState('');

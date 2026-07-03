@@ -11,6 +11,19 @@ import { getItem, getSecret, setItem, setSecret, deleteSecret } from './storage'
 const HOST_KEY = 'kc.apiBase';
 const TOKEN_KEY = 'kc.devToken';
 
+// The project's public, read-only demo workspace (AUTH_MODE=none) — reached via
+// the "Explore the public demo" button on onboarding. Override for a fork with
+// EXPO_PUBLIC_DEMO_HOST. Shared so onboarding can connect to it and Settings can
+// recognise a demo connection (and offer a clear way back to host/token entry).
+export const DEMO_HOST = (
+  process.env.EXPO_PUBLIC_DEMO_HOST || 'https://demo-public.dev.scalebase.io'
+).replace(/\/+$/, '');
+
+/** True when the given host is the public demo (saveConnection strips the trailing slash). */
+export function isDemoHost(host: string): boolean {
+  return !!host && host.replace(/\/+$/, '') === DEMO_HOST;
+}
+
 export interface Config {
   host: string; // e.g. https://imran.kube-coder.example.com  ('' when unset)
   token: string; // Bearer token ('' when unset)

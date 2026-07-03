@@ -3,7 +3,7 @@ import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Label, ScreenHeader } from '../components/ui';
-import { clearConnection } from '../store/config';
+import { clearConnection, isDemoHost } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { colors, font, space } from '../theme';
 import { confirmAction } from '../util/confirm';
@@ -11,12 +11,15 @@ import { confirmAction } from '../util/confirm';
 export default function SettingsScreen() {
   const cfg = useConfig();
   const masked = cfg.token ? cfg.token.slice(0, 4) + '••••••••' + cfg.token.slice(-2) : '';
+  const isDemo = isDemoHost(cfg.host);
 
   function disconnect() {
     confirmAction({
-      title: 'Disconnect this workspace?',
-      message: 'Your saved host and API token will be removed from this device.',
-      confirmLabel: 'Disconnect',
+      title: isDemo ? 'Leave the public demo?' : 'Disconnect this workspace?',
+      message: isDemo
+        ? "You'll return to the connect screen, where you can enter your own workspace host and token."
+        : 'Your saved host and API token will be removed from this device.',
+      confirmLabel: isDemo ? 'Leave demo' : 'Disconnect',
       destructive: true,
       onConfirm: clearConnection,
     });
@@ -35,16 +38,18 @@ export default function SettingsScreen() {
             <Label>API token</Label>
             <Text style={[styles.value, { fontFamily: font.mono }]}>{masked || '—'}</Text>
           </View>
-          {cfg.mock ? (
+          {cfg.mock || isDemo ? (
             <View style={styles.demoBadge}>
-              <Text style={styles.demoText}>DEMO MODE — showing mock data</Text>
+              <Text style={styles.demoText}>
+                {cfg.mock ? 'DEMO MODE — showing mock data' : 'PUBLIC DEMO — read-only'}
+              </Text>
             </View>
           ) : null}
         </Card>
 
         {!cfg.mock ? (
           <Button
-            title="Disconnect"
+            title={isDemo ? 'Leave demo' : 'Disconnect'}
             icon="log-out-outline"
             variant="danger"
             onPress={disconnect}
