@@ -15,12 +15,23 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { getTask, getTaskOutput, killTask, sendKey, sendMessage } from '../api/client';
+import { AppEmbed } from '../components/AppEmbed';
+import { AppPickerSheet } from '../components/AppPickerSheet';
 import { Button, Loading, StatusPill } from '../components/ui';
+import { getItem, setItem } from '../store/storage';
 import type { TaskDetail } from '../api/types';
 import type { TasksStackParams } from '../navigation';
 import { parseAnsiLines } from '../util/ansi';
 import { colors, font, radius, space, statusColor } from '../theme';
 import { usePolling } from '../util/usePolling';
+
+// Last app shown in the split pane, remembered across tasks/restarts so the
+// toggle is one tap once you've picked your dev server.
+const SPLIT_APP_KEY = 'kc.splitApp';
+interface SplitApp {
+  port: number;
+  name: string;
+}
 
 // Mobile key bar: control keys you can't type into the composer. Paste pulls the
 // clipboard into the input; the rest go straight to the live tmux session.
@@ -60,6 +71,38 @@ export default function TaskDetailScreen() {
   // Only auto-follow new output while the user is pinned near the bottom —
   // force-scrolling while they read scrollback makes the log unreadable.
   const pinnedToBottom = useRef(true);
+  // Split view: watch an app run in the lower half while the task streams in
+  // the upper half. null = off. The picker chooses which app/port.
+  const [splitApp, setSplitApp] = useState<SplitApp | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  async function toggleSplit() {
+    if (splitApp) {
+      setSplitApp(null);
+      return;
+    }
+    // One-tap re-open with the remembered app; picker only on first use.
+    const saved = await getItem(SPLIT_APP_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as SplitApp;
+        if (parsed && typeof parsed.port === 'number') {
+          setSplitApp(parsed);
+          return;
+        }
+      } catch {
+        /* fall through to picker */
+      }
+    }
+    setPickerOpen(true);
+  }
+
+  function pickApp(port: number, name: string) {
+    const app = { port, name };
+    setSplitApp(app);
+    setPickerOpen(false);
+    void setItem(SPLIT_APP_KEY, JSON.stringify(app));
+  }
 
   const load = useCallback(async () => {
     try {
@@ -109,11 +152,25 @@ export default function TaskDetailScreen() {
   }, [id, load]);
 
   // Destructive action lives in the header — far from the compose/Send area at
-  // the bottom so it can't be hit by accident.
+  // the bottom so it can't be hit by accident. The split toggle sits beside it.
   useLayoutEffect(() => {
     nav.setOptions({
-      headerRight: active
-        ? () => (
+      headerRight: () => (
+        <View style={styles.headerBtns}>
+          <Pressable
+            onPress={() => void toggleSplit()}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={splitApp ? 'Close app pane' : 'Show an app alongside'}
+            style={styles.headerBtn}
+          >
+            <Ionicons
+              name={splitApp ? 'contract-outline' : 'browsers-outline'}
+              size={22}
+              color={splitApp ? colors.accent : colors.text}
+            />
+          </Pressable>
+          {active ? (
             <Pressable
               onPress={promptKill}
               hitSlop={10}
@@ -123,10 +180,12 @@ export default function TaskDetailScreen() {
             >
               <Ionicons name="stop-circle-outline" size={24} color={colors.danger} />
             </Pressable>
-          )
-        : undefined,
+          ) : null}
+        </View>
+      ),
     });
-  }, [nav, active, promptKill]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav, active, promptKill, splitApp]);
 
   async function send() {
     if (!msg.trim()) return;
@@ -156,6 +215,9 @@ export default function TaskDetailScreen() {
         style={{ flex: 1 }}
         keyboardVerticalOffset={90}
       >
+        {/* Top pane: the task itself. With the split open it takes half the
+            screen; the app pane below takes the other half. */}
+        <View style={{ flex: 1 }}>
         <View style={styles.head}>
           <View style={styles.headTop}>
             <StatusPill status={task.status} />
@@ -249,6 +311,44 @@ export default function TaskDetailScreen() {
             <Text style={styles.finishedText}>{note.text}</Text>
           </View>
         )}
+        </View>
+
+        {splitApp ? (
+          <View style={styles.appPane}>
+            <View style={styles.paneBar}>
+              <Ionicons name="globe-outline" size={14} color={colors.accent} />
+              <Text style={styles.paneTitle} numberOfLines={1}>
+                {splitApp.name}
+                <Text style={styles.panePort}>  :{splitApp.port}</Text>
+              </Text>
+              <Pressable
+                onPress={() => setPickerOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Change app"
+                style={styles.paneBtn}
+              >
+                <Ionicons name="swap-horizontal" size={16} color={colors.textMuted} />
+              </Pressable>
+              <Pressable
+                onPress={() => setSplitApp(null)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Close app pane"
+                style={styles.paneBtn}
+              >
+                <Ionicons name="close" size={16} color={colors.textMuted} />
+              </Pressable>
+            </View>
+            <AppEmbed compact port={splitApp.port} name={splitApp.name} />
+          </View>
+        ) : null}
+
+        <AppPickerSheet
+          visible={pickerOpen}
+          onPick={pickApp}
+          onClose={() => setPickerOpen(false)}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -256,7 +356,24 @@ export default function TaskDetailScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
+  headerBtns: { flexDirection: 'row', alignItems: 'center' },
   headerBtn: { paddingHorizontal: space.sm, paddingVertical: 2 },
+  // Split view: the app pane mirrors the top pane's flex so the screen splits
+  // 50/50, with a slim toolbar naming the app + change/close actions.
+  appPane: { flex: 1, borderTopWidth: 2, borderTopColor: colors.borderStrong },
+  paneBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+    backgroundColor: colors.bgElevated,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  paneTitle: { flex: 1, color: colors.text, fontSize: font.size.sm, fontWeight: '700' },
+  panePort: { color: colors.textFaint, fontWeight: '400', fontFamily: font.mono },
+  paneBtn: { padding: 4 },
   head: { padding: space.lg, gap: space.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
   headTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   id: { color: colors.textFaint, fontSize: font.size.sm, fontFamily: font.mono },
