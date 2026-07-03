@@ -106,9 +106,14 @@ class NextPathGuardUnit(unittest.TestCase):
                   '/api/app-proxy/3000/deep/path'):
             self.assertIsNotNone(self.RE.match(p), p)
 
+    def test_accepts_terminal_proxy_paths(self):
+        for p in ('/api/terminal-proxy', '/api/terminal-proxy/', '/api/terminal-proxy/?t=1'):
+            self.assertIsNotNone(self.RE.match(p), p)
+
     def test_rejects_everything_else(self):
         for p in ('/', '/api/claude/tasks', '//evil.com/', 'https://evil.com',
-                  '/api/app-proxy/notaport/', '', '/api/app-proxyx/1/'):
+                  '/api/app-proxy/notaport/', '', '/api/app-proxyx/1/',
+                  '/api/terminal-proxyx/', '/api/terminal-proxy-evil/'):
             self.assertIsNone(self.RE.match(p), p)
 
 
