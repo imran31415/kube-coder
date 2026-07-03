@@ -13,7 +13,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import OnboardingScreen from './src/screens/OnboardingScreen';
 import TasksScreen from './src/screens/TasksScreen';
@@ -87,14 +87,30 @@ const TAB_ICONS: Record<string, [keyof typeof Ionicons.glyphMap, keyof typeof Io
 };
 
 function MainTabs() {
+  // Explicit, inset-aware bar sizing: icon (22) + label must always fit. The
+  // derived default clips labels when the bottom inset is 0 (web/older
+  // devices); home-indicator devices get the inset as extra bottom padding.
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 8);
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarStyle: styles.tabBar,
+        tabBarStyle: [styles.tabBar, { height: 54 + bottomPad, paddingBottom: bottomPad }],
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.textFaint,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginTop: -2 },
+        // bottom-tabs gives the icon wrapper flex:1, which squeezes the label
+        // to a clipped sliver on some layouts (notably web). Pin both slots —
+        // the label also needs flexShrink:0 + an explicit height or its text
+        // node gets crushed below its own line height and descenders clip.
+        tabBarIconStyle: { flexGrow: 0, height: 26 },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '600',
+          lineHeight: 14,
+          height: 16,
+          flexShrink: 0,
+        },
         tabBarIcon: ({ focused, color }) => {
           const [outline, filled] = TAB_ICONS[route.name] ?? ['ellipse-outline', 'ellipse'];
           return <Ionicons name={focused ? filled : outline} size={22} color={color} />;
@@ -138,9 +154,8 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  // No fixed height/paddingBottom: bottom-tabs sizes itself around the
-  // home-indicator inset, and a hardcoded 66px bar crowds the indicator on
-  // devices that have one (and wastes space on ones that don't).
+  // Height/paddingBottom come from MainTabs (inset-aware) so labels never
+  // clip on inset-0 devices and the home indicator gets real clearance.
   tabBar: {
     backgroundColor: colors.bgElevated,
     borderTopColor: colors.border,

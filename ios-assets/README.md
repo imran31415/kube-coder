@@ -13,8 +13,8 @@ App Store Connect expects:
 | `iphone-6.5/`  | iPhone 6.5"              | 1242 × 2688  | One of 6.5/6.7 |
 | `ipad-12.9/`   | iPad Pro 12.9"          | 2048 × 2732  | Yes (iPad-enabled app) |
 
-Screens captured per device: `01-tasks`, `02-task-detail`, `03-new-task`,
-`04-memory`, `05-metrics`.
+Screens captured per device: `01-tasks`, `02-task-detail`, `03-desktop`,
+`04-apps`, `05-new-task`, `06-memory`, `07-metrics`.
 
 Upload these in App Store Connect → your app → the matching display size, or via
 `fastlane deliver`. The source-of-truth dimensions live in

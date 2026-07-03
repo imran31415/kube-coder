@@ -14,7 +14,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { WebView } from './PlatformWebView';
 import { prepareTerminal, terminalEmbedSource } from '../api/client';
 import { getConfig } from '../store/config';
 import { parseAnsiLines } from '../util/ansi';
@@ -95,7 +95,9 @@ export function TerminalView({ taskId, output }: { taskId: string; output: strin
   }
 
   if (mode === 'archived') {
-    return <ArchivedOutput output={output} />;
+    // The demo build renders the recorded transcript as-is — labelling it
+    // "archived" there would be confusing when the task reads as running.
+    return <ArchivedOutput output={output} showNotice={!getConfig().mock} />;
   }
 
   return (
@@ -138,17 +140,19 @@ export function TerminalView({ taskId, output }: { taskId: string; output: strin
 }
 
 /** Finished/old tasks: the recorded output, ANSI-colored, pinned to bottom. */
-function ArchivedOutput({ output }: { output: string }) {
+function ArchivedOutput({ output, showNotice = true }: { output: string; showNotice?: boolean }) {
   const scrollRef = useRef<ScrollView>(null);
   const pinnedToBottom = useRef(true);
   const lines = useMemo(() => parseAnsiLines(output), [output]);
 
   return (
     <View style={styles.wrap}>
-      <View style={styles.archivedBar}>
-        <Ionicons name="time-outline" size={13} color={colors.textFaint} />
-        <Text style={styles.archivedText}>Archived output — the live session has ended</Text>
-      </View>
+      {showNotice ? (
+        <View style={styles.archivedBar}>
+          <Ionicons name="time-outline" size={13} color={colors.textFaint} />
+          <Text style={styles.archivedText}>Archived output — the live session has ended</Text>
+        </View>
+      ) : null}
       <ScrollView
         ref={scrollRef}
         style={styles.term}

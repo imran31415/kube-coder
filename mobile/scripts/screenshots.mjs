@@ -56,32 +56,43 @@ async function shots(page, device, outDir) {
     console.log(`    ✓ ${device.name}/${file}`);
   };
 
-  // 1) Tasks list
+  // 1) Tasks list (Active segment + search bar — the everyday view)
   await page.getByText('Tasks', { exact: true }).first().waitFor({ timeout: 15000 });
   await sleep(600);
   await shot('01-tasks.png');
 
-  // 2) Task detail (open the first, running task)
+  // 2) Task detail: session output + composer, with the control-key tray open
+  //    (accessibilityLabel maps to aria-label on react-native-web).
   await page.getByText('Add a /healthz endpoint to server.py and a unit test for it').click();
   await sleep(900);
+  await page.getByLabel('Show control keys').click().catch(() => {});
   await shot('02-task-detail.png');
 
   // back to the list via the Tasks tab (resets the stack)
   await tab(page, 'Tasks');
 
-  // 3) New task form
+  // 3) Desktop — the launcher grid shared with the web dashboard
+  await tab(page, 'Desktop');
+  await shot('03-desktop.png');
+
+  // 4) Apps — running dev servers, openable in-app
+  await tab(page, 'Apps');
+  await shot('04-apps.png');
+
+  // 5) New task form
+  await tab(page, 'Tasks');
   await page.getByText('New', { exact: true }).click();
   await sleep(800);
-  await shot('03-new-task.png');
+  await shot('05-new-task.png');
   await tab(page, 'Tasks');
 
-  // 4) Memory
+  // 6) Memory
   await tab(page, 'Memory');
-  await shot('04-memory.png');
+  await shot('06-memory.png');
 
-  // 5) Metrics
+  // 7) Metrics
   await tab(page, 'Metrics');
-  await shot('05-metrics.png');
+  await shot('07-metrics.png');
 
   await tab(page, 'Tasks');
 }

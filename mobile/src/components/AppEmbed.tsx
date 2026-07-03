@@ -4,7 +4,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { WebView } from './PlatformWebView';
 import { appEmbedSource, appProxyUrl } from '../api/client';
 import { getConfig } from '../store/config';
 import { colors, font, radius, space } from '../theme';
