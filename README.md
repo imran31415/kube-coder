@@ -1,4 +1,4 @@
-# kube-coder
+<img width="1072" height="732" alt="image" src="https://github.com/user-attachments/assets/b6f0fe47-9a3d-4028-8d11-65748da31f7b" /># kube-coder
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
@@ -8,6 +8,9 @@
 ---
 
 <img width="1072" height="732" alt="image" src="https://github.com/user-attachments/assets/3ce75784-2989-4cd2-8dc7-d4fad8ecc084" />
+
+[KubeCoder.com](https://kubecoder.com/)
+
 
 
 ## Enterprise-Grade Development Workspaces on Kubernetes
