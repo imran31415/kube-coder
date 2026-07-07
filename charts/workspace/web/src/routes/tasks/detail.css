@@ -387,9 +387,44 @@
 }
 .term-pane-frames-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
+  /* Fallback only — TerminalPane sets the live template inline
+     (terminal-fr / 6px handle / preview-fr) for the draggable divider. */
+  grid-template-columns: 1fr 6px 1fr;
   background: var(--border);
+}
+.term-pane-split-handle {
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  touch-action: none; /* the handle owns its gestures on touch screens */
+}
+/* Grip affordance: a short centered bar that brightens on hover/drag. */
+.term-pane-split-handle::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 36px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+.term-pane-split-handle:hover::after,
+.term-pane-split-handle:focus-visible::after,
+.term-pane-frames.is-dragging .term-pane-split-handle::after {
+  background: var(--accent);
+  opacity: 1;
+}
+/* While dragging, the iframes must not swallow the pointer stream (each is
+   its own document) — pointer capture on the handle covers modern browsers,
+   this covers the rest. Also stop text selection mid-drag. */
+.term-pane-frames.is-dragging {
+  user-select: none;
+}
+.term-pane-frames.is-dragging iframe {
+  pointer-events: none;
 }
 .term-pane-iframe {
   width: 100%;
