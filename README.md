@@ -7,6 +7,9 @@
 [![Test Coverage](https://img.shields.io/badge/coverage-60%25-yellow)](https://github.com/imran31415/kube-coder)
 ---
 
+<img width="1072" height="732" alt="image" src="https://github.com/user-attachments/assets/3ce75784-2989-4cd2-8dc7-d4fad8ecc084" />
+
+
 ## Enterprise-Grade Development Workspaces on Kubernetes
 
 kube-coder delivers **per-user, isolated development environments** that combine the power of cloud-native infrastructure with cutting-edge AI assistance. Each workspace provides a comprehensive suite of development tools—**VS Code in the browser**, **persistent tmux terminals**, an **interactive dashboard**, **in-pod browser sessions**, and **AI-powered build automation**—all secured behind GitHub OAuth and accessible via per-user subdomains.
