@@ -12,8 +12,9 @@
  *  rendered with the lightweight ANSI parser under an "archived" notice.
  */
 import { Ionicons } from '@expo/vector-icons';
+import { useIsFocused } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { WebView } from './PlatformWebView';
 import { prepareTerminal, terminalEmbedSource } from '../api/client';
 import { getConfig } from '../store/config';
@@ -22,6 +23,44 @@ import { colors, font, radius, space } from '../theme';
 import { Button } from './ui';
 
 type Mode = 'connecting' | 'live' | 'archived' | 'error';
+
+/** Injected into the terminal WebView before ttyd's client runs. ttyd's own
+ *  auto-reconnect gives up when the socket dies with an `error` event (it sets
+ *  doReconnect=false) or a clean close, then waits for an Enter keypress that
+ *  never comes on touch. Wrapping WebSocket lets the native side observe every
+ *  close/error and remount the WebView instead — the mobile equivalent of the
+ *  web dashboard's reload. Idempotent: both injection points run it. */
+const WS_WATCH_JS = `
+(function () {
+  if (window.__kcWsWatch) return;
+  window.__kcWsWatch = true;
+  var notify = function () {
+    try { window.ReactNativeWebView.postMessage('kc-ws-dead'); } catch (e) {}
+  };
+  var NativeWS = window.WebSocket;
+  if (!NativeWS) return;
+  var Wrapped = function (url, protocols) {
+    var ws = protocols === undefined ? new NativeWS(url) : new NativeWS(url, protocols);
+    ws.addEventListener('close', notify);
+    ws.addEventListener('error', notify);
+    return ws;
+  };
+  Wrapped.prototype = NativeWS.prototype;
+  Wrapped.CONNECTING = NativeWS.CONNECTING;
+  Wrapped.OPEN = NativeWS.OPEN;
+  Wrapped.CLOSING = NativeWS.CLOSING;
+  Wrapped.CLOSED = NativeWS.CLOSED;
+  window.WebSocket = Wrapped;
+})();
+true;`;
+
+// Auto-reconnect pacing: ignore ws-dead signals within DEBOUNCE of the last
+// remount (ttyd churns the socket during a normal mount), and give up into
+// the error state after MAX_BURST remounts inside BURST_WINDOW so a broken
+// upstream doesn't loop the WebView forever.
+const RECONNECT_DEBOUNCE_MS = 3000;
+const RECONNECT_BURST_WINDOW_MS = 30_000;
+const RECONNECT_MAX_BURST = 4;
 
 export function TerminalView({ taskId, output }: { taskId: string; output: string }) {
   const [mode, setMode] = useState<Mode>('connecting');
@@ -62,6 +101,67 @@ export function TerminalView({ taskId, output }: { taskId: string; output: strin
   useEffect(() => {
     void connect();
   }, [connect]);
+
+  // Guard: auto-reconnects only fire while this task's screen is focused and
+  // showing the live terminal. Reconnecting re-writes the one-shot pending
+  // file (prepare-terminal), which would steal the next ttyd attach from
+  // whichever task the user is actually looking at.
+  const isFocused = useIsFocused();
+  const guardRef = useRef({ focused: isFocused, live: false });
+  guardRef.current = { focused: isFocused, live: mode === 'live' };
+
+  // Timestamps of recent auto-reconnects, for debounce + runaway-loop cutoff.
+  const reconnectsRef = useRef<number[]>([]);
+  const autoReconnect = useCallback(() => {
+    const g = guardRef.current;
+    if (!g.focused || !g.live) return;
+    if (AppState.currentState !== 'active') return; // resume handler covers this
+    const now = Date.now();
+    const recent = reconnectsRef.current.filter((t) => now - t < RECONNECT_BURST_WINDOW_MS);
+    if (recent.length > 0 && now - recent[recent.length - 1] < RECONNECT_DEBOUNCE_MS) return;
+    if (recent.length >= RECONNECT_MAX_BURST) {
+      reconnectsRef.current = recent;
+      setErrMsg('The terminal keeps disconnecting.');
+      setMode('error');
+      return;
+    }
+    recent.push(now);
+    reconnectsRef.current = recent;
+    void connect();
+  }, [connect]);
+
+  // The OS suspends the WebView while the app is backgrounded, killing ttyd's
+  // WebSocket. On return to the foreground, remount — same fix as reloading
+  // the page on the web dashboard. Also fires when the user comes back to a
+  // still-mounted screen after a background trip elsewhere in the app: the
+  // wentBackground flag survives until the next focused resume or reconnect.
+  const wentBackgroundRef = useRef(false);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        wentBackgroundRef.current = true;
+        return;
+      }
+      if (!wentBackgroundRef.current) return;
+      const g = guardRef.current;
+      if (!g.focused || !g.live) return;
+      wentBackgroundRef.current = false;
+      reconnectsRef.current = [];
+      void connect();
+    });
+    return () => sub.remove();
+  }, [connect]);
+
+  // Navigating back to this screen after the app was backgrounded while it
+  // wasn't focused: the AppState handler skipped the reconnect, so do it now.
+  useEffect(() => {
+    if (!isFocused || !wentBackgroundRef.current) return;
+    if (guardRef.current.live) {
+      wentBackgroundRef.current = false;
+      reconnectsRef.current = [];
+      void connect();
+    }
+  }, [isFocused, connect]);
 
   if (mode === 'connecting') {
     return (
@@ -116,6 +216,15 @@ export function TerminalView({ taskId, output }: { taskId: string; output: strin
         pullToRefreshEnabled={false}
         setSupportMultipleWindows={false}
         allowsBackForwardNavigationGestures={false}
+        // Both injection points run the (idempotent) WebSocket watch:
+        // beforeContentLoaded hooks the constructor before ttyd's client
+        // connects; the post-load variant is the fallback on platforms where
+        // the early injection is flaky (older Android WebView).
+        injectedJavaScriptBeforeContentLoaded={WS_WATCH_JS}
+        injectedJavaScript={WS_WATCH_JS}
+        onMessage={(e) => {
+          if (e.nativeEvent.data === 'kc-ws-dead') autoReconnect();
+        }}
         onLoadEnd={() => setWebviewLoading(false)}
         onError={(e) => {
           setErrMsg(e.nativeEvent.description || 'The terminal did not respond.');
