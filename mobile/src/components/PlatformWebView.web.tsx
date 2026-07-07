@@ -12,6 +12,9 @@ export interface WebViewProps {
   onError?: (e: { nativeEvent: { description: string } }) => void;
   onHttpError?: (e: { nativeEvent: { url: string; statusCode: number } }) => void;
   // Accepted-and-ignored native-only props.
+  injectedJavaScript?: string;
+  injectedJavaScriptBeforeContentLoaded?: string;
+  onMessage?: (e: { nativeEvent: { data: string } }) => void;
   sharedCookiesEnabled?: boolean;
   thirdPartyCookiesEnabled?: boolean;
   originWhitelist?: string[];
