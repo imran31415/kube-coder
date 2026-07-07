@@ -21,9 +21,18 @@ export interface TerminalPaneProps {
 const LAST_PORT_KEY = 'kc.previewPort';
 const LAST_PATH_KEY = 'kc.previewPath';
 const LAST_MODE_KEY = 'kc.previewMode';
+// Device preset + custom dims are sessionStorage: a preset sticks while the
+// tab is open (actively testing a viewport across tasks) but every fresh
+// visit opens Responsive, so the app fills the pane and reflows as the
+// split divider is dragged.
 const LAST_DEVICE_KEY = 'kc.previewDevice';
 const LAST_CUSTOM_W_KEY = 'kc.previewCustomW';
 const LAST_CUSTOM_H_KEY = 'kc.previewCustomH';
+// Split-divider position (fraction of the frames row given to the terminal).
+// localStorage: pane-size taste is durable, unlike the device preset above.
+const SPLIT_RATIO_KEY = 'kc.previewSplit';
+const SPLIT_MIN = 0.2;
+const SPLIT_MAX = 0.8;
 
 type PreviewMode = 'app' | 'browser';
 
@@ -130,16 +139,16 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   // 'custom' constrains the iframe to fixed dimensions and scales-to-fit.
   // Persisted per workspace so the next Preview open inherits the choice.
   const [deviceId, setDeviceId] = useState<string>(() => {
-    try { return localStorage.getItem(LAST_DEVICE_KEY) ?? 'responsive'; }
+    try { return sessionStorage.getItem(LAST_DEVICE_KEY) ?? 'responsive'; }
     catch { return 'responsive'; }
   });
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [customW, setCustomW] = useState<string>(() => {
-    try { return localStorage.getItem(LAST_CUSTOM_W_KEY) ?? '390'; }
+    try { return sessionStorage.getItem(LAST_CUSTOM_W_KEY) ?? '390'; }
     catch { return '390'; }
   });
   const [customH, setCustomH] = useState<string>(() => {
-    try { return localStorage.getItem(LAST_CUSTOM_H_KEY) ?? '844'; }
+    try { return sessionStorage.getItem(LAST_CUSTOM_H_KEY) ?? '844'; }
     catch { return '844'; }
   });
   // The device frame is centered in this stage and scaled down when it
@@ -147,6 +156,46 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   // scale. Only meaningful when a fixed device size is active.
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+
+  // Draggable split divider (desktop Preview only). splitRatio is the
+  // fraction of the frames row given to the terminal; the app/VNC pane gets
+  // the rest. Driven by pointer events on the handle — pointer capture keeps
+  // the drag alive over the iframes, and an is-dragging class additionally
+  // turns off their pointer-events so neither document swallows the stream.
+  const framesRef = useRef<HTMLDivElement | null>(null);
+  const [splitRatio, setSplitRatio] = useState<number>(() => {
+    try {
+      const v = parseFloat(localStorage.getItem(SPLIT_RATIO_KEY) ?? '');
+      return v >= SPLIT_MIN && v <= SPLIT_MAX ? v : 0.5;
+    } catch { return 0.5; }
+  });
+  const [splitDragging, setSplitDragging] = useState(false);
+  const splitRatioRef = useRef(splitRatio);
+  splitRatioRef.current = splitRatio;
+
+  function onSplitPointerDown(e: PointerEvent) {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setSplitDragging(true);
+  }
+  function onSplitPointerMove(e: PointerEvent) {
+    if (!splitDragging) return;
+    const el = framesRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const f = (e.clientX - r.left) / r.width;
+    setSplitRatio(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, f)));
+  }
+  function onSplitPointerUp() {
+    if (!splitDragging) return;
+    setSplitDragging(false);
+    try { localStorage.setItem(SPLIT_RATIO_KEY, splitRatioRef.current.toFixed(3)); } catch { /* noop */ }
+  }
+  function resetSplit() {
+    setSplitRatio(0.5);
+    try { localStorage.setItem(SPLIT_RATIO_KEY, '0.5'); } catch { /* noop */ }
+  }
 
   // The side-by-side split doesn't fit on phones, so on mobile the Preview
   // shows ONE pane at a time — the live session (terminal) or the app preview
@@ -190,14 +239,15 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
     try { localStorage.setItem(LAST_MODE_KEY, mode); } catch { /* noop */ }
   }, [mode]);
 
-  // Persist the responsive-preview device + custom dimensions.
+  // Persist the responsive-preview device + custom dimensions (session-only —
+  // see the key comments above).
   useEffect(() => {
-    try { localStorage.setItem(LAST_DEVICE_KEY, deviceId); } catch { /* noop */ }
+    try { sessionStorage.setItem(LAST_DEVICE_KEY, deviceId); } catch { /* noop */ }
   }, [deviceId]);
   useEffect(() => {
     try {
-      localStorage.setItem(LAST_CUSTOM_W_KEY, customW);
-      localStorage.setItem(LAST_CUSTOM_H_KEY, customH);
+      sessionStorage.setItem(LAST_CUSTOM_W_KEY, customW);
+      sessionStorage.setItem(LAST_CUSTOM_H_KEY, customH);
     } catch { /* noop */ }
   }, [customW, customH]);
 
@@ -646,7 +696,16 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
       )}
       {phase === 'ready' && (
         // Split only on desktop Preview; mobile shows a single full pane.
-        <div class={`term-pane-frames ${withVnc && !isMobile ? 'term-pane-frames-split' : ''}`}>
+        // The inline column template implements the draggable divider —
+        // only set while the split class is active so it can't leak into
+        // the single-pane layouts.
+        <div
+          ref={framesRef}
+          class={`term-pane-frames ${withVnc && !isMobile ? 'term-pane-frames-split' : ''} ${splitDragging ? 'is-dragging' : ''}`}
+          style={withVnc && !isMobile
+            ? { gridTemplateColumns: `${splitRatio}fr 6px ${1 - splitRatio}fr` }
+            : undefined}
+        >
           {/* key={taskId} → guarantees a fresh DOM iframe per task. Without
               this, switching tasks would reuse the previous iframe element
               and we'd race ttyd against a half-torn-down WebSocket. Only
@@ -675,6 +734,32 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
             >
               <span class="term-pane-scroll-hint">Drag to scroll · Exit scroll mode to type</span>
             </div>
+          )}
+          {withVnc && !isMobile && (
+            <div
+              class="term-pane-split-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize panes — drag, arrow keys, or double-click to reset"
+              aria-valuenow={Math.round(splitRatio * 100)}
+              aria-valuemin={SPLIT_MIN * 100}
+              aria-valuemax={SPLIT_MAX * 100}
+              tabIndex={0}
+              title="Drag to resize · double-click to reset"
+              onPointerDown={onSplitPointerDown}
+              onPointerMove={onSplitPointerMove}
+              onPointerUp={onSplitPointerUp}
+              onPointerCancel={onSplitPointerUp}
+              onDblClick={resetSplit}
+              onKeyDown={(e: KeyboardEvent) => {
+                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                e.preventDefault();
+                const next = Math.min(SPLIT_MAX, Math.max(SPLIT_MIN,
+                  splitRatio + (e.key === 'ArrowLeft' ? -0.05 : 0.05)));
+                setSplitRatio(next);
+                try { localStorage.setItem(SPLIT_RATIO_KEY, next.toFixed(3)); } catch { /* noop */ }
+              }}
+            />
           )}
           {withVnc && showApp && (
             // The iframe stays a single element across responsive↔device

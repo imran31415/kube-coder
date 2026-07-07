@@ -2,11 +2,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useCallback, useLayoutEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
   LayoutAnimation,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -56,6 +57,13 @@ interface SplitApp {
   name: string;
 }
 
+// Divider position for the task/app split: fraction of the screen given to
+// the task pane. Draggable via the app pane's header bar; persisted so the
+// preferred balance survives restarts. Clamped so neither pane can collapse.
+const SPLIT_RATIO_KEY = 'kc.splitRatio';
+const SPLIT_MIN = 0.25;
+const SPLIT_MAX = 0.75;
+
 function finishedNote(status: string): { icon: keyof typeof Ionicons.glyphMap; text: string } {
   switch (status) {
     case 'error':
@@ -84,6 +92,48 @@ export default function TaskDetailScreen() {
   // the upper half. null = off. The picker chooses which app/port.
   const [splitApp, setSplitApp] = useState<SplitApp | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Draggable split: fraction of the vertical space the task pane keeps.
+  // Dragging the app pane's header bar moves the divider; only vertical
+  // moves claim the gesture, so the bar's buttons still tap normally.
+  const [splitRatio, setSplitRatio] = useState(0.5);
+  const splitRatioRef = useRef(0.5);
+  const dragStartRatio = useRef(0.5);
+  const splitAreaH = useRef(0);
+  useEffect(() => {
+    void (async () => {
+      const saved = parseFloat((await getItem(SPLIT_RATIO_KEY)) ?? '');
+      if (saved >= SPLIT_MIN && saved <= SPLIT_MAX) {
+        splitRatioRef.current = saved;
+        setSplitRatio(saved);
+      }
+    })();
+  }, []);
+  const persistRatio = () => {
+    void setItem(SPLIT_RATIO_KEY, splitRatioRef.current.toFixed(3));
+  };
+  const splitPan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) =>
+        Math.abs(g.dy) > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderGrant: () => {
+        dragStartRatio.current = splitRatioRef.current;
+      },
+      onPanResponderMove: (_e, g) => {
+        const h = splitAreaH.current;
+        if (h <= 0) return;
+        // Finger down (+dy) drags the bar down → the task pane grows.
+        const next = Math.min(
+          SPLIT_MAX,
+          Math.max(SPLIT_MIN, dragStartRatio.current + g.dy / h),
+        );
+        splitRatioRef.current = next;
+        setSplitRatio(next);
+      },
+      onPanResponderRelease: persistRatio,
+      onPanResponderTerminate: persistRatio,
+    }),
+  ).current;
 
   const load = useCallback(async () => {
     try {
@@ -227,10 +277,14 @@ export default function TaskDetailScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
         keyboardVerticalOffset={90}
+        onLayout={(e) => {
+          splitAreaH.current = e.nativeEvent.layout.height;
+        }}
       >
-        {/* Top pane: the task itself. With the split open it takes half the
-            screen; the app pane below takes the other half. */}
-        <View style={{ flex: 1 }}>
+        {/* Top pane: the task itself. With the split open, the divider ratio
+            says how much of the screen it keeps; drag the app pane's header
+            bar to adjust. */}
+        <View style={{ flex: splitApp ? splitRatio : 1 }}>
           <View style={styles.head}>
             <View style={styles.headTop}>
               <StatusPill status={task.status} />
@@ -353,8 +407,13 @@ export default function TaskDetailScreen() {
         </View>
 
         {splitApp ? (
-          <View style={styles.appPane}>
-            <View style={styles.paneBar}>
+          <View style={[styles.appPane, { flex: 1 - splitRatio }]}>
+            <View
+              style={styles.paneBar}
+              {...splitPan.panHandlers}
+              accessibilityHint="Drag up or down to resize the panes"
+            >
+              <View style={styles.paneGrip} pointerEvents="none" />
               <Ionicons name="globe-outline" size={14} color={colors.accent} />
               <Text style={styles.paneTitle} numberOfLines={1}>
                 {splitApp.name}
@@ -508,16 +567,28 @@ const styles = StyleSheet.create({
   finishedText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '600' },
 
   // ---- split view ----
-  appPane: { flex: 1, borderTopWidth: 2, borderTopColor: colors.borderStrong },
+  appPane: { borderTopWidth: 2, borderTopColor: colors.borderStrong },
   paneBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
     paddingHorizontal: space.md,
-    paddingVertical: 6,
+    paddingTop: 10,
+    paddingBottom: 6,
     backgroundColor: colors.bgElevated,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  // Centered pill signalling the bar doubles as the split's drag handle.
+  paneGrip: {
+    position: 'absolute',
+    top: 3,
+    left: '50%',
+    marginLeft: -16,
+    width: 32,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: colors.borderStrong,
   },
   paneTitle: { flex: 1, color: colors.text, fontSize: font.size.sm, fontWeight: '700' },
   panePort: { color: colors.textFaint, fontWeight: '400', fontFamily: font.mono },
