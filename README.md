@@ -1,5 +1,3 @@
-<img width="1072" height="732" alt="image" src="https://github.com/user-attachments/assets/b6f0fe47-9a3d-4028-8d11-65748da31f7b" /># kube-coder
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
