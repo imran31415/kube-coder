@@ -287,7 +287,7 @@ function ArchivedOutput({ output, showNotice = true }: { output: string; showNot
                     <Text
                       key={j}
                       style={{
-                        color: seg.color ?? '#c8d3df',
+                        color: seg.color ?? colors.text,
                         fontWeight: seg.bold ? '700' : '400',
                         opacity: seg.dim ? 0.6 : 1,
                       }}
@@ -304,11 +304,11 @@ function ArchivedOutput({ output, showNotice = true }: { output: string; showNot
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#08090b' },
-  web: { flex: 1, backgroundColor: '#08090b' },
+  wrap: { flex: 1, backgroundColor: colors.bg },
+  web: { flex: 1, backgroundColor: colors.bg },
   center: {
     flex: 1,
-    backgroundColor: '#08090b',
+    backgroundColor: colors.bg,
     alignItems: 'center',
     justifyContent: 'center',
     padding: space.xl,
@@ -369,5 +369,5 @@ const styles = StyleSheet.create({
   },
   term: { flex: 1 },
   termContent: { padding: space.lg },
-  termText: { color: '#c8d3df', fontFamily: font.mono, fontSize: font.size.sm, lineHeight: 19 },
+  termText: { color: colors.text, fontFamily: font.mono, fontSize: font.size.sm, lineHeight: 19 },
 });
