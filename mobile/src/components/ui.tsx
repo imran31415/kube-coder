@@ -11,7 +11,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { colors, font, gradients, radius, shadow, space, statusColor } from '../theme';
+import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { statusLabel } from '../util/format';
 import { openDrawer } from '../store/nav';
 
@@ -27,7 +27,7 @@ export function Card({
   accent?: string; // optional left accent bar (e.g. for running tasks)
 }) {
   const inner = (
-    <View style={[styles.card, accent ? { borderLeftWidth: 3, borderLeftColor: accent } : null, style]}>
+    <View style={[styles.card, accent ? { borderLeftWidth: 2, borderLeftColor: accent } : null, style]}>
       {children}
     </View>
   );
@@ -42,7 +42,7 @@ export function Card({
 export function StatusPill({ status }: { status: string }) {
   const c = statusColor(status);
   return (
-    <View style={[styles.pill, { backgroundColor: c + '1f', borderColor: c + '4d' }]}>
+    <View style={[styles.pill, { backgroundColor: colors.surface2, borderColor: c + '59' }]}>
       {status === 'running' ? (
         <ActivityIndicator size="small" color={c} style={styles.spinner} />
       ) : (
@@ -70,7 +70,8 @@ export function Button({
   icon?: keyof typeof Ionicons.glyphMap;
   style?: ViewStyle;
 }) {
-  const fg = variant === 'secondary' ? colors.text : colors.accentText;
+  const fg =
+    variant === 'primary' ? colors.accentText : variant === 'danger' ? colors.danger : colors.text;
   const body = loading ? (
     <ActivityIndicator color={fg} />
   ) : (
@@ -99,15 +100,19 @@ export function Button({
     );
   }
 
-  const bg = variant === 'danger' ? colors.danger : 'transparent';
+  const isDanger = variant === 'danger';
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
       style={({ pressed }) => [
         styles.btn,
-        { backgroundColor: bg, opacity: disabled ? 0.45 : pressed ? 0.9 : 1 },
-        variant === 'secondary' && styles.btnSecondary,
+        styles.btnFlat,
+        {
+          backgroundColor: isDanger ? colors.danger + '14' : colors.surface2,
+          borderColor: isDanger ? colors.danger + '55' : colors.border,
+          opacity: disabled ? 0.45 : pressed ? 0.9 : 1,
+        },
         style,
       ]}
     >
@@ -191,7 +196,7 @@ export function EmptyState({
   return (
     <View style={styles.center}>
       <View style={styles.emptyIcon}>
-        <Ionicons name={icon} size={28} color={colors.accent} />
+        <Ionicons name={icon} size={26} color={colors.textMuted} />
       </View>
       <Text style={styles.emptyTitle}>{title}</Text>
       {subtitle ? <Text style={[styles.muted, { textAlign: 'center', maxWidth: 280 }]}>{subtitle}</Text> : null}
@@ -225,9 +230,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     padding: space.lg,
-    ...shadow.card,
   },
-  pressed: { opacity: 0.7, transform: [{ scale: 0.992 }] },
+  pressed: { opacity: 0.85, transform: [{ scale: 0.997 }] },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -239,17 +243,17 @@ const styles = StyleSheet.create({
   },
   spinner: { marginRight: 6, transform: [{ scale: 0.7 }] },
   dot: { width: 7, height: 7, borderRadius: 4, marginRight: 6 },
-  pillText: { fontSize: font.size.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
+  pillText: { fontSize: font.size.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
   btn: {
-    height: 50,
+    height: 46,
     borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: space.lg,
   },
   btnRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  btnSecondary: { borderWidth: 1, borderColor: colors.borderStrong },
-  btnText: { fontSize: font.size.md, fontWeight: '700' },
+  btnFlat: { borderWidth: 1 },
+  btnText: { fontSize: font.size.md, fontWeight: '600' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -270,25 +274,27 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.card,
   },
-  brandMark: { width: 38, height: 38, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
-  brandGlyph: { color: colors.accentText, fontSize: 15, fontWeight: '900' },
-  headerTitle: { color: colors.text, fontSize: font.size.xxl, fontWeight: '800', letterSpacing: -0.5 },
+  brandMark: { width: 32, height: 32, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
+  brandGlyph: { color: colors.accentText, fontSize: 13, fontWeight: '800', fontFamily: font.mono },
+  headerTitle: { color: colors.text, fontSize: font.size.xl, fontWeight: '700', letterSpacing: -0.3 },
   headerSubtitle: { color: colors.textMuted, fontSize: font.size.sm, marginTop: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl, gap: space.md },
   emptyIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: radius.xl,
-    backgroundColor: colors.accent + '1a',
+    width: 56,
+    height: 56,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface2,
+    borderWidth: 1,
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   muted: { color: colors.textMuted, fontSize: font.size.sm, lineHeight: 20 },
-  emptyTitle: { color: colors.text, fontSize: font.size.lg, fontWeight: '700' },
+  emptyTitle: { color: colors.text, fontSize: font.size.lg, fontWeight: '600' },
   label: {
     color: colors.textMuted,
     fontSize: font.size.xs,
-    fontWeight: '700',
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.7,
     marginBottom: space.sm,

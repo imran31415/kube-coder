@@ -93,7 +93,7 @@ export function AppPickerSheet({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: '#000a', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: colors.bgElevated,
     borderTopLeftRadius: radius.xl,
