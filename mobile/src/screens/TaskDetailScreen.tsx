@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   KeyboardAvoidingView,
   LayoutAnimation,
@@ -264,22 +265,11 @@ export default function TaskDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav, active, promptKill, splitApp]);
 
-  // Pick one or more images from the library and upload each into the task's
-  // attachments dir. Chips flip uploading → ready|error independently.
-  async function pickImages() {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      setSendErr('Photo access is off — enable it in Settings to attach images.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsMultipleSelection: true,
-      quality: 0.9,
-    });
-    if (result.canceled) return;
+  // Upload each picked/captured asset into the task's attachments dir. Chips
+  // flip uploading → ready|error independently.
+  function uploadAssets(assets: ImagePicker.ImagePickerAsset[]) {
     setSendErr(null);
-    for (const asset of result.assets) {
+    for (const asset of assets) {
       const localId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       setAttachments((a) => [...a, { id: localId, uri: asset.uri, status: 'uploading' }]);
       void (async () => {
@@ -296,6 +286,50 @@ export default function TaskDetailScreen() {
         }
       })();
     }
+  }
+
+  // Take a photo with the camera and attach it.
+  async function captureImage() {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      setSendErr('Camera access is off — enable it in Settings to take a photo.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.9 });
+    if (result.canceled) return;
+    uploadAssets(result.assets);
+  }
+
+  // Pick one or more images from the photo library and attach them.
+  async function pickFromLibrary() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      setSendErr('Photo access is off — enable it in Settings to attach images.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      quality: 0.9,
+    });
+    if (result.canceled) return;
+    uploadAssets(result.assets);
+  }
+
+  // Attach button → choose between the camera and the photo library. Alert
+  // gives a native, dependency-free chooser on iOS/Android. On web there's no
+  // camera and react-native-web has no Alert, so go straight to the library
+  // (which opens the browser's file picker).
+  function chooseImageSource() {
+    if (Platform.OS === 'web') {
+      void pickFromLibrary();
+      return;
+    }
+    Alert.alert('Attach image', undefined, [
+      { text: 'Take Photo', onPress: () => void captureImage() },
+      { text: 'Choose from Library', onPress: () => void pickFromLibrary() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   }
 
   function removeAttachment(aid: string) {
@@ -459,7 +493,7 @@ export default function TaskDetailScreen() {
                   />
                 </Pressable>
                 <Pressable
-                  onPress={() => void pickImages()}
+                  onPress={chooseImageSource}
                   accessibilityRole="button"
                   accessibilityLabel="Attach image"
                   style={styles.keysBtn}

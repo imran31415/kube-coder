@@ -64,12 +64,14 @@ const config: ExpoConfig = {
       },
     ],
     [
-      // Photo-library access for attaching images to a task's follow-up
-      // (issue #179). Only the read/library permission is requested.
+      // Photo-library + camera access for attaching images to a task's
+      // follow-up (issue #179): pick from the library or take a photo.
       'expo-image-picker',
       {
         photosPermission:
           'Allow kube-coder to attach photos from your library to a task.',
+        cameraPermission:
+          'Allow kube-coder to take a photo to attach to a task.',
       },
     ],
   ],
