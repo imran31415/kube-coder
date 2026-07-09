@@ -80,6 +80,19 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     inputRef.current?.focus();
   }, [paste]);
 
+  // Receive clipboard IMAGES from the same toolbar "Paste" action and run them
+  // through the normal attach flow (upload → chip), matching a direct paste.
+  const imgPaste = session.imagePasteRequest.value;
+  const lastImgPasteNonce = useRef<number>(imgPaste?.nonce ?? 0);
+  useEffect(() => {
+    if (!imgPaste || imgPaste.nonce === lastImgPasteNonce.current) return;
+    lastImgPasteNonce.current = imgPaste.nonce;
+    addImageFiles(imgPaste.files);
+    // addImageFiles is a stable function declaration; deps intentionally track
+    // only the paste request (mirrors the text pasteRequest effect above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imgPaste]);
+
   // Upload each image and track it as a chip. Runs uploads in parallel; each
   // chip flips uploading → ready|error independently.
   function addImageFiles(files: File[]) {
