@@ -1,11 +1,13 @@
-/** Desktop: the same customizable launcher grid as the web dashboard's
- *  Desktop tab, backed by the same /api/desktop config (desktop.json on the
- *  workspace PVC) — icons that start a task, open a URL, or run a shell
- *  command. Tap to launch; long-press to edit/move/delete; + to add. */
+/** Desktop: the workspace home. A clean identity masthead, a one-tap "start a
+ *  build" composer, the customizable launcher grid (shared with the web
+ *  dashboard's Desktop tab via /api/desktop), and a live-build activity feed.
+ *  Tap an icon to launch; long-press to edit/move/delete; + to add. */
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
-import React, { useCallback, useState } from 'react';
+import { LinearGradient } from 'expo-linear-gradient';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Linking,
@@ -13,23 +15,28 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   createDesktopItem,
+  createTask,
   dashboardUrl,
   deleteDesktopItem,
+  githubDisplayName,
   launchDesktopItem,
   listDesktop,
+  listTasks,
   reorderDesktop,
   updateDesktopItem,
 } from '../api/client';
 import { DesktopEditorSheet } from '../components/DesktopEditorSheet';
 import { getConfig } from '../store/config';
-import { EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
-import type { DesktopItem, DesktopItemDraft } from '../api/types';
-import { colors, font, radius, shadow, space } from '../theme';
+import { EmptyState, ErrorBanner, Loading, StatusPill } from '../components/ui';
+import type { DesktopItem, DesktopItemDraft, TaskSummary } from '../api/types';
+import { colors, font, gradients, radius, shadow, space } from '../theme';
+import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
 
 // The server stores "icon:NAME" for the web SPA's line-icon set; map the
@@ -111,10 +118,125 @@ function inAppTarget(url: string): { tab: string; params?: object } | null {
   }
 }
 
+type Nav = { navigate: (tab: string, opts?: object) => void };
+
+/** Identity masthead: gradient monogram + "AI Workspace" over the operator's
+ *  GitHub handle. Degrades to a neutral label until the name resolves. */
+function DesktopHero({ name }: { name: string | null }) {
+  const display = name ?? 'Workspace';
+  const initial = display.charAt(0).toUpperCase();
+  return (
+    <View style={styles.hero}>
+      <LinearGradient
+        colors={gradients.brand}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.heroAvatar}
+      >
+        <Text style={styles.heroGlyph}>{initial}</Text>
+      </LinearGradient>
+      <View style={{ flexShrink: 1 }}>
+        <Text style={styles.heroEyebrow}>AI Workspace</Text>
+        <View style={styles.heroNameRow}>
+          <Text style={styles.heroName} numberOfLines={1}>
+            {display}
+          </Text>
+          {name ? <Ionicons name="logo-github" size={15} color={colors.textFaint} /> : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/** One-tap build composer. Owns its own prompt state so list re-renders (from
+ *  polling) never steal focus or clear the text. */
+function BuildComposer({ onStarted }: { onStarted: (id: string) => void }) {
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canSend = prompt.trim().length > 0 && !busy;
+
+  async function submit() {
+    const text = prompt.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      const t = await createTask({ prompt: text, workdir: '/home/dev' });
+      setPrompt('');
+      onStarted(t.id);
+    } catch (e) {
+      Alert.alert("Couldn't start the build", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.composer}>
+      <View style={styles.composerRow}>
+        <View style={styles.composerGlyph}>
+          <Ionicons name="chatbubbles-outline" size={17} color={colors.accent} />
+        </View>
+        <TextInput
+          value={prompt}
+          onChangeText={setPrompt}
+          placeholder="Describe a build to run…"
+          placeholderTextColor={colors.textFaint}
+          style={styles.composerInput}
+          multiline
+          editable={!busy}
+        />
+        <Pressable
+          onPress={submit}
+          disabled={!canSend}
+          accessibilityRole="button"
+          accessibilityLabel="Start build"
+          style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
+        >
+          {canSend ? (
+            <LinearGradient
+              colors={gradients.primary}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.composerSend}
+            >
+              {busy ? (
+                <ActivityIndicator color={colors.accentText} size="small" />
+              ) : (
+                <Ionicons name="arrow-up" size={18} color={colors.accentText} />
+              )}
+            </LinearGradient>
+          ) : (
+            <View style={[styles.composerSend, styles.composerSendOff]}>
+              {busy ? (
+                <ActivityIndicator color={colors.textFaint} size="small" />
+              ) : (
+                <Ionicons name="arrow-up" size={18} color={colors.textFaint} />
+              )}
+            </View>
+          )}
+        </Pressable>
+      </View>
+      <Text style={styles.composerHint}>Starts a build in /home/dev and opens it live</Text>
+    </View>
+  );
+}
+
+/** A clean uppercase section label with an optional right-side action. */
+function SectionLabel({ title, action }: { title: string; action?: React.ReactNode }) {
+  return (
+    <View style={styles.sectionRow}>
+      <Text style={styles.sectionLabel}>{title}</Text>
+      {action}
+    </View>
+  );
+}
+
 export default function DesktopScreen() {
   // Cross-tab navigation (launched tasks open in the Tasks stack).
-  const nav = useNavigation<{ navigate: (tab: string, opts?: object) => void }>();
+  const nav = useNavigation<Nav>();
   const [items, setItems] = useState<DesktopItem[] | null>(null);
+  const [live, setLive] = useState<TaskSummary[]>([]);
+  const [name, setName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -129,16 +251,38 @@ export default function DesktopScreen() {
       setError((e as Error).message);
       setItems((prev) => prev ?? []);
     }
+    // Live builds for the Activity feed — best-effort, never blocks the grid.
+    try {
+      const tasks = await listTasks();
+      setLive(
+        tasks
+          .filter((t) => t.status === 'running' || t.status === 'waiting' || t.waiting_for_input)
+          .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+          .slice(0, 3),
+      );
+    } catch {
+      /* keep last-good */
+    }
   }, []);
 
   // The desktop is shared with the web dashboard — pick up edits made there.
   usePolling(load, 15000);
+  // Identity is stable; fetch once.
+  React.useEffect(() => {
+    let ok = true;
+    void githubDisplayName().then((n) => { if (ok) setName(n); });
+    return () => { ok = false; };
+  }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await load();
     setRefreshing(false);
   };
+
+  function openTask(id: string) {
+    nav.navigate('Tasks', { screen: 'TaskDetail', params: { id } });
+  }
 
   async function launch(item: DesktopItem) {
     // URL icons open directly, same as the web (no server roundtrip). Dashboard
@@ -158,7 +302,7 @@ export default function DesktopScreen() {
     try {
       const r = await launchDesktopItem(item.id);
       if (r.kind === 'task') {
-        nav.navigate('Tasks', { screen: 'TaskDetail', params: { id: r.task_id } });
+        openTask(r.task_id);
       } else if (r.kind === 'shell') {
         const ok = r.exit_code === 0;
         const tail = (ok ? r.stdout : r.stderr || r.stdout).trim().split('\n').slice(-6).join('\n');
@@ -234,49 +378,84 @@ export default function DesktopScreen() {
     }
   }
 
+  const newBtn = (
+    <Pressable
+      onPress={() => { setEditing(null); setEditorOpen(true); }}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel="New icon"
+      style={({ pressed }) => [styles.newPill, pressed && { opacity: 0.7 }]}
+    >
+      <Ionicons name="add" size={15} color={colors.textMuted} />
+      <Text style={styles.newPillText}>New</Text>
+    </Pressable>
+  );
+
+  // Header (masthead + composer + Shortcuts label) is passed as an ELEMENT so
+  // it reconciles across polls instead of remounting — the composer keeps its
+  // text + focus. Memoized on the values it actually reads.
+  const header = useMemo(
+    () => (
+      <View>
+        <DesktopHero name={name} />
+        <SectionLabel title="Start a build" />
+        <BuildComposer onStarted={openTask} />
+        {error && items && items.length > 0 ? <ErrorBanner message={error} /> : null}
+        {items && items.length > 0 ? <SectionLabel title="Shortcuts" action={newBtn} /> : null}
+      </View>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [name, error, items?.length],
+  );
+
+  const footer =
+    live.length > 0 ? (
+      <View style={styles.activity}>
+        <SectionLabel title="Activity" />
+        {live.map((t) => (
+          <Pressable
+            key={t.id}
+            onPress={() => openTask(t.id)}
+            style={({ pressed }) => [styles.activityRow, pressed && { opacity: 0.7 }]}
+          >
+            <StatusPill status={t.status} />
+            <Text style={styles.activityTitle} numberOfLines={1}>
+              {t.prompt || t.id}
+            </Text>
+            <Text style={styles.activityTime}>{relativeTime(t.created_at)}</Text>
+          </Pressable>
+        ))}
+      </View>
+    ) : null;
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <ScreenHeader
-        title="Desktop"
-        subtitle="One-tap launchers, shared with the web dashboard"
-        right={
-          <Pressable
-            onPress={() => { setEditing(null); setEditorOpen(true); }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="New icon"
-            style={styles.addBtn}
-          >
-            <Ionicons name="add" size={22} color={colors.accent} />
-          </Pressable>
-        }
-      />
-
-      {error && items !== null && items.length > 0 ? <ErrorBanner message={error} /> : null}
-
       {items === null ? (
-        <Loading label="Loading desktop…" />
-      ) : items.length === 0 ? (
-        error ? (
-          <EmptyState icon="cloud-offline-outline" title="Couldn't load the desktop" subtitle={error} />
-        ) : (
-          <EmptyState
-            icon="grid-outline"
-            title="No icons yet"
-            subtitle="Pin a build prompt, a URL, or a shell command for one-tap launch. Tap + to create your first icon."
-          />
-        )
+        <Loading label="Loading workspace…" />
       ) : (
         <FlatList
           data={items}
           key="grid-3"
           numColumns={3}
           keyExtractor={(i) => i.id}
+          ListHeaderComponent={header}
+          ListFooterComponent={footer}
           contentContainerStyle={styles.grid}
           columnWrapperStyle={styles.gridRow}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
+          }
+          ListEmptyComponent={
+            error ? (
+              <EmptyState icon="cloud-offline-outline" title="Couldn't load the desktop" subtitle={error} />
+            ) : (
+              <EmptyState
+                icon="grid-outline"
+                title="No shortcuts yet"
+                subtitle="Pin a build prompt, a URL, or a shell command for one-tap launch. Tap + to create your first icon."
+              />
+            )
           }
           renderItem={({ item }) => (
             <Pressable
@@ -318,18 +497,102 @@ export default function DesktopScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  addBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.md,
+
+  // Masthead
+  hero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: space.lg,
+  },
+  heroAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadow.card,
+  },
+  heroGlyph: { color: colors.accentText, fontSize: 20, fontWeight: '800' },
+  heroEyebrow: {
+    color: colors.textFaint,
+    fontSize: 10.5,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  heroNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  heroName: { color: colors.text, fontSize: font.size.xl, fontWeight: '800', letterSpacing: -0.4 },
+
+  // Section labels
+  sectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.lg,
+    marginBottom: space.sm,
+  },
+  sectionLabel: {
+    color: colors.textMuted,
+    fontSize: font.size.xs,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  newPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
+  },
+  newPillText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+
+  // Composer
+  composer: {
+    marginHorizontal: space.lg,
+    marginBottom: space.xl,
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
+    gap: space.sm,
+    ...shadow.card,
+  },
+  composerRow: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm },
+  composerGlyph: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: colors.accent + '1f',
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: 2,
   },
-  grid: { paddingHorizontal: space.lg, paddingBottom: space.xl, gap: space.md },
-  gridRow: { gap: space.md },
+  composerInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: font.size.md,
+    minHeight: 34,
+    maxHeight: 130,
+    paddingTop: 7,
+    paddingBottom: 4,
+  },
+  composerSend: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  composerSendOff: { backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: colors.border },
+  composerHint: { color: colors.textFaint, fontSize: font.size.xs, paddingLeft: 40 },
+
+  // Grid
+  grid: { paddingBottom: space.xl, gap: space.md },
+  gridRow: { gap: space.md, paddingHorizontal: space.lg },
   cell: {
     flex: 1,
     maxWidth: '31.5%',
@@ -355,4 +618,21 @@ const styles = StyleSheet.create({
   cellEmoji: { fontSize: 26 },
   cellLabel: { color: colors.text, fontSize: font.size.sm, fontWeight: '700' },
   cellSub: { color: colors.textFaint, fontSize: font.size.xs, maxWidth: '95%' },
+
+  // Activity
+  activity: { marginTop: space.lg, paddingHorizontal: space.lg },
+  activityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingVertical: space.md,
+    paddingHorizontal: space.md,
+    marginBottom: space.sm,
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  activityTitle: { flex: 1, color: colors.text, fontSize: font.size.sm, fontWeight: '600' },
+  activityTime: { color: colors.textFaint, fontSize: font.size.xs },
 });

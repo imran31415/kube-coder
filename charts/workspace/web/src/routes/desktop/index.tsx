@@ -24,6 +24,7 @@ import { DesktopEditor } from './DesktopEditor';
 import { DesktopBulletin } from './DesktopBulletin';
 import { DesktopPrompt } from './DesktopPrompt';
 import { DesktopSection } from './DesktopSection';
+import { DesktopHeader } from './DesktopHeader';
 import './desktop.css';
 
 /** Render either an emoji/text icon or a named lucide-style line icon
@@ -147,6 +148,8 @@ export function DesktopRoute() {
   return (
     <div class="route route-desktop" ref={surfaceRef} onClick={onSurfaceClick}>
       <div class="dt-page">
+        <DesktopHeader />
+
         {error && <div class="dt-error" data-dt-stop="true" role="alert">{error}</div>}
 
         {/* Hero prompt composer — always the first section. Suppressed for

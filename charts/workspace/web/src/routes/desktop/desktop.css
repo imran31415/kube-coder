@@ -1,15 +1,27 @@
 .route-desktop {
   padding: var(--size-5) var(--size-5) var(--size-6);
-  /* Faint dot-grid background like a desktop wallpaper. Very low
-     contrast so it reads as texture not a pattern. Hidden in light
-     mode where it would compete with the white surface. */
-  background-image: radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0);
-  background-size: 22px 22px;
-  background-position: 11px 11px;
+  /* Layered wallpaper: a soft accent glow bleeding down from the top
+     (adds depth + a premium tint) over a faint dot-grid texture. Both
+     are very low contrast so they read as atmosphere, not decoration.
+     The multi-background lists must stay index-aligned across the three
+     properties below. */
+  background-image:
+    radial-gradient(130% 62% at 50% -22%,
+      color-mix(in srgb, var(--accent) 10%, transparent) 0%,
+      transparent 58%),
+    radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0);
+  background-size: 100% 100%, 22px 22px;
+  background-position: 0 0, 11px 11px;
+  background-repeat: no-repeat, repeat;
+  background-attachment: fixed, scroll;
   min-height: 100%;
 }
 :root[data-theme="light"] .route-desktop {
-  background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 60%, transparent) 1px, transparent 0);
+  background-image:
+    radial-gradient(130% 62% at 50% -22%,
+      color-mix(in srgb, var(--accent) 7%, transparent) 0%,
+      transparent 58%),
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 60%, transparent) 1px, transparent 0);
 }
 
 .dt-error {
@@ -21,6 +33,68 @@
   margin: var(--size-3) 0;
   font-size: 13px;
 }
+
+/* ────────────────────────────────────────────────────────────────
+   Identity header — the clean masthead at the top of the page. Gradient
+   monogram + an "AI Workspace" eyebrow over the operator's GitHub handle.
+   ──────────────────────────────────────────────────────────────── */
+.dt-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: var(--size-2);
+  animation: dt-composer-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.dt-hero-avatar {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #a855f7) 100%);
+  box-shadow:
+    0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+}
+.dt-hero-avatar span { transform: translateY(-0.5px); }
+.dt-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.dt-hero-eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+.dt-hero-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-subtle);
+}
+.dt-hero-badge svg { display: block; }
 
 /* ────────────────────────────────────────────────────────────────
    Page column + labeled sections. Everything lives in one constrained,
@@ -647,7 +721,9 @@
    the list, full column width, so it reads as a real activity panel. */
 .dt-bulletin {
   width: 100%;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text) 3%, transparent) 0%, transparent 24%),
+    color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;

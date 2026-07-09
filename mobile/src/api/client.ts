@@ -210,6 +210,24 @@ export function terminalEmbedSource(): { uri: string; headers: Record<string, st
   };
 }
 
+/** The workspace operator's identity, for the Desktop masthead. Resolves the
+ *  gh CLI login (or the configured git user name); returns null on any error
+ *  so the header can degrade to a neutral label instead of throwing. */
+export interface GithubStatus {
+  gh_cli?: { installed?: boolean; authenticated?: boolean; username?: string | null };
+  git_config?: { user_name?: string; user_email?: string };
+}
+
+export async function githubDisplayName(): Promise<string | null> {
+  if (getConfig().mock) return 'imran31415';
+  try {
+    const s = await request<GithubStatus>('/api/github/status');
+    return s?.gh_cli?.username?.trim() || s?.git_config?.user_name?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createTask(input: {
   prompt: string;
   workdir?: string;
