@@ -12,6 +12,7 @@
     "expo": "~56.0.12",
     "expo-build-properties": "~56.0.19",
     "expo-clipboard": "~56.0.4",
+    "expo-image-picker": "~56.0.20",
     "expo-linear-gradient": "~56.0.4",
     "expo-secure-store": "~56.0.4",
     "expo-splash-screen": "~56.0.10",

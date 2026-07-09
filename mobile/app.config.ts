@@ -63,6 +63,15 @@ const config: ExpoConfig = {
         backgroundColor: '#0b0d10',
       },
     ],
+    [
+      // Photo-library access for attaching images to a task's follow-up
+      // (issue #179). Only the read/library permission is requested.
+      'expo-image-picker',
+      {
+        photosPermission:
+          'Allow kube-coder to attach photos from your library to a task.',
+      },
+    ],
   ],
   extra: {
     eas: {

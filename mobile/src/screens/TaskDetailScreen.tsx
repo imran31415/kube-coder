@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   LayoutAnimation,
   PanResponder,
@@ -19,7 +20,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import { getTask, getTaskOutput, killTask, sendKey, sendMessage } from '../api/client';
+import * as ImagePicker from 'expo-image-picker';
+import { getTask, getTaskOutput, killTask, sendKey, sendMessage, uploadTaskImage } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
 import { AppPickerSheet } from '../components/AppPickerSheet';
 import { Loading, StatusPill } from '../components/ui';
@@ -48,6 +50,16 @@ const KEY_TRAY: { label: string; key?: string; paste?: boolean; hint: string }[]
   { label: '⏎', key: 'enter', hint: 'Enter' },
   { label: '⌃C', key: 'ctrl-c', hint: 'Interrupt' },
 ];
+
+/** One image attached to the composer, tracked from pick → upload. */
+interface Attachment {
+  id: string;
+  /** Local file URI for the thumbnail preview. */
+  uri: string;
+  /** Saved absolute path Claude Code will read; set once uploaded. */
+  path?: string;
+  status: 'uploading' | 'ready' | 'error';
+}
 
 // Last app shown in the split pane, remembered across tasks/restarts so the
 // toggle is one tap once you've picked your dev server.
@@ -85,6 +97,9 @@ export default function TaskDetailScreen() {
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  // Images attached to the pending follow-up (issue #179). Each is uploaded to
+  // the task's attachments dir; its saved path is appended to the prompt on send.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [promptExpanded, setPromptExpanded] = useState(false);
   // The control-key tray, hidden behind the keypad button beside Send.
   const [keysOpen, setKeysOpen] = useState(false);
@@ -249,13 +264,59 @@ export default function TaskDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav, active, promptKill, splitApp]);
 
+  // Pick one or more images from the library and upload each into the task's
+  // attachments dir. Chips flip uploading → ready|error independently.
+  async function pickImages() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      setSendErr('Photo access is off — enable it in Settings to attach images.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      quality: 0.9,
+    });
+    if (result.canceled) return;
+    setSendErr(null);
+    for (const asset of result.assets) {
+      const localId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      setAttachments((a) => [...a, { id: localId, uri: asset.uri, status: 'uploading' }]);
+      void (async () => {
+        try {
+          const path = await uploadTaskImage(id, asset);
+          setAttachments((a) =>
+            a.map((x) => (x.id === localId ? { ...x, path, status: 'ready' } : x)),
+          );
+        } catch (e) {
+          setAttachments((a) =>
+            a.map((x) => (x.id === localId ? { ...x, status: 'error' } : x)),
+          );
+          setSendErr(e instanceof Error ? e.message : 'Image upload failed');
+        }
+      })();
+    }
+  }
+
+  function removeAttachment(aid: string) {
+    setAttachments((a) => a.filter((x) => x.id !== aid));
+  }
+
   async function send() {
-    if (!msg.trim()) return;
+    const text = msg.trim();
+    const ready = attachments.filter((a) => a.status === 'ready' && a.path);
+    // Hold send until uploads settle so their paths make it into the prompt.
+    if (attachments.some((a) => a.status === 'uploading')) return;
+    if (!text && ready.length === 0) return;
     setSending(true);
     setSendErr(null);
+    // Append each uploaded image's absolute path on its own line — Claude Code
+    // detects the path and reads the image as vision input.
+    const finalText = [text, ...ready.map((a) => a.path as string)].filter(Boolean).join('\n');
     try {
-      await sendMessage(id, msg.trim());
+      await sendMessage(id, finalText);
       setMsg('');
+      setAttachments([]);
       await load();
     } catch (e) {
       // Keep the draft so the user can retry; a silent failure here looks
@@ -269,7 +330,9 @@ export default function TaskDetailScreen() {
   if (!task) return <Loading label={err ? "Couldn't load task — retrying…" : 'Loading task…'} />;
 
   const note = finishedNote(task.status);
-  const canSend = !!msg.trim() && !sending;
+  const uploading = attachments.some((a) => a.status === 'uploading');
+  const readyCount = attachments.filter((a) => a.status === 'ready').length;
+  const canSend = (!!msg.trim() || readyCount > 0) && !sending && !uploading;
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
@@ -342,6 +405,39 @@ export default function TaskDetailScreen() {
                 </ScrollView>
               ) : null}
 
+              {attachments.length > 0 ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={styles.attachTray}
+                >
+                  {attachments.map((a) => (
+                    <View key={a.id} style={styles.attachChip}>
+                      <Image source={{ uri: a.uri }} style={styles.attachThumb} />
+                      {a.status !== 'ready' ? (
+                        <View style={styles.attachOverlay}>
+                          {a.status === 'uploading' ? (
+                            <ActivityIndicator size="small" color={colors.accentText} />
+                          ) : (
+                            <Ionicons name="alert-circle" size={18} color={colors.danger} />
+                          )}
+                        </View>
+                      ) : null}
+                      <Pressable
+                        onPress={() => removeAttachment(a.id)}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove image"
+                        style={styles.attachRemove}
+                      >
+                        <Ionicons name="close" size={12} color={colors.accentText} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : null}
+
               {sendErr ? (
                 <Text style={styles.sendErr} accessibilityRole="alert">
                   Couldn't send: {sendErr}
@@ -361,6 +457,14 @@ export default function TaskDetailScreen() {
                     size={20}
                     color={keysOpen ? colors.accent : colors.textMuted}
                   />
+                </Pressable>
+                <Pressable
+                  onPress={() => void pickImages()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Attach image"
+                  style={styles.keysBtn}
+                >
+                  <Ionicons name="image-outline" size={20} color={colors.textMuted} />
                 </Pressable>
                 <TextInput
                   value={msg}
@@ -506,6 +610,44 @@ const styles = StyleSheet.create({
   },
   keyChipPressed: { backgroundColor: colors.cardHover, borderColor: colors.borderStrong },
   keyChipText: { color: colors.text, fontSize: font.size.sm, fontWeight: '600' },
+  // ---- attached-image chips ----
+  attachTray: {
+    flexDirection: 'row',
+    gap: space.sm,
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+  },
+  attachChip: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  attachThumb: { width: '100%', height: '100%' },
+  attachOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  attachRemove: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
   sendErr: {
     color: colors.danger,
     fontSize: font.size.xs,

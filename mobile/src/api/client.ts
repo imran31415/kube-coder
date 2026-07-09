@@ -241,6 +241,92 @@ export async function sendMessage(id: string, prompt: string): Promise<void> {
   await request(`/api/claude/tasks/${id}/message`, { method: 'POST', body: { prompt, submit: true } });
 }
 
+// Claude Code keys an image's type off the file EXTENSION, not magic bytes
+// (anthropics/claude-code#35866), so uploads are saved with an extension that
+// matches the picked asset's MIME type (falling back to its filename, then jpg).
+const IMAGE_MIME_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tiff',
+};
+
+function imageExt(mime?: string, fileName?: string | null): string {
+  const m = mime?.toLowerCase();
+  if (m && IMAGE_MIME_EXT[m]) return IMAGE_MIME_EXT[m];
+  const dot = fileName?.match(/\.([a-z0-9]+)$/i);
+  if (dot) return dot[1].toLowerCase();
+  return 'jpg';
+}
+
+let _imgSeq = 0;
+
+/**
+ * Upload a picked image into the task's attachments dir (reusing the workspace
+ * /api/files/upload endpoint) and return its saved absolute path — the same
+ * path the web composer injects into the prompt so Claude Code reads the image.
+ * The follow-up path is text-only, so the image travels as a file reference,
+ * not inline bytes.
+ *
+ * React Native can't stream a file:// path as a raw request body, so we fetch
+ * the local asset into a Blob first and POST the bytes (Content-Length comes
+ * from the blob).
+ */
+export async function uploadTaskImage(
+  taskId: string,
+  asset: { uri: string; mimeType?: string; fileName?: string | null },
+): Promise<string> {
+  const ext = imageExt(asset.mimeType, asset.fileName);
+  if (getConfig().mock) {
+    await delay(200);
+    return `/home/dev/.claude-tasks/${taskId}/attachments/pasted-mock.${ext}`;
+  }
+  const { host, token } = getConfig();
+  if (!host || !token) throw new ApiError('Not configured', 0);
+
+  const filename = `pasted-${Date.now().toString(36)}-${(_imgSeq++).toString(36)}.${ext}`;
+  const destPath = `.claude-tasks/${taskId}/attachments`;
+  const fileResp = await fetch(asset.uri);
+  const blob = await fileResp.blob();
+
+  const url = buildUrl(host, '/api/files/upload');
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS * 2);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        // Both headers are URL-encoded — HTTP header values are ISO-8859-1 and
+        // the server unquotes them (same contract as the web uploadFile()).
+        'X-Dest-Path': encodeURIComponent(destPath),
+        'X-Filename': encodeURIComponent(filename),
+        'Content-Type': asset.mimeType || blob.type || 'application/octet-stream',
+      },
+      body: blob,
+      signal: abort.signal,
+    });
+  } catch (e) {
+    const aborted = (e as Error).name === 'AbortError';
+    throw new ApiError(aborted ? 'Upload timed out' : `Network error: ${(e as Error).message}`, 0);
+  } finally {
+    clearTimeout(timer);
+  }
+  const parsed = (await res.json().catch(() => null)) as
+    | { absolute_path?: string; error?: string }
+    | null;
+  if (!res.ok || !parsed?.absolute_path) {
+    throw new ApiError(parsed?.error || `Upload failed (${res.status})`, res.status);
+  }
+  return parsed.absolute_path;
+}
+
 export async function killTask(id: string): Promise<void> {
   if (getConfig().mock) {
     await delay(100);
