@@ -62,6 +62,27 @@ ingress:
     connections: 20
     bodySize: "16k"
 
+# "Workspace is restarting…" holding page (issue #184). A tiny always-up nginx
+# Deployment (holding-<user>) wired in as the custom-error backend on the root
+# dashboard ingress(es), so the ~1 min Recreate downtime of a self-serve update
+# shows a branded auto-recovering page instead of a raw nginx 503. Separate
+# Deployment (survives the workspace pod's Recreate), no PVC, tens of MiB.
+holdingPage:
+  enabled: true
+  # nginx-unprivileged listens on 8080 as a non-root user, which fits the
+  # read-only/non-root securityContext without extra config.
+  image: nginxinc/nginx-unprivileged:1.27-alpine
+  # One replica is enough for a transient holding page; bump to 2 if you want it
+  # to survive a single-node drain during the restart window.
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 32Mi
+
 # OAuth2 (GitHub) settings — only used when ingress.auth.type=oauth2.
 # Real credentials should come from a gitignored overlay (e.g.
 # secrets/<user>/oauth2.yaml). Public-repo defaults leave them empty,

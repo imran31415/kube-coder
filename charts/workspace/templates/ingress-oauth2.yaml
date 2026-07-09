@@ -16,6 +16,13 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- if .Values.holdingPage.enabled }}
+    # Serve the always-up holding-<user> "restarting…" page (issue #184) while
+    # the workspace pod is Recreate-restarted and this upstream has no Ready
+    # endpoint. The oauth2 auth sub-request runs first, so it stays behind auth.
+    nginx.ingress.kubernetes.io/custom-http-errors: "502,503,504"
+    nginx.ingress.kubernetes.io/default-backend: holding-{{ .Values.user.name }}
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

@@ -1,0 +1,115 @@
+{{- if .Values.holdingPage.enabled }}
+# Always-up "restarting…" holding backend (issue #184).
+#
+# During a self-serve update the workspace Deployment does a Recreate rollout
+# (replicas: 1 on an RWO /home/dev PVC — see deployment.yaml), so the ws-<user>
+# Service has ZERO endpoints for ~1 min and stock ingress-nginx returns a raw
+# 503. This tiny separate Deployment stays up across that window and is wired in
+# as the ingress custom-error backend (see ingress.yaml / ingress-oauth2.yaml),
+# so the user sees a branded page that auto-recovers instead of a bare 503.
+#
+# It MUST be its own Deployment (not a sidecar / not in the workspace pod) so it
+# survives the workspace pod's Recreate. Kept deliberately tiny: no PVC, tens of
+# MiB, unprivileged read-only nginx.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: holding-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: holding-{{ .Values.user.name }}
+spec:
+  replicas: {{ .Values.holdingPage.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: holding-{{ .Values.user.name }}
+  template:
+    metadata:
+      labels:
+        app: holding-{{ .Values.user.name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: holding
+        image: {{ .Values.holdingPage.image | default "nginxinc/nginx-unprivileged:1.27-alpine" }}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+          readOnly: true
+        - name: html
+          mountPath: /usr/share/nginx/html/holding.html
+          subPath: holding.html
+          readOnly: true
+        # nginx needs a few writable paths under a read-only root filesystem.
+        - name: cache
+          mountPath: /var/cache/nginx
+        - name: run
+          mountPath: /tmp
+        readinessProbe:
+          # Every real path answers 503 by design, so probe the dedicated
+          # /healthz (returns 200) — see holding-configmap.yaml.
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: {{ .Values.holdingPage.resources.requests.cpu | default "10m" | quote }}
+            memory: {{ .Values.holdingPage.resources.requests.memory | default "16Mi" | quote }}
+          limits:
+            cpu: {{ .Values.holdingPage.resources.limits.cpu | default "50m" | quote }}
+            memory: {{ .Values.holdingPage.resources.limits.memory | default "32Mi" | quote }}
+      volumes:
+      - name: config
+        configMap:
+          name: holding-{{ .Values.user.name }}
+          items:
+          - key: default.conf
+            path: default.conf
+      - name: html
+        configMap:
+          name: holding-{{ .Values.user.name }}
+          items:
+          - key: holding.html
+            path: holding.html
+      - name: cache
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: holding-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: holding-{{ .Values.user.name }}
+spec:
+  selector:
+    app: holding-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+{{- end }}

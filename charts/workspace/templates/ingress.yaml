@@ -17,6 +17,16 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- if .Values.holdingPage.enabled }}
+    # During a self-serve update the workspace pod is Recreate-restarted and
+    # this upstream has no Ready endpoint for ~1 min. Serve the always-up
+    # holding-<user> backend's "restarting…" page (issue #184) instead of a
+    # raw nginx 503; it polls /health and returns to the live workspace once
+    # the new pod is Ready. In basic-auth mode the auth sub-request runs first,
+    # so the page is never exposed unauthenticated.
+    nginx.ingress.kubernetes.io/custom-http-errors: "502,503,504"
+    nginx.ingress.kubernetes.io/default-backend: holding-{{ .Values.user.name }}
+    {{- end }}
     {{- if .Values.ingress.tls.enabled }}
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     {{- end }}
