@@ -8,6 +8,8 @@
  */
 import type {
   AppEntry,
+  ControllerCapacity,
+  ControllerWorkspace,
   DesktopItem,
   Health,
   MemoryRecord,
@@ -248,3 +250,48 @@ export const mockApps: AppEntry[] = [
     addr: '127.0.0.1',
   },
 ];
+
+// ── Controller (admin plane) mocks ──────────────────────────────────────────
+
+function mockWs(
+  user: string,
+  state: ControllerWorkspace['state'],
+  isolated: boolean,
+  detail: string,
+  version: string | null,
+  updateAvailable = false,
+): ControllerWorkspace {
+  return {
+    user,
+    deployment: `ws-${user}`,
+    namespace: isolated ? `ws-${user}` : 'coder',
+    isolated,
+    state,
+    desiredReplicas: state === 'stopped' ? 0 : 1,
+    readyReplicas: state === 'running' ? 1 : 0,
+    url: `https://${user}.kube-coder.app`,
+    detail,
+    version,
+    updateAvailable,
+  };
+}
+
+export const mockWorkspaces: ControllerWorkspace[] = [
+  mockWs('imran', 'running', true, '1/1 ready', 'v1.11.0', true),
+  mockWs('alex-worboys', 'running', true, '1/1 ready', 'v1.12.0'),
+  mockWs('marketing-demo', 'stopped', false, 'scaled to 0', 'v1.9.0', true),
+  mockWs('db-migration', 'transitioning', true, '0/1 starting', 'v1.12.0'),
+  mockWs('nightly', 'degraded', true, 'CrashLoopBackOff', 'v1.10.0', true),
+];
+
+export const mockCapacity: ControllerCapacity = {
+  generatedAt: NOW,
+  namespace: 'coder',
+  status: 'warn',
+  metricsError: null,
+  cluster: {
+    nodeCount: 3,
+    cpu: { clusterPct: 62.4, workspacePct: 38.1 },
+    memory: { clusterPct: 78.9, workspacePct: 54.2 },
+  },
+};

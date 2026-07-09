@@ -19,6 +19,7 @@ import { InsightsBar } from './components/InsightsBar';
 import { CapacityPanel } from './components/CapacityPanel';
 import { HealthSummary } from './components/HealthSummary';
 import { ProvisionForm } from './components/ProvisionForm';
+import { MobileAccessCard } from './components/MobileAccessCard';
 
 // The single workspace whose inline metrics panel is expanded (null = collapsed).
 const expanded = signal<string | null>(null);
@@ -190,6 +191,8 @@ function WorkspaceList() {
           </div>
         </>
       )}
+
+      <MobileAccessCard />
     </div>
   );
 }

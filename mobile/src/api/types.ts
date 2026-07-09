@@ -90,3 +90,49 @@ export interface AppEntry {
   /** Bind address from /proc/net/tcp, e.g. "127.0.0.1". */
   addr: string;
 }
+
+// ── Controller (admin plane) ────────────────────────────────────────────────
+// Mirrors the workspace-controller's /api/workspaces and /api/capacity/summary.
+
+export type WorkspaceState = 'running' | 'stopped' | 'transitioning' | 'degraded';
+
+/** One workspace in the controller's list (mirrors controller.py list_workspaces). */
+export interface ControllerWorkspace {
+  user: string;
+  deployment: string;
+  namespace: string;
+  isolated: boolean;
+  state: WorkspaceState;
+  desiredReplicas: number;
+  readyReplicas: number;
+  url: string | null;
+  /** Short human status, e.g. "1/1 ready" or "CrashLoopBackOff". */
+  detail: string;
+  version: string | null;
+  updateAvailable: boolean;
+}
+
+export interface ControllerWorkspacesResponse {
+  namespace: string;
+  workspaces: ControllerWorkspace[];
+  latestVersion: string | null;
+}
+
+/** One resource rollup in the capacity summary (percent-of-cluster). */
+export interface CapacityResource {
+  clusterPct: number | null;
+  workspacePct: number | null;
+}
+
+/** Cheap cluster-health rollup (mirrors controller.py cluster_health). */
+export interface ControllerCapacity {
+  generatedAt: number;
+  namespace: string;
+  status: 'ok' | 'warn' | 'critical' | 'unknown';
+  metricsError: string | null;
+  cluster: {
+    nodeCount: number;
+    cpu: CapacityResource;
+    memory: CapacityResource;
+  } | null;
+}

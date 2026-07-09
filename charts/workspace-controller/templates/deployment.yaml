@@ -98,6 +98,17 @@ spec:
               name: {{ .Values.controller.update.selfServeSecretName }}
               key: self-serve-token
         {{- end }}
+        {{- if .Values.controller.adminToken.enabled }}
+        # Persistent admin API token for non-browser clients (the Expo mobile
+        # app), which can't complete the oauth2 handshake. Mounted from a Secret
+        # exactly like SELF_SERVE_TOKEN — never a plaintext env literal. Reveal
+        # it from the web console's "Mobile access" card. See admin-token-secret.yaml.
+        - name: CONTROLLER_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.controller.adminToken.existingSecretName | default "workspace-controller-admin-token" }}
+              key: admin-token
+        {{- end }}
         {{- if .Values.provision.enabled }}
         # --- Self-service provisioning (see values.yaml `provision`) ---
         # The admin creates a GitHub OAuth App by hand and pastes its Client ID +
