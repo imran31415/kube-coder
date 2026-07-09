@@ -34,6 +34,7 @@ export type IconName =
   | 'download'
   | 'upload'
   | 'apps'
+  | 'image'
   | 'desktop';
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -200,6 +201,13 @@ const PATHS: Record<IconName, JSX.Element> = {
       <rect x="11" y="3" width="6" height="6" rx="1" />
       <rect x="3" y="11" width="6" height="6" rx="1" />
       <rect x="11" y="11" width="6" height="6" rx="1" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="3" y="4" width="14" height="12" rx="1.5" />
+      <circle cx="7.5" cy="8.5" r="1.5" />
+      <path d="M4 15l4-4 3 3 3-3 3 3" />
     </>
   ),
 };

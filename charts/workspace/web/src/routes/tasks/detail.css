@@ -249,6 +249,81 @@
   font-size: 11.5px;
 }
 .mc-hint { line-height: 1.4; }
+.mc-composer-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+}
+.mc-file-input { display: none; }
+
+/* Highlight the composer while an image file is dragged over it. */
+.mc-composer--dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  background: var(--surface-2);
+}
+
+/* Thumbnail chips for pasted/dropped/picked images (issue #179). */
+.mc-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2);
+}
+.mc-chip {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.mc-chip-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mc-chip--uploading .mc-chip-thumb { opacity: 0.5; }
+.mc-chip--error { border-color: var(--danger, #d9534f); }
+.mc-chip-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+}
+.mc-chip-remove:hover { background: rgba(0, 0, 0, 0.8); }
+.mc-chip-badge {
+  position: absolute;
+  bottom: 2px;
+  left: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--danger, #d9534f);
+}
+.mc-chip-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mc-spin 0.7s linear infinite;
+}
+@keyframes mc-spin { to { transform: rotate(360deg); } }
 
 /* Mobile: shrink type, hug the edges, and collapse the composer to a single
    line so the embedded terminal gets the maximum viewport. The textarea uses
