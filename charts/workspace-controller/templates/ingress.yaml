@@ -14,6 +14,12 @@ metadata:
     {{- end }}
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
     nginx.ingress.kubernetes.io/proxy-buffers-number: "8"
+    # Give the metrics/workspace-listing endpoints headroom over the 60s default
+    # so a briefly-slow read (cold kubectl discovery cache, apiserver hiccup)
+    # degrades to a slow load rather than a 502. The listing itself is kept fast
+    # by the concurrent _collect() fan-out in controller.py.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

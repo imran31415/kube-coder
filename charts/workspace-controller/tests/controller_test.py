@@ -759,6 +759,40 @@ class PerWorkspaceNamespaceTest(unittest.TestCase):
         self.assertEqual(by_user['alice']['namespace'], 'ws-alice')
         self.assertEqual(by_user['bob']['namespace'], 'ws-bob')
 
+    def test_collect_aggregates_items_across_namespaces(self):
+        # _collect fans out one read per workspace namespace (now concurrently)
+        # and concatenates the items, each keeping its own namespace.
+        def fake(args, namespace=None):
+            if args == ['get', 'namespaces']:
+                return {'items': [{'metadata': {'name': 'ws-alice'}},
+                                  {'metadata': {'name': 'ws-bob'}}]}
+            if args == ['get', 'pods']:
+                return {'items': [{'metadata': {'name': f'p-{namespace}',
+                                                'namespace': namespace}}]}
+            return {'items': []}
+        controller._kubectl_json = fake
+        got = {i['metadata']['namespace'] for i in controller._collect('pods')}
+        # coder (own ns) + the two ws-* namespaces
+        self.assertEqual(got, {'coder', 'ws-alice', 'ws-bob'})
+
+    def test_collect_skips_a_failing_namespace(self):
+        # One unreadable tenant namespace must not blank the whole listing.
+        def fake(args, namespace=None):
+            if args == ['get', 'namespaces']:
+                return {'items': [{'metadata': {'name': 'ws-alice'}},
+                                  {'metadata': {'name': 'ws-bob'}}]}
+            if args == ['get', 'pods']:
+                if namespace == 'ws-bob':
+                    raise controller.KubectlError('forbidden')
+                return {'items': [{'metadata': {'name': f'p-{namespace}',
+                                                'namespace': namespace}}]}
+            return {'items': []}
+        controller._kubectl_json = fake
+        got = {i['metadata']['namespace'] for i in controller._collect('pods')}
+        self.assertNotIn('ws-bob', got)          # the failing ns is dropped
+        self.assertIn('ws-alice', got)           # the others still come through
+        self.assertIn('coder', got)
+
     def test_workspace_exists_checks_the_per_user_namespace(self):
         seen = {}
         def fake(args, namespace=None):

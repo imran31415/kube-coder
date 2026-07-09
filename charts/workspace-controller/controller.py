@@ -17,6 +17,7 @@ web/src/api/client.ts) so the auth cookie attaches; we strip that prefix here.
 Stdlib only — no third-party deps, so it runs on the unmodified coder image.
 """
 import base64
+import concurrent.futures
 import datetime
 import hashlib
 import http.server
@@ -65,6 +66,10 @@ ADMIN_USERS = {
 DEV_TOKEN = os.environ.get('CONTROLLER_DEV_TOKEN', '')
 DIST_DIR = os.environ.get('CONTROLLER_DIST_DIR', '/controller-web')
 KUBECTL_TIMEOUT = int(os.environ.get('KUBECTL_TIMEOUT', '15'))
+# Max concurrent per-namespace kubectl reads in _collect(). Bounds the fan-out
+# so a large fleet can't spawn hundreds of kubectl processes at once, while
+# still keeping the workspace listing sub-second as namespaces grow.
+COLLECT_CONCURRENCY = int(os.environ.get('COLLECT_CONCURRENCY', '16'))
 MAX_REQUEST_BODY_BYTES = int(os.environ.get('MAX_REQUEST_BODY_BYTES', str(64 * 1024)))
 
 # Metrics come from the in-cluster Prometheus (no metrics-server on this
@@ -235,13 +240,31 @@ def _collect(resource):
     """Concatenate `kubectl get <resource>` items across all workspace
     namespaces. Every item keeps its own metadata.namespace so callers can tell
     workspaces apart. A per-namespace read failure is skipped, not fatal — one
-    unreadable tenant namespace shouldn't blank the whole console."""
-    items = []
-    for ns in discover_workspace_namespaces():
+    unreadable tenant namespace shouldn't blank the whole console.
+
+    The per-namespace reads run concurrently: the console lists the whole fleet
+    on every page load, and a sequential kubectl-per-namespace walk grew
+    linearly with workspace count (~1+3N subprocess spawns per /api/workspaces),
+    which is what pushed slow listings past the ingress timeout into 502s. These
+    calls are I/O-bound (each blocks on the apiserver), so threads give real
+    concurrency despite the GIL, and wall-time collapses to roughly the slowest
+    single namespace read regardless of fleet size."""
+    namespaces = discover_workspace_namespaces()
+
+    def _one(ns):
         try:
-            items.extend(_kubectl_json(['get', resource], namespace=ns).get('items', []))
+            return _kubectl_json(['get', resource], namespace=ns).get('items', [])
         except KubectlError:
-            continue
+            return []
+
+    if len(namespaces) <= 1:
+        return _one(namespaces[0]) if namespaces else []
+
+    items = []
+    workers = min(COLLECT_CONCURRENCY, len(namespaces))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for chunk in pool.map(_one, namespaces):
+            items.extend(chunk)
     return items
 
 
@@ -1803,7 +1826,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client (usually the ingress, occasionally a navigated-away
+            # SPA) hung up before we finished writing. There's nothing to
+            # recover, and letting it propagate crashes the handler thread with
+            # a noisy traceback, so swallow it.
+            pass
 
     def read_json_body(self):
         n = int(self.headers.get('Content-Length', 0))
