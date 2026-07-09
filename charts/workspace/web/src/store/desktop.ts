@@ -11,6 +11,7 @@ import {
 } from '../api/desktop';
 import { pushToast } from './ui';
 import { navigate } from './router';
+import { createTask } from './tasks';
 
 export const desktopItems = signal<DesktopItem[]>([]);
 export const desktopError = signal<string | null>(null);
@@ -76,6 +77,30 @@ export async function moveDesktopItem(id: string, dir: 'up' | 'down'): Promise<v
     pushToast(e instanceof Error ? e.message : 'Reorder failed', { kind: 'danger' });
     await refreshDesktop();
   }
+}
+
+/** Start a build directly from a free-text prompt typed into the Desktop
+ *  composer. Mirrors launchItem's `task` branch: create the task, then drop
+ *  the user straight into the new build's detail/terminal view. Returns true
+ *  on success so the caller can clear its input. */
+export async function startBuildFromPrompt(
+  prompt: string,
+  workdir: string,
+  assistant?: string,
+): Promise<boolean> {
+  const text = prompt.trim();
+  if (!text) return false;
+  const task = await createTask({
+    prompt: text,
+    workdir,
+    assistant: assistant || undefined,
+  });
+  if (!task || !task.task_id) return false;
+  // Same landing as launchItem: /tasks/<id> selects the build and mounts the
+  // TerminalPane (URL-driven, so it works on both desktop split-view and the
+  // mobile full-screen detail route).
+  navigate(`/tasks/${encodeURIComponent(task.task_id)}`);
+  return true;
 }
 
 export async function launchItem(item: DesktopItem): Promise<void> {

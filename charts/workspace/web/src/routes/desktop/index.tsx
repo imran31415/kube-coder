@@ -22,6 +22,9 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { serverMode } from '../../store/server-mode';
 import { DesktopEditor } from './DesktopEditor';
 import { DesktopBulletin } from './DesktopBulletin';
+import { DesktopPrompt } from './DesktopPrompt';
+import { DesktopSection } from './DesktopSection';
+import { DesktopHeader } from './DesktopHeader';
 import './desktop.css';
 
 /** Render either an emoji/text icon or a named lucide-style line icon
@@ -144,41 +147,71 @@ export function DesktopRoute() {
 
   return (
     <div class="route route-desktop" ref={surfaceRef} onClick={onSurfaceClick}>
-      {error && <div class="dt-error" data-dt-stop="true" role="alert">{error}</div>}
+      <div class="dt-page">
+        <DesktopHeader />
 
-      {loaded && items.length === 0 ? (
-        <EmptyState
-          icon={<Icon name="inbox" size={24} />}
-          title="No icons yet"
-          description="Pin a build prompt, a URL, or a shell command. Optionally bind ⌘⇧1 (or any key combo) for one-tap launch."
-          action={
-            <MutatorOnly>
-              <Button variant="primary" data-dt-stop="true" onClick={onNew}>
-                <Icon name="plus" size={14} /> Create your first icon
-              </Button>
-            </MutatorOnly>
+        {error && <div class="dt-error" data-dt-stop="true" role="alert">{error}</div>}
+
+        {/* Hero prompt composer — always the first section. Suppressed for
+            read-only visitors who can't start builds. */}
+        {!serverMode.value.readOnly && (
+          <DesktopSection
+            class="dt-section-compose"
+            title="Start a build"
+            icon={<Icon name="chat" size={13} />}
+          >
+            <DesktopPrompt />
+          </DesktopSection>
+        )}
+
+        <DesktopSection
+          title="Shortcuts"
+          icon={<Icon name="desktop" size={13} />}
+          meta={
+            items.length > 0 ? (
+              <MutatorOnly>
+                <button type="button" class="dt-section-action" data-dt-stop="true" onClick={onNew}>
+                  <Icon name="plus" size={12} /> New
+                </button>
+              </MutatorOnly>
+            ) : undefined
           }
-        />
-      ) : (
-        <>
-          <div class="dt-grid" role="list">
-            {items.map((it, idx) => (
-              <DesktopCell
-                key={it.id}
-                item={it}
-                first={idx === 0}
-                last={idx === items.length - 1}
-                onLaunch={() => void launchItem(it)}
-                onEdit={() => onEdit(it)}
-                onDelete={() => setConfirmDelete(it)}
-                onMoveUp={() => void moveDesktopItem(it.id, 'up')}
-                onMoveDown={() => void moveDesktopItem(it.id, 'down')}
-              />
-            ))}
-          </div>
-          <DesktopBulletin />
-        </>
-      )}
+        >
+          {loaded && items.length === 0 ? (
+            <EmptyState
+              icon={<Icon name="inbox" size={24} />}
+              title="No icons yet"
+              description="Pin a build prompt, a URL, or a shell command. Optionally bind ⌘⇧1 (or any key combo) for one-tap launch."
+              action={
+                <MutatorOnly>
+                  <Button variant="primary" data-dt-stop="true" onClick={onNew}>
+                    <Icon name="plus" size={14} /> Create your first icon
+                  </Button>
+                </MutatorOnly>
+              }
+            />
+          ) : (
+            <div class="dt-grid" role="list">
+              {items.map((it, idx) => (
+                <DesktopCell
+                  key={it.id}
+                  item={it}
+                  first={idx === 0}
+                  last={idx === items.length - 1}
+                  onLaunch={() => void launchItem(it)}
+                  onEdit={() => onEdit(it)}
+                  onDelete={() => setConfirmDelete(it)}
+                  onMoveUp={() => void moveDesktopItem(it.id, 'up')}
+                  onMoveDown={() => void moveDesktopItem(it.id, 'down')}
+                />
+              ))}
+            </div>
+          )}
+        </DesktopSection>
+
+        {/* Self-hides when no builds are live; renders its own section. */}
+        <DesktopBulletin />
+      </div>
 
       {addPrompt && (
         <button

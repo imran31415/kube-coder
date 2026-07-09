@@ -2762,6 +2762,36 @@ class DesktopManager:
             },
         },
         {
+            'id': 'seeddocs1',
+            'label': 'Docs',
+            'icon': 'icon:docs',
+            'action': {
+                'type': 'url',
+                'url': '/docs',
+                'target': 'self',
+            },
+        },
+        {
+            'id': 'seedfiles',
+            'label': 'Files',
+            'icon': 'icon:files',
+            'action': {
+                'type': 'url',
+                'url': '/files',
+                'target': 'self',
+            },
+        },
+        {
+            'id': 'seedapps1',
+            'label': 'Apps',
+            'icon': 'icon:apps',
+            'action': {
+                'type': 'url',
+                'url': '/apps',
+                'target': 'self',
+            },
+        },
+        {
             'id': 'seedsett1',
             'label': 'Settings',
             'icon': 'icon:settings',
@@ -3432,13 +3462,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif self.path == "/metrics":
             self.send_metrics()
             return
-        elif self.path == "/api/github/status":
+        # These /api/* reads match on normalized_path (the /oauth- and
+        # /browser-stripped path) rather than raw self.path: the SPA prefixes
+        # every /api/ call with /oauth in oauth2 mode, so a raw `self.path`
+        # match would 404 the prefixed request. (Peers like /api/mode and
+        # /api/desktop already route via the normalized path below.)
+        elif normalized_path == "/api/github/status":
             self.send_github_status()
             return
-        elif self.path == "/api/github/config":
+        elif normalized_path == "/api/github/config":
             self.send_git_config()
             return
-        elif self.path == "/api/workspace/version":
+        elif normalized_path == "/api/workspace/version":
             self.send_workspace_version()
             return
         elif self.path == "/vnc" or self.path == "/vnc/":
