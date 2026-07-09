@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'preact/hooks';
 import { listTasks, isStaleWaiting, type TaskSummary } from '../../api/tasks';
 import { navigate } from '../../store/router';
+import { Icon } from '../../components/Icon';
+import { DesktopSection } from './DesktopSection';
 
 interface BulletinEntry {
   kind: 'build';
@@ -89,11 +91,15 @@ export function DesktopBulletin() {
   if (loaded && entries.length === 0) return null;
 
   return (
-    <section class="dt-bulletin" data-dt-stop="true" aria-label="Live builds">
-      <header class="dt-bulletin-head">
-        <span class="dt-bulletin-title">Live builds</span>
-        <span class="dt-bulletin-sub muted">Click to jump in</span>
-      </header>
+    <DesktopSection
+      class="dt-section-activity"
+      title="Activity"
+      icon={<Icon name="tasks" size={13} />}
+      meta={<span class="dt-bulletin-hint muted">Click to jump in</span>}
+      data-dt-stop="true"
+      aria-label="Live builds"
+    >
+      <div class="dt-bulletin">
       {!loaded ? (
         <ul class="dt-bulletin-list" role="list" aria-busy="true">
           {[0, 1, 2].map((i) => (
@@ -134,6 +140,7 @@ export function DesktopBulletin() {
           ))}
         </ul>
       )}
-    </section>
+      </div>
+    </DesktopSection>
   );
 }

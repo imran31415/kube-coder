@@ -23,6 +23,90 @@
 }
 
 /* ────────────────────────────────────────────────────────────────
+   Page column + labeled sections. Everything lives in one constrained,
+   left-anchored column so the composer, shortcuts, and activity feed
+   share a single vertical rhythm and left edge — the "designed
+   workspace" feel. Each section is announced by a small uppercase label
+   with a hairline rule running to the column edge.
+   ──────────────────────────────────────────────────────────────── */
+.dt-page {
+  max-width: 860px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-7);
+}
+
+.dt-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.dt-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-3);
+  margin-bottom: var(--size-4);
+}
+.dt-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dt-section-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-subtle);
+}
+/* Hairline that fills the remaining width, fading out toward the far
+   edge so it reads as a quiet divider, not a hard line. */
+.dt-section-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  min-width: 24px;
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    color-mix(in srgb, var(--border) 30%, transparent) 70%,
+    transparent 100%
+  );
+}
+.dt-section-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+/* Small inline "+ New" action that sits in a section header's meta slot. */
+.dt-section-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
+}
+.dt-section-action:hover {
+  color: var(--text);
+  border-color: var(--border-2);
+  background: var(--surface-2);
+}
+.dt-section-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ────────────────────────────────────────────────────────────────
    Hero prompt composer — the top-of-Desktop "start a build" box. The
    first thing on a fresh workspace, so it carries real visual weight:
    a soft accent-tinted card, a growing input, and a prominent circular
@@ -30,9 +114,7 @@
    + bulletin so everything shares one vertical rhythm on wide screens.
    ──────────────────────────────────────────────────────────────── */
 .dt-composer {
-  margin: var(--size-2) 0 var(--size-3) 22px;
   width: 100%;
-  max-width: 640px;
   animation: dt-composer-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 @keyframes dt-composer-in {
@@ -218,7 +300,9 @@
      row above — the prior --size-6 (32px) made Settings stack tightly
      under Claude. --size-7 (48px) gives proper desktop-icon breathing. */
   gap: var(--size-7) var(--size-4);
-  margin-top: var(--size-5);
+  /* A touch of top padding so the first row's floating hover chrome
+     doesn't kiss the section rule. Section header owns the outer gap. */
+  padding-top: var(--size-1);
 }
 
 .dt-cell {
@@ -558,15 +642,11 @@
    Reads as a quiet card; no shadow, hairline border, tight density.
    ──────────────────────────────────────────────────────────────── */
 
-/* Widget-sized bulletin — left-aligned to the icon BADGE column (not
-   the cell column). The cell is 108px wide with a 64px badge centered
-   inside it → the badge starts 22px in from the cell-left. We offset
-   the bulletin by the same 22px so its left edge visually matches the
-   icon column's center-of-badge alignment on wide screens. */
+/* Activity feed — a quiet bordered card holding the live-build rows. The
+   section header (label + rule) sits above it; the card itself is just
+   the list, full column width, so it reads as a real activity panel. */
 .dt-bulletin {
-  margin: var(--size-5) 0 0 22px;
   width: 100%;
-  max-width: 420px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -574,22 +654,7 @@
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
-
-.dt-bulletin-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--size-2);
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.dt-bulletin-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.dt-bulletin-sub { font-size: 11px; display: none; }
+.dt-bulletin-hint { font-size: 11px; }
 
 .dt-bulletin-empty { padding: 10px 12px; font-size: 11.5px; }
 
@@ -804,28 +869,27 @@
 
 @media (max-width: 720px) {
   .route-desktop { padding: var(--size-3); }
-  /* Composer spans the phone width and centers with the grid. */
-  .dt-composer { margin: 0 auto var(--size-3); max-width: 100%; }
+  /* Tighter section rhythm on phones. */
+  .dt-page { gap: var(--size-6); }
+  .dt-section-head { margin-bottom: var(--size-3); }
   .dt-composer-input { font-size: 15px; } /* keep ≥16px?—14/15 avoids iOS zoom w/ our meta */
   .dt-composer-foot { padding-left: 0; }
   .dt-composer-hint { display: none; } /* no physical keyboard — hide the hint */
   .dt-composer-workdir { max-width: 100%; }
-  /* Mobile: shrink icons ~30% (64 → 45) and center the whole grid +
-     bulletin so they sit balanced on phones rather than anchored to
-     the left edge. Desktop stays left-anchored (above) — the bigger
-     viewport handles the offset better. */
+  /* Mobile: shrink icons ~30% (64 → 45). Stay LEFT-anchored so the grid
+     lines up under the section label — the sectioned layout reads as one
+     tidy column rather than a centered island. */
   .dt-grid {
     grid-template-columns: repeat(auto-fill, 86px);
     gap: var(--size-5) var(--size-3);
-    justify-content: center;
+    justify-content: start;
   }
   .dt-cell { max-width: 86px; }
   .dt-cell-label { font-size: 11px; max-width: 86px; }
   .dt-cell-icon { width: 45px; height: 45px; border-radius: 12px; font-size: 24px; }
   .dt-cell-icon-emoji { font-size: 24px; }
   .dt-cell-icon svg { width: 21px; height: 21px; }
-  /* Bulletin centered to match the centered icon grid. */
-  .dt-bulletin { margin-left: auto; margin-right: auto; }
+  .dt-bulletin { max-width: 100%; }
   /* Bulletin row layout adapts naturally — flex column wraps the body
      content; tag stays on the left, time on the right. Smaller padding
      so the widget feels tighter on phones. */
