@@ -25,8 +25,9 @@ import DesktopScreen from './src/screens/DesktopScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
 import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import ControllerScreen from './src/screens/ControllerScreen';
 import type { AppsStackParams, TasksStackParams } from './src/navigation';
-import { hydrate, isConfigured } from './src/store/config';
+import { hasController, hydrate, isConfigured } from './src/store/config';
 import { useConfig } from './src/store/useConfig';
 import { colors, font } from './src/theme';
 
@@ -83,6 +84,7 @@ const TAB_ICONS: Record<string, [keyof typeof Ionicons.glyphMap, keyof typeof Io
   Apps: ['globe-outline', 'globe'],
   Memory: ['bookmark-outline', 'bookmark'],
   Metrics: ['stats-chart-outline', 'stats-chart'],
+  Controller: ['server-outline', 'server'],
   Settings: ['settings-outline', 'settings'],
 };
 
@@ -92,6 +94,9 @@ function MainTabs() {
   // devices); home-indicator devices get the inset as extra bottom padding.
   const insets = useSafeAreaInsets();
   const bottomPad = Math.max(insets.bottom, 8);
+  // The Controller tab only appears once a controller connection exists — with
+  // none, the app is unchanged. useConfig() re-renders the bar when one is added.
+  const showController = hasController(useConfig());
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -122,6 +127,7 @@ function MainTabs() {
       <Tab.Screen name="Apps" component={AppsStack} />
       <Tab.Screen name="Memory" component={MemoryScreen} />
       <Tab.Screen name="Metrics" component={MetricsScreen} />
+      {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
       <Tab.Screen name="Settings" component={SettingsScreen} />
     </Tab.Navigator>
   );

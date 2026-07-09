@@ -32,6 +32,23 @@ controller:
   # this list. Leave empty to trust the oauth2-proxy --github-user gate alone.
   adminUsers: ""
 
+  # Persistent admin API token so non-browser clients — the Expo mobile app —
+  # can reach the admin API with `Authorization: Bearer <token>` (oauth2-proxy
+  # can't do a mobile OAuth handshake). OFF by default: the token bypasses the
+  # proxy gate and the adminUsers allowlist, so enable it deliberately. When
+  # enabled, a strong token is auto-generated into a Secret and PRESERVED across
+  # upgrades — reveal it from the web console's "Mobile access" card, then paste
+  # the controller host + token into the app. Rotate by deleting the Secret (or
+  # setting `value`) and restarting the controller.
+  adminToken:
+    enabled: false
+    # Pin a specific token instead of auto-generating (e.g. from a secrets
+    # overlay). Empty => generate + preserve across upgrades.
+    value: ""
+    # Bring your own Secret (must expose an `admin-token` key), e.g. one managed
+    # by sealed-secrets/SOPS. When set, the chart does not create its own Secret.
+    existingSecretName: ""
+
   # Workspace version updates: surface "update available" per workspace and let
   # a confirmed action restart it onto the latest release image. The live
   # Deployment is patched immediately; when provisioning's GitOps repo is
