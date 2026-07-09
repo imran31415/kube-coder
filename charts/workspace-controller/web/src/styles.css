@@ -1151,3 +1151,72 @@ body {
   color: #58a6ff;
   margin-left: 0.4rem;
 }
+
+/* ────────────────────────────────────────────────────────────────
+   Mobile / narrow viewports. Above these breakpoints the desktop layout
+   is unchanged. The workspace list row is a single non-wrapping flex line
+   (name + state/update/isolation pills + a fixed-width start/stop button),
+   which clips the pills and pushes the page into horizontal scroll on a
+   phone. Here we let the header actions and the pill cluster wrap, and
+   drop the action button onto its own full-width line beneath the name.
+   ──────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .app {
+    padding: 1.6rem 0.85rem;
+  }
+
+  /* Header: stack the title above the actions; let actions wrap and share
+     the width instead of overflowing off the right edge. */
+  .hdr {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+  }
+  .hdr-actions {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+  .hdr-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  /* List row: allow wrapping. The name + meta take the full first line
+     (pills wrap within it), and the start/stop button drops to its own
+     full-width line below — a big tap target that never steals name width
+     or clips the badges. */
+  .row {
+    flex-wrap: wrap;
+    row-gap: 0.6rem;
+  }
+  .row-main {
+    flex: 1 1 100%;
+  }
+  .row-name {
+    flex-wrap: wrap;
+  }
+  .row .btn {
+    flex: 1 1 100%;
+    min-width: 0;
+    /* Align the button's left edge with the name (past the chevron + its
+       gap) rather than running full-bleed to the row padding. */
+    margin-left: calc(0.7rem + 0.75rem);
+  }
+}
+
+/* Smallest phones: tighten page gutters and pill spacing so nothing
+   crowds the edges. */
+@media (max-width: 400px) {
+  .app {
+    padding: 1.4rem 0.7rem;
+  }
+  .row-name {
+    gap: 0.4rem;
+    font-size: 0.94rem;
+  }
+  .pill {
+    padding: 0.1rem 0.42rem;
+  }
+  .row .btn {
+    margin-left: 0;
+  }
+}
