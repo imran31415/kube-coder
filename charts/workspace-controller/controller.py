@@ -274,6 +274,49 @@ def _collect(resource):
     return items
 
 
+def _ws_item(dep, pods, host):
+    """Build one workspace listing entry from its Deployment, its (raw) pods and
+    an optional host. Shared by list_workspaces() and find_workspace() so the
+    fleet listing and a single-workspace lookup produce identical shapes."""
+    name = dep.get('metadata', {}).get('name', '')
+    m = _NAME_RE.match(name)
+    user = m.group(1) if m else name
+    spec = dep.get('spec', {})
+    status = dep.get('status', {})
+    desired = spec.get('replicas', 1)
+    ready = status.get('readyReplicas', 0) or 0
+    gen = dep.get('metadata', {}).get('generation', 0) or 0
+    obs_gen = status.get('observedGeneration', 0) or 0
+    pod_sums = [_pod_summary(p) for p in pods]
+    state = _classify(desired, ready, obs_gen, gen, pod_sums)
+    detail = next((p['reason'] for p in pod_sums if p.get('reason')), None)
+    if detail is None:
+        detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
+    image = _workspace_image(dep)
+    image_tag, version = version_from_image(image)
+    ws_ns = dep.get('metadata', {}).get('namespace', NAMESPACE)
+    return {
+        'user': user,
+        'deployment': name,
+        'namespace': ws_ns,
+        # Isolated == migrated to its own per-user namespace (#103). A workspace
+        # still in the control-plane namespace ($NAMESPACE) is either
+        # not-yet-migrated or a leftover scaled-to-0 rollback copy — the SPA
+        # badges these differently so the two don't look like accidental
+        # duplicates during a migration.
+        'isolated': ws_ns != NAMESPACE,
+        'state': state,
+        'desiredReplicas': desired,
+        'readyReplicas': ready,
+        'url': f'https://{host}/' if host else None,
+        'pods': pod_sums,
+        'detail': detail,
+        'image': image,
+        'imageTag': image_tag,
+        'version': version,
+    }
+
+
 def list_workspaces():
     deps = _collect('deployments')
     all_pods = _collect('pods')
@@ -301,66 +344,66 @@ def list_workspaces():
     out = []
     for dep in deps:
         name = dep.get('metadata', {}).get('name', '')
-        m = _NAME_RE.match(name)
-        if not m:
+        if not _NAME_RE.match(name):
             continue
-        user = m.group(1)
-        spec = dep.get('spec', {})
-        status = dep.get('status', {})
-        desired = spec.get('replicas', 1)
-        ready = status.get('readyReplicas', 0) or 0
-        gen = dep.get('metadata', {}).get('generation', 0) or 0
-        obs_gen = status.get('observedGeneration', 0) or 0
-        pods = [_pod_summary(p) for p in pods_by_app.get(name, [])]
-        state = _classify(desired, ready, obs_gen, gen, pods)
-        host = hosts.get(name)
-        detail = next((p['reason'] for p in pods if p.get('reason')), None)
-        if detail is None:
-            detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
-        image = _workspace_image(dep)
-        image_tag, version = version_from_image(image)
-        ws_ns = dep.get('metadata', {}).get('namespace', NAMESPACE)
-        out.append({
-            'user': user,
-            'deployment': name,
-            'namespace': ws_ns,
-            # Isolated == migrated to its own per-user namespace (#103). A
-            # workspace still in the control-plane namespace ($NAMESPACE) is
-            # either not-yet-migrated or a leftover scaled-to-0 rollback copy —
-            # the SPA badges these differently so the two don't look like
-            # accidental duplicates during a migration.
-            'isolated': ws_ns != NAMESPACE,
-            'state': state,
-            'desiredReplicas': desired,
-            'readyReplicas': ready,
-            'url': f'https://{host}/' if host else None,
-            'pods': pods,
-            'detail': detail,
-            'image': image,
-            'imageTag': image_tag,
-            'version': version,
-        })
+        out.append(_ws_item(dep, pods_by_app.get(name, []), hosts.get(name)))
     out.sort(key=lambda w: w['user'])
     return {'namespace': NAMESPACE, 'workspaces': out}
 
 
-def _find_workspace(user):
-    """The workspace dict (incl. its namespace) for a user from the live
-    listing, or LookupError. Ensures we only ever mutate something the console
-    would actually show, and in the namespace it really lives in (#103)."""
+def find_workspace(user):
+    """One workspace's entry (same shape as a list_workspaces() item), read
+    directly from its own namespace — falling back to the control-plane
+    namespace for a not-yet-migrated (#103) workspace. Raises ValueError on a
+    bad name, LookupError if absent.
+
+    This is deliberately O(1): it reads just this user's Deployment (+ pods,
+    ingress) instead of the all-namespaces fan-out of list_workspaces(). The
+    self-serve version/update path runs on every workspace's Settings page load,
+    and list_workspaces() had grown to ~12s across the fleet — past the
+    workspace's controller-call timeout, which silently hid the update option.
+    A single-namespace read keeps it well under a second regardless of fleet
+    size."""
     if not _USER_RE.match(user):
         raise ValueError('invalid workspace name')
     name = f'{WORKSPACE_PREFIX}{user}'
-    for w in list_workspaces()['workspaces']:
-        if w['deployment'] == name:
-            return w
+    selector = f'app={name}'
+    # Prefer the isolated ws-<user> namespace; fall back to the control plane.
+    for ns in dict.fromkeys([ns_for_user(user), NAMESPACE]):
+        try:
+            deps = _kubectl_json(['get', 'deployments', '-l', selector],
+                                 namespace=ns).get('items', [])
+        except KubectlError:
+            continue
+        dep = next((d for d in deps
+                    if d.get('metadata', {}).get('name') == name), None)
+        if dep is None:
+            continue
+        try:
+            pods = _kubectl_json(['get', 'pods', '-l', selector],
+                                 namespace=ns).get('items', [])
+        except KubectlError:
+            pods = []
+        host = None
+        try:
+            for ing in _kubectl_json(['get', 'ingress', '-l', selector],
+                                     namespace=ns).get('items', []):
+                for rule in ing.get('spec', {}).get('rules', []):
+                    if rule.get('host'):
+                        host = rule['host']
+                        break
+                if host:
+                    break
+        except KubectlError:
+            pass
+        return _ws_item(dep, pods, host)
     raise LookupError(name)
 
 
 def scale_workspace(user, replicas):
     # Confirm the deployment exists (and is actually a workspace) before
     # touching it — never scale something the listing wouldn't show.
-    ws = _find_workspace(user)
+    ws = find_workspace(user)
     name = ws['deployment']
     _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'],
                  namespace=ws['namespace'])
@@ -425,7 +468,7 @@ def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
         limits['memory'] = _validate_mem(mem_limit)
     if not limits:
         raise ValueError('provide a cpu and/or memory limit')
-    ws = _find_workspace(user)
+    ws = find_workspace(user)
     name = ws['deployment']
     # Strategic merge: containers are merged by `name`, and the limits map merges
     # key-wise, so only the keys we send change and `requests` stays as-is.
@@ -688,11 +731,7 @@ def set_workspace_image(user, target_version=None, persist=True):
     target = (target_version or latest_version() or '').strip()
     if not parse_version(target):
         raise ValueError('no target version available (latest release unknown)')
-    name = f'{WORKSPACE_PREFIX}{user}'
-    wss = {w['deployment']: w for w in list_workspaces()['workspaces']}
-    ws = wss.get(name)
-    if ws is None:
-        raise LookupError(name)
+    ws = find_workspace(user)   # targeted; raises LookupError if absent
     current_image = ws.get('image') or ''
     current_ver = ws.get('version')
     repo = current_image.rsplit(':', 1)[0] if ':' in current_image else (
@@ -703,7 +742,7 @@ def set_workspace_image(user, target_version=None, persist=True):
     if not already:
         patch = {'spec': {'template': {'spec': {'containers': [
             {'name': WORKSPACE_CONTAINER, 'image': new_image}]}}}}
-        _kubectl_run(['patch', f'deployment/{name}', '--type=strategic', '-p', json.dumps(patch)],
+        _kubectl_run(['patch', f"deployment/{ws['deployment']}", '--type=strategic', '-p', json.dumps(patch)],
                      namespace=ws.get('namespace'))
     persisted = False
     persist_error = None
@@ -727,12 +766,7 @@ def set_workspace_image(user, target_version=None, persist=True):
 
 def workspace_version_info(user):
     """Current vs latest version for one workspace (for the self-serve GET)."""
-    if not _USER_RE.match(user):
-        raise ValueError('invalid workspace name')
-    name = f'{WORKSPACE_PREFIX}{user}'
-    ws = {w['deployment']: w for w in list_workspaces()['workspaces']}.get(name)
-    if ws is None:
-        raise LookupError(name)
+    ws = find_workspace(user)   # targeted single-namespace read, not the fleet
     latest = latest_version()
     return {
         'user': user,
