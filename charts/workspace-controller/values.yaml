@@ -141,7 +141,10 @@ provision:
   # installs helm on the fly). Override only if you bake a dedicated tool image.
   image: ""
 
-  # Default tag new workspaces run; the chart prefixes it with `devlaptop-`.
+  # Fallback image tag for new workspaces (chart prefixes it with `devlaptop-`).
+  # New workspaces default to the latest published release; this is used only
+  # when that release lookup is unavailable (e.g. GitHub unreachable). Leave
+  # empty unless you need a specific offline fallback.
   workspaceImageTag: ""
 
   # Shared cluster Secret names projected into every provisioned workspace so the
