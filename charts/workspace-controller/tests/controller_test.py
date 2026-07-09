@@ -387,10 +387,14 @@ class ResourceLimitTest(unittest.TestCase):
         controller.WORKSPACE_CONTAINER = 'ide'
         controller.WORKSPACE_PREFIX = 'ws-'
         controller.GITOPS_REPO = ''        # persistence off by default in tests
+        self._orig_find = controller.find_workspace
         # Pretend the workspace exists so the existence guard passes. Under
         # per-workspace namespaces (#103) it lives in its own ws-octo namespace.
-        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [
-            {'deployment': 'ws-octo', 'namespace': 'ws-octo'}]}
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}'}
+
+    def tearDown(self):
+        controller.find_workspace = self._orig_find
 
     def test_validate_cpu_accepts_cores_and_millicores(self):
         self.assertEqual(controller._validate_cpu('2'), '2')
@@ -436,7 +440,9 @@ class ResourceLimitTest(unittest.TestCase):
             controller.set_workspace_resources('octo', None, None)
 
     def test_set_resources_unknown_workspace_raises_lookup(self):
-        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': []}
+        def _absent(user):
+            raise LookupError(user)
+        controller.find_workspace = _absent
         with self.assertRaises(LookupError):
             controller.set_workspace_resources('octo', '2', None)
 
@@ -599,7 +605,7 @@ class SetWorkspaceImageTest(unittest.TestCase):
         controller.WORKSPACE_CONTAINER = 'ide'
         controller.WORKSPACE_PREFIX = 'ws-'
         controller.IMAGE_TAG_PREFIX = 'devlaptop-'
-        self._orig_list = controller.list_workspaces
+        self._orig_find = controller.find_workspace
         self._orig_run = controller._kubectl_run
         self._orig_latest = controller.latest_version
         self._orig_gitops_repo = controller.GITOPS_REPO
@@ -607,12 +613,12 @@ class SetWorkspaceImageTest(unittest.TestCase):
         controller.GITOPS_REPO = ''       # persistence off by default in tests
         controller.GITOPS_TOKEN = ''
         controller.latest_version = lambda: 'v1.4.0'
-        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': [
-            {'deployment': 'ws-octo', 'namespace': 'ws-octo', 'version': 'v1.3.0',
-             'image': 'registry/coder:devlaptop-v1.3.0', 'imageTag': 'devlaptop-v1.3.0'}]}
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}', 'version': 'v1.3.0',
+            'image': 'registry/coder:devlaptop-v1.3.0', 'imageTag': 'devlaptop-v1.3.0'}
 
     def tearDown(self):
-        controller.list_workspaces = self._orig_list
+        controller.find_workspace = self._orig_find
         controller._kubectl_run = self._orig_run
         controller.latest_version = self._orig_latest
         controller.GITOPS_REPO = self._orig_gitops_repo
@@ -658,7 +664,9 @@ class SetWorkspaceImageTest(unittest.TestCase):
             controller.set_workspace_image('octo')          # no version anywhere
 
     def test_unknown_workspace_raises_lookup(self):
-        controller.list_workspaces = lambda: {'namespace': 'coder', 'workspaces': []}
+        def _absent(user):
+            raise LookupError(user)
+        controller.find_workspace = _absent
         with self.assertRaises(LookupError):
             controller.set_workspace_image('octo', 'v1.4.0')
 
@@ -787,6 +795,31 @@ class PerWorkspaceNamespaceTest(unittest.TestCase):
         self.assertEqual(set(by_user), {'alice', 'bob'})
         self.assertEqual(by_user['alice']['namespace'], 'ws-alice')
         self.assertEqual(by_user['bob']['namespace'], 'ws-bob')
+
+    def test_find_workspace_reads_only_its_own_namespace(self):
+        # Targeted O(1) lookup: reads ws-<user> directly, never the
+        # all-namespaces fan-out (no 'get namespaces', no foreign-tenant reads).
+        # Regression: workspace_version_info() used list_workspaces() and grew to
+        # ~12s across the fleet, past the workspace's controller-call timeout, so
+        # the self-serve update option silently vanished from Settings.
+        seen = []
+        def fake(args, namespace=None):
+            seen.append((list(args), namespace))
+            if args[:2] == ['get', 'deployments'] and namespace == 'ws-alice':
+                return {'items': [_dep('ws-alice')]}
+            return {'items': []}
+        controller._kubectl_json = fake
+        ws = controller.find_workspace('alice')
+        self.assertEqual(ws['deployment'], 'ws-alice')
+        self.assertEqual(ws['namespace'], 'ws-alice')
+        self.assertEqual(ws['version'], 'v1.0.0')
+        self.assertNotIn(['get', 'namespaces'], [a for a, _ in seen])   # never enumerated
+        self.assertTrue(all(ns in ('ws-alice', 'coder') for _, ns in seen))
+
+    def test_find_workspace_absent_raises_lookup(self):
+        controller._kubectl_json = lambda args, namespace=None: {'items': []}
+        with self.assertRaises(LookupError):
+            controller.find_workspace('ghost')
 
     def test_collect_aggregates_items_across_namespaces(self):
         # _collect fans out one read per workspace namespace (now concurrently)
