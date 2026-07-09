@@ -24,6 +24,10 @@ export interface SessionSignals {
    *  into the Send-message composer. `nonce` bumps per paste so an identical
    *  paste still fires the consumer's effect. Null until the first paste. */
   pasteRequest: Signal<{ text: string; nonce: number } | null>;
+  /** Like pasteRequest, but carries clipboard IMAGES from the toolbar "Paste"
+   *  action into the composer, where they become upload chips (issue #179).
+   *  `nonce` bumps per paste so repeat pastes re-fire the consumer's effect. */
+  imagePasteRequest: Signal<{ files: File[]; nonce: number } | null>;
 }
 
 const _store = new Map<string, SessionSignals>();
@@ -36,6 +40,7 @@ export function getSessionSignals(taskId: string): SessionSignals {
       scrollMode: signal(false),
       reattachCounter: signal(0),
       pasteRequest: signal<{ text: string; nonce: number } | null>(null),
+      imagePasteRequest: signal<{ files: File[]; nonce: number } | null>(null),
     };
     _store.set(taskId, s);
   }

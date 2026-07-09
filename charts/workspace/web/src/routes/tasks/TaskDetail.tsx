@@ -4,6 +4,7 @@ import type { TaskDetail as TaskDetailType } from '../../api/tasks';
 import { PopoverMenu, PopoverItem, PopoverSection, PopoverDivider } from '../../components/PopoverMenu';
 import { previewFullscreen } from '../../store/ui';
 import { getSessionSignals } from './sessionSignals';
+import { readClipboard, uploadTaskImage } from './imageAttach';
 import {
   openTerminalInNewTab,
   toggleScrollMode,
@@ -170,26 +171,48 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   }
   async function onPaste() {
     if (!t) return;
-    let text = '';
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      pushToast('Clipboard unavailable — allow clipboard access or paste manually.', { kind: 'warn' });
-      return;
-    }
-    if (!text.trim()) {
+    // Read text AND images — a copied screenshot is image-only, so the old
+    // readText()-only path silently swallowed it (issue #179 gap).
+    const { text, images } = await readClipboard();
+    const trimmed = text.trim();
+    if (!images.length && !trimmed) {
       pushToast('Clipboard is empty.', { kind: 'info' });
       return;
     }
+    const s = getSessionSignals(t.task_id);
     if (tab === 'message') {
-      // Drop it into the Send-message composer for review before sending.
-      const s = getSessionSignals(t.task_id);
-      const prev = s.pasteRequest.value;
-      s.pasteRequest.value = { text, nonce: (prev?.nonce ?? 0) + 1 };
-      pushToast('Pasted into the message box.', { kind: 'success' });
+      // Route into the Send-message composer for review before sending: text
+      // into the box, images into the attach flow (upload → chip).
+      if (trimmed) {
+        const prev = s.pasteRequest.value;
+        s.pasteRequest.value = { text, nonce: (prev?.nonce ?? 0) + 1 };
+      }
+      if (images.length) {
+        const prev = s.imagePasteRequest.value;
+        s.imagePasteRequest.value = { files: images, nonce: (prev?.nonce ?? 0) + 1 };
+      }
+      pushToast(
+        images.length ? 'Added to the message box.' : 'Pasted into the message box.',
+        { kind: 'success' },
+      );
     } else {
       // Session/Preview tab — paste straight into the live tmux input (no Enter).
-      await pasteToSession(t.task_id, text);
+      // Images can't ride the tmux buffer, so upload them and paste their saved
+      // paths, which Claude Code reads (same trick the composer uses on send).
+      if (images.length) await pasteImagesToSession(t.task_id, images);
+      if (trimmed) await pasteToSession(t.task_id, text);
+    }
+  }
+
+  // Upload clipboard images and paste their absolute paths into the live
+  // session so Claude Code can read them from the terminal prompt.
+  async function pasteImagesToSession(taskId: string, images: File[]) {
+    try {
+      const paths: string[] = [];
+      for (const img of images) paths.push(await uploadTaskImage(taskId, img));
+      await pasteToSession(taskId, paths.join('\n'));
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Image upload failed', { kind: 'danger' });
     }
   }
   async function onCopyLink() {

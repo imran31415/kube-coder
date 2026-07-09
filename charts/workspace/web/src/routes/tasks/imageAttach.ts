@@ -50,6 +50,44 @@ export function imagesFromClipboard(data: DataTransfer | null): File[] {
   return out;
 }
 
+/**
+ * Read text AND images from the async clipboard for the toolbar "Paste" button
+ * (which, unlike a textarea paste event, has no ClipboardEvent to inspect).
+ * Uses navigator.clipboard.read() where available — that's the only API that
+ * exposes image blobs — and falls back to readText() when it's missing or the
+ * read is blocked, so behaviour degrades to the old text-only path rather than
+ * throwing. Images are wrapped as Files with a MIME-correct extension so the
+ * downstream upload names them the same way a direct paste/drop does.
+ */
+export async function readClipboard(): Promise<{ text: string; images: File[] }> {
+  const images: File[] = [];
+  let text = '';
+  const clip = navigator.clipboard as (Clipboard & { read?: () => Promise<ClipboardItem[]> }) | undefined;
+  if (clip?.read) {
+    try {
+      const items = await clip.read();
+      for (const item of items) {
+        const imgType = item.types.find((t) => t.startsWith('image/'));
+        if (imgType) {
+          const blob = await item.getType(imgType);
+          images.push(new File([blob], `pasted.${extForImageMime(blob.type)}`, { type: blob.type }));
+        } else if (item.types.includes('text/plain')) {
+          text += await (await item.getType('text/plain')).text();
+        }
+      }
+      return { text, images };
+    } catch {
+      /* fall through to readText — read() can throw on permission / focus */
+    }
+  }
+  try {
+    text = (await clip?.readText?.()) ?? '';
+  } catch {
+    /* clipboard unavailable — caller treats empty text + no images as a no-op */
+  }
+  return { text, images };
+}
+
 let _seq = 0;
 /**
  * Upload a pasted/dropped image into the task's attachments dir and return the
