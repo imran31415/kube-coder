@@ -33,7 +33,7 @@ import {
 } from '../api/client';
 import { DesktopEditorSheet } from '../components/DesktopEditorSheet';
 import { getConfig } from '../store/config';
-import { EmptyState, ErrorBanner, Loading, StatusPill } from '../components/ui';
+import { EmptyState, ErrorBanner, Loading, MenuButton, StatusPill } from '../components/ui';
 import type { DesktopItem, DesktopItemDraft, TaskSummary } from '../api/types';
 import { colors, font, gradients, radius, shadow, space } from '../theme';
 import { relativeTime } from '../util/format';
@@ -127,6 +127,7 @@ function DesktopHero({ name }: { name: string | null }) {
   const initial = display.charAt(0).toUpperCase();
   return (
     <View style={styles.hero}>
+      <MenuButton />
       <LinearGradient
         colors={gradients.brand}
         start={{ x: 0, y: 0 }}

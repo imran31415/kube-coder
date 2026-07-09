@@ -64,6 +64,12 @@ ADMIN_USERS = {
 # Local-dev only: a bearer token that bypasses the proxy-header check, so
 # `yarn dev` can hit the API without oauth2. NEVER set by the Helm chart.
 DEV_TOKEN = os.environ.get('CONTROLLER_DEV_TOKEN', '')
+# Persistent admin API token (opt-in, from a Secret via the Helm chart). Lets
+# non-browser clients — the Expo mobile app — reach the admin API with
+# `Authorization: Bearer <token>`, since oauth2-proxy can't do a mobile OAuth
+# handshake. Unlike DEV_TOKEN this IS production-safe (a long random secret,
+# revealed only to an already-authenticated admin). Empty => disabled.
+ADMIN_TOKEN = os.environ.get('CONTROLLER_ADMIN_TOKEN', '').strip()
 DIST_DIR = os.environ.get('CONTROLLER_DIST_DIR', '/controller-web')
 KUBECTL_TIMEOUT = int(os.environ.get('KUBECTL_TIMEOUT', '15'))
 # Max concurrent per-namespace kubectl reads in _collect(). Bounds the fan-out
@@ -1506,7 +1512,12 @@ def render_values_yaml(opts, client_id, cookie_secret):
     image ships only this file via ConfigMap."""
     slug = opts['slug']
     host = opts['host']
-    tag = opts.get('imageTag') or WORKSPACE_IMAGE_TAG or 'v1.0.0'
+    # Default new workspaces to the latest published release so they aren't
+    # pinned to a stale version at create time. Precedence: an explicit
+    # per-request imageTag wins (admin pinned a specific version); otherwise the
+    # latest release; WORKSPACE_IMAGE_TAG is only a fallback for when the release
+    # lookup is unavailable (e.g. GitHub unreachable), and 'v1.0.0' a last resort.
+    tag = opts.get('imageTag') or latest_version() or WORKSPACE_IMAGE_TAG or 'v1.0.0'
     pvc = opts.get('pvcSize') or '20Gi'
     res = opts.get('resources') or {}
     req_cpu = (res.get('requests') or {}).get('cpu', '250m')
@@ -1844,17 +1855,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         raw = self.rfile.read(n).decode('utf-8')
         return json.loads(raw) if raw else {}
 
-    def check_admin(self):
+    def _bearer(self):
+        """The Bearer credential from the Authorization header, or ''."""
+        auth = self.headers.get('Authorization', '')
+        return auth[7:].strip() if auth.startswith('Bearer ') else ''
+
+    def check_admin(self, allow_token=True):
         """True if the request is from an allowed admin.
 
-        oauth2-proxy is the primary gate; this is defense-in-depth. The local
-        dev bearer token (CONTROLLER_DEV_TOKEN, never set in-cluster) is the
-        only path that doesn't require proxy headers.
+        oauth2-proxy is the primary gate; this is defense-in-depth. Two bearer
+        tokens also grant access without proxy headers: the local-dev
+        CONTROLLER_DEV_TOKEN, and the production ADMIN_TOKEN used by the mobile
+        app. Both bypass the ADMIN_USERS allowlist — the token itself is the
+        grant. `allow_token=False` restricts to the proxy/oauth path only, for
+        endpoints that must be reachable *solely* by a signed-in browser admin
+        (e.g. revealing the admin token itself).
         """
-        if DEV_TOKEN:
-            auth = self.headers.get('Authorization', '')
-            if auth.startswith('Bearer ') and hmac.compare_digest(auth[7:].strip(), DEV_TOKEN):
-                return True
+        if allow_token:
+            tok = self._bearer()
+            if tok:
+                if DEV_TOKEN and hmac.compare_digest(tok, DEV_TOKEN):
+                    return True
+                if ADMIN_TOKEN and hmac.compare_digest(tok, ADMIN_TOKEN):
+                    return True
         if TRUSTED_PROXY:
             # oauth2-proxy injects identity differently per mode: as a REVERSE
             # PROXY (our setup) --pass-user-headers sends X-Forwarded-User /
@@ -1936,6 +1959,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except KubectlError as exc:
                 sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
+            return
+        if path == '/api/admin/token':
+            # Reveal the persistent admin token so a signed-in admin can copy it
+            # into the mobile app. allow_token=False: only a browser/oauth admin
+            # may read it — a mobile client holding the token can't re-fetch it
+            # (it already has it), and a no-proxy deploy exposes nothing. Returns
+            # {enabled:false} cleanly when the token isn't configured so the web
+            # console can hide the section instead of erroring.
+            if not self.check_admin(allow_token=False):
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            self.send_json({'enabled': bool(ADMIN_TOKEN), 'token': ADMIN_TOKEN or None})
             return
         # Self-serve (workspace-brokered): current vs latest version for one
         # workspace, gated by the shared service token instead of admin.

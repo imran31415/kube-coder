@@ -1220,3 +1220,75 @@ body {
     margin-left: 0;
   }
 }
+
+/* ────────────────────────────────────────────────────────────────
+   "Mobile access" card — reveal the controller host + admin token to
+   paste into the mobile app. Quiet/secondary so it doesn't compete with
+   the workspace list.
+   ──────────────────────────────────────────────────────────────── */
+.mobile-access {
+  margin-top: 1.5rem;
+  padding: 1rem 1.1rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.mobile-access-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.mobile-access-head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.mobile-access .sub {
+  margin: 0.4rem 0 0;
+}
+.mobile-access-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+.mobile-access-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.ma-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.copy-row code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.45rem 0.6rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.copy-row .btn {
+  flex: none;
+}
+.ma-token {
+  font-family: var(--mono, monospace);
+}
+.ma-hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+}

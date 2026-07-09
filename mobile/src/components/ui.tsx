@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { statusLabel } from '../util/format';
+import { openDrawer } from '../store/nav';
 
 export function Card({
   children,
@@ -120,21 +121,41 @@ export function Button({
   );
 }
 
-/** Consistent screen header with brand mark, title, optional subtitle + action. */
+/** Round ☰ button that opens the nav drawer. Shown at the start of every
+ *  top-level screen header (the app navigates via the drawer, not a tab bar). */
+export function MenuButton() {
+  return (
+    <Pressable
+      onPress={openDrawer}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel="Open menu"
+      style={({ pressed }) => [styles.menuBtn, pressed && { opacity: 0.6 }]}
+    >
+      <Ionicons name="menu" size={22} color={colors.text} />
+    </Pressable>
+  );
+}
+
+/** Consistent screen header with brand mark, title, optional subtitle + action.
+ *  Leads with the ☰ menu button unless `menu={false}`. */
 export function ScreenHeader({
   title,
   subtitle,
   right,
   brand,
+  menu = true,
 }: {
   title: string;
   subtitle?: string;
   right?: React.ReactNode;
   brand?: boolean;
+  menu?: boolean;
 }) {
   return (
     <View style={styles.header}>
       <View style={styles.headerLeft}>
+        {menu ? <MenuButton /> : null}
         {brand ? (
           <LinearGradient colors={gradients.brand} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.brandMark}>
             <Text style={styles.brandGlyph}>{'</>'}</Text>
@@ -243,6 +264,16 @@ const styles = StyleSheet.create({
     gap: space.md,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: space.md, flexShrink: 1 },
+  menuBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
   brandMark: { width: 32, height: 32, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
   brandGlyph: { color: colors.accentText, fontSize: 13, fontWeight: '800', fontFamily: font.mono },
   headerTitle: { color: colors.text, fontSize: font.size.xl, fontWeight: '700', letterSpacing: -0.3 },

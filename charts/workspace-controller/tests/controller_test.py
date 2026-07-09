@@ -282,6 +282,35 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertEqual(len(s), 32)
         self.assertTrue(s.isalnum())
 
+    def test_render_values_defaults_to_latest_release_when_no_tag_given(self):
+        # No explicit imageTag => the workspace is pinned to the latest release,
+        # not a stale WORKSPACE_IMAGE_TAG. Regression: new workspaces were coming
+        # up on an old version because the static env pin won over the release.
+        opts = {'login': 'octo', 'slug': 'octo', 'host': 'octo.dev.scalebase.io'}
+        orig_latest, orig_env = controller.latest_version, controller.WORKSPACE_IMAGE_TAG
+        controller.NAMESPACE = 'coder'
+        controller.latest_version = lambda: 'v1.11.0'
+        controller.WORKSPACE_IMAGE_TAG = 'v1.6.0'   # stale pin must NOT win
+        try:
+            text = controller.render_values_yaml(opts, 'Ov23liclientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
+        finally:
+            controller.latest_version, controller.WORKSPACE_IMAGE_TAG = orig_latest, orig_env
+        self.assertIn('tag: devlaptop-v1.11.0', text)
+        self.assertNotIn('devlaptop-v1.6.0', text)
+
+    def test_render_values_falls_back_to_env_when_release_lookup_fails(self):
+        # If the release lookup is unavailable, WORKSPACE_IMAGE_TAG is the fallback.
+        opts = {'login': 'octo', 'slug': 'octo', 'host': 'octo.dev.scalebase.io'}
+        orig_latest, orig_env = controller.latest_version, controller.WORKSPACE_IMAGE_TAG
+        controller.NAMESPACE = 'coder'
+        controller.latest_version = lambda: None
+        controller.WORKSPACE_IMAGE_TAG = 'v1.6.0'
+        try:
+            text = controller.render_values_yaml(opts, 'Ov23liclientid', 'cookiesecret32xxxxxxxxxxxxxxxxxxx')
+        finally:
+            controller.latest_version, controller.WORKSPACE_IMAGE_TAG = orig_latest, orig_env
+        self.assertIn('tag: devlaptop-v1.6.0', text)
+
     def test_render_values_yaml_is_valid_and_has_fields(self):
         opts = {'login': 'Octo', 'slug': 'octo', 'host': 'octo.dev.scalebase.io',
                 'pvcSize': '30Gi', 'gitName': 'Octo Cat', 'gitEmail': 'octo@example.com',
