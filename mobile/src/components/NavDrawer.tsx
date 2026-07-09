@@ -107,7 +107,7 @@ export function NavDrawer() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000b' },
+  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
   panel: {
     position: 'absolute',
     top: 0,
@@ -127,9 +127,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  brandMark: { width: 40, height: 40, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
-  brandGlyph: { color: colors.accentText, fontSize: 15, fontWeight: '900' },
-  brandName: { color: colors.text, fontSize: font.size.lg, fontWeight: '800' },
+  brandMark: { width: 36, height: 36, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
+  brandGlyph: { color: colors.accentText, fontSize: 14, fontWeight: '800', fontFamily: font.mono },
+  brandName: { color: colors.text, fontSize: font.size.lg, fontWeight: '700', letterSpacing: -0.2 },
   brandHost: { color: colors.textFaint, fontSize: font.size.xs, marginTop: 1 },
 
   items: { marginTop: space.md, gap: 2, flex: 1 },
