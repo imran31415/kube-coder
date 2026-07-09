@@ -1506,7 +1506,12 @@ def render_values_yaml(opts, client_id, cookie_secret):
     image ships only this file via ConfigMap."""
     slug = opts['slug']
     host = opts['host']
-    tag = opts.get('imageTag') or WORKSPACE_IMAGE_TAG or 'v1.0.0'
+    # Default new workspaces to the latest published release so they aren't
+    # pinned to a stale version at create time. Precedence: an explicit
+    # per-request imageTag wins (admin pinned a specific version); otherwise the
+    # latest release; WORKSPACE_IMAGE_TAG is only a fallback for when the release
+    # lookup is unavailable (e.g. GitHub unreachable), and 'v1.0.0' a last resort.
+    tag = opts.get('imageTag') or latest_version() or WORKSPACE_IMAGE_TAG or 'v1.0.0'
     pvc = opts.get('pvcSize') or '20Gi'
     res = opts.get('resources') or {}
     req_cpu = (res.get('requests') or {}).get('cpu', '250m')
