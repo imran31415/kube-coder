@@ -22,6 +22,7 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { serverMode } from '../../store/server-mode';
 import { DesktopEditor } from './DesktopEditor';
 import { DesktopBulletin } from './DesktopBulletin';
+import { DesktopPrompt } from './DesktopPrompt';
 import './desktop.css';
 
 /** Render either an emoji/text icon or a named lucide-style line icon
@@ -145,6 +146,10 @@ export function DesktopRoute() {
   return (
     <div class="route route-desktop" ref={surfaceRef} onClick={onSurfaceClick}>
       {error && <div class="dt-error" data-dt-stop="true" role="alert">{error}</div>}
+
+      {/* Hero prompt composer — always at the top, above icons + bulletin.
+          Suppressed for read-only visitors who can't start builds. */}
+      {!serverMode.value.readOnly && <DesktopPrompt />}
 
       {loaded && items.length === 0 ? (
         <EmptyState

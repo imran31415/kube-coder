@@ -22,6 +22,184 @@
   font-size: 13px;
 }
 
+/* ────────────────────────────────────────────────────────────────
+   Hero prompt composer — the top-of-Desktop "start a build" box. The
+   first thing on a fresh workspace, so it carries real visual weight:
+   a soft accent-tinted card, a growing input, and a prominent circular
+   send button. Left-aligned to the same 22px badge column as the grid
+   + bulletin so everything shares one vertical rhythm on wide screens.
+   ──────────────────────────────────────────────────────────────── */
+.dt-composer {
+  margin: var(--size-2) 0 var(--size-3) 22px;
+  width: 100%;
+  max-width: 640px;
+  animation: dt-composer-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes dt-composer-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-composer { animation: none; }
+}
+
+.dt-composer-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  padding: 12px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent) 0%, transparent 60%),
+    color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 6px 22px color-mix(in srgb, var(--bg) 0%, rgba(0, 0, 0, 0.16));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+:root[data-theme="light"] .dt-composer-box {
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.07);
+}
+/* Whole box lifts to an accent ring when the user is typing inside it. */
+.dt-composer-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 8px 26px color-mix(in srgb, var(--bg) 0%, rgba(0, 0, 0, 0.18));
+}
+.dt-composer-box.is-busy { opacity: 0.85; }
+
+.dt-composer-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* Leading glyph — quiet accent tint, sits at the input's baseline. */
+.dt-composer-spark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 3px;
+  border-radius: 9px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.dt-composer-input {
+  flex: 1;
+  min-width: 0;
+  margin-top: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.45;
+  resize: none;
+  overflow-y: auto;
+  max-height: 180px;
+}
+.dt-composer-input::placeholder { color: var(--text-subtle); }
+.dt-composer-input:focus { outline: none; }
+.dt-composer-input:disabled { color: var(--text-muted); }
+
+/* Circular accent send button — the clear primary action. */
+.dt-composer-send {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: transform var(--motion-fast), background var(--motion-fast), opacity var(--motion-fast);
+}
+.dt-composer-send:hover:not(:disabled) { transform: translateY(-1px); background: var(--accent-strong); }
+.dt-composer-send:active:not(:disabled) { transform: translateY(0); }
+.dt-composer-send:disabled {
+  background: var(--surface-3);
+  color: var(--text-subtle);
+  cursor: not-allowed;
+}
+.dt-composer-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Nudge the play glyph optically-centered inside the circle. */
+.dt-composer-send svg { margin-left: 1px; }
+
+.dt-composer-spinner {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: dt-composer-spin 0.7s linear infinite;
+}
+@keyframes dt-composer-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .dt-composer-spinner { animation: none; } }
+
+/* Footer — workdir chip on the left, keyboard hint on the right. */
+.dt-composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+  padding-left: 38px; /* align under the input, past the leading glyph */
+}
+.dt-composer-workdir {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  max-width: 60%;
+}
+.dt-composer-workdir svg { flex: 0 0 auto; color: var(--text-subtle); }
+.dt-composer-workdir select {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+.dt-composer-workdir select:hover { color: var(--text); }
+.dt-composer-workdir select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dt-composer-workdir-static {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dt-composer-hint {
+  color: var(--text-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.dt-composer-hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
 /* Icon grid — wider gaps, no cards. Each cell is a floating icon with
    the label beneath, like a real desktop. The icon badge carries the
    visual weight; the rest is clean negative space. Desktop spacing
@@ -626,6 +804,12 @@
 
 @media (max-width: 720px) {
   .route-desktop { padding: var(--size-3); }
+  /* Composer spans the phone width and centers with the grid. */
+  .dt-composer { margin: 0 auto var(--size-3); max-width: 100%; }
+  .dt-composer-input { font-size: 15px; } /* keep ≥16px?—14/15 avoids iOS zoom w/ our meta */
+  .dt-composer-foot { padding-left: 0; }
+  .dt-composer-hint { display: none; } /* no physical keyboard — hide the hint */
+  .dt-composer-workdir { max-width: 100%; }
   /* Mobile: shrink icons ~30% (64 → 45) and center the whole grid +
      bulletin so they sit balanced on phones rather than anchored to
      the left edge. Desktop stays left-anchored (above) — the bigger

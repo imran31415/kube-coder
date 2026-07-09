@@ -2762,6 +2762,36 @@ class DesktopManager:
             },
         },
         {
+            'id': 'seeddocs1',
+            'label': 'Docs',
+            'icon': 'icon:docs',
+            'action': {
+                'type': 'url',
+                'url': '/docs',
+                'target': 'self',
+            },
+        },
+        {
+            'id': 'seedfiles',
+            'label': 'Files',
+            'icon': 'icon:files',
+            'action': {
+                'type': 'url',
+                'url': '/files',
+                'target': 'self',
+            },
+        },
+        {
+            'id': 'seedapps1',
+            'label': 'Apps',
+            'icon': 'icon:apps',
+            'action': {
+                'type': 'url',
+                'url': '/apps',
+                'target': 'self',
+            },
+        },
+        {
             'id': 'seedsett1',
             'label': 'Settings',
             'icon': 'icon:settings',
