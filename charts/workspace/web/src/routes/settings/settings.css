@@ -217,3 +217,42 @@
   gap: var(--size-2);
 }
 .settings-copy-row .input { flex: 1 1 220px; min-width: 0; font-family: var(--font-mono, monospace); }
+
+/* Full-screen "workspace is restarting…" overlay (issue #184). Shown after a
+   self-serve update rolls the pod; the SPA keeps polling /health underneath and
+   reloads once the freshly-recreated pod is Ready. Mirrors the ingress holding
+   page so the hand-off looks the same whether the user stays or reloads. */
+.ws-restarting-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--size-4);
+  background: var(--bg);
+}
+.ws-restarting-card {
+  width: min(92vw, 420px);
+  padding: 40px 36px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  text-align: center;
+}
+.ws-restarting-spinner {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 24px;
+  border-radius: 50%;
+  border: 4px solid var(--border-2);
+  border-top-color: var(--info);
+  animation: ws-restarting-spin 0.9s linear infinite;
+}
+@keyframes ws-restarting-spin { to { transform: rotate(360deg); } }
+.ws-restarting-title { font-size: 18px; font-weight: 650; margin: 0 0 10px; }
+.ws-restarting-text { font-size: 14px; line-height: 1.5; color: var(--text-muted); margin: 0; }
+.ws-restarting-eta { font-size: 12px; color: var(--text-subtle); margin: 8px 0 0; }
+@media (prefers-reduced-motion: reduce) {
+  .ws-restarting-spinner { animation-duration: 2.4s; }
+}

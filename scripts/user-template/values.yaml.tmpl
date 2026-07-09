@@ -102,6 +102,12 @@ assistant:
 update:
   selfServeSecretName: "__SELF_SERVE_SECRET__"
 
+# "Restarting…" holding page shown during the update's Recreate downtime
+# (#184). On by default via the chart; uncomment to tune or disable.
+# holdingPage:
+#   enabled: true
+#   replicas: 1
+
 # GitHub App for repo access:
 #   Drop credentials in users-private/__USER__/secrets/github-app.yaml.
 #   Each workspace gets its OWN GitHub App, not a shared one — anyone with

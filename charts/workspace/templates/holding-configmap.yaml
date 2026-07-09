@@ -1,0 +1,128 @@
+{{- if .Values.holdingPage.enabled }}
+# Static assets for the always-up "workspace is restarting…" holding backend
+# (issue #184). Served by the holding-<user> Deployment (nginx), which the
+# workspace ingresses point at as their custom-error backend so the raw nginx
+# 503 during a Recreate rollout is replaced with a branded page.
+#
+# Like browser-html-configmap.yaml, this ConfigMap is intentionally NOT part of
+# any deployment checksum: editing the copy or config propagates via kubelet's
+# ConfigMap sync (nginx re-reads the static file per request) without a
+# restart of the holding pod.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: holding-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: holding-{{ .Values.user.name }}
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name _;
+        root /usr/share/nginx/html;
+
+        # This backend only ever receives traffic as the ingress custom-error
+        # backend, i.e. when the workspace upstream has no Ready endpoint.
+        # Answer EVERY path with the holding page, and deliberately keep a
+        # non-2xx status so the page's own /health poll can tell "still
+        # restarting" (503 here) from "back up" (200 from the live pod).
+        location / {
+            return 503;
+        }
+
+        # Kubelet readiness/liveness probe target — must be 2xx (every other
+        # path is 503 by design, which would otherwise fail the probe and keep
+        # this backend out of the Service endpoints). Never reached via the
+        # ingress custom-error path, which only forwards the client's own path.
+        location = /healthz {
+            add_header Content-Type text/plain always;
+            return 200 "ok\n";
+        }
+
+        error_page 503 /holding.html;
+        location = /holding.html {
+            internal;
+            add_header Cache-Control "no-store" always;
+        }
+    }
+  holding.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <meta name="robots" content="noindex" />
+      <title>Workspace restarting…</title>
+      <style>
+        :root { color-scheme: light dark; }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; }
+        body {
+          display: flex; align-items: center; justify-content: center;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+            Helvetica, Arial, sans-serif;
+          background: #f7f8fa; color: #1c2430;
+        }
+        .card {
+          width: min(92vw, 420px); padding: 40px 36px; border-radius: 16px;
+          background: #fff; box-shadow: 0 8px 40px rgba(20,30,50,.12);
+          text-align: center;
+        }
+        .spinner {
+          width: 44px; height: 44px; margin: 0 auto 24px; border-radius: 50%;
+          border: 4px solid rgba(128,128,128,.25); border-top-color: #3b82f6;
+          animation: spin .9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        h1 { font-size: 1.25rem; margin: 0 0 10px; font-weight: 650; }
+        p { margin: 0; font-size: .95rem; line-height: 1.5; opacity: .8; }
+        .eta { margin-top: 6px; font-size: .8rem; opacity: .6; }
+        .bar {
+          margin-top: 26px; height: 4px; border-radius: 4px;
+          background: #e5e9f0; overflow: hidden;
+        }
+        .bar::before {
+          content: ""; display: block; height: 100%; width: 40%;
+          border-radius: 4px; background: #3b82f6;
+          animation: slide 1.4s ease-in-out infinite;
+        }
+        @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+        @media (prefers-color-scheme: dark) {
+          body { background: #0f1420; color: #e6ebf2; }
+          .card { background: #161c28; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+          .bar { background: #263041; }
+        }
+      </style>
+    </head>
+    <body>
+      <main class="card">
+        <div class="spinner" role="status" aria-live="polite"></div>
+        <h1>Your workspace is restarting…</h1>
+        <p>Applying the update and bringing your workspace back online.</p>
+        <p class="eta">This usually takes about a minute — the page refreshes
+          automatically when it's ready.</p>
+        <div class="bar" aria-hidden="true"></div>
+      </main>
+      <script>
+        // The workspace pod is briefly gone during a Recreate rollout, so this
+        // page is served (by an always-up backend) via the ingress custom-error
+        // path. Poll /health until the new pod answers 200, then hand back to
+        // the live workspace. While the pod is down /health is itself
+        // intercepted and returns 503, so a 2xx unambiguously means "back up".
+        var POLL_MS = 4000;
+        function check() {
+          fetch('/health', { cache: 'no-store', redirect: 'manual' })
+            .then(function (r) {
+              if (r.ok) { location.reload(); return; }
+              schedule();
+            })
+            .catch(schedule);
+        }
+        function schedule() { setTimeout(check, POLL_MS); }
+        // Small initial delay so the old pod has begun terminating.
+        setTimeout(check, 1500);
+      </script>
+    </body>
+    </html>
+{{- end }}
