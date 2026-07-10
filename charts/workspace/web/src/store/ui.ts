@@ -16,11 +16,13 @@ function loadPrefs(): PersistedPrefs {
   const fallback: PersistedPrefs = {
     theme: 'system',
     density: 'comfortable',
-    // Default-collapsed rail so the dashboard opens with the most chrome
-    // hidden — reduces visual noise on first paint, and the toggle at the
-    // bottom of the rail (chevron) is a one-click expand. Users who prefer
-    // the labeled rail can pin it open and the choice persists.
-    railCollapsed: true,
+    // Default-expanded rail so the dashboard opens with readable text labels
+    // (Desktop, Build, Memory, …) next to each icon — new users shouldn't
+    // have to hover for tooltips or discover the toggle to learn what the
+    // nav does. The chevron at the bottom of the rail still collapses it to
+    // an icon-only strip in one click, and that choice persists for users
+    // who prefer the compact rail.
+    railCollapsed: false,
     masterCollapsed: false,
   };
   if (typeof localStorage === 'undefined') return fallback;
