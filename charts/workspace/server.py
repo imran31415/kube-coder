@@ -6348,7 +6348,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
            (…/oauth/api/app-proxy/<port>/ — trailing slash guaranteed by the
            301 above), keeping the /oauth prefix so it authenticates. Skips
            protocol-relative (//cdn) and already-proxied URLs; relative URLs
-           are already correct.
+           are already correct. Also skips Next.js /_next/* build assets:
+           Turbopack derives chunk identity from the literal <script src>
+           attribute, so relativizing it breaks hydration (see repl below).
 
         2. A runtime shim (_APP_PROXY_SHIM) is injected into <head> to catch
            requests the app builds in JS at request time — fetch('/runs'),
@@ -6358,7 +6360,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         """
         def repl(mo):
             url = mo.group(3)
-            if url.startswith(b'//') or url.startswith(b'/api/app-proxy/'):
+            # Leave protocol-relative (//cdn), already-proxied, AND Next.js
+            # build assets (/_next/*) untouched. Next's Turbopack runtime keys
+            # every chunk by the *literal* <script src> attribute — it reads
+            # getAttribute("src"), strips a fixed base, and uses the remainder
+            # as the chunk id to locate and run the page entry. Relativizing
+            # that attribute (/_next/… → _next/…) changes the derived id, so
+            # the entry chunk is never executed: React never hydrates and the
+            # app hangs blank / forever-loading with no console error. Keep
+            # /_next/* root-absolute; those escaped requests are recovered by
+            # _dispatch_referer_proxy (302 back onto the proxy path, reusing
+            # the Referer's /oauth prefix so they re-authenticate).
+            if (url.startswith(b'//')
+                    or url.startswith(b'/api/app-proxy/')
+                    or url.startswith(b'/_next/')):
                 return mo.group(0)
             rel = url[1:]  # drop the single leading '/'
             return mo.group(1) + mo.group(2) + (rel or b'./')
