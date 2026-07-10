@@ -25,11 +25,14 @@ import { MobileAccessCard } from './components/MobileAccessCard';
 const expanded = signal<string | null>(null);
 
 export function App() {
-  // The 5s list poll runs for the whole app lifetime (both views need state).
+  // The list poll runs for the whole app lifetime (both views need state).
+  // 10s is plenty for a status console; refresh() is single-flight so polls
+  // never stack, and mutating actions invalidate the server cache for an
+  // immediate update rather than relying on a tight interval.
   useEffect(() => {
     void refresh();
     void loadProvisionConfig();
-    const id = window.setInterval(() => void refresh(), 5000);
+    const id = window.setInterval(() => void refresh(), 10000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -159,7 +162,12 @@ function WorkspaceList() {
         </div>
       </div>
 
-      {loaded.value && rows.length === 0 && !error.value ? (
+      {!loaded.value && rows.length === 0 && !error.value ? (
+        <div class="empty loading">
+          <span class="spinner" aria-hidden="true" />
+          Loading workspaces…
+        </div>
+      ) : loaded.value && rows.length === 0 && !error.value ? (
         <div class="empty">No workspaces found.</div>
       ) : filtered.length === 0 ? (
         <div class="empty">No workspaces match your search or filters.</div>

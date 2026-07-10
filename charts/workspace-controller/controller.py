@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -186,43 +187,24 @@ def _kubectl_run(args, namespace=None):
 
 # --- Workspace listing -------------------------------------------------------
 
-def _pod_summary(pod):
-    """Compact per-pod status used to distinguish 'starting' from 'crashing'."""
-    status = pod.get('status', {})
-    cstatuses = status.get('containerStatuses', []) or []
-    ready = bool(cstatuses) and all(c.get('ready') for c in cstatuses)
-    restarts = sum(c.get('restartCount', 0) for c in cstatuses)
-    reason = None
-    for c in cstatuses:
-        st = c.get('state', {})
-        if 'waiting' in st and st['waiting'].get('reason'):
-            reason = st['waiting']['reason']        # e.g. CrashLoopBackOff, ImagePullBackOff
-            break
-        if 'terminated' in st and st['terminated'].get('reason') not in (None, 'Completed'):
-            reason = st['terminated']['reason']
-            break
-    return {
-        'name': pod.get('metadata', {}).get('name', ''),
-        'phase': status.get('phase', 'Unknown'),
-        'ready': ready,
-        'restarts': restarts,
-        'reason': reason,
-    }
+def _classify(desired, ready, obs_gen, gen, conditions=None):
+    """Map a Deployment's replica/generation/condition facts to a UI state.
 
-
-def _classify(desired, ready, obs_gen, gen, pods):
-    """Map replica/generation/pod facts to a UI state."""
+    Pods-free by design: coarse state (running/stopped/transitioning/degraded)
+    comes from `.status` alone, so the fleet listing needs no per-pod query. A
+    wedged rollout — image pull failing or the container crash-looping past the
+    progress deadline — surfaces as a `Progressing=ProgressDeadlineExceeded`
+    Deployment condition, which is our 'degraded' signal without reading pods."""
     if desired == 0:
         return 'stopped'
     if obs_gen < gen:
         return 'transitioning'        # spec edited; controller hasn't caught up
     if ready >= desired:
         return 'running'
-    # desired >= 1 but not all ready: starting vs. wedged?
-    bad = {'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'Error', 'CreateContainerError'}
-    if any(p.get('reason') in bad for p in pods):
-        return 'degraded'
-    return 'transitioning'
+    for c in (conditions or []):
+        if c.get('type') == 'Progressing' and c.get('reason') == 'ProgressDeadlineExceeded':
+            return 'degraded'
+    return 'transitioning'            # starting
 
 
 def discover_workspace_namespaces():
@@ -274,10 +256,23 @@ def _collect(resource):
     return items
 
 
-def _ws_item(dep, pods, host):
-    """Build one workspace listing entry from its Deployment, its (raw) pods and
-    an optional host. Shared by list_workspaces() and find_workspace() so the
-    fleet listing and a single-workspace lookup produce identical shapes."""
+def _workspace_url(user):
+    """The workspace's public URL, derived from WORKSPACE_DOMAIN — no ingress
+    read. New workspaces are always served at <user>.<domain> (wildcard DNS),
+    so the host is computable; None when the domain isn't configured."""
+    return f'https://{user}.{WORKSPACE_DOMAIN}/' if WORKSPACE_DOMAIN else None
+
+
+def _ws_item(dep):
+    """Build one workspace listing entry from its Deployment ALONE — no per-pod
+    or per-ingress query. State comes from `.status`; the URL is derived from
+    WORKSPACE_DOMAIN. Shared by list_workspaces() and find_workspace() so the
+    fleet listing and a single-workspace lookup produce identical shapes.
+
+    The old version joined all-namespace pod + ingress reads here, which made
+    the listing ~46 kubectl calls and stacked enough all-namespace pod JSON in
+    memory to OOM the pod under the console's 5s poll. The Deployment's own
+    status carries everything the list view renders."""
     name = dep.get('metadata', {}).get('name', '')
     m = _NAME_RE.match(name)
     user = m.group(1) if m else name
@@ -287,11 +282,8 @@ def _ws_item(dep, pods, host):
     ready = status.get('readyReplicas', 0) or 0
     gen = dep.get('metadata', {}).get('generation', 0) or 0
     obs_gen = status.get('observedGeneration', 0) or 0
-    pod_sums = [_pod_summary(p) for p in pods]
-    state = _classify(desired, ready, obs_gen, gen, pod_sums)
-    detail = next((p['reason'] for p in pod_sums if p.get('reason')), None)
-    if detail is None:
-        detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
+    state = _classify(desired, ready, obs_gen, gen, status.get('conditions', []))
+    detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
     image = _workspace_image(dep)
     image_tag, version = version_from_image(image)
     ws_ns = dep.get('metadata', {}).get('namespace', NAMESPACE)
@@ -308,8 +300,11 @@ def _ws_item(dep, pods, host):
         'state': state,
         'desiredReplicas': desired,
         'readyReplicas': ready,
-        'url': f'https://{host}/' if host else None,
-        'pods': pod_sums,
+        'url': _workspace_url(user),
+        # Kept for response-shape compatibility. The list view renders state +
+        # detail (not pods); pod-level detail belongs to a single-workspace view
+        # that can read one namespace cheaply, not the fleet listing.
+        'pods': [],
         'detail': detail,
         'image': image,
         'imageTag': image_tag,
@@ -318,37 +313,47 @@ def _ws_item(dep, pods, host):
 
 
 def list_workspaces():
-    deps = _collect('deployments')
-    all_pods = _collect('pods')
-    # Hosts are best-effort; if the RBAC for ingresses is absent or the call
-    # fails we still return the list, just without clickable URLs.
-    hosts = {}
-    try:
-        for ing in _collect('ingress'):
-            app = ing.get('metadata', {}).get('labels', {}).get('app')
-            if not app or app in hosts:
-                continue
-            for rule in ing.get('spec', {}).get('rules', []):
-                if rule.get('host'):
-                    hosts[app] = rule['host']
-                    break
-    except KubectlError:
-        pass
-
-    pods_by_app = {}
-    for pod in all_pods:
-        app = pod.get('metadata', {}).get('labels', {}).get('app')
-        if app:
-            pods_by_app.setdefault(app, []).append(pod)
-
+    """The fleet listing — ONE lightweight read per workspace namespace
+    (deployments), no pods, no ingress. State/URL are derived (see _ws_item),
+    so this stays cheap and low-memory regardless of fleet size."""
     out = []
-    for dep in deps:
+    for dep in _collect('deployments'):
         name = dep.get('metadata', {}).get('name', '')
         if not _NAME_RE.match(name):
             continue
-        out.append(_ws_item(dep, pods_by_app.get(name, []), hosts.get(name)))
+        out.append(_ws_item(dep))
     out.sort(key=lambda w: w['user'])
     return {'namespace': NAMESPACE, 'workspaces': out}
+
+
+# Short-lived, single-flight cache for the fleet listing. Every open console tab
+# polls /api/workspaces every few seconds; without this, each poll re-ran the
+# per-namespace fan-out and overlapping polls used to stack up and OOM the pod.
+# The lock makes it single-flight — one computation at a time; callers arriving
+# mid-flight get its result — and the TTL collapses a burst of polls into one
+# read. Mutating actions call invalidate_workspaces_cache() so the UI stays live.
+LIST_CACHE_TTL = float(os.environ.get('LIST_CACHE_TTL', '4'))
+_list_cache = {'ts': 0.0, 'data': None}
+_list_cache_lock = threading.Lock()
+
+
+def cached_list_workspaces(force=False):
+    c = _list_cache
+    if not force and c['data'] is not None and time.time() - c['ts'] < LIST_CACHE_TTL:
+        return c['data']
+    with _list_cache_lock:
+        # Re-check under the lock: a concurrent caller may have just refreshed.
+        if not force and c['data'] is not None and time.time() - c['ts'] < LIST_CACHE_TTL:
+            return c['data']
+        c['data'] = list_workspaces()
+        c['ts'] = time.time()
+        return c['data']
+
+
+def invalidate_workspaces_cache():
+    """Force the next cached_list_workspaces() to recompute — called after a
+    start/stop/update/resource edit so the console reflects it immediately."""
+    _list_cache['ts'] = 0.0
 
 
 def find_workspace(user):
@@ -357,10 +362,10 @@ def find_workspace(user):
     namespace for a not-yet-migrated (#103) workspace. Raises ValueError on a
     bad name, LookupError if absent.
 
-    This is deliberately O(1): it reads just this user's Deployment (+ pods,
-    ingress) instead of the all-namespaces fan-out of list_workspaces(). The
-    self-serve version/update path runs on every workspace's Settings page load,
-    and list_workspaces() had grown to ~12s across the fleet — past the
+    This is deliberately O(1): it reads just this user's Deployment (one
+    namespaced get) instead of the all-namespaces fan-out of list_workspaces().
+    The self-serve version/update path runs on every workspace's Settings page
+    load, and list_workspaces() had grown to ~12s across the fleet — past the
     workspace's controller-call timeout, which silently hid the update option.
     A single-namespace read keeps it well under a second regardless of fleet
     size."""
@@ -377,26 +382,8 @@ def find_workspace(user):
             continue
         dep = next((d for d in deps
                     if d.get('metadata', {}).get('name') == name), None)
-        if dep is None:
-            continue
-        try:
-            pods = _kubectl_json(['get', 'pods', '-l', selector],
-                                 namespace=ns).get('items', [])
-        except KubectlError:
-            pods = []
-        host = None
-        try:
-            for ing in _kubectl_json(['get', 'ingress', '-l', selector],
-                                     namespace=ns).get('items', []):
-                for rule in ing.get('spec', {}).get('rules', []):
-                    if rule.get('host'):
-                        host = rule['host']
-                        break
-                if host:
-                    break
-        except KubectlError:
-            pass
-        return _ws_item(dep, pods, host)
+        if dep is not None:
+            return _ws_item(dep)
     raise LookupError(name)
 
 
@@ -407,6 +394,7 @@ def scale_workspace(user, replicas):
     name = ws['deployment']
     _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'],
                  namespace=ws['namespace'])
+    invalidate_workspaces_cache()   # reflect start/stop on the next console poll
     return name
 
 
@@ -484,6 +472,7 @@ def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
         except (ProvisionError, GithubError) as exc:
             persist_error = str(exc)
             sys.stderr.write(f'[controller] gitops resource update {user} failed: {exc}\n')
+    invalidate_workspaces_cache()
     return {'user': user, 'limits': limits, 'persisted': persisted, 'persistError': persist_error}
 
 
@@ -744,6 +733,7 @@ def set_workspace_image(user, target_version=None, persist=True):
             {'name': WORKSPACE_CONTAINER, 'image': new_image}]}}}}
         _kubectl_run(['patch', f"deployment/{ws['deployment']}", '--type=strategic', '-p', json.dumps(patch)],
                      namespace=ws.get('namespace'))
+        invalidate_workspaces_cache()   # reflect the new version on the next poll
     persisted = False
     persist_error = None
     if persist and GITOPS_REPO and GITOPS_TOKEN:
@@ -1822,7 +1812,10 @@ def provision_status(slug):
             job_state = 'running'
         else:
             job_state = 'pending'
-    ws = next((w for w in list_workspaces()['workspaces'] if w['user'] == slug), None)
+    try:
+        ws = find_workspace(slug)   # targeted read; None until the Job creates it
+    except (ValueError, LookupError):
+        ws = None
     return {
         'slug': slug,
         'job': job_state,
@@ -1989,7 +1982,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
             try:
-                self.send_json(decorate_with_updates(list_workspaces()))
+                self.send_json(decorate_with_updates(cached_list_workspaces()))
             except KubectlError as exc:
                 sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
@@ -2300,7 +2293,6 @@ def main():
     # separate port so workspace pods can self-update without ever being able
     # to reach the header-trusting admin API. Only started when a token is set.
     if SELF_SERVE_TOKEN:
-        import threading
         self_httpd = http.server.ThreadingHTTPServer(('0.0.0.0', SELF_SERVE_PORT), Handler)
         self_httpd.restricted = True
         t = threading.Thread(target=self_httpd.serve_forever, daemon=True)
