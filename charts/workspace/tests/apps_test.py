@@ -338,6 +338,8 @@ class _StubUpstreamHandler(http.server.BaseHTTPRequestHandler):
                 b'<!doctype html><html><head>'
                 b'<script type="module" crossorigin src="/assets/index-DMwNl9rx.js"></script>'
                 b'<link rel="stylesheet" href="/assets/index-DeubTYm-.css">'
+                b'<script src="/_next/static/chunks/main-abc123.js" defer></script>'
+                b'<link rel="stylesheet" href="/_next/static/chunks/style-def456.css">'
                 b'<link rel="preconnect" href="https://fonts.googleapis.com">'
                 b'<img data-src="/lazy.png">'
                 b'</head><body><a href="docs/page">rel</a></body></html>'
@@ -499,6 +501,20 @@ class AppsProxyTests(unittest.TestCase):
         self.assertIn(b'data-src="/lazy.png"', html)
         self.assertIn(b'href="docs/page"', html)
         self.assertNotIn(b'src="/assets/index-DMwNl9rx.js"', html)
+
+    def test_next_build_assets_are_not_relativized(self):
+        # Next.js/Turbopack keys each chunk by the literal <script src>
+        # attribute (getAttribute("src") minus a fixed base) to find + run the
+        # page entry. Relativizing /_next/* would change the derived id, so the
+        # entry never runs and the app hangs un-hydrated. /_next/* must stay
+        # root-absolute; the escaped requests are recovered by the Referer 302.
+        with urllib.request.urlopen(self._proxy_url('/html'), timeout=5) as r:
+            html = r.read()
+        self.assertIn(b'src="/_next/static/chunks/main-abc123.js"', html)
+        self.assertIn(b'href="/_next/static/chunks/style-def456.css"', html)
+        # And it must NOT have been relativized (leading slash preserved).
+        self.assertNotIn(b'src="_next/static/chunks/main-abc123.js"', html)
+        self.assertNotIn(b'href="_next/static/chunks/style-def456.css"', html)
 
     def test_html_gets_runtime_base_path_shim_in_head(self):
         # The shim that re-prefixes runtime fetch/XHR/WebSocket calls must be
