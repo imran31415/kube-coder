@@ -39,6 +39,7 @@
     "typecheck": "tsc --noEmit",
     "export:web": "EXPO_PUBLIC_MOCK=1 expo export --platform web",
     "screenshots": "npm run export:web && node scripts/screenshots.mjs",
+    "check:nav": "npm run export:web && node scripts/check-nav.mjs",
     "build:production": "eas build --profile production --platform all",
     "build:ios": "eas build --profile production --platform ios",
     "build:android": "eas build --profile production --platform android",

@@ -26,6 +26,7 @@ import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ControllerScreen from './src/screens/ControllerScreen';
 import { NavDrawer } from './src/components/NavDrawer';
+import { MenuButton } from './src/components/ui';
 import type { AppsStackParams, TasksStackParams } from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
@@ -52,10 +53,26 @@ const headerOptions = {
   contentStyle: { backgroundColor: colors.bg },
 };
 
+/** Stack screenOptions with a dead-end guard: if a screen sits at the bottom
+ *  of its stack (e.g. a deep link landed on a detail screen with nothing
+ *  beneath it), there is no back button — lead with the ☰ menu instead so
+ *  every screen keeps a way out. Otherwise leave headerLeft alone: setting it
+ *  at all replaces the default back button. */
+function stackScreenOptions({
+  route,
+  navigation,
+}: {
+  route: { key: string };
+  navigation: { getState: () => { routes: { key: string }[] } };
+}) {
+  const first = navigation.getState().routes[0]?.key === route.key;
+  return { ...headerOptions, ...(first ? { headerLeft: () => <MenuButton /> } : null) };
+}
+
 const Stack = createNativeStackNavigator<TasksStackParams>();
 function TasksStack() {
   return (
-    <Stack.Navigator screenOptions={headerOptions}>
+    <Stack.Navigator screenOptions={stackScreenOptions}>
       <Stack.Screen name="TaskList" component={TasksScreen} options={{ headerShown: false }} />
       <Stack.Screen name="TaskDetail" component={TaskDetailScreen} options={{ title: 'Task' }} />
       <Stack.Screen
@@ -70,7 +87,7 @@ function TasksStack() {
 const AppsStackNav = createNativeStackNavigator<AppsStackParams>();
 function AppsStack() {
   return (
-    <AppsStackNav.Navigator screenOptions={headerOptions}>
+    <AppsStackNav.Navigator screenOptions={stackScreenOptions}>
       <AppsStackNav.Screen name="AppList" component={AppsScreen} options={{ headerShown: false }} />
       <AppsStackNav.Screen name="AppView" component={AppViewScreen} options={{ title: 'App' }} />
     </AppsStackNav.Navigator>

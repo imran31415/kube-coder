@@ -103,7 +103,9 @@ function inAppTarget(url: string): { tab: string; params?: object } | null {
       return { tab: 'Tasks' }; // '/' — the dashboard home
     case 'tasks':
       return sub
-        ? { tab: 'Tasks', params: { screen: 'TaskDetail', params: { id: sub } } }
+        ? // initial: false keeps TaskList mounted beneath so the detail header
+          // has a back button even when the Tasks tab was never visited.
+          { tab: 'Tasks', params: { screen: 'TaskDetail', params: { id: sub }, initial: false } }
         : { tab: 'Tasks', params: { screen: 'TaskList' } };
     case 'memory':
       return { tab: 'Memory' };
@@ -282,7 +284,9 @@ export default function DesktopScreen() {
   };
 
   function openTask(id: string) {
-    nav.navigate('Tasks', { screen: 'TaskDetail', params: { id } });
+    // initial: false → TaskList stays beneath the detail screen, so it opens
+    // with a back button instead of becoming the stack's only (trapped) route.
+    nav.navigate('Tasks', { screen: 'TaskDetail', params: { id }, initial: false });
   }
 
   async function launch(item: DesktopItem) {
