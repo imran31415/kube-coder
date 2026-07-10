@@ -68,16 +68,18 @@ controller:
 
   # The controller buffers Prometheus range-query results in memory (capacity
   # history + per-workspace insights over hours) across concurrent request
-  # threads, so 256Mi OOM-killed it under dashboard load (intermittent 502s).
-  # Bumped for headroom; the lazy-loading dashboard (summary page + drill-downs)
-  # keeps steady-state well under this.
+  # threads. The /api/workspaces listing is now deployments-only + single-flight
+  # cached (no all-namespace pod/ingress JSON, no stacking polls), which removed
+  # the main OOM driver; the limit keeps headroom for the Prometheus buffers and
+  # concurrent metric requests. (256Mi OOM-killed it historically; 512Mi still
+  # OOM'd under the old heavy-listing + 5s-poll load.)
   resources:
     requests:
       cpu: 100m
       memory: 128Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 768Mi
 
   # Per-workspace usage metrics come from the in-cluster Prometheus (this
   # cluster has no metrics-server). Empty disables the metrics panel cleanly.

@@ -821,6 +821,44 @@ class PerWorkspaceNamespaceTest(unittest.TestCase):
         with self.assertRaises(LookupError):
             controller.find_workspace('ghost')
 
+    def test_list_workspaces_reads_no_pods_or_ingress(self):
+        # The fleet listing must be deployments-only — no per-namespace pod or
+        # ingress fan-out (that was the OOM + latency source). Regression guard.
+        resources = []
+        def fake(args, namespace=None):
+            if args == ['get', 'namespaces']:
+                return {'items': [{'metadata': {'name': 'ws-alice'}}]}
+            if len(args) >= 2 and args[0] == 'get':
+                resources.append(args[1])
+            if args == ['get', 'deployments']:
+                return {'items': [_dep('ws-alice')]}
+            return {'items': []}
+        controller._kubectl_json = fake
+        controller.list_workspaces()
+        self.assertIn('deployments', resources)
+        self.assertNotIn('pods', resources)
+        self.assertNotIn('ingress', resources)
+
+    def test_ws_item_derives_url_from_domain_not_ingress(self):
+        orig = controller.WORKSPACE_DOMAIN
+        controller.WORKSPACE_DOMAIN = 'dev.example.io'
+        try:
+            item = controller._ws_item(_dep('ws-alice'))
+        finally:
+            controller.WORKSPACE_DOMAIN = orig
+        self.assertEqual(item['url'], 'https://alice.dev.example.io/')
+        self.assertEqual(item['pods'], [])           # no per-pod detail in the list
+        self.assertEqual(item['state'], 'running')   # readyReplicas==desired in _dep
+
+    def test_classify_degraded_from_progress_deadline_condition(self):
+        # Pods-free degraded signal: a wedged rollout surfaces as a Deployment
+        # Progressing=ProgressDeadlineExceeded condition.
+        wedged = [{'type': 'Progressing', 'reason': 'ProgressDeadlineExceeded'}]
+        self.assertEqual(controller._classify(1, 0, 2, 2, wedged), 'degraded')
+        self.assertEqual(controller._classify(1, 0, 2, 2, []), 'transitioning')  # still starting
+        self.assertEqual(controller._classify(0, 0, 2, 2, []), 'stopped')
+        self.assertEqual(controller._classify(1, 1, 2, 2, []), 'running')
+
     def test_collect_aggregates_items_across_namespaces(self):
         # _collect fans out one read per workspace namespace (now concurrently)
         # and concatenates the items, each keeping its own namespace.

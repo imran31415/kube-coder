@@ -35,7 +35,21 @@ export function findWorkspace(user: string): Workspace | undefined {
   return workspaces.value.find((w) => w.user === user);
 }
 
-export async function refresh(): Promise<void> {
+// Single-flight: the interval poll and any action-triggered refresh share one
+// in-flight request instead of stacking. A slow/held response used to let 5s
+// polls pile up concurrently, hammering /api/workspaces and OOMing the
+// controller; coalescing means at most one request is ever outstanding.
+let inFlight: Promise<void> | null = null;
+
+export function refresh(): Promise<void> {
+  if (inFlight) return inFlight;
+  inFlight = doRefresh().finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+async function doRefresh(): Promise<void> {
   try {
     const res = await listWorkspaces();
     workspaces.value = res.workspaces;
