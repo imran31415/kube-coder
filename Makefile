@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -386,8 +386,44 @@ mobile-build-android: mobile-typecheck ## EAS production build, Android only (.a
 mobile-submit-ios: ## Upload the latest iOS production build to App Store Connect
 	cd $(MOBILE_DIR) && npx eas-cli submit --profile production --platform ios
 
+# App Store / Play *listing* automation via fastlane (deliver + supply) —
+# metadata text + screenshots only; EAS still builds & uploads the binary.
+# Requires credentials in mobile/fastlane/.env (copy from .env.example). Run
+# mobile-fastlane-install once. Listing copy lives in mobile/fastlane/metadata/,
+# screenshots in ios-assets/ + android-assets/ (regenerate with
+# `make mobile-screenshots`).
+mobile-fastlane-install: ## Install fastlane for the mobile app (bundler, local vendor/)
+	# --path installs into the repo-local vendor/bundle (no sudo, no global
+	# gems) and works on both Bundler 1.x (macOS system ruby) and 2.x, unlike
+	# `bundle config set --local path`, which only exists in 2.x.
+	cd $(MOBILE_DIR) && bundle install --path vendor/bundle
+
+mobile-metadata: ## Push App Store listing TEXT to App Store Connect (no screenshots, no binary)
+	cd $(MOBILE_DIR) && bundle exec fastlane ios metadata
+
+mobile-metadata-text: ## Alias of mobile-metadata — App Store listing text only
+	cd $(MOBILE_DIR) && bundle exec fastlane ios metadata_text
+
+mobile-ios-screenshots: ## Sync ios-assets/ screenshots to the App Store listing (deterministic — deletes then uploads exactly 7/device, no deliver dupes)
+	cd $(MOBILE_DIR) && set -a && . ./fastlane/.env && set +a && bundle exec ruby scripts/sync-ios-screenshots.rb
+
+mobile-metadata-download: ## Pull the live App Store listing into mobile/fastlane/metadata/
+	cd $(MOBILE_DIR) && bundle exec fastlane deliver download_metadata
+
+mobile-play-metadata: ## Push Play Store listing text + screenshots to Google Play (no binary)
+	cd $(MOBILE_DIR) && bundle exec fastlane android metadata
+
+mobile-play-metadata-text: ## Push only the Play Store listing text (no screenshots, no binary)
+	cd $(MOBILE_DIR) && bundle exec fastlane android metadata_text
+
+mobile-play-metadata-download: ## Pull the live Play Store listing into mobile/fastlane/metadata/android/
+	cd $(MOBILE_DIR) && bundle exec fastlane supply init --package-name app.kubecoder.mobile \
+		--json_key "$${SUPPLY_JSON_KEY:-play-service-account.json}"
+
 mobile-clean: ## Remove mobile build artifacts and deps
-	rm -rf $(MOBILE_DIR)/dist $(MOBILE_DIR)/node_modules $(MOBILE_DIR)/.expo
+	rm -rf $(MOBILE_DIR)/dist $(MOBILE_DIR)/node_modules $(MOBILE_DIR)/.expo \
+		$(MOBILE_DIR)/vendor $(MOBILE_DIR)/.bundle $(MOBILE_DIR)/fastlane/screenshots \
+		$(MOBILE_DIR)/fastlane/metadata/android/en-US/images
 
 python-tests: ## Run server.py unit + integration tests
 	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v

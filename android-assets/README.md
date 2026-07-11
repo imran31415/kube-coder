@@ -14,5 +14,7 @@ Screens captured per device: `01-tasks`, `02-task-detail`, `03-desktop`,
 
 Play accepts 320–3840 px per side with a max 2:1 aspect ratio; the sizes above
 satisfy that. Upload under Play Console → Store listing → Phone / Tablet
-screenshots. The source-of-truth dimensions live in
-`mobile/scripts/screenshots.mjs`.
+screenshots, or push them (with the listing text) in one shot via
+`make mobile-play-metadata` (fastlane supply — it stages `phone/` →
+`phoneScreenshots` and `tablet-10/` → `tenInchScreenshots`). The source-of-truth
+dimensions live in `mobile/scripts/screenshots.mjs`.

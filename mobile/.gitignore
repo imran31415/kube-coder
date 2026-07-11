@@ -33,6 +33,13 @@ yarn-error.*
 # local env files
 .env*.local
 
+# Ruby / fastlane (bundler installs gems locally into vendor/)
+vendor/bundle/
+.bundle/
+
+# Google Play service-account key (fastlane supply + eas.json submit config)
+play-service-account.json
+
 # typescript
 *.tsbuildinfo
 

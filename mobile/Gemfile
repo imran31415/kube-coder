@@ -1,0 +1,6 @@
+source "https://rubygems.org"
+
+# fastlane drives App Store Connect metadata + screenshots (`deliver`).
+# Builds and binary uploads stay with EAS — see the mobile-build* / mobile-
+# submit-ios Makefile targets.
+gem "fastlane"
