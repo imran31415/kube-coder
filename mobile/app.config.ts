@@ -40,7 +40,7 @@ const config: ExpoConfig = {
     // (same rationale as the iOS ATS exception above: self-hosted / localhost).
     adaptiveIcon: {
       foregroundImage: './assets/android-icon-foreground.png',
-      backgroundColor: '#0b0d10',
+      backgroundColor: '#ededf0',
     },
   },
   web: {

@@ -55,7 +55,7 @@ demo: github.com/imran31415/kube-coder
 ```
 
 - **Category**: Tools (or Productivity)
-- **Website**: `https://github.com/imran31415/kube-coder`
+- **Website**: `https://kubecoder.com`
 - **Email**: your support address
 
 ## Data safety form

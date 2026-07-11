@@ -18,7 +18,7 @@ client, and the listing should read that way for review.
 - **Primary category**: Developer Tools
 - **Copyright**: `© 2026 Imran Hassanali`
 - **Support URL**: `https://github.com/imran31415/kube-coder`
-- **Marketing URL** (optional): `https://github.com/imran31415/kube-coder`
+- **Marketing URL** (optional): `https://kubecoder.com`
 
 ## Promotional text (≤170)
 
