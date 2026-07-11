@@ -1,0 +1,17 @@
+# fastlane Appfile — identifies the App Store Connect app for `deliver`.
+#
+# The bundle identifier is public (it's baked into every build) and matches
+# mobile/app.config.ts. Everything else here is PERSONAL to the Apple account
+# and must NOT be committed to this open-source repo — supply it via the
+# environment (see fastlane/.env.example) or an untracked fastlane/.env.
+app_identifier(ENV["FL_APP_IDENTIFIER"] || "app.kubecoder.mobile")
+
+# Apple ID used for `deliver` when authenticating with a username/password or
+# an app-specific password. Not needed when using an App Store Connect API key
+# (the preferred path — see the Fastfile's before_all hook).
+apple_id(ENV["FASTLANE_APPLE_ID"]) if ENV["FASTLANE_APPLE_ID"]
+
+# App Store Connect ("iTunes Connect") team, only needed if the Apple ID
+# belongs to more than one team.
+itc_team_id(ENV["ASC_TEAM_ID"]) if ENV["ASC_TEAM_ID"]
+team_id(ENV["APPLE_TEAM_ID"]) if ENV["APPLE_TEAM_ID"]

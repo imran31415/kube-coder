@@ -1,0 +1,18 @@
+# Generated / staged by the lanes — screenshots are copied from ios-assets/ and
+# android-assets/ at run time.
+screenshots/
+metadata/android/*/images/
+
+# fastlane run artifacts.
+report.xml
+Preview.html
+*.log
+
+# Auto-generated lane docs (regenerate with `fastlane docs`).
+README.md
+
+# Secrets — real credentials live in fastlane/.env (never committed).
+.env
+.env.*
+!.env.example
+*.p8

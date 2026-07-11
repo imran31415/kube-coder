@@ -1,14 +1,20 @@
 # kube-coder — App Store Connect listing
 
-Copy-paste fields for App Store Connect. Character limits noted; everything
-here is within them. Keep it simple — the app is a thin client, and the
-listing should read that way for review.
+Human-readable reference for the App Store Connect listing. Character limits
+noted; everything here is within them. Keep it simple — the app is a thin
+client, and the listing should read that way for review.
+
+> **Automated push:** the machine source of truth for these fields lives in
+> `mobile/fastlane/metadata/` and is pushed with `make mobile-metadata`
+> (fastlane deliver — metadata + screenshots, no binary). Edit the `.txt`
+> files there when you change copy, and keep this doc in sync for humans.
+> `make mobile-metadata-download` pulls the live listing back into that folder.
 
 ## App information
 
 - **Name** (≤30): `kube-coder`
 - **Subtitle** (≤30): `Client for your dev workspace`
-- **Bundle ID**: `com.scalebase.kubecoder` (match `mobile/app.config.ts`)
+- **Bundle ID**: `app.kubecoder.mobile` (matches `mobile/app.config.ts`)
 - **Primary category**: Developer Tools
 - **Copyright**: `© 2026 Imran Hassanali`
 - **Support URL**: `https://github.com/imran31415/kube-coder`

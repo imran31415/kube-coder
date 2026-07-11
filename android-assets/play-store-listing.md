@@ -1,7 +1,14 @@
 # kube-coder — Google Play listing
 
-Copy-paste fields for the Play Console "Main store listing" page. Character
-limits noted; everything here is within them.
+Human-readable reference for the Play Console "Main store listing" page.
+Character limits noted; everything here is within them.
+
+> **Automated push:** the machine source of truth for these fields lives in
+> `mobile/fastlane/metadata/android/en-US/` and is pushed with
+> `make mobile-play-metadata` (fastlane supply — listing text + screenshots,
+> no binary). Edit the `.txt` files there when you change copy, and keep this
+> doc in sync for humans. `make mobile-play-metadata-download` pulls the live
+> listing back into that folder.
 
 ## App details
 

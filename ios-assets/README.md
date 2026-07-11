@@ -16,6 +16,12 @@ App Store Connect expects:
 Screens captured per device: `01-tasks`, `02-task-detail`, `03-desktop`,
 `04-apps`, `05-new-task`, `06-memory`, `07-metrics`.
 
-Upload these in App Store Connect → your app → the matching display size, or via
-`fastlane deliver`. The source-of-truth dimensions live in
-`mobile/scripts/screenshots.mjs`.
+Push them to the App Store listing with `make mobile-ios-screenshots`
+(`mobile/scripts/sync-ios-screenshots.rb`) — it deletes each device's existing
+screenshots and uploads exactly these 7, in `01…07` order, via the App Store
+Connect API. This deliberately bypasses fastlane `deliver`, whose screenshot
+step runs a second verification pass that re-uploads images and leaves
+duplicates. Listing **text** goes up separately with `make mobile-metadata`
+(deliver, `skip_screenshots`). You can also upload manually in App Store
+Connect → your app → the matching display size. The source-of-truth dimensions
+live in `mobile/scripts/screenshots.mjs`.

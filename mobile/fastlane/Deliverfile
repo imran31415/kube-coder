@@ -1,0 +1,27 @@
+# fastlane Deliverfile — global options for `deliver` (App Store metadata +
+# screenshots). Lane-level overrides live in the Fastfile.
+#
+# Division of labour: EAS builds and uploads the binary (`make mobile-build-ios`
+# / `make mobile-submit-ios`). deliver never touches the binary here — it only
+# syncs the store listing text and screenshots. Flip `skip_binary_upload` to
+# false only if you decide to hand binary upload to fastlane too.
+skip_binary_upload(true)
+
+# Screenshots are staged from ios-assets/ into fastlane/screenshots/ by the
+# Fastfile (that folder is generated and git-ignored). deliver detects the
+# device family from each image's pixel dimensions.
+screenshots_path("./fastlane/screenshots")
+overwrite_screenshots(true)
+
+# Metadata text lives under fastlane/metadata/ (deliver's native layout).
+metadata_path("./fastlane/metadata")
+
+# Push metadata only; a human presses "Submit for Review" in App Store Connect
+# (or you wire it up later). Precheck's IAP scan is irrelevant — the app has
+# none.
+submit_for_review(false)
+precheck_include_in_app_purchases(false)
+
+# Skip the interactive HTML preview + confirmation when running in CI. Locally
+# you still get the confirmation prompt.
+force(ENV["CI"] == "true" || ENV["FL_FORCE"] == "true")
