@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -299,6 +300,13 @@ def _stringify(v: Any) -> str:
 # In-process registry of live runner threads, keyed by thread_id, so status
 # reflects a running turn even before its events land.
 _RUNNING: Dict[str, bool] = {}
+# Live subprocess handle for the turn currently running in each thread, so a
+# user-issued stop can terminate it. Registered once Popen succeeds and cleared
+# in _run_turn's finally. Guarded by _RUNLOCK.
+_PROCS: Dict[str, subprocess.Popen] = {}
+# Thread ids the user asked to stop; lets _run_turn record a clean "stopped"
+# marker (instead of a spurious error) and skip the adapter's finalize.
+_STOPPING: set = set()
 _RUNLOCK = threading.Lock()
 
 
@@ -467,6 +475,52 @@ class HypervisorSession:
         threading.Thread(target=self._run_turn, args=(text, first, meta),
                          daemon=True).start()
 
+    def stop(self) -> bool:
+        """Terminate the turn currently running in this thread, if any.
+
+        Returns True if a running turn was found and signalled, False if the
+        thread was already idle (a safe no-op). Sends SIGTERM to the CLI's
+        process group, escalating to SIGKILL after a short grace period; the
+        runner thread's finally clause records the "stopped" marker and resets
+        status to idle.
+        """
+        with _RUNLOCK:
+            proc = _PROCS.get(self.id)
+            running = bool(_RUNNING.get(self.id))
+            if not running and proc is None:
+                return False
+            _STOPPING.add(self.id)
+        if proc is None:
+            # Turn is registered but its Popen hasn't been created yet (tiny
+            # window in _run_turn); the stop flag above makes the runner skip
+            # finalize once it lands.
+            return True
+        self._signal_group(proc, signal.SIGTERM)
+        # Give it a moment to exit on SIGTERM, then force-kill. Bounded so the
+        # request handler never hangs.
+        for _ in range(30):  # ~3s total
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        if proc.poll() is None:
+            self._signal_group(proc, signal.SIGKILL)
+        return True
+
+    @staticmethod
+    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            # Group gone or unavailable — fall back to the direct child.
+            try:
+                proc.send_signal(sig)
+            except (ProcessLookupError, OSError):
+                pass
+
+    def _stop_requested(self) -> bool:
+        with _RUNLOCK:
+            return self.id in _STOPPING
+
     def _has_assistant_turn(self) -> bool:
         for e in self.read_events():
             if e.get('role') == 'assistant':
@@ -489,7 +543,12 @@ class HypervisorSession:
                 stdin=subprocess.PIPE if spec.get('stdin') is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 bufsize=1,
+                # Own process group so stop() can signal the whole tree (the CLI
+                # may spawn children of its own) with a single killpg.
+                start_new_session=True,
             )
+            with _RUNLOCK:
+                _PROCS[self.id] = proc
             if spec.get('stdin') is not None:
                 try:
                     proc.stdin.write(spec['stdin'])
@@ -506,13 +565,17 @@ class HypervisorSession:
                     out, _ = proc.communicate()
                     self._append([{'role': 'system', 'type': 'error',
                                    'text': 'assistant timed out'}])
-                self._append(adapter.finalize_buffered(ctx, proc.returncode, out))
+                # A user stop kills the process; its partial/garbled output isn't
+                # a real answer, so skip finalize and let the stopped marker land.
+                if not self._stop_requested():
+                    self._append(adapter.finalize_buffered(ctx, proc.returncode, out))
             else:
                 # Streaming path: parse each stdout line into canonical events.
                 for line in proc.stdout:
                     self._append(adapter.parse(ctx, line))
                 proc.wait()
-                self._append(adapter.finalize(ctx, proc.returncode))
+                if not self._stop_requested():
+                    self._append(adapter.finalize(ctx, proc.returncode))
         except FileNotFoundError:
             self._append([{'role': 'system', 'type': 'error',
                            'text': f'assistant binary not found: {meta.get("assistant")}'}])
@@ -523,6 +586,12 @@ class HypervisorSession:
         finally:
             with _RUNLOCK:
                 _RUNNING.pop(self.id, None)
+                _PROCS.pop(self.id, None)
+                stopped = self.id in _STOPPING
+                _STOPPING.discard(self.id)
+            if stopped:
+                self._append([{'role': 'system', 'type': 'message',
+                               'text': '⏹ Stopped by user.'}])
             m = self.read_meta() or meta
             m['adapter'] = ctx  # persist any session id the adapter captured
             m['status'] = 'idle'

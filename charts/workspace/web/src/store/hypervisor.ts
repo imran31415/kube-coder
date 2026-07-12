@@ -5,6 +5,7 @@ import {
   createThread,
   getThread,
   sendThreadMessage,
+  stopThread,
   deleteThread,
   type HypervisorConfig,
   type HypervisorThread,
@@ -32,6 +33,9 @@ export const events = signal<HvEvent[]>([]);
 export const activeStatus = signal<string>('');
 
 export const sending = signal(false);
+/** True from the moment the user hits Stop until the turn actually ends, so the
+ *  Stop button can show a pending state and not be double-fired. */
+export const stopping = signal(false);
 export const chatError = signal<string | null>(null);
 
 /** The assistant a NEW thread will use (defaults to config.defaultAssistant). */
@@ -154,6 +158,24 @@ export async function sendMessage(text: string): Promise<void> {
     chatError.value = e instanceof Error ? e.message : 'Failed to send';
   } finally {
     sending.value = false;
+  }
+}
+
+/** Stop the turn currently running in the active thread. Best-effort: the
+ *  server kills the CLI process and appends a "stopped" marker, which the next
+ *  poll surfaces; we also refresh immediately so the UI reacts without waiting
+ *  for the 2s tick. */
+export async function stopMessage(): Promise<void> {
+  const id = activeThreadId.value;
+  if (!id || stopping.value) return;
+  stopping.value = true;
+  try {
+    await stopThread(id);
+    await pollActive();
+  } catch (e) {
+    chatError.value = e instanceof Error ? e.message : 'Failed to stop';
+  } finally {
+    stopping.value = false;
   }
 }
 
