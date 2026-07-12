@@ -7,6 +7,8 @@ port 3000 to Apps"*. It reports live state **and** acts on it.
 
 Tracking issue: imran31415/kube-coder#212.
 
+![Hypervisor chat](screenshots/hypervisor-chat.png)
+
 ## Architecture (the key decision)
 
 **The existing CLI agents power the conversation; the Hypervisor only adds a
