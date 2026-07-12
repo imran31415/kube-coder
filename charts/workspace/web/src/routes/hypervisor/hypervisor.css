@@ -37,6 +37,26 @@
   justify-content: space-between;
   padding: var(--size-3) var(--size-3) var(--size-2);
 }
+.hv-sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+}
+/* Close affordance — only meaningful on mobile where the sidebar is a
+   slide-over; on desktop the sidebar is always present so it stays hidden. */
+.hv-sidebar-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.hv-sidebar-close:hover { background: var(--surface-2); color: var(--text); }
 
 .hv-eyebrow {
   font-size: 11px;
@@ -217,20 +237,41 @@
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
+/* Mobile "past chats" trigger — a labeled chip with a live count, so it reads
+   as "open my chat history" rather than an anonymous ••• menu. */
 .hv-topbar-menu {
   display: none;
   align-items: center;
-  justify-content: center;
-  width: 32px;
+  gap: 6px;
   height: 32px;
+  padding: 0 10px;
   margin-left: calc(var(--size-2) * -1);
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   color: var(--text-muted);
   cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
 }
-.hv-topbar-menu:hover { background: var(--surface-2); color: var(--text); }
+.hv-topbar-menu:hover { background: var(--surface-3); color: var(--text); }
+.hv-topbar-menu:active { transform: translateY(0.5px); }
+.hv-topbar-menu-label { line-height: 1; }
+.hv-topbar-menu-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+}
 .hv-topbar-title {
   flex: 1;
   min-width: 0;
@@ -672,6 +713,7 @@
     background: rgba(0, 0, 0, 0.45);
   }
   .hv-topbar-menu { display: inline-flex; }
+  .hv-sidebar-close { display: inline-flex; }
   .hv-msg { max-width: 92%; }
   .hv-transcript { padding: var(--size-3) var(--size-3) var(--size-4); }
 }

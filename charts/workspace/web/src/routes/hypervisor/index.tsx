@@ -75,17 +75,28 @@ export function HypervisorRoute() {
       <aside class="hv-sidebar">
         <div class="hv-sidebar-head">
           <span class="hv-eyebrow">Chats</span>
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={() => {
-              newChat();
-              setSidebarOpen(false);
-            }}
-            title="Start a new chat"
-          >
-            <Icon name="plus" size={12} /> New
-          </Button>
+          <div class="hv-sidebar-head-actions">
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => {
+                newChat();
+                setSidebarOpen(false);
+              }}
+              title="Start a new chat"
+            >
+              <Icon name="plus" size={12} /> New
+            </Button>
+            <button
+              type="button"
+              class="hv-sidebar-close"
+              onClick={() => setSidebarOpen(false)}
+              title="Close"
+              aria-label="Close chats"
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Which CLI agent a new chat uses — any enabled assistant. The chat is
@@ -144,10 +155,12 @@ export function HypervisorRoute() {
               type="button"
               class="hv-topbar-menu"
               onClick={() => setSidebarOpen((v) => !v)}
-              title="Chats"
-              aria-label="Open chats"
+              title="Past chats"
+              aria-label={`Past chats (${list.length})`}
             >
-              <Icon name="more" size={18} />
+              <Icon name="chat" size={15} />
+              <span class="hv-topbar-menu-label">Chats</span>
+              {list.length > 0 && <span class="hv-topbar-menu-count">{list.length}</span>}
             </button>
           )}
           <span class="hv-topbar-title">
