@@ -38,3 +38,5 @@ data:
 {{ .Files.Get "memory/embeddings_worker.py" | indent 4 }}
   mcp_agent_orchestrator.py: |
 {{ .Files.Get "mcp_agent_orchestrator.py" | indent 4 }}
+  mcp_dashboard.py: |
+{{ .Files.Get "mcp_dashboard.py" | indent 4 }}

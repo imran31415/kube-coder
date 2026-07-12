@@ -22,6 +22,7 @@ import './Shell.css';
 // always-mounted BottomSheet. See issue #101.
 const TasksRoute = lazy<ComponentType>(() => import('./tasks/index').then((m) => ({ default: m.TasksRoute })));
 const DesktopRoute = lazy<ComponentType>(() => import('./desktop/index').then((m) => ({ default: m.DesktopRoute })));
+const HypervisorRoute = lazy<ComponentType>(() => import('./hypervisor/index').then((m) => ({ default: m.HypervisorRoute })));
 const MemoryRoute = lazy<ComponentType>(() => import('./memory/index').then((m) => ({ default: m.MemoryRoute })));
 const TriggersRoute = lazy<ComponentType>(() => import('./triggers/index').then((m) => ({ default: m.TriggersRoute })));
 const FilesRoute = lazy<ComponentType>(() => import('./files/index').then((m) => ({ default: m.FilesRoute })));
@@ -32,6 +33,7 @@ const AppsRoute = lazy<ComponentType>(() => import('./apps/index').then((m) => (
 const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/tasks': TasksRoute,
   '/desktop': DesktopRoute,
+  '/hypervisor': HypervisorRoute,
   '/memory': MemoryRoute,
   '/apps': AppsRoute,
   '/triggers': TriggersRoute,

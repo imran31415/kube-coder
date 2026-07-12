@@ -263,6 +263,20 @@ browser:
 claude:
   apiKey: ""
 
+# Hypervisor — the workspace-aware chat tab. A clean chat interface layered
+# over the user's existing CLI agents (claude, ante, opencode, …) plus a
+# dashboard MCP server that lets the chat inspect live workspace state and take
+# UI-equivalent actions. There is no new provider/model config here: the chat
+# uses whichever assistant the user selects, configured via the assistant.*
+# blocks below (and the user's own ~/.ante/settings.json etc.).
+hypervisor:
+  enabled: true
+  # Which assistant a new chat thread uses by default. The user can switch it
+  # per-thread from the tab's selector (any enabled assistant).
+  defaultAssistant: "claude"
+  # Working directory for hypervisor chat sessions.
+  workdir: "/home/dev"
+
 # Optional alternate assistants. Claude Code is always available (above);
 # OpenCode (https://opencode.ai) becomes a *per-task* choice in the
 # dashboard whenever either of the blocks below is configured. Both blocks

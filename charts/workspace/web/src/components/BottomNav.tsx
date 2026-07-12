@@ -13,6 +13,7 @@ const SLOTS: Slot[] = [
   // Desktop is the default landing on the SPA — give it the first slot
   // here too so primary nav is consistent across the rail + bottom bar.
   { path: '/desktop', title: 'Desktop', icon: 'desktop' },
+  { path: '/hypervisor', title: 'Chat', icon: 'hypervisor' },
   { path: '/tasks', title: 'Build', icon: 'tasks' },
   { path: '/memory', title: 'Memory', icon: 'memory' },
 ];
