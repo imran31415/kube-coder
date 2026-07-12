@@ -286,6 +286,10 @@
   align-self: flex-end;
   align-items: flex-end;
 }
+.hv-msg-agent {
+  align-self: flex-start;
+  align-items: flex-start;
+}
 
 .hv-bubble {
   padding: 9px 13px;
@@ -301,46 +305,246 @@
   color: var(--text);
   border-bottom-right-radius: var(--radius-sm);
 }
+.hv-bubble-agent {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-bottom-left-radius: var(--radius-sm);
+}
 
-/* Agent output — the "live feed" idiom: hairline card + a single left accent
-   rule (the app's one sanctioned accent-as-affordance use). */
-.hv-agent-card {
+/* ── Agent turn — a system message, not a terminal. Avatar + branded name +
+      parsed prose/activity blocks. ─────────────────────────────────────── */
+.hv-turn {
   align-self: stretch;
   max-width: 100%;
+  display: flex;
+  gap: 10px;
+}
+.hv-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.hv-turn-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hv-turn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+}
+.hv-turn-name {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.hv-turn-via {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--text-subtle);
+}
+
+/* Assistant prose — rendered markdown, reads as chat, not code. */
+.hv-prose {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+.hv-prose-muted { color: var(--text-subtle); }
+.hv-prose > :first-child { margin-top: 0; }
+.hv-prose > :last-child { margin-bottom: 0; }
+.hv-prose p { margin: 0 0 8px; }
+.hv-prose ul,
+.hv-prose ol { margin: 0 0 8px; padding-left: 20px; }
+.hv-prose li { margin: 2px 0; }
+.hv-prose code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.hv-prose pre {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  overflow: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.hv-prose pre code { padding: 0; border: 0; background: none; font-size: 12px; }
+.hv-prose strong { font-weight: 650; }
+.hv-prose a { color: var(--accent); text-decoration: underline; }
+
+/* Tool / command run — a compact chip, expandable to the raw detail. */
+.hv-activity {
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   overflow: hidden;
 }
-.hv-agent-head {
+.hv-activity-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+}
+.hv-activity-head:hover { background: var(--surface-2); }
+.hv-activity-icon {
+  display: inline-flex;
   color: var(--text-subtle);
 }
-.hv-agent-name {
-  font-weight: 600;
-  color: var(--text-muted);
+.hv-activity-label {
+  flex: 1;
+  min-width: 0;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.hv-agent-status { font-family: var(--font-mono); text-transform: none; letter-spacing: 0; }
-.hv-output {
+.hv-activity-caret {
+  color: var(--text-subtle);
+  transition: transform var(--motion-fast);
+}
+.hv-activity.is-open .hv-activity-caret { transform: rotate(180deg); }
+.hv-activity-detail {
   margin: 0;
-  padding: 10px 12px;
+  padding: 9px 11px;
+  border-top: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--text);
-  max-height: 58vh;
+  color: var(--text-muted);
+  max-height: 40vh;
   overflow: auto;
+  background: var(--surface-2);
 }
+
+/* ── Workspace context strip — live "entity" chips above the transcript. ── */
+.hv-context {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px var(--size-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.hv-context::-webkit-scrollbar { display: none; }
+.hv-context-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+.hv-context-summary {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.hv-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.hv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), color var(--motion-fast), background var(--motion-fast);
+}
+.hv-chip:hover { color: var(--text); border-color: var(--text-subtle); }
+.hv-chip-idle { cursor: default; }
+.hv-chip-idle:hover { color: var(--text-muted); border-color: var(--border); }
+.hv-chip-text {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hv-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-subtle);
+  flex-shrink: 0;
+}
+.hv-chip-running .hv-chip-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
+}
+.hv-chip-waiting-for-input .hv-chip-dot { background: var(--warn); }
+.hv-chip-more { color: var(--text-subtle); }
+
+/* Welcome suggestions — one tap to a good first message. */
+.hv-suggests {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
+  margin: var(--size-4) auto 0;
+}
+.hv-suggest {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), color var(--motion-fast), background var(--motion-fast);
+}
+.hv-suggest:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-subtle);
+  background: var(--surface-2);
+}
+.hv-suggest:disabled { opacity: 0.5; cursor: default; }
 
 /* Typing indicator — three quiet dots. */
 .hv-typing {

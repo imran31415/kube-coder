@@ -153,7 +153,7 @@ export function HypervisorRoute() {
             </button>
           )}
           <span class="hv-topbar-title">
-            {activeThread ? activeThread.title || 'Chat' : 'New chat'}
+            {activeThread ? activeThread.title || 'Chat' : 'Kube-Coder'}
           </span>
           <div class="hv-topbar-meta">
             {active && status && (

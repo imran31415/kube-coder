@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
 import { EmptyState } from '../../components/primitives/EmptyState';
@@ -13,13 +13,59 @@ import {
   config,
   sendMessage,
 } from '../../store/hypervisor';
+import { WorkspaceContext } from './WorkspaceContext';
+import { parseAgentTranscript, renderMarkdown, type TranscriptBlock } from './transcript';
 
 /**
- * The chat transcript + composer. User turns render as neutral bubbles; the
- * agent's live rendered output is shown as a "live feed" card (polled). This is
- * intentionally CLI-agnostic — any selected agent streams here. Structured
- * per-CLI bubble rendering (stream-json etc.) is a follow-up.
+ * The chat transcript + composer. User turns render as bubbles; the CLI agent's
+ * polled pane is parsed (see transcript.ts) into clean, system-branded blocks —
+ * assistant prose as markdown bubbles, tool/command runs as compact activity
+ * chips — so the conversation reads as coming from the *Kube-Coder* workspace,
+ * not a raw Claude/OpenCode terminal.
  */
+
+const SUGGESTIONS = [
+  "What's running and how much CPU am I using?",
+  'Spin up a task to run the tests',
+  'Remember that I deploy with `make ship`',
+];
+
+/** One tool/command run — collapsed by default, expandable to the raw detail. */
+function ActivityChip({ label, detail }: { label: string; detail: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div class={`hv-activity ${open ? 'is-open' : ''}`}>
+      <button type="button" class="hv-activity-head" onClick={() => setOpen((v) => !v)}>
+        <span class="hv-activity-icon">
+          <Icon name="terminal" size={12} />
+        </span>
+        <span class="hv-activity-label">{label}</span>
+        <Icon name="chevron-down" size={13} class="hv-activity-caret" />
+      </button>
+      {open && <pre class="hv-activity-detail">{detail}</pre>}
+    </div>
+  );
+}
+
+function AgentBlocks({ blocks }: { blocks: TranscriptBlock[] }) {
+  return (
+    <>
+      {blocks.map((b, i) =>
+        b.kind === 'text' ? (
+          <div
+            key={i}
+            class="hv-prose"
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(b.text) }}
+          />
+        ) : (
+          <ActivityChip key={i} label={b.label} detail={b.detail} />
+        ),
+      )}
+    </>
+  );
+}
+
 export function Chat() {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -30,7 +76,8 @@ export function Chat() {
   const active = activeThreadId.value;
   const status = activeStatus.value;
 
-  // Auto-grow the composer to fit its content (up to the CSS max-height).
+  const blocks = useMemo(() => (active ? parseAgentTranscript(output) : []), [active, output]);
+
   useEffect(() => {
     const el = taRef.current;
     if (!el) return;
@@ -38,22 +85,20 @@ export function Chat() {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [draft]);
 
-  // Auto-scroll to the newest content as the conversation / output grows.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [msgs, output]);
+  }, [msgs, blocks]);
 
-  function submit() {
-    const text = draft.trim();
-    if (!text || sending.value) return;
+  function submit(text?: string) {
+    const value = (text ?? draft).trim();
+    if (!value || sending.value) return;
     setDraft('');
-    void sendMessage(text);
+    void sendMessage(value);
     taRef.current?.focus();
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    // Enter sends; Shift+Enter inserts a newline (standard chat behaviour).
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -64,54 +109,80 @@ export function Chat() {
   const working = status === 'running';
   const readOnly = config.value?.readOnly;
   const empty = !active && msgs.length === 0;
-  const agentName = selectedAssistant.value || 'agent';
+  const cli = selectedAssistant.value || 'agent';
+  // A turn is "in flight" (show the thinking indicator) while the agent is
+  // working, or right after we sent and no output has landed yet.
+  const thinking = working || (busy && active !== null && blocks.length === 0);
 
   return (
     <div class="hv-chat">
+      {active && <WorkspaceContext />}
+
       <div class="hv-transcript" ref={scrollRef}>
         {empty ? (
           <div class="hv-welcome-host">
             <EmptyState
               icon={<Icon name="hypervisor" size={26} />}
-              title="Workspace Hypervisor"
+              title="Kube-Coder"
               description={
                 <>
-                  Ask about your workspace or tell it what to do — "how many tasks
-                  are running and what's my CPU?", "spin up a task to run the
-                  tests", "remember that I deploy with <code>make ship</code>".
-                  <span class="hv-welcome-agent">
-                    Powered by <strong>{agentName}</strong>.
-                  </span>
+                  Ask about your workspace or tell it what to do — it reads live
+                  state and acts on it through your tools.
                 </>
               }
             />
+            <div class="hv-suggests">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  class="hv-suggest"
+                  onClick={() => submit(s)}
+                  disabled={busy}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
         ) : (
           <div class="hv-transcript-flow">
-            {msgs.map((m, i) => (
-              <div key={i} class={`hv-msg hv-msg-${m.role}`}>
-                <div class="hv-bubble">{m.text}</div>
-              </div>
-            ))}
+            {msgs.map((m, i) =>
+              m.role === 'user' ? (
+                <div key={i} class="hv-msg hv-msg-user">
+                  <div class="hv-bubble">{m.text}</div>
+                </div>
+              ) : (
+                <div key={i} class="hv-msg hv-msg-agent">
+                  <div class="hv-bubble hv-bubble-agent">{m.text}</div>
+                </div>
+              ),
+            )}
 
-            {/* The agent's live rendered output — its answer + tool activity. */}
-            {active && output && (
-              <div class="hv-agent-card">
-                <div class="hv-agent-head">
-                  <Icon name="hypervisor" size={12} />
-                  <span class="hv-agent-name">{agentName}</span>
-                  {status && status !== 'running' && (
-                    <span class="hv-agent-status">· {status}</span>
-                  )}
-                  {working && (
-                    <span class="hv-typing" aria-label="working">
-                      <i />
-                      <i />
-                      <i />
-                    </span>
+            {/* The live agent turn — parsed into clean system-branded blocks. */}
+            {active && (blocks.length > 0 || thinking) && (
+              <div class="hv-turn">
+                <div class="hv-avatar" aria-hidden="true">
+                  <Icon name="hypervisor" size={15} />
+                </div>
+                <div class="hv-turn-body">
+                  <div class="hv-turn-head">
+                    <span class="hv-turn-name">Kube-Coder</span>
+                    <span class="hv-turn-via">via {cli}</span>
+                    {thinking && (
+                      <span class="hv-typing" aria-label="working">
+                        <i />
+                        <i />
+                        <i />
+                      </span>
+                    )}
+                  </div>
+                  {blocks.length > 0 ? (
+                    <AgentBlocks blocks={blocks} />
+                  ) : (
+                    <div class="hv-prose hv-prose-muted">Working…</div>
                   )}
                 </div>
-                <pre class="hv-output">{output}</pre>
               </div>
             )}
           </div>
@@ -134,7 +205,7 @@ export function Chat() {
           placeholder={
             readOnly
               ? 'Read-only workspace — you can still ask about state'
-              : 'Message the Hypervisor…  (Enter to send, Shift+Enter for newline)'
+              : 'Message Kube-Coder…  (Enter to send, Shift+Enter for newline)'
           }
           onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKeyDown}

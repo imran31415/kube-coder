@@ -661,16 +661,26 @@ class ClaudeTaskManager:
         return 'claude'
 
     @staticmethod
-    def assistant_command(assistant):
+    def assistant_command(assistant, auto_approve=False):
+        # auto_approve launches the interactive REPL with the CLI's
+        # skip-permissions flag so it never blocks on an in-terminal approval
+        # menu. This is required for surfaces that drive the agent purely by
+        # pasting text (the Hypervisor chat, which has no way to answer an
+        # arrow/number permission prompt) — mirrors the headless orchestrator's
+        # per-CLI skip flags. The Build tab leaves this off so its live terminal
+        # keeps prompting for approval as before. Only claude/ante/antigravity
+        # expose a REPL-compatible skip flag; other CLIs are launched unchanged.
         if assistant == 'ante':
-            return 'ante'
+            return 'ante --yolo' if auto_approve else 'ante'
         if assistant == 'antigravity':
             # Interactive Antigravity (agy) REPL for the dashboard pane. Optional
             # model via KC_ANTIGRAVITY_MODEL (agy picks a sensible default
             # otherwise); quoted so a hostile env var can't break out of the
             # `bash -lc` shell_cmd built downstream in create_task().
             model = os.environ.get('KC_ANTIGRAVITY_MODEL', '')
-            return f'agy --model {_shell_quote(model)}' if model else 'agy'
+            skip = '--dangerously-skip-permissions ' if auto_approve else ''
+            model_flag = f'--model {_shell_quote(model)}' if model else ''
+            return f'agy {skip}{model_flag}'.strip()
         if assistant == 'librefang':
             # Interactive chat REPL with the registry's "coder" agent (synced
             # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT
@@ -706,7 +716,7 @@ class ClaudeTaskManager:
             # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the
             # default lives in harness.py.
             return 'python3 /tmp/browser/harness.py'
-        return 'claude'
+        return 'claude --dangerously-skip-permissions' if auto_approve else 'claude'
 
     # Soft ceiling on concurrently-live tasks created through this manager
     # (dashboard / desktop / webhook / cron). Protects a small 2-3 CPU pod from
@@ -745,7 +755,7 @@ class ClaudeTaskManager:
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
                     source=None, disable_memory_injection=False, assistant=None,
-                    parent_task_id=None, system_preamble=None):
+                    parent_task_id=None, system_preamble=None, auto_approve=False):
         at_cap, _, _ = ClaudeTaskManager.at_capacity()
         if at_cap:
             return ClaudeTaskManager._capacity_rejection()
@@ -854,7 +864,7 @@ class ClaudeTaskManager:
         if assistant == 'claude':
             ClaudeTaskManager._ensure_claude_trust(workdir)
 
-        cli_cmd = ClaudeTaskManager.assistant_command(assistant)
+        cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=auto_approve)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
         tmux_cmd = [
             'tmux', 'new-session', '-d',
@@ -4501,6 +4511,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             source=BrowserHandler.HYPERVISOR_SOURCE,
             assistant=assistant,
             system_preamble=HYPERVISOR_PREAMBLE,
+            # The chat can only paste text, so the agent must never block on an
+            # in-terminal approval menu — launch it with skip-permissions. (The
+            # dashboard MCP's destructive tools still gate on confirm=true, so
+            # kill_task / delete_memory continue to ask in chat.)
+            auto_approve=True,
         )
         if task.get('status') == 'rejected':
             self.send_json({'error': task.get('error')}, 429)
