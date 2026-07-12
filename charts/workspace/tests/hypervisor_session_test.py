@@ -128,11 +128,81 @@ class SessionEventsTest(unittest.TestCase):
         # since-cursor returns only newer events.
         self.assertEqual(len(s.read_events(since_seq=1)), 1)
 
-    def test_unknown_assistant_uses_fallback_adapter(self):
-        s = hs.HypervisorSession.create(
-            assistant='opencode-openrouter', workdir='/home/dev',
-            cli_cmd='opencode', preamble='', title='x')
-        self.assertEqual(s.read_meta()['adapter_kind'], 'fallback')
+    def test_assistant_adapter_routing(self):
+        cases = {'claude': 'claude', 'ante': 'ante',
+                 'opencode-openrouter': 'opencode', 'opencode-deepseek': 'opencode',
+                 'librefang': 'fallback', 'kc-harness': 'fallback'}
+        for assistant, kind in cases.items():
+            s = hs.HypervisorSession.create(
+                assistant=assistant, workdir='/home/dev', cli_cmd=assistant,
+                preamble='', title='x')
+            self.assertEqual(s.read_meta()['adapter_kind'], kind, assistant)
+
+
+class AnteAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.a = hs.AnteAdapter()
+
+    def test_captures_session_id_and_lifts_text(self):
+        ctx = {'workdir': '/home/dev'}
+        self.assertEqual(self.a.parse(ctx, json.dumps(
+            {'event': {'SessionStart': {'session_id': 'ses_1'}}}), ), [])
+        self.assertEqual(ctx['ante_session_id'], 'ses_1')
+        out = self.a.parse(ctx, json.dumps(
+            {'event': {'AssistantMessage': {'text': 'hello'}}}))
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message', 'text': 'hello'}])
+
+    def test_tool_call_and_result(self):
+        ctx = {}
+        call = self.a.parse(ctx, json.dumps(
+            {'event': {'ToolCall': {'id': 't1', 'name': 'bash', 'input': {'command': 'ls'}}}}))
+        self.assertEqual(call[0]['type'], 'tool_call')
+        self.assertEqual(call[0]['tool']['name'], 'bash')
+        res = self.a.parse(ctx, json.dumps(
+            {'event': {'ToolResult': {'id': 't1', 'output': 'ok'}}}))
+        self.assertEqual(res[0]['type'], 'tool_result')
+
+    def test_noise_ignored_and_resume_flag(self):
+        ctx = {'ante_session_id': 'ses_9', 'workdir': '/home/dev'}
+        self.assertEqual(self.a.parse(ctx, json.dumps({'event': {'TurnStart': {}}})), [])
+        spec = self.a.build(ctx, 'hi', first=False)
+        self.assertIn('-r', spec['argv'])
+        self.assertIn('ses_9', spec['argv'])
+        self.assertIn('--output-format', spec['argv'])
+
+    def test_raw_fallback_when_no_structured_events(self):
+        ctx = {}
+        self.a.build(ctx, 'hi', first=True)       # resets per-turn state
+        self.a.parse(ctx, 'plain non-json line')  # accumulates raw
+        out = self.a.finalize(ctx, 0)
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message',
+                                'text': 'plain non-json line'}])
+
+
+class OpencodeAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.a = hs.OpencodeAdapter()
+
+    def test_build_uses_run_json_and_model_from_cli_cmd(self):
+        ctx = {'cli_cmd': "opencode --model 'openrouter/anthropic/claude-sonnet-4'",
+               'workdir': '/home/dev'}
+        spec = self.a.build(ctx, 'hi', first=True)
+        self.assertEqual(spec['argv'][:4], ['opencode', 'run', 'hi', '--format'])
+        self.assertIn('--model', spec['argv'])
+        self.assertIn('openrouter/anthropic/claude-sonnet-4', spec['argv'])
+
+    def test_captures_session_id_and_text(self):
+        ctx = {}
+        self.a.parse(ctx, json.dumps({'session': {'id': 'ses_x'}, 'type': 'session'}))
+        self.assertEqual(ctx['opencode_session_id'], 'ses_x')
+        out = self.a.parse(ctx, json.dumps({'type': 'text', 'text': 'yo'}))
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message', 'text': 'yo'}])
+
+    def test_resume_flag_on_later_turn(self):
+        ctx = {'opencode_session_id': 'ses_x', 'cli_cmd': 'opencode'}
+        spec = self.a.build(ctx, 'again', first=False)
+        self.assertIn('-s', spec['argv'])
+        self.assertIn('ses_x', spec['argv'])
 
 
 if __name__ == '__main__':
