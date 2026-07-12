@@ -73,6 +73,14 @@
 
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top:    env(safe-area-inset-top, 0px);
+
+  /* True on-screen height of the fixed chrome, notch/home-indicator included.
+     The bars GROW by the safe-area inset (they don't let padding eat into
+     their content height) — so any viewport-relative sizing that needs to
+     subtract the chrome must subtract *these* totals, not the raw bar height.
+     On non-notched devices the insets are 0, so these equal the raw heights. */
+  --topbar-total:    calc(var(--topbar-h) + var(--safe-top));
+  --bottomnav-total: calc(var(--bottomnav-h) + var(--safe-bottom));
 }
 
 @media (prefers-color-scheme: light) {

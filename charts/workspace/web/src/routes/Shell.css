@@ -27,7 +27,7 @@
 }
 
 @media (max-width: 720px) {
-  .app-main { padding-bottom: calc(var(--bottomnav-h) + var(--safe-bottom)); }
+  .app-main { padding-bottom: var(--bottomnav-total); }
 }
 
 [data-density="compact"] .app-main { font-size: 12.5px; }
