@@ -136,3 +136,51 @@ export interface ControllerCapacity {
     memory: CapacityResource;
   } | null;
 }
+
+// ---- Hypervisor chat -------------------------------------------------------
+// A thread is a structured agent session; the server returns a canonical event
+// stream (see charts/workspace/hypervisor_session.py) the app renders directly.
+export type HvEventRole = 'user' | 'assistant' | 'system';
+export type HvEventType = 'message' | 'tool_call' | 'tool_result' | 'error' | 'status';
+
+export interface HvEvent {
+  seq: number;
+  ts: number;
+  role: HvEventRole;
+  type: HvEventType;
+  text?: string;
+  tool?: { name: string; input: unknown };
+  tool_id?: string;
+  tool_use_id?: string;
+  is_error?: boolean;
+  status?: string;
+}
+
+export interface HypervisorAssistant {
+  id: string;
+  label: string;
+  default?: boolean;
+  model?: string;
+}
+
+export interface HypervisorConfig {
+  enabled: boolean;
+  defaultAssistant: string;
+  workdir: string;
+  readOnly: boolean;
+  assistants: HypervisorAssistant[];
+}
+
+export interface HypervisorThread {
+  id: string;
+  title: string;
+  assistant: string | null;
+  status: string;
+  created_at: number | null;
+  updated_at: number | null;
+}
+
+export interface HypervisorThreadDetail {
+  thread: HypervisorThread;
+  events: HvEvent[];
+}
