@@ -1,6 +1,10 @@
 .topbar {
   position: sticky; top: 0; z-index: 30;
-  height: var(--topbar-h);
+  /* Grow the bar by the notch inset (mirrors .mobile-nav) rather than letting
+     padding-top eat into a fixed 48px — with box-sizing:border-box that would
+     crush the header content to ~0px and slide it under the iOS notch. The
+     content keeps its full --topbar-h; the extra height sits behind the notch. */
+  height: var(--topbar-total);
   padding: 0 var(--size-3);
   padding-top: var(--safe-top);
   display: flex; align-items: center; gap: var(--size-3);

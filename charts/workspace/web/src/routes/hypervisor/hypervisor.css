@@ -13,13 +13,13 @@
   position: relative;
   display: grid;
   grid-template-columns: 264px 1fr;
-  height: calc(100dvh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-total));
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
 }
 @supports not (height: 100dvh) {
-  .route-hypervisor { height: calc(100vh - var(--topbar-h)); }
+  .route-hypervisor { height: calc(100vh - var(--topbar-total)); }
 }
 
 /* ── Sidebar (mirrors the Rail's treatment) ──────────────────────────── */
@@ -636,10 +636,10 @@
 @media (max-width: 720px) {
   .route-hypervisor {
     grid-template-columns: 1fr;
-    height: calc(100dvh - var(--topbar-h) - var(--bottomnav-h));
+    height: calc(100dvh - var(--topbar-total) - var(--bottomnav-total));
   }
   @supports not (height: 100dvh) {
-    .route-hypervisor { height: calc(100vh - var(--topbar-h) - var(--bottomnav-h)); }
+    .route-hypervisor { height: calc(100vh - var(--topbar-total) - var(--bottomnav-total)); }
   }
   /* ≥16px font on the input/select stops iOS Safari from auto-zooming (and
      hard-scrolling) the moment the field is focused — a big source of the jump.

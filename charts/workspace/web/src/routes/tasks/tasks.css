@@ -363,26 +363,26 @@
   display: flex;
   flex-direction: column;
   max-width: none;
-  min-height: calc(100dvh - var(--topbar-h));
-  height: calc(100dvh - var(--topbar-h));
+  min-height: calc(100dvh - var(--topbar-total));
+  height: calc(100dvh - var(--topbar-total));
   padding: var(--size-4);
 }
 @supports not (height: 100dvh) {
   .route.route-tasks {
-    min-height: calc(100vh - var(--topbar-h));
-    height: calc(100vh - var(--topbar-h));
+    min-height: calc(100vh - var(--topbar-total));
+    height: calc(100vh - var(--topbar-total));
   }
 }
 @media (max-width: 720px) {
   .route.route-tasks {
     padding: var(--size-3);
-    min-height: calc(100dvh - var(--topbar-h) - var(--bottomnav-h));
-    height: calc(100dvh - var(--topbar-h) - var(--bottomnav-h));
+    min-height: calc(100dvh - var(--topbar-total) - var(--bottomnav-total));
+    height: calc(100dvh - var(--topbar-total) - var(--bottomnav-total));
   }
   @supports not (height: 100dvh) {
     .route.route-tasks {
-      min-height: calc(100vh - var(--topbar-h) - var(--bottomnav-h));
-      height: calc(100vh - var(--topbar-h) - var(--bottomnav-h));
+      min-height: calc(100vh - var(--topbar-total) - var(--bottomnav-total));
+      height: calc(100vh - var(--topbar-total) - var(--bottomnav-total));
     }
   }
   /* Tighter route header on phones so the list gets maximum space. */
