@@ -2,14 +2,24 @@
    1px hairlines, off-white/black accent used sparingly (one CTA, active
    left-bars, focus rings), typography + negative space over colour. */
 
+/* Size against the *dynamic* viewport (100dvh) rather than the layout
+   viewport (height:100%). On phones the on-screen keyboard shrinks the visual
+   viewport but not the layout viewport — with height:100% the composer sits
+   below the keyboard and the browser force-scrolls to chase the caret, so the
+   view "jumps" while typing. 100dvh tracks the keyboard-shrunk viewport, the
+   composer stays pinned just above the keyboard, and the jumping stops. Mirrors
+   the already-shipped .route-tasks treatment. */
 .route-hypervisor {
   position: relative;
   display: grid;
   grid-template-columns: 264px 1fr;
-  height: 100%;
+  height: calc(100dvh - var(--topbar-h));
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
+}
+@supports not (height: 100dvh) {
+  .route-hypervisor { height: calc(100vh - var(--topbar-h)); }
 }
 
 /* ── Sidebar (mirrors the Rail's treatment) ──────────────────────────── */
@@ -624,7 +634,21 @@
 
 /* ── Mobile ──────────────────────────────────────────────────────────── */
 @media (max-width: 720px) {
-  .route-hypervisor { grid-template-columns: 1fr; }
+  .route-hypervisor {
+    grid-template-columns: 1fr;
+    height: calc(100dvh - var(--topbar-h) - var(--bottomnav-h));
+  }
+  @supports not (height: 100dvh) {
+    .route-hypervisor { height: calc(100vh - var(--topbar-h) - var(--bottomnav-h)); }
+  }
+  /* ≥16px font on the input/select stops iOS Safari from auto-zooming (and
+     hard-scrolling) the moment the field is focused — a big source of the jump.
+     Also pad the composer past the home-indicator safe area. */
+  .hv-composer {
+    padding-bottom: calc(var(--size-3) + var(--safe-bottom));
+  }
+  .hv-composer-input { font-size: 16px; }
+  .hv-agent-select { font-size: 16px; }
   .hv-sidebar {
     position: absolute;
     z-index: 40;
