@@ -28,13 +28,10 @@ secrets_dir = $(firstword $(wildcard ./secrets/$(1) ./users-private/$(1)/secrets
 # Build a `-f path` arg for every *.yaml inside the resolved secrets dir.
 secret_flags = $(foreach f,$(wildcard $(call secrets_dir,$(1))/*.yaml),-f $(f))
 
-# Resolve the image ref (repository:tag) a user's pod actually runs, read
-# straight from their values.yaml `image:` block. `make ship USER=<x>` builds
-# and pushes THIS tag, so the pushed image and the helm deploy can never
-# diverge. Previously `ship` built the global $(VERSION) tag below, which
-# matched almost no deployed workspace — a silent "configmap shipped but the
-# image didn't" footgun, since the rolled pod just re-pulled its existing,
-# unchanged tag. Empty when a workspace pins no image.tag in its values.
+# Resolve the image ref (repository:tag) a user's pod currently pins, read
+# straight from their values.yaml `image:` block. Empty when a workspace pins
+# no image.tag. Helper only — `make ship` no longer builds this tag; it repins
+# the user to the release tag devlaptop-$(VERSION) and deploys (see `ship`).
 user_image = $(shell awk '/^image:/{i=1;next} i&&/^[^[:space:]]/{exit} i&&/^[[:space:]]*repository:[[:space:]]*/{r=$$2} i&&/^[[:space:]]*tag:[[:space:]]*/{t=$$2} END{if(r&&t)print r":"t}' $(call values_file,$(1)))
 
 # Namespace a user's workspace lives in. Single source of truth is the
@@ -48,9 +45,9 @@ ws_namespace = $(shell ns=$$(awk '/^namespace:/{print $$2; exit}' $(call values_
 # Variables
 REGISTRY := registry.digitalocean.com/resourceloop/coder
 IMAGE_NAME := devlaptop
-# Fallback tag for user-less `make build` / `make push` / `make clean` only.
-# `make ship USER=<x>` does NOT use this — it derives the tag from that user's
-# values.yaml via $(user_image) so build and deploy stay in lockstep.
+# The release version. Tags the image `make build` / `make push` / `make release`
+# produce ($(IMAGE) below), and the tag `make ship USER=<x>` repins a user onto.
+# Bumped automatically by scripts/release.sh.
 VERSION := v1.15.0
 PLATFORM := linux/amd64
 # Control-plane namespace: the shared base-infrastructure + workspace-controller
