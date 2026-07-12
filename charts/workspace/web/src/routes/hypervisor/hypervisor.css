@@ -431,6 +431,12 @@
   transition: transform var(--motion-fast);
 }
 .hv-activity.is-open .hv-activity-caret { transform: rotate(180deg); }
+/* An errored tool run / adapter error — a restrained danger accent, not a fill. */
+.hv-activity.is-error {
+  border-color: color-mix(in srgb, var(--danger, #c0392b) 45%, var(--border));
+}
+.hv-activity.is-error .hv-activity-icon,
+.hv-activity.is-error .hv-activity-label { color: var(--danger, #c0392b); }
 .hv-activity-detail {
   margin: 0;
   padding: 9px 11px;

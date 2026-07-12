@@ -180,9 +180,29 @@ def _remove_inject_hook() -> None:
     print(f'[seed_claude_config] removed UserPromptSubmit memory hook from {SETTINGS_PATH}')
 
 
+def _seed_settings() -> None:
+    """Ensure kube-coder-managed keys in ~/.claude/settings.json.
+
+    skipDangerousModePermissionPrompt=true: the Hypervisor runs Claude headless
+    in bypass-permissions mode (`claude -p --permission-mode bypassPermissions`,
+    see hypervisor_session.py). This key pre-accepts the one-time "Bypass
+    Permissions mode" acknowledgement so no interactive dialog can ever gate a
+    headless run. It is ONLY consulted when a bypass/dangerous flag is passed,
+    so it does NOT affect the Build tab's plain `claude` (which still prompts).
+    Idempotent — only writes when the value is missing/wrong.
+    """
+    settings = _load_json(SETTINGS_PATH)
+    if settings.get('skipDangerousModePermissionPrompt') is True:
+        return
+    settings['skipDangerousModePermissionPrompt'] = True
+    _atomic_write(SETTINGS_PATH, json.dumps(settings, indent=2) + '\n')
+    print(f'[seed_claude_config] set skipDangerousModePermissionPrompt in {SETTINGS_PATH}')
+
+
 def main() -> int:
     _seed_mcp()
     _remove_inject_hook()
+    _seed_settings()
     return 0
 
 

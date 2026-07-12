@@ -1,10 +1,12 @@
 import { apiGet, apiPost, apiDelete } from './client';
+import type { HvEvent } from '../routes/hypervisor/transcript';
 
 /**
  * Hypervisor — the workspace-aware chat tab. Thin client for the /api/hypervisor
- * facade, which is itself a thin layer over the task manager: a "thread" is a
- * hypervisor-flavoured agent session (the user's chosen CLI agent), and the
- * chat just renders it cleanly. See charts/workspace/server.py handle_hypervisor_*.
+ * facade. A "thread" is a structured agent session (hypervisor_session.py): the
+ * selected CLI runs in machine-readable streaming mode and the server returns a
+ * canonical event stream, which the chat renders directly. No terminal, no pane
+ * scraping. See charts/workspace/server.py handle_hypervisor_*.
  */
 
 export interface HypervisorAssistant {
@@ -22,13 +24,7 @@ export interface HypervisorConfig {
   assistants: HypervisorAssistant[];
 }
 
-export type ThreadStatus =
-  | 'running'
-  | 'completed'
-  | 'killed'
-  | 'error'
-  | 'waiting-for-input'
-  | 'unknown';
+export type ThreadStatus = 'idle' | 'running' | 'error' | 'unknown';
 
 export interface HypervisorThread {
   id: string;
@@ -39,16 +35,9 @@ export interface HypervisorThread {
   updated_at: number | null;
 }
 
-export interface ChatMessage {
-  role: 'user' | 'assistant';
-  text: string;
-  sent_at?: number | null;
-}
-
 export interface ThreadDetail {
   thread: HypervisorThread;
-  messages: ChatMessage[];
-  recent_output: string;
+  events: HvEvent[];
 }
 
 export const getHypervisorConfig = () =>
@@ -64,8 +53,10 @@ export const createThread = (opts: { message?: string; assistant?: string; workd
     (r) => r.thread,
   );
 
-export const getThread = (id: string) =>
-  apiGet<ThreadDetail>(`/api/hypervisor/threads/${encodeURIComponent(id)}`);
+export const getThread = (id: string, since = 0) =>
+  apiGet<ThreadDetail>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}?since=${since}`,
+  );
 
 export const sendThreadMessage = (id: string, message: string) =>
   apiPost<{ ok: boolean }>(
