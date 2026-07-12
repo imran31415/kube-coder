@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -17,7 +18,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   createThread,
   deleteThread,
@@ -29,6 +30,8 @@ import {
 import type { HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
 import { buildTurns, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
+import { confirmAction } from '../util/confirm';
+import { relativeTime } from '../util/format';
 import { colors, font, radius, space } from '../theme';
 
 const SUGGESTIONS = [
@@ -48,6 +51,7 @@ export default function HypervisorScreen() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [chatsOpen, setChatsOpen] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
 
@@ -98,6 +102,7 @@ export default function HypervisorScreen() {
     setEvents([]);
     setStatus('');
     setError(null);
+    setChatsOpen(false);
   }
 
   function newChat() {
@@ -106,6 +111,7 @@ export default function HypervisorScreen() {
     setStatus('');
     setError(null);
     setDraft('');
+    setChatsOpen(false);
   }
 
   async function removeThread(id: string) {
@@ -116,6 +122,16 @@ export default function HypervisorScreen() {
     }
     if (activeId === id) newChat();
     void refreshThreads();
+  }
+
+  function confirmRemove(t: HypervisorThread) {
+    confirmAction({
+      title: 'Delete chat?',
+      message: t.title || 'New chat',
+      confirmLabel: 'Delete',
+      destructive: true,
+      onConfirm: () => void removeThread(t.id),
+    });
   }
 
   async function send(text?: string) {
@@ -147,10 +163,10 @@ export default function HypervisorScreen() {
 
   if (config && config.enabled === false) {
     return (
-      <View style={styles.root}>
+      <SafeAreaView style={styles.root} edges={['top']}>
         <ScreenHeader title="Hypervisor" />
         <EmptyState icon="hardware-chip-outline" title="Hypervisor is disabled" subtitle="Enable it in the workspace chart (hypervisor.enabled)." />
-      </View>
+      </SafeAreaView>
     );
   }
 
@@ -161,40 +177,41 @@ export default function HypervisorScreen() {
   const empty = !activeId && events.length === 0;
 
   return (
-    <View style={styles.root}>
+    <SafeAreaView style={styles.root} edges={['top']}>
       <ScreenHeader
         title={activeThread ? activeThread.title || 'Chat' : 'Hypervisor'}
         subtitle={activeThread ? `via ${activeThread.assistant || agentName}` : 'Talk to your workspace'}
         right={
-          <Pressable onPress={newChat} hitSlop={8} style={styles.newBtn}>
-            <Ionicons name="add" size={18} color={colors.accentText} />
-            <Text style={styles.newBtnText}>New</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            {threads.length > 0 && (
+              <Pressable
+                onPress={() => setChatsOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Past chats, ${threads.length}`}
+                style={({ pressed }) => [styles.chatsBtn, pressed && { opacity: 0.6 }]}
+              >
+                <Ionicons name="chatbubbles-outline" size={16} color={colors.text} />
+                <Text style={styles.chatsBtnText}>{threads.length}</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={newChat} hitSlop={8} style={({ pressed }) => [styles.newBtn, pressed && { opacity: 0.9 }]}>
+              <Ionicons name="add" size={18} color={colors.accentText} />
+              <Text style={styles.newBtnText}>New</Text>
+            </Pressable>
+          </View>
         }
       />
 
-      {threads.length > 0 && (
-        <View style={styles.threadBar}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.threadBarInner}>
-            {threads.map((t) => {
-              const on = t.id === activeId;
-              return (
-                <Pressable
-                  key={t.id}
-                  onPress={() => openThread(t.id)}
-                  onLongPress={() => removeThread(t.id)}
-                  style={[styles.threadChip, on && styles.threadChipOn]}
-                >
-                  <View style={[styles.dot, { backgroundColor: t.status === 'running' ? colors.running : colors.killed }]} />
-                  <Text numberOfLines={1} style={[styles.threadChipText, on && styles.threadChipTextOn]}>
-                    {t.title || 'New chat'}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
+      <ChatsSheet
+        visible={chatsOpen}
+        threads={threads}
+        activeId={activeId}
+        onClose={() => setChatsOpen(false)}
+        onOpen={openThread}
+        onDelete={confirmRemove}
+        onNew={newChat}
+      />
 
       <KeyboardAvoidingView
         style={styles.flex}
@@ -272,7 +289,78 @@ export default function HypervisorScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
-    </View>
+    </SafeAreaView>
+  );
+}
+
+/**
+ * Past-chats sheet — the workspace's chat history as a first-class, discoverable
+ * surface. Slides up from the bottom; each row switches on tap and deletes via
+ * an explicit trash button (with a confirm), replacing the old undiscoverable
+ * long-press on a cramped chip row.
+ */
+function ChatsSheet({
+  visible,
+  threads,
+  activeId,
+  onClose,
+  onOpen,
+  onDelete,
+  onNew,
+}: {
+  visible: boolean;
+  threads: HypervisorThread[];
+  activeId: string | null;
+  onClose: () => void;
+  onOpen: (id: string) => void;
+  onDelete: (t: HypervisorThread) => void;
+  onNew: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <Pressable style={styles.sheetScrim} onPress={onClose} />
+      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
+        <View style={styles.sheetGrip} />
+        <View style={styles.sheetHead}>
+          <Text style={styles.sheetTitle}>Chats</Text>
+          <Pressable onPress={onNew} hitSlop={8} style={({ pressed }) => [styles.sheetNew, pressed && { opacity: 0.9 }]}>
+            <Ionicons name="add" size={16} color={colors.accentText} />
+            <Text style={styles.newBtnText}>New</Text>
+          </Pressable>
+        </View>
+        <ScrollView style={styles.sheetList} contentContainerStyle={styles.sheetListInner}>
+          {threads.map((t) => {
+            const on = t.id === activeId;
+            return (
+              <View key={t.id} style={[styles.chatRow, on && styles.chatRowOn]}>
+                <Pressable onPress={() => onOpen(t.id)} style={styles.chatRowMain}>
+                  <View style={[styles.dot, { backgroundColor: t.status === 'running' ? colors.running : colors.killed }]} />
+                  <View style={styles.chatRowBody}>
+                    <Text numberOfLines={1} style={[styles.chatRowTitle, on && { color: colors.text }]}>
+                      {t.title || 'New chat'}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.chatRowMeta}>
+                      {t.assistant || 'agent'}
+                      {t.updated_at ? ` · ${relativeTime(t.updated_at)}` : ''}
+                    </Text>
+                  </View>
+                </Pressable>
+                <Pressable
+                  onPress={() => onDelete(t)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Delete chat"
+                  style={({ pressed }) => [styles.chatDel, pressed && { opacity: 0.6 }]}
+                >
+                  <Ionicons name="trash-outline" size={17} color={colors.textFaint} />
+                </Pressable>
+              </View>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
@@ -323,24 +411,82 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
   newBtnText: { color: colors.accentText, fontWeight: '700', fontSize: font.size.sm },
-  threadBar: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  threadBarInner: { paddingHorizontal: space.md, paddingVertical: space.sm, gap: space.sm },
-  threadChip: {
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  chatsBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    maxWidth: 180,
+    gap: 5,
     paddingHorizontal: space.md,
-    paddingVertical: space.xs + 2,
-    borderRadius: radius.sm,
+    height: 34,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.card,
   },
-  threadChipOn: { borderColor: colors.borderStrong, backgroundColor: colors.accentSoft },
-  threadChipText: { color: colors.textMuted, fontSize: font.size.sm, flexShrink: 1 },
-  threadChipTextOn: { color: colors.text },
+  chatsBtnText: { color: colors.text, fontWeight: '600', fontSize: font.size.sm },
   dot: { width: 7, height: 7, borderRadius: 4 },
+  // Past-chats sheet
+  sheetScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
+  sheet: {
+    backgroundColor: colors.bgElevated,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    borderTopWidth: 1,
+    borderColor: colors.border,
+    paddingTop: space.sm,
+    maxHeight: '75%',
+  },
+  sheetGrip: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.borderStrong,
+    marginBottom: space.sm,
+  },
+  sheetHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.lg,
+    paddingBottom: space.sm,
+  },
+  sheetTitle: { color: colors.text, fontSize: font.size.lg, fontWeight: '700' },
+  sheetNew: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: colors.accent,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs + 1,
+    borderRadius: radius.md,
+  },
+  sheetList: { flexGrow: 0 },
+  sheetListInner: { paddingHorizontal: space.md, paddingBottom: space.sm, gap: space.xs },
+  chatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radius.md,
+  },
+  chatRowOn: { backgroundColor: colors.accentSoft },
+  chatRowMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.sm + 2,
+    paddingHorizontal: space.sm,
+    minWidth: 0,
+  },
+  chatRowBody: { flex: 1, minWidth: 0, gap: 2 },
+  chatRowTitle: { color: colors.textMuted, fontSize: font.size.md, fontWeight: '500' },
+  chatRowMeta: { color: colors.textFaint, fontSize: font.size.xs },
+  chatDel: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   transcript: { padding: space.lg, gap: space.md },
   welcome: { paddingTop: space.xxl, gap: space.lg },
   suggests: { gap: space.sm, paddingHorizontal: space.lg },
