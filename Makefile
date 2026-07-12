@@ -446,37 +446,51 @@ coverage: ## Run all tests with comprehensive coverage reports and HTML output
 
 test-all-units: dashboard-web-test python-tests controller-web-test controller-python-tests ## Run dashboard SPA + server.py + controller SPA + controller.py tests
 
-# Full end-to-end deploy: image + chart + rolled pod.
-# Two delivery paths feed a pod and we need BOTH for any change:
-#   1. Docker image  (Dockerfile changes, SPA bundle in /opt/dashboard-dist,
-#                     Claude/OpenCode versions, base apt packages, …)
-#      → make push  (single buildx --push invocation)
-#   2. ConfigMap     (server.py, dashboard.html, claude-md.txt, harness.py,
-#                     workspace-entrypoint, …)
-#      → make deploy  (helm upgrade — the configmap checksum is annotated on
-#                      the deployment, so any change auto-rolls the pod)
-# We also force a rollout restart at the end: when only the image changed
-# (configmap unchanged), helm sees no diff and the pod wouldn't otherwise
-# restart, even with imagePullPolicy: Always.
+# Roll a user's workspace onto the CURRENT RELEASE image. `make ship USER=<x>`
+# does NOT build — it repins the user's values.yaml image.tag to the release
+# tag ($(IMAGE_NAME)-$(VERSION), built + pushed ONCE by `make release`), then
+# `make deploy` + a forced rollout so the pod re-pulls BOTH delivery paths:
+#   1. Docker image  (SPA bundle in /opt/dashboard-dist, Claude/OpenCode CLIs,
+#                     base apt packages, …) — via the new release image tag.
+#   2. ConfigMap     (server.py, mcp_*.py, dashboard.html, harness.py, …)
+#                    — via helm upgrade (checksum annotated on the deployment).
+# The forced rollout matters because when only the image tag moved (configmap
+# unchanged) helm sees no diff and wouldn't otherwise restart the pod.
 #
-# The image tag is taken from the USER's values.yaml (via $(user_image)), NOT
-# the global $(VERSION) — so `make push` builds exactly the tag the helm
-# deploy references and the pod re-pulls. Building the wrong tag used to leave
-# the image silently stale while only the configmap updated.
+# This keeps the per-user gitops pin and the repo's release VERSION in lockstep:
+# shipping a user always means "put them on the release the repo declares",
+# never silently rebuild current HEAD onto whatever (possibly stale, possibly
+# immutable) tag the user happened to pin — the old footgun that could clobber
+# an immutable devlaptop-vX.Y.Z release tag.
+#
+#   - Need to (re)build the image?      make release VERSION=vX.Y.Z   (or make push)
+#   - Only touched server.py / config?  make ship-config USER=<x>
+#
+# The values.yaml edit is left UNCOMMITTED so you can review then commit/push it
+# to the gitops repo (per-user files live in the .users/ checkout of
+# kube-coder-users).
 # Usage:  make ship USER=<name>
-ship: require-user validate-user ## Full deploy: build+push the user's image tag, helm upgrade, force-roll the pod (USER=<name>)
-	@img="$(call user_image,$(USER))"; \
-	if [ -z "$$img" ]; then \
-	  echo "ERROR: no image.repository/tag found in $(call values_file,$(USER))."; \
-	  echo "       Set them there, or run 'make push' + 'make deploy USER=$(USER)' manually."; \
+ship: require-user validate-user ## Roll a user onto release image devlaptop-$(VERSION): repin values.yaml + deploy + roll, NO rebuild (USER=<name>)
+	@vf="$(call values_file,$(USER))"; tag="$(IMAGE_NAME)-$(VERSION)"; \
+	if [ -z "$$vf" ] || [ ! -f "$$vf" ]; then \
+	  echo "ERROR: no values.yaml found for $(USER)."; exit 1; \
+	fi; \
+	if ! grep -Eq '^[[:space:]]*tag:[[:space:]]*devlaptop-' "$$vf"; then \
+	  echo "ERROR: no 'tag: devlaptop-*' line in $$vf to repin."; exit 1; \
+	fi; \
+	if ! docker manifest inspect "$(REGISTRY):$$tag" >/dev/null 2>&1; then \
+	  echo "ERROR: image $(REGISTRY):$$tag is not in the registry."; \
+	  echo "       Cut the release first: make release VERSION=$(VERSION)  (or make push)."; \
 	  exit 1; \
 	fi; \
-	echo "==> Shipping $(USER): building + pushing $$img (from $(call values_file,$(USER)))"; \
-	$(MAKE) --no-print-directory push IMAGE="$$img"
+	cur="$$(awk '/^image:/{i=1;next} i&&/^[^[:space:]]/{exit} i&&/^[[:space:]]*tag:[[:space:]]*/{print $$2}' "$$vf")"; \
+	echo "==> Shipping $(USER): repin $$cur -> $$tag in $$vf (no rebuild)"; \
+	sed -i.bak -E "s|^([[:space:]]*tag:[[:space:]]*)devlaptop-.*|\1$$tag|" "$$vf" && rm -f "$$vf.bak"
 	@$(MAKE) --no-print-directory deploy USER=$(USER)
 	@echo "Forcing rollout restart so $(USER)'s pod re-pulls the image..."
 	kubectl rollout restart deployment/ws-$(USER) -n $(call ws_namespace,$(USER))
 	kubectl rollout status deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --timeout=180s
+	@echo "NOTE: image.tag in $(call values_file,$(USER)) is UNCOMMITTED — commit + push it to the gitops repo to persist the pin."
 
 # Stop / start a workspace pod without touching the helm release. PVC + secrets +
 # ingress + cookieSecret all stay; just the pod is gone. Reversible.
