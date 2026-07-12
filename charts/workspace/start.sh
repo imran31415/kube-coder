@@ -164,6 +164,11 @@ cfg["mcp"] = {
         "command": ["python3", "/home/dev/.claude-memory/mcp_memory.py"],
         "enabled": True,
     },
+    "dashboard": {
+        "type": "local",
+        "command": ["python3", "/tmp/browser/mcp_dashboard.py"],
+        "enabled": True,
+    },
 }
 print(json.dumps(cfg, indent=2))
 PY
@@ -632,6 +637,13 @@ servers['agent-orchestrator'] = {
 servers['memory'] = {
     'command': 'python3',
     'args': ['/home/dev/.claude-memory/mcp_memory.py'],
+}
+# Dashboard tools — the same workspace read/action surface Claude gets, so a
+# selected/spawned Ante agent (e.g. in the Hypervisor chat) can inspect metrics
+# and tasks and take curated UI actions. See mcp_dashboard.py.
+servers['dashboard'] = {
+    'command': 'python3',
+    'args': ['/tmp/browser/mcp_dashboard.py'],
 }
 cfg['mcp_servers'] = servers
 cfg.setdefault('has_completed_onboarding', True)

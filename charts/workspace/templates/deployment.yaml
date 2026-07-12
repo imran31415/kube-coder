@@ -189,6 +189,16 @@ spec:
           value: {{ .Values.readOnly | default false | quote }}
         - name: AUTH_MODE
           value: {{ .Values.ingress.auth.type | default "basic" | quote }}
+        # Hypervisor — the workspace-aware chat tab. A clean chat UI over the
+        # user's existing CLI agents (claude/ante/opencode/…) plus the dashboard
+        # MCP tools. These just flag the feature + its default agent/workdir;
+        # provider/model/keys come from the existing assistant.* config above.
+        - name: HYPERVISOR_ENABLED
+          value: {{ (.Values.hypervisor).enabled | default true | quote }}
+        - name: HYPERVISOR_DEFAULT_ASSISTANT
+          value: {{ (.Values.hypervisor).defaultAssistant | default "claude" | quote }}
+        - name: HYPERVISOR_WORKDIR
+          value: {{ (.Values.hypervisor).workdir | default "/home/dev" | quote }}
         {{- if .Values.update.selfServeSecretName }}
         # Self-serve version updates: the workspace backend brokers to the
         # controller's token-gated self-serve listener over the in-cluster

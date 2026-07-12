@@ -64,6 +64,28 @@ AUTH_MODE = os.environ.get('AUTH_MODE', 'basic').lower()
 # hint surfaced through /api/mode; it does NOT relax any gate. Only meaningful
 # alongside READONLY_MODE=true (the demo deploy); inert otherwise.
 DEMO_SHOW_ALL = os.environ.get('DEMO_SHOW_ALL', 'false').lower() == 'true'
+# Hypervisor — the workspace-aware chat tab. A clean chat UI layered over the
+# user's existing CLI agents (claude/ante/opencode/…) plus the dashboard MCP
+# tools. Threads are hypervisor-flavoured tasks (source="hypervisor") reusing
+# ClaudeTaskManager; there is no separate LLM/provider loop.
+HYPERVISOR_ENABLED = os.environ.get('HYPERVISOR_ENABLED', 'true').lower() == 'true'
+HYPERVISOR_DEFAULT_ASSISTANT = os.environ.get('HYPERVISOR_DEFAULT_ASSISTANT', 'claude')
+HYPERVISOR_WORKDIR = os.environ.get('HYPERVISOR_WORKDIR', '/home/dev')
+# Short context note pasted as the first message of a new chat, so the agent
+# knows its role + that it has the dashboard tools. Kept terse on purpose —
+# a big preamble front-loads noise and some CLIs handle it poorly.
+HYPERVISOR_PREAMBLE = (
+    "[System: You are the Workspace Hypervisor — a chat assistant embedded in "
+    "this kube-coder developer workspace. You have `dashboard` MCP tools to read "
+    "live workspace state (get_metrics, list_tasks, get_task, get_service_health, "
+    "get_github_status, search_memory, list_memory, list_apps, list_triggers) and "
+    "to act on it (create_task, send_task_message, add_memory, pin_app). "
+    "Destructive tools (kill_task, delete_memory) require confirm=true — first "
+    "tell the user exactly what you'll do and get their explicit approval in the "
+    "chat, then call again with confirm=true. Prefer these tools for any question "
+    "about, or action on, the workspace. Answer from tool results, not memory. Be "
+    "concise and conversational.]\n\n"
+)
 # TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
 # X-Auth-Request-User / X-Auth-Request-Email / Remote-User headers from the
 # request. Without it we ignore those headers — the only ways to authenticate
@@ -723,7 +745,7 @@ class ClaudeTaskManager:
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
                     source=None, disable_memory_injection=False, assistant=None,
-                    parent_task_id=None):
+                    parent_task_id=None, system_preamble=None):
         at_cap, _, _ = ClaudeTaskManager.at_capacity()
         if at_cap:
             return ClaudeTaskManager._capacity_rejection()
@@ -798,9 +820,14 @@ class ClaudeTaskManager:
         # Write prompt to a file so we can paste it cleanly via tmux. We
         # prepend the memory-injection block here so the model sees prior
         # context before the user's actual request.
+        # system_preamble (e.g. the Hypervisor's role/context note) is pasted
+        # ahead of the user's text but deliberately NOT stored in meta['prompt'],
+        # so it never pollutes the task title / list.
         prompt_file = os.path.join(task_dir, 'prompt.txt')
         with open(prompt_file, 'w') as f:
             f.write(injection_block)
+            if system_preamble:
+                f.write(system_preamble)
             f.write(prompt)
 
         # Log read-access for every auto-injected memory (best-effort).
@@ -3529,6 +3556,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/claude/assistants':
             self.handle_claude_list_assistants()
             return
+        elif claude_path == '/api/hypervisor/config':
+            self.handle_hypervisor_config()
+            return
+        elif claude_path == '/api/hypervisor/threads':
+            self.handle_hypervisor_list_threads()
+            return
         elif claude_path == '/api/workspace/dirs':
             self.handle_workspace_dirs()
             return
@@ -3538,6 +3571,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if m:
             self._claude_task_id = m.group(1)
             self.handle_claude_stream_output()
+            return
+
+        # --- Hypervisor chat threads ---
+        # {id}/stream reuses the task SSE stream verbatim (a thread IS a task).
+        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/stream$', claude_path)
+        if m:
+            self._claude_task_id = m.group(1)
+            self.handle_claude_stream_output()
+            return
+        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', claude_path)
+        if m:
+            self.handle_hypervisor_get_thread(m.group(1))
             return
         # /api/claude/tasks/{id} and /api/claude/tasks/{id}/output
         m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/output$', claude_path)
@@ -3918,6 +3963,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._claude_task_id = m.group(1)
                 self.handle_claude_delete_task()
+                return
+            m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', path)
+            if m:
+                self.handle_hypervisor_delete_thread(m.group(1))
                 return
             m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', path)
             if m:
@@ -4375,6 +4424,147 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         self.send_json({'assistants': ClaudeTaskManager.available_assistants()})
+
+    # ── Hypervisor: workspace-aware chat over the user's CLI agents ──────────
+    # Thin facade over ClaudeTaskManager. A "thread" is a task created with
+    # source="hypervisor" (the dashboard MCP tools spawn their own tasks with
+    # source="hypervisor-tool", so those never show up as chat threads). The
+    # chat layer reuses task creation, follow-ups, streaming and persistence —
+    # we only add the chat-shaped surface + a role/context preamble.
+    HYPERVISOR_SOURCE = 'hypervisor'
+
+    @staticmethod
+    def _shape_hypervisor_thread(task):
+        """Shape a task summary/meta dict into a chat-thread dict."""
+        title = (task.get('name') or task.get('prompt') or '').strip()
+        if not title:
+            title = 'New chat'
+        return {
+            'id': task.get('task_id'),
+            'title': title[:80],
+            'assistant': task.get('assistant'),
+            'status': task.get('status'),
+            'created_at': task.get('created_at'),
+            'updated_at': (task.get('finished_at') or task.get('killed_at')
+                           or task.get('last_activity_at') or task.get('created_at')),
+        }
+
+    def _hypervisor_task_or_404(self, thread_id):
+        """Fetch a task and confirm it's a hypervisor thread; else send 404."""
+        task = ClaudeTaskManager.get_task(thread_id)
+        if task is None or (task.get('source') or '') != BrowserHandler.HYPERVISOR_SOURCE:
+            self.send_json({'error': 'Thread not found'}, 404)
+            return None
+        return task
+
+    def handle_hypervisor_config(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({
+            'enabled': HYPERVISOR_ENABLED,
+            'defaultAssistant': HYPERVISOR_DEFAULT_ASSISTANT,
+            'workdir': HYPERVISOR_WORKDIR,
+            'readOnly': READONLY_MODE,
+            'assistants': ClaudeTaskManager.available_assistants(),
+        })
+
+    def handle_hypervisor_list_threads(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        threads = [
+            BrowserHandler._shape_hypervisor_thread(t)
+            for t in ClaudeTaskManager.list_tasks()
+            if (t.get('source') or '') == BrowserHandler.HYPERVISOR_SOURCE
+        ]
+        self.send_json({'threads': threads})
+
+    def handle_hypervisor_create_thread(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not HYPERVISOR_ENABLED:
+            self.send_json({'error': 'Hypervisor is disabled'}, 404)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        message = (data.get('message') or '').strip()
+        assistant = (data.get('assistant') or HYPERVISOR_DEFAULT_ASSISTANT)
+        workdir = data.get('workdir') or HYPERVISOR_WORKDIR
+        task = ClaudeTaskManager.create_task(
+            message,
+            workdir=workdir,
+            source=BrowserHandler.HYPERVISOR_SOURCE,
+            assistant=assistant,
+            system_preamble=HYPERVISOR_PREAMBLE,
+        )
+        if task.get('status') == 'rejected':
+            self.send_json({'error': task.get('error')}, 429)
+            return
+        if task.get('status') == 'error':
+            self.send_json({'error': task.get('error', 'failed to start chat')}, 500)
+            return
+        self.send_json(
+            {'thread': BrowserHandler._shape_hypervisor_thread(task)}, 201)
+
+    def handle_hypervisor_get_thread(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task = self._hypervisor_task_or_404(thread_id)
+        if task is None:
+            return
+        # Reconstruct the user side of the conversation from the stored prompt +
+        # follow-ups (the agent side streams live via /stream and the tmux log).
+        messages = []
+        first = (task.get('prompt') or '').strip()
+        if first:
+            messages.append({'role': 'user', 'text': first,
+                             'sent_at': task.get('created_at')})
+        for fp in task.get('followups', []) or []:
+            messages.append({'role': 'user', 'text': fp.get('prompt', ''),
+                             'sent_at': fp.get('sent_at')})
+        self.send_json({
+            'thread': BrowserHandler._shape_hypervisor_thread(task),
+            'messages': messages,
+            'recent_output': task.get('recent_output', ''),
+        })
+
+    def handle_hypervisor_send_message(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task = self._hypervisor_task_or_404(thread_id)
+        if task is None:
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        message = (data.get('message') or '').strip()
+        if not message:
+            self.send_json({'error': 'message is required'}, 400)
+            return
+        updated, err = ClaudeTaskManager.send_followup(thread_id, message)
+        if err:
+            self.send_json({'error': err}, 409)
+            return
+        self.send_json({'ok': True})
+
+    def handle_hypervisor_delete_thread(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task = self._hypervisor_task_or_404(thread_id)
+        if task is None:
+            return
+        ClaudeTaskManager.delete_task(thread_id)
+        self.send_json({'ok': True})
 
     def handle_claude_regenerate_token(self):
         if not self.check_oauth_only():
@@ -6520,6 +6710,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_claude_create_terminal_task()
             elif path == "/api/claude/auth/token/regenerate":
                 self.handle_claude_regenerate_token()
+            # Hypervisor chat threads
+            elif path == "/api/hypervisor/threads":
+                self.handle_hypervisor_create_thread()
             # Webhook CRUD (dashboard)
             elif path == "/api/webhooks":
                 self.handle_webhook_create()
@@ -6554,6 +6747,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self._claude_task_id = m.group(1)
                     self.handle_claude_followup()
+                    return
+                # /api/hypervisor/threads/{id}/messages — chat follow-up
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/messages$', path)
+                if m:
+                    self.handle_hypervisor_send_message(m.group(1))
                     return
                 # /api/claude/tasks/{id}/rename
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/rename$', path)
@@ -7343,6 +7541,8 @@ if __name__ == "__main__":
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
     print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
     print("  GET  /api/claude/assistants         - List enabled assistants")
+    print("  GET  /api/hypervisor/config         - Hypervisor chat config")
+    print("  *    /api/hypervisor/threads[/{id}]  - Hypervisor chat threads")
     print("  --- Memory API (Phase 1) ---")
     print("  GET    /api/memory                       - List/search memories")
     print("  POST   /api/memory                       - Upsert a memory")

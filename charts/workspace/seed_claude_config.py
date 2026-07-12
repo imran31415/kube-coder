@@ -53,6 +53,16 @@ DESIRED_MCPS = {
         'command': 'python3',
         'args': ['/tmp/browser/mcp_agent_orchestrator.py'],
     },
+    # Dashboard tools: read live workspace state (metrics, tasks, health,
+    # memory, apps, triggers) and take curated UI actions (create task, add
+    # memory, pin app; kill task / delete memory gated behind confirm=true).
+    # Powers the Hypervisor chat's "do anything you can do in the UI" surface;
+    # available to any agent that has it seeded. See mcp_dashboard.py.
+    'dashboard': {
+        'type': 'stdio',
+        'command': 'python3',
+        'args': ['/tmp/browser/mcp_dashboard.py'],
+    },
     # Playwright: full browser automation. Useful for web-app testing /
     # scraping / e2e flows. Uses Firefox (already in the workspace image).
     # First-use cost is ~1 min while Playwright downloads its own browser

@@ -35,6 +35,7 @@ export type IconName =
   | 'upload'
   | 'apps'
   | 'image'
+  | 'hypervisor'
   | 'desktop';
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -167,6 +168,14 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <rect x="3" y="4" width="14" height="12" rx="1" />
       <path d="M6 9l2 2-2 2M10 13h4" />
+    </>
+  ),
+  // Chip/CPU glyph with pins — the "workspace hypervisor" mark.
+  hypervisor: (
+    <>
+      <rect x="5" y="5" width="10" height="10" rx="2" />
+      <rect x="8" y="8" width="4" height="4" rx="1" />
+      <path d="M8 2v3M12 2v3M8 15v3M12 15v3M2 8h3M2 12h3M15 8h3M15 12h3" />
     </>
   ),
   link: (
