@@ -28,6 +28,9 @@ import type {
   DesktopItem,
   DesktopItemDraft,
   Health,
+  HypervisorConfig,
+  HypervisorThread,
+  HypervisorThreadDetail,
   LaunchResult,
   MemoryRecord,
   Metrics,
@@ -559,4 +562,60 @@ export async function getHealth(): Promise<Health> {
     browser: d.services?.browser,
     ok: d.status === 'healthy',
   };
+}
+
+// ---- Hypervisor chat -------------------------------------------------------
+// Threads are structured agent sessions; the server returns a canonical event
+// stream we poll with ?since (see charts/workspace/hypervisor_session.py). No
+// SSE — same polling model as the task screens.
+
+export async function getHypervisorConfig(): Promise<HypervisorConfig> {
+  if (getConfig().mock) {
+    await delay(80);
+    return {
+      enabled: true,
+      defaultAssistant: 'claude',
+      workdir: '/home/dev',
+      readOnly: false,
+      assistants: [{ id: 'claude', label: 'Claude Code', default: true }],
+    };
+  }
+  return request<HypervisorConfig>('/api/hypervisor/config');
+}
+
+export async function listThreads(): Promise<HypervisorThread[]> {
+  if (getConfig().mock) {
+    await delay(80);
+    return [];
+  }
+  const d = await request<{ threads?: HypervisorThread[] }>('/api/hypervisor/threads');
+  return d.threads ?? [];
+}
+
+export async function createThread(
+  message: string,
+  assistant?: string,
+): Promise<HypervisorThread> {
+  const d = await request<{ thread: HypervisorThread }>('/api/hypervisor/threads', {
+    method: 'POST',
+    body: { message, assistant },
+  });
+  return d.thread;
+}
+
+export async function getThreadDetail(id: string, since = 0): Promise<HypervisorThreadDetail> {
+  return request<HypervisorThreadDetail>(`/api/hypervisor/threads/${encodeURIComponent(id)}`, {
+    query: { since },
+  });
+}
+
+export async function sendThreadMessage(id: string, message: string): Promise<void> {
+  await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/messages`, {
+    method: 'POST',
+    body: { message },
+  });
+}
+
+export async function deleteThread(id: string): Promise<void> {
+  await request(`/api/hypervisor/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
