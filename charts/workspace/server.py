@@ -44,6 +44,16 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
     _MEMORY_AVAILABLE = False
     print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
 
+# hypervisor_session: structured agent sessions backing the Hypervisor chat.
+# Same delivery as the memory package (copied next to server.py at /tmp/browser).
+try:
+    from hypervisor_session import HypervisorSession
+    _HYPERVISOR_AVAILABLE = True
+except Exception as _hv_import_err:  # broken install shouldn't crash the server
+    HypervisorSession = None  # type: ignore
+    _HYPERVISOR_AVAILABLE = False
+    print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
+
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
@@ -3584,12 +3594,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # --- Hypervisor chat threads ---
-        # {id}/stream reuses the task SSE stream verbatim (a thread IS a task).
-        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/stream$', claude_path)
-        if m:
-            self._claude_task_id = m.group(1)
-            self.handle_claude_stream_output()
-            return
+        # Threads are structured agent sessions (hypervisor_session.py); the
+        # frontend polls this endpoint with ?since=<seq> for new canonical
+        # events. No SSE/tmux stream — there is no terminal to stream.
         m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', claude_path)
         if m:
             self.handle_hypervisor_get_thread(m.group(1))
@@ -4435,44 +4442,28 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({'assistants': ClaudeTaskManager.available_assistants()})
 
-    # ── Hypervisor: workspace-aware chat over the user's CLI agents ──────────
-    # Thin facade over ClaudeTaskManager. A "thread" is a task created with
-    # source="hypervisor" (the dashboard MCP tools spawn their own tasks with
-    # source="hypervisor-tool", so those never show up as chat threads). The
-    # chat layer reuses task creation, follow-ups, streaming and persistence —
-    # we only add the chat-shaped surface + a role/context preamble.
-    HYPERVISOR_SOURCE = 'hypervisor'
+    # ── Hypervisor: structured agent-session chat ───────────────────────────
+    # Each thread is a HypervisorSession (see hypervisor_session.py): the
+    # selected CLI is run in its machine-readable streaming mode over pipes (no
+    # tmux, no TTY) and normalized into a canonical event stream persisted as
+    # events.jsonl. The frontend renders those events — it never sees a
+    # terminal, so there are no interactive dialogs to answer and no rendered
+    # pane to un-scrape. Adding an assistant means adding one adapter; this
+    # facade and the frontend don't change.
 
-    @staticmethod
-    def _shape_hypervisor_thread(task):
-        """Shape a task summary/meta dict into a chat-thread dict."""
-        title = (task.get('name') or task.get('prompt') or '').strip()
-        if not title:
-            title = 'New chat'
-        return {
-            'id': task.get('task_id'),
-            'title': title[:80],
-            'assistant': task.get('assistant'),
-            'status': task.get('status'),
-            'created_at': task.get('created_at'),
-            'updated_at': (task.get('finished_at') or task.get('killed_at')
-                           or task.get('last_activity_at') or task.get('created_at')),
-        }
-
-    def _hypervisor_task_or_404(self, thread_id):
-        """Fetch a task and confirm it's a hypervisor thread; else send 404."""
-        task = ClaudeTaskManager.get_task(thread_id)
-        if task is None or (task.get('source') or '') != BrowserHandler.HYPERVISOR_SOURCE:
+    def _hv_session_or_404(self, thread_id):
+        s = HypervisorSession.get(thread_id) if _HYPERVISOR_AVAILABLE else None
+        if s is None:
             self.send_json({'error': 'Thread not found'}, 404)
             return None
-        return task
+        return s
 
     def handle_hypervisor_config(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         self.send_json({
-            'enabled': HYPERVISOR_ENABLED,
+            'enabled': HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE,
             'defaultAssistant': HYPERVISOR_DEFAULT_ASSISTANT,
             'workdir': HYPERVISOR_WORKDIR,
             'readOnly': READONLY_MODE,
@@ -4483,18 +4474,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        threads = [
-            BrowserHandler._shape_hypervisor_thread(t)
-            for t in ClaudeTaskManager.list_tasks()
-            if (t.get('source') or '') == BrowserHandler.HYPERVISOR_SOURCE
-        ]
+        threads = HypervisorSession.list() if _HYPERVISOR_AVAILABLE else []
         self.send_json({'threads': threads})
 
     def handle_hypervisor_create_thread(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        if not HYPERVISOR_ENABLED:
+        if not (HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE):
             self.send_json({'error': 'Hypervisor is disabled'}, 404)
             return
         try:
@@ -4503,58 +4490,47 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         message = (data.get('message') or '').strip()
-        assistant = (data.get('assistant') or HYPERVISOR_DEFAULT_ASSISTANT)
+        assistant = ClaudeTaskManager.resolve_assistant(
+            data.get('assistant') or HYPERVISOR_DEFAULT_ASSISTANT)
         workdir = data.get('workdir') or HYPERVISOR_WORKDIR
-        task = ClaudeTaskManager.create_task(
-            message,
-            workdir=workdir,
-            source=BrowserHandler.HYPERVISOR_SOURCE,
-            assistant=assistant,
-            system_preamble=HYPERVISOR_PREAMBLE,
-            # The chat can only paste text, so the agent must never block on an
-            # in-terminal approval menu — launch it with skip-permissions. (The
-            # dashboard MCP's destructive tools still gate on confirm=true, so
-            # kill_task / delete_memory continue to ask in chat.)
-            auto_approve=True,
-        )
-        if task.get('status') == 'rejected':
-            self.send_json({'error': task.get('error')}, 429)
+        # cli_cmd is only consumed by the non-structured fallback adapter; the
+        # Claude adapter builds its own argv. auto_approve keeps any fallback
+        # CLI from blocking on an approval it can't answer.
+        cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=True)
+        try:
+            session = HypervisorSession.create(
+                assistant=assistant, workdir=workdir, cli_cmd=cli_cmd,
+                preamble=HYPERVISOR_PREAMBLE, title=message)
+        except Exception as e:
+            self.send_json({'error': f'failed to start chat: {e}'}, 500)
             return
-        if task.get('status') == 'error':
-            self.send_json({'error': task.get('error', 'failed to start chat')}, 500)
-            return
-        self.send_json(
-            {'thread': BrowserHandler._shape_hypervisor_thread(task)}, 201)
+        if message:
+            session.send(message)
+        self.send_json({'thread': session.summary()}, 201)
 
     def handle_hypervisor_get_thread(self, thread_id):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        task = self._hypervisor_task_or_404(thread_id)
-        if task is None:
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
             return
-        # Reconstruct the user side of the conversation from the stored prompt +
-        # follow-ups (the agent side streams live via /stream and the tmux log).
-        messages = []
-        first = (task.get('prompt') or '').strip()
-        if first:
-            messages.append({'role': 'user', 'text': first,
-                             'sent_at': task.get('created_at')})
-        for fp in task.get('followups', []) or []:
-            messages.append({'role': 'user', 'text': fp.get('prompt', ''),
-                             'sent_at': fp.get('sent_at')})
+        qs = self.path.split('?', 1)[1] if '?' in self.path else ''
+        try:
+            since = int((urllib.parse.parse_qs(qs).get('since') or ['0'])[0])
+        except (TypeError, ValueError):
+            since = 0
         self.send_json({
-            'thread': BrowserHandler._shape_hypervisor_thread(task),
-            'messages': messages,
-            'recent_output': task.get('recent_output', ''),
+            'thread': session.summary(),
+            'events': session.read_events(since_seq=since),
         })
 
     def handle_hypervisor_send_message(self, thread_id):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        task = self._hypervisor_task_or_404(thread_id)
-        if task is None:
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
             return
         try:
             data = self.read_json_body()
@@ -4565,20 +4541,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not message:
             self.send_json({'error': 'message is required'}, 400)
             return
-        updated, err = ClaudeTaskManager.send_followup(thread_id, message)
-        if err:
-            self.send_json({'error': err}, 409)
+        if session.status() == 'running':
+            self.send_json({'error': 'assistant is still responding'}, 409)
             return
+        session.send(message)
         self.send_json({'ok': True})
 
     def handle_hypervisor_delete_thread(self, thread_id):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        task = self._hypervisor_task_or_404(thread_id)
-        if task is None:
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
             return
-        ClaudeTaskManager.delete_task(thread_id)
+        session.delete()
         self.send_json({'ok': True})
 
     def handle_claude_regenerate_token(self):

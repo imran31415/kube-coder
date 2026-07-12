@@ -3,8 +3,7 @@ import { Icon } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import {
-  messages,
-  liveOutput,
+  events,
   activeThreadId,
   activeStatus,
   sending,
@@ -14,14 +13,14 @@ import {
   sendMessage,
 } from '../../store/hypervisor';
 import { WorkspaceContext } from './WorkspaceContext';
-import { parseAgentTranscript, renderMarkdown, type TranscriptBlock } from './transcript';
+import { buildTurns, renderMarkdown, type Block } from './transcript';
 
 /**
- * The chat transcript + composer. User turns render as bubbles; the CLI agent's
- * polled pane is parsed (see transcript.ts) into clean, system-branded blocks —
- * assistant prose as markdown bubbles, tool/command runs as compact activity
- * chips — so the conversation reads as coming from the *Kube-Coder* workspace,
- * not a raw Claude/OpenCode terminal.
+ * The chat transcript + composer. The backend delivers a canonical event stream
+ * (assistant prose, tool calls/results, errors); buildTurns() groups it into
+ * user bubbles + agent turns, and we render prose as markdown and tool runs as
+ * compact activity chips — so the conversation reads as the *Kube-Coder*
+ * workspace, not a raw Claude/OpenCode terminal. No screen scraping.
  */
 
 const SUGGESTIONS = [
@@ -31,10 +30,10 @@ const SUGGESTIONS = [
 ];
 
 /** One tool/command run — collapsed by default, expandable to the raw detail. */
-function ActivityChip({ label, detail }: { label: string; detail: string }) {
+function ActivityChip({ label, detail, error }: { label: string; detail: string; error?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <div class={`hv-activity ${open ? 'is-open' : ''}`}>
+    <div class={`hv-activity ${open ? 'is-open' : ''} ${error ? 'is-error' : ''}`}>
       <button type="button" class="hv-activity-head" onClick={() => setOpen((v) => !v)}>
         <span class="hv-activity-icon">
           <Icon name="terminal" size={12} />
@@ -42,16 +41,16 @@ function ActivityChip({ label, detail }: { label: string; detail: string }) {
         <span class="hv-activity-label">{label}</span>
         <Icon name="chevron-down" size={13} class="hv-activity-caret" />
       </button>
-      {open && <pre class="hv-activity-detail">{detail}</pre>}
+      {open && detail && <pre class="hv-activity-detail">{detail}</pre>}
     </div>
   );
 }
 
-function AgentBlocks({ blocks }: { blocks: TranscriptBlock[] }) {
+function AgentBlocks({ blocks }: { blocks: Block[] }) {
   return (
     <>
       {blocks.map((b, i) =>
-        b.kind === 'text' ? (
+        b.kind === 'prose' ? (
           <div
             key={i}
             class="hv-prose"
@@ -59,7 +58,7 @@ function AgentBlocks({ blocks }: { blocks: TranscriptBlock[] }) {
             dangerouslySetInnerHTML={{ __html: renderMarkdown(b.text) }}
           />
         ) : (
-          <ActivityChip key={i} label={b.label} detail={b.detail} />
+          <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} />
         ),
       )}
     </>
@@ -71,12 +70,12 @@ export function Chat() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const msgs = messages.value;
-  const output = liveOutput.value;
   const active = activeThreadId.value;
   const status = activeStatus.value;
+  const evts = events.value;
 
-  const blocks = useMemo(() => (active ? parseAgentTranscript(output) : []), [active, output]);
+  const turns = useMemo(() => buildTurns(evts), [evts]);
+  const hasAgentTail = turns.length > 0 && turns[turns.length - 1].role === 'agent';
 
   useEffect(() => {
     const el = taRef.current;
@@ -88,7 +87,7 @@ export function Chat() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [msgs, blocks]);
+  }, [turns]);
 
   function submit(text?: string) {
     const value = (text ?? draft).trim();
@@ -108,11 +107,11 @@ export function Chat() {
   const busy = sending.value;
   const working = status === 'running';
   const readOnly = config.value?.readOnly;
-  const empty = !active && msgs.length === 0;
+  const empty = !active && evts.length === 0;
   const cli = selectedAssistant.value || 'agent';
-  // A turn is "in flight" (show the thinking indicator) while the agent is
-  // working, or right after we sent and no output has landed yet.
-  const thinking = working || (busy && active !== null && blocks.length === 0);
+  // Show the thinking indicator while the agent is working, or right after we
+  // sent and no assistant turn has landed yet.
+  const thinking = working || (busy && active !== null && !hasAgentTail);
 
   return (
     <div class="hv-chat">
@@ -147,20 +146,36 @@ export function Chat() {
           </div>
         ) : (
           <div class="hv-transcript-flow">
-            {msgs.map((m, i) =>
-              m.role === 'user' ? (
+            {turns.map((t, i) =>
+              t.role === 'user' ? (
                 <div key={i} class="hv-msg hv-msg-user">
-                  <div class="hv-bubble">{m.text}</div>
+                  <div class="hv-bubble">{t.text}</div>
                 </div>
               ) : (
-                <div key={i} class="hv-msg hv-msg-agent">
-                  <div class="hv-bubble hv-bubble-agent">{m.text}</div>
+                <div key={i} class="hv-turn">
+                  <div class="hv-avatar" aria-hidden="true">
+                    <Icon name="hypervisor" size={15} />
+                  </div>
+                  <div class="hv-turn-body">
+                    <div class="hv-turn-head">
+                      <span class="hv-turn-name">Kube-Coder</span>
+                      <span class="hv-turn-via">via {cli}</span>
+                      {thinking && i === turns.length - 1 && (
+                        <span class="hv-typing" aria-label="working">
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                      )}
+                    </div>
+                    <AgentBlocks blocks={t.blocks} />
+                  </div>
                 </div>
               ),
             )}
 
-            {/* The live agent turn — parsed into clean system-branded blocks. */}
-            {active && (blocks.length > 0 || thinking) && (
+            {/* Agent is working but hasn't emitted its turn block yet. */}
+            {active && thinking && !hasAgentTail && (
               <div class="hv-turn">
                 <div class="hv-avatar" aria-hidden="true">
                   <Icon name="hypervisor" size={15} />
@@ -169,19 +184,13 @@ export function Chat() {
                   <div class="hv-turn-head">
                     <span class="hv-turn-name">Kube-Coder</span>
                     <span class="hv-turn-via">via {cli}</span>
-                    {thinking && (
-                      <span class="hv-typing" aria-label="working">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                    )}
+                    <span class="hv-typing" aria-label="working">
+                      <i />
+                      <i />
+                      <i />
+                    </span>
                   </div>
-                  {blocks.length > 0 ? (
-                    <AgentBlocks blocks={blocks} />
-                  ) : (
-                    <div class="hv-prose hv-prose-muted">Working…</div>
-                  )}
+                  <div class="hv-prose hv-prose-muted">Working…</div>
                 </div>
               </div>
             )}

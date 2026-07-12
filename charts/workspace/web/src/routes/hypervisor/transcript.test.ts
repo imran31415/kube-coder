@@ -1,87 +1,84 @@
 import { describe, it, expect } from 'vitest';
-import { parseAgentTranscript } from './transcript';
+import { buildTurns, type HvEvent } from './transcript';
 
-describe('parseAgentTranscript', () => {
-  it('returns nothing for an empty / whitespace pane', () => {
-    expect(parseAgentTranscript('')).toEqual([]);
-    expect(parseAgentTranscript('   \n\n  ')).toEqual([]);
+function ev(partial: Partial<HvEvent> & Pick<HvEvent, 'role' | 'type'>, seq: number): HvEvent {
+  return { seq, ts: seq, ...partial } as HvEvent;
+}
+
+describe('buildTurns', () => {
+  it('returns nothing for an empty event list', () => {
+    expect(buildTurns([])).toEqual([]);
   });
 
-  it('extracts assistant prose as a single text block', () => {
-    const raw = [
-      '⏺ CLAUDE',
-      '',
-      "⏺ I'll check what's running across the workspace.",
-      '',
-      'Everything looks healthy.',
-    ].join('\n');
-    const blocks = parseAgentTranscript(raw);
-    const text = blocks.filter((b) => b.kind === 'text');
-    expect(text.length).toBeGreaterThanOrEqual(1);
-    expect(text.map((b) => (b as any).text).join(' ')).toContain("what's running");
-    expect(text.map((b) => (b as any).text).join(' ')).toContain('healthy');
+  it('groups a user turn then an agent prose turn', () => {
+    const turns = buildTurns([
+      ev({ role: 'user', type: 'message', text: 'hi' }, 1),
+      ev({ role: 'assistant', type: 'message', text: 'Everything looks healthy.' }, 2),
+    ]);
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toEqual({ role: 'user', text: 'hi' });
+    expect(turns[1].role).toBe('agent');
+    if (turns[1].role === 'agent') {
+      expect(turns[1].blocks[0]).toEqual({ kind: 'prose', text: 'Everything looks healthy.' });
+    }
   });
 
-  it('classifies a shell run as an activity chip, not prose', () => {
-    const raw = [
-      '⏺ Running 3 shell commands…',
-      '  ⎿  $ echo "=== notable user processes ==="; ps -eo pid,pcpu',
-      '     $ echo "=== tmux sessions ==="; tmux ls',
-    ].join('\n');
-    const blocks = parseAgentTranscript(raw);
-    const act = blocks.find((b) => b.kind === 'activity') as any;
-    expect(act).toBeTruthy();
-    expect(act.label).toMatch(/running 3 shell commands/i);
-    expect(act.detail).toContain('ps -eo');
+  it('renders a tool call as a friendly activity chip', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',
+           tool: { name: 'Bash', input: { command: 'ps -eo pid,pcpu' } } }, 1),
+    ]);
+    expect(turns).toHaveLength(1);
+    if (turns[0].role === 'agent') {
+      const b = turns[0].blocks[0];
+      expect(b.kind).toBe('activity');
+      if (b.kind === 'activity') {
+        expect(b.label).toBe('Ran command');
+        expect(b.detail).toContain('ps -eo');
+      }
+    }
   });
 
-  it('labels a tool-call block by the tool name', () => {
-    const raw = ['⏺ Bash(ls -la /home/dev)', '  ⎿  total 40'].join('\n');
-    const [block] = parseAgentTranscript(raw);
-    expect(block.kind).toBe('activity');
-    expect((block as any).label).toBe('Bash command');
+  it('folds a tool_result into the preceding tool call', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',
+           tool: { name: 'Bash', input: { command: 'echo hi' } } }, 1),
+      ev({ role: 'system', type: 'tool_result', tool_use_id: 't1', text: 'hi' }, 2),
+    ]);
+    if (turns[0].role === 'agent') {
+      expect(turns[0].blocks).toHaveLength(1);
+      const b = turns[0].blocks[0];
+      if (b.kind === 'activity') expect(b.detail).toContain('hi');
+    }
   });
 
-  it('strips the interactive permission menu', () => {
-    const raw = [
-      '⏺ I need to run a command.',
-      '',
-      'Do you want to proceed?',
-      '❯ 1. Yes',
-      "  2. Yes, and don't ask again",
-      '  3. No',
-      '',
-      'Esc to cancel · Tab to amend · ctrl+e to explain',
-    ].join('\n');
-    const blocks = parseAgentTranscript(raw);
-    const joined = JSON.stringify(blocks);
-    expect(joined).not.toMatch(/do you want to proceed/i);
-    expect(joined).not.toMatch(/1\. Yes/);
-    expect(joined).not.toMatch(/Esc to cancel/i);
-    // The real assistant line survives.
-    expect(joined).toMatch(/need to run a command/i);
+  it('surfaces an error event as an error activity', () => {
+    const turns = buildTurns([
+      ev({ role: 'system', type: 'error', text: 'claude exited with code 1' }, 1),
+    ]);
+    if (turns[0].role === 'agent') {
+      const b = turns[0].blocks[0];
+      expect(b.kind).toBe('activity');
+      if (b.kind === 'activity') {
+        expect(b.error).toBe(true);
+        expect(b.detail).toMatch(/exited with code 1/);
+      }
+    }
   });
 
-  it('drops the input frame + footer chrome at the bottom of the pane', () => {
-    const raw = [
-      '⏺ Done — nothing else is running.',
-      '',
-      '╭──────────────────────────────────────────────╮',
-      '│ >                                            │',
-      '╰──────────────────────────────────────────────╯',
-      '  ? for shortcuts',
-    ].join('\n');
-    const blocks = parseAgentTranscript(raw);
-    const joined = JSON.stringify(blocks);
-    expect(joined).toMatch(/nothing else is running/i);
-    expect(joined).not.toMatch(/shortcuts/i);
-    expect(joined).not.toContain('>');
+  it('ignores status events (no chat content)', () => {
+    const turns = buildTurns([ev({ role: 'system', type: 'status', status: 'idle' }, 1)]);
+    expect(turns).toEqual([]);
   });
 
-  it('keeps unknown content as text rather than dropping it', () => {
-    const raw = 'just some plain output line with no markers';
-    const [block] = parseAgentTranscript(raw);
-    expect(block.kind).toBe('text');
-    expect((block as any).text).toContain('plain output');
+  it('maps an MCP tool name to its tool part', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',
+           tool: { name: 'mcp__dashboard__get_metrics', input: {} } }, 1),
+    ]);
+    if (turns[0].role === 'agent') {
+      const b = turns[0].blocks[0];
+      if (b.kind === 'activity') expect(b.label).toBe('get metrics');
+    }
   });
 });

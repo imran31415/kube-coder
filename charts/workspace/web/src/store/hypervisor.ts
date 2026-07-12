@@ -8,15 +8,15 @@ import {
   deleteThread,
   type HypervisorConfig,
   type HypervisorThread,
-  type ChatMessage,
 } from '../api/hypervisor';
+import type { HvEvent } from '../routes/hypervisor/transcript';
 import { listTasks, type TaskSummary } from '../api/tasks';
 
 /**
- * State for the Hypervisor chat tab. A thread is a live CLI-agent session; the
- * store reconstructs the user side of the conversation from the server and
- * polls the agent's rendered output while a thread is open. There is no bespoke
- * LLM loop here — the selected CLI agent does the thinking + tool calls.
+ * State for the Hypervisor chat tab. A thread is a structured agent session; the
+ * store polls its canonical event stream while open and renders those events
+ * directly. There is no bespoke LLM loop here — the selected CLI agent does the
+ * thinking + tool calls; we normalize its structured output into events.
  */
 
 export const config = signal<HypervisorConfig | null>(null);
@@ -26,10 +26,9 @@ export const threads = signal<HypervisorThread[]>([]);
 export const threadsLoading = signal(false);
 
 export const activeThreadId = signal<string | null>(null);
-export const messages = signal<ChatMessage[]>([]);
-/** Latest rendered output of the agent's session (polled) — the assistant's
- *  live response area. Raw pane text; cleaned enough to read as chat. */
-export const liveOutput = signal<string>('');
+/** Canonical event stream for the open thread (user turns, assistant prose,
+ *  tool calls/results, errors). Rendered by buildTurns() in transcript.ts. */
+export const events = signal<HvEvent[]>([]);
 export const activeStatus = signal<string>('');
 
 export const sending = signal(false);
@@ -95,11 +94,12 @@ async function pollActive(): Promise<void> {
   const id = activeThreadId.value;
   if (!id) return;
   try {
-    const detail = await getThread(id);
+    // Re-fetch the full (small) transcript each tick — simplest correct model
+    // for a chat; the event log is append-only so this never flickers.
+    const detail = await getThread(id, 0);
     // Guard against a late poll landing after the user switched threads.
     if (activeThreadId.value !== id) return;
-    messages.value = detail.messages;
-    liveOutput.value = detail.recent_output || '';
+    events.value = detail.events;
     activeStatus.value = detail.thread.status;
   } catch {
     /* transient — next tick retries */
@@ -108,8 +108,7 @@ async function pollActive(): Promise<void> {
 
 export async function openThread(id: string): Promise<void> {
   activeThreadId.value = id;
-  messages.value = [];
-  liveOutput.value = '';
+  events.value = [];
   activeStatus.value = '';
   chatError.value = null;
   await pollActive();
@@ -119,10 +118,11 @@ export async function openThread(id: string): Promise<void> {
 export function closeThread(): void {
   stopPolling();
   activeThreadId.value = null;
-  messages.value = [];
-  liveOutput.value = '';
+  events.value = [];
   activeStatus.value = '';
 }
+
+let optimisticSeq = -1;
 
 /** Send a chat message. Creates a new thread if none is active. */
 export async function sendMessage(text: string): Promise<void> {
@@ -130,8 +130,13 @@ export async function sendMessage(text: string): Promise<void> {
   if (!trimmed || sending.value) return;
   sending.value = true;
   chatError.value = null;
-  // Optimistically show the user's message.
-  messages.value = [...messages.value, { role: 'user', text: trimmed }];
+  // Optimistically show the user's turn until the next poll replaces it with
+  // the server-recorded event (negative seq so it never collides).
+  events.value = [
+    ...events.value,
+    { seq: optimisticSeq--, ts: Date.now() / 1000, role: 'user', type: 'message', text: trimmed },
+  ];
+  activeStatus.value = 'running';
   try {
     if (!activeThreadId.value) {
       const thread = await createThread({

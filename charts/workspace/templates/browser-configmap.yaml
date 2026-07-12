@@ -40,3 +40,5 @@ data:
 {{ .Files.Get "mcp_agent_orchestrator.py" | indent 4 }}
   mcp_dashboard.py: |
 {{ .Files.Get "mcp_dashboard.py" | indent 4 }}
+  hypervisor_session.py: |
+{{ .Files.Get "hypervisor_session.py" | indent 4 }}

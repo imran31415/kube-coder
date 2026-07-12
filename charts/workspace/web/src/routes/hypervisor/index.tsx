@@ -23,14 +23,12 @@ import './hypervisor.css';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
   running: 'success',
-  'waiting-for-input': 'warn',
   error: 'danger',
-  killed: 'neutral',
-  completed: 'neutral',
+  idle: 'neutral',
 };
 
 function statusLabel(s: string): string {
-  if (s === 'waiting-for-input') return 'your turn';
+  if (s === 'running') return 'thinking';
   return s || 'idle';
 }
 
