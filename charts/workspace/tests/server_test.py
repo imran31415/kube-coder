@@ -387,6 +387,34 @@ class AssistantSelectionTests(unittest.TestCase):
             'claude',
         )
 
+    def test_command_auto_approve_adds_skip_flag(self):
+        # auto_approve launches the REPL with the CLI's skip-permissions flag so
+        # a text-only surface (the Hypervisor chat) never blocks on an approval
+        # menu it can't answer. Only claude/ante/antigravity expose one.
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('claude', auto_approve=True),
+            'claude --dangerously-skip-permissions',
+        )
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('ante', auto_approve=True),
+            'ante --yolo',
+        )
+        os.environ.pop('KC_ANTIGRAVITY_MODEL', None)
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('antigravity', auto_approve=True),
+            'agy --dangerously-skip-permissions',
+        )
+        os.environ['KC_ANTIGRAVITY_MODEL'] = 'gemini-3-pro'
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('antigravity', auto_approve=True),
+            'agy --dangerously-skip-permissions --model gemini-3-pro',
+        )
+        # Default (Build tab) still launches the bare REPL — approvals prompt.
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('claude'),
+            'claude',
+        )
+
     @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
     def test_create_task_records_assistant_and_uses_cli(self, mock_run):
         os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'

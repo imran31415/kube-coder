@@ -104,7 +104,14 @@ nothing new. No new pip dependency.
 - **Rendering:** the assistant's output is the agent's rendered tmux pane
   (cleaned text), polled. Structured per-CLI rendering (Claude `stream-json`,
   `kc-harness` JSONL → true bubbles/tool cards) is a follow-up.
-- **Trust boundary:** an agent selected here still has its own `bash` (same as
-  the Build tab). The dashboard MCP adds *gated* UI actions on top; it does not
-  sandbox the shell.
+- **Trust boundary:** an agent selected here has its own `bash`, and because a
+  chat can only paste text (there is no way to answer an in-terminal approval
+  menu), the CLI is launched with its skip-permissions flag
+  (`claude --dangerously-skip-permissions`, `ante --yolo`, `agy
+  --dangerously-skip-permissions`) so it never blocks mid-turn. The agent thus
+  acts without per-command approval — appropriate for a chat over your *own*
+  workspace pod, but more permissive than the Build tab's prompting terminal.
+  The dashboard MCP's destructive tools (`kill_task`, `delete_memory`) still
+  gate on `confirm=true`, so those keep asking in chat. The shell is not
+  sandboxed.
 - **Mobile:** the thread sidebar is hidden on small screens (chat pane only).

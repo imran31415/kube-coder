@@ -10,6 +10,7 @@ import {
   type HypervisorThread,
   type ChatMessage,
 } from '../api/hypervisor';
+import { listTasks, type TaskSummary } from '../api/tasks';
 
 /**
  * State for the Hypervisor chat tab. A thread is a live CLI-agent session; the
@@ -36,6 +37,19 @@ export const chatError = signal<string | null>(null);
 
 /** The assistant a NEW thread will use (defaults to config.defaultAssistant). */
 export const selectedAssistant = signal<string>('');
+
+/** Live workspace "entities" surfaced as chips in the chat — currently the
+ *  other tasks/agents running in the pod, so the user can see what the
+ *  Hypervisor is talking about without leaving the chat. */
+export const workspaceTasks = signal<TaskSummary[]>([]);
+
+export async function refreshWorkspaceTasks(): Promise<void> {
+  try {
+    workspaceTasks.value = await listTasks();
+  } catch {
+    /* keep last-good list */
+  }
+}
 
 let pollTimer: number | null = null;
 
