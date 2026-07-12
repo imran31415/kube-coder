@@ -74,6 +74,24 @@ _ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|[\x00-\x08
 # Per-turn wall-clock ceiling for a fallback CLI (Claude manages its own).
 FALLBACK_TURN_TIMEOUT = float(os.environ.get('KC_HYPERVISOR_FALLBACK_TIMEOUT', '180'))
 
+# The Hypervisor gives Claude a MINIMAL, curated MCP set — `dashboard` (the
+# workspace UI actions: metrics/tasks/apps + create_task/pin_app/gated kill…)
+# and `memory` — instead of the full seeded config (playwright,
+# sequential-thinking, spine, …). A headless `claude -p` turn connects MCP
+# servers asynchronously and doesn't wait long; with the full set the dashboard
+# tools frequently weren't ready before the turn finished and Claude fell back
+# to bash. Two lightweight stdio servers connect fast and reliably. Passed via
+# --mcp-config/--strict-mcp-config so it overrides ~/.claude.json for this run
+# only (the Build tab keeps the full set). The dashboard MCP reads the bearer
+# token from $HOME/.claude-tasks/.api-token, so HOME=/home/dev (forced below) is
+# what keeps its REST calls from 401-ing.
+_HYPERVISOR_MCP_CONFIG = json.dumps({'mcpServers': {
+    'dashboard': {'type': 'stdio', 'command': 'python3',
+                  'args': ['/tmp/browser/mcp_dashboard.py']},
+    'memory': {'type': 'stdio', 'command': 'python3',
+               'args': [os.path.join(WORKSPACE_HOME, '.claude-memory', 'mcp_memory.py')]},
+}})
+
 
 def _now() -> float:
     return time.time()
@@ -133,6 +151,11 @@ class ClaudeAdapter(Adapter):
             '--output-format', 'stream-json',
             '--verbose',
             '--permission-mode', 'bypassPermissions',
+            # Curated 2-server MCP set that connects fast enough for a headless
+            # turn (see _HYPERVISOR_MCP_CONFIG). --strict-mcp-config makes it the
+            # ONLY set for this run, overriding ~/.claude.json.
+            '--mcp-config', _HYPERVISOR_MCP_CONFIG,
+            '--strict-mcp-config',
         ]
         sid = ctx.get('claude_session_id')
         if sid:

@@ -80,6 +80,18 @@ class ClaudeAdapterParseTest(unittest.TestCase):
         self.assertIn('--permission-mode', spec['argv'])
         self.assertIn('bypassPermissions', spec['argv'])
 
+    def test_build_uses_minimal_strict_mcp_config(self):
+        spec = self.a.build(self.ctx, 'hello', first=True)
+        self.assertIn('--mcp-config', spec['argv'])
+        self.assertIn('--strict-mcp-config', spec['argv'])
+        cfg = json.loads(spec['argv'][spec['argv'].index('--mcp-config') + 1])
+        self.assertEqual(set(cfg['mcpServers']), {'dashboard', 'memory'})
+
+    def test_build_forces_home_and_drops_api_key(self):
+        spec = self.a.build(self.ctx, 'hello', first=True)
+        self.assertEqual(spec['env']['HOME'], hs.WORKSPACE_HOME)
+        self.assertNotIn('ANTHROPIC_API_KEY', spec['env'])
+
 
 class FallbackAdapterTest(unittest.TestCase):
     def test_strips_ansi_and_emits_message(self):
