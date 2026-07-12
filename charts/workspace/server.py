@@ -4547,6 +4547,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         session.send(message)
         self.send_json({'ok': True})
 
+    def handle_hypervisor_stop(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        stopped = session.stop()
+        # Idle threads are a safe no-op — report 'idle' rather than erroring so
+        # the client can fire-and-forget without racing the turn's completion.
+        self.send_json({'ok': True, 'stopped': stopped})
+
     def handle_hypervisor_delete_thread(self, thread_id):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -6743,6 +6755,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/messages$', path)
                 if m:
                     self.handle_hypervisor_send_message(m.group(1))
+                    return
+                # /api/hypervisor/threads/{id}/stop — halt the running turn
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/stop$', path)
+                if m:
+                    self.handle_hypervisor_stop(m.group(1))
                     return
                 # /api/claude/tasks/{id}/rename
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/rename$', path)

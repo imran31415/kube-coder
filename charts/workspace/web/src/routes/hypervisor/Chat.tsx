@@ -7,10 +7,12 @@ import {
   activeThreadId,
   activeStatus,
   sending,
+  stopping,
   chatError,
   selectedAssistant,
   config,
   sendMessage,
+  stopMessage,
 } from '../../store/hypervisor';
 import { WorkspaceContext } from './WorkspaceContext';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
@@ -91,7 +93,7 @@ export function Chat() {
 
   function submit(text?: string) {
     const value = (text ?? draft).trim();
-    if (!value || sending.value) return;
+    if (!value || blocked) return;
     setDraft('');
     void sendMessage(value);
     taRef.current?.focus();
@@ -106,6 +108,10 @@ export function Chat() {
 
   const busy = sending.value;
   const working = status === 'running';
+  // Input is locked whenever a turn is in flight — not just during the brief
+  // send request — so the user can't queue a message the server would reject
+  // (409 "assistant is still responding"). Stop is the only action then.
+  const blocked = busy || working;
   const readOnly = config.value?.readOnly;
   const empty = !active && evts.length === 0;
   const cli = selectedAssistant.value || 'agent';
@@ -137,7 +143,7 @@ export function Chat() {
                   type="button"
                   class="hv-suggest"
                   onClick={() => submit(s)}
-                  disabled={busy}
+                  disabled={blocked}
                 >
                   {s}
                 </button>
@@ -214,16 +220,30 @@ export function Chat() {
           placeholder={
             readOnly
               ? 'Read-only workspace — you can still ask about state'
-              : 'Message Kube-Coder…  (Enter to send, Shift+Enter for newline)'
+              : working
+                ? 'Kube-Coder is working… press Stop to interrupt'
+                : 'Message Kube-Coder…  (Enter to send, Shift+Enter for newline)'
           }
           onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKeyDown}
           rows={1}
-          disabled={busy}
+          disabled={blocked}
         />
-        <Button type="submit" variant="primary" disabled={busy || !draft.trim()} title="Send (Enter)">
-          <Icon name="play" size={12} /> Send
-        </Button>
+        {working ? (
+          <Button
+            type="button"
+            variant="danger"
+            onClick={() => void stopMessage()}
+            disabled={stopping.value}
+            title="Stop execution"
+          >
+            <Icon name="close" size={12} /> {stopping.value ? 'Stopping…' : 'Stop'}
+          </Button>
+        ) : (
+          <Button type="submit" variant="primary" disabled={blocked || !draft.trim()} title="Send (Enter)">
+            <Icon name="play" size={12} /> Send
+          </Button>
+        )}
       </form>
     </div>
   );

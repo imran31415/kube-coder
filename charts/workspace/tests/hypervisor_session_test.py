@@ -135,5 +135,49 @@ class SessionEventsTest(unittest.TestCase):
         self.assertEqual(s.read_meta()['adapter_kind'], 'fallback')
 
 
+class StopTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+        self.s = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title='x')
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+        with hs._RUNLOCK:
+            hs._RUNNING.pop(self.s.id, None)
+            hs._PROCS.pop(self.s.id, None)
+            hs._STOPPING.discard(self.s.id)
+
+    def test_stop_on_idle_thread_is_noop(self):
+        self.assertFalse(self.s.stop())
+        self.assertFalse(self.s._stop_requested())
+
+    def test_stop_kills_running_process_group(self):
+        import subprocess
+        proc = subprocess.Popen(['sleep', '30'], start_new_session=True)
+        with hs._RUNLOCK:
+            hs._RUNNING[self.s.id] = True
+            hs._PROCS[self.s.id] = proc
+        try:
+            self.assertTrue(self.s.stop())
+            self.assertTrue(self.s._stop_requested())
+            self.assertIsNotNone(proc.poll())  # actually terminated
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_stop_flag_set_before_process_registered(self):
+        # Turn is marked running but its Popen hasn't landed yet — stop() should
+        # still flag it so the runner skips finalize once the process appears.
+        with hs._RUNLOCK:
+            hs._RUNNING[self.s.id] = True
+        self.assertTrue(self.s.stop())
+        self.assertTrue(self.s._stop_requested())
+
+
 if __name__ == '__main__':
     unittest.main()

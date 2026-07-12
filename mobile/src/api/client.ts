@@ -616,6 +616,10 @@ export async function sendThreadMessage(id: string, message: string): Promise<vo
   });
 }
 
+export async function stopThread(id: string): Promise<void> {
+  await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+}
+
 export async function deleteThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

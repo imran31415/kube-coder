@@ -26,6 +26,7 @@ import {
   getThreadDetail,
   listThreads,
   sendThreadMessage,
+  stopThread,
 } from '../api/client';
 import type { HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
 import { buildTurns, type HvBlock } from '../util/hvTranscript';
@@ -49,6 +50,7 @@ export default function HypervisorScreen() {
   const [status, setStatus] = useState<string>('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [chatsOpen, setChatsOpen] = useState(false);
@@ -161,6 +163,24 @@ export default function HypervisorScreen() {
     }
   }
 
+  async function stop() {
+    if (!activeId || stopping) return;
+    setStopping(true);
+    try {
+      await stopThread(activeId);
+      // Reflect the halt immediately rather than waiting for the next poll.
+      const d = await getThreadDetail(activeId, 0);
+      if (d.thread.id === activeId) {
+        setEvents(d.events);
+        setStatus(d.thread.status);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to stop');
+    } finally {
+      setStopping(false);
+    }
+  }
+
   if (config && config.enabled === false) {
     return (
       <SafeAreaView style={styles.root} edges={['top']}>
@@ -174,6 +194,7 @@ export default function HypervisorScreen() {
   const agentName = config?.defaultAssistant || 'claude';
   const activeThread = threads.find((t) => t.id === activeId) || null;
   const working = status === 'running';
+  const blocked = sending || working;
   const empty = !activeId && events.length === 0;
 
   return (
@@ -228,7 +249,7 @@ export default function HypervisorScreen() {
               />
               <View style={styles.suggests}>
                 {SUGGESTIONS.map((s) => (
-                  <Pressable key={s} onPress={() => void send(s)} style={styles.suggest} disabled={sending}>
+                  <Pressable key={s} onPress={() => void send(s)} style={styles.suggest} disabled={blocked}>
                     <Text style={styles.suggestText}>{s}</Text>
                   </Pressable>
                 ))}
@@ -275,18 +296,30 @@ export default function HypervisorScreen() {
             style={styles.input}
             value={draft}
             onChangeText={setDraft}
-            placeholder="Message Kube-Coder…"
+            placeholder={working ? 'Kube-Coder is working…' : 'Message Kube-Coder…'}
             placeholderTextColor={colors.textFaint}
             multiline
-            editable={!sending}
+            // Lock input for the whole turn, not just the send request, so the
+            // user can't queue a message the server would reject (409).
+            editable={!blocked}
           />
-          <Pressable
-            onPress={() => void send()}
-            disabled={sending || !draft.trim()}
-            style={[styles.sendBtn, (sending || !draft.trim()) && styles.sendBtnOff]}
-          >
-            <Ionicons name="arrow-up" size={20} color={colors.accentText} />
-          </Pressable>
+          {working ? (
+            <Pressable
+              onPress={() => void stop()}
+              disabled={stopping}
+              style={[styles.sendBtn, styles.stopBtn, stopping && styles.sendBtnOff]}
+            >
+              <Ionicons name="stop" size={18} color={colors.accentText} />
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => void send()}
+              disabled={blocked || !draft.trim()}
+              style={[styles.sendBtn, (blocked || !draft.trim()) && styles.sendBtnOff]}
+            >
+              <Ionicons name="arrow-up" size={20} color={colors.accentText} />
+            </Pressable>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -561,4 +594,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   sendBtnOff: { opacity: 0.4 },
+  stopBtn: { backgroundColor: colors.danger },
 });
