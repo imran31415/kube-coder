@@ -37,7 +37,7 @@ EVENT SCHEMA (one JSON object per line in events.jsonl):
       #   status       -> "status": "running"|"idle"|"error" ("turn" lifecycle)
     }
 
-Persistence lives under ~/.claude-tasks/hypervisor/<thread_id>/:
+Persistence lives under /home/dev/.claude-tasks/hypervisor/<thread_id>/:
     thread.json   — metadata (title, assistant, workdir, status, session ids)
     events.jsonl  — canonical transcript (append-only)
 """
@@ -57,8 +57,15 @@ from typing import Any, Callable, Dict, List, Optional
 # ───────────────────────────────────────────────────────────────────────────
 # Paths / constants
 # ───────────────────────────────────────────────────────────────────────────
-HOME = os.environ.get('HOME', '/home/dev')
-HYPERVISOR_DIR = os.path.join(HOME, '.claude-tasks', 'hypervisor')
+# The workspace home is the PVC-mounted /home/dev, where the CLIs' config,
+# credentials (Claude oauth in ~/.claude.json, ~/.ante, …) and the task store
+# live. This is HARDCODED to match server.py's TASKS_DIR — the server process
+# itself may run with a different $HOME (e.g. /home/ubuntu), so keying storage
+# or the CLI subprocess env off os.environ['HOME'] would land in an ephemeral,
+# config-less home. We store threads next to the tasks and force HOME=/home/dev
+# on every spawned CLI so it finds its subscription/oauth + seeded MCP config.
+WORKSPACE_HOME = '/home/dev'
+HYPERVISOR_DIR = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'hypervisor')
 
 # Strip ANSI/VT escape sequences from fallback CLI output so a non-structured
 # assistant still reads as clean prose, never raw terminal control codes.
@@ -141,7 +148,8 @@ class ClaudeAdapter(Adapter):
         # uses, where the "use this API key?" prompt defaults to No.
         env = {k: v for k, v in os.environ.items()
                if k not in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')}
-        return {'argv': argv, 'cwd': ctx.get('workdir') or HOME, 'env': env}
+        env['HOME'] = WORKSPACE_HOME
+        return {'argv': argv, 'cwd': ctx.get('workdir') or WORKSPACE_HOME, 'env': env}
 
     def parse(self, ctx, line):
         line = line.strip()
@@ -211,8 +219,10 @@ class FallbackAdapter(Adapter):
         stdin = text if not (first and ctx.get('preamble')) \
             else (ctx['preamble'] + '\n\n' + text)
         env = dict(os.environ)
-        env.update({'TERM': 'dumb', 'NO_COLOR': '1', 'CI': '1'})
-        return {'argv': ['bash', '-lc', cli_cmd], 'cwd': ctx.get('workdir') or HOME,
+        env.update({'TERM': 'dumb', 'NO_COLOR': '1', 'CI': '1',
+                    'HOME': WORKSPACE_HOME})
+        return {'argv': ['bash', '-lc', cli_cmd],
+                'cwd': ctx.get('workdir') or WORKSPACE_HOME,
                 'env': env, 'stdin': stdin + '\n', 'timeout': FALLBACK_TURN_TIMEOUT,
                 'buffer_stdout': True}
 
@@ -445,10 +455,14 @@ class HypervisorSession:
         ctx = meta.get('adapter', {})
         try:
             spec = adapter.build(ctx, text, first)
+            # Force HOME=/home/dev on every spawned CLI so it finds its config /
+            # credentials regardless of the server process's own $HOME.
+            env = dict(spec.get('env') or os.environ)
+            env['HOME'] = WORKSPACE_HOME
             proc = subprocess.Popen(
                 spec['argv'],
-                cwd=spec.get('cwd') or HOME,
-                env=spec.get('env') or os.environ,
+                cwd=spec.get('cwd') or WORKSPACE_HOME,
+                env=env,
                 stdin=subprocess.PIPE if spec.get('stdin') is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 bufsize=1,
