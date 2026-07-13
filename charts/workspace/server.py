@@ -12,6 +12,7 @@ import collections
 import hmac
 import hashlib
 import secrets
+import mimetypes
 import shutil
 import threading
 import queue
