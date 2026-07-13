@@ -163,6 +163,10 @@ export function Chat() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  // Whether the view is pinned to the bottom. We only auto-scroll on new events
+  // while pinned — so scrolling up to read history isn't yanked back down by the
+  // 2s poll. Starts true; the scroll handler flips it as the user scrolls.
+  const pinnedRef = useRef(true);
 
   function addFiles(files: File[]) {
     const imgs = files.filter(isImageFile);
@@ -205,11 +209,25 @@ export function Chat() {
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [turns]);
+
+  // Track pin state: pinned when within ~80px of the bottom. Scrolling up
+  // unpins (so polls stop yanking down); scrolling back to the bottom re-pins.
+  function onTranscriptScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  // A freshly opened thread starts pinned to the bottom.
+  useEffect(() => {
+    pinnedRef.current = true;
+  }, [active]);
 
   function submit(text?: string) {
     if (blocked) return;
+    pinnedRef.current = true; // sending your own message re-pins to the bottom
     const value = (text ?? draft).trim();
     // Append each uploaded image's absolute path on its own line — Claude Code
     // reads the image by path (same as the Build tab composer).
@@ -250,7 +268,7 @@ export function Chat() {
     <div class="hv-chat">
       {active && <WorkspaceContext />}
 
-      <div class="hv-transcript" ref={scrollRef}>
+      <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll}>
         {empty ? (
           <div class="hv-welcome-host">
             <EmptyState
