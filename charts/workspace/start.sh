@@ -41,6 +41,47 @@ ln -sf /home/dev/.credentials/.ssh ~/.ssh
 touch /home/dev/.credentials/.config/git/config
 ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
 ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
+
+# Persist per-tool API logins across pod restarts (issue #243). The
+# interactive terminals (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
+# which is ephemeral — so `eas login` (Expo), `npm login`, `docker login`,
+# `aws configure`, `gcloud auth` etc. are lost on every restart. Redirect
+# those credential files/dirs onto the persistent /home/dev/.credentials
+# store, the same way ~/.ssh and ~/.gitconfig are handled above. Dirs and
+# single files are treated separately so we never shadow a real login with
+# an empty stub, and any pre-existing ephemeral login is migrated onto the
+# PVC once (no-clobber) so upgrading an established workspace keeps a session
+# that was active before this change shipped.
+persist_cred() {                      # $1 = subpath under HOME, $2 = dir|file
+  local sub="$1" kind="$2"
+  local target="/home/dev/.credentials/$sub"
+  if [ "$kind" = dir ]; then
+    mkdir -p "$target"; chmod 700 "$target"
+  else
+    mkdir -p "$(dirname "$target")"; touch "$target"; chmod 600 "$target"
+  fi
+  for HOME_DIR in /home/ubuntu; do
+    [ -d "$HOME_DIR" ] || continue
+    local link="$HOME_DIR/$sub"
+    if [ -e "$link" ] && [ ! -L "$link" ]; then   # migrate a real login once
+      if [ "$kind" = dir ]; then
+        cp -an "$link/." "$target/" 2>/dev/null || true; rm -rf "$link"
+      else
+        cp -an "$link" "$target" 2>/dev/null || true; rm -f "$link"
+      fi
+    fi
+    mkdir -p "$(dirname "$link")"
+    ln -sfn "$target" "$link"
+    chown -h ubuntu:ubuntu "$link" 2>/dev/null || true
+  done
+}
+persist_cred .expo            dir    # Expo / EAS (eas login, expo login)
+persist_cred .docker          dir    # docker login (registry auth)
+persist_cred .aws             dir    # aws configure / SSO cache
+persist_cred .config/gcloud   dir    # gcloud auth
+persist_cred .npmrc           file   # npm / yarn registry tokens
+persist_cred .git-credentials file   # git credential.helper store (non-GitHub HTTPS)
+
 # CLAUDE.md is chart-managed (describes the workspace environment to
 # Claude). Always overwrite from the configmap so chart updates land
 # — previously we preserved any existing file, which meant edits to

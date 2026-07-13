@@ -16,6 +16,7 @@ This is a Kubernetes-based development workspace running in an isolated containe
 - **`~/.ssh`** — symlinked to `/home/dev/.credentials/.ssh` (persistent)
 - **`~/.gitconfig`** — symlinked to `/home/dev/.credentials/.config/git` (persistent)
 - **`~/.config/gh`** — symlinked to `/home/dev/.credentials/.config/gh` (persistent)
+- **Per-tool logins persist too** — `~/.expo`, `~/.docker`, `~/.aws`, `~/.config/gcloud`, `~/.npmrc`, and `~/.git-credentials` are symlinked into `/home/dev/.credentials/`, so `eas login`, `npm login`, `docker login`, `aws configure`, and `gcloud auth` survive pod restarts (no re-login every session). For non-GitHub HTTPS git, opt in per host with `git config --global credential.https://<host>.helper store` (keeps the App-token helper for github.com untouched); creds save to the now-persistent `~/.git-credentials`.
 
 ## Runtimes & Languages
 
