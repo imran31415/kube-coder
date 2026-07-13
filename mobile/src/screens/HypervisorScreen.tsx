@@ -10,6 +10,8 @@ import {
   Image,
   KeyboardAvoidingView,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -79,6 +81,10 @@ export default function HypervisorScreen() {
   const [chatsOpen, setChatsOpen] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
+  // Whether the view is pinned to the bottom. We only auto-scroll on new events
+  // while pinned — so scrolling up to read history isn't yanked back down by the
+  // 2s poll. Starts true; onScroll flips it as the user scrolls.
+  const pinnedRef = useRef(true);
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -118,9 +124,22 @@ export default function HypervisorScreen() {
   }, [activeId]);
 
   useEffect(() => {
+    if (!pinnedRef.current) return;
     const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
     return () => clearTimeout(t);
   }, [events]);
+
+  // A freshly opened thread starts pinned to the bottom.
+  useEffect(() => {
+    pinnedRef.current = true;
+  }, [activeId]);
+
+  // Pinned when within ~80px of the bottom. Scrolling up unpins (so polls stop
+  // pulling down); scrolling back to the bottom re-pins.
+  function onTranscriptScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    pinnedRef.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+  }
 
   function openThread(id: string) {
     setActiveId(id);
@@ -202,6 +221,7 @@ export default function HypervisorScreen() {
     // Append each uploaded image's absolute path on its own line — Claude reads
     // the image by path (same as the Build tab composer).
     const finalText = [msg, ...paths].filter(Boolean).join('\n');
+    pinnedRef.current = true; // sending your own message re-pins to the bottom
     setSending(true);
     setError(null);
     setDraft('');
@@ -306,7 +326,13 @@ export default function HypervisorScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={insets.top + headerH}
       >
-        <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.transcript}>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.flex}
+          contentContainerStyle={styles.transcript}
+          onScroll={onTranscriptScroll}
+          scrollEventThrottle={100}
+        >
           {empty ? (
             <View style={styles.welcome}>
               <EmptyState
