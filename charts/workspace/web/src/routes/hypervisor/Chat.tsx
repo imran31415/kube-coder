@@ -122,7 +122,60 @@ function MediaBlock({
   );
 }
 
-function AgentBlocks({ blocks }: { blocks: Block[] }) {
+/** A multiple-choice prompt the agent emitted (a ```choice block). Options are
+ *  clickable buttons; clicking one sends it as the next message — no need to
+ *  type "1". Only the latest turn's picker is `interactive`; historical ones
+ *  render disabled so you can't re-answer a resolved question. The composer
+ *  stays open for "none of these — let me type my own answer". */
+function ChoiceBlock({
+  question,
+  options,
+  interactive,
+  onChoose,
+}: {
+  question?: string;
+  options: string[];
+  interactive: boolean;
+  onChoose: (text: string) => void;
+}) {
+  const disabled = !interactive || sending.value || activeStatus.value === 'running';
+  return (
+    <div class="hv-choice">
+      {question && (
+        <div
+          class="hv-choice-q"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(question) }}
+        />
+      )}
+      <div class="hv-choice-opts">
+        {options.map((o, i) => (
+          <button
+            key={i}
+            type="button"
+            class="hv-choice-opt"
+            disabled={disabled}
+            onClick={() => onChoose(o)}
+          >
+            <span class="hv-choice-num">{i + 1}</span>
+            <span class="hv-choice-text">{o}</span>
+          </button>
+        ))}
+      </div>
+      {interactive && <div class="hv-choice-hint">Or type your own answer below.</div>}
+    </div>
+  );
+}
+
+function AgentBlocks({
+  blocks,
+  interactive,
+  onChoose,
+}: {
+  blocks: Block[];
+  interactive: boolean;
+  onChoose: (text: string) => void;
+}) {
   return (
     <>
       {blocks.map((b, i) => {
@@ -147,6 +200,16 @@ function AgentBlocks({ blocks }: { blocks: Block[] }) {
                 url={b.url}
                 title={b.title}
                 height={b.height}
+              />
+            );
+          case 'choice':
+            return (
+              <ChoiceBlock
+                key={i}
+                question={b.question}
+                options={b.options}
+                interactive={interactive}
+                onChoose={onChoose}
               />
             );
           default:
@@ -319,7 +382,11 @@ export function Chat() {
                         </span>
                       )}
                     </div>
-                    <AgentBlocks blocks={t.blocks} />
+                    <AgentBlocks
+                      blocks={t.blocks}
+                      interactive={i === turns.length - 1 && !working}
+                      onChoose={submit}
+                    />
                   </div>
                 </div>
               ),

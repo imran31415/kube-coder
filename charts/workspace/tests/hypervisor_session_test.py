@@ -347,5 +347,64 @@ class StopTest(unittest.TestCase):
         self.assertTrue(self.s._stop_requested())
 
 
+class ChoiceExpansionTest(unittest.TestCase):
+    """The ```choice fence → canonical `choice` event split (harness-agnostic)."""
+
+    def test_parse_body_with_question_and_options(self):
+        ev = hs._parse_choice_body('Which database?\n- Postgres\n- MySQL\n')
+        self.assertEqual(ev, {'role': 'assistant', 'type': 'choice',
+                              'options': ['Postgres', 'MySQL'],
+                              'question': 'Which database?'})
+
+    def test_parse_body_numbered_and_no_question(self):
+        ev = hs._parse_choice_body('1) A\n2. B\n')
+        self.assertEqual(ev['options'], ['A', 'B'])
+        self.assertNotIn('question', ev)
+
+    def test_parse_body_no_options_is_none(self):
+        self.assertIsNone(hs._parse_choice_body('just prose, no bullets'))
+
+    def test_expand_splits_message_into_prose_plus_choice(self):
+        msg = {'role': 'assistant', 'type': 'message',
+               'text': 'Here are the options.\n```choice\nPick one\n- A\n- B\n```'}
+        out = hs._expand_choices(msg)
+        self.assertEqual(out[0], {'role': 'assistant', 'type': 'message',
+                                  'text': 'Here are the options.'})
+        self.assertEqual(out[1], {'role': 'assistant', 'type': 'choice',
+                                  'options': ['A', 'B'], 'question': 'Pick one'})
+
+    def test_expand_passthrough_for_plain_message(self):
+        msg = {'role': 'assistant', 'type': 'message', 'text': 'no fence here'}
+        self.assertEqual(hs._expand_choices(msg), [msg])
+
+    def test_expand_passthrough_for_non_assistant(self):
+        msg = {'role': 'user', 'type': 'message', 'text': '```choice\n- A\n```'}
+        self.assertEqual(hs._expand_choices(msg), [msg])
+
+    def test_unparseable_fence_kept_as_raw_text(self):
+        msg = {'role': 'assistant', 'type': 'message',
+               'text': '```choice\nno options at all\n```'}
+        out = hs._expand_choices(msg)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]['type'], 'message')
+
+    def test_append_persists_split_events(self):
+        tmp = tempfile.mkdtemp()
+        orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = tmp
+        try:
+            s = hs.HypervisorSession.create(
+                assistant='claude', workdir='/home/dev', cli_cmd='claude',
+                preamble='', title='x')
+            s._append([{'role': 'assistant', 'type': 'message',
+                        'text': 'Choose:\n```choice\n- A\n- B\n```'}])
+            evs = s.read_events()
+            self.assertEqual([e['type'] for e in evs], ['message', 'choice'])
+            self.assertEqual(evs[1]['options'], ['A', 'B'])
+            self.assertEqual([e['seq'] for e in evs], [1, 2])
+        finally:
+            hs.HYPERVISOR_DIR = orig
+
+
 if __name__ == '__main__':
     unittest.main()

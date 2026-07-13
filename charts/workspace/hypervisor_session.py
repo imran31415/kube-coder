@@ -35,7 +35,16 @@ EVENT SCHEMA (one JSON object per line in events.jsonl):
       #   tool_result  -> "tool_use_id": str, "text": str, "is_error": bool
       #   error        -> "text": str
       #   status       -> "status": "running"|"idle"|"error" ("turn" lifecycle)
+      #   choice       -> "options": [str, ...], "question": str (optional)
     }
+
+The `choice` event is how the agent asks the user to pick between a few options
+(rendered as clickable buttons in the chat). It is NOT emitted by any adapter —
+instead, when the agent ends an assistant message with a ```choice fenced block
+(instructed via the preamble), _append() splits that message into a prose
+`message` + a `choice` event centrally, downstream of every adapter. So the
+picker works identically for Claude and every fallback CLI, and clients stay
+pure renderers.
 
 Persistence lives under /home/dev/.claude-tasks/hypervisor/<thread_id>/:
     thread.json   — metadata (title, assistant, workdir, status, session ids)
@@ -129,6 +138,60 @@ def _log(msg: str) -> None:
 
 def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text or '')
+
+
+# A ```choice fenced block turns into a clickable multiple-choice picker. We
+# parse it centrally (see _expand_choices, called from _append) so it works for
+# every harness, not per-adapter. First non-bullet line is an optional question;
+# `-`/`*`/`1.`/`1)` lines are the options.
+_CHOICE_FENCE_RE = re.compile(r'```choice[^\n]*\n(.*?)```', re.DOTALL)
+_CHOICE_OPT_RE = re.compile(r'^(?:[-*]|\d+[.)])\s+(.+)$')
+
+
+def _parse_choice_body(body: str) -> Optional[Dict[str, Any]]:
+    options: List[str] = []
+    question = ''
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _CHOICE_OPT_RE.match(line)
+        if m:
+            options.append(m.group(1).strip())
+        elif not options:
+            question = f'{question} {line}'.strip()
+    if not options:
+        return None
+    ev: Dict[str, Any] = {'role': 'assistant', 'type': 'choice', 'options': options}
+    if question:
+        ev['question'] = question
+    return ev
+
+
+def _expand_choices(partial: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Split an assistant message containing a ```choice fence into a prose
+    `message` + a canonical `choice` event. Non-message or fence-free partials
+    pass through unchanged — so this is a safe no-op for everything else."""
+    if partial.get('role') != 'assistant' or partial.get('type') != 'message':
+        return [partial]
+    text = partial.get('text') or ''
+    if '```choice' not in text:
+        return [partial]
+    out: List[Dict[str, Any]] = []
+    last = 0
+    for m in _CHOICE_FENCE_RE.finditer(text):
+        before = text[last:m.start()].strip()
+        if before:
+            out.append({'role': 'assistant', 'type': 'message', 'text': before})
+        choice = _parse_choice_body(m.group(1))
+        # Unparseable fence (no options) → keep the raw text so nothing is lost.
+        out.append(choice or {'role': 'assistant', 'type': 'message',
+                              'text': m.group(0)})
+        last = m.end()
+    rest = text[last:].strip()
+    if rest:
+        out.append({'role': 'assistant', 'type': 'message', 'text': rest})
+    return out or [partial]
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -755,10 +818,18 @@ class HypervisorSession:
     def _append(self, partials: List[Dict[str, Any]]) -> None:
         if not partials:
             return
+        # Expand any ```choice fence in an assistant message into a prose
+        # message + a canonical choice event (harness-agnostic — every adapter's
+        # output funnels through here).
+        expanded: List[Dict[str, Any]] = []
+        for p in partials:
+            expanded.extend(_expand_choices(p))
+        if not expanded:
+            return
         with self._append_lock:
             seq = self._next_seq()
             with open(self.events_path, 'a') as f:
-                for p in partials:
+                for p in expanded:
                     e = dict(p)
                     e['seq'] = seq
                     e['ts'] = _now()

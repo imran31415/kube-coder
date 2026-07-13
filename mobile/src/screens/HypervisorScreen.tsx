@@ -400,7 +400,15 @@ export default function HypervisorScreen() {
                     {working && i === turns.length - 1 && <Text style={styles.working}>· working…</Text>}
                   </View>
                   {turn.blocks.map((b, j) => (
-                    <Block key={j} block={b} id={`${i}:${j}`} expanded={expanded} setExpanded={setExpanded} />
+                    <Block
+                      key={j}
+                      block={b}
+                      id={`${i}:${j}`}
+                      expanded={expanded}
+                      setExpanded={setExpanded}
+                      interactive={i === turns.length - 1 && !working}
+                      onChoose={(t) => void send(t)}
+                    />
                   ))}
                 </View>
               ),
@@ -564,11 +572,15 @@ function Block({
   id,
   expanded,
   setExpanded,
+  interactive,
+  onChoose,
 }: {
   block: HvBlock;
   id: string;
   expanded: Set<string>;
   setExpanded: (s: Set<string>) => void;
+  interactive: boolean;
+  onChoose: (text: string) => void;
 }) {
   if (block.kind === 'prose') {
     return <Text style={styles.prose}>{block.text}</Text>;
@@ -578,6 +590,9 @@ function Block({
   }
   if (block.kind === 'media') {
     return <MediaBlock block={block} />;
+  }
+  if (block.kind === 'choice') {
+    return <ChoiceBlock question={block.question} options={block.options} interactive={interactive} onChoose={onChoose} />;
   }
   const open = expanded.has(id);
   const toggle = () => {
@@ -595,6 +610,40 @@ function Block({
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={colors.textFaint} />
       </Pressable>
       {open && block.detail ? <Text style={styles.activityDetail}>{block.detail}</Text> : null}
+    </View>
+  );
+}
+
+/** A multiple-choice prompt (a ```choice block the backend parsed into a choice
+ *  event). Each option is a tappable button that sends it as the next message —
+ *  no typing "1". Only the latest turn's picker is interactive; older ones are
+ *  disabled. The composer stays open to type a different answer. */
+function ChoiceBlock({
+  question,
+  options,
+  interactive,
+  onChoose,
+}: {
+  question?: string;
+  options: string[];
+  interactive: boolean;
+  onChoose: (text: string) => void;
+}) {
+  return (
+    <View style={styles.choice}>
+      {question ? <Text style={styles.choiceQ}>{question}</Text> : null}
+      {options.map((o, i) => (
+        <Pressable
+          key={i}
+          onPress={() => interactive && onChoose(o)}
+          disabled={!interactive}
+          style={({ pressed }) => [styles.choiceOpt, pressed && interactive && styles.choiceOptOn, !interactive && styles.choiceOptOff]}
+        >
+          <Text style={styles.choiceNum}>{i + 1}</Text>
+          <Text style={styles.choiceText}>{o}</Text>
+        </Pressable>
+      ))}
+      {interactive ? <Text style={styles.choiceHint}>Or type your own answer below.</Text> : null}
     </View>
   );
 }
@@ -774,6 +823,36 @@ const styles = StyleSheet.create({
   agentVia: { color: colors.textFaint, fontSize: font.size.xs },
   working: { color: colors.textFaint, fontSize: font.size.xs, fontStyle: 'italic' },
   prose: { color: colors.text, fontSize: font.size.md, lineHeight: 22 },
+  choice: { gap: space.sm, marginTop: space.xs },
+  choiceQ: { color: colors.text, fontSize: font.size.md, fontWeight: '600', lineHeight: 21 },
+  choiceOpt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    minHeight: 44,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.card,
+  },
+  choiceOptOn: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  choiceOptOff: { opacity: 0.55 },
+  choiceNum: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    textAlign: 'center',
+    lineHeight: 20,
+    fontSize: font.size.xs,
+    fontWeight: '700',
+    color: colors.textMuted,
+    backgroundColor: colors.surface2,
+    overflow: 'hidden',
+  },
+  choiceText: { flex: 1, color: colors.text, fontSize: font.size.md },
+  choiceHint: { color: colors.textFaint, fontSize: font.size.xs, fontStyle: 'italic' },
   activity: {
     borderWidth: 1,
     borderColor: colors.border,

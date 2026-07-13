@@ -155,7 +155,7 @@ export interface ControllerCapacity {
 // A thread is a structured agent session; the server returns a canonical event
 // stream (see charts/workspace/hypervisor_session.py) the app renders directly.
 export type HvEventRole = 'user' | 'assistant' | 'system';
-export type HvEventType = 'message' | 'tool_call' | 'tool_result' | 'error' | 'status';
+export type HvEventType = 'message' | 'tool_call' | 'tool_result' | 'error' | 'status' | 'choice';
 
 export interface HvEvent {
   seq: number;
@@ -168,6 +168,10 @@ export interface HvEvent {
   tool_use_id?: string;
   is_error?: boolean;
   status?: string;
+  // choice events: a multiple-choice prompt (backend splits a ```choice fence
+  // into this — see hypervisor_session.py). Rendered as tappable buttons.
+  options?: string[];
+  question?: string;
 }
 
 export interface HypervisorAssistant {
