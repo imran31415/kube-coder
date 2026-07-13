@@ -31,10 +31,44 @@ export interface HvEvent {
   status?: string;
 }
 
-/** A block inside an agent turn: prose (markdown) or a tool/command activity. */
+/** A block inside an agent turn. Besides prose + tool-activity, the agent can
+ *  render rich content by calling the dashboard MCP render tools (show_app_preview
+ *  / show_media) — those tool_calls become `embed` / `media` blocks here. */
 export type Block =
   | { kind: 'prose'; text: string }
-  | { kind: 'activity'; label: string; detail: string; error?: boolean };
+  | { kind: 'activity'; label: string; detail: string; error?: boolean }
+  | { kind: 'embed'; port: number; title?: string; height?: number }
+  | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number };
+
+/** MCP render tools whose tool_call renders inline instead of a text chip. */
+const APP_PREVIEW_TOOL = 'mcp__dashboard__show_app_preview';
+const MEDIA_TOOL = 'mcp__dashboard__show_media';
+
+function num(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : (v as number);
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
+}
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v : undefined;
+}
+
+/** Map a render tool_call to its block, or null if it isn't a render tool. */
+function renderBlock(name: string, input: unknown): Block | null {
+  const a = (input || {}) as Record<string, unknown>;
+  if (name === APP_PREVIEW_TOOL) {
+    const port = num(a.port);
+    if (port === undefined) return null;
+    return { kind: 'embed', port, title: str(a.title), height: num(a.height) };
+  }
+  if (name === MEDIA_TOOL) {
+    const mediaKind = a.media_kind === 'video' ? 'video' : 'image';
+    const path = str(a.path);
+    const url = str(a.url);
+    if (!path && !url) return null;
+    return { kind: 'media', mediaKind, path, url, title: str(a.title), height: num(a.height) };
+  }
+  return null;
+}
 
 /** A rendered turn: a user bubble or an agent turn made of blocks. */
 export type Turn =
@@ -85,6 +119,9 @@ function toolLabel(name: string): string {
 export function buildTurns(events: HvEvent[]): Turn[] {
   const turns: Turn[] = [];
   let agent: { role: 'agent'; blocks: Block[] } | null = null;
+  // tool_use_ids of render tool_calls — their tool_result is confirmation text
+  // we swallow (the rendered block is the real output), unless it errored.
+  const renderIds = new Set<string>();
 
   const openAgent = () => {
     if (!agent) {
@@ -103,12 +140,20 @@ export function buildTurns(events: HvEvent[]): Turn[] {
     if (e.type === 'message' && (e.text || '').trim()) {
       openAgent().blocks.push({ kind: 'prose', text: e.text || '' });
     } else if (e.type === 'tool_call') {
-      openAgent().blocks.push({
-        kind: 'activity',
-        label: toolLabel(e.tool?.name || 'tool'),
-        detail: prettyInput(e.tool?.input),
-      });
+      const rendered = renderBlock(e.tool?.name || '', e.tool?.input);
+      if (rendered) {
+        if (e.tool_id) renderIds.add(e.tool_id);
+        openAgent().blocks.push(rendered);
+      } else {
+        openAgent().blocks.push({
+          kind: 'activity',
+          label: toolLabel(e.tool?.name || 'tool'),
+          detail: prettyInput(e.tool?.input),
+        });
+      }
     } else if (e.type === 'tool_result') {
+      // Swallow a render tool's confirmation result (unless it failed).
+      if (e.tool_use_id && renderIds.has(e.tool_use_id) && !e.is_error) continue;
       const blocks = openAgent().blocks;
       const last = [...blocks].reverse().find((b) => b.kind === 'activity') as
         | { kind: 'activity'; label: string; detail: string; error?: boolean }

@@ -10,6 +10,54 @@ describe('buildTurns', () => {
     expect(buildTurns([])).toEqual([]);
   });
 
+  it('renders show_app_preview as an embed block', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'p1',
+           tool: { name: 'mcp__dashboard__show_app_preview', input: { port: '3000', title: 'Vite', height: 320 } } }, 1),
+      ev({ role: 'system', type: 'tool_result', tool_use_id: 'p1', text: 'Embedding…' }, 2),
+    ]);
+    if (turns[0].role === 'agent') {
+      expect(turns[0].blocks).toHaveLength(1); // result swallowed
+      const b = turns[0].blocks[0];
+      expect(b).toEqual({ kind: 'embed', port: 3000, title: 'Vite', height: 320 });
+    }
+  });
+
+  it('renders show_media (path/image) and (url/video) as media blocks', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'm1',
+           tool: { name: 'mcp__dashboard__show_media', input: { media_kind: 'image', path: 'shot.png' } } }, 1),
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'm2',
+           tool: { name: 'mcp__dashboard__show_media', input: { media_kind: 'video', url: 'https://x/c.mp4' } } }, 2),
+    ]);
+    if (turns[0].role === 'agent') {
+      expect(turns[0].blocks[0]).toEqual({ kind: 'media', mediaKind: 'image', path: 'shot.png', url: undefined, title: undefined, height: undefined });
+      expect(turns[0].blocks[1]).toEqual({ kind: 'media', mediaKind: 'video', path: undefined, url: 'https://x/c.mp4', title: undefined, height: undefined });
+    }
+  });
+
+  it('keeps a render tool error visible instead of swallowing it', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'm1',
+           tool: { name: 'mcp__dashboard__show_media', input: { media_kind: 'image', path: 'x.png' } } }, 1),
+      ev({ role: 'system', type: 'tool_result', tool_use_id: 'm1', is_error: true, text: 'file not found' }, 2),
+    ]);
+    if (turns[0].role === 'agent') {
+      const hasError = turns[0].blocks.some((b) => b.kind === 'activity' && b.error);
+      expect(hasError).toBe(true);
+    }
+  });
+
+  it('falls back to an activity chip for an unrenderable render call (missing port)', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'p1',
+           tool: { name: 'mcp__dashboard__show_app_preview', input: {} } }, 1),
+    ]);
+    if (turns[0].role === 'agent') {
+      expect(turns[0].blocks[0].kind).toBe('activity');
+    }
+  });
+
   it('groups a user turn then an agent prose turn', () => {
     const turns = buildTurns([
       ev({ role: 'user', type: 'message', text: 'hi' }, 1),

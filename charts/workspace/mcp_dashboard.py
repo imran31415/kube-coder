@@ -223,6 +223,52 @@ def _t_list_triggers(a):
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Tool handlers — render (Hypervisor rich content)
+#
+# These don't mutate anything; they exist so the agent can render live app
+# previews / images / videos inline in the Hypervisor chat. The render SIGNAL is
+# the tool CALL itself (name + input), which the chat frontend keys off — the
+# text returned here is just confirmation for the agent.
+# ───────────────────────────────────────────────────────────────────────────
+
+def _t_show_app_preview(a):
+    port = a.get('port')
+    if isinstance(port, str) and port.isdigit():
+        port = int(port)
+    if not isinstance(port, int) or isinstance(port, bool) or port <= 0:
+        return _err('port (a positive number) is required')
+    # Best-effort note about whether a listener is up — still render regardless,
+    # since the app may be mid-startup.
+    _, apps = _api('GET', '/api/apps')
+    status = None
+    if isinstance(apps, dict):
+        for app in apps.get('apps', []) or []:
+            if app.get('port') == port:
+                status = app.get('status')
+                break
+    note = f'Embedding a live preview of the app on port {port} in the chat.'
+    if status and status != 'running':
+        note += f' (/api/apps reports this port as "{status}".)'
+    elif status is None:
+        note += ' (no listener detected yet — it may still be starting.)'
+    return _ok(note)
+
+
+def _t_show_media(a):
+    media_kind = (a.get('media_kind') or a.get('kind') or 'image').strip().lower()
+    if media_kind not in ('image', 'video'):
+        return _err("media_kind must be 'image' or 'video'")
+    path = (a.get('path') or '').strip()
+    url = (a.get('url') or '').strip()
+    if bool(path) == bool(url):
+        return _err('provide exactly one of: path (a file under /home/dev) or url (http[s])')
+    if url and not (url.startswith('http://') or url.startswith('https://')):
+        return _err('url must be http(s)')
+    where = f'file {path}' if path else url
+    return _ok(f'Rendering {media_kind} ({where}) in the chat.')
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Tool handlers — safe write
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -388,6 +434,40 @@ TOOLS: Dict[str, Any] = {
         'list_triggers',
         'List configured webhooks and cron schedules (the Triggers tab).',
         _t_list_triggers),
+
+    # ── render (Hypervisor rich content) ────────────────────────────────────
+    'show_app_preview': _tool(
+        'show_app_preview',
+        'Embed a LIVE preview (iframe) of an app running on a local port inline '
+        'in the Hypervisor chat. Call this when you start, build, or want to show '
+        'a running web app — e.g. after launching a dev server. Use list_apps to '
+        'find the port if unsure.',
+        _t_show_app_preview,
+        properties={
+            'port': {'type': 'number',
+                     'description': 'The local port the app is listening on.'},
+            'title': {'type': 'string',
+                      'description': 'Optional caption shown above the preview.'},
+            'height': {'type': 'number',
+                       'description': 'Optional preview height in px (default ~280).'},
+        }, required=['port']),
+    'show_media': _tool(
+        'show_media',
+        'Render an image or video inline in the Hypervisor chat. Source is either '
+        'a workspace file path under /home/dev (e.g. a screenshot you just saved) '
+        'or an http(s) URL. Call this proactively when you produce or reference a '
+        'visual.',
+        _t_show_media,
+        properties={
+            'media_kind': {'type': 'string',
+                           'description': "'image' or 'video'."},
+            'path': {'type': 'string',
+                     'description': 'A file under /home/dev (relative), e.g. shot.png.'},
+            'url': {'type': 'string',
+                    'description': 'An http(s) URL (use instead of path).'},
+            'title': {'type': 'string', 'description': 'Optional caption.'},
+            'height': {'type': 'number', 'description': 'Optional max height in px.'},
+        }, required=['media_kind']),
 
     # ── safe write ────────────────────────────────────────────────────────
     'create_task': _tool(
