@@ -106,6 +106,30 @@ class FallbackAdapterTest(unittest.TestCase):
         self.assertEqual(out[0]['type'], 'error')
 
 
+class ProviderKeyOverlayTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs._PROVIDER_KEYS_FILE
+        hs._PROVIDER_KEYS_FILE = os.path.join(self.tmp, 'provider-keys.json')
+
+    def tearDown(self):
+        hs._PROVIDER_KEYS_FILE = self._orig
+
+    def test_missing_file_is_empty_overlay(self):
+        self.assertEqual(hs._provider_key_overlay(), {})
+
+    def test_only_allowed_nonempty_keys_surface(self):
+        with open(hs._PROVIDER_KEYS_FILE, 'w') as f:
+            json.dump({'OPENROUTER_API_KEY': 'k1', 'DEEPSEEK_API_KEY': '  ',
+                       'EVIL': 'nope'}, f)
+        self.assertEqual(hs._provider_key_overlay(), {'OPENROUTER_API_KEY': 'k1'})
+
+    def test_garbage_file_is_empty_overlay(self):
+        with open(hs._PROVIDER_KEYS_FILE, 'w') as f:
+            f.write('not json')
+        self.assertEqual(hs._provider_key_overlay(), {})
+
+
 class SessionEventsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

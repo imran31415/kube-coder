@@ -669,6 +669,67 @@ def _fake_kubectl_ok(*args, **kwargs):
     return mock.Mock(returncode=0, stdout='', stderr='')
 
 
+class ProviderKeysManagerTests(unittest.TestCase):
+    """Tests for ProviderKeysManager: set/delete, masked public_view (never
+    leaks the key), env_overlay only exposes allowed vars, atomic 0600 write."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='kctest-pk-')
+        self._orig_file = server.ProviderKeysManager.KEYS_FILE
+        server.ProviderKeysManager.KEYS_FILE = os.path.join(self.tmpdir, 'provider-keys.json')
+
+    def tearDown(self):
+        server.ProviderKeysManager.KEYS_FILE = self._orig_file
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_read_empty_when_absent(self):
+        self.assertEqual(server.ProviderKeysManager._read(), {})
+
+    def test_set_and_env_overlay_roundtrip(self):
+        ok, err = server.ProviderKeysManager.set('OPENROUTER_API_KEY', 'sk-or-secret123')
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertEqual(server.ProviderKeysManager.env_overlay(),
+                         {'OPENROUTER_API_KEY': 'sk-or-secret123'})
+
+    def test_set_rejects_unknown_provider(self):
+        ok, err = server.ProviderKeysManager.set('AWS_SECRET_KEY', 'x')
+        self.assertFalse(ok)
+        self.assertIn('unknown provider', err or '')
+        # Nothing written for a rejected provider.
+        self.assertEqual(server.ProviderKeysManager._read(), {})
+
+    def test_set_rejects_empty_key(self):
+        ok, err = server.ProviderKeysManager.set('DEEPSEEK_API_KEY', '   ')
+        self.assertFalse(ok)
+        self.assertIn('required', err or '')
+
+    def test_public_view_masks_and_never_leaks_key(self):
+        server.ProviderKeysManager.set('OPENROUTER_API_KEY', 'sk-or-abcd1234ecc18')
+        view = server.ProviderKeysManager.public_view()
+        self.assertTrue(view['OPENROUTER_API_KEY']['set'])
+        self.assertEqual(view['OPENROUTER_API_KEY']['hint'], '…cc18')
+        self.assertFalse(view['DEEPSEEK_API_KEY']['set'])
+        # The raw key must not appear anywhere in the serialized view.
+        self.assertNotIn('abcd1234', json.dumps(view))
+
+    def test_delete_removes_key(self):
+        server.ProviderKeysManager.set('ANTHROPIC_API_KEY', 'sk-ant-xyz')
+        self.assertTrue(server.ProviderKeysManager.delete('ANTHROPIC_API_KEY'))
+        self.assertEqual(server.ProviderKeysManager.env_overlay(), {})
+
+    def test_written_file_is_0600(self):
+        server.ProviderKeysManager.set('OPENROUTER_API_KEY', 'sk-or-x')
+        mode = os.stat(server.ProviderKeysManager.KEYS_FILE).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_env_overlay_only_allowed_vars(self):
+        # A stray non-allowed key in the file is never surfaced.
+        server.ProviderKeysManager._write({'OPENROUTER_API_KEY': 'k', 'EVIL': 'v'})
+        self.assertEqual(server.ProviderKeysManager.env_overlay(), {'OPENROUTER_API_KEY': 'k'})
+
+
 class CronManagerTests(unittest.TestCase):
     """Tests for CronManager: config CRUD, schedule validation, fire_token
     minting, kubectl apply manifest construction (without actually calling out

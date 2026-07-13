@@ -4,6 +4,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Label, ScreenHeader } from '../components/ui';
 import { ControllerConnectModal } from '../components/ControllerConnectModal';
+import { ProviderKeysCard } from '../components/ProviderKeysCard';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { colors, font, space } from '../theme';
@@ -73,6 +74,8 @@ export default function SettingsScreen() {
             style={{ marginTop: space.sm }}
           />
         ) : null}
+
+        {!cfg.mock ? <ProviderKeysCard readOnly={isDemo} /> : null}
 
         {/* Admin controller — a second, optional connection. */}
         <Card style={{ gap: space.md, marginTop: space.lg }}>
