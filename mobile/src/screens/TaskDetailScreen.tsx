@@ -1,6 +1,7 @@
 /** Task detail: the live ttyd session (or archived output) + follow-up composer. */
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
@@ -91,6 +92,7 @@ function finishedNote(status: string): { icon: keyof typeof Ionicons.glyphMap; t
 export default function TaskDetailScreen() {
   const route = useRoute<RouteProp<TasksStackParams, 'TaskDetail'>>();
   const nav = useNavigation();
+  const headerHeight = useHeaderHeight();
   const { id } = route.params;
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [output, setOutput] = useState('');
@@ -373,7 +375,7 @@ export default function TaskDetailScreen() {
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
-        keyboardVerticalOffset={90}
+        keyboardVerticalOffset={headerHeight}
         onLayout={(e) => {
           splitAreaH.current = e.nativeEvent.layout.height;
         }}

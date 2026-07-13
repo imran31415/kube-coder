@@ -1,5 +1,6 @@
 /** Create a new Claude task. */
 import { useNavigation } from '@react-navigation/native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -21,6 +22,7 @@ const ASSISTANTS = ['claude', 'ante', 'opencode-openrouter'];
 
 export default function NewTaskScreen() {
   const nav = useNavigation<TasksNav>();
+  const headerHeight = useHeaderHeight();
   const [prompt, setPrompt] = useState('');
   const [workdir, setWorkdir] = useState('/home/dev');
   const [assistant, setAssistant] = useState('claude');
@@ -45,8 +47,16 @@ export default function NewTaskScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={headerHeight}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+        >
           <Label>Prompt</Label>
           <TextInput
             value={prompt}
@@ -102,7 +112,7 @@ export default function NewTaskScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: space.lg },
+  scroll: { padding: space.lg, paddingBottom: space.xxl },
   prompt: {
     backgroundColor: colors.bgElevated,
     borderWidth: 1,
