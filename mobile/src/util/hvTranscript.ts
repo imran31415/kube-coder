@@ -11,7 +11,8 @@ export type HvBlock =
   | { kind: 'prose'; text: string }
   | { kind: 'activity'; label: string; detail: string; error?: boolean }
   | { kind: 'embed'; port: number; title?: string; height?: number }
-  | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number };
+  | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number }
+  | { kind: 'choice'; question?: string; options: string[] };
 
 export type HvTurn =
   | { role: 'user'; text: string }
@@ -107,6 +108,8 @@ export function buildTurns(events: HvEvent[]): HvTurn[] {
     }
     if (e.type === 'message' && (e.text || '').trim()) {
       openAgent().blocks.push({ kind: 'prose', text: e.text || '' });
+    } else if (e.type === 'choice' && (e.options?.length || 0) > 0) {
+      openAgent().blocks.push({ kind: 'choice', question: e.question, options: e.options || [] });
     } else if (e.type === 'tool_call') {
       const rendered = renderBlock(e.tool?.name || '', e.tool?.input);
       if (rendered) {

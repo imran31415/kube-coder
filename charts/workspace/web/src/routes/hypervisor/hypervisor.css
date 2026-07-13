@@ -833,3 +833,47 @@
   border-radius: 999px;
   cursor: pointer;
 }
+
+/* Multiple-choice picker — a ```choice block the backend split into a choice
+   event. Clickable option buttons so the user never types "1". */
+.hv-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  margin: var(--size-1) 0;
+}
+.hv-choice-q { font-weight: 550; color: var(--text); }
+.hv-choice-q :is(p, ul, ol) { margin: 0; }
+.hv-choice-opts { display: flex; flex-direction: column; gap: var(--size-2); }
+.hv-choice-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--size-2) var(--size-3);
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.hv-choice-opt:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.hv-choice-opt:disabled { opacity: 0.55; cursor: default; }
+.hv-choice-num {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--text-muted);
+  background: var(--surface-3);
+  border-radius: 999px;
+}
+.hv-choice-text { flex: 1; min-width: 0; }
+.hv-choice-hint { font-size: 0.78rem; color: var(--text-subtle); font-style: italic; }

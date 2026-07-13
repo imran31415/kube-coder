@@ -119,6 +119,23 @@ describe('buildTurns', () => {
     expect(turns).toEqual([]);
   });
 
+  it('renders a choice event as a choice block with options', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'message', text: 'Pick a database:' }, 1),
+      ev({ role: 'assistant', type: 'choice', question: 'Which database?', options: ['Postgres', 'MySQL'] }, 2),
+    ]);
+    expect(turns).toHaveLength(1);
+    if (turns[0].role === 'agent') {
+      expect(turns[0].blocks[0]).toEqual({ kind: 'prose', text: 'Pick a database:' });
+      expect(turns[0].blocks[1]).toEqual({ kind: 'choice', question: 'Which database?', options: ['Postgres', 'MySQL'] });
+    }
+  });
+
+  it('ignores a choice event with no options', () => {
+    const turns = buildTurns([ev({ role: 'assistant', type: 'choice', options: [] }, 1)]);
+    expect(turns).toEqual([]);
+  });
+
   it('maps an MCP tool name to its tool part', () => {
     const turns = buildTurns([
       ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',

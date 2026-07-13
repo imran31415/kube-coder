@@ -112,7 +112,18 @@ HYPERVISOR_PREAMBLE = (
     "URL). Do this proactively — when you start or build an app, show its preview; "
     "when you produce a screenshot or image, show it. "
     "Prefer these tools for any question about, or action on, the workspace. "
-    "Answer from tool results, not memory. Be concise and conversational.]\n\n"
+    "Answer from tool results, not memory. Be concise and conversational. "
+    "When you need the user to make a discrete choice between a few options, "
+    "write your normal explanation, then END the message with a fenced choice "
+    "block the chat renders as clickable buttons:\n"
+    "```choice\n"
+    "<optional one-line question>\n"
+    "- First option\n"
+    "- Second option\n"
+    "```\n"
+    "Use it only for genuine either/or decisions, keep each option short (a few "
+    "words), and never put anything after the block. The user can always type a "
+    "different answer instead of clicking one.]\n\n"
 )
 # TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
 # X-Auth-Request-User / X-Auth-Request-Email / Remote-User headers from the
