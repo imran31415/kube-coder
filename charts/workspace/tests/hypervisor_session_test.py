@@ -128,11 +128,83 @@ class SessionEventsTest(unittest.TestCase):
         # since-cursor returns only newer events.
         self.assertEqual(len(s.read_events(since_seq=1)), 1)
 
-    def test_unknown_assistant_uses_fallback_adapter(self):
-        s = hs.HypervisorSession.create(
-            assistant='opencode-openrouter', workdir='/home/dev',
-            cli_cmd='opencode', preamble='', title='x')
-        self.assertEqual(s.read_meta()['adapter_kind'], 'fallback')
+    def test_assistant_adapter_routing(self):
+        cases = {'claude': 'claude', 'ante': 'ante',
+                 'opencode-openrouter': 'opencode', 'opencode-deepseek': 'opencode',
+                 'librefang': 'fallback', 'kc-harness': 'fallback'}
+        for assistant, kind in cases.items():
+            s = hs.HypervisorSession.create(
+                assistant=assistant, workdir='/home/dev', cli_cmd=assistant,
+                preamble='', title='x')
+            self.assertEqual(s.read_meta()['adapter_kind'], kind, assistant)
+
+
+class AnteAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.a = hs.AnteAdapter()
+
+    def test_agentmessage_becomes_assistant_text(self):
+        ctx = {'workdir': '/home/dev'}
+        self.a._reset_turn(ctx)
+        # SessionStart captures the resumable id, emits nothing.
+        self.assertEqual(self.a.parse(ctx, json.dumps(
+            {'event': {'SessionStart': {'session_id': 'ses_1'}}})), [])
+        self.assertEqual(ctx['ante_session_id'], 'ses_1')
+        # AgentMessage inner is the bare text string.
+        out = self.a.parse(ctx, json.dumps({'event': {'AgentMessage': 'PONG'}}))
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message', 'text': 'PONG'}])
+
+    def test_noise_ignored_and_resume_flag(self):
+        ctx = {'ante_session_id': 'ses_9', 'workdir': '/home/dev'}
+        for noise in ('TurnStart', 'UsageUpdate', 'ExtensionRefreshed'):
+            self.assertEqual(self.a.parse(ctx, json.dumps({'event': {noise: {}}})), [])
+        spec = self.a.build(ctx, 'hi', first=False)
+        self.assertIn('-r', spec['argv'])
+        self.assertIn('ses_9', spec['argv'])
+        self.assertIn('--output-format', spec['argv'])
+
+    def test_raw_fallback_when_no_structured_events(self):
+        ctx = {}
+        self.a.build(ctx, 'hi', first=True)       # resets per-turn state
+        self.a.parse(ctx, 'plain non-json line')  # accumulates raw
+        out = self.a.finalize(ctx, 0)
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message',
+                                'text': 'plain non-json line'}])
+
+
+class OpencodeAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.a = hs.OpencodeAdapter()
+
+    def test_text_event_part(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        out = self.a.parse(ctx, json.dumps(
+            {'type': 'text', 'sessionID': 'ses_x', 'part': {'text': 'PONG'}}))
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message', 'text': 'PONG'}])
+        self.assertEqual(ctx['opencode_session_id'], 'ses_x')
+
+    def test_step_events_are_noise(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        self.assertEqual(self.a.parse(ctx, json.dumps({'type': 'step_start', 'part': {}})), [])
+        self.assertEqual(self.a.parse(ctx, json.dumps({'type': 'step_finish', 'part': {}})), [])
+
+    def test_error_event_surfaces_provider_message(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        out = self.a.parse(ctx, json.dumps(
+            {'type': 'error', 'error': {'name': 'APIError',
+                                        'data': {'message': 'Key limit exceeded'}}}))
+        self.assertEqual(out, [{'role': 'system', 'type': 'error', 'text': 'Key limit exceeded'}])
+
+    def test_build_model_from_cli_cmd_and_resume(self):
+        ctx = {'cli_cmd': "opencode --model 'openrouter/anthropic/claude-sonnet-4'"}
+        spec = self.a.build(ctx, 'hi', first=True)
+        self.assertEqual(spec['argv'][:4], ['opencode', 'run', 'hi', '--format'])
+        self.assertIn('openrouter/anthropic/claude-sonnet-4', spec['argv'])
+        ctx['opencode_session_id'] = 'ses_x'
+        self.assertIn('-s', self.a.build(ctx, 'again', first=False)['argv'])
 
 
 class StopTest(unittest.TestCase):
