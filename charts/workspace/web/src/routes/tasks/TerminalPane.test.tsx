@@ -72,6 +72,29 @@ describe('TerminalPane preview source toggle', () => {
   });
 });
 
+describe('TerminalPane copy hint (#243)', () => {
+  it('surfaces the Shift-drag copy hint over the terminal on desktop', async () => {
+    render(<TerminalPane taskId="t1" />);
+    await screen.findByTitle('Task terminal');
+    const hint = await screen.findByRole('note');
+    expect(hint.textContent).toMatch(/Shift-drag/i);
+  });
+
+  it('dismisses permanently and stays gone across remounts', async () => {
+    const first = render(<TerminalPane taskId="t1" />);
+    await first.findByTitle('Task terminal');
+    fireEvent.click(await first.findByRole('button', { name: 'Dismiss copy hint' }));
+    await waitFor(() => expect(first.queryByRole('note')).toBeNull());
+    // Persisted so a later mount never nags again.
+    expect(localStorage.getItem('kc.term.copyHintDismissed')).toBe('1');
+    first.unmount();
+
+    render(<TerminalPane taskId="t2" />);
+    await screen.findByTitle('Task terminal');
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+});
+
 describe('TerminalPane mobile preview', () => {
   let savedMM: typeof window.matchMedia;
   beforeEach(() => {
@@ -104,5 +127,8 @@ describe('TerminalPane mobile preview', () => {
     fireEvent.click(sessionBtn);
     await screen.findByTitle('Task terminal');
     expect(screen.queryByTitle('App preview')).toBeNull();
+    // The Shift-drag copy hint is desktop-only (touch has separate copy
+    // limits), so it must not appear on the mobile Session pane.
+    expect(screen.queryByRole('note')).toBeNull();
   });
 });

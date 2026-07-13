@@ -125,6 +125,7 @@ Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t cla
 ## Tips
 
 - Use `tmux` for long-running processes to avoid losing work if a terminal session drops.
+- **Copying text from the web terminal:** the terminal runs tmux with `mouse on`, so a plain click-drag is captured by tmux (it selects into tmux's own buffer, not your clipboard). Hold **Shift** while dragging to select — that bypasses mouse reporting and gives the browser a native selection, which **⌘/Ctrl+C** then copies to your OS clipboard.
 - The VS Code server runs on port 8080 (no auth — protected by ingress-level authentication).
 - SSH keys persist in `~/.ssh`. Generate with: `ssh-keygen -t ed25519`
 - To check what's running: `curl localhost:6080/health`
