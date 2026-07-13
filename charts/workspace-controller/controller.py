@@ -742,6 +742,26 @@ def set_workspace_image(user, target_version=None, persist=True):
         except (ProvisionError, GithubError) as exc:
             persist_error = str(exc)
             sys.stderr.write(f'[controller] gitops image update {user}->{new_tag} failed: {exc}\n')
+    # Config reconcile — the crux of a real "update". The live image patch above
+    # rolls the pod, but the pod runs server.py (and every other script) from the
+    # Helm-rendered ConfigMaps, which a bare `kubectl patch` NEVER refreshes. So
+    # backend code — new Hypervisor routes, the assistants list, … — would stay
+    # frozen at whatever chart version last did a `helm upgrade`, while the SPA
+    # baked into the image advances. That mismatch is the "workspace updated but
+    # Hypervisor 404s / no assistants" bug. Launch the same provisioning Job used
+    # for create: it runs `make deploy` (helm upgrade from CHART_REF against the
+    # user's gitops config, now carrying new_tag), refreshing every ConfigMap and
+    # rolling the pod via the deployment's checksum/* annotations. Run it even
+    # when the image is already current — a stale ConfigMap can (and does)
+    # coexist with an up-to-date image tag.
+    reconcile = None
+    if provisioning_enabled():
+        try:
+            create_provision_job(user)
+            reconcile = 'launched'
+        except (KubectlError, ProvisionError) as exc:
+            reconcile = 'failed'
+            sys.stderr.write(f'[controller] update {user}: config reconcile Job failed: {exc}\n')
     return {
         'user': user,
         'fromVersion': current_ver,
@@ -751,6 +771,10 @@ def set_workspace_image(user, target_version=None, persist=True):
         'rolled': not already,
         'persisted': persisted,
         'persistError': persist_error,
+        # 'launched' => a helm-upgrade Job is refreshing the ConfigMaps (the pod
+        # will roll again once it completes); None => provisioning not configured,
+        # so this update was image-tag only (legacy behavior).
+        'reconcile': reconcile,
     }
 
 
