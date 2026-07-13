@@ -21,9 +21,12 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import {
+  authHeaders,
   createThread,
   deleteThread,
+  fileRawUrl,
   getHypervisorConfig,
   getThreadDetail,
   listThreads,
@@ -31,6 +34,7 @@ import {
   stopThread,
   uploadTaskImage,
 } from '../api/client';
+import { AppEmbed } from '../components/AppEmbed';
 import type { HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
 import { buildTurns, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
@@ -493,6 +497,12 @@ function Block({
   if (block.kind === 'prose') {
     return <Text style={styles.prose}>{block.text}</Text>;
   }
+  if (block.kind === 'embed') {
+    return <EmbedBlock port={block.port} title={block.title} height={block.height} />;
+  }
+  if (block.kind === 'media') {
+    return <MediaBlock block={block} />;
+  }
   const open = expanded.has(id);
   const toggle = () => {
     const next = new Set(expanded);
@@ -509,6 +519,65 @@ function Block({
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={colors.textFaint} />
       </Pressable>
       {open && block.detail ? <Text style={styles.activityDetail}>{block.detail}</Text> : null}
+    </View>
+  );
+}
+
+/** Live app preview: the existing AppEmbed WebView in a fixed-height box so it
+ *  lays out inside the scrolling transcript. */
+function EmbedBlock({ port, title, height }: { port: number; title?: string; height?: number }) {
+  const h = height && height >= 120 ? height : 260;
+  return (
+    <View style={styles.embed}>
+      <View style={styles.embedHead}>
+        <Ionicons name="globe-outline" size={12} color={colors.textMuted} />
+        <Text style={styles.embedTitle} numberOfLines={1}>
+          {title || `App on :${port}`}
+        </Text>
+      </View>
+      <View style={{ height: h }}>
+        <AppEmbed port={port} name={title || `App :${port}`} compact />
+      </View>
+    </View>
+  );
+}
+
+/** An inline image or video. Workspace files go through the authed
+ *  /api/files/raw endpoint (Bearer header); external URLs are used directly. */
+function MediaBlock({ block }: { block: Extract<HvBlock, { kind: 'media' }> }) {
+  const src = block.url || (block.path ? fileRawUrl(block.path) : '');
+  if (!src) return null;
+  const headers = block.url ? undefined : authHeaders();
+  const h = block.height && block.height >= 80 ? block.height : 320;
+  if (block.mediaKind === 'video') {
+    return <VideoBlock uri={src} headers={headers} height={h} title={block.title} />;
+  }
+  return (
+    <View>
+      <Image source={{ uri: src, headers }} style={[styles.mediaImg, { height: h }]} resizeMode="contain" />
+      {block.title ? <Text style={styles.mediaCap}>{block.title}</Text> : null}
+    </View>
+  );
+}
+
+function VideoBlock({
+  uri,
+  headers,
+  height,
+  title,
+}: {
+  uri: string;
+  headers?: Record<string, string>;
+  height: number;
+  title?: string;
+}) {
+  const player = useVideoPlayer({ uri, headers }, (p) => {
+    p.loop = false;
+  });
+  return (
+    <View>
+      <VideoView player={player} style={[styles.mediaImg, { height }]} contentFit="contain" nativeControls />
+      {title ? <Text style={styles.mediaCap}>{title}</Text> : null}
     </View>
   );
 }
@@ -724,4 +793,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  embed: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+    backgroundColor: colors.card,
+  },
+  embedHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface2,
+  },
+  embedTitle: { flex: 1, color: colors.textMuted, fontSize: font.size.sm, fontWeight: '600' },
+  mediaImg: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface2,
+  },
+  mediaCap: { marginTop: 4, color: colors.textFaint, fontSize: font.size.xs },
 });
