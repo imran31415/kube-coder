@@ -485,10 +485,88 @@ class OpencodeAdapter(_StructuredCliAdapter):
         return []
 
 
+class CodexAdapter(_StructuredCliAdapter):
+    """`codex exec --json` (headless); multi-turn via `codex exec resume <id>`.
+
+    Codex (OpenAI) emits JSONL, captured empirically:
+      {"type":"thread.started","thread_id":"<uuid>"}   → session id (for resume)
+      {"type":"turn.started"} / {"type":"item.started",...}   → in-progress noise
+      {"type":"item.completed","item":{"id":..,"type":"<t>",..}}   → the payload
+      {"type":"turn.completed"|"turn.failed",...}      → turn outcome
+    Transient top-level {"type":"error","message":"Reconnecting..."} lines are
+    connection-retry notices, NOT turn outcomes — only `turn.failed` is terminal,
+    so we deliberately drop the top-level error chatter.
+
+    Auth is ChatGPT OAuth (`codex login` once in the pod; creds under $CODEX_HOME
+    which start.sh persists on the PVC) — no API key. The pod is externally
+    sandboxed (k8s), so we pass --dangerously-bypass-approvals-and-sandbox (its
+    documented use is exactly an externally-sandboxed environment).
+
+    NOTE: item rendering is intentionally minimal (agent message + error) pending
+    an in-pod capture of the full item.type vocabulary (reasoning / command /
+    file-change items) — same empirical-refinement path ante/opencode took.
+    """
+
+    kind = 'codex'
+    # Shared exec options for both the first turn and a resume.
+    def _opts(self, ctx):
+        opts = ['--json', '--skip-git-repo-check',
+                '--dangerously-bypass-approvals-and-sandbox',
+                '-C', ctx.get('workdir') or WORKSPACE_HOME]
+        model = os.environ.get('KC_CODEX_MODEL', '')
+        if model:
+            opts += ['--model', model]
+        return opts
+
+    def build(self, ctx, text, first):
+        self._reset_turn(ctx)
+        sid = ctx.get('codex_session_id')
+        if sid:
+            argv = ['codex', 'exec', 'resume', *self._opts(ctx), sid, text]
+        else:
+            prompt = (ctx['preamble'] + '\n\n' + text) \
+                if (first and ctx.get('preamble')) else text
+            argv = ['codex', 'exec', *self._opts(ctx), prompt]
+        return {'argv': argv, 'cwd': ctx.get('workdir') or WORKSPACE_HOME}
+
+    def _parse_obj(self, ctx, o):
+        t = str(o.get('type') or '')
+        if t == 'thread.started':
+            tid = o.get('thread_id')
+            if isinstance(tid, str):
+                ctx['codex_session_id'] = tid
+            return []
+        if t == 'turn.failed':
+            err = o.get('error') if isinstance(o.get('error'), dict) else {}
+            ctx['_emitted'] = True
+            return [{'role': 'system', 'type': 'error',
+                     'text': err.get('message') or _stringify(o.get('error'))
+                             or 'codex turn failed'}]
+        if t == 'item.completed':
+            item = o.get('item') if isinstance(o.get('item'), dict) else {}
+            it = str(item.get('type') or '')
+            if 'error' in it:
+                ctx['_emitted'] = True
+                return [{'role': 'system', 'type': 'error',
+                         'text': _lift_text(item) or item.get('message')
+                                 or 'codex error'}]
+            # The agent's chat message (agent_message / assistant_message /
+            # message / text). Internal-step items (reasoning, command_execution,
+            # file_change, …) carry no such marker and are skipped for now.
+            if any(s in it for s in ('message', 'text', 'agent', 'assistant')):
+                txt = _lift_text(item)
+                if txt:
+                    ctx['_emitted'] = True
+                    return [{'role': 'assistant', 'type': 'message', 'text': txt}]
+            return []
+        return []  # turn.started / item.started / turn.completed / retry chatter
+
+
 _ADAPTERS: Dict[str, Adapter] = {
     'claude': ClaudeAdapter(),
     'ante': AnteAdapter(),
     'opencode': OpencodeAdapter(),
+    'codex': CodexAdapter(),
     'fallback': FallbackAdapter(),
 }
 
@@ -498,6 +576,8 @@ def _adapter_for(assistant: str) -> Adapter:
         return _ADAPTERS['claude']
     if assistant == 'ante':
         return _ADAPTERS['ante']
+    if assistant == 'codex':
+        return _ADAPTERS['codex']
     if assistant.startswith('opencode'):
         return _ADAPTERS['opencode']
     return _ADAPTERS['fallback']

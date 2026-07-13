@@ -90,6 +90,15 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 ARG OPENCODE_VERSION=1.17.4
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
+# Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
+# as the `codex` assistant and drives the Hypervisor via `codex exec --json`.
+# Auth is ChatGPT OAuth (no API key) — the user runs `codex login` once in the
+# pod; credentials + sessions live under $CODEX_HOME (~/.codex), which start.sh
+# persists on the PVC (same pattern as ~/.claude). npm-global install, so no
+# PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
+ARG CODEX_VERSION=0.144.3
+RUN npm install -g @openai/codex@${CODEX_VERSION}
+
 # Antigravity CLI (agy) — Google's terminal-native coding agent. Selected
 # per-task in the dashboard (the `antigravity` assistant) and spawnable via the
 # agent-orchestrator. Auth is OAuth Google Sign-In (no API key) — the user runs

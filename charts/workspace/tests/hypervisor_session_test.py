@@ -153,7 +153,7 @@ class SessionEventsTest(unittest.TestCase):
         self.assertEqual(len(s.read_events(since_seq=1)), 1)
 
     def test_assistant_adapter_routing(self):
-        cases = {'claude': 'claude', 'ante': 'ante',
+        cases = {'claude': 'claude', 'ante': 'ante', 'codex': 'codex',
                  'opencode-openrouter': 'opencode', 'opencode-deepseek': 'opencode',
                  'librefang': 'fallback', 'kc-harness': 'fallback'}
         for assistant, kind in cases.items():
@@ -229,6 +229,78 @@ class OpencodeAdapterTest(unittest.TestCase):
         self.assertIn('openrouter/anthropic/claude-sonnet-4', spec['argv'])
         ctx['opencode_session_id'] = 'ses_x'
         self.assertIn('-s', self.a.build(ctx, 'again', first=False)['argv'])
+
+
+class CodexAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.a = hs.CodexAdapter()
+
+    def test_thread_started_captures_session_id(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        out = self.a.parse(ctx, json.dumps(
+            {'type': 'thread.started', 'thread_id': 'tid-123'}))
+        self.assertEqual(out, [])
+        self.assertEqual(ctx['codex_session_id'], 'tid-123')
+
+    def test_item_completed_agent_message_becomes_text(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        out = self.a.parse(ctx, json.dumps(
+            {'type': 'item.completed',
+             'item': {'id': 'item_1', 'type': 'agent_message', 'text': 'PONG'}}))
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message', 'text': 'PONG'}])
+
+    def test_item_completed_error_surfaces(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        out = self.a.parse(ctx, json.dumps(
+            {'type': 'item.completed',
+             'item': {'id': 'item_0', 'type': 'error', 'message': 'boom'}}))
+        self.assertEqual(out, [{'role': 'system', 'type': 'error', 'text': 'boom'}])
+
+    def test_turn_failed_is_terminal_error(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        out = self.a.parse(ctx, json.dumps(
+            {'type': 'turn.failed', 'error': {'message': '401 Unauthorized'}}))
+        self.assertEqual(out, [{'role': 'system', 'type': 'error', 'text': '401 Unauthorized'}])
+
+    def test_transient_error_and_step_events_are_noise(self):
+        ctx = {}
+        self.a._reset_turn(ctx)
+        # top-level reconnect chatter is NOT a turn outcome — dropped.
+        self.assertEqual(self.a.parse(ctx, json.dumps(
+            {'type': 'error', 'message': 'Reconnecting... 2/5'}), ), [])
+        for noise in ('turn.started', 'turn.completed'):
+            self.assertEqual(self.a.parse(ctx, json.dumps({'type': noise})), [])
+        self.assertEqual(self.a.parse(ctx, json.dumps(
+            {'type': 'item.started', 'item': {'type': 'reasoning'}})), [])
+        # reasoning item.completed carries no message marker → skipped.
+        self.assertEqual(self.a.parse(ctx, json.dumps(
+            {'type': 'item.completed', 'item': {'type': 'reasoning', 'text': 'hmm'}})), [])
+
+    def test_build_first_turn_and_resume(self):
+        ctx = {'workdir': '/home/dev', 'preamble': 'ROLE'}
+        spec = self.a.build(ctx, 'hi', first=True)
+        self.assertEqual(spec['argv'][:3], ['codex', 'exec', '--json'])
+        self.assertIn('--dangerously-bypass-approvals-and-sandbox', spec['argv'])
+        self.assertIn('--skip-git-repo-check', spec['argv'])
+        self.assertEqual(spec['argv'][-1], 'ROLE\n\nhi')  # preamble prepended, turn 1
+        # resume uses the captured session id via the `exec resume <id>` form.
+        ctx['codex_session_id'] = 'tid-9'
+        spec2 = self.a.build(ctx, 'again', first=False)
+        self.assertEqual(spec2['argv'][:3], ['codex', 'exec', 'resume'])
+        self.assertIn('tid-9', spec2['argv'])
+        self.assertEqual(spec2['argv'][-1], 'again')
+
+    def test_raw_fallback_when_no_structured_events(self):
+        ctx = {}
+        self.a.build(ctx, 'hi', first=True)
+        self.a.parse(ctx, 'plain non-json line')
+        out = self.a.finalize(ctx, 0)
+        self.assertEqual(out, [{'role': 'assistant', 'type': 'message',
+                                'text': 'plain non-json line'}])
 
 
 class StopTest(unittest.TestCase):

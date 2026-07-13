@@ -617,6 +617,13 @@ class ClaudeTaskManager:
             'id': 'antigravity',
             'label': 'Antigravity',
         },
+        # Codex — OpenAI's `codex` CLI, pre-installed in the image. ChatGPT
+        # OAuth login (no API key: `codex login` once in the pod), so it's
+        # listed whenever its binary is resolvable — same signal as Antigravity.
+        'codex': {
+            'id': 'codex',
+            'label': 'Codex',
+        },
         # LibreFang — open-source agent OS (https://librefang.ai). Tasks talk
         # to its registry-bundled "coder" agent via `librefang chat`; the CLI
         # picks up whatever provider key is in the environment
@@ -653,6 +660,15 @@ class ClaudeTaskManager:
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['antigravity'],
                 model=os.environ.get('KC_ANTIGRAVITY_MODEL', ''),
+            ))
+        # Codex — listed only when its CLI is resolvable (older images predate
+        # it). Auth is ChatGPT OAuth (`codex login` once in the pod), so binary
+        # presence is the right signal — same as Antigravity. Optional model via
+        # KC_CODEX_MODEL (codex picks its own default otherwise).
+        if shutil.which('codex'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['codex'],
+                model=os.environ.get('KC_CODEX_MODEL', ''),
             ))
         # LibreFang — listed only when its CLI is actually resolvable (older
         # images predate it, and /usr/local/bin/librefang is a symlink to a
@@ -709,6 +725,16 @@ class ClaudeTaskManager:
             skip = '--dangerously-skip-permissions ' if auto_approve else ''
             model_flag = f'--model {_shell_quote(model)}' if model else ''
             return f'agy {skip}{model_flag}'.strip()
+        if assistant == 'codex':
+            # Interactive Codex TUI for the dashboard pane. Optional model via
+            # KC_CODEX_MODEL (codex picks its own default otherwise); quoted so a
+            # hostile env var can't break out of the `bash -lc` shell_cmd built
+            # downstream in create_task(). The pod is externally sandboxed (k8s),
+            # so auto_approve uses the bypass flag documented for exactly that.
+            model = os.environ.get('KC_CODEX_MODEL', '')
+            skip = '--dangerously-bypass-approvals-and-sandbox ' if auto_approve else ''
+            model_flag = f'--model {_shell_quote(model)}' if model else ''
+            return f'codex {skip}{model_flag}'.strip()
         if assistant == 'librefang':
             # Interactive chat REPL with the registry's "coder" agent (synced
             # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT

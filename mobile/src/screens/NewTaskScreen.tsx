@@ -18,7 +18,7 @@ import { Button, Label } from '../components/ui';
 import type { TasksNav } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 
-const ASSISTANTS = ['claude', 'ante', 'opencode-openrouter'];
+const ASSISTANTS = ['claude', 'ante', 'codex', 'opencode-openrouter'];
 
 export default function NewTaskScreen() {
   const nav = useNavigation<TasksNav>();
