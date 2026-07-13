@@ -882,11 +882,18 @@ class ClaudeTaskManager:
 
         cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=auto_approve)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
+        # Overlay any user-set provider keys onto the new session's env, so a key
+        # set in Settings (no redeploy) reaches the CLI subprocess. Store wins
+        # over the pod env; when unset the pod/helm default carries through.
+        provider_env = []
+        for k, v in ProviderKeysManager.env_overlay().items():
+            provider_env += ['-e', f'{k}={v}']
         tmux_cmd = [
             'tmux', 'new-session', '-d',
             '-s', session_name,
             '-x', '220', '-y', '50',
             '-e', f'KC_TASK_ID={task_id}',
+            *provider_env,
             'bash', '-lc', shell_cmd,
         ]
 
@@ -2233,6 +2240,84 @@ class WebhookManager:
             return json.dumps(cur, default=str)
         except (TypeError, ValueError):
             return ''
+
+
+class ProviderKeysManager:
+    """User-settable provider API keys, persisted on the PVC and injected into
+    every CLI subprocess's env at spawn — so a user can set their own OpenRouter
+    / DeepSeek / Anthropic key from the workspace Settings UI (no redeploy), the
+    way Claude's oauth login is self-service. The helm value / pod env stays the
+    default; a stored key overrides it only when set. Model: WebhookManager
+    (one JSON on the PVC, atomic 0600 write, masked public view).
+    """
+
+    KEYS_FILE = '/home/dev/.claude-tasks/provider-keys.json'
+    # ONLY these env var names may ever be set/injected — never arbitrary env.
+    # Keep in sync with hypervisor_session._PROVIDER_KEY_VARS.
+    ALLOWED = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY')
+
+    @classmethod
+    def _read(cls):
+        try:
+            with open(cls.KEYS_FILE) as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    @classmethod
+    def _write(cls, data):
+        os.makedirs(os.path.dirname(cls.KEYS_FILE), mode=0o700, exist_ok=True)
+        tmp = cls.KEYS_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, cls.KEYS_FILE)
+
+    @classmethod
+    def set(cls, provider, key):
+        if provider not in cls.ALLOWED:
+            return False, 'unknown provider'
+        key = (key or '').strip()
+        if not key:
+            return False, 'key is required'
+        data = cls._read()
+        data[provider] = key
+        cls._write(data)
+        return True, None
+
+    @classmethod
+    def delete(cls, provider):
+        if provider not in cls.ALLOWED:
+            return False
+        data = cls._read()
+        if provider in data:
+            del data[provider]
+            cls._write(data)
+            return True
+        return False
+
+    @classmethod
+    def public_view(cls):
+        """Masked view for the UI — reports set/unset + a last-4 hint, NEVER the
+        key itself (same idea as WebhookManager stripping hmac_secret)."""
+        data = cls._read()
+        out = {}
+        for p in cls.ALLOWED:
+            v = data.get(p)
+            out[p] = {
+                'set': bool(v),
+                'hint': (f'…{v[-4:]}' if isinstance(v, str) and len(v) >= 4 else ''),
+            }
+        return out
+
+    @classmethod
+    def env_overlay(cls):
+        """{VAR: value} for the keys the user has set — applied over the pod env
+        at every CLI spawn (Build tab tmux + Hypervisor subprocess)."""
+        data = cls._read()
+        return {p: data[p] for p in cls.ALLOWED
+                if isinstance(data.get(p), str) and data[p].strip()}
 
 
 class CronManager:
@@ -3619,6 +3704,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_claude_get_task()
             return
 
+        # --- Provider keys (dashboard Settings) ---
+        if claude_path == '/api/provider-keys':
+            self.handle_provider_keys_list()
+            return
+
         # --- Webhook CRUD (dashboard) ---
         if claude_path == '/api/webhooks':
             self.handle_webhook_list()
@@ -3994,6 +4084,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', path)
             if m:
                 self.handle_hypervisor_delete_thread(m.group(1))
+                return
+            m = re.match(r'^/api/provider-keys/([A-Z_]+)$', path)
+            if m:
+                self.handle_provider_keys_delete(m.group(1))
                 return
             m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', path)
             if m:
@@ -4918,6 +5012,38 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not ok:
             self.send_json({'error': 'Webhook not found'}, 404)
             return
+        self.send_json({'ok': True})
+
+    def handle_provider_keys_list(self):
+        # Secrets endpoint — must not be reachable in the unauth public demo
+        # (same posture as send_git_config), so allow_none_mode=False.
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        # Masked view only — never returns the key itself.
+        self.send_json({'providers': ProviderKeysManager.public_view()})
+
+    def handle_provider_keys_set(self):
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        provider = (data.get('provider') or '').strip()
+        ok, err = ProviderKeysManager.set(provider, data.get('key'))
+        if not ok:
+            self.send_json({'error': err}, 400)
+            return
+        self.send_json({'ok': True, 'provider': provider})
+
+    def handle_provider_keys_delete(self, provider):
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        ProviderKeysManager.delete(provider)
         self.send_json({'ok': True})
 
     def handle_webhook_receive(self):
@@ -6806,6 +6932,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Hypervisor chat threads
             elif path == "/api/hypervisor/threads":
                 self.handle_hypervisor_create_thread()
+            # Provider keys (dashboard Settings)
+            elif path == "/api/provider-keys":
+                self.handle_provider_keys_set()
             # Webhook CRUD (dashboard)
             elif path == "/api/webhooks":
                 self.handle_webhook_create()

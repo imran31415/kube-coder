@@ -68,6 +68,27 @@ from typing import Any, Callable, Dict, List, Optional
 WORKSPACE_HOME = '/home/dev'
 HYPERVISOR_DIR = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'hypervisor')
 
+# User-set provider keys (managed by server.py's ProviderKeysManager) are stored
+# as one JSON on the PVC and overlaid onto every CLI subprocess's env at spawn,
+# so a key set in Settings takes effect on the next turn with no restart. This
+# module can't import server.py (server imports us), so we read the same file
+# directly — keep _PROVIDER_KEY_VARS in sync with ProviderKeysManager.ALLOWED.
+_PROVIDER_KEYS_FILE = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'provider-keys.json')
+_PROVIDER_KEY_VARS = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY')
+
+
+def _provider_key_overlay() -> Dict[str, str]:
+    """{VAR: value} for the provider keys the user has set, or {} if none."""
+    try:
+        with open(_PROVIDER_KEYS_FILE) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in _PROVIDER_KEY_VARS
+            if isinstance(data.get(k), str) and data[k].strip()}
+
 # Strip ANSI/VT escape sequences from fallback CLI output so a non-structured
 # assistant still reads as clean prose, never raw terminal control codes.
 _ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|[\x00-\x08\x0b\x0c\x0e-\x1f]')
@@ -745,6 +766,10 @@ class HypervisorSession:
             # Force HOME=/home/dev on every spawned CLI so it finds its config /
             # credentials regardless of the server process's own $HOME.
             env = dict(spec.get('env') or os.environ)
+            # Overlay any user-set provider keys (store wins over pod env). For
+            # Claude this only re-adds ANTHROPIC_API_KEY if the user explicitly
+            # set one — the adapter's default env drops it so oauth is used.
+            env.update(_provider_key_overlay())
             env['HOME'] = WORKSPACE_HOME
             proc = subprocess.Popen(
                 spec['argv'],

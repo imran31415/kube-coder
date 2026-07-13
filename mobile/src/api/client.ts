@@ -637,3 +637,38 @@ export function authHeaders(): Record<string, string> {
   const { token } = getConfig();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
+
+// ---- Provider keys ---------------------------------------------------------
+// User-settable model-provider keys for this workspace. Must match server.py
+// ProviderKeysManager.ALLOWED. GET returns a masked view (never the key).
+
+export type ProviderVar = 'OPENROUTER_API_KEY' | 'DEEPSEEK_API_KEY' | 'ANTHROPIC_API_KEY';
+
+export interface ProviderKeyStatus {
+  set: boolean;
+  hint: string;
+}
+
+export type ProviderKeysView = Record<ProviderVar, ProviderKeyStatus>;
+
+const EMPTY_PROVIDER_VIEW: ProviderKeysView = {
+  OPENROUTER_API_KEY: { set: false, hint: '' },
+  DEEPSEEK_API_KEY: { set: false, hint: '' },
+  ANTHROPIC_API_KEY: { set: false, hint: '' },
+};
+
+export async function listProviderKeys(): Promise<ProviderKeysView> {
+  if (getConfig().mock) return EMPTY_PROVIDER_VIEW;
+  const r = await request<{ providers: ProviderKeysView }>('/api/provider-keys');
+  return r.providers;
+}
+
+export async function setProviderKey(provider: ProviderVar, key: string): Promise<void> {
+  if (getConfig().mock) return;
+  await request('/api/provider-keys', { method: 'POST', body: { provider, key } });
+}
+
+export async function deleteProviderKey(provider: ProviderVar): Promise<void> {
+  if (getConfig().mock) return;
+  await request(`/api/provider-keys/${provider}`, { method: 'DELETE' });
+}

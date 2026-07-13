@@ -2,6 +2,7 @@ import { theme, density, type Theme, type Density, pushToast } from '../../store
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { GitSection } from './GitSection';
+import { ProviderKeysSection } from './ProviderKeysSection';
 import { BrowserSection } from './BrowserSection';
 import { MetricsSection } from './MetricsSection';
 import { UpdatesSection } from './UpdatesSection';
@@ -77,6 +78,8 @@ export function SettingsRoute() {
       <UpdatesSection />
 
       <GitSection />
+
+      <ProviderKeysSection />
 
       <BrowserSection />
 
