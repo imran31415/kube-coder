@@ -588,6 +588,19 @@ install -m 0644 /browser-config/memory_manager.py  /tmp/browser/memory/manager.p
 install -m 0644 /browser-config/memory_sync.py     /tmp/browser/memory/sync.py
 install -m 0644 /browser-config/memory_embeddings.py        /tmp/browser/memory/embeddings.py
 install -m 0644 /browser-config/memory_embeddings_worker.py /tmp/browser/memory/embeddings_worker.py
+
+# The skills subsystem (multi-harness SKILL.md surface, issue #187) ships
+# the same way: flat configmap keys reassembled into a real package tree.
+mkdir -p /tmp/browser/skills/providers
+install -m 0644 /browser-config/skills__init__.py            /tmp/browser/skills/__init__.py
+install -m 0644 /browser-config/skills_model.py              /tmp/browser/skills/model.py
+install -m 0644 /browser-config/skills_parser.py             /tmp/browser/skills/parser.py
+install -m 0644 /browser-config/skills_sync.py               /tmp/browser/skills/sync.py
+install -m 0644 /browser-config/skills_providers__init__.py  /tmp/browser/skills/providers/__init__.py
+install -m 0644 /browser-config/skills_providers_claude.py   /tmp/browser/skills/providers/claude.py
+install -m 0644 /browser-config/skills_providers_opencode.py /tmp/browser/skills/providers/opencode.py
+install -m 0644 /browser-config/skills_providers_ante.py     /tmp/browser/skills/providers/ante.py
+install -m 0644 /browser-config/skills_providers_antigravity.py /tmp/browser/skills/providers/antigravity.py
 # Seed the per-user MCP server + user-prompt-submit hook next to the
 # SQLite file so claude config points at PVC-backed paths that survive
 # configmap rotations.
@@ -676,6 +689,7 @@ for f in /browser-config/*; do
   base=$(basename "$f")
   case "$base" in
     memory_*|memory__init__.py) continue ;;
+    skills_*|skills__init__.py) continue ;;
   esac
   cp "$f" /tmp/browser/
 done

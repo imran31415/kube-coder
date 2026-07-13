@@ -20,6 +20,7 @@ import {
   mockHealth,
   mockMemory,
   mockMetrics,
+  mockSkills,
   mockTaskDetail,
   mockTasks,
 } from '../mock/mockData';
@@ -34,6 +35,7 @@ import type {
   LaunchResult,
   MemoryRecord,
   Metrics,
+  SkillRecord,
   TaskDetail,
   TaskSummary,
 } from './types';
@@ -387,6 +389,33 @@ function normalizeMemory(m: RawMemory): MemoryRecord {
         ? m.tags.split(',').map((s) => s.trim()).filter(Boolean)
         : [];
   return { ...m, tags };
+}
+
+// ---- Skills ------------------------------------------------------------------
+
+/** Multi-harness skills (issue #187): normalized SKILL.md records discovered
+ *  from every agent harness (Claude Code, OpenCode, …) by the backend. */
+export async function listSkills(): Promise<SkillRecord[]> {
+  if (getConfig().mock) {
+    await delay(120);
+    return [...mockSkills];
+  }
+  const data = await request<{ skills?: RawSkill[] } | RawSkill[]>('/api/skills');
+  const recs = Array.isArray(data) ? data : data.skills ?? [];
+  return recs.map(normalizeSkill);
+}
+
+type RawSkill = Omit<SkillRecord, 'systems' | 'allowed_tools'> & {
+  systems?: unknown;
+  allowed_tools?: unknown;
+};
+
+function normalizeSkill(s: RawSkill): SkillRecord {
+  return {
+    ...s,
+    systems: Array.isArray(s.systems) ? (s.systems as string[]) : [],
+    allowed_tools: Array.isArray(s.allowed_tools) ? (s.allowed_tools as string[]) : [],
+  };
 }
 
 // ---- Desktop launcher --------------------------------------------------------

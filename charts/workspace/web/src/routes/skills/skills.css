@@ -1,0 +1,151 @@
+/* Skills tab — mirrors the memory tab's master/detail conventions. */
+
+.skl-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: var(--size-4);
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .skl-layout { grid-template-columns: 1fr; }
+  .skl-detail-pane { display: none; }
+}
+.skl-master { min-width: 0; }
+.skl-detail-pane {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+  min-height: 360px;
+  max-height: calc(100vh - 180px);
+}
+
+/* Toolbar */
+.skl-toolbar { display: flex; flex-direction: column; gap: var(--size-2); margin-bottom: var(--size-2); }
+.skl-facet-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.skl-facet {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.skl-facet:hover { background: var(--surface-3); color: var(--text); }
+.skl-facet-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.skl-facet-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+/* List rows */
+.skl-list { display: flex; flex-direction: column; gap: 6px; }
+.skl-row {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.skl-row:hover { background: var(--surface-2); border-color: var(--border-2); }
+.skl-row-active { border-color: var(--accent); background: var(--accent-soft); }
+
+.skl-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.skl-row-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.skl-row-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.skl-row-systems { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; min-width: 0; }
+.skl-invocable { font-size: 10.5px; }
+
+/* System badge — shared between rows, detail, and sources. */
+.skl-system {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+  white-space: nowrap;
+}
+
+/* Detail pane */
+.skl-detail { padding: var(--size-3) var(--size-4); display: flex; flex-direction: column; gap: var(--size-3); }
+.skl-detail-header { display: flex; flex-direction: column; gap: 6px; }
+.skl-detail-headline { display: flex; align-items: center; gap: var(--size-2); flex-wrap: wrap; }
+.skl-detail-name { font-size: 15px; font-weight: 650; }
+.skl-detail-desc { font-size: 13px; line-height: 1.5; margin: 0; }
+
+.skl-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.skl-meta dt { color: var(--text-muted); font-weight: 500; }
+.skl-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; display: flex; gap: 4px; flex-wrap: wrap; }
+
+.skl-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: var(--size-2) 0 0;
+}
+.skl-sources { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.skl-sources li { display: flex; gap: var(--size-2); align-items: baseline; font-size: 12px; min-width: 0; flex-wrap: wrap; }
+.skl-source-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; color: var(--text-muted); }
+.skl-source-shadowed { opacity: 0.55; }
+
+.skl-body {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--size-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  margin: 0;
+  max-height: 480px;
+  overflow: auto;
+}

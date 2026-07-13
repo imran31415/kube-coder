@@ -69,6 +69,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/hypervisor', title: 'Hypervisor' },
   { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },
+  { path: '/skills', title: 'Skills' },
   { path: '/apps', title: 'Apps' },
   { path: '/triggers', title: 'Triggers' },
   { path: '/files', title: 'Files' },

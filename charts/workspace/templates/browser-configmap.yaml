@@ -36,6 +36,24 @@ data:
 {{ .Files.Get "memory/embeddings.py" | indent 4 }}
   memory_embeddings_worker.py: |
 {{ .Files.Get "memory/embeddings_worker.py" | indent 4 }}
+  skills__init__.py: |
+{{ .Files.Get "skills/__init__.py" | indent 4 }}
+  skills_model.py: |
+{{ .Files.Get "skills/model.py" | indent 4 }}
+  skills_parser.py: |
+{{ .Files.Get "skills/parser.py" | indent 4 }}
+  skills_sync.py: |
+{{ .Files.Get "skills/sync.py" | indent 4 }}
+  skills_providers__init__.py: |
+{{ .Files.Get "skills/providers/__init__.py" | indent 4 }}
+  skills_providers_claude.py: |
+{{ .Files.Get "skills/providers/claude.py" | indent 4 }}
+  skills_providers_opencode.py: |
+{{ .Files.Get "skills/providers/opencode.py" | indent 4 }}
+  skills_providers_ante.py: |
+{{ .Files.Get "skills/providers/ante.py" | indent 4 }}
+  skills_providers_antigravity.py: |
+{{ .Files.Get "skills/providers/antigravity.py" | indent 4 }}
   mcp_agent_orchestrator.py: |
 {{ .Files.Get "mcp_agent_orchestrator.py" | indent 4 }}
   mcp_dashboard.py: |

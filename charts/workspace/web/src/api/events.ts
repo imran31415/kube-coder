@@ -32,6 +32,7 @@ const EVENT_TYPES = [
   'task.status',
   'trigger.fired',
   'memory.changed',
+  'skills.changed',
 ];
 
 let es: EventSource | null = null;

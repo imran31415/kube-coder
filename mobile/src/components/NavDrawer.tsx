@@ -20,6 +20,7 @@ const ITEMS: Item[] = [
   { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
   { name: 'Apps', label: 'Apps', icon: 'globe-outline' },
   { name: 'Memory', label: 'Memory', icon: 'bookmark-outline' },
+  { name: 'Skills', label: 'Skills', icon: 'sparkles-outline' },
   { name: 'Metrics', label: 'Metrics', icon: 'stats-chart-outline' },
   { name: 'Controller', label: 'Controller', icon: 'server-outline', controller: true },
   { name: 'Settings', label: 'Settings', icon: 'settings-outline' },

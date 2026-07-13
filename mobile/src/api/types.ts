@@ -25,6 +25,20 @@ export interface MemoryRecord {
   updated_at?: number;
 }
 
+/** A normalized agent skill discovered from any harness (issue #187).
+ *  `systems` lists every harness (claude/opencode/…) sharing this content. */
+export interface SkillRecord {
+  name: string;
+  description: string;
+  body?: string;
+  scope: string; // project | user | plugin
+  systems: string[];
+  user_invocable?: boolean;
+  allowed_tools?: string[];
+  argument_hint?: string;
+  updated_at?: number;
+}
+
 export interface Metrics {
   cpu_percent: number;
   memory_used_mb: number;

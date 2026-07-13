@@ -55,6 +55,18 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
 
+# Multi-harness skills subsystem (issue #187) — same colocated-package
+# convention as `memory`. Read-only surface over SKILL.md-style files
+# discovered from every supported agent harness (Claude Code, OpenCode,
+# Antigravity, …) via one provider class per harness.
+try:
+    from skills.sync import SkillsSyncer
+    _SKILLS_AVAILABLE = True
+except Exception as _skills_import_err:  # broken install shouldn't crash the server
+    SkillsSyncer = None  # type: ignore
+    _SKILLS_AVAILABLE = False
+    print(f'[skills] import failed: {_skills_import_err}', file=sys.stderr)
+
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
@@ -3686,6 +3698,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_memory_get(m.group(1), m.group(2))
             return
 
+        # --- Skills API (multi-harness SKILL.md surface; backs the Skills tab) ---
+        if claude_path == '/api/skills':
+            self.handle_skills_list(memory_query)
+            return
+        if claude_path == '/api/skills/stats':
+            self.handle_skills_stats()
+            return
+        m = re.match(r'^/api/skills/([a-zA-Z0-9._-]+)$', claude_path)
+        if m:
+            self.handle_skills_get(m.group(1))
+            return
+
         # --- Subagents (read-only view over Claude's transcripts) ---
         if claude_path == '/api/subagents':
             self.handle_subagents_list()
@@ -5525,6 +5549,88 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         EventBroker.publish('memory.changed', {'op': 'purge'})
         self.send_json({'status': 'ok', 'result': res})
 
+    # ── Skills (multi-harness SKILL.md surface — issue #187) ─────────────
+    # Read-only in this phase: list / detail / stats come from the
+    # SkillsSyncer's in-memory snapshot (files are the source of truth);
+    # POST /api/skills/_scan forces a synchronous rescan.
+
+    def _skills_unavailable(self):
+        if _SKILLS_AVAILABLE:
+            return False
+        self.send_json({'error': 'skills subsystem unavailable',
+                        'code': 'skills_unavailable',
+                        'detail': 'skills package failed to import; check server logs'},
+                       503)
+        return True
+
+    def handle_skills_list(self, query):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._skills_unavailable():
+            return
+        if (query.get('refresh') or [''])[0] in ('1', 'true'):
+            try:
+                SkillsSyncer.trigger_sync()
+            except Exception as e:
+                print(f'[skills] refresh failed: {e}', file=sys.stderr)
+        records = SkillsSyncer.snapshot()
+        system = (query.get('system') or [None])[0]
+        scope = (query.get('scope') or [None])[0]
+        if system:
+            records = [r for r in records if system in r.systems]
+        if scope:
+            records = [r for r in records if r.scope == scope]
+        self.send_json({'skills': [r.to_dict() for r in records],
+                        'count': len(records)})
+
+    def handle_skills_get(self, name):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._skills_unavailable():
+            return
+        variants = SkillsSyncer.get(name)
+        if not variants:
+            self.send_json({'error': 'not found', 'code': 'not_found'}, 404)
+            return
+        # One logical skill normally; 2+ entries when copies have diverged
+        # across systems (same name, different content fingerprint).
+        self.send_json({'skill': variants[0].to_dict(),
+                        'variants': [v.to_dict() for v in variants],
+                        'divergent': len(variants) > 1})
+
+    def handle_skills_stats(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._skills_unavailable():
+            return
+        records = SkillsSyncer.snapshot()
+        by_system, by_scope = {}, {}
+        for r in records:
+            for s in r.systems:
+                by_system[s] = by_system.get(s, 0) + 1
+            by_scope[r.scope] = by_scope.get(r.scope, 0) + 1
+        self.send_json({'total': len(records),
+                        'by_system': by_system,
+                        'by_scope': by_scope,
+                        'syncer': SkillsSyncer.status()})
+
+    def handle_skills_scan(self):
+        """POST /api/skills/_scan — synchronous forced rescan."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._skills_unavailable():
+            return
+        try:
+            res = SkillsSyncer.trigger_sync()
+        except Exception as e:
+            self.send_json({'error': f'scan failed: {e}'}, 500)
+            return
+        self.send_json({'status': 'ok', 'result': res})
+
     # ── Subagents (spawned child tasks) ──────────────────────────
     # Lists real spawned sub-tasks filtered by parent_task_id.
     # Replaces the old read-only transcript scanner which was fragile
@@ -6828,6 +6934,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_memory_import()
             elif path == "/api/memory/_purge":
                 self.handle_memory_purge()
+            # Skills API (multi-harness SKILL.md surface)
+            elif path == "/api/skills/_scan":
+                self.handle_skills_scan()
             # File upload (raw body; X-Dest-Path + X-Filename headers)
             elif path == "/api/files/upload":
                 self.handle_file_upload()
@@ -7606,6 +7715,22 @@ if __name__ == "__main__":
             print(f'[memory] periodic GC started '
                   f'(>{_gc_days}d every {_gc_interval_h}h)')
 
+    # Multi-harness skills scanner (issue #187): keeps an in-memory snapshot
+    # of SKILL.md-style definitions from every supported agent harness and
+    # publishes 'skills.changed' on the EventBroker when files change on disk.
+    # Independent of the memory subsystem — its own availability flag.
+    if _SKILLS_AVAILABLE:
+        try:
+            _skills_interval = int(os.environ.get('KC_SKILLS_INTERVAL', '30'))
+        except (TypeError, ValueError):
+            _skills_interval = 30
+        try:
+            SkillsSyncer.start(interval_seconds=_skills_interval,
+                               publish=EventBroker.publish)
+            print(f'[skills] multi-harness skills syncer started ({_skills_interval}s)')
+        except Exception as e:
+            print(f'[skills] syncer start failed: {e}', file=sys.stderr)
+
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless
     # webhook/cron callbacks are timely (issue #96).
@@ -7651,6 +7776,10 @@ if __name__ == "__main__":
     print("  GET    /api/memory/{ns}/{key}/neighbors  - Graph walk")
     print("  POST   /api/memory/{ns}/{key}/relations  - Create relation")
     print("  GET    /api/memory/stats                 - Counts + health")
+    print("  GET    /api/skills                       - List skills (all harnesses)")
+    print("  GET    /api/skills/{name}                - One skill (+divergent variants)")
+    print("  GET    /api/skills/stats                 - Counts by system/scope")
+    print("  POST   /api/skills/_scan                 - Force rescan")
 
     with http.server.ThreadingHTTPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()
