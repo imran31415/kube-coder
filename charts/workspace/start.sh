@@ -389,6 +389,37 @@ for HOME_DIR in /home/ubuntu; do
   ln -sfn "$TARGET" "$LINK" 2>/dev/null || true
 done
 
+# Persist Codex's OAuth credentials + sessions across pod restarts. Codex stores
+# everything (auth.json from `codex login`, config.toml, saved sessions) under
+# $CODEX_HOME (default ~/.codex), which on the ephemeral home is wiped every
+# restart — losing the login. Point ~/.codex at the PVC (same pattern as
+# ~/.claude above) so the ChatGPT login survives and `codex exec` (the
+# Hypervisor driver) can resume sessions.
+CODEX_TARGET=/home/dev/.codex
+mkdir -p "$CODEX_TARGET"
+chmod 700 "$CODEX_TARGET"
+if [ -L "$CODEX_TARGET" ]; then
+  CD=$(readlink "$CODEX_TARGET")
+  if [ "$CD" = "$CODEX_TARGET" ] || [ "$CD" = ".codex" ]; then
+    rm -f "$CODEX_TARGET"; mkdir -p "$CODEX_TARGET"; chmod 700 "$CODEX_TARGET"
+  fi
+fi
+for HOME_DIR in /home/ubuntu; do
+  [ -d "$HOME_DIR" ] || continue
+  LINK="$HOME_DIR/.codex"
+  [ "$LINK" = "$CODEX_TARGET" ] && continue
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$CODEX_TARGET" ]; then
+    continue
+  fi
+  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+    cp -an "$LINK"/. "$CODEX_TARGET"/ 2>/dev/null || true
+    rm -rf "$LINK"
+  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    rm -f "$LINK"
+  fi
+  ln -sfn "$CODEX_TARGET" "$LINK" 2>/dev/null || true
+done
+
 # Persist Ante's config across pod restarts and keep its binary on the PVC.
 # Ante stores everything (settings, sessions, versions.json) under ~/.ante,
 # which on the ephemeral /home/ubuntu home was wiped every restart. We point
