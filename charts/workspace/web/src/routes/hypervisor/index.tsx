@@ -18,6 +18,7 @@ import {
   closeThread,
 } from '../../store/hypervisor';
 import type { ThreadStatus } from '../../api/hypervisor';
+import { currentPath, navigate, pathSuffix } from '../../store/router';
 import { Chat } from './Chat';
 import './hypervisor.css';
 
@@ -40,6 +41,19 @@ export function HypervisorRoute() {
     void initHypervisor();
     return () => closeThread();
   }, []);
+
+  // URL-driven thread selection: `/hypervisor/<id>` opens that thread, a bare
+  // `/hypervisor` shows the new-chat state. This makes the Desktop composer
+  // (and Activity widget) able to deep-link straight into a chat, and keeps
+  // back/forward + refresh honest. Mirrors how the Tasks route reads its id.
+  useEffect(() => {
+    const id = pathSuffix(currentPath.value).split('/')[0] || null;
+    if (id) {
+      if (id !== activeThreadId.value) void openThread(id);
+    } else if (activeThreadId.value) {
+      newChat();
+    }
+  }, [currentPath.value]);
 
   const cfg = config.value;
   const list = threads.value;
@@ -64,7 +78,9 @@ export function HypervisorRoute() {
   }
 
   function pick(id: string) {
-    void openThread(id);
+    // Drive selection through the URL so refresh/back/forward stay honest;
+    // the path effect above calls openThread(id).
+    navigate(`/hypervisor/${encodeURIComponent(id)}`);
     setSidebarOpen(false);
   }
 
@@ -80,7 +96,7 @@ export function HypervisorRoute() {
               size="sm"
               variant="primary"
               onClick={() => {
-                newChat();
+                navigate('/hypervisor');
                 setSidebarOpen(false);
               }}
               title="Start a new chat"
@@ -139,7 +155,13 @@ export function HypervisorRoute() {
                 class="hv-thread-del"
                 title="Delete chat"
                 aria-label="Delete chat"
-                onClick={() => removeThread(t.id)}
+                onClick={() => {
+                  // If we're deleting the open thread, drop back to the
+                  // new-chat URL so the route doesn't try to re-open a
+                  // now-missing id.
+                  if (active === t.id) navigate('/hypervisor');
+                  void removeThread(t.id);
+                }}
               >
                 <Icon name="close" size={12} />
               </button>

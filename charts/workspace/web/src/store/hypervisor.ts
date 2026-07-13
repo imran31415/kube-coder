@@ -12,6 +12,7 @@ import {
 } from '../api/hypervisor';
 import type { HvEvent } from '../routes/hypervisor/transcript';
 import { listTasks, type TaskSummary } from '../api/tasks';
+import { navigate, currentPath } from './router';
 
 /**
  * State for the Hypervisor chat tab. A thread is a structured agent session; the
@@ -149,6 +150,12 @@ export async function sendMessage(text: string): Promise<void> {
       });
       await refreshThreads();
       await openThread(thread.id);
+      // Reflect the new thread in the URL so a refresh reopens it. Guarded so
+      // we only touch history when actually on the Hypervisor route (sendMessage
+      // is only called from there today, but stay defensive).
+      if (currentPath.value.startsWith('/hypervisor')) {
+        navigate(`/hypervisor/${encodeURIComponent(thread.id)}`, true);
+      }
     } else {
       await sendThreadMessage(activeThreadId.value, trimmed);
       startPolling();

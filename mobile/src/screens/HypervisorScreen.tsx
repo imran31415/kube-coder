@@ -21,6 +21,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -60,8 +61,19 @@ interface Attachment {
   status: 'uploading' | 'ready' | 'error';
 }
 
+// Chats default to the workspace root, matching the Desktop composer's "Dev"
+// default. Mobile has no folder picker, so this is the single source of truth.
+const CHAT_WORKDIR = '/home/dev';
+
+/** Params other screens (the Desktop composer, its Activity feed) can pass when
+ *  navigating to the Hypervisor tab: seed + auto-send a first message, or open
+ *  an existing thread. Consumed once, then cleared. */
+type HvParams = { initialMessage?: string; openThreadId?: string } | undefined;
+
 export default function HypervisorScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
+  const route = useRoute();
   const keyboardVisible = useKeyboardVisible();
   // Measured header height → the KeyboardAvoidingView's offset (the composer
   // must rise by exactly the space above it, or it over/under-shoots the
@@ -140,6 +152,29 @@ export default function HypervisorScreen() {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     pinnedRef.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
   }
+
+  // Deep-link handling: the Desktop composer navigates here with an
+  // `initialMessage` to seed a fresh chat, and its Activity feed with an
+  // `openThreadId` to reopen an existing one. Consume the params exactly once
+  // (clear them) so switching back to this tab later doesn't resend.
+  useEffect(() => {
+    const params = route.params as HvParams;
+    if (!params) return;
+    if (params.openThreadId) {
+      openThread(params.openThreadId);
+    } else if (params.initialMessage) {
+      void send(params.initialMessage);
+    }
+    if (params.openThreadId || params.initialMessage) {
+      // The tab navigator has no typed params for this screen; clear the
+      // consumed ones so a later tab switch doesn't replay them.
+      (navigation.setParams as (p: HvParams) => void)({
+        initialMessage: undefined,
+        openThreadId: undefined,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params]);
 
   function openThread(id: string) {
     setActiveId(id);
@@ -234,7 +269,7 @@ export default function HypervisorScreen() {
     ]);
     try {
       if (!activeId) {
-        const thread = await createThread(finalText, config?.defaultAssistant);
+        const thread = await createThread(finalText, config?.defaultAssistant, CHAT_WORKDIR);
         await refreshThreads();
         openThread(thread.id);
       } else {

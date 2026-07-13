@@ -12,6 +12,8 @@ import {
 import { pushToast } from './ui';
 import { navigate } from './router';
 import { createTask } from './tasks';
+import { createThread, getHypervisorConfig } from '../api/hypervisor';
+import { config as hypervisorConfig, refreshThreads } from './hypervisor';
 
 export const desktopItems = signal<DesktopItem[]>([]);
 export const desktopError = signal<string | null>(null);
@@ -101,6 +103,41 @@ export async function startBuildFromPrompt(
   // mobile full-screen detail route).
   navigate(`/tasks/${encodeURIComponent(task.task_id)}`);
   return true;
+}
+
+/** Start a Hypervisor chat directly from the Desktop composer. Mirrors
+ *  startBuildFromPrompt but creates a structured chat thread instead of a
+ *  build, then deep-links into it (URL-driven, so the thread opens on both
+ *  desktop split-view and the mobile full-screen chat). The chat runs in the
+ *  chosen workdir and uses the workspace's default assistant unless one is
+ *  passed. Returns true on success so the caller can clear its input. */
+export async function startChatFromPrompt(
+  prompt: string,
+  workdir: string,
+  assistant?: string,
+): Promise<boolean> {
+  const text = prompt.trim();
+  if (!text) return false;
+  try {
+    // Resolve the default assistant lazily — the Desktop route doesn't init the
+    // Hypervisor store, so config may not be loaded yet on first use.
+    let agent = assistant;
+    if (!agent) {
+      const cfg = hypervisorConfig.value ?? (await getHypervisorConfig());
+      hypervisorConfig.value = cfg;
+      agent = cfg.defaultAssistant || undefined;
+    }
+    const thread = await createThread({ message: text, assistant: agent, workdir });
+    if (!thread || !thread.id) return false;
+    // Refresh the thread list so the sidebar/activity reflect the new chat,
+    // then land the user straight in it.
+    await refreshThreads();
+    navigate(`/hypervisor/${encodeURIComponent(thread.id)}`);
+    return true;
+  } catch (e) {
+    pushToast(e instanceof Error ? e.message : 'Failed to start chat', { kind: 'danger' });
+    return false;
+  }
 }
 
 export async function launchItem(item: DesktopItem): Promise<void> {

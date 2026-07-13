@@ -595,10 +595,11 @@ export async function listThreads(): Promise<HypervisorThread[]> {
 export async function createThread(
   message: string,
   assistant?: string,
+  workdir?: string,
 ): Promise<HypervisorThread> {
   const d = await request<{ thread: HypervisorThread }>('/api/hypervisor/threads', {
     method: 'POST',
-    body: { message, assistant },
+    body: { message, assistant, workdir },
   });
   return d.thread;
 }

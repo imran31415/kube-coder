@@ -306,7 +306,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--size-2);
+  flex-wrap: wrap;
+  gap: 4px var(--size-2);
   padding-left: 38px; /* align under the input, past the leading glyph */
 }
 .dt-composer-workdir {
@@ -339,6 +340,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* "Start a build instead" / "Start a chat instead" toggle — a quiet inline
+   link so the alternate entry point is discoverable without competing with
+   the primary send action. */
+.dt-composer-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dt-composer-mode svg { flex: 0 0 auto; color: var(--text-subtle); }
+.dt-composer-mode:hover { color: var(--text); }
+.dt-composer-mode:hover svg { color: var(--accent); }
+.dt-composer-mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dt-composer-mode:disabled { opacity: 0.5; cursor: default; }
 
 .dt-composer-hint {
   color: var(--text-subtle);
@@ -763,6 +787,17 @@
   .dt-skel { animation: none; }
 }
 
+/* Sub-group label inside the Activity card ("Live builds" / "Recent chats").
+   Small uppercase eyebrow; the second group gets breathing room above it. */
+.dt-bulletin-group {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.dt-bulletin-list + .dt-bulletin-group { margin-top: 14px; }
+
 .dt-bulletin-list { list-style: none; margin: 0; padding: 0; }
 .dt-bulletin-list > li + li {
   border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
@@ -845,6 +880,21 @@
 :root[data-theme="light"] .dt-bulletin-tag-waiting {
   background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
   color: var(--warn);
+}
+/* Recent-chat rows carry an accent-tinted tag; a running chat pulses the
+   same dot the build rows use. */
+.dt-bulletin-tag-chat {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+  color: var(--accent);
+}
+.dt-bulletin-tag-chat svg { flex: 0 0 auto; }
+.dt-bulletin-tag-chat-running {
+  background: color-mix(in srgb, #4ade80 18%, var(--surface-2));
+  color: #4ade80;
+}
+.dt-bulletin-tag-chat-error {
+  background: color-mix(in srgb, #ef4444 20%, var(--surface-2));
+  color: #ef4444;
 }
 
 .dt-bulletin-title-text {

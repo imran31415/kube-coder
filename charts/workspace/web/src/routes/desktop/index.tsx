@@ -157,7 +157,7 @@ export function DesktopRoute() {
         {!serverMode.value.readOnly && (
           <DesktopSection
             class="dt-section-compose"
-            title="Start a build"
+            title="Start a chat"
             icon={<Icon name="chat" size={13} />}
           >
             <DesktopPrompt />
