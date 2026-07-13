@@ -92,9 +92,14 @@ HYPERVISOR_PREAMBLE = (
     "to act on it (create_task, send_task_message, add_memory, pin_app). "
     "Destructive tools (kill_task, delete_memory) require confirm=true — first "
     "tell the user exactly what you'll do and get their explicit approval in the "
-    "chat, then call again with confirm=true. Prefer these tools for any question "
-    "about, or action on, the workspace. Answer from tool results, not memory. Be "
-    "concise and conversational.]\n\n"
+    "chat, then call again with confirm=true. "
+    "You can also render rich content inline in this chat: call show_app_preview "
+    "with a running app's port to embed a LIVE preview of it, and show_media to "
+    "display an image or video (a workspace file path under /home/dev, or an http "
+    "URL). Do this proactively — when you start or build an app, show its preview; "
+    "when you produce a screenshot or image, show it. "
+    "Prefer these tools for any question about, or action on, the workspace. "
+    "Answer from tool results, not memory. Be concise and conversational.]\n\n"
 )
 # TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
 # X-Auth-Request-User / X-Auth-Request-Email / Remote-User headers from the
@@ -3701,6 +3706,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/files/list':
             self.handle_files_list()
             return
+        # Stream a workspace media file (Hypervisor image/video rendering).
+        if claude_path == '/api/files/raw':
+            self.handle_file_raw()
+            return
 
         super().do_GET()
 
@@ -5683,6 +5692,86 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if rel == '.':
             rel = ''
         self.send_json({'path': rel, 'entries': entries})
+
+    def handle_file_raw(self):
+        """GET /api/files/raw?path=<rel> — stream a workspace MEDIA file.
+
+        Auth-gated + traversal-guarded (reuses _resolve_under_home_dev). Powers
+        the Hypervisor chat's image/video rendering: the agent saves a file under
+        /home/dev and shows it via show_media(path=...), and the client fetches
+        the bytes here.
+
+        SECURITY: restricted to image/* and video/* by content type. The
+        dashboard is served from this same origin with no CSP, so serving an
+        arbitrary /home/dev HTML/JS file here would be stored XSS — refuse
+        anything that isn't media, and send nosniff + inline disposition.
+        Supports a single Range request so <video> seeking works.
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlparse(self.path).query
+        rel = (urllib.parse.parse_qs(qs).get('path', [''])[0] or '').strip()
+        try:
+            target = self._resolve_under_home_dev(rel)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if not os.path.isfile(target):
+            self.send_json({'error': 'not a file'}, 404)
+            return
+        ctype = mimetypes.guess_type(target)[0] or ''
+        if not (ctype.startswith('image/') or ctype.startswith('video/')):
+            self.send_json(
+                {'error': 'only image/* and video/* files can be served here'}, 415)
+            return
+        try:
+            size = os.path.getsize(target)
+            start, end = 0, size - 1
+            is_range = False
+            rng = self.headers.get('Range', '')
+            m = re.match(r'^bytes=(\d*)-(\d*)$', rng.strip()) if rng else None
+            if m and size > 0:
+                s, e = m.group(1), m.group(2)
+                if s:
+                    start = int(s)
+                    end = int(e) if e else size - 1
+                elif e:  # suffix range: last N bytes
+                    start = max(0, size - int(e))
+                    end = size - 1
+                if start > end or start >= size:
+                    self.send_response(416)
+                    self.send_header('Content-Range', f'bytes */{size}')
+                    self.end_headers()
+                    return
+                is_range = True
+            length = end - start + 1
+            with open(target, 'rb') as fh:
+                self.send_response(206 if is_range else 200)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Length', str(length))
+                self.send_header('Accept-Ranges', 'bytes')
+                if is_range:
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                self.send_header('Content-Disposition', 'inline')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Cache-Control', 'private, max-age=60')
+                self.end_headers()
+                fh.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = fh.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client went away mid-stream; headers already sent
+        except OSError as e:
+            try:
+                self.send_json({'error': f'read failed: {e}'}, 500)
+            except Exception:
+                pass
 
     def handle_file_upload(self):
         if not self.check_claude_auth():

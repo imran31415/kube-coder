@@ -16,6 +16,8 @@ import {
 } from '../../store/hypervisor';
 import { WorkspaceContext } from './WorkspaceContext';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
+import { proxyUrl } from '../../api/apps';
+import { withOauthPrefix } from '../../api/client';
 
 /**
  * The chat transcript + composer. The backend delivers a canonical event stream
@@ -48,21 +50,98 @@ function ActivityChip({ label, detail, error }: { label: string; detail: string;
   );
 }
 
+/** Live preview of a running app, embedded via the app-proxy iframe (same
+ *  machinery as the Apps page). Falls back to an "Open in Apps" link when the
+ *  frame can't authenticate (non-oauth2 deployments). */
+function EmbedBlock({ port, title, height }: { port: number; title?: string; height?: number }) {
+  const [key, setKey] = useState(0);
+  const h = height && height >= 80 ? height : 280;
+  return (
+    <figure class="hv-embed">
+      <figcaption class="hv-embed-head">
+        <span class="hv-embed-title">{title || `App on :${port}`}</span>
+        <span class="hv-embed-actions">
+          <button type="button" class="hv-embed-btn" onClick={() => setKey((k) => k + 1)}>
+            Reload
+          </button>
+          <a class="hv-embed-btn" href={`/apps/${port}`}>
+            Open <Icon name="link" size={11} />
+          </a>
+        </span>
+      </figcaption>
+      <iframe
+        key={key}
+        class="hv-embed-frame"
+        style={{ height: `${h}px` }}
+        src={proxyUrl(port)}
+        title={title || `Application on port ${port}`}
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads"
+      />
+    </figure>
+  );
+}
+
+/** An inline image or video. Workspace files go through the authed
+ *  /api/files/raw endpoint; external URLs are used directly. */
+function MediaBlock({
+  mediaKind,
+  path,
+  url,
+  title,
+  height,
+}: {
+  mediaKind: 'image' | 'video';
+  path?: string;
+  url?: string;
+  title?: string;
+  height?: number;
+}) {
+  const src = url || (path ? `${withOauthPrefix('/api/files/raw')}?path=${encodeURIComponent(path)}` : '');
+  if (!src) return null;
+  const maxH = height && height >= 40 ? height : 420;
+  return (
+    <figure class="hv-media">
+      {mediaKind === 'video' ? (
+        <video class="hv-media-el" src={src} controls preload="metadata" style={{ maxHeight: `${maxH}px` }} />
+      ) : (
+        <img class="hv-media-el" src={src} alt={title || 'image'} loading="lazy" style={{ maxHeight: `${maxH}px` }} />
+      )}
+      {title && <figcaption class="hv-media-cap">{title}</figcaption>}
+    </figure>
+  );
+}
+
 function AgentBlocks({ blocks }: { blocks: Block[] }) {
   return (
     <>
-      {blocks.map((b, i) =>
-        b.kind === 'prose' ? (
-          <div
-            key={i}
-            class="hv-prose"
-            // eslint-disable-next-line react/no-danger
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(b.text) }}
-          />
-        ) : (
-          <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} />
-        ),
-      )}
+      {blocks.map((b, i) => {
+        switch (b.kind) {
+          case 'prose':
+            return (
+              <div
+                key={i}
+                class="hv-prose"
+                // eslint-disable-next-line react/no-danger
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(b.text) }}
+              />
+            );
+          case 'embed':
+            return <EmbedBlock key={i} port={b.port} title={b.title} height={b.height} />;
+          case 'media':
+            return (
+              <MediaBlock
+                key={i}
+                mediaKind={b.mediaKind}
+                path={b.path}
+                url={b.url}
+                title={b.title}
+                height={b.height}
+              />
+            );
+          default:
+            return <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} />;
+        }
+      })}
     </>
   );
 }
