@@ -18,6 +18,17 @@ import { WorkspaceContext } from './WorkspaceContext';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
 import { proxyUrl } from '../../api/apps';
 import { withOauthPrefix } from '../../api/client';
+import { isImageFile, imagesFromClipboard, uploadTaskImage } from '../tasks/imageAttach';
+
+/** A user-attached image being uploaded to the workspace so the agent can read
+ *  it — same mechanism as the Build tab: upload, then the file's absolute path
+ *  is appended to the outgoing message and Claude reads it by path. */
+interface Attachment {
+  id: string;
+  previewUrl: string;
+  path?: string;
+  status: 'uploading' | 'ready' | 'error';
+}
 
 /**
  * The chat transcript + composer. The backend delivers a canonical event stream
@@ -148,8 +159,35 @@ function AgentBlocks({ blocks }: { blocks: Block[] }) {
 
 export function Chat() {
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  function addFiles(files: File[]) {
+    const imgs = files.filter(isImageFile);
+    for (const file of imgs) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const previewUrl = URL.createObjectURL(file);
+      setAttachments((a) => [...a, { id, previewUrl, status: 'uploading' }]);
+      // Reuse the Build tab's uploader; 'hypervisor' → .claude-tasks/hypervisor/attachments.
+      void uploadTaskImage('hypervisor', file)
+        .then((path) =>
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x))),
+        )
+        .catch(() =>
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x))),
+        );
+    }
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((a) => {
+      const x = a.find((t) => t.id === id);
+      if (x) URL.revokeObjectURL(x.previewUrl);
+      return a.filter((t) => t.id !== id);
+    });
+  }
 
   const active = activeThreadId.value;
   const status = activeStatus.value;
@@ -171,10 +209,19 @@ export function Chat() {
   }, [turns]);
 
   function submit(text?: string) {
+    if (blocked) return;
     const value = (text ?? draft).trim();
-    if (!value || blocked) return;
+    // Append each uploaded image's absolute path on its own line — Claude Code
+    // reads the image by path (same as the Build tab composer).
+    const paths = attachments
+      .filter((a) => a.status === 'ready' && a.path)
+      .map((a) => a.path as string);
+    if (!value && paths.length === 0) return;
+    const finalText = [value, ...paths].filter(Boolean).join('\n');
     setDraft('');
-    void sendMessage(value);
+    attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
+    setAttachments([]);
+    void sendMessage(finalText);
     taRef.current?.focus();
   }
 
@@ -197,6 +244,7 @@ export function Chat() {
   // Show the thinking indicator while the agent is working, or right after we
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
+  const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
 
   return (
     <div class="hv-chat">
@@ -285,13 +333,61 @@ export function Chat() {
 
       {chatError.value && <div class="hv-banner hv-banner-error">{chatError.value}</div>}
 
+      {attachments.length > 0 && (
+        <div class="hv-attachments">
+          {attachments.map((a) => (
+            <div key={a.id} class={`hv-attachment is-${a.status}`}>
+              <img src={a.previewUrl} alt="attachment" />
+              <button
+                type="button"
+                class="hv-attachment-x"
+                onClick={() => removeAttachment(a.id)}
+                title="Remove"
+              >
+                <Icon name="close" size={10} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <form
         class="hv-composer"
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
+        onDrop={(e) => {
+          const files = Array.from(e.dataTransfer?.files || []);
+          if (files.some(isImageFile)) {
+            e.preventDefault();
+            addFiles(files);
+          }
+        }}
+        onDragOver={(e) => e.preventDefault()}
       >
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const input = e.target as HTMLInputElement;
+            addFiles(Array.from(input.files || []));
+            input.value = '';
+          }}
+        />
+        <button
+          type="button"
+          class="hv-attach-btn"
+          onClick={() => fileRef.current?.click()}
+          disabled={blocked}
+          title="Attach image"
+          aria-label="Attach image"
+        >
+          <Icon name="image" size={16} />
+        </button>
         <textarea
           ref={taRef}
           class="hv-composer-input"
@@ -301,10 +397,17 @@ export function Chat() {
               ? 'Read-only workspace — you can still ask about state'
               : working
                 ? 'Kube-Coder is working… press Stop to interrupt'
-                : 'Message Kube-Coder…  (Enter to send, Shift+Enter for newline)'
+                : 'Message Kube-Coder…  (paste or attach an image, Enter to send)'
           }
           onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKeyDown}
+          onPaste={(e) => {
+            const imgs = imagesFromClipboard(e.clipboardData);
+            if (imgs.length) {
+              e.preventDefault();
+              addFiles(imgs);
+            }
+          }}
           rows={1}
           disabled={blocked}
         />
@@ -319,7 +422,7 @@ export function Chat() {
             <Icon name="close" size={12} /> {stopping.value ? 'Stopping…' : 'Stop'}
           </Button>
         ) : (
-          <Button type="submit" variant="primary" disabled={blocked || !draft.trim()} title="Send (Enter)">
+          <Button type="submit" variant="primary" disabled={blocked || !canSend} title="Send (Enter)">
             <Icon name="play" size={12} /> Send
           </Button>
         )}

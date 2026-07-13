@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -19,15 +20,21 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as ImagePicker from 'expo-image-picker';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import {
+  authHeaders,
   createThread,
   deleteThread,
+  fileRawUrl,
   getHypervisorConfig,
   getThreadDetail,
   listThreads,
   sendThreadMessage,
   stopThread,
+  uploadTaskImage,
 } from '../api/client';
+import { AppEmbed } from '../components/AppEmbed';
 import type { HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
 import { buildTurns, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
@@ -41,6 +48,15 @@ const SUGGESTIONS = [
   'Remember that I deploy with `make ship`',
 ];
 
+/** A picked image being uploaded so the agent can read it — its saved absolute
+ *  path is appended to the outgoing message (same as the Build tab). */
+interface Attachment {
+  id: string;
+  uri: string;
+  path?: string;
+  status: 'uploading' | 'ready' | 'error';
+}
+
 export default function HypervisorScreen() {
   const insets = useSafeAreaInsets();
   const [config, setConfig] = useState<HypervisorConfig | null>(null);
@@ -50,6 +66,7 @@ export default function HypervisorScreen() {
   const [status, setStatus] = useState<string>('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -136,25 +153,66 @@ export default function HypervisorScreen() {
     });
   }
 
+  function uploadAssets(assets: ImagePicker.ImagePickerAsset[]) {
+    for (const asset of assets) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setAttachments((a) => [...a, { id, uri: asset.uri, status: 'uploading' }]);
+      // Reuse the Build tab's uploader; 'hypervisor' → .claude-tasks/hypervisor/attachments.
+      uploadTaskImage('hypervisor', asset)
+        .then((path) =>
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x))),
+        )
+        .catch(() =>
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x))),
+        );
+    }
+  }
+
+  async function pickImage() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      setError('Photo access is off — enable it in Settings to attach images.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      quality: 0.9,
+    });
+    if (!result.canceled) uploadAssets(result.assets);
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((a) => a.filter((x) => x.id !== id));
+  }
+
   async function send(text?: string) {
+    if (sending || attachments.some((a) => a.status === 'uploading')) return;
     const msg = (text ?? draft).trim();
-    if (!msg || sending) return;
+    const paths = attachments
+      .filter((a) => a.status === 'ready' && a.path)
+      .map((a) => a.path as string);
+    if (!msg && paths.length === 0) return;
+    // Append each uploaded image's absolute path on its own line — Claude reads
+    // the image by path (same as the Build tab composer).
+    const finalText = [msg, ...paths].filter(Boolean).join('\n');
     setSending(true);
     setError(null);
     setDraft('');
+    setAttachments([]);
     setStatus('running');
     // Optimistic user turn (negative seq so it never collides with server seqs).
     setEvents((prev) => [
       ...prev,
-      { seq: optimisticSeq.current--, ts: Date.now() / 1000, role: 'user', type: 'message', text: msg },
+      { seq: optimisticSeq.current--, ts: Date.now() / 1000, role: 'user', type: 'message', text: finalText },
     ]);
     try {
       if (!activeId) {
-        const thread = await createThread(msg, config?.defaultAssistant);
+        const thread = await createThread(finalText, config?.defaultAssistant);
         await refreshThreads();
         openThread(thread.id);
       } else {
-        await sendThreadMessage(activeId, msg);
+        await sendThreadMessage(activeId, finalText);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to send');
@@ -195,6 +253,7 @@ export default function HypervisorScreen() {
   const activeThread = threads.find((t) => t.id === activeId) || null;
   const working = status === 'running';
   const blocked = sending || working;
+  const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
   const empty = !activeId && events.length === 0;
 
   return (
@@ -291,7 +350,34 @@ export default function HypervisorScreen() {
 
         {error && <ErrorBanner message={error} />}
 
+        {attachments.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.attachStrip}
+            contentContainerStyle={styles.attachStripInner}
+          >
+            {attachments.map((a) => (
+              <View key={a.id} style={[styles.attachThumb, a.status === 'error' && styles.attachThumbErr]}>
+                <Image source={{ uri: a.uri }} style={styles.attachImg} />
+                {a.status === 'uploading' && <View style={styles.attachDim} />}
+                <Pressable style={styles.attachX} onPress={() => removeAttachment(a.id)} hitSlop={6}>
+                  <Ionicons name="close" size={11} color="#fff" />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        )}
+
         <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
+          <Pressable
+            onPress={() => void pickImage()}
+            disabled={blocked}
+            style={[styles.attachBtn, blocked && styles.sendBtnOff]}
+            hitSlop={6}
+          >
+            <Ionicons name="image-outline" size={20} color={colors.textMuted} />
+          </Pressable>
           <TextInput
             style={styles.input}
             value={draft}
@@ -314,8 +400,8 @@ export default function HypervisorScreen() {
           ) : (
             <Pressable
               onPress={() => void send()}
-              disabled={blocked || !draft.trim()}
-              style={[styles.sendBtn, (blocked || !draft.trim()) && styles.sendBtnOff]}
+              disabled={blocked || !canSend}
+              style={[styles.sendBtn, (blocked || !canSend) && styles.sendBtnOff]}
             >
               <Ionicons name="arrow-up" size={20} color={colors.accentText} />
             </Pressable>
@@ -411,6 +497,12 @@ function Block({
   if (block.kind === 'prose') {
     return <Text style={styles.prose}>{block.text}</Text>;
   }
+  if (block.kind === 'embed') {
+    return <EmbedBlock port={block.port} title={block.title} height={block.height} />;
+  }
+  if (block.kind === 'media') {
+    return <MediaBlock block={block} />;
+  }
   const open = expanded.has(id);
   const toggle = () => {
     const next = new Set(expanded);
@@ -427,6 +519,65 @@ function Block({
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={colors.textFaint} />
       </Pressable>
       {open && block.detail ? <Text style={styles.activityDetail}>{block.detail}</Text> : null}
+    </View>
+  );
+}
+
+/** Live app preview: the existing AppEmbed WebView in a fixed-height box so it
+ *  lays out inside the scrolling transcript. */
+function EmbedBlock({ port, title, height }: { port: number; title?: string; height?: number }) {
+  const h = height && height >= 120 ? height : 260;
+  return (
+    <View style={styles.embed}>
+      <View style={styles.embedHead}>
+        <Ionicons name="globe-outline" size={12} color={colors.textMuted} />
+        <Text style={styles.embedTitle} numberOfLines={1}>
+          {title || `App on :${port}`}
+        </Text>
+      </View>
+      <View style={{ height: h }}>
+        <AppEmbed port={port} name={title || `App :${port}`} compact />
+      </View>
+    </View>
+  );
+}
+
+/** An inline image or video. Workspace files go through the authed
+ *  /api/files/raw endpoint (Bearer header); external URLs are used directly. */
+function MediaBlock({ block }: { block: Extract<HvBlock, { kind: 'media' }> }) {
+  const src = block.url || (block.path ? fileRawUrl(block.path) : '');
+  if (!src) return null;
+  const headers = block.url ? undefined : authHeaders();
+  const h = block.height && block.height >= 80 ? block.height : 320;
+  if (block.mediaKind === 'video') {
+    return <VideoBlock uri={src} headers={headers} height={h} title={block.title} />;
+  }
+  return (
+    <View>
+      <Image source={{ uri: src, headers }} style={[styles.mediaImg, { height: h }]} resizeMode="contain" />
+      {block.title ? <Text style={styles.mediaCap}>{block.title}</Text> : null}
+    </View>
+  );
+}
+
+function VideoBlock({
+  uri,
+  headers,
+  height,
+  title,
+}: {
+  uri: string;
+  headers?: Record<string, string>;
+  height: number;
+  title?: string;
+}) {
+  const player = useVideoPlayer({ uri, headers }, (p) => {
+    p.loop = false;
+  });
+  return (
+    <View>
+      <VideoView player={player} style={[styles.mediaImg, { height }]} contentFit="contain" nativeControls />
+      {title ? <Text style={styles.mediaCap}>{title}</Text> : null}
     </View>
   );
 }
@@ -595,4 +746,77 @@ const styles = StyleSheet.create({
   },
   sendBtnOff: { opacity: 0.4 },
   stopBtn: { backgroundColor: colors.danger },
+  attachBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface2,
+  },
+  attachStrip: {
+    maxHeight: 72,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  attachStripInner: { gap: space.sm, padding: space.sm },
+  attachThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface2,
+  },
+  attachThumbErr: { borderColor: colors.danger },
+  attachImg: { width: '100%', height: '100%' },
+  attachDim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  attachX: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  embed: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+    backgroundColor: colors.card,
+  },
+  embedHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface2,
+  },
+  embedTitle: { flex: 1, color: colors.textMuted, fontSize: font.size.sm, fontWeight: '600' },
+  mediaImg: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface2,
+  },
+  mediaCap: { marginTop: 4, color: colors.textFaint, fontSize: font.size.xs },
 });

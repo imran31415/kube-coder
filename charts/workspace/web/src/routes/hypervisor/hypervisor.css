@@ -780,3 +780,56 @@
   font-size: 11.5px;
   color: var(--text-subtle);
 }
+
+/* ── Composer image attachments ──────────────────────────────────────────── */
+.hv-attach-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  align-self: flex-end;
+  color: var(--text-subtle);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.hv-attach-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.hv-attach-btn:disabled { opacity: 0.4; cursor: default; }
+
+.hv-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2);
+  padding: var(--size-2) var(--size-3) 0;
+}
+.hv-attachment {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.hv-attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hv-attachment.is-uploading { opacity: 0.6; }
+.hv-attachment.is-error { border-color: var(--danger, #c0392b); }
+.hv-attachment-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
