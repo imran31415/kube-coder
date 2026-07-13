@@ -262,14 +262,224 @@ class FallbackAdapter(Adapter):
         return [{'role': 'assistant', 'type': 'message', 'text': text}]
 
 
+# ── Structured-CLI adapters (ante, opencode) ────────────────────────────────
+# Both emit line-delimited JSON with a resumable session id, so they slot into
+# the same pattern as Claude — the correct headless flow, NOT the interactive
+# REPL the fallback would run. Schemas validated live in-pod (2026-07-13):
+#   ante:     assistant text arrives as event.AgentMessage (inner = a string).
+#   opencode: text arrives as a `text` event's part.text; step_start/step_finish
+#             are noise; a `type:"error"` event carries provider errors (e.g.
+#             "Key limit exceeded"), which we surface cleanly.
+# Parsing stays permissive with a raw-stdout fallback so a version bump can't
+# blank the chat.
+_TEXT_FIELDS = ('text', 'content', 'message', 'output_text', 'response')
+
+
+def _lift_text(inner: Any) -> str:
+    if isinstance(inner, str):
+        return inner
+    if isinstance(inner, dict):
+        for f in _TEXT_FIELDS:
+            v = inner.get(f)
+            if isinstance(v, str) and v.strip():
+                return v
+            if isinstance(v, list):  # Claude-style content blocks
+                t = _stringify(v)
+                if t.strip():
+                    return t
+    return ''
+
+
+def _dig_session_id(o: Any) -> Optional[str]:
+    """Find a session id in common shapes: session_id / sessionID / session.id."""
+    if not isinstance(o, dict):
+        return None
+    for k in ('session_id', 'sessionID', 'sessionId'):
+        if isinstance(o.get(k), str):
+            return o[k]
+    sess = o.get('session')
+    if isinstance(sess, dict) and isinstance(sess.get('id'), str):
+        return sess['id']
+    return None
+
+
+class _StructuredCliAdapter(Adapter):
+    """Base for line-delimited-JSON CLIs: permissive parse + raw-text fallback."""
+
+    kind = 'structured'
+
+    def _reset_turn(self, ctx):
+        ctx['_emitted'] = False
+        ctx['_raw'] = []
+
+    def parse(self, ctx, line):
+        if not line.strip():
+            return []
+        try:
+            o = json.loads(line.strip())
+        except json.JSONDecodeError:
+            ctx.setdefault('_raw', []).append(line.rstrip('\n'))  # → raw fallback
+            return []
+        return self._parse_obj(ctx, o)
+
+    def _parse_obj(self, ctx, o):
+        raise NotImplementedError
+
+    def finalize(self, ctx, rc):
+        # If structured content was recognized this turn, we're done. Otherwise
+        # surface the raw stdout so the response is never lost to a schema miss.
+        if ctx.get('_emitted'):
+            return []
+        raw = strip_ansi('\n'.join(ctx.get('_raw', []) or [])).strip()
+        if raw:
+            return [{'role': 'assistant', 'type': 'message', 'text': raw}]
+        if rc not in (0, None):
+            return [{'role': 'system', 'type': 'error',
+                     'text': f'{self.kind} exited with code {rc}'}]
+        return []
+
+
+class AnteAdapter(_StructuredCliAdapter):
+    """`ante -p --output-format json --permission-mode yolo` (headless).
+
+    Ante wraps each event as {"event": {"<Type>": <inner>}}; assistant text is
+    an `AgentMessage` (inner is the text string). Multi-turn via `-r <id>`.
+    """
+
+    kind = 'ante'
+    _NOISE = frozenset({'ExtensionRefreshed', 'InfoBlockStart', 'InfoBlockAppend',
+                        'InfoBlockEnd', 'UserInput', 'TurnStart', 'TurnEnd',
+                        'SessionEnd', 'Usage', 'UsageUpdate', 'TokenUsage',
+                        'Reasoning'})
+
+    def build(self, ctx, text, first):
+        self._reset_turn(ctx)
+        argv = ['ante', '-p', text, '--output-format', 'json',
+                '--permission-mode', 'yolo']
+        sid = ctx.get('ante_session_id')
+        if sid:
+            argv += ['-r', sid]
+        elif ctx.get('preamble'):
+            argv += ['--append-system-prompt', ctx['preamble']]
+        return {'argv': argv, 'cwd': ctx.get('workdir') or WORKSPACE_HOME}
+
+    def _parse_obj(self, ctx, o):
+        ev = o.get('event')
+        if not isinstance(ev, dict) or not ev:
+            return []
+        k = next(iter(ev))
+        inner = ev[k] if isinstance(ev[k], dict) else ev[k]
+        if k == 'SessionStart':
+            sid = _dig_session_id(inner if isinstance(inner, dict) else {})
+            if sid:
+                ctx['ante_session_id'] = sid
+            return []
+        if k in self._NOISE:
+            return []
+        lk = k.lower()
+        d = inner if isinstance(inner, dict) else {}
+        if 'error' in lk:
+            ctx['_emitted'] = True
+            return [{'role': 'system', 'type': 'error',
+                     'text': _lift_text(inner) or _stringify(inner) or 'ante error'}]
+        if 'tool' in lk and 'result' in lk:
+            ctx['_emitted'] = True
+            return [{'role': 'system', 'type': 'tool_result',
+                     'tool_use_id': d.get('id') or d.get('tool_call_id') or '',
+                     'is_error': bool(d.get('is_error') or d.get('error')),
+                     'text': _stringify(d.get('output') or d.get('result')
+                                        or d.get('content'))}]
+        if 'tool' in lk and (d.get('name') or d.get('tool')):
+            ctx['_emitted'] = True
+            return [{'role': 'assistant', 'type': 'tool_call',
+                     'tool_id': d.get('id', ''),
+                     'tool': {'name': d.get('name') or d.get('tool') or 'tool',
+                              'input': d.get('input') or d.get('arguments') or {}}}]
+        if 'delta' in lk:  # skip partial-text spam; full events carry the text
+            return []
+        txt = _lift_text(inner)
+        if txt:
+            ctx['_emitted'] = True
+            return [{'role': 'assistant', 'type': 'message', 'text': txt}]
+        return []
+
+
+class OpencodeAdapter(_StructuredCliAdapter):
+    """`opencode run --format json` (headless); multi-turn via `-s <session_id>`."""
+
+    kind = 'opencode'
+    _NOISE = frozenset({'step_start', 'step_finish'})
+
+    def build(self, ctx, text, first):
+        self._reset_turn(ctx)
+        msg = text if not (first and ctx.get('preamble')) \
+            else ctx['preamble'] + '\n\n' + text
+        argv = ['opencode', 'run', msg, '--format', 'json']
+        # Reuse the model the workspace configured (assistant_command builds
+        # `opencode --model '<provider>/<model>'`).
+        m = re.search(r"--model\s+'?([^'\s]+)", ctx.get('cli_cmd', '') or '')
+        if m:
+            argv += ['--model', m.group(1)]
+        sid = ctx.get('opencode_session_id')
+        if sid:
+            argv += ['-s', sid]
+        return {'argv': argv, 'cwd': ctx.get('workdir') or WORKSPACE_HOME}
+
+    def _parse_obj(self, ctx, o):
+        sid = _dig_session_id(o)
+        if sid:
+            ctx['opencode_session_id'] = sid
+        t = str(o.get('type') or o.get('event') or '').lower()
+        if t in self._NOISE:
+            return []
+        if t == 'error':
+            err = o.get('error') or {}
+            msg = (err.get('data') or {}).get('message') or err.get('message') \
+                or _stringify(err) or 'opencode error'
+            ctx['_emitted'] = True
+            return [{'role': 'system', 'type': 'error', 'text': msg}]
+        part = o.get('part') if isinstance(o.get('part'), dict) else {}
+        if 'tool' in t:
+            name = o.get('tool') or o.get('name') or part.get('tool')
+            if 'result' in t or o.get('state') == 'completed':
+                out = o.get('output') or o.get('result') or part.get('output')
+                if out is not None:
+                    ctx['_emitted'] = True
+                    return [{'role': 'system', 'type': 'tool_result',
+                             'tool_use_id': o.get('callID') or o.get('id') or '',
+                             'is_error': bool(o.get('error')),
+                             'text': _stringify(out)}]
+            if name:
+                ctx['_emitted'] = True
+                return [{'role': 'assistant', 'type': 'tool_call',
+                         'tool_id': o.get('callID') or o.get('id') or '',
+                         'tool': {'name': name,
+                                  'input': o.get('input') or o.get('args') or {}}}]
+            return []
+        if t == 'text':
+            txt = _lift_text(part) or _lift_text(o)
+            if txt:
+                ctx['_emitted'] = True
+                return [{'role': 'assistant', 'type': 'message', 'text': txt}]
+        return []
+
+
 _ADAPTERS: Dict[str, Adapter] = {
     'claude': ClaudeAdapter(),
+    'ante': AnteAdapter(),
+    'opencode': OpencodeAdapter(),
     'fallback': FallbackAdapter(),
 }
 
 
 def _adapter_for(assistant: str) -> Adapter:
-    return _ADAPTERS.get(assistant, _ADAPTERS['fallback'])
+    if assistant == 'claude':
+        return _ADAPTERS['claude']
+    if assistant == 'ante':
+        return _ADAPTERS['ante']
+    if assistant.startswith('opencode'):
+        return _ADAPTERS['opencode']
+    return _ADAPTERS['fallback']
 
 
 def _stringify(v: Any) -> str:
