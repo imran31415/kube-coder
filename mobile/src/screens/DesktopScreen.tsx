@@ -1,7 +1,8 @@
-/** Desktop: the workspace home. A clean identity masthead, a one-tap "start a
- *  build" composer, the customizable launcher grid (shared with the web
- *  dashboard's Desktop tab via /api/desktop), and a live-build activity feed.
- *  Tap an icon to launch; long-press to edit/move/delete; + to add. */
+/** Desktop: the workspace home. A clean identity masthead, a one-tap composer
+ *  that starts a Hypervisor chat by default (with a "start a build instead"
+ *  toggle), the customizable launcher grid (shared with the web dashboard's
+ *  Desktop tab via /api/desktop), and an activity feed of live builds + recent
+ *  chats. Tap an icon to launch; long-press to edit/move/delete; + to add. */
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -28,13 +29,14 @@ import {
   launchDesktopItem,
   listDesktop,
   listTasks,
+  listThreads,
   reorderDesktop,
   updateDesktopItem,
 } from '../api/client';
 import { DesktopEditorSheet } from '../components/DesktopEditorSheet';
 import { getConfig } from '../store/config';
 import { EmptyState, ErrorBanner, Loading, MenuButton, StatusPill } from '../components/ui';
-import type { DesktopItem, DesktopItemDraft, TaskSummary } from '../api/types';
+import type { DesktopItem, DesktopItemDraft, HypervisorThread, TaskSummary } from '../api/types';
 import { colors, font, gradients, radius, shadow, space } from '../theme';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
@@ -151,21 +153,40 @@ function DesktopHero({ name }: { name: string | null }) {
   );
 }
 
-/** One-tap build composer. Owns its own prompt state so list re-renders (from
- *  polling) never steal focus or clear the text. */
-function BuildComposer({ onStarted }: { onStarted: (id: string) => void }) {
+/** One-tap composer. Starts a Hypervisor chat by default; a quiet toggle flips
+ *  it to the classic build path. Owns its own prompt state so list re-renders
+ *  (from polling) never steal focus or clear the text.
+ *
+ *  Chat mode hands off to the Hypervisor tab (which creates the thread and shows
+ *  the live turn); build mode creates the task inline and opens it. */
+function Composer({
+  onStartBuild,
+  onStartChat,
+}: {
+  onStartBuild: (id: string) => void;
+  onStartChat: (message: string) => void;
+}) {
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<'chat' | 'build'>('chat');
+  const isChat = mode === 'chat';
   const canSend = prompt.trim().length > 0 && !busy;
 
   async function submit() {
     const text = prompt.trim();
     if (!text || busy) return;
+    if (isChat) {
+      // Hand the message to the Hypervisor tab; it owns thread creation and the
+      // live view. Clear immediately — there's no inline async to await here.
+      setPrompt('');
+      onStartChat(text);
+      return;
+    }
     setBusy(true);
     try {
       const t = await createTask({ prompt: text, workdir: '/home/dev' });
       setPrompt('');
-      onStarted(t.id);
+      onStartBuild(t.id);
     } catch (e) {
       Alert.alert("Couldn't start the build", (e as Error).message);
     } finally {
@@ -177,12 +198,16 @@ function BuildComposer({ onStarted }: { onStarted: (id: string) => void }) {
     <View style={styles.composer}>
       <View style={styles.composerRow}>
         <View style={styles.composerGlyph}>
-          <Ionicons name="chatbubbles-outline" size={17} color={colors.accent} />
+          <Ionicons
+            name={isChat ? 'chatbubbles-outline' : 'construct-outline'}
+            size={17}
+            color={colors.accent}
+          />
         </View>
         <TextInput
           value={prompt}
           onChangeText={setPrompt}
-          placeholder="Describe a build to run…"
+          placeholder={isChat ? 'Ask your workspace anything…' : 'Describe a build to run…'}
           placeholderTextColor={colors.textFaint}
           style={styles.composerInput}
           multiline
@@ -192,7 +217,7 @@ function BuildComposer({ onStarted }: { onStarted: (id: string) => void }) {
           onPress={submit}
           disabled={!canSend}
           accessibilityRole="button"
-          accessibilityLabel="Start build"
+          accessibilityLabel={isChat ? 'Start chat' : 'Start build'}
           style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
         >
           {canSend ? (
@@ -219,7 +244,29 @@ function BuildComposer({ onStarted }: { onStarted: (id: string) => void }) {
           )}
         </Pressable>
       </View>
-      <Text style={styles.composerHint}>Starts a build in /home/dev and opens it live</Text>
+      <View style={styles.composerFoot}>
+        <Text style={styles.composerHint}>
+          {isChat
+            ? 'Starts a chat in /home/dev'
+            : 'Starts a build in /home/dev and opens it live'}
+        </Text>
+        <Pressable
+          onPress={() => setMode((m) => (m === 'chat' ? 'build' : 'chat'))}
+          disabled={busy}
+          hitSlop={8}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.composerToggle, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons
+            name={isChat ? 'construct-outline' : 'chatbubbles-outline'}
+            size={12}
+            color={colors.accent}
+          />
+          <Text style={styles.composerToggleText}>
+            {isChat ? 'Start a build instead' : 'Start a chat instead'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -239,6 +286,7 @@ export default function DesktopScreen() {
   const nav = useNavigation<Nav>();
   const [items, setItems] = useState<DesktopItem[] | null>(null);
   const [live, setLive] = useState<TaskSummary[]>([]);
+  const [chats, setChats] = useState<HypervisorThread[]>([]);
   const [name, setName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -266,6 +314,13 @@ export default function DesktopScreen() {
     } catch {
       /* keep last-good */
     }
+    // Recent chats — also best-effort. listThreads() is newest-first already.
+    try {
+      const threads = await listThreads();
+      setChats(threads.slice(0, 3));
+    } catch {
+      /* keep last-good */
+    }
   }, []);
 
   // The desktop is shared with the web dashboard — pick up edits made there.
@@ -287,6 +342,16 @@ export default function DesktopScreen() {
     // initial: false → TaskList stays beneath the detail screen, so it opens
     // with a back button instead of becoming the stack's only (trapped) route.
     nav.navigate('Tasks', { screen: 'TaskDetail', params: { id }, initial: false });
+  }
+
+  // Chat composer + Activity chat rows hand off to the Hypervisor tab: an
+  // initialMessage seeds a brand-new chat, an openThreadId reopens an existing
+  // one. HypervisorScreen consumes the param once and clears it.
+  function startChat(message: string) {
+    nav.navigate('Hypervisor', { initialMessage: message });
+  }
+  function openChat(id: string) {
+    nav.navigate('Hypervisor', { openThreadId: id });
   }
 
   async function launch(item: DesktopItem) {
@@ -403,8 +468,8 @@ export default function DesktopScreen() {
     () => (
       <View>
         <DesktopHero name={name} />
-        <SectionLabel title="Start a build" />
-        <BuildComposer onStarted={openTask} />
+        <SectionLabel title="Start a chat" />
+        <Composer onStartBuild={openTask} onStartChat={startChat} />
         {error && items && items.length > 0 ? <ErrorBanner message={error} /> : null}
         {items && items.length > 0 ? <SectionLabel title="Shortcuts" action={newBtn} /> : null}
       </View>
@@ -414,22 +479,51 @@ export default function DesktopScreen() {
   );
 
   const footer =
-    live.length > 0 ? (
+    live.length > 0 || chats.length > 0 ? (
       <View style={styles.activity}>
         <SectionLabel title="Activity" />
-        {live.map((t) => (
-          <Pressable
-            key={t.id}
-            onPress={() => openTask(t.id)}
-            style={({ pressed }) => [styles.activityRow, pressed && { opacity: 0.7 }]}
-          >
-            <StatusPill status={t.status} />
-            <Text style={styles.activityTitle} numberOfLines={1}>
-              {t.prompt || t.id}
+        {live.length > 0 && (
+          <>
+            <Text style={styles.activityGroup}>LIVE BUILDS</Text>
+            {live.map((t) => (
+              <Pressable
+                key={t.id}
+                onPress={() => openTask(t.id)}
+                style={({ pressed }) => [styles.activityRow, pressed && { opacity: 0.7 }]}
+              >
+                <StatusPill status={t.status} />
+                <Text style={styles.activityTitle} numberOfLines={1}>
+                  {t.prompt || t.id}
+                </Text>
+                <Text style={styles.activityTime}>{relativeTime(t.created_at)}</Text>
+              </Pressable>
+            ))}
+          </>
+        )}
+        {chats.length > 0 && (
+          <>
+            <Text style={[styles.activityGroup, live.length > 0 && { marginTop: space.md }]}>
+              RECENT CHATS
             </Text>
-            <Text style={styles.activityTime}>{relativeTime(t.created_at)}</Text>
-          </Pressable>
-        ))}
+            {chats.map((c) => (
+              <Pressable
+                key={c.id}
+                onPress={() => openChat(c.id)}
+                style={({ pressed }) => [styles.activityRow, pressed && { opacity: 0.7 }]}
+              >
+                <View style={styles.activityChatIcon}>
+                  <Ionicons name="chatbubbles-outline" size={15} color={colors.accent} />
+                </View>
+                <Text style={styles.activityTitle} numberOfLines={1}>
+                  {c.title || 'New chat'}
+                </Text>
+                <Text style={styles.activityTime}>
+                  {relativeTime(c.updated_at ?? c.created_at ?? undefined)}
+                </Text>
+              </Pressable>
+            ))}
+          </>
+        )}
       </View>
     ) : null;
 
@@ -593,7 +687,16 @@ const styles = StyleSheet.create({
   },
   composerSend: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
   composerSendOff: { backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: colors.border },
-  composerHint: { color: colors.textFaint, fontSize: font.size.xs, paddingLeft: 40 },
+  composerFoot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingLeft: 40,
+    gap: space.sm,
+  },
+  composerHint: { color: colors.textFaint, fontSize: font.size.xs, flexShrink: 1 },
+  composerToggle: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  composerToggleText: { color: colors.accent, fontSize: font.size.xs, fontWeight: '600' },
 
   // Grid
   grid: { paddingBottom: space.xl, gap: space.md },
@@ -626,6 +729,21 @@ const styles = StyleSheet.create({
 
   // Activity
   activity: { marginTop: space.lg, paddingHorizontal: space.lg },
+  activityGroup: {
+    color: colors.textFaint,
+    fontSize: 10.5,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginBottom: space.sm,
+  },
+  activityChatIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    backgroundColor: colors.accent + '1f',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   activityRow: {
     flexDirection: 'row',
     alignItems: 'center',
