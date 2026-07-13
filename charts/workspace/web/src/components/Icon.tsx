@@ -7,6 +7,7 @@ import type { JSX } from 'preact';
 export type IconName =
   | 'tasks'
   | 'memory'
+  | 'skills'
   | 'triggers'
   | 'files'
   | 'settings'
@@ -49,6 +50,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <rect x="4" y="3" width="12" height="14" rx="2" />
       <path d="M7 7h6M7 10h6M7 13h4" />
+    </>
+  ),
+  // Four-point spark — "capability" — distinct from triggers' bolt shape.
+  skills: (
+    <>
+      <path d="M10 2l1.8 6.2L18 10l-6.2 1.8L10 18l-1.8-6.2L2 10l6.2-1.8z" />
     </>
   ),
   triggers: (

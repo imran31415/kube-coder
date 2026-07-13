@@ -29,12 +29,14 @@ const FilesRoute = lazy<ComponentType>(() => import('./files/index').then((m) =>
 const SettingsRoute = lazy<ComponentType>(() => import('./settings/index').then((m) => ({ default: m.SettingsRoute })));
 const DocsRoute = lazy<ComponentType>(() => import('./docs/index').then((m) => ({ default: m.DocsRoute })));
 const AppsRoute = lazy<ComponentType>(() => import('./apps/index').then((m) => ({ default: m.AppsRoute })));
+const SkillsRoute = lazy<ComponentType>(() => import('./skills/index').then((m) => ({ default: m.SkillsRoute })));
 
 const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/tasks': TasksRoute,
   '/desktop': DesktopRoute,
   '/hypervisor': HypervisorRoute,
   '/memory': MemoryRoute,
+  '/skills': SkillsRoute,
   '/apps': AppsRoute,
   '/triggers': TriggersRoute,
   '/files': FilesRoute,

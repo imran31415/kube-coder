@@ -14,6 +14,7 @@ import type {
   Health,
   MemoryRecord,
   Metrics,
+  SkillRecord,
   TaskDetail,
   TaskSummary,
 } from '../api/types';
@@ -166,6 +167,39 @@ export const mockMemory: MemoryRecord[] = [
     tags: ['mobile', 'ci'],
     importance: 0.85,
     updated_at: NOW - 3600,
+  },
+];
+
+export const mockSkills: SkillRecord[] = [
+  {
+    name: 'remote-task',
+    description: 'Launch a Claude task on a remote kube-coder workspace, check status, or attach.',
+    body: '# Remote Task Skill\n\nLaunch tasks on remote workspace pods.',
+    scope: 'project',
+    systems: ['claude', 'opencode', 'ante'],
+    user_invocable: true,
+    allowed_tools: ['Bash', 'Read', 'Grep'],
+    argument_hint: '[prompt or "status"]',
+    updated_at: NOW - 7200,
+  },
+  {
+    name: 'code-review',
+    description: 'Review the current diff for correctness bugs and cleanups.',
+    body: '# Code Review\n\nRuns a structured review over the working diff.',
+    scope: 'user',
+    systems: ['claude'],
+    user_invocable: true,
+    allowed_tools: ['Bash', 'Read'],
+    updated_at: NOW - 86400,
+  },
+  {
+    name: 'deploy-prod',
+    description: 'Guarded production deploy runbook.',
+    body: 'Run make ship, verify rollout, watch alerts for 10 minutes.',
+    scope: 'user',
+    systems: ['opencode'],
+    user_invocable: false,
+    updated_at: NOW - 43200,
   },
 ];
 
