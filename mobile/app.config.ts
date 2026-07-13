@@ -49,6 +49,8 @@ const config: ExpoConfig = {
   },
   plugins: [
     'expo-secure-store',
+    // Inline video playback for the Hypervisor chat's video previews.
+    'expo-video',
     [
       // Allow plain-HTTP requests on Android (self-hosted / localhost minikube
       // workspaces). Production cloud hosts still use HTTPS.

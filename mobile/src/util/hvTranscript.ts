@@ -9,11 +9,43 @@ import type { HvEvent } from '../api/types';
 
 export type HvBlock =
   | { kind: 'prose'; text: string }
-  | { kind: 'activity'; label: string; detail: string; error?: boolean };
+  | { kind: 'activity'; label: string; detail: string; error?: boolean }
+  | { kind: 'embed'; port: number; title?: string; height?: number }
+  | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number };
 
 export type HvTurn =
   | { role: 'user'; text: string }
   | { role: 'agent'; blocks: HvBlock[] };
+
+/** MCP render tools whose tool_call renders inline instead of a text chip. */
+const APP_PREVIEW_TOOL = 'mcp__dashboard__show_app_preview';
+const MEDIA_TOOL = 'mcp__dashboard__show_media';
+
+function num(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : (v as number);
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
+}
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v : undefined;
+}
+
+/** Map a render tool_call to its block, or null if it isn't a render tool. */
+function renderBlock(name: string, input: unknown): HvBlock | null {
+  const a = (input || {}) as Record<string, unknown>;
+  if (name === APP_PREVIEW_TOOL) {
+    const port = num(a.port);
+    if (port === undefined) return null;
+    return { kind: 'embed', port, title: str(a.title), height: num(a.height) };
+  }
+  if (name === MEDIA_TOOL) {
+    const mediaKind = a.media_kind === 'video' ? 'video' : 'image';
+    const path = str(a.path);
+    const url = str(a.url);
+    if (!path && !url) return null;
+    return { kind: 'media', mediaKind, path, url, title: str(a.title), height: num(a.height) };
+  }
+  return null;
+}
 
 function prettyInput(input: unknown): string {
   if (input == null) return '';
@@ -55,6 +87,9 @@ function toolLabel(name: string): string {
 export function buildTurns(events: HvEvent[]): HvTurn[] {
   const turns: HvTurn[] = [];
   let agent: { role: 'agent'; blocks: HvBlock[] } | null = null;
+  // tool_use_ids of render tool_calls — their tool_result is confirmation text
+  // we swallow (the rendered block is the real output), unless it errored.
+  const renderIds = new Set<string>();
 
   const openAgent = () => {
     if (!agent) {
@@ -73,12 +108,19 @@ export function buildTurns(events: HvEvent[]): HvTurn[] {
     if (e.type === 'message' && (e.text || '').trim()) {
       openAgent().blocks.push({ kind: 'prose', text: e.text || '' });
     } else if (e.type === 'tool_call') {
-      openAgent().blocks.push({
-        kind: 'activity',
-        label: toolLabel(e.tool?.name || 'tool'),
-        detail: prettyInput(e.tool?.input),
-      });
+      const rendered = renderBlock(e.tool?.name || '', e.tool?.input);
+      if (rendered) {
+        if (e.tool_id) renderIds.add(e.tool_id);
+        openAgent().blocks.push(rendered);
+      } else {
+        openAgent().blocks.push({
+          kind: 'activity',
+          label: toolLabel(e.tool?.name || 'tool'),
+          detail: prettyInput(e.tool?.input),
+        });
+      }
     } else if (e.type === 'tool_result') {
+      if (e.tool_use_id && renderIds.has(e.tool_use_id) && !e.is_error) continue;
       const blocks = openAgent().blocks;
       const last = [...blocks].reverse().find((b) => b.kind === 'activity') as
         | { kind: 'activity'; label: string; detail: string; error?: boolean }
