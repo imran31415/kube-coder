@@ -162,7 +162,9 @@ export function ScreenHeader({
           </LinearGradient>
         ) : null}
         <View style={{ flexShrink: 1 }}>
-          <Text style={styles.headerTitle}>{title}</Text>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {title}
+          </Text>
           {subtitle ? (
             <Text style={styles.headerSubtitle} numberOfLines={1}>
               {subtitle}

@@ -40,6 +40,7 @@ import { buildTurns, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
+import { useKeyboardVisible } from '../util/useKeyboard';
 import { colors, font, radius, space } from '../theme';
 
 const SUGGESTIONS = [
@@ -59,6 +60,11 @@ interface Attachment {
 
 export default function HypervisorScreen() {
   const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
+  // Measured header height → the KeyboardAvoidingView's offset (the composer
+  // must rise by exactly the space above it, or it over/under-shoots the
+  // keyboard). Defaults to a sane guess until the first layout pass.
+  const [headerH, setHeaderH] = useState(56);
   const [config, setConfig] = useState<HypervisorConfig | null>(null);
   const [threads, setThreads] = useState<HypervisorThread[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -258,6 +264,7 @@ export default function HypervisorScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
+      <View onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}>
       <ScreenHeader
         title={activeThread ? activeThread.title || 'Chat' : 'Hypervisor'}
         subtitle={activeThread ? `via ${activeThread.assistant || agentName}` : 'Talk to your workspace'}
@@ -282,6 +289,7 @@ export default function HypervisorScreen() {
           </View>
         }
       />
+      </View>
 
       <ChatsSheet
         visible={chatsOpen}
@@ -296,7 +304,7 @@ export default function HypervisorScreen() {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={insets.top + 44}
+        keyboardVerticalOffset={insets.top + headerH}
       >
         <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.transcript}>
           {empty ? (
@@ -369,7 +377,14 @@ export default function HypervisorScreen() {
           </ScrollView>
         )}
 
-        <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
+        <View
+          style={[
+            styles.composer,
+            // Keyboard up → it already covers the home indicator, so drop the
+            // safe-area inset that would otherwise leave a gap under the input.
+            { paddingBottom: keyboardVisible ? space.sm : Math.max(insets.bottom, space.sm) },
+          ]}
+        >
           <Pressable
             onPress={() => void pickImage()}
             disabled={blocked}
