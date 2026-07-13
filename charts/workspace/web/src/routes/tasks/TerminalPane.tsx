@@ -33,6 +33,14 @@ const LAST_CUSTOM_H_KEY = 'kc.previewCustomH';
 const SPLIT_RATIO_KEY = 'kc.previewSplit';
 const SPLIT_MIN = 0.2;
 const SPLIT_MAX = 0.8;
+// One-shot discoverability hint for terminal copy. tmux runs with
+// `mouse on` (chart-managed) so a plain click-drag is captured by tmux
+// copy-mode and never reaches the OS clipboard — users report "copy
+// doesn't work". Holding Shift bypasses the terminal's mouse reporting
+// and gives the browser a native selection, which Ctrl/⌘-C then copies.
+// We surface that once (desktop only; mobile has separate copy limits)
+// and remember the dismissal so it never nags.
+const COPY_HINT_KEY = 'kc.term.copyHintDismissed';
 
 type PreviewMode = 'app' | 'browser';
 
@@ -131,6 +139,15 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   const [appReloadKey, setAppReloadKey] = useState(0);
   const [portStatus, setPortStatus] = useState<string>('');
   const [portBusy, setPortBusy] = useState(false);
+  // Terminal copy hint: shown until the user dismisses it once (persisted).
+  const [copyHintDismissed, setCopyHintDismissed] = useState<boolean>(() => {
+    try { return localStorage.getItem(COPY_HINT_KEY) === '1'; }
+    catch { return false; }
+  });
+  const dismissCopyHint = () => {
+    setCopyHintDismissed(true);
+    try { localStorage.setItem(COPY_HINT_KEY, '1'); } catch { /* noop */ }
+  };
   const vncRef = useRef<HTMLIFrameElement | null>(null);
   const appRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -720,6 +737,23 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
               title="Task terminal"
               allow="clipboard-read; clipboard-write"
             />
+          )}
+          {/* Copy discoverability chip (desktop only). tmux mouse-mode eats a
+              plain drag; Shift-drag gives the browser a real selection to copy.
+              Shown once, then dismissed for good via localStorage. */}
+          {termSrc && !isMobile && !copyHintDismissed && (!withVnc || mobilePane === 'session') && (
+            <div class="term-pane-copy-hint" role="note">
+              <span><strong>Shift-drag</strong> to select, then <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>C</kbd> to copy</span>
+              <button
+                type="button"
+                class="term-pane-copy-hint-x"
+                onClick={dismissCopyHint}
+                title="Dismiss"
+                aria-label="Dismiss copy hint"
+              >
+                ×
+              </button>
+            </div>
           )}
           {/* Mobile + scroll mode: a transparent overlay turns finger drags into
               tmux copy-mode scrolling (the ttyd iframe ignores touch). Only

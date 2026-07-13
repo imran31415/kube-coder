@@ -460,6 +460,50 @@
   pointer-events: none;
   user-select: none;
 }
+/* One-shot copy discoverability chip, pinned bottom-left over the terminal.
+   Desktop only; dismissible (see TerminalPane COPY_HINT_KEY). */
+.term-pane-copy-hint {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+.term-pane-copy-hint kbd {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.16);
+}
+.term-pane-copy-hint-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  color: #fff;
+  background: transparent;
+}
+.term-pane-copy-hint-x:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
 .term-pane-frames-split {
   display: grid;
   /* Fallback only — TerminalPane sets the live template inline
