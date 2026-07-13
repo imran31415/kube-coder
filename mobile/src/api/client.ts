@@ -623,3 +623,16 @@ export async function stopThread(id: string): Promise<void> {
 export async function deleteThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
+/** Absolute URL for a workspace media file served by /api/files/raw. Pair with
+ *  authHeaders() on an <Image>/<VideoView> so the Bearer token authenticates
+ *  the request (RN Image/expo-video support request headers). */
+export function fileRawUrl(path: string): string {
+  const { host } = getConfig();
+  return `${(host || '').replace(/\/+$/, '')}/api/files/raw?path=${encodeURIComponent(path)}`;
+}
+
+export function authHeaders(): Record<string, string> {
+  const { token } = getConfig();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
