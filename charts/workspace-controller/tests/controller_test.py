@@ -682,6 +682,47 @@ class SetWorkspaceImageTest(unittest.TestCase):
         self.assertEqual(seen, {'slug': 'octo', 'tag': 'devlaptop-v1.4.0'})
         self.assertTrue(result['persisted'])
 
+    def _enable_provisioning(self):
+        """Turn on the wiring provisioning_enabled() checks + stub the Job launch
+        so no real kubectl is spawned. Returns the dict the stub records into."""
+        controller.GITOPS_REPO = 'github.com/o/r.git'
+        controller.GITOPS_TOKEN = 'tok'
+        self.addCleanup(setattr, controller, 'WORKSPACE_DOMAIN', controller.WORKSPACE_DOMAIN)
+        controller.WORKSPACE_DOMAIN = 'dev.example.com'
+        self.addCleanup(setattr, controller, 'gitops_update_image_tag',
+                        controller.gitops_update_image_tag)
+        controller.gitops_update_image_tag = lambda slug, tag: True
+        launched = {}
+        self.addCleanup(setattr, controller, 'create_provision_job',
+                        controller.create_provision_job)
+        controller.create_provision_job = lambda slug: launched.update(slug=slug) or 'job/x'
+        return launched
+
+    def test_config_reconcile_job_launched_on_update(self):
+        # A real update refreshes the ConfigMaps (server.py) via a helm-upgrade
+        # Job, not just the image tag.
+        controller._kubectl_run = lambda args, namespace=None: None
+        launched = self._enable_provisioning()
+        result = controller.set_workspace_image('octo')
+        self.assertEqual(launched, {'slug': 'octo'})
+        self.assertEqual(result['reconcile'], 'launched')
+
+    def test_config_reconcile_runs_even_when_already_on_target(self):
+        # The umi bug: image already latest but the ConfigMap (server.py) stale —
+        # "update" must still reconcile config, even with no image roll.
+        controller._kubectl_run = lambda args, namespace=None: None
+        launched = self._enable_provisioning()
+        result = controller.set_workspace_image('octo', 'v1.3.0')  # already on v1.3.0
+        self.assertFalse(result['rolled'])            # no image patch
+        self.assertEqual(launched, {'slug': 'octo'})  # but config still reconciled
+        self.assertEqual(result['reconcile'], 'launched')
+
+    def test_no_reconcile_job_when_provisioning_disabled(self):
+        # No GitOps/domain wiring → legacy image-tag-only update, no Job.
+        controller._kubectl_run = lambda args, namespace=None: None
+        result = controller.set_workspace_image('octo')  # GITOPS off (setUp default)
+        self.assertIsNone(result['reconcile'])
+
 
 class RestrictedListenerTest(unittest.TestCase):
     """The self-serve listener must 404 every admin/header-trusting route so a
