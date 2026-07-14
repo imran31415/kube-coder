@@ -239,7 +239,14 @@ def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
 # Assistants with a non-interactive one-shot "print" mode that exits when
 # the task is done. Anything not listed has no reliable headless interface
 # (kc-harness) and is always run interactively (prompt pasted into the REPL).
-_HEADLESS_CAPABLE = {'claude', 'ante', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek'}
+_HEADLESS_CAPABLE = {'claude', 'ante', 'codex', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek'}
+
+
+def _codex_model_flag() -> str:
+    """Optional `-m <model>` for codex; empty when KC_CODEX_MODEL is unset (codex
+    picks its own default). Mirrors server.py's assistant_command."""
+    m = os.environ.get('KC_CODEX_MODEL', '')
+    return f'-m {_shell_quote(m)} ' if m else ''
 
 
 def _opencode_model(assistant: str) -> str:
@@ -299,6 +306,10 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
             return f'agy --model {_shell_quote(m)}' if m else 'agy'
         if assistant == 'kc-harness':
             return 'python3 /tmp/browser/harness.py'
+        if assistant == 'codex':
+            # Interactive Codex TUI. The pod is externally sandboxed (k8s), so
+            # bypass approvals/sandbox for the unattended sub-agent.
+            return f'codex --dangerously-bypass-approvals-and-sandbox {_codex_model_flag()}'.rstrip()
         if assistant == 'librefang':
             # Interactive REPL also needs the daemon — see _assistant_command's
             # headless branch and _librefang_daemon_bootstrap().
@@ -311,6 +322,14 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         return f'claude --dangerously-skip-permissions -p {q}'
     if assistant == 'ante':
         return f'ante --yolo -p {q}'
+    if assistant == 'codex':
+        # `codex exec <prompt>` is the one-shot non-interactive mode (exits when
+        # done). Bypass approvals/sandbox (pod is externally sandboxed) and skip
+        # the git-repo check so it runs in any workdir. No --json here: the
+        # orchestrator captures the tmux pane as text, and exec prints its final
+        # message to stdout.
+        return (f'codex exec --dangerously-bypass-approvals-and-sandbox '
+                f'--skip-git-repo-check {_codex_model_flag()}{q}')
     if assistant == 'antigravity':
         # `agy -p` is the CLI's one-shot print mode (prompt on the command line,
         # exits when done). --dangerously-skip-permissions auto-approves tool
@@ -356,6 +375,7 @@ def _wait_pane_ready(session_name: str, min_delay: float = 1.5,
 _ASSISTANTS_LIST = [
     {'id': 'claude', 'label': 'Claude Code'},
     {'id': 'ante', 'label': 'Ante CLI'},
+    {'id': 'codex', 'label': 'Codex'},
     {'id': 'antigravity', 'label': 'Antigravity'},
     {'id': 'librefang', 'label': 'LibreFang'},
     {'id': 'opencode-openrouter', 'label': 'OpenRouter'},

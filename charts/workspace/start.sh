@@ -753,6 +753,28 @@ os.replace(tmp, path)
 print('[seed_ante_config] wrote', path)
 PY
 
+# Seed Codex's MCP servers so a selected/spawned Codex agent gets the SAME
+# stdio MCP surface as Claude/Ante — agent-orchestrator (spawn + track
+# sub-agents), shared persistent memory, and the dashboard tools (metrics/
+# tasks/UI actions in the Hypervisor). Codex reads MCP servers from
+# $CODEX_HOME/config.toml; `codex mcp add` merges each block in idempotently
+# (overwrites the named server, preserves everything else incl. auth.json), so
+# a re-run on an established PVC is safe. Best-effort + gated on the binary so
+# older images / a failed add never stall boot. Independent of `codex login`
+# (MCP config isn't auth). CODEX_HOME is pinned to the PVC path the persistence
+# block above manages, so it lands regardless of this script's own $HOME.
+if command -v codex >/dev/null 2>&1; then
+  log_stage "seeding Codex MCP config (~/.codex/config.toml)"
+  for _mcp in \
+    "agent-orchestrator /tmp/browser/mcp_agent_orchestrator.py" \
+    "memory /home/dev/.claude-memory/mcp_memory.py" \
+    "dashboard /tmp/browser/mcp_dashboard.py"; do
+    set -- $_mcp   # $1=server name, $2=script path
+    CODEX_HOME=/home/dev/.codex codex mcp add "$1" -- python3 "$2" >/dev/null 2>&1 \
+      || log_stage "WARNING: codex mcp add $1 failed (Codex MCP $1 not registered)"
+  done
+fi
+
 log_stage "starting browser/Claude API server on :6080"
 mkdir -p /tmp/browser
 # Copy Python sources (these need a pod restart to take effect).

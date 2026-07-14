@@ -701,3 +701,27 @@ export async function deleteProviderKey(provider: ProviderVar): Promise<void> {
   if (getConfig().mock) return;
   await request(`/api/provider-keys/${provider}`, { method: 'DELETE' });
 }
+
+// ---- Assistants ------------------------------------------------------------
+// The set of AI harnesses the workspace has enabled (claude/ante/codex/opencode
+// /…), gated backend-side on binary + key presence. Drives the New Task picker
+// so it always reflects what's actually usable (incl. Codex when logged in).
+
+export interface Assistant {
+  id: string;
+  label?: string;
+  default?: boolean;
+  model?: string;
+}
+
+export async function listAssistants(): Promise<Assistant[]> {
+  if (getConfig().mock) {
+    return [
+      { id: 'claude', label: 'Claude Code', default: true },
+      { id: 'ante', label: 'Ante CLI' },
+      { id: 'codex', label: 'Codex' },
+    ];
+  }
+  const r = await request<{ assistants?: Assistant[] }>('/api/claude/assistants');
+  return r.assistants ?? [];
+}

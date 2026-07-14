@@ -1,7 +1,7 @@
 /** Create a new Claude task. */
 import { useNavigation } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -13,21 +13,40 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { createTask } from '../api/client';
+import { createTask, listAssistants, type Assistant } from '../api/client';
 import { Button, Label } from '../components/ui';
 import type { TasksNav } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 
-const ASSISTANTS = ['claude', 'ante', 'codex', 'opencode-openrouter'];
+// Shown until the backend list loads (or if it fails) so the picker is never
+// empty. The live list from /api/claude/assistants replaces this and reflects
+// exactly what the workspace has enabled (incl. Codex once logged in).
+const FALLBACK_ASSISTANTS: Assistant[] = [
+  { id: 'claude', label: 'Claude Code', default: true },
+  { id: 'ante', label: 'Ante CLI' },
+  { id: 'codex', label: 'Codex' },
+];
 
 export default function NewTaskScreen() {
   const nav = useNavigation<TasksNav>();
   const headerHeight = useHeaderHeight();
   const [prompt, setPrompt] = useState('');
   const [workdir, setWorkdir] = useState('/home/dev');
+  const [assistants, setAssistants] = useState<Assistant[]>(FALLBACK_ASSISTANTS);
   const [assistant, setAssistant] = useState('claude');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void listAssistants()
+      .then((list) => {
+        if (list.length === 0) return;
+        setAssistants(list);
+        // Default the selection to the backend's default (or first) assistant.
+        setAssistant(list.find((a) => a.default)?.id ?? list[0].id);
+      })
+      .catch(() => {/* keep the fallback list */});
+  }, []);
 
   async function submit() {
     if (!prompt.trim()) return;
@@ -79,13 +98,13 @@ export default function NewTaskScreen() {
 
           <Label style={{ marginTop: space.xl }}>Assistant</Label>
           <View style={styles.chips}>
-            {ASSISTANTS.map((a) => (
+            {assistants.map((a) => (
               <Pressable
-                key={a}
-                onPress={() => setAssistant(a)}
-                style={[styles.chip, assistant === a && styles.chipActive]}
+                key={a.id}
+                onPress={() => setAssistant(a.id)}
+                style={[styles.chip, assistant === a.id && styles.chipActive]}
               >
-                <Text style={[styles.chipText, assistant === a && styles.chipTextActive]}>{a}</Text>
+                <Text style={[styles.chipText, assistant === a.id && styles.chipTextActive]}>{a.label || a.id}</Text>
               </Pressable>
             ))}
           </View>

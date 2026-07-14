@@ -151,7 +151,7 @@ export function DesktopEditor({
                 fullWidth
                 value={taskAssistant}
                 onInput={(e) => setTaskAssistant((e.target as HTMLInputElement).value)}
-                placeholder="claude  (or opencode-openrouter / kc-harness)"
+                placeholder="claude  (or ante / codex / opencode-openrouter)"
               />
             </label>
           </div>
