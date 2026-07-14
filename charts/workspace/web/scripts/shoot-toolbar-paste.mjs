@@ -14,13 +14,14 @@
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { chromiumPath } from './chromium-path.mjs';
 
 const TASK_ID = process.argv[2] || process.env.KC_TASK_ID;
 const out = resolve(process.argv[3] || '/home/dev/kube-coder/docs/screenshots');
 mkdirSync(out, { recursive: true });
 if (!TASK_ID) { console.error('need a task id'); process.exit(1); }
 
-const CHROMIUM = process.env.KC_CHROMIUM || '/home/ubuntu/.cache/ms-playwright/chromium-1224/chrome-linux64/chrome';
+const CHROMIUM = chromiumPath();
 const BASE = process.env.SHOT_BASE || 'http://127.0.0.1:7070';
 const PNG_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP8z8Dwn4EIwDiqEAQAGAsE9wEK3wAAAABJRU5ErkJggg==';

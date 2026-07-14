@@ -45,13 +45,20 @@ sleep 2
 curl -sf http://localhost:7070/ >/dev/null && echo "dev server up" || tail -20 /tmp/dev_server.log
 ```
 
-### 3. Confirm the Chromium binary path (it drifts — never hardcode)
+### 3. Ensure a Chromium binary is installed
+
+The shoot scripts auto-discover the Playwright Chromium via
+`scripts/chromium-path.mjs` (checks `$KC_CHROMIUM`, then the highest-revision
+`chromium-<rev>` under any ms-playwright cache root), so you don't hardcode or
+symlink anything. Just make sure one is installed:
 
 ```bash
-ls -d ~/.cache/ms-playwright/chromium*/chrome-linux*/chrome
+ls -d ~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null \
+  || yarn --cwd charts/workspace/web exec playwright install chromium
 ```
 
-If it's missing, install it: `yarn --cwd charts/workspace/web exec playwright install chromium`.
+If it lives somewhere unusual, point the scripts at it explicitly with
+`KC_CHROMIUM=/path/to/chrome`.
 
 ### 4. Run the shoot script
 

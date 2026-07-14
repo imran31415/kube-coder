@@ -13,19 +13,12 @@
 import { chromium } from 'playwright-core';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { resolve, basename, extname } from 'node:path';
+import { chromiumPath } from './chromium-path.mjs';
 
 const out = resolve(process.argv[2] || '/home/dev/screenshots/docs');
 mkdirSync(out, { recursive: true });
 
-const CHROMIUM_CANDIDATES = [
-  '/home/ubuntu/.cache/ms-playwright/chromium-1224/chrome-linux64/chrome',
-  '/home/ubuntu/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome',
-];
-const CHROMIUM = CHROMIUM_CANDIDATES.find((p) => { try { readFileSync(p); return true; } catch { return false; } });
-if (!CHROMIUM) {
-  console.error('No playwright chromium found in', CHROMIUM_CANDIDATES);
-  process.exit(1);
-}
+const CHROMIUM = chromiumPath();
 
 const BASE = process.env.SHOT_BASE || 'http://127.0.0.1:6080';
 const TOKEN = process.env.KC_DEV_TOKEN || readFileSync('/home/dev/.claude-tasks/.api-token', 'utf8').trim();
