@@ -66,6 +66,44 @@
   color: var(--text-subtle);
 }
 
+/* Active / Past filter — mirrors the Build tab's .td-bar-tab idiom so the two
+   feel like one app. */
+.hv-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--size-3) var(--size-2);
+}
+.hv-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.hv-tab:hover { background: var(--surface-2); color: var(--text); }
+.hv-tab-active {
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 500;
+}
+.hv-tab-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
 .hv-agent-picker {
   display: flex;
   flex-direction: column;
