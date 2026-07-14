@@ -80,3 +80,52 @@ export const skillsStats = () => apiGet<SkillsStats>('/api/skills/stats');
 
 export const scanSkills = () =>
   apiPost<{ status: string; result: Record<string, unknown> }>('/api/skills/_scan');
+
+// ── Cross-tool sync (PR2) ────────────────────────────────────────────────────
+
+export interface SyncTarget {
+  system: string;
+  scope?: string;
+}
+
+export interface SyncSkillInput {
+  source_system: string;
+  source_scope?: string;
+  targets: SyncTarget[];
+  force?: boolean;
+}
+
+export interface SyncResult {
+  name: string;
+  source_system: string;
+  installed: { system: string; scope: string; path: string }[];
+  failed: { system: string; scope: string; error: string }[];
+}
+
+export interface SyncConflict {
+  system: string;
+  existing_fingerprint: string;
+}
+
+/** Thrown when a target already holds a DIVERGENT copy (HTTP 409). The caller
+ *  can re-issue with force=true to overwrite. */
+export class SkillSyncConflictError extends Error {
+  conflicts: SyncConflict[];
+  constructor(conflicts: SyncConflict[]) {
+    super('target has a divergent copy');
+    this.name = 'SkillSyncConflictError';
+    this.conflicts = conflicts;
+  }
+}
+
+export const syncSkill = (name: string, input: SyncSkillInput) =>
+  apiPost<SyncResult>(`/api/skills/${encodeURIComponent(name)}/sync`, input).catch((err) => {
+    // apiPost throws ApiError with .status/.body on non-2xx; surface 409 as a
+    // typed conflict so the UI can offer a "force" retry.
+    const status = (err as { status?: number })?.status;
+    const body = (err as { body?: { code?: string; conflicts?: SyncConflict[] } })?.body;
+    if (status === 409 && body?.code === 'conflict') {
+      throw new SkillSyncConflictError(safeArray(body.conflicts) as SyncConflict[]);
+    }
+    throw err;
+  });

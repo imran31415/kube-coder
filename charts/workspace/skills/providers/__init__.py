@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import time
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from ..model import SkillRecord, SkillSource, SKILL_NAME_RE, fingerprint
+from ..model import (
+    SkillRecord, SkillSource, SKILL_NAME_RE, fingerprint, render_skill_md,
+)
 from ..parser import parse_frontmatter, parse_bool, parse_tool_list
 
 
@@ -127,18 +130,75 @@ class SkillProvider:
         return fp
 
     # ── write path (sync engine, PR 2) ──────────────────────────────────
+    #
+    # A writable provider only needs to implement `_install_dir(scope)` —
+    # the ONE canonical directory this harness reads a given scope's skills
+    # from. `render()`/`install_path()`/`install()` are generic and shared:
+    # all currently-supported harnesses use the Claude-compatible SKILL.md
+    # layout. A provider whose native write format differs overrides
+    # `render()` alone; nothing else changes.
+
+    def _install_dir(self, scope: str) -> Optional[str]:
+        """Canonical directory to WRITE `scope` skills into (not the full
+        multi-home scan list — one destination). Return None for scopes
+        this harness can't be written to (e.g. plugin). Writable providers
+        override; the default is read-only (no destination)."""
+        return None
 
     def install_path(self, name: str, scope: str = 'user') -> str:
-        """Destination path a translated skill would be written to."""
-        raise NotImplementedError
+        """Destination path a translated skill would be written to.
+        Validates the name up front (path-traversal guard)."""
+        if not SKILL_NAME_RE.match(name or ''):
+            raise ValueError(f'unsafe skill name: {name!r}')
+        base = self._install_dir(scope)
+        if not base:
+            raise ValueError(
+                f'{self.key}: scope {scope!r} is not writable')
+        return os.path.join(base, name, 'SKILL.md')
 
     def render(self, record: SkillRecord) -> str:
-        """Canonical record → this harness's native file text."""
-        raise NotImplementedError
+        """Canonical record → this harness's native file text. Default is
+        the interchange SKILL.md; override only for a divergent format."""
+        return render_skill_md(record)
+
+    def writable(self) -> bool:
+        return self.enabled and self._install_dir('user') is not None
 
     def install(self, record: SkillRecord, scope: str = 'user') -> str:
-        """render() + atomic write. Returns the written path."""
-        raise NotImplementedError
+        """render() + atomic write into this harness's dir. Returns the
+        written path. Guards: name regex, realpath containment, temp-file
+        + os.replace so a crash never leaves a half-written skill."""
+        if not self.enabled:
+            raise ValueError(f'{self.key}: provider is disabled')
+        name = (record.name or '')
+        if not SKILL_NAME_RE.match(name):
+            raise ValueError(f'unsafe skill name: {name!r}')
+        base = self._install_dir(scope)
+        if not base:
+            raise ValueError(f'{self.key}: scope {scope!r} is not writable')
+        dest = os.path.join(base, name, 'SKILL.md')
+        # Defense in depth: the resolved destination must stay inside the
+        # resolved install dir even though `name` is already regex-clean.
+        real_base = os.path.realpath(base)
+        real_dest = os.path.realpath(dest)
+        if real_dest != os.path.join(real_base, name, 'SKILL.md') and \
+                not real_dest.startswith(real_base + os.sep):
+            raise ValueError('destination escapes install root')
+        text = self.render(record)
+        dest_dir = os.path.dirname(dest)
+        os.makedirs(dest_dir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=dest_dir, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(text)
+            os.replace(tmp, dest)  # atomic on same filesystem
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return dest
 
 
 def _now() -> float:

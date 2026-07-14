@@ -1,5 +1,8 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { listSkills, getSkill, skillsStats, scanSkills, type SkillRecord } from './skills';
+import {
+  listSkills, getSkill, skillsStats, scanSkills, syncSkill,
+  SkillSyncConflictError, type SkillRecord,
+} from './skills';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -14,6 +17,23 @@ function capture(body: unknown) {
     return {
       ok: true,
       status: 200,
+      statusText: '',
+      headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) },
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return calls;
+}
+
+/** Fetch mock that returns an arbitrary status + JSON body (for error paths). */
+function respond(status: number, body: unknown) {
+  const calls: { url: string; method: string; body?: string }[] = [];
+  globalThis.fetch = vi.fn(async (u: string, init?: RequestInit) => {
+    calls.push({ url: u, method: init?.method ?? 'GET', body: init?.body as string | undefined });
+    return {
+      ok: status >= 200 && status < 300,
+      status,
       statusText: '',
       headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) },
       json: async () => body,
@@ -106,5 +126,97 @@ describe('skills api (#187)', () => {
     await scanSkills();
     expect(calls[0].method).toBe('POST');
     expect(calls[0].url).toContain('/api/skills/_scan');
+  });
+});
+
+describe('syncSkill cross-tool sync (PR2)', () => {
+  const INPUT = {
+    source_system: 'claude',
+    source_scope: 'user',
+    targets: [{ system: 'opencode', scope: 'user' }],
+    force: false,
+  };
+
+  it('POSTs the sync endpoint with the source + targets body', async () => {
+    const calls = capture({
+      name: 'remote-task',
+      source_system: 'claude',
+      installed: [{ system: 'opencode', scope: 'user', path: '/x/SKILL.md' }],
+      failed: [],
+    });
+    const r = await syncSkill('remote-task', INPUT);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toContain('/api/skills/remote-task/sync');
+    const sent = JSON.parse(calls[0].body!);
+    expect(sent.source_system).toBe('claude');
+    expect(sent.targets).toEqual([{ system: 'opencode', scope: 'user' }]);
+    expect(r.installed).toHaveLength(1);
+    expect(r.failed).toHaveLength(0);
+  });
+
+  it('URL-encodes the skill name', async () => {
+    const calls = capture({ name: 'a b', source_system: 'claude', installed: [], failed: [] });
+    await syncSkill('a b', INPUT);
+    expect(calls[0].url).toContain('/api/skills/a%20b/sync');
+  });
+
+  it('surfaces per-target failures without throwing (207-style body)', async () => {
+    capture({
+      name: 'remote-task',
+      source_system: 'claude',
+      installed: [{ system: 'opencode', scope: 'user', path: '/x/SKILL.md' }],
+      failed: [{ system: 'ante', scope: 'user', error: 'provider is disabled' }],
+    });
+    const r = await syncSkill('remote-task', INPUT);
+    expect(r.installed).toHaveLength(1);
+    expect(r.failed).toHaveLength(1);
+    expect(r.failed[0].system).toBe('ante');
+  });
+
+  it('throws SkillSyncConflictError on a 409 conflict, carrying the conflicts', async () => {
+    respond(409, {
+      code: 'conflict',
+      conflicts: [{ system: 'opencode', existing_fingerprint: 'deadbeef' }],
+    });
+    await expect(syncSkill('remote-task', INPUT)).rejects.toBeInstanceOf(SkillSyncConflictError);
+    try {
+      await syncSkill('remote-task', INPUT);
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SkillSyncConflictError);
+      expect((e as SkillSyncConflictError).conflicts).toEqual([
+        { system: 'opencode', existing_fingerprint: 'deadbeef' },
+      ]);
+    }
+  });
+
+  it('coerces a 409 with a missing conflicts array to []', async () => {
+    respond(409, { code: 'conflict' });
+    try {
+      await syncSkill('remote-task', INPUT);
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(SkillSyncConflictError);
+      expect((e as SkillSyncConflictError).conflicts).toEqual([]);
+    }
+  });
+
+  it('re-throws a non-conflict 409 as a plain ApiError', async () => {
+    respond(409, { error: 'something else' });
+    await expect(syncSkill('remote-task', INPUT)).rejects.not.toBeInstanceOf(SkillSyncConflictError);
+  });
+
+  it('re-throws other error statuses (400 bad target) unchanged', async () => {
+    respond(400, { error: 'bad_target', code: 'bad_target' });
+    const err = await syncSkill('remote-task', INPUT).catch((e) => e);
+    expect(err).not.toBeInstanceOf(SkillSyncConflictError);
+    expect((err as { status?: number }).status).toBe(400);
+  });
+
+  it('re-throws a 403 readonly block unchanged', async () => {
+    respond(403, { error: 'read-only mode' });
+    const err = await syncSkill('remote-task', INPUT).catch((e) => e);
+    expect(err).not.toBeInstanceOf(SkillSyncConflictError);
+    expect((err as { status?: number }).status).toBe(403);
   });
 });
