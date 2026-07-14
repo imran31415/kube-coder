@@ -8,8 +8,10 @@
 # tracked part of the repo (otherwise a contributor running
 # `git rm -r --cached .claude/` to fix a local edit would silently delete
 # the skill definitions). Order matters — exclusion has to come after the
-# blanket ignore.
-.claude/
+# blanket ignore. Use `.claude/*` (contents) rather than `.claude/` (the
+# directory): git cannot re-include a path whose parent *directory* is
+# excluded, so `!.claude/skills/` only works when the dir itself isn't ignored.
+.claude/*
 !.claude/skills/
 !.claude/skills/**
 
