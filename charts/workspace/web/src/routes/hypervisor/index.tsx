@@ -20,6 +20,7 @@ import {
 import type { ThreadStatus } from '../../api/hypervisor';
 import { currentPath, navigate, pathSuffix } from '../../store/router';
 import { Chat } from './Chat';
+import { partitionThreads, type ChatTab } from './chatTabs';
 import './hypervisor.css';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
@@ -36,6 +37,7 @@ function statusLabel(s: string): string {
 export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [chatTab, setChatTab] = useState<ChatTab>('active');
 
   useEffect(() => {
     void initHypervisor();
@@ -60,6 +62,24 @@ export function HypervisorRoute() {
   const active = activeThreadId.value;
   const activeThread = list.find((t) => t.id === active) ?? null;
   const status = activeStatus.value;
+
+  // Split into what you're working with now vs. older chats. Derived purely
+  // from status + updated_at (see chatTabs.ts) — no server change needed.
+  const { active: activeThreads, past: pastThreads } = partitionThreads(
+    list,
+    active,
+    Date.now(),
+  );
+  const shown = chatTab === 'active' ? activeThreads : pastThreads;
+
+  // If there's nothing to show under Active but there is history, land the user
+  // on Past so the list isn't misleadingly empty. Only nudges while sitting on
+  // an empty Active tab, so a deliberate switch back isn't fought.
+  useEffect(() => {
+    if (chatTab === 'active' && activeThreads.length === 0 && pastThreads.length > 0) {
+      setChatTab('past');
+    }
+  }, [chatTab, activeThreads.length, pastThreads.length]);
 
   if (cfg && cfg.enabled === false) {
     return (
@@ -115,6 +135,31 @@ export function HypervisorRoute() {
           </div>
         </div>
 
+        {/* Default to just the chats in play; older ones live under Past so the
+            list stays short. Split is derived (chatTabs.ts), not a stored flag. */}
+        <nav class="hv-tabs" role="tablist" aria-label="Chats filter">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={chatTab === 'active'}
+            class={`hv-tab ${chatTab === 'active' ? 'hv-tab-active' : ''}`}
+            onClick={() => setChatTab('active')}
+          >
+            Active
+            {activeThreads.length > 0 && <span class="hv-tab-count">{activeThreads.length}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={chatTab === 'past'}
+            class={`hv-tab ${chatTab === 'past' ? 'hv-tab-active' : ''}`}
+            onClick={() => setChatTab('past')}
+          >
+            Past
+            {pastThreads.length > 0 && <span class="hv-tab-count">{pastThreads.length}</span>}
+          </button>
+        </nav>
+
         {/* Which CLI agent a new chat uses — any enabled assistant. The chat is
             a clean layer over the agent the user already configures. */}
         <label class="hv-agent-picker">
@@ -135,8 +180,12 @@ export function HypervisorRoute() {
         </label>
 
         <div class="hv-thread-list">
-          {list.length === 0 && <p class="hv-thread-empty">No chats yet.</p>}
-          {list.map((t) => (
+          {shown.length === 0 && (
+            <p class="hv-thread-empty">
+              {chatTab === 'active' ? 'No active chats — start one with New.' : 'No past chats.'}
+            </p>
+          )}
+          {shown.map((t) => (
             <div key={t.id} class={`hv-thread ${active === t.id ? 'hv-thread-active' : ''}`}>
               <button
                 type="button"
@@ -177,8 +226,8 @@ export function HypervisorRoute() {
               type="button"
               class="hv-topbar-menu"
               onClick={() => setSidebarOpen((v) => !v)}
-              title="Past chats"
-              aria-label={`Past chats (${list.length})`}
+              title="Chats"
+              aria-label={`Chats (${list.length})`}
             >
               <Icon name="chat" size={15} />
               <span class="hv-topbar-menu-label">Chats</span>
