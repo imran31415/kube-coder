@@ -38,6 +38,7 @@ import {
   uploadTaskImage,
 } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
+import { Markdown } from '../components/Markdown';
 import type { HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
 import { buildTurns, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
@@ -616,7 +617,7 @@ function Block({
   onChoose: (text: string) => void;
 }) {
   if (block.kind === 'prose') {
-    return <Text style={styles.prose}>{block.text}</Text>;
+    return <Markdown text={block.text} />;
   }
   if (block.kind === 'embed') {
     return <EmbedBlock port={block.port} title={block.title} height={block.height} />;
@@ -855,7 +856,6 @@ const styles = StyleSheet.create({
   agentName: { color: colors.text, fontWeight: '700', fontSize: font.size.sm },
   agentVia: { color: colors.textFaint, fontSize: font.size.xs },
   working: { color: colors.textFaint, fontSize: font.size.xs, fontStyle: 'italic' },
-  prose: { color: colors.text, fontSize: font.size.md, lineHeight: 22 },
   choice: { gap: space.sm, marginTop: space.xs },
   choiceQ: { color: colors.text, fontSize: font.size.md, fontWeight: '600', lineHeight: 21 },
   choiceOpt: {
