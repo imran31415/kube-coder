@@ -730,6 +730,89 @@ class ProviderKeysManagerTests(unittest.TestCase):
         self.assertEqual(server.ProviderKeysManager.env_overlay(), {'OPENROUTER_API_KEY': 'k'})
 
 
+class SubscriptionStatusManagerTests(unittest.TestCase):
+    """Tests for SubscriptionStatusManager: reads plan/expiry from credential
+    files, NEVER surfaces token material, logout only via the CLI subcommand."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='kctest-sub-')
+        self._orig_claude = server.SubscriptionStatusManager.CLAUDE_CREDS
+        self._orig_codex = server.SubscriptionStatusManager.CODEX_AUTH
+        server.SubscriptionStatusManager.CLAUDE_CREDS = os.path.join(self.tmpdir, 'claude.json')
+        server.SubscriptionStatusManager.CODEX_AUTH = os.path.join(self.tmpdir, 'codex.json')
+
+    def tearDown(self):
+        server.SubscriptionStatusManager.CLAUDE_CREDS = self._orig_claude
+        server.SubscriptionStatusManager.CODEX_AUTH = self._orig_codex
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_claude(self, oauth):
+        with open(server.SubscriptionStatusManager.CLAUDE_CREDS, 'w') as f:
+            json.dump({'claudeAiOauth': oauth}, f)
+
+    def test_claude_not_logged_in_when_file_absent(self):
+        self.assertEqual(server.SubscriptionStatusManager._claude_status(),
+                         {'logged_in': False})
+
+    def test_claude_active_subscription_reports_plan_and_expiry(self):
+        future = (server.time.time() + 3600) * 1000
+        self._write_claude({'accessToken': 'SECRET-tok', 'subscriptionType': 'max',
+                            'expiresAt': future})
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('ANTHROPIC_API_KEY', None)
+            st = server.SubscriptionStatusManager._claude_status()
+        self.assertTrue(st['logged_in'])
+        self.assertEqual(st['kind'], 'subscription')
+        self.assertEqual(st['plan'], 'max')
+        self.assertFalse(st['expired'])
+        self.assertFalse(st['overridden_by_key'])
+        # Token material must never appear in the serialized status.
+        self.assertNotIn('SECRET-tok', json.dumps(st))
+
+    def test_claude_expired_flag(self):
+        past = (server.time.time() - 3600) * 1000
+        self._write_claude({'accessToken': 't', 'subscriptionType': 'pro', 'expiresAt': past})
+        self.assertTrue(server.SubscriptionStatusManager._claude_status()['expired'])
+
+    def test_claude_overridden_by_env_key(self):
+        self._write_claude({'accessToken': 't', 'subscriptionType': 'max', 'expiresAt': 0})
+        with mock.patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'sk-ant-x'}):
+            self.assertTrue(
+                server.SubscriptionStatusManager._claude_status()['overridden_by_key'])
+
+    def test_codex_absent_cli_reports_unavailable(self):
+        with mock.patch('server.shutil.which', return_value=None):
+            self.assertEqual(server.SubscriptionStatusManager._codex_status(),
+                             {'logged_in': False, 'available': False})
+
+    def test_codex_subscription_vs_api_key(self):
+        with mock.patch('server.shutil.which', return_value='/usr/bin/codex'):
+            with open(server.SubscriptionStatusManager.CODEX_AUTH, 'w') as f:
+                json.dump({'tokens': {'access_token': 'x'}}, f)
+            self.assertEqual(
+                server.SubscriptionStatusManager._codex_status()['kind'], 'subscription')
+            with open(server.SubscriptionStatusManager.CODEX_AUTH, 'w') as f:
+                json.dump({'OPENAI_API_KEY': 'sk-x', 'tokens': None}, f)
+            self.assertEqual(
+                server.SubscriptionStatusManager._codex_status()['kind'], 'api_key')
+
+    def test_logout_rejects_unknown_provider(self):
+        ok, err = server.SubscriptionStatusManager.logout('aws')
+        self.assertFalse(ok)
+        self.assertIn('unknown provider', err or '')
+
+    def test_logout_runs_cli_subcommand(self):
+        fake = mock.Mock(returncode=0, stdout='', stderr='')
+        with mock.patch('server.shutil.which', return_value='/usr/bin/codex'), \
+                mock.patch('server.subprocess.run', return_value=fake) as run:
+            ok, err = server.SubscriptionStatusManager.logout('codex')
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        run.assert_called_once()
+        self.assertEqual(run.call_args[0][0], ['codex', 'logout'])
+
+
 class CronManagerTests(unittest.TestCase):
     """Tests for CronManager: config CRUD, schedule validation, fire_token
     minting, kubectl apply manifest construction (without actually calling out

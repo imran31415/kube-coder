@@ -6,10 +6,17 @@ import {
   type ProviderVar,
   type ProviderKeysView,
 } from '../../api/providerKeys';
+import {
+  getSubscriptions,
+  logoutSubscription,
+  type SubscriptionProvider,
+  type SubscriptionsView,
+} from '../../api/subscriptions';
 import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { pushToast } from '../../store/ui';
 
 const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
@@ -18,10 +25,26 @@ const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
   { var: 'ANTHROPIC_API_KEY', label: 'Anthropic', hint: 'Overrides the Claude subscription/oauth default when set.' },
 ];
 
+const SUBSCRIPTIONS: { id: SubscriptionProvider; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+];
+
+function formatExpiry(ms: number | null | undefined): string {
+  if (!ms) return '';
+  try {
+    return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
 export function ProviderKeysSection() {
   const [view, setView] = useState<ProviderKeysView | null>(null);
+  const [subs, setSubs] = useState<SubscriptionsView | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [logoutTarget, setLogoutTarget] = useState<SubscriptionProvider | null>(null);
 
   async function refresh() {
     try {
@@ -31,7 +54,15 @@ export function ProviderKeysSection() {
       // server unavailable — leave view null
     }
   }
-  useEffect(() => { void refresh(); }, []);
+  async function refreshSubs() {
+    try {
+      const r = await getSubscriptions();
+      setSubs(r.subscriptions);
+    } catch {
+      // server unavailable — leave subs null
+    }
+  }
+  useEffect(() => { void refresh(); void refreshSubs(); }, []);
 
   async function onSave(p: ProviderVar) {
     const key = (drafts[p] ?? '').trim();
@@ -42,6 +73,9 @@ export function ProviderKeysSection() {
       pushToast('Key saved', { kind: 'success' });
       setDrafts((d) => ({ ...d, [p]: '' }));
       await refresh();
+      // A new ANTHROPIC_API_KEY changes whether the Claude subscription is
+      // overridden — keep the subscription block in sync.
+      await refreshSubs();
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Save failed', { kind: 'danger' });
     } finally {
@@ -55,8 +89,23 @@ export function ProviderKeysSection() {
       await deleteProviderKey(p);
       pushToast('Key cleared', { kind: 'info' });
       await refresh();
+      await refreshSubs();
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Clear failed', { kind: 'danger' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onLogout(p: SubscriptionProvider) {
+    setBusy(`sub:${p}`);
+    setLogoutTarget(null);
+    try {
+      await logoutSubscription(p);
+      pushToast('Logged out', { kind: 'info' });
+      await refreshSubs();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Logout failed', { kind: 'danger' });
     } finally {
       setBusy(null);
     }
@@ -69,6 +118,61 @@ export function ProviderKeysSection() {
         Set your own model-provider keys for this workspace. Stored securely on your workspace disk
         and used the next time an assistant runs — no redeploy. Leave blank to use the workspace default.
       </p>
+
+      {subs && (
+        <div class="settings-subs">
+          <div class="settings-subs-title muted">Subscription logins</div>
+          {SUBSCRIPTIONS.map((s) => {
+            const st = subs[s.id];
+            // Codex isn't in older images — hide the row entirely when the CLI
+            // is absent and there's nothing to report.
+            if (s.id === 'codex' && st?.available === false && !st?.logged_in) return null;
+            const busyThis = busy === `sub:${s.id}`;
+            let tone: 'success' | 'warn' | 'neutral' = 'neutral';
+            let text = 'not signed in';
+            if (st?.logged_in) {
+              const plan = st.plan ? ` · ${st.plan}` : '';
+              if (st.kind === 'api_key') {
+                tone = 'success';
+                text = 'API key';
+              } else if (st.expired) {
+                tone = 'warn';
+                text = `subscription${plan} · expired`;
+              } else {
+                tone = 'success';
+                const exp = formatExpiry(st.expires_at);
+                text = `subscription${plan}${exp ? ` · expires ${exp}` : ''}`;
+              }
+            }
+            return (
+              <div class="settings-row" key={s.id}>
+                <div class="settings-row-label">
+                  {s.label}
+                  {' '}
+                  <Pill tone={tone} mono>{text}</Pill>
+                  {st?.overridden_by_key && (
+                    <div class="settings-radio-hint muted">
+                      A saved Anthropic API key is overriding this subscription.
+                    </div>
+                  )}
+                </div>
+                <div class="settings-row-control">
+                  {st?.logged_in && (
+                    <Button
+                      variant="secondary"
+                      type="button"
+                      disabled={busyThis}
+                      onClick={() => setLogoutTarget(s.id)}
+                    >
+                      Log out
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {PROVIDERS.map((prov) => {
         const status = view?.[prov.var];
@@ -112,6 +216,20 @@ export function ProviderKeysSection() {
           </div>
         );
       })}
+
+      <ConfirmDialog
+        open={logoutTarget !== null}
+        title="Log out of subscription?"
+        body={
+          logoutTarget
+            ? `This runs the ${logoutTarget} CLI logout and clears its saved credentials in this workspace. Assistants using it will stop working until you sign in again.`
+            : ''
+        }
+        confirmLabel="Log out"
+        destructive
+        onConfirm={() => logoutTarget && onLogout(logoutTarget)}
+        onCancel={() => setLogoutTarget(null)}
+      />
     </section>
   );
 }

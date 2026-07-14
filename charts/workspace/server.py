@@ -2373,6 +2373,97 @@ class ProviderKeysManager:
                 if isinstance(data.get(p), str) and data[p].strip()}
 
 
+class SubscriptionStatusManager:
+    """Read-only view of subscription-based CLI logins (Claude Max/Pro OAuth,
+    Codex ChatGPT OAuth) so the Settings UI can show "logged in via subscription"
+    next to the pasted-API-key rows (ProviderKeysManager). Two rules, mirroring
+    ProviderKeysManager.public_view():
+      * status is read from the credential file (cheap, no subprocess on every
+        poll, and richer — gives plan + expiry). Logout shells out to the CLI's
+        own subcommand so cleanup stays authoritative.
+      * NEVER return the token / refresh token / raw JWT — only derived,
+        non-secret fields (plan, expiry, expired-flag).
+    """
+
+    CLAUDE_CREDS = os.path.expanduser('~/.claude/.credentials.json')
+    CODEX_AUTH = os.path.expanduser('~/.codex/auth.json')
+
+    # provider -> CLI logout argv. Only these providers may be logged out, and
+    # only via the CLI's own subcommand (never by us rm-ing credential files).
+    LOGOUT_CMDS = {
+        'claude': ['claude', 'auth', 'logout'],
+        'codex': ['codex', 'logout'],
+    }
+
+    @staticmethod
+    def _load_json(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    @classmethod
+    def _claude_status(cls):
+        data = cls._load_json(cls.CLAUDE_CREDS) or {}
+        oauth = data.get('claudeAiOauth')
+        if not isinstance(oauth, dict) or not oauth.get('accessToken'):
+            return {'logged_in': False}
+        expires_at = oauth.get('expiresAt')
+        expires_at = expires_at if isinstance(expires_at, (int, float)) else None
+        # A pasted ANTHROPIC_API_KEY (user overlay or pod env) takes precedence
+        # over the subscription at spawn — surface that so the UI can explain it.
+        overridden = ('ANTHROPIC_API_KEY' in ProviderKeysManager.env_overlay()
+                      or bool(os.environ.get('ANTHROPIC_API_KEY')))
+        return {
+            'logged_in': True,
+            'kind': 'subscription',
+            'plan': oauth.get('subscriptionType') or '',
+            'expires_at': expires_at,
+            'expired': bool(expires_at is not None and expires_at < time.time() * 1000),
+            'overridden_by_key': overridden,
+        }
+
+    @classmethod
+    def _codex_status(cls):
+        # ~/.codex/auth.json is absent until `codex login`. A `tokens` object
+        # means ChatGPT OAuth (subscription); an OPENAI_API_KEY-only file is an
+        # api-key login, not a subscription.
+        if not shutil.which('codex'):
+            return {'logged_in': False, 'available': False}
+        data = cls._load_json(cls.CODEX_AUTH)
+        if not isinstance(data, dict):
+            return {'logged_in': False}
+        if isinstance(data.get('tokens'), dict) and data['tokens']:
+            return {'logged_in': True, 'kind': 'subscription', 'plan': 'ChatGPT'}
+        if data.get('OPENAI_API_KEY'):
+            return {'logged_in': True, 'kind': 'api_key'}
+        return {'logged_in': False}
+
+    @classmethod
+    def public_view(cls):
+        """Masked status for the UI — never includes any token material."""
+        return {
+            'claude': cls._claude_status(),
+            'codex': cls._codex_status(),
+        }
+
+    @classmethod
+    def logout(cls, provider):
+        argv = cls.LOGOUT_CMDS.get(provider)
+        if not argv:
+            return False, 'unknown provider'
+        if not shutil.which(argv[0]):
+            return False, f'{argv[0]} not available'
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        except (subprocess.SubprocessError, OSError) as e:
+            return False, str(e)[:200]
+        if proc.returncode != 0:
+            return False, (proc.stderr or proc.stdout or 'logout failed').strip()[:200]
+        return True, None
+
+
 class CronManager:
     """Scheduled triggers backed by Kubernetes CronJob objects.
 
@@ -3762,6 +3853,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_provider_keys_list()
             return
 
+        # --- Subscription-login status (dashboard Settings) ---
+        if claude_path == '/api/subscriptions':
+            self.handle_subscriptions_list()
+            return
+
         # --- Webhook CRUD (dashboard) ---
         if claude_path == '/api/webhooks':
             self.handle_webhook_list()
@@ -4153,6 +4249,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             m = re.match(r'^/api/provider-keys/([A-Z_]+)$', path)
             if m:
                 self.handle_provider_keys_delete(m.group(1))
+                return
+            # Log out of a subscription CLI (claude|codex) — DELETE the login.
+            m = re.match(r'^/api/subscriptions/([a-z]+)$', path)
+            if m:
+                self.handle_subscriptions_logout(m.group(1))
                 return
             m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', path)
             if m:
@@ -5109,6 +5210,25 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         ProviderKeysManager.delete(provider)
+        self.send_json({'ok': True})
+
+    def handle_subscriptions_list(self):
+        # Reports subscription-login status only (plan/expiry) — no token
+        # material — but still a secrets-adjacent endpoint, so gate it like
+        # provider-keys (never reachable in the unauth public demo).
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'subscriptions': SubscriptionStatusManager.public_view()})
+
+    def handle_subscriptions_logout(self, provider):
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        ok, err = SubscriptionStatusManager.logout(provider)
+        if not ok:
+            self.send_json({'error': err or 'logout failed'}, 400)
+            return
         self.send_json({'ok': True})
 
     def handle_webhook_receive(self):
