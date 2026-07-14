@@ -147,3 +147,20 @@ class OpenCodeProvider(SkillProvider):
         if env:
             return [p for p in env.split(os.pathsep) if p]
         return DEFAULT_PROJECT_ROOTS
+
+    # ── write path ──────────────────────────────────────────────────────
+    # We install into the Claude-compatible skills dir (not the legacy
+    # command/*.md form) — it round-trips through scan() cleanly.
+
+    def _install_dir(self, scope):
+        homes = list(self._homes())
+        if scope == 'user':
+            home = next((h for h in homes if os.path.isdir(h)), homes[-1])
+            return os.path.join(home, '.config', 'opencode', 'skills')
+        if scope == 'project':
+            roots = list(self._project_roots())
+            if not roots:
+                return None
+            base = next((r for r in roots if os.path.isdir(r)), roots[0])
+            return os.path.join(base, '.opencode', 'skills')
+        return None

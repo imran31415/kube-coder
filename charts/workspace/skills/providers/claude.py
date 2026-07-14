@@ -80,3 +80,20 @@ class ClaudeProvider(SkillProvider):
         if env:
             return [p for p in env.split(os.pathsep) if p]
         return DEFAULT_PROJECT_ROOTS
+
+    # ── write path ──────────────────────────────────────────────────────
+
+    def _install_dir(self, scope):
+        """Canonical dir to write a `scope` skill into. Plugin skills are
+        marketplace-managed, so they are not a writable target."""
+        if scope == 'user':
+            homes = list(HOME_CLAUDE_ROOTS)
+            home = next((h for h in homes if os.path.isdir(h)), homes[-1])
+            return os.path.join(home, 'skills')
+        if scope == 'project':
+            roots = list(self._project_roots())
+            if not roots:
+                return None
+            base = next((r for r in roots if os.path.isdir(r)), roots[0])
+            return os.path.join(base, '.claude', 'skills')
+        return None

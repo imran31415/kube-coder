@@ -4,7 +4,16 @@ import {
   eventStreamConnected,
   type DashboardEvent,
 } from '../api/events';
-import { listSkills, type SkillRecord } from '../api/skills';
+import {
+  listSkills,
+  skillsStats,
+  syncSkill,
+  SkillSyncConflictError,
+  type SkillRecord,
+  type SyncTarget,
+  type SyncConflict,
+} from '../api/skills';
+import { pushToast } from './ui';
 
 /**
  * Skills store — mirrors store/memory.ts: signals + in-flight-deduped
@@ -55,6 +64,81 @@ export const filteredSkills = computed(() => {
 
 export function selectSkill(s: SkillRecord | null) {
   selectedSkill.value = s;
+}
+
+// ── Cross-tool sync (PR2) ────────────────────────────────────────────────────
+
+// Harnesses that can be WRITTEN to (enabled providers), from the stats
+// endpoint — so the "Sync to…" target list is accurate even for a harness
+// that has no skills of its own yet. Antigravity (disabled) is excluded.
+export const writableSystems = signal<string[]>([]);
+
+export async function loadWritableSystems(): Promise<void> {
+  try {
+    const s = await skillsStats();
+    const providers = (s.syncer as { providers?: Record<string, boolean> } | undefined)?.providers;
+    if (providers) {
+      writableSystems.value = Object.entries(providers)
+        .filter(([, enabled]) => enabled)
+        .map(([k]) => k)
+        .sort();
+    }
+  } catch {
+    // Non-fatal: fall back to systems seen in the list (see syncTargetsFor).
+  }
+}
+
+/** Candidate sync targets for a skill: writable harnesses it isn't already in. */
+export function syncTargetsFor(s: SkillRecord): string[] {
+  const pool = writableSystems.value.length ? writableSystems.value : skillSystems.value;
+  return pool.filter((sys) => !s.systems.includes(sys));
+}
+
+export const syncingSkill = signal(false);
+
+export type SyncOutcome =
+  | { ok: true; installed: number }
+  | { ok: false; conflicts: SyncConflict[] }   // divergent target(s); retry w/ force
+  | { ok: false; error: string };
+
+/**
+ * Install a skill into other harnesses. On a 409 (a target already holds a
+ * divergent copy) returns the conflict list so the caller can confirm and
+ * retry with `force: true` — never overwrites silently.
+ */
+export async function syncSkillToTargets(
+  name: string,
+  sourceSystem: string,
+  sourceScope: string | undefined,
+  targets: SyncTarget[],
+  force = false,
+): Promise<SyncOutcome> {
+  syncingSkill.value = true;
+  try {
+    const res = await syncSkill(name, {
+      source_system: sourceSystem,
+      source_scope: sourceScope,
+      targets,
+      force,
+    });
+    const n = res.installed.length;
+    if (res.failed.length) {
+      pushToast(`Synced ${n}, ${res.failed.length} failed`, { kind: 'warn' });
+    } else {
+      pushToast(`Synced to ${res.installed.map((i) => i.system).join(', ')}`, { kind: 'success' });
+    }
+    await refreshSkills();
+    return { ok: true, installed: n };
+  } catch (err) {
+    if (err instanceof SkillSyncConflictError) {
+      return { ok: false, conflicts: err.conflicts };
+    }
+    const msg = err instanceof Error ? err.message : 'Sync failed';
+    pushToast(msg, { kind: 'danger' });
+    return { ok: false, error: msg };
+  } finally {
+    syncingSkill.value = false;
+  }
 }
 
 // Dedupe in-flight list fetches so the poll tick + an explicit refresh
@@ -115,6 +199,7 @@ function onSkillsEvent(ev: DashboardEvent) {
 
 export function startSkillsPolling(intervalMs = 30000) {
   doRefresh();
+  void loadWritableSystems();
   if (!eventUnsub) eventUnsub = subscribeEvents(onSkillsEvent);
   if (pollHandle) clearInterval(pollHandle);
   pollHandle = setInterval(() => {

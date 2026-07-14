@@ -92,6 +92,36 @@ def fingerprint(body: str) -> str:
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
 
 
+def render_skill_md(record: 'SkillRecord') -> str:
+    """Serialize a record back into canonical SKILL.md text.
+
+    This is the interchange format every Claude-compatible harness reads
+    (Claude Code, OpenCode, Ante). The body is written VERBATIM so the
+    installed copy hashes to the same `fingerprint()` as the source and
+    therefore collapses into one row on the next scan. Only known
+    frontmatter keys are emitted; optional keys are omitted when empty so
+    a re-scan parses back to an equivalent record (absent user-invocable
+    parses as False, empty allowed-tools as []).
+    """
+    lines = ['---', f'name: {record.name}']
+    desc = (record.description or '').strip()
+    if desc:
+        lines.append(f'description: {desc}')
+    if record.user_invocable:
+        lines.append('user-invocable: true')
+    if record.allowed_tools:
+        lines.append('allowed-tools: ' + ', '.join(record.allowed_tools))
+    hint = (record.argument_hint or '').strip()
+    if hint:
+        lines.append(f'argument-hint: {hint}')
+    lines.append('---')
+    body = (record.body or '').strip('\n')
+    text = '\n'.join(lines) + '\n'
+    if body:
+        text += '\n' + body + '\n'
+    return text
+
+
 def _scope_rank(scope: str) -> int:
     try:
         return SCOPE_ORDER.index(scope)
