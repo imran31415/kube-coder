@@ -13,14 +13,21 @@ import {
   startSkillsPolling,
   stopSkillsPolling,
 } from '../../store/skills';
+import {
+  syncTargetsFor,
+  syncSkillToTargets,
+  syncingSkill,
+} from '../../store/skills';
 import { sheetOpen } from '../../store/ui';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { Input } from '../../components/primitives/Input';
+import { Button } from '../../components/primitives/Button';
 import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { BottomSheet } from '../../components/BottomSheet';
-import type { SkillRecord } from '../../api/skills';
+import { MutatorOnly } from '../../components/MutatorOnly';
+import type { SkillRecord, SyncConflict } from '../../api/skills';
 import './skills.css';
 
 /**
@@ -251,8 +258,114 @@ function SkillDetail() {
         ))}
       </ul>
 
+      <MutatorOnly>
+        <SyncPanel skill={s} />
+      </MutatorOnly>
+
       <h3 class="skl-section-title">Definition</h3>
       <pre class="skl-body">{s.body || '(empty)'}</pre>
     </article>
+  );
+}
+
+/**
+ * "Sync to…" — install this skill's content into other harnesses so every
+ * agent can use it. Wrapped in <MutatorOnly>, so the read-only public demo
+ * hides it entirely. On a 409 (a target already has a divergent copy) it
+ * surfaces the conflict and offers a one-click force-overwrite.
+ */
+function SyncPanel({ skill }: { skill: SkillRecord }) {
+  const targets = syncTargetsFor(skill);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [conflicts, setConflicts] = useState<SyncConflict[] | null>(null);
+
+  // Reset selection when the selected skill changes.
+  const key = `${skill.name}:${skill.fingerprint}`;
+  useEffect(() => {
+    setPicked(new Set());
+    setConflicts(null);
+  }, [key]);
+
+  if (targets.length === 0) {
+    return (
+      <div class="skl-sync">
+        <h3 class="skl-section-title">Sync</h3>
+        <p class="muted skl-sync-none">Already present in every available harness.</p>
+      </div>
+    );
+  }
+
+  const toggle = (sys: string) => {
+    const next = new Set(picked);
+    if (next.has(sys)) next.delete(sys);
+    else next.add(sys);
+    setPicked(next);
+    setConflicts(null);
+  };
+
+  const run = async (force: boolean) => {
+    const chosen = [...picked];
+    if (!chosen.length) return;
+    const outcome = await syncSkillToTargets(
+      skill.name,
+      skill.systems[0],
+      skill.scope,
+      chosen.map((system) => ({ system, scope: 'user' })),
+      force,
+    );
+    if (outcome.ok) {
+      setPicked(new Set());
+      setConflicts(null);
+    } else if ('conflicts' in outcome) {
+      setConflicts(outcome.conflicts);
+    }
+  };
+
+  return (
+    <div class="skl-sync">
+      <h3 class="skl-section-title">Sync to…</h3>
+      <p class="muted skl-sync-hint">
+        Install this skill into another harness so its agent can use it too.
+      </p>
+      <div class="skl-sync-targets">
+        {targets.map((sys) => (
+          <label class={`skl-sync-target ${picked.has(sys) ? 'skl-sync-target-on' : ''}`} key={sys}>
+            <input
+              type="checkbox"
+              checked={picked.has(sys)}
+              onChange={() => toggle(sys)}
+            />
+            <span class="skl-system">{sys}</span>
+          </label>
+        ))}
+      </div>
+
+      {conflicts && (
+        <div class="skl-sync-conflict" role="alert">
+          <Icon name="triggers" size={12} />{' '}
+          {conflicts.map((c) => c.system).join(', ')} already {conflicts.length === 1 ? 'has' : 'have'} a
+          different version. Overwrite?
+          <div class="skl-sync-actions">
+            <Button size="sm" variant="danger" disabled={syncingSkill.value} onClick={() => void run(true)}>
+              Overwrite
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConflicts(null)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      {!conflicts && (
+        <div class="skl-sync-actions">
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={picked.size === 0 || syncingSkill.value}
+            onClick={() => void run(false)}
+          >
+            {syncingSkill.value ? 'Syncing…' : `Sync${picked.size ? ` to ${picked.size}` : ''}`}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }

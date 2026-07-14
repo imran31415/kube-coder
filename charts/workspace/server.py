@@ -61,9 +61,13 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
 # Antigravity, …) via one provider class per harness.
 try:
     from skills.sync import SkillsSyncer
+    from skills.providers import PROVIDERS as SKILL_PROVIDERS
+    from skills.model import SKILL_NAME_RE
     _SKILLS_AVAILABLE = True
 except Exception as _skills_import_err:  # broken install shouldn't crash the server
     SkillsSyncer = None  # type: ignore
+    SKILL_PROVIDERS = {}  # type: ignore
+    SKILL_NAME_RE = None  # type: ignore
     _SKILLS_AVAILABLE = False
     print(f'[skills] import failed: {_skills_import_err}', file=sys.stderr)
 
@@ -5794,6 +5798,125 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({'status': 'ok', 'result': res})
 
+    def handle_skills_sync(self, name):
+        """POST /api/skills/{name}/sync — cross-harness install (PR2).
+
+        Body: {source_system, source_scope?, targets:[{system, scope?}],
+        force?}. Translates one logical skill's source variant into each
+        target harness's native dir so every agent can use it. Any-to-any:
+        source_system is a parameter, not fixed to Claude.
+
+        Guarded: readonly (do_POST chokepoint), name charset, unknown/
+        disabled targets (400), and 409 when a target already holds a
+        DIVERGENT copy (different fingerprint) unless {"force": true} —
+        so a sync never silently clobbers a locally-edited skill.
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._skills_unavailable():
+            return
+        # Belt-and-suspenders: the route regex already restricts the charset,
+        # but re-check against the canonical gate before any path is built.
+        if not (SKILL_NAME_RE and SKILL_NAME_RE.match(name)):
+            self.send_json({'error': 'invalid skill name', 'code': 'bad_name'}, 400)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not isinstance(data, dict):
+            self.send_json({'error': 'body must be an object'}, 400)
+            return
+
+        source_system = (data.get('source_system') or '').strip()
+        source_scope = (data.get('source_scope') or '').strip() or None
+        force = bool(data.get('force'))
+        targets = data.get('targets')
+        if not isinstance(targets, list) or not targets:
+            self.send_json({'error': 'targets[] required'}, 400)
+            return
+
+        # --- resolve the SOURCE variant from the live snapshot ---
+        variants = SkillsSyncer.get(name)
+        if not variants:
+            self.send_json({'error': 'not found', 'code': 'not_found'}, 404)
+            return
+        candidates = variants
+        if source_system:
+            candidates = [v for v in candidates if source_system in v.systems]
+        if source_scope:
+            candidates = [v for v in candidates if v.scope == source_scope]
+        if not candidates:
+            self.send_json({'error': 'source variant not found',
+                            'code': 'source_not_found'}, 404)
+            return
+        if len(candidates) > 1:
+            # Divergent skill and the caller didn't pin it down.
+            self.send_json({'error': 'ambiguous source; specify source_system',
+                            'code': 'ambiguous_source'}, 400)
+            return
+        source = candidates[0]
+
+        # --- validate every target up front (fail fast, install nothing) ---
+        norm_targets = []
+        for t in targets:
+            if not isinstance(t, dict):
+                self.send_json({'error': 'each target must be an object'}, 400)
+                return
+            sys_key = (t.get('system') or '').strip()
+            scope = (t.get('scope') or 'user').strip()
+            provider = SKILL_PROVIDERS.get(sys_key)
+            if provider is None:
+                self.send_json({'error': f'unknown target system: {sys_key!r}',
+                                'code': 'bad_target'}, 400)
+                return
+            if not provider.enabled:
+                self.send_json({'error': f'target {sys_key!r} is disabled',
+                                'code': 'target_disabled'}, 400)
+                return
+            try:
+                provider.install_path(name, scope)  # validates scope writable
+            except ValueError as e:
+                self.send_json({'error': str(e), 'code': 'bad_target'}, 400)
+                return
+            norm_targets.append((sys_key, scope, provider))
+
+        # --- conflict check: refuse to overwrite a DIVERGENT target copy ---
+        conflicts = []
+        for sys_key, scope, _provider in norm_targets:
+            existing = [v for v in variants if sys_key in v.systems]
+            for ex in existing:
+                if ex.fingerprint != source.fingerprint:
+                    conflicts.append({'system': sys_key,
+                                      'existing_fingerprint': ex.fingerprint})
+                    break
+        if conflicts and not force:
+            self.send_json({'error': 'target has a divergent copy',
+                            'code': 'conflict', 'conflicts': conflicts,
+                            'hint': 'retry with {"force": true} to overwrite'},
+                           409)
+            return
+
+        # --- install into every target (atomic per file) ---
+        installed, failed = [], []
+        for sys_key, scope, provider in norm_targets:
+            try:
+                path = provider.install(source, scope)
+                installed.append({'system': sys_key, 'scope': scope, 'path': path})
+            except Exception as e:
+                failed.append({'system': sys_key, 'scope': scope, 'error': str(e)})
+        # Refresh the snapshot so the collapsed row is visible immediately
+        # and clients get a fresh list on their next poll / SSE tick.
+        try:
+            SkillsSyncer.trigger_sync()
+        except Exception:
+            pass
+        status = 200 if installed and not failed else (207 if installed else 500)
+        self.send_json({'name': name, 'source_system': source.systems[0],
+                        'installed': installed, 'failed': failed}, status)
+
     # ── Subagents (spawned child tasks) ──────────────────────────
     # Lists real spawned sub-tasks filtered by parent_task_id.
     # Replaces the old read-only transcript scanner which was fragile
@@ -7126,6 +7249,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self.handle_hypervisor_stop(m.group(1))
                     return
+                # /api/skills/{name}/sync — cross-harness install (PR2).
+                # Stricter name charset than the GET route: only the
+                # filesystem-safe [a-z0-9-] set may ever build a write path.
+                m = re.match(r'^/api/skills/([a-z0-9-]+)/sync$', path)
+                if m:
+                    self.handle_skills_sync(m.group(1))
+                    return
                 # /api/claude/tasks/{id}/rename
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/rename$', path)
                 if m:
@@ -7946,6 +8076,7 @@ if __name__ == "__main__":
     print("  GET    /api/skills/{name}                - One skill (+divergent variants)")
     print("  GET    /api/skills/stats                 - Counts by system/scope")
     print("  POST   /api/skills/_scan                 - Force rescan")
+    print("  POST   /api/skills/{name}/sync           - Install skill into other harnesses")
 
     with http.server.ThreadingHTTPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()
