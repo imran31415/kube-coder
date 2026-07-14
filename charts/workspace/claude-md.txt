@@ -238,8 +238,8 @@ won't leak into every prompt.
 This workspace ships an `agent-orchestrator` MCP server that lets you
 spawn, monitor, and collect results from sub-agent sessions. Use it to
 decompose large problems into parallel subtasks. The same tools are
-registered for **Claude, Ante, and OpenCode**, so any of these harnesses
-can spawn any other and lineage is tracked across them.
+registered for **Claude, Ante, OpenCode, and Codex**, so any of these
+harnesses can spawn any other and lineage is tracked across them.
 
 By default agents spawn in **headless** mode: the sub-agent runs the
 prompt to completion and exits, so `get_agent_status` flips to
@@ -267,6 +267,10 @@ so orchestration can't fork-bomb the pod or run away on API spend.
 
 - `ante` — Ante CLI (pre-installed; defaults to OpenRouter when its key is set)
 - `claude` — Claude Code (requires Anthropic API key or OAuth)
+- `codex` — Codex (OpenAI, pre-installed). ChatGPT OAuth — run `codex login`
+  ONCE in a terminal to sign in (creds persist on the PVC under `~/.codex`);
+  after that it works as a Hypervisor driver, a Build-tab REPL, and a
+  `spawn_agent(assistant="codex")` sub-agent, same as Claude. No API key.
 - `librefang` — LibreFang agent OS (pre-installed; talks to its registry
   `coder` agent and reuses whatever provider key is in the environment)
 - `opencode-openrouter` — OpenCode via OpenRouter

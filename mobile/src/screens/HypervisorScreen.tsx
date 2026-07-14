@@ -91,6 +91,8 @@ export default function HypervisorScreen() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [chatsOpen, setChatsOpen] = useState(false);
+  // Assistant chosen for the NEXT new chat (existing threads keep their own).
+  const [selectedAssistant, setSelectedAssistant] = useState<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
   // Whether the view is pinned to the bottom. We only auto-scroll on new events
@@ -108,7 +110,11 @@ export default function HypervisorScreen() {
 
   useEffect(() => {
     void getHypervisorConfig()
-      .then(setConfig)
+      .then((c) => {
+        setConfig(c);
+        // Seed the new-chat assistant picker with the workspace default.
+        setSelectedAssistant((prev) => prev ?? c.defaultAssistant);
+      })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load config'));
     void refreshThreads();
   }, [refreshThreads]);
@@ -269,7 +275,7 @@ export default function HypervisorScreen() {
     ]);
     try {
       if (!activeId) {
-        const thread = await createThread(finalText, config?.defaultAssistant, CHAT_WORKDIR);
+        const thread = await createThread(finalText, selectedAssistant || config?.defaultAssistant, CHAT_WORKDIR);
         await refreshThreads();
         openThread(thread.id);
       } else {
@@ -443,6 +449,33 @@ export default function HypervisorScreen() {
                 </Pressable>
               </View>
             ))}
+          </ScrollView>
+        )}
+
+        {/* New-chat assistant picker — parity with the web Hypervisor agent
+            select. Only shown when starting a NEW chat (no active thread) and
+            more than one assistant is available; existing threads keep the
+            assistant they were created with. */}
+        {!activeThread && (config?.assistants?.length ?? 0) > 1 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.asstRow}
+            contentContainerStyle={styles.asstRowContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            {config!.assistants.map((a) => {
+              const on = (selectedAssistant || config?.defaultAssistant) === a.id;
+              return (
+                <Pressable
+                  key={a.id}
+                  onPress={() => setSelectedAssistant(a.id)}
+                  style={[styles.asstChip, on && styles.asstChipOn]}
+                >
+                  <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>{a.label || a.id}</Text>
+                </Pressable>
+              );
+            })}
           </ScrollView>
         )}
 
@@ -871,6 +904,28 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
+  asstRow: {
+    maxHeight: 44,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  asstRowContent: {
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  asstChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+  },
+  asstChipOn: { backgroundColor: colors.accent + '22', borderColor: colors.accent },
+  asstChipText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '500' },
+  asstChipTextOn: { color: colors.accent, fontWeight: '700' },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',

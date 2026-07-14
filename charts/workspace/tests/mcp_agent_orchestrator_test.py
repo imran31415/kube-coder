@@ -47,6 +47,21 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertIn('--yolo', cmd)
         self.assertIn("'write tests'", cmd)
 
+    def test_headless_codex_uses_exec_with_bypass(self):
+        cmd = orch._assistant_command('codex', 'write tests', headless=True)
+        self.assertIn('codex exec', cmd)
+        self.assertIn('--dangerously-bypass-approvals-and-sandbox', cmd)
+        self.assertIn('--skip-git-repo-check', cmd)
+        self.assertIn("'write tests'", cmd)
+
+    def test_interactive_codex_is_tui_with_bypass(self):
+        cmd = orch._assistant_command('codex', 'ignored', headless=False)
+        self.assertEqual(cmd, 'codex --dangerously-bypass-approvals-and-sandbox')
+
+    def test_codex_is_headless_capable_and_listed(self):
+        self.assertIn('codex', orch._HEADLESS_CAPABLE)
+        self.assertIn('codex', {a['id'] for a in orch._ASSISTANTS_LIST})
+
     def test_headless_antigravity_has_print_and_skip_permissions(self):
         cmd = orch._assistant_command('antigravity', 'write tests', headless=True)
         self.assertIn('agy', cmd)
