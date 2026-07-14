@@ -11,13 +11,12 @@
 import { chromium } from 'playwright-core';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { chromiumPath } from './chromium-path.mjs';
 
 const out = resolve(process.argv[2] || '/home/dev/kube-coder/docs/screenshots');
 mkdirSync(out, { recursive: true });
 
-const CHROMIUM =
-  process.env.KC_CHROMIUM ||
-  '/home/dev/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome';
+const CHROMIUM = chromiumPath();
 
 // Pull the holding.html body straight out of the chart ConfigMap (indented
 // under `holding.html: |`) so this renders the shipped markup verbatim.

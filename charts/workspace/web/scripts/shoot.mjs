@@ -8,11 +8,12 @@
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { chromiumPath } from './chromium-path.mjs';
 
 const out = resolve(process.argv[2] || '/home/dev/screenshots');
 mkdirSync(out, { recursive: true });
 
-const CHROMIUM = '/home/ubuntu/.cache/ms-playwright/chromium-1224/chrome-linux64/chrome';
+const CHROMIUM = chromiumPath();
 const BASE = process.env.SHOT_BASE || 'http://127.0.0.1:7070';
 
 async function shootRoute(page, url, file, opts = {}) {
