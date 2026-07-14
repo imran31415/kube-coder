@@ -4,7 +4,9 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Label, ScreenHeader } from '../components/ui';
 import { ControllerConnectModal } from '../components/ControllerConnectModal';
+import { GitIdentityCard } from '../components/GitIdentityCard';
 import { ProviderKeysCard } from '../components/ProviderKeysCard';
+import { UpdatesCard } from '../components/UpdatesCard';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { colors, font, space } from '../theme';
@@ -45,7 +47,7 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <ScreenHeader title="Settings" subtitle="Connection & about" />
+      <ScreenHeader title="Settings" subtitle="Connection, identity & updates" />
       <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
         <Card style={{ gap: space.md }}>
           <View>
@@ -76,6 +78,13 @@ export default function SettingsScreen() {
         ) : null}
 
         {!cfg.mock ? <ProviderKeysCard readOnly={isDemo} /> : null}
+
+        {/* Identity + self-serve updates. Shown read-only on the public demo and
+            in the mock build (where they render canned data), interactive on a
+            real workspace connection. */}
+        <GitIdentityCard readOnly={isDemo || cfg.mock} />
+
+        <UpdatesCard readOnly={isDemo || cfg.mock} />
 
         {/* Admin controller — a second, optional connection. */}
         <Card style={{ gap: space.md, marginTop: space.lg }}>
