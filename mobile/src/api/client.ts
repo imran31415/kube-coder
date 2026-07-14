@@ -219,6 +219,7 @@ export function terminalEmbedSource(): { uri: string; headers: Record<string, st
  *  gh CLI login (or the configured git user name); returns null on any error
  *  so the header can degrade to a neutral label instead of throwing. */
 export interface GithubStatus {
+  ssh?: { configured?: boolean; key_type?: string; key_fingerprint?: string; public_key?: string };
   gh_cli?: { installed?: boolean; authenticated?: boolean; username?: string | null };
   git_config?: { user_name?: string; user_email?: string };
 }
@@ -231,6 +232,45 @@ export async function githubDisplayName(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// ---- Git identity & SSH ----------------------------------------------------
+// The Settings > GitHub & SSH card. Backs onto the same endpoints as the web
+// dashboard's GitSection: /api/github/status (nested payload above), POST
+// /api/github/config (set name+email) and POST /api/github/ssh/generate.
+
+const MOCK_GITHUB_STATUS: GithubStatus = {
+  ssh: {
+    configured: true,
+    key_type: 'ed25519',
+    key_fingerprint: 'SHA256:demo0000demo0000demo0000demo0000demo0000abc',
+    public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1demoKEYdemoKEYdemoKEYdemoKEY demo@kube-coder',
+  },
+  gh_cli: { installed: true, authenticated: true, username: 'imran31415' },
+  git_config: { user_name: 'Imran Hassanali', user_email: 'develop.imran@gmail.com' },
+};
+
+/** Full GitHub/SSH/identity status. Unlike githubDisplayName() this surfaces
+ *  the whole payload so the Settings card can render SSH + identity state. */
+export async function getGithubStatus(): Promise<GithubStatus> {
+  if (getConfig().mock) return MOCK_GITHUB_STATUS;
+  return request<GithubStatus>('/api/github/status');
+}
+
+/** Persist git user.name / user.email globally on the workspace. */
+export async function setGitConfig(name: string, email: string): Promise<void> {
+  if (getConfig().mock) return;
+  await request('/api/github/config', { method: 'POST', body: { name, email } });
+}
+
+/** Generate a fresh ed25519 key pair (overwrites any existing one) and return
+ *  the refreshed SSH status, including the new public key to add to GitHub. */
+export async function generateSshKey(email: string): Promise<GithubStatus['ssh']> {
+  if (getConfig().mock) return MOCK_GITHUB_STATUS.ssh;
+  return request<NonNullable<GithubStatus['ssh']>>('/api/github/ssh/generate', {
+    method: 'POST',
+    body: { email },
+  });
 }
 
 export async function createTask(input: {
@@ -724,4 +764,51 @@ export async function listAssistants(): Promise<Assistant[]> {
   }
   const r = await request<{ assistants?: Assistant[] }>('/api/claude/assistants');
   return r.assistants ?? [];
+}
+
+// ---- Workspace updates (self-serve) ----------------------------------------
+// Settings > Updates. Mirrors the web dashboard's UpdatesSection: read current
+// vs latest version from the controller, then broker a "restart & pull latest".
+// `available` is false when self-serve updates aren't wired for this deployment
+// — the card then hides itself, exactly like the SPA does.
+
+export interface WorkspaceVersion {
+  available: boolean;
+  reason?: string;
+  user?: string;
+  version?: string | null;
+  imageTag?: string | null;
+  latestVersion?: string | null;
+  updateAvailable?: boolean;
+  state?: string;
+  error?: string;
+}
+
+export interface UpdateResult {
+  ok?: boolean;
+  user?: string;
+  fromVersion?: string | null;
+  toVersion?: string;
+  imageTag?: string;
+  rolled?: boolean;
+  persisted?: boolean;
+  persistError?: string | null;
+  error?: string;
+}
+
+export async function getWorkspaceVersion(): Promise<WorkspaceVersion> {
+  if (getConfig().mock) {
+    return {
+      available: true,
+      version: 'v0.42.0',
+      latestVersion: 'v0.43.0',
+      updateAvailable: true,
+    };
+  }
+  return request<WorkspaceVersion>('/api/workspace/version');
+}
+
+export async function updateWorkspace(): Promise<UpdateResult> {
+  if (getConfig().mock) return { ok: true, rolled: false, toVersion: 'v0.42.0' };
+  return request<UpdateResult>('/api/workspace/update', { method: 'POST', body: {} });
 }
