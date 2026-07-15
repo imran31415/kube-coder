@@ -690,6 +690,14 @@ export async function sendThreadMessage(id: string, message: string): Promise<vo
   });
 }
 
+export async function renameThread(id: string, title: string): Promise<HypervisorThread> {
+  const d = await request<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/rename`,
+    { method: 'POST', body: { title } },
+  );
+  return d.thread;
+}
+
 export async function stopThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/stop`, { method: 'POST' });
 }

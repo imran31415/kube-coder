@@ -33,6 +33,7 @@ import {
   getHypervisorConfig,
   getThreadDetail,
   listThreads,
+  renameThread,
   sendThreadMessage,
   stopThread,
   uploadTaskImage,
@@ -210,6 +211,22 @@ export default function HypervisorScreen() {
     void refreshThreads();
   }
 
+  // Optimistically patch the in-memory list so the sheet + header update
+  // instantly, then confirm against the server (rolling back on failure).
+  async function renameThreadTitle(id: string, title: string) {
+    const next = title.trim();
+    if (!next) return;
+    const prev = threads;
+    setThreads((list) => list.map((t) => (t.id === id ? { ...t, title: next } : t)));
+    try {
+      await renameThread(id, next);
+      void refreshThreads();
+    } catch (e) {
+      setThreads(prev);
+      setError(e instanceof Error ? e.message : 'Failed to rename');
+    }
+  }
+
   function confirmRemove(t: HypervisorThread) {
     confirmAction({
       title: 'Delete chat?',
@@ -360,6 +377,7 @@ export default function HypervisorScreen() {
         onClose={() => setChatsOpen(false)}
         onOpen={openThread}
         onDelete={confirmRemove}
+        onRename={renameThreadTitle}
         onNew={newChat}
       />
 
@@ -543,6 +561,7 @@ function ChatsSheet({
   onClose,
   onOpen,
   onDelete,
+  onRename,
   onNew,
 }: {
   visible: boolean;
@@ -551,12 +570,44 @@ function ChatsSheet({
   onClose: () => void;
   onOpen: (id: string) => void;
   onDelete: (t: HypervisorThread) => void;
+  onRename: (id: string, title: string) => void;
   onNew: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  // Inline rename: the row being edited plus its draft text.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState('');
+
+  function startRename(t: HypervisorThread) {
+    setRenamingId(t.id);
+    setDraftTitle(t.title || '');
+  }
+  function cancelRename() {
+    setRenamingId(null);
+    setDraftTitle('');
+  }
+  function commitRename(id: string) {
+    const next = draftTitle.trim();
+    if (next) onRename(id, next);
+    cancelRename();
+  }
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.sheetScrim} onPress={onClose} />
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={() => {
+        cancelRename();
+        onClose();
+      }}
+    >
+      <Pressable
+        style={styles.sheetScrim}
+        onPress={() => {
+          cancelRename();
+          onClose();
+        }}
+      />
       <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
         <View style={styles.sheetGrip} />
         <View style={styles.sheetHead}>
@@ -569,9 +620,45 @@ function ChatsSheet({
         <ScrollView style={styles.sheetList} contentContainerStyle={styles.sheetListInner}>
           {threads.map((t) => {
             const on = t.id === activeId;
+            if (renamingId === t.id) {
+              return (
+                <View key={t.id} style={[styles.chatRow, styles.chatRowEditing, on && styles.chatRowOn]}>
+                  <TextInput
+                    style={styles.chatRenameInput}
+                    value={draftTitle}
+                    onChangeText={setDraftTitle}
+                    autoFocus
+                    maxLength={80}
+                    returnKeyType="done"
+                    onSubmitEditing={() => commitRename(t.id)}
+                    placeholder="Chat name"
+                    placeholderTextColor={colors.textFaint}
+                    accessibilityLabel="Chat name"
+                  />
+                  <Pressable
+                    onPress={() => commitRename(t.id)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Save name"
+                    style={({ pressed }) => [styles.chatDel, pressed && { opacity: 0.6 }]}
+                  >
+                    <Ionicons name="checkmark" size={18} color={colors.accent} />
+                  </Pressable>
+                  <Pressable
+                    onPress={cancelRename}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel rename"
+                    style={({ pressed }) => [styles.chatDel, pressed && { opacity: 0.6 }]}
+                  >
+                    <Ionicons name="close" size={18} color={colors.textFaint} />
+                  </Pressable>
+                </View>
+              );
+            }
             return (
               <View key={t.id} style={[styles.chatRow, on && styles.chatRowOn]}>
-                <Pressable onPress={() => onOpen(t.id)} style={styles.chatRowMain}>
+                <Pressable onPress={() => onOpen(t.id)} onLongPress={() => startRename(t)} style={styles.chatRowMain}>
                   <View style={[styles.dot, { backgroundColor: t.status === 'running' ? colors.running : colors.killed }]} />
                   <View style={styles.chatRowBody}>
                     <Text numberOfLines={1} style={[styles.chatRowTitle, on && { color: colors.text }]}>
@@ -582,6 +669,15 @@ function ChatsSheet({
                       {t.updated_at ? ` · ${relativeTime(t.updated_at)}` : ''}
                     </Text>
                   </View>
+                </Pressable>
+                <Pressable
+                  onPress={() => startRename(t)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Rename chat"
+                  style={({ pressed }) => [styles.chatDel, pressed && { opacity: 0.6 }]}
+                >
+                  <Ionicons name="pencil" size={16} color={colors.textFaint} />
                 </Pressable>
                 <Pressable
                   onPress={() => onDelete(t)}
@@ -812,6 +908,20 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
   chatRowOn: { backgroundColor: colors.accentSoft },
+  chatRowEditing: { paddingLeft: space.sm, paddingVertical: space.xs },
+  chatRenameInput: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.text,
+    fontSize: font.size.md,
+    fontWeight: '500',
+    backgroundColor: colors.surface2,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs + 2,
+  },
   chatRowMain: {
     flex: 1,
     flexDirection: 'row',
