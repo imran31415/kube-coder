@@ -96,6 +96,13 @@ oauth2:
   githubUsers: ""         # comma-separated allowlist (optional)
   githubOrg: ""           # restrict to org members (optional)
   githubTeam: ""          # restrict to team slug (optional)
+  # Session lifetime. GitHub OAuth apps issue no refresh token, so oauth2-proxy
+  # cannot silently renew a session — it is hard-capped at cookieExpire, after
+  # which the user must log in again. Default 30d so returning to the workspace
+  # the next day doesn't force a re-login. cookieRefresh is a no-op for GitHub
+  # (no token to refresh); keep it 0 to avoid pointless re-validation/log spam.
+  cookieExpire: "720h0m0s"  # 30 days
+  cookieRefresh: "0"        # disabled — GitHub has no refresh token
 
 # Read-only public demo mode. When true:
 #   - server.py rejects every POST/DELETE/PUT with 403 readonly
