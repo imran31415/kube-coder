@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiRaw } from './client';
+import { apiGet, apiPost, apiRaw, api, withOauthPrefix } from './client';
 
 export interface FileEntry {
   name: string;
@@ -12,6 +12,53 @@ export interface FileListing {
 }
 
 export const listFiles = (path = '') => apiGet<FileListing>('/api/files/list', { path });
+
+/** Preview descriptor returned by GET /api/files/preview. Text files carry
+ *  their (size-capped) content; images/video signal an inline render via the
+ *  raw endpoint; binary/undecodable content signals "download instead". */
+export type FilePreview =
+  | { kind: 'text'; path: string; mime: string; size: number; content: string; truncated: boolean }
+  | { kind: 'image'; path: string; mime: string; size: number }
+  | { kind: 'video'; path: string; mime: string; size: number }
+  | { kind: 'binary'; path: string; mime: string; size: number; reason?: string };
+
+export const previewFile = (path: string) => apiGet<FilePreview>('/api/files/preview', { path });
+
+/** Same-origin URL for streaming raw media bytes (image/video preview). Auth
+ *  rides the oauth2 session cookie the SPA was loaded with (see client.ts). */
+export const fileRawUrl = (path: string) =>
+  `${withOauthPrefix('/api/files/raw')}?path=${encodeURIComponent(path)}`;
+
+/**
+ * Download a file via an authenticated fetch → Blob → object-URL anchor. Going
+ * through apiRaw (rather than a bare <a href>) keeps the Bearer token + the
+ * oauth session-expired redirect behaviour, and works whether auth is a cookie
+ * or a dev token.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await apiRaw(`/api/files/download?path=${encodeURIComponent(path)}`, { method: 'GET' });
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick so the click has consumed the URL.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+export async function deleteFile(path: string): Promise<void> {
+  await api(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+}
+
+/** Move/rename `from` → `to` (both relative to /home/dev). Returns the new
+ *  path the server settled on. */
+export async function renameFile(from: string, to: string): Promise<string> {
+  const r = await apiPost<{ ok: boolean; path: string }>('/api/files/rename', { from, to });
+  return r.path;
+}
 
 export interface UploadResult {
   ok: boolean;

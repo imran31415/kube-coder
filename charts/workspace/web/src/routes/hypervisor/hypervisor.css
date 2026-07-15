@@ -212,14 +212,14 @@
   text-overflow: ellipsis;
 }
 
-.hv-thread-del {
+.hv-thread-del,
+.hv-thread-rename {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 26px;
   height: 26px;
-  margin-right: 4px;
   background: transparent;
   border: 0;
   border-radius: var(--radius-sm);
@@ -228,16 +228,60 @@
   opacity: 0;
   transition: opacity var(--motion-fast), color var(--motion-fast), background var(--motion-fast);
 }
+.hv-thread-del { margin-right: 4px; }
 .hv-thread:hover .hv-thread-del,
-.hv-thread-active .hv-thread-del {
+.hv-thread-active .hv-thread-del,
+.hv-thread:hover .hv-thread-rename,
+.hv-thread-active .hv-thread-rename {
   opacity: 1;
 }
 .hv-thread-del:hover {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
+.hv-thread-rename:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 @media (pointer: coarse) {
-  .hv-thread-del { opacity: 1; }
+  .hv-thread-del,
+  .hv-thread-rename { opacity: 1; }
+}
+
+/* Inline rename editor — replaces the row's open/rename/delete controls while
+   a chat's title is being edited. */
+.hv-thread-renaming {
+  gap: 4px;
+  padding: 4px 6px 4px 12px;
+}
+.hv-thread-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 8px;
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+.hv-thread-rename-save {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  cursor: pointer;
+  transition: color var(--motion-fast), background var(--motion-fast);
+}
+.hv-thread-rename-save:hover {
+  background: var(--accent-soft);
 }
 
 /* ── Status dot ──────────────────────────────────────────────────────── */

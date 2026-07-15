@@ -36,6 +36,8 @@ export type IconName =
   | 'upload'
   | 'apps'
   | 'image'
+  | 'trash'
+  | 'pencil'
   | 'hypervisor'
   | 'desktop';
 
@@ -224,6 +226,16 @@ const PATHS: Record<IconName, JSX.Element> = {
       <rect x="3" y="4" width="14" height="12" rx="1.5" />
       <circle cx="7.5" cy="8.5" r="1.5" />
       <path d="M4 15l4-4 3 3 3-3 3 3" />
+    </>
+  ),
+  trash: (
+    <>
+      <path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10" />
+    </>
+  ),
+  pencil: (
+    <>
+      <path d="M4 16l1-3 8-8 2 2-8 8-3 1z" />
     </>
   ),
 };

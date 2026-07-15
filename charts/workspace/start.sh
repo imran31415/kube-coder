@@ -220,7 +220,10 @@ if [ -n "$GITHUB_APP_ID" ]; then
   python3 /github-app/github-app-token.py --once
   # shellcheck disable=SC1091
   source /home/dev/.credentials/.github-env
-  cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env
+  # NOTE: the --once run above already wrote /home/dev/.profile.d-github-env as a
+  # mode-guarded hook (exports the App token only in "app" mode). Do NOT clobber
+  # it with a raw copy of .github-env, or a "personal" login would be shadowed
+  # again (issue #256).
 
   # Make GH_TOKEN/GITHUB_TOKEN visible to EVERY shell flavour in the pod.
   # The container runs with allowPrivilegeEscalation:false (see the
@@ -257,8 +260,20 @@ if [ -n "$GITHUB_APP_ID" ]; then
   if mkdir -p "$GH_SHIM_DIR" 2>/dev/null; then
     cat > "$GH_SHIM_DIR/gh" <<'GHSHIM'
 #!/usr/bin/env bash
-if [ -r /home/dev/.credentials/.github-token ]; then
-  GH_TOKEN="$(cat /home/dev/.credentials/.github-token)"
+# Respect the workspace GitHub auth mode (issue #256).
+#   app       force the fresh App installation token so long-lived processes
+#             (e.g. the Claude harness) never go stale.
+#   personal  defer to the user's own login (~/.config/gh/hosts.yml): strip an
+#             INHERITED App token so gh reads hosts.yml. A user's own personal
+#             PAT in GH_TOKEN is preserved (only the App token is stripped).
+_mode="$(cat /home/dev/.credentials/.github-auth-mode 2>/dev/null || echo app)"
+_tokfile=/home/dev/.credentials/.github-token
+if [ "$_mode" = personal ]; then
+  if [ -r "$_tokfile" ] && [ "$GH_TOKEN" = "$(cat "$_tokfile")" ]; then
+    unset GH_TOKEN GITHUB_TOKEN
+  fi
+elif [ -r "$_tokfile" ]; then
+  GH_TOKEN="$(cat "$_tokfile")"
   GITHUB_TOKEN="$GH_TOKEN"
   export GH_TOKEN GITHUB_TOKEN
 fi

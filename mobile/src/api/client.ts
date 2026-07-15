@@ -17,6 +17,8 @@ import { getConfig } from '../store/config';
 import {
   mockApps,
   mockDesktop,
+  mockFileListing,
+  mockFilePreview,
   mockHealth,
   mockMemory,
   mockMetrics,
@@ -28,6 +30,8 @@ import type {
   AppEntry,
   DesktopItem,
   DesktopItemDraft,
+  FileListing,
+  FilePreview,
   Health,
   HypervisorConfig,
   HypervisorThread,
@@ -698,6 +702,14 @@ export async function sendThreadMessage(id: string, message: string): Promise<vo
   });
 }
 
+export async function renameThread(id: string, title: string): Promise<HypervisorThread> {
+  const d = await request<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/rename`,
+    { method: 'POST', body: { title } },
+  );
+  return d.thread;
+}
+
 export async function stopThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/stop`, { method: 'POST' });
 }
@@ -722,6 +734,60 @@ export function fileRawUrl(path: string): string {
 export function authHeaders(): Record<string, string> {
   const { token } = getConfig();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// ---- Files -----------------------------------------------------------------
+// Mirrors the dashboard's Files route: browse /home/dev, preview a file, and
+// (write-gated server-side by READONLY_MODE) rename / delete. Download-to-disk
+// is a web/desktop affordance; on a phone the useful actions are browse +
+// preview + manage, so this client stops there.
+
+/** List a directory under /home/dev (empty string = the root). */
+export async function listFiles(path = ''): Promise<FileListing> {
+  if (getConfig().mock) {
+    await delay(120);
+    return mockFileListing(path);
+  }
+  return request<FileListing>('/api/files/list', { query: { path } });
+}
+
+/** Fetch the preview descriptor for a file. */
+export async function previewFile(path: string): Promise<FilePreview> {
+  if (getConfig().mock) {
+    await delay(80);
+    return mockFilePreview(path);
+  }
+  return request<FilePreview>('/api/files/preview', { query: { path } });
+}
+
+/** Delete a file or empty directory (server enforces the traversal guard +
+ *  read-only gate). */
+export async function deleteFile(path: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(100);
+    return;
+  }
+  await request('/api/files', { method: 'DELETE', query: { path } });
+}
+
+/** Move/rename within /home/dev. Returns the new path the server settled on. */
+export async function renameFile(from: string, to: string): Promise<string> {
+  if (getConfig().mock) {
+    await delay(100);
+    return to;
+  }
+  const r = await request<{ ok: boolean; path: string }>('/api/files/rename', {
+    method: 'POST',
+    body: { from, to },
+  });
+  return r.path;
+}
+
+/** Absolute URL for downloading any file as an attachment. Pair with
+ *  authHeaders() (FileSystem.downloadAsync) or use for the web export. */
+export function fileDownloadUrl(path: string): string {
+  const { host } = getConfig();
+  return `${(host || '').replace(/\/+$/, '')}/api/files/download?path=${encodeURIComponent(path)}`;
 }
 
 // ---- Provider keys ---------------------------------------------------------

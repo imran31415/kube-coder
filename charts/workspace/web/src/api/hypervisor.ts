@@ -72,6 +72,12 @@ export const sendThreadMessage = (id: string, message: string) =>
     { message },
   );
 
+export const renameThread = (id: string, title: string) =>
+  apiPost<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/rename`,
+    { title },
+  ).then((r) => r.thread);
+
 export const stopThread = (id: string) =>
   apiPost<{ ok: boolean; stopped: boolean }>(
     `/api/hypervisor/threads/${encodeURIComponent(id)}/stop`,

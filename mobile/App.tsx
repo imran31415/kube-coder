@@ -23,6 +23,7 @@ import AppViewScreen from './src/screens/AppViewScreen';
 import DesktopScreen from './src/screens/DesktopScreen';
 import HypervisorScreen from './src/screens/HypervisorScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
+import FilesScreen from './src/screens/FilesScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
 import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
@@ -126,6 +127,7 @@ function MainTabs() {
         <Tab.Screen name="Tasks" component={TasksStack} />
         <Tab.Screen name="Apps" component={AppsStack} />
         <Tab.Screen name="Memory" component={MemoryScreen} />
+        <Tab.Screen name="Files" component={FilesScreen} />
         <Tab.Screen name="Skills" component={SkillsScreen} />
         <Tab.Screen name="Metrics" component={MetricsScreen} />
         {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}

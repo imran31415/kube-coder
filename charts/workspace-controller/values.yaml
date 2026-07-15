@@ -112,6 +112,12 @@ oauth2:
   githubUsers: ""
   githubOrg: ""
   githubTeam: ""
+  # Session lifetime for the controller console. GitHub issues no refresh token,
+  # so the session is hard-capped at cookieExpire (no silent renewal). Default
+  # 30d so admins aren't forced to re-login daily. cookieRefresh is a no-op for
+  # GitHub; keep it 0. See charts/workspace/values.yaml for the full rationale.
+  cookieExpire: "720h0m0s"  # 30 days
+  cookieRefresh: "0"        # disabled — GitHub has no refresh token
 
 # Self-service provisioning: an admin types a GitHub username in the console and
 # the controller (1) registers a GitHub App for them via the manifest flow, (2)

@@ -20,9 +20,9 @@ describe('App shell', () => {
     expect(screen.getByText('kube-coder')).toBeInTheDocument();
     expect(screen.getByLabelText('Open command palette')).toBeInTheDocument();
     // The Build route no longer carries a route-level <h1> — the header was
-    // dropped to reclaim vertical space and the "+ New build" affordance moved
-    // into the rail. We assert the route mounted by checking the rail's Build
-    // item is marked active.
+    // dropped to reclaim vertical space and the "+ New build" affordance lives
+    // in the Build page's master-bar. We assert the route mounted by checking
+    // the rail's Build item is marked active.
     const activeRailItem = container.querySelector('.rail .rail-item[aria-current="page"]');
     expect(activeRailItem?.textContent).toContain('Build');
   });

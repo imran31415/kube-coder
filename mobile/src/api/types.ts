@@ -39,6 +39,26 @@ export interface SkillRecord {
   updated_at?: number;
 }
 
+/** File-manager entries (mirror /api/files/list on server.py). */
+export interface FileEntry {
+  name: string;
+  kind: 'dir' | 'file';
+  size: number;
+  mtime: number;
+}
+export interface FileListing {
+  path: string;
+  entries: FileEntry[];
+}
+
+/** Preview descriptor from /api/files/preview. Text carries capped content;
+ *  image/video signal an inline render via /api/files/raw; binary → download. */
+export type FilePreview =
+  | { kind: 'text'; path: string; mime: string; size: number; content: string; truncated: boolean }
+  | { kind: 'image'; path: string; mime: string; size: number }
+  | { kind: 'video'; path: string; mime: string; size: number }
+  | { kind: 'binary'; path: string; mime: string; size: number; reason?: string };
+
 export interface Metrics {
   cpu_percent: number;
   memory_used_mb: number;

@@ -135,7 +135,7 @@ async function openDrawerAndGo(page, item) {
 // ---------- Path D: drawer to every top-level screen, then nested details
 {
   const page = await freshPage();
-  for (const item of ['Builds', 'Apps', 'Memory', 'Skills', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
+  for (const item of ['Builds', 'Apps', 'Memory', 'Files', 'Skills', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
     await openDrawerAndGo(page, item);
     await assertEscape(page, `Top-level: ${item}`, `05-top-${item.toLowerCase()}.png`);
   }

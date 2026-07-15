@@ -34,6 +34,32 @@
   padding: var(--size-2) 0 0;
 }
 
+/* Subscription rows carry a variable-length status pill (e.g. "subscription ·
+   max · expires Jul 5, 2026") that overflowed the fixed 160px grid column of
+   .settings-row and collided with the Log out button. Use a wrapping flex row
+   so the badge takes the space it needs and the button stays clear of it. */
+.settings-sub-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2) var(--size-3);
+  padding: var(--size-3) 0;
+  border-top: 1px solid var(--border);
+}
+.settings-sub-row:first-of-type { border-top: 0; }
+.settings-sub-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2);
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 13px;
+}
+.settings-sub-name { font-weight: 500; }
+.settings-sub-control { flex: 0 0 auto; margin-left: auto; }
+.settings-sub-note { flex-basis: 100%; }
+
 .seg {
   display: inline-flex;
   border: 1px solid var(--border);

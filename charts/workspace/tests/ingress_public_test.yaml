@@ -137,6 +137,47 @@ tests:
           path: spec.selector.matchLabels.app
           value: oauth2-proxy-testuser
 
+  - it: session cookie defaults to a 30-day expiry with refresh disabled (GitHub has no refresh token)
+    template: templates/oauth2-proxy.yaml
+    set:
+      ingress.auth.type: oauth2
+      oauth2.cookieSecret: cs
+      oauth2.clientId: cid
+      oauth2.clientSecret: csec
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-expire=720h0m0s
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-refresh=0
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --skip-provider-button=true
+
+  - it: session cookie lifetime is overridable via oauth2.cookieExpire / cookieRefresh
+    template: templates/oauth2-proxy.yaml
+    set:
+      ingress.auth.type: oauth2
+      oauth2.cookieSecret: cs
+      oauth2.clientId: cid
+      oauth2.clientSecret: csec
+      oauth2.cookieExpire: 168h0m0s
+      oauth2.cookieRefresh: 2h0m0s
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-expire=168h0m0s
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-refresh=2h0m0s
+
   - it: workspace Role does NOT grant `list` on Secrets — cross-tenant enumeration vector
     template: templates/serviceaccount.yaml
     documentIndex: 1

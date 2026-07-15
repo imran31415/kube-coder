@@ -9,6 +9,7 @@ import {
   deleteThread,
   listDeletedThreads,
   restoreThread,
+  renameThread,
   type HypervisorConfig,
   type HypervisorThread,
 } from '../api/hypervisor';
@@ -208,6 +209,22 @@ export async function stopMessage(): Promise<void> {
  *  message spawns a fresh session. */
 export function newChat(): void {
   closeThread();
+}
+
+/** Rename a chat. Optimistically patches the in-memory list so the sidebar and
+ *  topbar update instantly, then confirms against the server. */
+export async function renameThreadTitle(id: string, title: string): Promise<void> {
+  const trimmed = title.trim();
+  if (!trimmed) return;
+  const prev = threads.value;
+  threads.value = prev.map((t) => (t.id === id ? { ...t, title: trimmed } : t));
+  try {
+    await renameThread(id, trimmed);
+    await refreshThreads();
+  } catch {
+    // Roll back to the last-good list on failure.
+    threads.value = prev;
+  }
 }
 
 /** Soft-delete a chat. The thread moves to "Recently deleted" (restorable)
