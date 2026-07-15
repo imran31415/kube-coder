@@ -3962,6 +3962,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/files/raw':
             self.handle_file_raw()
             return
+        # Download any workspace file as an attachment (Files manager).
+        if claude_path == '/api/files/download':
+            self.handle_file_download()
+            return
+        # Inline preview descriptor for the Files pane (text/image/binary).
+        if claude_path == '/api/files/preview':
+            self.handle_file_preview()
+            return
 
         super().do_GET()
 
@@ -4236,6 +4244,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self._handle_apps_pin_delete(int(m.group(1)))
                 return
             if self._dispatch_app_proxy(path, 'DELETE'):
+                return
+            # Delete a file / empty dir (Files manager). Path arrives as a query
+            # param, so match the route portion before '?'.
+            if path.split('?', 1)[0] == '/api/files':
+                self.handle_file_delete()
                 return
             m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', path)
             if m:
@@ -6384,6 +6397,203 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             rel_out = ''
         self.send_json({'ok': True, 'path': rel_out}, 201)
 
+    # Text preview is capped so a multi-gigabyte log can't be slurped into
+    # memory (and shipped to the browser) by a single click. Larger files fall
+    # back to download.
+    PREVIEW_MAX_BYTES = 256 * 1024
+
+    def handle_file_download(self):
+        """GET /api/files/download?path=<rel> — stream ANY workspace file as an
+        attachment (traversal-guarded via _resolve_under_home_dev).
+
+        SECURITY: unlike /api/files/raw (which serves image/* + video/* inline
+        for the Hypervisor chat), this can serve arbitrary bytes — including an
+        HTML/JS file that would be stored XSS if rendered on this same (CSP-less)
+        origin. We defuse that by ALWAYS sending `Content-Disposition:
+        attachment` + `X-Content-Type-Options: nosniff` + a neutral
+        application/octet-stream type, so the browser downloads rather than
+        renders. Directories can't be downloaded."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlparse(self.path).query
+        rel = (urllib.parse.parse_qs(qs).get('path', [''])[0] or '').strip()
+        try:
+            target = self._resolve_under_home_dev(rel)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if not os.path.isfile(target):
+            self.send_json({'error': 'not a file'}, 404)
+            return
+        name = os.path.basename(target)
+        # RFC 6266: ASCII fallback (with quotes/backslashes/control chars
+        # stripped) plus a UTF-8 filename* so non-ASCII names survive.
+        ascii_name = re.sub(r'[^\x20-\x7e]', '_', name).replace('\\', '_').replace('"', '_')
+        star = urllib.parse.quote(name, safe='')
+        try:
+            size = os.path.getsize(target)
+            with open(target, 'rb') as fh:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Length', str(size))
+                self.send_header(
+                    'Content-Disposition',
+                    f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{star}",
+                )
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Cache-Control', 'private, no-store')
+                self.end_headers()
+                while True:
+                    chunk = fh.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client went away mid-stream; headers already sent
+        except OSError as e:
+            try:
+                self.send_json({'error': f'read failed: {e}'}, 500)
+            except Exception:
+                pass
+
+    def handle_file_preview(self):
+        """GET /api/files/preview?path=<rel> — JSON preview descriptor for the
+        Files pane. Text files (size-capped) return their content with a
+        truncation marker; images signal the client to render via
+        /api/files/raw; everything else (binary / oversized) signals download."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlparse(self.path).query
+        rel = (urllib.parse.parse_qs(qs).get('path', [''])[0] or '').strip()
+        try:
+            target = self._resolve_under_home_dev(rel)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if not os.path.isfile(target):
+            self.send_json({'error': 'not a file'}, 404)
+            return
+        rel_out = os.path.relpath(target, self.HOME_DEV)
+        try:
+            size = os.path.getsize(target)
+        except OSError as e:
+            self.send_json({'error': f'stat failed: {e}'}, 500)
+            return
+        ctype = mimetypes.guess_type(target)[0] or ''
+        if ctype.startswith('image/'):
+            self.send_json({'kind': 'image', 'path': rel_out, 'mime': ctype, 'size': size})
+            return
+        if ctype.startswith('video/'):
+            self.send_json({'kind': 'video', 'path': rel_out, 'mime': ctype, 'size': size})
+            return
+        # Peek only the first PREVIEW_MAX_BYTES: a huge text log still previews
+        # (truncated, with a marker), while a huge binary never gets slurped in.
+        try:
+            with open(target, 'rb') as fh:
+                raw = fh.read(self.PREVIEW_MAX_BYTES + 1)
+        except OSError as e:
+            self.send_json({'error': f'read failed: {e}'}, 500)
+            return
+        # A NUL byte is the classic "this is binary" tell; also treat anything
+        # that isn't valid UTF-8 as binary rather than mangling it.
+        if b'\x00' in raw:
+            self.send_json({'kind': 'binary', 'path': rel_out, 'mime': ctype, 'size': size,
+                            'reason': 'binary'})
+            return
+        truncated = len(raw) > self.PREVIEW_MAX_BYTES
+        body = raw[:self.PREVIEW_MAX_BYTES]
+        try:
+            text = body.decode('utf-8')
+        except UnicodeDecodeError:
+            self.send_json({'kind': 'binary', 'path': rel_out, 'mime': ctype, 'size': size,
+                            'reason': 'binary'})
+            return
+        self.send_json({'kind': 'text', 'path': rel_out, 'mime': ctype or 'text/plain',
+                        'size': size, 'content': text, 'truncated': truncated})
+
+    def handle_file_delete(self):
+        """DELETE /api/files?path=<rel> — remove a file or an EMPTY directory
+        (traversal-guarded). Refuses to recurse into a non-empty directory so a
+        stray click can't wipe a subtree; refuses to delete /home/dev itself."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlparse(self.path).query
+        rel = (urllib.parse.parse_qs(qs).get('path', [''])[0] or '').strip()
+        try:
+            target = self._resolve_under_home_dev(rel)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if target == self.HOME_DEV:
+            self.send_json({'error': 'refusing to delete /home/dev'}, 400)
+            return
+        # lexists so a dangling/relative symlink can still be removed (a symlink
+        # ESCAPING /home/dev is already rejected above: realpath resolved its
+        # target and failed the containment check).
+        if not os.path.lexists(target):
+            self.send_json({'error': 'not found'}, 404)
+            return
+        try:
+            if os.path.isdir(target) and not os.path.islink(target):
+                if os.listdir(target):
+                    self.send_json({'error': 'directory not empty'}, 409)
+                    return
+                os.rmdir(target)
+            else:
+                os.remove(target)
+        except OSError as e:
+            self.send_json({'error': f'delete failed: {e}'}, 500)
+            return
+        self.send_json({'ok': True})
+
+    def handle_file_rename(self):
+        """POST /api/files/rename {from,to} — move/rename within /home/dev. Both
+        endpoints are traversal-guarded; `to` may name a new path but must not
+        already exist (no silent overwrite) and its parent must exist."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(content_length).decode('utf-8') if content_length else '{}'
+            body = json.loads(raw) if raw else {}
+        except (ValueError, json.JSONDecodeError):
+            self.send_json({'error': 'invalid JSON body'}, 400)
+            return
+        src_rel = (body.get('from') or '').strip()
+        dst_rel = (body.get('to') or '').strip()
+        if not src_rel or not dst_rel:
+            self.send_json({'error': 'both from and to are required'}, 400)
+            return
+        try:
+            src = self._resolve_under_home_dev(src_rel)
+            dst = self._resolve_under_home_dev(dst_rel)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if src == self.HOME_DEV:
+            self.send_json({'error': 'refusing to move /home/dev'}, 400)
+            return
+        if not os.path.lexists(src):
+            self.send_json({'error': 'source not found'}, 404)
+            return
+        if os.path.lexists(dst):
+            self.send_json({'error': 'destination already exists'}, 409)
+            return
+        if not os.path.isdir(os.path.dirname(dst)):
+            self.send_json({'error': 'destination directory does not exist'}, 400)
+            return
+        try:
+            os.rename(src, dst)
+        except OSError as e:
+            self.send_json({'error': f'rename failed: {e}'}, 500)
+            return
+        rel_out = os.path.relpath(dst, self.HOME_DEV)
+        self.send_json({'ok': True, 'path': rel_out})
+
     def send_vnc_viewer(self):
         # Defense-in-depth: oauth2-proxy should already have rejected an
         # unauth'd visitor, but if this handler is ever reached directly
@@ -7352,6 +7562,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # mkdir under /home/dev (JSON body: {path})
             elif path == "/api/files/mkdir":
                 self.handle_file_mkdir()
+            # rename/move within /home/dev (JSON body: {from, to})
+            elif path == "/api/files/rename":
+                self.handle_file_rename()
             else:
                 # /api/claude/tasks/{id}/message
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/message$', path)

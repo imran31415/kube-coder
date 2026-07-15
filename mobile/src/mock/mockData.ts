@@ -11,6 +11,9 @@ import type {
   ControllerCapacity,
   ControllerWorkspace,
   DesktopItem,
+  FileEntry,
+  FileListing,
+  FilePreview,
   Health,
   MemoryRecord,
   Metrics,
@@ -329,3 +332,65 @@ export const mockCapacity: ControllerCapacity = {
     memory: { clusterPct: 78.9, workspacePct: 54.2 },
   },
 };
+
+// ---- Files -----------------------------------------------------------------
+// A small in-memory /home/dev tree so the demo/screenshot build renders a
+// populated Files screen with a working preview.
+interface MockNode {
+  entries?: Record<string, MockNode>; // present ⇒ directory
+  content?: string; // present ⇒ text file
+  image?: boolean; // ⇒ preview as image
+  size?: number;
+  mtime?: number;
+}
+
+const MOCK_TREE: Record<string, MockNode> = {
+  'kube-coder': { entries: {}, mtime: NOW - 3600 },
+  screenshots: {
+    entries: {
+      'dashboard.png': { image: true, size: 184320, mtime: NOW - 1800 },
+    },
+    mtime: NOW - 1800,
+  },
+  'notes.md': {
+    content: '# Notes\n\n- Ship the Files manager\n- Verify preview + rename + delete\n',
+    mtime: NOW - 600,
+  },
+  'server.log': {
+    content: Array.from({ length: 40 }, (_, i) => `[info] line ${i + 1} — workspace healthy`).join('\n'),
+    mtime: NOW - 120,
+  },
+};
+
+function mockResolve(path: string): MockNode | null {
+  const parts = path.split('/').filter(Boolean);
+  let level: Record<string, MockNode> = MOCK_TREE;
+  let node: MockNode | null = null;
+  for (const part of parts) {
+    node = level[part] ?? null;
+    if (!node) return null;
+    level = node.entries ?? {};
+  }
+  return node;
+}
+
+export function mockFileListing(path: string): FileListing {
+  const level = path ? mockResolve(path)?.entries ?? {} : MOCK_TREE;
+  const entries: FileEntry[] = Object.entries(level).map(([name, n]) => ({
+    name,
+    kind: n.entries ? 'dir' : 'file',
+    size: n.size ?? (n.content ? n.content.length : 0),
+    mtime: n.mtime ?? NOW,
+  }));
+  return { path, entries };
+}
+
+export function mockFilePreview(path: string): FilePreview {
+  const node = mockResolve(path);
+  const size = node?.size ?? (node?.content ? node.content.length : 0);
+  if (node?.image) return { kind: 'image', path, mime: 'image/png', size };
+  if (node?.content !== undefined) {
+    return { kind: 'text', path, mime: 'text/plain', size, content: node.content, truncated: false };
+  }
+  return { kind: 'binary', path, mime: 'application/octet-stream', size };
+}

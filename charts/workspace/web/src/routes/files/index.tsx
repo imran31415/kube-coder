@@ -1,11 +1,22 @@
 import { useEffect, useState } from 'preact/hooks';
-import { listFiles, makeDirectory, uploadFile, type FileEntry } from '../../api/files';
+import {
+  listFiles,
+  makeDirectory,
+  uploadFile,
+  previewFile,
+  downloadFile,
+  deleteFile,
+  renameFile,
+  fileRawUrl,
+  type FileEntry,
+  type FilePreview,
+} from '../../api/files';
 import { vscodeUrl } from '../../api/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
 import { MutatorOnly } from '../../components/MutatorOnly';
-import { PromptDialog } from '../../components/ConfirmDialog';
+import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import './files.css';
 
 function fmtSize(bytes: number): string {
@@ -22,6 +33,16 @@ export function FilesRoute() {
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mkdirOpen, setMkdirOpen] = useState(false);
+  // Preview pane: the currently-open file (rel path) + its fetched descriptor.
+  const [selected, setSelected] = useState<string | null>(null);
+  const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  // Modal targets (null = closed). rename carries the entry; delete too.
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
+
+  const rel = (name: string) => (path ? `${path}/${name}` : name);
 
   async function refresh(p: string) {
     setBusy(true);
@@ -44,15 +65,45 @@ export function FilesRoute() {
 
   async function go(name: string, kind: FileEntry['kind']) {
     if (kind !== 'dir') return;
-    const next = path ? `${path}/${name}` : name;
-    await refresh(next);
+    closePreview();
+    await refresh(rel(name));
   }
 
   async function goUp() {
     if (!path) return;
+    closePreview();
     const parts = path.split('/').filter(Boolean);
     parts.pop();
     await refresh(parts.join('/'));
+  }
+
+  function closePreview() {
+    setSelected(null);
+    setPreview(null);
+    setPreviewErr(null);
+  }
+
+  async function openPreview(name: string) {
+    const p = rel(name);
+    setSelected(p);
+    setPreview(null);
+    setPreviewErr(null);
+    setPreviewBusy(true);
+    try {
+      setPreview(await previewFile(p));
+    } catch (err) {
+      setPreviewErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+
+  async function onDownload(name: string) {
+    try {
+      await downloadFile(rel(name), name);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Download failed', { kind: 'danger' });
+    }
   }
 
   async function onUpload(e: Event) {
@@ -77,11 +128,48 @@ export function FilesRoute() {
     if (!name) return;
     setBusy(true);
     try {
-      await makeDirectory(path ? `${path}/${name}` : name);
+      await makeDirectory(rel(name));
       pushToast(`Created ${name}/`, { kind: 'success' });
       await refresh(path);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'mkdir failed', { kind: 'danger' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRenameConfirm(newName: string) {
+    const target = renameTarget;
+    setRenameTarget(null);
+    if (!target || !newName || newName === target.name) return;
+    const from = rel(target.name);
+    const to = rel(newName);
+    setBusy(true);
+    try {
+      await renameFile(from, to);
+      pushToast(`Renamed to ${newName}`, { kind: 'success' });
+      if (selected === from) closePreview();
+      await refresh(path);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Rename failed', { kind: 'danger' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDeleteConfirm() {
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    if (!target) return;
+    const p = rel(target.name);
+    setBusy(true);
+    try {
+      await deleteFile(p);
+      pushToast(`Deleted ${target.name}`, { kind: 'success' });
+      if (selected === p) closePreview();
+      await refresh(path);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Delete failed', { kind: 'danger' });
     } finally {
       setBusy(false);
     }
@@ -95,7 +183,9 @@ export function FilesRoute() {
       <header class="route-header route-header-with-action">
         <div>
           <h1 class="route-title">Files</h1>
-          <p class="route-subtitle muted">Browse /home/dev. Click a directory to enter, the breadcrumb to navigate back.</p>
+          <p class="route-subtitle muted">
+            Browse /home/dev. Click a file to preview; a directory to enter.
+          </p>
         </div>
         <MutatorOnly>
           <div class="files-actions">
@@ -113,13 +203,13 @@ export function FilesRoute() {
       </header>
 
       <nav class="files-crumbs mono">
-        <button class="files-crumb" onClick={() => refresh('')}>/home/dev</button>
+        <button class="files-crumb" onClick={() => { closePreview(); void refresh(''); }}>/home/dev</button>
         {path.split('/').filter(Boolean).map((p, i, arr) => {
           const upTo = arr.slice(0, i + 1).join('/');
           return (
             <span key={upTo}>
               <span class="files-crumb-sep">/</span>
-              <button class="files-crumb" onClick={() => refresh(upTo)}>{p}</button>
+              <button class="files-crumb" onClick={() => { closePreview(); void refresh(upTo); }}>{p}</button>
             </span>
           );
         })}
@@ -127,66 +217,100 @@ export function FilesRoute() {
 
       {error && <div class="trig-error" role="alert">{error}</div>}
 
-      <table class="files-table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Size</th>
-            <th>Modified</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {path && (
-            <tr class="files-row files-row-up">
-              <td colSpan={4}>
-                <button class="files-row-btn" onClick={goUp}>
-                  <Icon name="chevron-right" size={14} class="files-up-icon" />
-                  <span>..</span>
-                </button>
-              </td>
-            </tr>
-          )}
-          {dirs.map((e) => (
-            <tr class="files-row" key={e.name}>
-              <td>
-                <button class="files-row-btn" onClick={() => go(e.name, e.kind)}>
-                  <Icon name="files" size={14} />
-                  <span>{e.name}/</span>
-                </button>
-              </td>
-              <td class="muted mono">—</td>
-              <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
-              <td><OpenInVscode path={path ? `${path}/${e.name}` : e.name} kind="dir" /></td>
-            </tr>
-          ))}
-          {files.map((e) => (
-            <tr class="files-row" key={e.name}>
-              <td>
-                <span class="files-row-btn files-row-btn-static">
-                  <Icon name="inbox" size={14} />
-                  <span>{e.name}</span>
-                </span>
-              </td>
-              <td class="muted mono">{fmtSize(e.size)}</td>
-              <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
-              <td><OpenInVscode path={path ? `${path}/${e.name}` : e.name} kind="file" /></td>
-            </tr>
-          ))}
-          {busy && (!loadedOnce || entries.length === 0) && (
-            <>
-              {Array.from({ length: 5 }, (_, i) => (
-                <tr class="files-row files-row-skeleton" key={`skeleton-${i}`} aria-hidden="true">
-                  <td><span class="files-skeleton-cell files-skeleton-name" /></td>
-                  <td><span class="files-skeleton-cell files-skeleton-size" /></td>
-                  <td><span class="files-skeleton-cell files-skeleton-date" /></td>
-                  <td />
+      <div class={`files-body${selected ? ' files-body-split' : ''}`}>
+        <div class="files-table-wrap">
+          <table class="files-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th>Modified</th>
+                <th class="files-actions-head"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {path && (
+                <tr class="files-row files-row-up">
+                  <td colSpan={4}>
+                    <button class="files-row-btn" onClick={goUp}>
+                      <Icon name="chevron-right" size={14} class="files-up-icon" />
+                      <span>..</span>
+                    </button>
+                  </td>
+                </tr>
+              )}
+              {dirs.map((e) => (
+                <tr class="files-row" key={`d:${e.name}`}>
+                  <td>
+                    <button class="files-row-btn" onClick={() => go(e.name, e.kind)}>
+                      <Icon name="files" size={14} />
+                      <span>{e.name}/</span>
+                    </button>
+                  </td>
+                  <td class="muted mono">—</td>
+                  <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
+                  <td>
+                    <RowActions
+                      entry={e}
+                      path={rel(e.name)}
+                      onRename={() => setRenameTarget(e)}
+                      onDelete={() => setDeleteTarget(e)}
+                    />
+                  </td>
                 </tr>
               ))}
-            </>
-          )}
-        </tbody>
-      </table>
+              {files.map((e) => {
+                const p = rel(e.name);
+                return (
+                  <tr class={`files-row${selected === p ? ' files-row-selected' : ''}`} key={`f:${e.name}`}>
+                    <td>
+                      <button class="files-row-btn" onClick={() => openPreview(e.name)}>
+                        <Icon name="inbox" size={14} />
+                        <span>{e.name}</span>
+                      </button>
+                    </td>
+                    <td class="muted mono">{fmtSize(e.size)}</td>
+                    <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
+                    <td>
+                      <RowActions
+                        entry={e}
+                        path={p}
+                        onDownload={() => onDownload(e.name)}
+                        onRename={() => setRenameTarget(e)}
+                        onDelete={() => setDeleteTarget(e)}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+              {busy && (!loadedOnce || entries.length === 0) && (
+                <>
+                  {Array.from({ length: 5 }, (_, i) => (
+                    <tr class="files-row files-row-skeleton" key={`skeleton-${i}`} aria-hidden="true">
+                      <td><span class="files-skeleton-cell files-skeleton-name" /></td>
+                      <td><span class="files-skeleton-cell files-skeleton-size" /></td>
+                      <td><span class="files-skeleton-cell files-skeleton-date" /></td>
+                      <td />
+                    </tr>
+                  ))}
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {selected && (
+          <PreviewPane
+            path={selected}
+            name={selected.split('/').pop() || selected}
+            preview={preview}
+            busy={previewBusy}
+            error={previewErr}
+            onClose={closePreview}
+            onDownload={() => onDownload(selected.split('/').pop() || selected)}
+          />
+        )}
+      </div>
 
       <PromptDialog
         open={mkdirOpen}
@@ -197,7 +321,156 @@ export function FilesRoute() {
         onConfirm={onMkdirConfirm}
         onCancel={() => setMkdirOpen(false)}
       />
+
+      <PromptDialog
+        open={renameTarget !== null}
+        title="Rename"
+        body={renameTarget ? `Rename ${renameTarget.name}` : ''}
+        initial={renameTarget?.name ?? ''}
+        placeholder="new-name"
+        confirmLabel="Rename"
+        onConfirm={onRenameConfirm}
+        onCancel={() => setRenameTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`Delete ${deleteTarget?.name ?? ''}?`}
+        body={
+          deleteTarget?.kind === 'dir'
+            ? 'The folder must be empty. This cannot be undone.'
+            : 'This permanently removes the file. This cannot be undone.'
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={onDeleteConfirm}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
+  );
+}
+
+/** Per-row action cluster. Download only shows for files (dirs can't stream);
+ *  Rename + Delete are mutations, gated by MutatorOnly. VS Code link stays. */
+function RowActions({
+  entry,
+  path,
+  onDownload,
+  onRename,
+  onDelete,
+}: {
+  entry: FileEntry;
+  path: string;
+  onDownload?: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div class="files-row-actions">
+      {onDownload && (
+        <button
+          class="files-icon-btn"
+          title={`Download ${entry.name}`}
+          aria-label={`Download ${entry.name}`}
+          onClick={(e) => { e.stopPropagation(); onDownload(); }}
+        >
+          <Icon name="download" size={13} />
+        </button>
+      )}
+      <MutatorOnly>
+        <button
+          class="files-icon-btn"
+          title={`Rename ${entry.name}`}
+          aria-label={`Rename ${entry.name}`}
+          onClick={(e) => { e.stopPropagation(); onRename(); }}
+        >
+          <Icon name="pencil" size={13} />
+        </button>
+        <button
+          class="files-icon-btn files-icon-btn-danger"
+          title={`Delete ${entry.name}`}
+          aria-label={`Delete ${entry.name}`}
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        >
+          <Icon name="trash" size={13} />
+        </button>
+      </MutatorOnly>
+      <OpenInVscode path={path} kind={entry.kind} />
+    </div>
+  );
+}
+
+/** Right-hand preview pane. Renders text inline (mono, scrollable), images/
+ *  video via the raw media endpoint, and a download fallback for binary or
+ *  undecodable content. */
+function PreviewPane({
+  path,
+  name,
+  preview,
+  busy,
+  error,
+  onClose,
+  onDownload,
+}: {
+  path: string;
+  name: string;
+  preview: FilePreview | null;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onDownload: () => void;
+}) {
+  return (
+    <aside class="files-preview" aria-label={`Preview of ${name}`}>
+      <header class="files-preview-head">
+        <span class="files-preview-name mono" title={path}>{name}</span>
+        <div class="files-preview-head-actions">
+          <button class="files-icon-btn" title="Download" aria-label="Download" onClick={onDownload}>
+            <Icon name="download" size={14} />
+          </button>
+          <button class="files-icon-btn" title="Close preview" aria-label="Close preview" onClick={onClose}>
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      </header>
+
+      <div class="files-preview-body">
+        {busy && <p class="muted files-preview-msg">Loading preview…</p>}
+        {!busy && error && <p class="trig-error files-preview-msg">{error}</p>}
+        {!busy && !error && preview && (
+          <>
+            {preview.kind === 'text' && (
+              <>
+                {preview.truncated && (
+                  <p class="files-preview-trunc muted">
+                    Showing the first {fmtSize(preview.content.length)} of {fmtSize(preview.size)} — download for the full file.
+                  </p>
+                )}
+                <pre class="files-preview-text mono">{preview.content}</pre>
+              </>
+            )}
+            {preview.kind === 'image' && (
+              <img class="files-preview-img" src={fileRawUrl(preview.path)} alt={name} />
+            )}
+            {preview.kind === 'video' && (
+              <video class="files-preview-video" src={fileRawUrl(preview.path)} controls />
+            )}
+            {preview.kind === 'binary' && (
+              <div class="files-preview-binary">
+                <Icon name="inbox" size={28} />
+                <p class="muted">
+                  {preview.reason === 'too_large' ? 'File is too large to preview.' : 'Binary file — no inline preview.'}
+                </p>
+                <p class="muted mono">{fmtSize(preview.size)}</p>
+                <Button variant="secondary" onClick={onDownload}>
+                  <Icon name="download" size={14} /> Download
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </aside>
   );
 }
 

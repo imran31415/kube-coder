@@ -103,3 +103,97 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* --- Split layout: table + preview pane -------------------------------- */
+.files-body { display: flex; flex-direction: column; }
+.files-body-split { flex-direction: row; align-items: flex-start; gap: var(--size-4); }
+.files-table-wrap { flex: 1 1 auto; min-width: 0; }
+.files-body-split .files-preview { flex: 0 0 min(46%, 560px); }
+
+.files-actions-head { width: 1%; white-space: nowrap; }
+
+/* Per-row action cluster (download / rename / delete / vscode). */
+.files-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  justify-content: flex-end;
+}
+/* Reveal actions on row hover/focus to keep the table calm; always shown on
+   the selected row and on touch (no hover) devices. */
+.files-row-actions .files-icon-btn { opacity: 0; transition: opacity var(--motion-fast); }
+.files-row:hover .files-icon-btn,
+.files-row-selected .files-icon-btn,
+.files-icon-btn:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .files-row-actions .files-icon-btn { opacity: 1; }
+}
+
+.files-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-subtle);
+  background: transparent;
+  transition: background var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast);
+}
+.files-icon-btn:hover { background: var(--surface-2); color: var(--accent); }
+.files-icon-btn-danger:hover { color: var(--danger); }
+.files-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.files-row-selected td { background: var(--accent-soft); }
+
+/* --- Preview pane ------------------------------------------------------ */
+.files-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+.files-body:not(.files-body-split) .files-preview { margin-top: var(--size-4); }
+.files-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.files-preview-name { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-preview-head-actions { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+.files-preview-body { overflow: auto; padding: 0; }
+.files-preview-msg { padding: var(--size-4); }
+.files-preview-trunc { padding: 8px 12px; margin: 0; font-size: 11px; border-bottom: 1px solid var(--border); }
+.files-preview-text {
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+  tab-size: 2;
+}
+.files-preview-img, .files-preview-video { display: block; max-width: 100%; margin: 0 auto; }
+.files-preview-binary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--size-2);
+  padding: var(--size-6) var(--size-4);
+  color: var(--text-subtle);
+  text-align: center;
+}
+.files-preview-binary p { margin: 0; }
+
+/* On narrow screens the split collapses to stacked (table then preview). */
+@media (max-width: 760px) {
+  .files-body-split { flex-direction: column; }
+  .files-body-split .files-preview { flex: 1 1 auto; width: 100%; }
+}
