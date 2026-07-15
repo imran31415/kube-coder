@@ -1,0 +1,53 @@
+suite: GitHub auth mode — personal vs managed App (#256)
+# start.sh + the token-refresh daemon must let a personal `gh auth login` win
+# when the persisted mode is "personal", without the App token clobbering it.
+templates:
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/github-app-token-refresh.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: the gh shim in start.sh is auth-mode aware (defers to personal login)
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # reads the persisted sentinel…
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: '_mode="\$\(cat /home/dev/.credentials/.github-auth-mode'
+      # …and strips an inherited App token in personal mode so gh reads hosts.yml
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'unset GH_TOKEN GITHUB_TOKEN'
+
+  - it: start.sh no longer clobbers the mode-guarded profile hook with raw exports
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: 'cp /home/dev/.credentials/.github-env /home/dev/.profile.d-github-env'
+
+  - it: the refresh daemon is auth-mode aware
+    template: templates/github-app-token-refresh.yaml
+    set:
+      github.app.appId: "123"
+    asserts:
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'def get_auth_mode'
+      # the per-shell hook self-guards so personal mode exports no App token
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'github-auth-mode 2>/dev/null \|\| echo app'
+      # personal mode hands git to the user's gh login instead of the App helper
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'setup-git'
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'configure_git\(token, get_auth_mode\(\)\)'
+
+  - it: the daemon configmap is absent when no GitHub App is configured
+    template: templates/github-app-token-refresh.yaml
+    asserts:
+      - hasDocuments:
+          count: 0

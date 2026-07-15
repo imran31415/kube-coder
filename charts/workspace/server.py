@@ -346,6 +346,68 @@ class GitHubManager:
 
     SSH_DIR = os.path.expanduser('~/.ssh')
     GH_CONFIG_DIR = os.path.expanduser('~/.config/gh')
+    # Persisted GitHub auth mode (issue #256). 'personal' = the user's own
+    # gh/git login wins; anything else (incl. missing) = 'app', the managed
+    # installation-token default. Read by start.sh, the refresh daemon and here.
+    AUTH_MODE_FILE = '/home/dev/.credentials/.github-auth-mode'
+    TOKEN_FILE = '/home/dev/.credentials/.github-token'
+
+    @staticmethod
+    def get_auth_mode():
+        """Current GitHub auth mode: 'personal' or 'app' (default)."""
+        try:
+            with open(GitHubManager.AUTH_MODE_FILE) as f:
+                return 'personal' if f.read().strip() == 'personal' else 'app'
+        except OSError:
+            return 'app'
+
+    @staticmethod
+    def app_available():
+        """Whether the managed GitHub App flow is wired for this workspace —
+        i.e. switching back to 'app' mode is meaningful. True when the App is
+        configured (GITHUB_APP_ID) or a minted token file already exists."""
+        return bool(os.environ.get('GITHUB_APP_ID')) or os.path.exists(GitHubManager.TOKEN_FILE)
+
+    @staticmethod
+    def _app_credential_helper():
+        """The git credential helper that serves the App installation token."""
+        return (
+            "!f() { "
+            'echo "protocol=https"; '
+            'echo "host=github.com"; '
+            'echo "username=x-access-token"; '
+            'echo "password=$(cat /home/dev/.credentials/.github-token)"; '
+            "}; f"
+        )
+
+    @staticmethod
+    def _apply_auth_mode(mode):
+        """Re-point git credential auth to match the mode, effective immediately
+        for new git/gh operations (mirrors the refresh daemon's configure_git).
+        app: install the App-token helper. personal: remove it and let the
+        user's gh login drive git via `gh auth setup-git` (best-effort)."""
+        if mode == 'personal':
+            subprocess.run(['git', 'config', '--global', '--unset-all', 'credential.helper'],
+                           capture_output=True)
+            subprocess.run(['gh', 'auth', 'setup-git', '--hostname', 'github.com'],
+                           capture_output=True)
+        else:
+            subprocess.run(['git', 'config', '--global', '--replace-all',
+                            'credential.helper', GitHubManager._app_credential_helper()],
+                           capture_output=True)
+
+    @staticmethod
+    def set_auth_mode(mode):
+        """Persist + apply the GitHub auth mode. Raises ValueError on bad input.
+        Returns the refreshed full status so the UI reflects the switch."""
+        if mode not in ('app', 'personal'):
+            raise ValueError("mode must be 'app' or 'personal'")
+        os.makedirs(os.path.dirname(GitHubManager.AUTH_MODE_FILE), exist_ok=True)
+        with open(GitHubManager.AUTH_MODE_FILE, 'w') as f:
+            f.write(mode + '\n')
+        os.chmod(GitHubManager.AUTH_MODE_FILE, 0o600)
+        GitHubManager._apply_auth_mode(mode)
+        return GitHubManager.get_full_status()
 
     @staticmethod
     def get_ssh_status():
@@ -505,7 +567,9 @@ Host github.com
         return {
             'ssh': GitHubManager.get_ssh_status(),
             'gh_cli': GitHubManager.get_gh_cli_status(),
-            'git_config': GitHubManager.get_git_config()
+            'git_config': GitHubManager.get_git_config(),
+            'auth_mode': GitHubManager.get_auth_mode(),
+            'app_available': GitHubManager.app_available(),
         }
 
 
@@ -7304,6 +7368,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_ssh_generate()
             elif path == "/api/github/config":
                 self.handle_git_config_post()
+            elif path == "/api/github/auth-mode":
+                self.handle_set_auth_mode()
             elif path == "/api/github/cli/login-url":
                 self.handle_gh_login_instructions()
             elif path == "/api/github/cli/complete-auth":
@@ -7698,6 +7764,26 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'error': str(e)}).encode())
+
+    def handle_set_auth_mode(self):
+        """Switch the workspace GitHub auth mode: 'app' (managed installation
+        token) or 'personal' (the user's own `gh auth login`). Persists the
+        choice and re-points git's credential helper immediately (issue #256).
+        Auth-gated; blocked in read-only demo via the do_POST chokepoint."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+            mode = (data.get('mode') or '').strip()
+            status = GitHubManager.set_auth_mode(mode)
+            self.send_json(status, 200)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
 
     def handle_gh_login_instructions(self):
         """Return instructions for gh CLI authentication"""
