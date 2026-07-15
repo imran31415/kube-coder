@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { TaskStatus } from '../../api/tasks';
+import { interruptTask, type TaskStatus } from '../../api/tasks';
 import { sendFollowup } from '../../store/tasks';
 import { pushToast } from '../../store/ui';
 import { Button } from '../../components/primitives/Button';
@@ -48,6 +48,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
 
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [interrupting, setInterrupting] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -179,6 +180,19 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     }
   }
 
+  async function onInterrupt() {
+    if (status !== 'running' || readOnly || interrupting) return;
+    setInterrupting(true);
+    try {
+      await interruptTask(taskId);
+      pushToast('Interrupt sent', { kind: 'warn' });
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Interrupt failed', { kind: 'danger' });
+    } finally {
+      setInterrupting(false);
+    }
+  }
+
   function onKey(e: KeyboardEvent) {
     // Cmd/Ctrl+Enter sends; plain Enter inserts a newline.
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -270,6 +284,18 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
             >
               <Icon name="image" size={14} />
             </Button>
+            {status === 'running' && (
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                disabled={interrupting || readOnly}
+                title="Interrupt the current assistant turn"
+                onClick={onInterrupt}
+              >
+                <Icon name="close" size={12} /> Stop
+              </Button>
+            )}
             <Button
               type="submit"
               variant="primary"
