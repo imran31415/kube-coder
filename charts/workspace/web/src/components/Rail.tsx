@@ -1,7 +1,6 @@
 import { currentPath, navigate, ROUTES, matchRoute } from '../store/router';
-import { railCollapsed, previewFullscreen, drawerOpen } from '../store/ui';
+import { railCollapsed, previewFullscreen } from '../store/ui';
 import { Icon, type IconName } from './Icon';
-import { MutatorOnly } from './MutatorOnly';
 import './Rail.css';
 
 const ICONS: Record<string, IconName> = {
@@ -28,29 +27,6 @@ export function Rail() {
       aria-label="Primary"
       data-collapsed={collapsed ? 'true' : 'false'}
     >
-      {/* Primary CTA at the top of the rail. Sits above the route list with
-          a 1px separator so it reads as a distinct action, not a nav item.
-          Earlier "+" icon-only button next to the Build row was too easy
-          to miss; this is the discoverable replacement. Hidden in
-          read-only public-demo via MutatorOnly. */}
-      <MutatorOnly>
-        <div class="rail-cta">
-          <button
-            type="button"
-            class="rail-cta-btn"
-            onClick={() => {
-              if (active !== '/tasks') navigate('/tasks');
-              drawerOpen.value = 'new-task';
-            }}
-            title="New build"
-            aria-label="New build"
-          >
-            <Icon name="plus" size={14} />
-            {!collapsed && <span class="rail-cta-label">New build</span>}
-          </button>
-        </div>
-        <div class="rail-sep" aria-hidden="true" />
-      </MutatorOnly>
       <div class="rail-items">
         {ROUTES.map((r) => {
           const isActive = active === r.path;
