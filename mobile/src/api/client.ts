@@ -661,6 +661,18 @@ export async function listThreads(): Promise<HypervisorThread[]> {
   return d.threads ?? [];
 }
 
+/** The "Recently deleted" trash view — soft-deleted threads only. */
+export async function listDeletedThreads(): Promise<HypervisorThread[]> {
+  if (getConfig().mock) {
+    await delay(80);
+    return [];
+  }
+  const d = await request<{ threads?: HypervisorThread[] }>('/api/hypervisor/threads', {
+    query: { deleted: 1 },
+  });
+  return d.threads ?? [];
+}
+
 export async function createThread(
   message: string,
   assistant?: string,
@@ -692,6 +704,11 @@ export async function stopThread(id: string): Promise<void> {
 
 export async function deleteThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Undo a soft-delete: clears deleted_at so the chat reappears in the list. */
+export async function restoreThread(id: string): Promise<void> {
+  await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 }
 
 /** Absolute URL for a workspace media file served by /api/files/raw. Pair with

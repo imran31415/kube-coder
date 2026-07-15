@@ -3,11 +3,13 @@ import { Icon } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
 import { Pill } from '../../components/primitives/Pill';
 import { EmptyState } from '../../components/primitives/EmptyState';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import {
   config,
   configError,
   threads,
+  deletedThreads,
   activeThreadId,
   activeStatus,
   selectedAssistant,
@@ -15,9 +17,11 @@ import {
   openThread,
   newChat,
   removeThread,
+  reviveThread,
+  refreshDeletedThreads,
   closeThread,
 } from '../../store/hypervisor';
-import type { ThreadStatus } from '../../api/hypervisor';
+import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { currentPath, navigate, pathSuffix } from '../../store/router';
 import { Chat } from './Chat';
 import { partitionThreads, type ChatTab } from './chatTabs';
@@ -38,6 +42,11 @@ export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
+  // The chat awaiting delete-confirmation (null when the dialog is closed).
+  const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
+  // "Recently deleted" is collapsed by default; expanding it lazy-loads the
+  // tombstones so the common case never pays for the extra request.
+  const [trashOpen, setTrashOpen] = useState(false);
 
   useEffect(() => {
     void initHypervisor();
@@ -80,6 +89,11 @@ export function HypervisorRoute() {
       setChatTab('past');
     }
   }, [chatTab, activeThreads.length, pastThreads.length]);
+
+  // Lazy-load the trash the first time the user opens "Recently deleted".
+  useEffect(() => {
+    if (trashOpen) void refreshDeletedThreads();
+  }, [trashOpen]);
 
   if (cfg && cfg.enabled === false) {
     return (
@@ -204,20 +218,76 @@ export function HypervisorRoute() {
                 class="hv-thread-del"
                 title="Delete chat"
                 aria-label="Delete chat"
-                onClick={() => {
-                  // If we're deleting the open thread, drop back to the
-                  // new-chat URL so the route doesn't try to re-open a
-                  // now-missing id.
-                  if (active === t.id) navigate('/hypervisor');
-                  void removeThread(t.id);
-                }}
+                onClick={() => setPendingDelete(t)}
               >
                 <Icon name="close" size={12} />
               </button>
             </div>
           ))}
         </div>
+
+        {/* Recently deleted — a collapsible trash so an accidental delete is
+            recoverable (issue #260). Soft-deleted threads keep their files;
+            Restore clears the tombstone. GC hard-purges old ones server-side. */}
+        <div class={`hv-trash ${trashOpen ? 'hv-trash-open' : ''}`}>
+          <button
+            type="button"
+            class="hv-trash-toggle"
+            aria-expanded={trashOpen}
+            onClick={() => setTrashOpen((v) => !v)}
+          >
+            <Icon name={trashOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+            <span>Recently deleted</span>
+            {deletedThreads.value.length > 0 && (
+              <span class="hv-tab-count">{deletedThreads.value.length}</span>
+            )}
+          </button>
+          {trashOpen && (
+            <div class="hv-trash-list">
+              {deletedThreads.value.length === 0 && (
+                <p class="hv-thread-empty">Nothing here.</p>
+              )}
+              {deletedThreads.value.map((t) => (
+                <div key={t.id} class="hv-thread hv-thread-deleted">
+                  <span class="hv-thread-open hv-thread-open-static" title={t.title}>
+                    <span class="hv-dot hv-dot-deleted" aria-hidden="true" />
+                    <span class="hv-thread-body">
+                      <span class="hv-thread-title">{t.title || 'New chat'}</span>
+                      <span class="hv-thread-agent">{t.assistant}</span>
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    class="hv-thread-restore"
+                    title="Restore chat"
+                    onClick={() => void reviveThread(t.id)}
+                  >
+                    Restore
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </aside>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this chat?"
+        body="You can restore it from Recently deleted."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const t = pendingDelete;
+          setPendingDelete(null);
+          if (!t) return;
+          // If we're deleting the open thread, drop back to the new-chat URL so
+          // the route doesn't try to re-open a now-missing id.
+          if (active === t.id) navigate('/hypervisor');
+          void removeThread(t.id);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
 
       <section class="hv-main">
         <header class="hv-topbar">

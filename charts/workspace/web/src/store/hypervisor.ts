@@ -7,6 +7,8 @@ import {
   sendThreadMessage,
   stopThread,
   deleteThread,
+  listDeletedThreads,
+  restoreThread,
   type HypervisorConfig,
   type HypervisorThread,
 } from '../api/hypervisor';
@@ -26,6 +28,11 @@ export const configError = signal<string | null>(null);
 
 export const threads = signal<HypervisorThread[]>([]);
 export const threadsLoading = signal(false);
+
+/** Soft-deleted threads, shown in the "Recently deleted" section so an
+ *  accidental delete can be restored. Loaded lazily when the user expands it. */
+export const deletedThreads = signal<HypervisorThread[]>([]);
+export const deletedLoading = signal(false);
 
 export const activeThreadId = signal<string | null>(null);
 /** Canonical event stream for the open thread (user turns, assistant prose,
@@ -79,6 +86,17 @@ export async function refreshThreads(): Promise<void> {
     /* keep last-good list */
   } finally {
     threadsLoading.value = false;
+  }
+}
+
+export async function refreshDeletedThreads(): Promise<void> {
+  deletedLoading.value = true;
+  try {
+    deletedThreads.value = await listDeletedThreads();
+  } catch {
+    /* keep last-good list */
+  } finally {
+    deletedLoading.value = false;
   }
 }
 
@@ -192,6 +210,9 @@ export function newChat(): void {
   closeThread();
 }
 
+/** Soft-delete a chat. The thread moves to "Recently deleted" (restorable)
+ *  rather than being erased. Refreshes both lists so the trash view stays
+ *  current if it's already been expanded. */
 export async function removeThread(id: string): Promise<void> {
   try {
     await deleteThread(id);
@@ -200,4 +221,16 @@ export async function removeThread(id: string): Promise<void> {
   }
   if (activeThreadId.value === id) closeThread();
   await refreshThreads();
+  // Keep the trash view in sync only if it's been loaded at least once.
+  if (deletedThreads.value.length > 0) await refreshDeletedThreads();
+}
+
+/** Undo a soft-delete: the chat reappears in the main list. */
+export async function reviveThread(id: string): Promise<void> {
+  try {
+    await restoreThread(id);
+  } catch {
+    /* best effort */
+  }
+  await Promise.all([refreshThreads(), refreshDeletedThreads()]);
 }
