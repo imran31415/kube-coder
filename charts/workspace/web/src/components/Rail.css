@@ -10,49 +10,6 @@
   transition: width var(--motion-base), flex-basis var(--motion-base), padding var(--motion-base);
 }
 
-/* Top-of-rail primary CTA — solid filled in the accent color (white in
-   dark, black in light). Editorial / newspaper "primary action" feel —
-   one inked rectangle, sharp corners. */
-.rail-cta { display: flex; }
-.rail-cta-btn {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--size-2);
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--on-accent);
-  border: 1px solid var(--accent);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
-  cursor: pointer;
-  transition: background var(--motion-fast), border-color var(--motion-fast), transform 80ms ease;
-}
-.rail-cta-btn:hover {
-  background: color-mix(in srgb, var(--accent) 88%, var(--bg));
-  border-color: color-mix(in srgb, var(--accent) 88%, var(--bg));
-}
-.rail-cta-btn:active { transform: translateY(0.5px); }
-.rail-cta-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.rail-cta-label { line-height: 1; }
-[data-collapsed="true"] .rail-cta-btn {
-  padding: 6px 0;
-  width: 100%;
-}
-
-/* Empty spacer between the CTA and the route list. Visual breathing
-   room only, no line — keeps the rail quiet. */
-.rail-sep {
-  height: 6px;
-}
-
 .rail-items {
   display: flex;
   flex-direction: column;

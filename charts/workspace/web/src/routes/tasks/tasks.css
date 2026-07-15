@@ -313,6 +313,12 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* Desktop "New build" CTA in the master-bar. Lives on the Build page itself
+   (the rail no longer carries a global "+ New build" button). */
+.tasks-new-build {
+  flex: 0 0 auto;
+}
+
 /* Mobile-only "New build" CTA at the top of the master pane — phones don't
    show the left rail, so this is the equivalent of the rail's "+" affordance. */
 .tasks-mobile-new {

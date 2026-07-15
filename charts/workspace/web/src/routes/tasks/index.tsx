@@ -47,7 +47,16 @@ export function TasksRoute() {
         {!isMobile && !collapsedMaster && !fullscreen && (
           <div class="tasks-master">
             <div class="tasks-master-bar">
-              <span class="muted" style={{ fontSize: '11.5px' }}>Build sessions</span>
+              <MutatorOnly>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => (drawerOpen.value = 'new-task')}
+                  class="tasks-new-build"
+                >
+                  <Icon name="plus" size={12} /> New build
+                </Button>
+              </MutatorOnly>
               <Button
                 size="sm"
                 variant="ghost"
