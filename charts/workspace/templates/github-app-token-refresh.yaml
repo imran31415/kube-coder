@@ -32,7 +32,22 @@ data:
     CREDENTIALS_DIR = "/home/dev/.credentials"
     TOKEN_FILE = os.path.join(CREDENTIALS_DIR, ".github-token")
     ENV_FILE = os.path.join(CREDENTIALS_DIR, ".github-env")
+    AUTH_MODE_FILE = os.path.join(CREDENTIALS_DIR, ".github-auth-mode")
     REFRESH_INTERVAL = 3000  # 50 minutes in seconds
+
+
+    def get_auth_mode() -> str:
+        """Read the persisted GitHub auth mode (issue #256).
+
+        'personal' means the user's own `gh auth login` / git identity should
+        win and the App machinery must NOT clobber it. Anything else — including
+        a missing file — means 'app', the managed installation-token default.
+        """
+        try:
+            with open(AUTH_MODE_FILE) as f:
+                return "personal" if f.read().strip() == "personal" else "app"
+        except OSError:
+            return "app"
 
 
     def b64url(data: bytes) -> str:
@@ -96,24 +111,59 @@ data:
             f.write(token)
         os.chmod(TOKEN_FILE, 0o600)
 
+        # Raw exports — sourced by start.sh itself at boot so the entrypoint can
+        # always reach GitHub with the App token regardless of the user-facing
+        # auth mode. NOT sourced by user shells (that's the guarded hook below).
         env_content = f'export GITHUB_TOKEN="{token}"\nexport GH_TOKEN="{token}"\n'
 
         with open(ENV_FILE, "w") as f:
             f.write(env_content)
         os.chmod(ENV_FILE, 0o600)
 
-        # Also update the profile hook so new shells (including tmux) pick up the token
+        # Per-shell profile hook (BASH_ENV + ~/.bashrc/~/.profile source this).
+        # It self-guards on the auth mode: in 'personal' mode it exports nothing,
+        # so a personal `gh auth login` (hosts.yml) is no longer shadowed by the
+        # App GH_TOKEN — and switching modes takes effect for NEW shells with no
+        # need to rewrite ~/.bashrc. See issue #256.
         profile_hook = "/home/dev/.profile.d-github-env"
+        hook_content = (
+            "# github-app token (managed by the refresh daemon; self-guards on auth mode)\n"
+            'if [ "$(cat /home/dev/.credentials/.github-auth-mode 2>/dev/null || echo app)" = "app" ]; then\n'
+            f'  export GITHUB_TOKEN="{token}"\n'
+            f'  export GH_TOKEN="{token}"\n'
+            "fi\n"
+        )
         try:
             with open(profile_hook, "w") as f:
-                f.write(env_content)
+                f.write(hook_content)
             os.chmod(profile_hook, 0o600)
         except OSError:
             pass
 
 
-    def configure_git(token: str):
-        """Configure git credential helper and gh CLI auth."""
+    def configure_git(token: str, mode: str):
+        """Point git's credential helper at the identity for the current mode.
+
+        app:      install a helper that always cats the fresh App token.
+        personal: remove that global App helper and let the user's own gh login
+                  drive git (best-effort `gh auth setup-git`), so a personal
+                  `gh auth login` actually takes effect for `git push` (#256).
+        """
+        if mode == "personal":
+            # Drop only the top-level (App-owned) credential.helper. Per-host
+            # helpers a user set for non-GitHub hosts live under
+            # credential.<url>.helper and are left untouched.
+            subprocess.run(
+                ["git", "config", "--global", "--unset-all", "credential.helper"],
+                capture_output=True,
+            )
+            # Let gh serve as the github.com credential helper for the personal
+            # login. Non-zero (ignored) until the user has run `gh auth login`.
+            subprocess.run(
+                ["gh", "auth", "setup-git", "--hostname", "github.com"],
+                capture_output=True,
+            )
+            return
         helper = (
             "!f() { "
             'echo "protocol=https"; '
@@ -123,7 +173,7 @@ data:
             "}; f"
         )
         subprocess.run(
-            ["git", "config", "--global", "credential.helper", helper],
+            ["git", "config", "--global", "--replace-all", "credential.helper", helper],
             check=True,
         )
 
@@ -137,7 +187,7 @@ data:
         token = get_installation_token(jwt, installation_id)
 
         write_credentials(token)
-        configure_git(token)
+        configure_git(token, get_auth_mode())
 
         print(f"[github-app-token] Token refreshed successfully.")
 

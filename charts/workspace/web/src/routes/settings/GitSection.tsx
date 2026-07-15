@@ -1,28 +1,65 @@
 import { useEffect, useState } from 'preact/hooks';
-import { githubStatus, generateSshKey, setGitConfig, type GitHubStatus } from '../../api/github';
+import {
+  getGithubFullStatus,
+  generateSshKey,
+  setGitConfig,
+  setAuthMode,
+  type GithubFullStatus,
+  type GitAuthMode,
+} from '../../api/github';
 import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
 
+const MODES: { id: GitAuthMode; label: string }[] = [
+  { id: 'app', label: 'App (managed)' },
+  { id: 'personal', label: 'Personal' },
+];
+
 export function GitSection() {
-  const [status, setStatus] = useState<GitHubStatus | null>(null);
+  const [status, setStatus] = useState<GithubFullStatus | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
+  const [modeBusy, setModeBusy] = useState(false);
+
+  function applyStatus(s: GithubFullStatus) {
+    setStatus(s);
+    setName(s.git_config?.user_name ?? '');
+    setEmail(s.git_config?.user_email ?? '');
+  }
 
   async function refresh() {
     try {
-      const s = await githubStatus();
-      setStatus(s);
-      setName(s.git_user_name ?? '');
-      setEmail(s.git_user_email ?? '');
+      applyStatus(await getGithubFullStatus());
     } catch {
-      // server unavailable — leave status null
+      // server unavailable / unauthorized — leave status null
     }
   }
   useEffect(() => { void refresh(); }, []);
+
+  const mode: GitAuthMode = status?.auth_mode ?? 'app';
+  const appAvailable = status?.app_available ?? true;
+  const ghUser = status?.gh_cli?.username?.trim();
+
+  async function onSetMode(next: GitAuthMode) {
+    if (next === mode || modeBusy) return;
+    setModeBusy(true);
+    try {
+      applyStatus(await setAuthMode(next));
+      if (next === 'personal') {
+        pushToast('Personal mode on. If git/gh still use the bot, run `gh auth login` in a terminal.', { kind: 'info' });
+      } else {
+        pushToast('Using the managed GitHub App token.', { kind: 'success' });
+      }
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Could not switch mode', { kind: 'danger' });
+    } finally {
+      setModeBusy(false);
+    }
+  }
 
   async function onSaveConfig(e: Event) {
     e.preventDefault();
@@ -59,15 +96,41 @@ export function GitSection() {
   return (
     <section class="settings-section">
       <h2 class="settings-section-title">GitHub &amp; SSH</h2>
+
+      <div class="settings-row">
+        <div class="settings-row-label">Auth mode</div>
+        <div class="settings-row-control settings-row-control-stack">
+          <div class="seg">
+            {MODES.map((m) => (
+              <button
+                key={m.id}
+                class={`seg-item ${mode === m.id ? 'seg-item-active' : ''}`}
+                disabled={modeBusy || (m.id === 'app' && !appAvailable)}
+                onClick={() => void onSetMode(m.id)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <div class="settings-row-hint muted">
+            {mode === 'personal'
+              ? `Using your own GitHub login${ghUser ? ` (${ghUser})` : ''}. Sign in with `
+              : 'Using the workspace’s managed GitHub App token — no personal login needed.'}
+            {mode === 'personal' && <code class="mono">gh auth login</code>}
+            {mode === 'personal' && ' in a terminal if git/gh still act as the bot.'}
+          </div>
+        </div>
+      </div>
+
       <p class="settings-row-hint muted">
         Status:
         {' '}
-        <Pill tone={status?.ssh_key_exists ? 'success' : 'warn'} mono>
-          {status?.ssh_key_exists ? 'SSH key ✓' : 'SSH key missing'}
+        <Pill tone={status?.ssh?.configured ? 'success' : 'warn'} mono>
+          {status?.ssh?.configured ? 'SSH key ✓' : 'SSH key missing'}
         </Pill>
         {' '}
-        <Pill tone={status?.gh_authenticated ? 'success' : 'warn'} mono>
-          {status?.gh_authenticated ? `gh CLI ✓ ${status?.gh_user ?? ''}`.trim() : 'gh CLI not signed in'}
+        <Pill tone={status?.gh_cli?.authenticated ? 'success' : 'warn'} mono>
+          {status?.gh_cli?.authenticated ? `gh CLI ✓ ${ghUser ?? ''}`.trim() : 'gh CLI not signed in'}
         </Pill>
       </p>
 
@@ -97,15 +160,15 @@ export function GitSection() {
         </div>
       </form>
 
-      {status?.ssh_public_key && (
+      {status?.ssh?.public_key && (
         <details class="settings-pubkey">
           <summary>Show SSH public key</summary>
-          <pre class="mono">{status.ssh_public_key}</pre>
+          <pre class="mono">{status.ssh.public_key}</pre>
           <Button
             size="sm"
             variant="ghost"
             onClick={() => {
-              navigator.clipboard?.writeText(status.ssh_public_key ?? '');
+              navigator.clipboard?.writeText(status.ssh?.public_key ?? '');
               pushToast('Copied', { kind: 'info' });
             }}
           >

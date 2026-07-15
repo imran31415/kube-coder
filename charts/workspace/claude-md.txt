@@ -170,12 +170,21 @@ git push fork HEAD
 gh pr create --base main --repo imran31415/kube-coder
 ```
 
-Authentication note: `gh repo fork` and `gh pr create` use whatever
-identity `gh auth status` reports. By default that's the workspace's
-GitHub App token (commits attributed to the bot account). To push as
-yourself instead, either run `gh auth login` once (token persists on
-the PVC at `~/.config/gh/`) or use SSH agent forwarding from your
-local machine when SSH'd in.
+Authentication note — two GitHub auth modes: `gh` and `git push` follow
+the workspace's **GitHub auth mode**:
+
+- **App (managed)** — the default. A GitHub App installation token
+  (refreshed hourly) drives git + `gh`; commits are attributed to the
+  bot account. Nothing to set up.
+- **Personal** — your own `gh auth login` / git identity wins. Switch in
+  **Settings → GitHub & SSH** (or `echo personal > ~/.credentials/.github-auth-mode`),
+  then run `gh auth login` once. The choice persists on the PVC and
+  survives the ~hourly token refresh and pod restarts, so the App token
+  no longer clobbers your personal login. Switch back anytime by
+  selecting **App** (or `echo app > ~/.credentials/.github-auth-mode`).
+
+Long-lived shells opened before a switch keep their old `GH_TOKEN`; open
+a fresh terminal (or restart the pod) for the change to fully take hold.
 
 **Do not `git push origin`** — `origin` is the upstream repo and the
 workspace's identity doesn't have write access there. Use `fork`.

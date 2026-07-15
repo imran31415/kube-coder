@@ -10,6 +10,7 @@ Run with:    python3 -m unittest tests.server_managers_test
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -202,9 +203,85 @@ class MiscGitHubTests(unittest.TestCase):
     def test_get_full_status_combines(self):
         with mock.patch.object(GH, 'get_ssh_status', return_value={'configured': False}), \
              mock.patch.object(GH, 'get_gh_cli_status', return_value={'authenticated': False}), \
-             mock.patch.object(GH, 'get_git_config', return_value={'user_name': ''}):
+             mock.patch.object(GH, 'get_git_config', return_value={'user_name': ''}), \
+             mock.patch.object(GH, 'get_auth_mode', return_value='app'), \
+             mock.patch.object(GH, 'app_available', return_value=False):
             out = GH.get_full_status()
-        self.assertEqual(set(out), {'ssh', 'gh_cli', 'git_config'})
+        self.assertEqual(set(out), {'ssh', 'gh_cli', 'git_config', 'auth_mode', 'app_available'})
+
+
+class AuthModeTests(unittest.TestCase):
+    """GitHub auth mode: personal-vs-app switch (issue #256)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.mode_file = os.path.join(self.tmp, '.github-auth-mode')
+        self.tok_file = os.path.join(self.tmp, '.github-token')
+        self._orig_mode, self._orig_tok = GH.AUTH_MODE_FILE, GH.TOKEN_FILE
+        GH.AUTH_MODE_FILE, GH.TOKEN_FILE = self.mode_file, self.tok_file
+
+    def tearDown(self):
+        GH.AUTH_MODE_FILE, GH.TOKEN_FILE = self._orig_mode, self._orig_tok
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _read_mode(self):
+        with open(self.mode_file) as f:
+            return f.read().strip()
+
+    def test_default_mode_is_app_when_missing(self):
+        self.assertEqual(GH.get_auth_mode(), 'app')
+
+    def test_reads_personal(self):
+        with open(self.mode_file, 'w') as f:
+            f.write('personal\n')
+        self.assertEqual(GH.get_auth_mode(), 'personal')
+
+    def test_garbage_falls_back_to_app(self):
+        with open(self.mode_file, 'w') as f:
+            f.write('bogus')
+        self.assertEqual(GH.get_auth_mode(), 'app')
+
+    def test_app_available_true_when_appid_env(self):
+        with mock.patch.dict(server.os.environ, {'GITHUB_APP_ID': '123'}):
+            self.assertTrue(GH.app_available())
+
+    def test_app_available_true_when_token_file_exists(self):
+        with open(self.tok_file, 'w') as f:
+            f.write('ghs_x')
+        with mock.patch.dict(server.os.environ, clear=False):
+            server.os.environ.pop('GITHUB_APP_ID', None)
+            self.assertTrue(GH.app_available())
+
+    def test_set_mode_rejects_bad_value(self):
+        with self.assertRaises(ValueError):
+            GH.set_auth_mode('nope')
+        self.assertFalse(os.path.exists(self.mode_file))
+
+    def test_set_personal_removes_app_helper_and_hands_git_to_gh(self):
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return _proc(0)
+        with mock.patch.object(server.subprocess, 'run', side_effect=fake_run), \
+             mock.patch.object(GH, 'get_full_status', return_value={'auth_mode': 'personal'}):
+            out = GH.set_auth_mode('personal')
+        self.assertEqual(self._read_mode(), 'personal')
+        self.assertEqual(out['auth_mode'], 'personal')
+        self.assertTrue(any('--unset-all' in c and 'credential.helper' in c for c in calls))
+        self.assertTrue(any(c[:3] == ['gh', 'auth', 'setup-git'] for c in calls))
+
+    def test_set_app_installs_token_helper(self):
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return _proc(0)
+        with mock.patch.object(server.subprocess, 'run', side_effect=fake_run), \
+             mock.patch.object(GH, 'get_full_status', return_value={'auth_mode': 'app'}):
+            GH.set_auth_mode('app')
+        self.assertEqual(self._read_mode(), 'app')
+        self.assertTrue(any('--replace-all' in c and 'credential.helper' in c for c in calls))
 
 
 if __name__ == '__main__':
