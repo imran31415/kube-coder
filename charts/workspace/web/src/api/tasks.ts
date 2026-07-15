@@ -120,6 +120,10 @@ export const createTask = (input: CreateTaskInput) => apiPost<TaskDetail>('/api/
 export const sendMessage = (id: string, prompt: string, submit = true) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/message`, { prompt, submit });
 
+/** Send Escape to the live assistant session without killing the task. */
+export const interruptTask = (id: string) =>
+  apiPost<TaskDetail>(`/api/claude/tasks/${id}/interrupt`, {});
+
 export const renameTask = (id: string, name: string) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/rename`, { name });
 

@@ -1344,6 +1344,34 @@ class ClaudeTaskManager:
         return updated, None
 
     @staticmethod
+    def interrupt_task(task_id):
+        """Send Escape to a live task's tmux session without killing it."""
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            return None, 'Task not found'
+
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
+        check = subprocess.run(
+            ['tmux', 'has-session', '-t', session_name],
+            capture_output=True, text=True,
+        )
+        if check.returncode != 0:
+            return None, 'Session is no longer running'
+
+        result = subprocess.run(
+            ['tmux', 'send-keys', '-t', session_name, 'Escape'],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return None, result.stderr.strip() or 'Failed to interrupt session'
+
+        return meta, None
+
+    @staticmethod
     def delete_task(task_id):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         meta_path = os.path.join(task_dir, 'task.json')
@@ -4637,6 +4665,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json(task)
 
+    def handle_claude_interrupt_task(self):
+        """POST /api/claude/tasks/{id}/interrupt: stop the current turn."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        task, err = ClaudeTaskManager.interrupt_task(self._claude_task_id)
+        if task is None:
+            self.send_json({'error': err or 'Task not found'}, 404)
+            return
+        self.send_json(task)
+
     def handle_claude_rename_task(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -7359,6 +7398,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     self._claude_task_id = m.group(1)
                     self.handle_claude_followup()
                     return
+                # /api/claude/tasks/{id}/interrupt — send Escape to Claude Code
+                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/interrupt$', path)
+                if m:
+                    self._claude_task_id = m.group(1)
+                    self.handle_claude_interrupt_task()
+                    return
                 # /api/hypervisor/threads/{id}/messages — chat follow-up
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/messages$', path)
                 if m:
@@ -8175,6 +8220,7 @@ if __name__ == "__main__":
     print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
     print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
     print("  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
+    print("  POST /api/claude/tasks/{id}/interrupt - Stop the current assistant turn")
     print("  POST /api/claude/tasks/{id}/rename  - Rename a task")
     print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
