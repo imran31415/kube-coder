@@ -15,6 +15,7 @@ import {
   openThread,
   newChat,
   removeThread,
+  renameThreadTitle,
   closeThread,
 } from '../../store/hypervisor';
 import type { ThreadStatus } from '../../api/hypervisor';
@@ -38,6 +39,9 @@ export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
+  // Inline rename: the thread whose title is being edited, plus its draft text.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState('');
 
   useEffect(() => {
     void initHypervisor();
@@ -102,6 +106,22 @@ export function HypervisorRoute() {
     // the path effect above calls openThread(id).
     navigate(`/hypervisor/${encodeURIComponent(id)}`);
     setSidebarOpen(false);
+  }
+
+  function startRename(id: string, title: string) {
+    setRenamingId(id);
+    setDraftTitle(title || '');
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+    setDraftTitle('');
+  }
+
+  function commitRename(id: string) {
+    const next = draftTitle.trim();
+    if (next) void renameThreadTitle(id, next);
+    cancelRename();
   }
 
   return (
@@ -185,37 +205,79 @@ export function HypervisorRoute() {
               {chatTab === 'active' ? 'No active chats — start one with New.' : 'No past chats.'}
             </p>
           )}
-          {shown.map((t) => (
-            <div key={t.id} class={`hv-thread ${active === t.id ? 'hv-thread-active' : ''}`}>
-              <button
-                type="button"
-                class="hv-thread-open"
-                onClick={() => pick(t.id)}
-                title={t.title}
-              >
-                <span class={`hv-dot hv-dot-${t.status}`} aria-hidden="true" />
-                <span class="hv-thread-body">
-                  <span class="hv-thread-title">{t.title || 'New chat'}</span>
-                  <span class="hv-thread-agent">{t.assistant}</span>
-                </span>
-              </button>
-              <button
-                type="button"
-                class="hv-thread-del"
-                title="Delete chat"
-                aria-label="Delete chat"
-                onClick={() => {
-                  // If we're deleting the open thread, drop back to the
-                  // new-chat URL so the route doesn't try to re-open a
-                  // now-missing id.
-                  if (active === t.id) navigate('/hypervisor');
-                  void removeThread(t.id);
-                }}
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          ))}
+          {shown.map((t) =>
+            renamingId === t.id ? (
+              <div key={t.id} class={`hv-thread hv-thread-renaming ${active === t.id ? 'hv-thread-active' : ''}`}>
+                <input
+                  class="hv-thread-rename-input"
+                  value={draftTitle}
+                  autoFocus
+                  maxLength={80}
+                  aria-label="Chat name"
+                  onInput={(e) => setDraftTitle((e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(t.id);
+                    else if (e.key === 'Escape') cancelRename();
+                  }}
+                  onBlur={() => commitRename(t.id)}
+                />
+                <button
+                  type="button"
+                  class="hv-thread-rename-save"
+                  title="Save name"
+                  aria-label="Save name"
+                  // mousedown fires before the input's blur, so the click isn't
+                  // swallowed by the blur-commit teardown.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitRename(t.id);
+                  }}
+                >
+                  <Icon name="check" size={12} />
+                </button>
+              </div>
+            ) : (
+              <div key={t.id} class={`hv-thread ${active === t.id ? 'hv-thread-active' : ''}`}>
+                <button
+                  type="button"
+                  class="hv-thread-open"
+                  onClick={() => pick(t.id)}
+                  onDblClick={() => startRename(t.id, t.title)}
+                  title={t.title}
+                >
+                  <span class={`hv-dot hv-dot-${t.status}`} aria-hidden="true" />
+                  <span class="hv-thread-body">
+                    <span class="hv-thread-title">{t.title || 'New chat'}</span>
+                    <span class="hv-thread-agent">{t.assistant}</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="hv-thread-rename"
+                  title="Rename chat"
+                  aria-label="Rename chat"
+                  onClick={() => startRename(t.id, t.title)}
+                >
+                  <Icon name="pencil" size={12} />
+                </button>
+                <button
+                  type="button"
+                  class="hv-thread-del"
+                  title="Delete chat"
+                  aria-label="Delete chat"
+                  onClick={() => {
+                    // If we're deleting the open thread, drop back to the
+                    // new-chat URL so the route doesn't try to re-open a
+                    // now-missing id.
+                    if (active === t.id) navigate('/hypervisor');
+                    void removeThread(t.id);
+                  }}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            ),
+          )}
         </div>
       </aside>
 

@@ -768,6 +768,18 @@ class HypervisorSession:
         m = self.read_meta() or {}
         return m.get('status', 'idle')
 
+    def set_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """Rename the chat. Marks the title as user-set (`title_custom`) so the
+        first-message auto-title in send() never clobbers a manual rename.
+        Returns the updated summary, or None if the thread is gone."""
+        meta = self.read_meta()
+        if meta is None:
+            return None
+        meta['title'] = (title or '').strip()[:80] or 'New chat'
+        meta['title_custom'] = True
+        self._write_meta(meta)
+        return self.summary(meta)
+
     def summary(self, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         m = meta or self.read_meta() or {}
         return {
@@ -846,8 +858,10 @@ class HypervisorSession:
         if not meta:
             return
         first = not self._has_assistant_turn()
-        # Title from the first user message.
-        if meta.get('title', 'New chat') in ('New chat', '') and first:
+        # Title from the first user message — unless the user already renamed
+        # the chat by hand (title_custom), in which case leave it alone.
+        if (first and not meta.get('title_custom')
+                and meta.get('title', 'New chat') in ('New chat', '')):
             meta['title'] = text[:80]
         self._append([{'role': 'user', 'type': 'message', 'text': text}])
         meta['status'] = 'running'

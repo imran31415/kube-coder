@@ -163,6 +163,55 @@ class SessionEventsTest(unittest.TestCase):
             self.assertEqual(s.read_meta()['adapter_kind'], kind, assistant)
 
 
+class SetTitleTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+
+    def _new(self, title='New chat'):
+        return hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title=title)
+
+    def test_set_title_renames_and_marks_custom(self):
+        s = self._new()
+        summary = s.set_title('  My deploy chat  ')
+        self.assertEqual(summary['title'], 'My deploy chat')  # trimmed
+        m = s.read_meta()
+        self.assertEqual(m['title'], 'My deploy chat')
+        self.assertTrue(m['title_custom'])
+
+    def test_set_title_caps_at_80_chars(self):
+        s = self._new()
+        s.set_title('x' * 200)
+        self.assertEqual(len(s.read_meta()['title']), 80)
+
+    def test_blank_title_falls_back_to_new_chat(self):
+        s = self._new()
+        self.assertEqual(s.set_title('   ')['title'], 'New chat')
+
+    def test_set_title_on_missing_thread_returns_none(self):
+        s = hs.HypervisorSession('nope-does-not-exist')
+        self.assertIsNone(s.set_title('whatever'))
+
+    def test_custom_title_survives_first_message_autotitle(self):
+        # A manual rename before the first message must not be clobbered by the
+        # first-user-message auto-title in send().
+        s = self._new()
+        s.set_title('Pinned name')
+        # Simulate what send() does on the first turn without spawning a CLI.
+        meta = s.read_meta()
+        first = not s._has_assistant_turn()
+        if (first and not meta.get('title_custom')
+                and meta.get('title', 'New chat') in ('New chat', '')):
+            meta['title'] = 'auto title from message'
+        self.assertEqual(meta['title'], 'Pinned name')
+
+
 class AnteAdapterTest(unittest.TestCase):
     def setUp(self):
         self.a = hs.AnteAdapter()

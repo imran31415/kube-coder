@@ -4894,6 +4894,28 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         session.send(message)
         self.send_json({'ok': True})
 
+    def handle_hypervisor_rename_thread(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        title = (data.get('title') or '').strip()
+        if not title:
+            self.send_json({'error': 'title is required'}, 400)
+            return
+        summary = session.set_title(title)
+        if summary is None:
+            self.send_json({'error': 'not found'}, 404)
+            return
+        self.send_json({'thread': summary})
+
     def handle_hypervisor_stop(self, thread_id):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -7647,6 +7669,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/stop$', path)
                 if m:
                     self.handle_hypervisor_stop(m.group(1))
+                    return
+                # /api/hypervisor/threads/{id}/rename — set a custom chat title
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/rename$', path)
+                if m:
+                    self.handle_hypervisor_rename_thread(m.group(1))
                     return
                 # /api/skills/{name}/sync — cross-harness install (PR2).
                 # Stricter name charset than the GET route: only the
