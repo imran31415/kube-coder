@@ -145,19 +145,13 @@ export function ProviderKeysSection() {
               }
             }
             return (
-              <div class="settings-row" key={s.id}>
-                <div class="settings-row-label">
-                  {s.label}
-                  {' '}
+              <div class="settings-sub-row" key={s.id}>
+                <div class="settings-sub-label">
+                  <span class="settings-sub-name">{s.label}</span>
                   <Pill tone={tone} mono>{text}</Pill>
-                  {st?.overridden_by_key && (
-                    <div class="settings-radio-hint muted">
-                      A saved Anthropic API key is overriding this subscription.
-                    </div>
-                  )}
                 </div>
-                <div class="settings-row-control">
-                  {st?.logged_in && (
+                {st?.logged_in && (
+                  <div class="settings-sub-control">
                     <Button
                       variant="secondary"
                       type="button"
@@ -166,8 +160,13 @@ export function ProviderKeysSection() {
                     >
                       Log out
                     </Button>
-                  )}
-                </div>
+                  </div>
+                )}
+                {st?.overridden_by_key && (
+                  <div class="settings-sub-note settings-radio-hint muted">
+                    A saved Anthropic API key is overriding this subscription.
+                  </div>
+                )}
               </div>
             );
           })}
