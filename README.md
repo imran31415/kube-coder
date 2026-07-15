@@ -3,44 +3,61 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.19%2B-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![CI](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml/badge.svg)](https://github.com/imran31415/kube-coder/actions/workflows/ci.yml)
 [![Test Coverage](https://img.shields.io/badge/coverage-60%25-yellow)](https://github.com/imran31415/kube-coder)
+[![Benchmark: 79.4%](https://img.shields.io/badge/aider--polyglot-79.4%25%20(claude)-brightgreen)](https://github.com/imran31415/kubecoder-bench)
+
 ---
 
-<img width="1072" height="732" alt="image" src="https://github.com/user-attachments/assets/3ce75784-2989-4cd2-8dc7-d4fad8ecc084" />
+<img width="1072" height="732" alt="kube-coder dashboard" src="https://github.com/user-attachments/assets/3ce75784-2989-4cd2-8dc7-d4fad8ecc084" />
 
-[KubeCoder.com](https://kubecoder.com/)
+<h1>kube-coder</h1>
 
+**One Helm chart turns a Kubernetes cluster into a fleet of AI-native cloud dev workspaces.**
 
+[KubeCoder.com](https://kubecoder.com/) · [Docs & public demo](https://demo-public.dev.scalebase.io/docs) · [Benchmark](https://github.com/imran31415/kubecoder-bench) · [r/kubecoder](https://www.reddit.com/r/kubecoder/)
 
-## Enterprise-Grade Development Workspaces on Kubernetes
+---
 
-kube-coder delivers **per-user, isolated development environments** that combine the power of cloud-native infrastructure with cutting-edge AI assistance. Each workspace provides a comprehensive suite of development tools—**VS Code in the browser**, **persistent tmux terminals**, an **interactive dashboard**, **in-pod browser sessions**, and **AI-powered build automation**—all secured behind GitHub OAuth and accessible via per-user subdomains.
+## The idea
 
-> **Architected for scale:** A single Helm chart can deploy as many independent IDE pods as your Kubernetes cluster can accommodate—each with separate namespaces, ingress rules, persistent volumes, and assistant configurations.
+Give every developer — or every AI agent — a real computer in the cloud, and make spinning one up a two-minute, self-service action.
 
-### Why Choose kube-coder?
+Each **kube-coder workspace** is an isolated pod with a persistent home directory and everything a developer needs, reachable from any browser behind your own GitHub login:
 
-**🚀 Developer Productivity Revolution**
-- **Zero-setup onboarding** - New developers get a fully configured environment in minutes, not days
-- **Persistent workspaces** - Your environment survives pod restarts, preserving in-flight work and tmux sessions
-- **AI-powered workflows** - Integrate Claude Code or OpenCode directly into your development process
-- **Multi-modal access** - Code, terminal, and browser interfaces available simultaneously
+- **VS Code** in the browser (`code-server`)
+- a **persistent tmux terminal** that keeps running when you close the tab
+- an **in-pod Chrome** you can watch over VNC (for previewing web apps, or letting an agent drive a browser)
+- a **dashboard** that ties it together — and a **Hypervisor** chat that operates the pod *for* you
+- **pluggable coding agents** — Claude Code, Codex, Gemini, Ante, OpenCode — that you can spawn, message, and fan out in parallel
 
-**🔒 Enterprise Security & Isolation**
-- **Per-user isolation** - Separate Kubernetes namespaces, network policies, and persistent volumes
-- **GitHub OAuth integration** - Secure authentication with your existing identity provider
-- **Zero-trust networking** - Internal services protected behind authentication proxies
+Because it's just Kubernetes underneath, a single chart deploys as many of these as your cluster can hold — each with its own namespace, ingress, TLS certificate, persistent volume, and OAuth allowlist. Onboarding a new teammate is a form in the admin console; their workspace resolves and issues its own TLS on first request.
 
-**📈 Operational Excellence**
-- **Kubernetes-native** - Leverage built-in scaling, healing, and resource management
-- **Helm-based deployment** - Repeatable, version-controlled infrastructure as code
-- **Comprehensive monitoring** - Built-in metrics, health checks, and logging
+> **The short version:** it's a self-hosted, multi-tenant, AI-first replacement for "here's a laptop, spend two days setting it up." The environment survives restarts, an in-flight agent keeps working after you disconnect, and you can drive the whole thing from your phone.
 
-[Documentation & Limited Public Demo](https://demo-public.dev.scalebase.io/docs)
+---
 
-## Subreddit
-- https://www.reddit.com/r/kubecoder/
+## Proven on real tasks
 
-## Example Screenshots
+kube-coder isn't a demo — the agents inside it solve real problems, and there's a public benchmark to show it.
+
+[**kubecoder-bench**](https://github.com/imran31415/kubecoder-bench) runs coding agents against the [Aider polyglot](https://github.com/Aider-AI/polyglot-benchmark) (Exercism) suite, **scored against hidden tests** — a pass means the agent genuinely solved the task, not that it memorized the answer. Every task runs in its own isolated kube-coder workspace, fanned out across parallel workers.
+
+| Backend | Python split (34 tasks) | Notes |
+|---|---|---|
+| **Oracle** (reference solutions) | **34 / 34** | validates the harness end-to-end |
+| **Claude Code** | **27 / 34 — 79.4%** | single attempt, **no retries**; **~5.3× faster** via parallel workspaces |
+| **Ante** (DeepSeek/OpenRouter) | runnable ✓ | agent-agnostic — swap one flag |
+
+The 79.4% is a *conservative floor*: public leaderboards allow multiple attempts, this run allows one. The point isn't a headline number — it's that **the same infrastructure this repo ships parallelizes real agent work across isolated environments and validates it honestly.**
+
+```bash
+git clone https://github.com/imran31415/kubecoder-bench && cd kubecoder-bench
+./setup.sh
+python3 harness/bench.py --lang python --backend claude --workers 6
+```
+
+---
+
+## See it
 
 <table>
   <tr>
@@ -56,236 +73,52 @@ kube-coder delivers **per-user, isolated development environments** that combine
   <tr>
     <td width="50%" valign="top">
       <img width="100%" alt="LibreFang agent running alongside its UI dashboard" src="https://github.com/user-attachments/assets/8b30e4ab-aeeb-486b-87c3-16c912c966cf" />
-      <br/><sub><b>LibreFang agent</b> — agent + its UI dashboard in split-pane</sub>
+      <br/><sub><b>Agent + app side by side</b> — an agent working next to its live UI</sub>
     </td>
-    <td width="50%" valign="top" align="center">
-      <img height="300" alt="Multi-tenant controller dashboard" src="https://github.com/user-attachments/assets/c67b5c2f-aafa-430f-9456-e909800910d9" />
-      <br/><sub><b>Controller dashboard</b> — cluster-wide multi-tenant management</sub>
+    <td width="50%" valign="top">
+      <img width="100%" alt="Live build sessions list with inline output previews" src="docs/screenshots/session-list-live-preview.png" />
+      <br/><sub><b>Build sessions</b> — every agent session, with live output inline</sub>
     </td>
   </tr>
 </table>
 
----
-
-## What's in a Workspace
-<img width="567" height="406" alt="image" src="https://github.com/user-attachments/assets/68a4bca3-637d-49f3-90f9-a773a9bde319" />
-
-
-| Surface | Capabilities | Access URL |
-|---|---|---|
-| **Dashboard SPA** | Vite + Preact app: Build sessions, Memory, Triggers, Files, Settings | `/` |
-| **Terminal** | ttyd-attached tmux, accessible from any browser | `/oauth/terminal/` |
-| **VS Code** | `code-server` at `/home/dev` | `/oauth/vscode/?folder=/home/dev` |
-| **In-pod browser** | Chrome on an X display, viewable via noVNC | `/oauth/vnc-direct/vnc.html` |
-| **Metrics + health** | Live CPU / Mem / Disk + service health | `/oauth/metrics`, `/oauth/health` |
-| **Assistant** | Claude Code (default) or OpenCode | per-task |
-| **Auth** | oauth2-proxy injects `X-Auth-Request-User` headers | every `/oauth/*` route |
+▶️ **Videos:** [new-user provisioning](#videos) · [product demo](#videos) · [marketing](#videos)
 
 ---
 
-## Dashboard at a Glance
+## The Hypervisor — talk to your workspace, and it acts
 
-The next-generation dashboard at `/` is a single-page Preact app delivering unified control over your development environment:
+<img width="100%" alt="Hypervisor chat calling get_metrics and list_tasks" src="docs/screenshots/hypervisor-chat.png" />
 
-- **Build** — List of live + past Claude/OpenCode sessions on the left, with a detail pane on the right featuring tabs for **Terminal**, **Preview** (split: ttyd ┃ noVNC), **Send message** (chat-style mirror of the tmux pane), **Info**, and **Subagents** (hidden when empty). Live sessions default to Terminal; finished sessions hide interactive tabs and show a status banner.
-- **Memory** — Persistent SQLite-backed memory + history + relations across build sessions; mirrored over MCP for the assistant to read/write.
-- **Triggers** — Webhooks + cron jobs that spawn build sessions on schedule or HTTP POST.
-- **Files** — Read the workspace PVC, upload files, create directories.
-- **Settings** — Appearance customization, GitHub identity management, browser/VNC controls, **system metrics with real-time visualizations + alerts + service health**.
+The **Hypervisor** is the feature that makes a kube-coder pod feel alive. It's a chat tab where you talk to the workspace in plain language and it *does the thing*:
 
-### Top Bar Interface
-The dashboard includes a persistent top bar showing real-time CPU, memory, and disk usage metrics, along with quick-access buttons for VS Code and creating new terminal sessions.
+> *"How many tasks are running and what's my CPU?"* · *"Spin up a build to run the tests."* · *"Remember that I deploy with `make ship`."* · *"Pin port 3000 to Apps."*
 
-### Mobile Experience
-<img width="500" height="580" alt="image" src="https://github.com/user-attachments/assets/d2f2e7ad-7939-4ad1-9623-d9fa1d4e3278" />
+Under the hood it's not a screen-scraped terminal — each thread is a **structured agent session**. Your chosen CLI (Claude, Codex, Ante, …) runs headless over pipes, and a canonical event stream renders clean prose plus expandable tool cards. It's wired to three MCP servers so it can genuinely operate the pod:
 
+- **dashboard** — read metrics/tasks/health, create & message builds, pin apps, manage memory
+- **memory** — persistent facts about you and your projects
+- **agent-orchestrator** — spawn and coordinate sub-agents
 
-The dashboard is fully responsive. Below 720px the Rail collapses into a BottomNav (Build / Memory / Triggers / More), the detail pane moves into a swipe-able bottom sheet, and the topbar slims to just brand + search + the two primary actions (VS Code, New terminal).
-
-Mobile users experience an optimized interface with touch-friendly controls and intuitive navigation patterns suitable for on-the-go development environment management.
+Destructive actions (`kill_task`, `delete_memory`) ask for confirmation right in the chat. It's fully mobile, works with whichever assistant you pick, and survives pod restarts (the Claude adapter `--resume`s its session). See [`docs/hypervisor-spec.md`](docs/hypervisor-spec.md) for the architecture.
 
 ---
 
-## Mobile App (iOS & Android)
+## Build sessions & parallel agents
 
-Beyond the responsive web dashboard, kube-coder ships a **native Expo / React Native app** ([`mobile/`](mobile/)) to drive your workspace from your phone: list / create / message / kill Claude & OpenCode sessions, tail their **color terminal output** with a control-key shortcut bar (Shift-Tab, Esc, arrows, Ctrl-C, Paste), search the persistent memory, and watch live metrics — all over the workspace's Bearer-token API. It points at **any** kube-coder host: a cloud workspace, or a local minikube one via `make mobile-forward`.
+A **build session** is an interactive Claude / Codex / Ante / OpenCode tmux session inside the pod. Start one from the dashboard, the phone app, or the API; it survives restarts, and its output is mirrored to a log you can tail from anywhere.
 
-```bash
-cd mobile && npm install
-npm run ios          # iOS Simulator   (or: npm run android / npm run web)
+The **New build** flow is deliberately minimal — pick an assistant + working directory, get a memorable name (`funny-kitty-37`), and land straight in a live terminal. No prompt box to fill out first; type your first prompt in the REPL, like you would locally.
+
+**Parallelism is the point.** The built-in **agent-orchestrator** MCP lets any session spawn sub-agents — across *different* harnesses — to fan work out and collect results:
+
+```
+spawn_agent("Refactor module A", assistant="ante")     → task_1
+spawn_agent("Write tests for module C", assistant="claude") → task_2
+wait_for_agent(task_1); wait_for_agent(task_2)         → synthesize
 ```
 
-On the first screen, enter your **workspace host** + **API token** — copy both from the dashboard's **Settings → Mobile app** panel. Store builds + assets use EAS and the screenshot pipeline:
-
-```bash
-make mobile-build         # EAS cloud build (iOS .ipa + Android .aab — no Mac needed)
-make mobile-screenshots   # regenerate App Store / Play Store screenshots
-```
-
-Full walkthrough — connecting to any host (incl. localhost/minikube), iOS/Android specifics, and store submission: **[mobile/README.md](mobile/README.md)**.
-
-## Quick Start
-
-kube-coder runs two ways — pick the one that fits:
-
-| | **Local (minikube)** | **Cloud / multi-tenant** |
-|---|---|---|
-| Best for | trying it out, dev, offline | real deployments, teams |
-| Needs | Docker + minikube | a cluster, registry, DNS, GitHub OAuth |
-| Auth | http basic (`admin`/`admin`) | GitHub OAuth2 (or basic) |
-| TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
-| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md) |
-
-> **📖 Step-by-step walkthroughs** — follow-along, manual-style guides for each path:
-> - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
-> - [Deploying on Kubernetes (multi-tenant, OAuth + TLS)](docs/deploy-on-kubernetes.md) — cluster → per-user workspace
-
-### Option A — Local (minikube)
-
-Run the whole stack on a local single-node cluster — no cloud account, registry, DNS, or TLS.
-
-**Prerequisites:** Docker, minikube, kubectl, helm (`brew install minikube kubectl helm` on macOS).
-
-**One command:**
-
-```bash
-make local          # start minikube, build the image, deploy, and print access info
-```
-
-**Then reach the dashboard:**
-
-```bash
-echo '127.0.0.1  kube-coder.local' | sudo tee -a /etc/hosts   # one time
-make local-forward                                            # keep running in a terminal
-# open http://kube-coder.local:8080/   →   basic auth: admin / admin
-```
-
-`make local` is a wrapper for these steps, each runnable on its own (e.g. to rebuild after a change):
-
-```bash
-make local-up       # start the minikube cluster + enable the nginx ingress addon
-make local-build    # build the image inside minikube (native arm64 on Apple Silicon — no emulation)
-make local-secret   # create the namespace + basic-auth secret (override LOCAL_AUTH_USER/PASS)
-make local-deploy   # deploy base-infrastructure + the workspace, force-rolled
-make local-info     # reprint the /etc/hosts line, URL, and credentials
-make local-down     # remove the workspace (DELETE=1 also deletes the minikube cluster)
-```
-
-Everything targets the minikube context explicitly, so it never touches a remote cluster. Full walkthrough, configuration, limitations, and troubleshooting: **[docs/local-development.md](docs/local-development.md)**.
-
-### Option B — Cloud / multi-tenant
-
-#### Prerequisites
-
-- Kubernetes 1.19+ with `kubectl` configured
-- Helm 3.0+
-- An nginx-ingress controller (note its external IP)
-- **Wildcard DNS** — `*.<your-domain>` pointing at that ingress IP, so every `<login>.<your-domain>` workspace resolves with no per-user DNS
-- A GitHub OAuth App for the **controller console** (oauth2-proxy); per-user OAuth Apps are created during onboarding, above
-- A **private GitHub repo** to hold provisioned workspace config (the GitOps store) + a token that can push to it
-- A `regcred` image-pull Secret in the target namespace pointing at your registry (we use `registry.digitalocean.com/<org>/<repo>`)
-
-#### One-time setup
-
-```bash
-make deploy-base                  # base infra: nginx-ingress, oauth2-proxy, cert-manager
-make ship-controller-config       # the admin console (workspace-controller)
-```
-
-Two things make self-service onboarding work; you set them once:
-
-- **Wildcard DNS.** Point `*.<your-domain>` (e.g. `*.dev.example.com`) at your nginx-ingress controller's external IP. Every workspace lives at `<github-login>.<your-domain>`, so the wildcard means **no per-user DNS** — a new user's host resolves the moment they're created, and **cert-manager + Let's Encrypt** issues that host's TLS certificate automatically on first request.
-- **The console's own GitHub OAuth App + admin allowlist.** Gates the dashboard at `controller.<your-domain>`; only the GitHub logins you allowlist may administer workspaces. One-time controller config is in **[docs/PROVISIONING.md](docs/PROVISIONING.md)**.
-
-#### Onboard a user — the 2-minute dashboard flow
-
-> **Scenario.** Dana (`@dana-codes`) joins the team Monday morning and needs a full cloud workspace before standup. Here's the whole flow.
-
-1. **Open the console** at `https://controller.<your-domain>` → click **New workspace**.
-2. **Look up the user.** Type `dana-codes` and hit **Look up**. The controller confirms it's a real GitHub account and shows the host it will create: `dana-codes.<your-domain>`.
-3. **Create a GitHub OAuth App** — the one manual step, because GitHub has no API to create these. The form shows the exact values; in GitHub → *Settings → Developer settings → **OAuth Apps** → New OAuth App*:
-   - **Homepage URL:** `https://dana-codes.<your-domain>`
-   - **Authorization callback URL:** `https://dana-codes.<your-domain>/oauth2/callback`
-   - **Register application** → **Generate a new client secret**.
-   > ⚠️ It must be an **OAuth App** (Client ID starts with `Ov…`) — *not* a GitHub App (`Iv…`), which silently 404s the login.
-4. **Paste & create.** Drop the **Client ID** and **Client Secret** into the form → **Create workspace**. The controller commits Dana's config to your private GitOps repo and launches a provisioner Job; the page streams the rollout live: *Starting provisioner → Deploying workspace → **Workspace ready***.
-5. **Hand it off.** Click **Open dana-codes ↗** to confirm, then send Dana her URL: `https://dana-codes.<your-domain>`. She signs in with her own GitHub account — she, and only she, is on this workspace's allowlist — and lands in VS Code, a persistent terminal, and Claude Code. Elapsed time: a couple of minutes, most of it the image pull.
-
-**What happened when you clicked Create:** the controller validated the GitHub user, rendered a `values.yaml` + secret and committed them to the GitOps repo (the single source of truth), then ran a one-shot privileged Job that `helm upgrade`s the workspace chart — pod, Service, ingress, PVC, and a dedicated oauth2-proxy pinned to Dana's login. Wildcard DNS already resolves her host; cert-manager mints the TLS cert on first hit. Nothing else to wire.
-
-#### Manage a user — request limits, updates, lifecycle
-
-<img width="406" height="292" alt="image" src="https://github.com/user-attachments/assets/c82035dc-2c67-4aae-ac39-5041f7a4e7f5" />
-
-<img width="375" height="556" alt="image" src="https://github.com/user-attachments/assets/261df033-7576-43f1-b094-8aea551acc6f" />
-
-
-
-
-All per-workspace, in the same console:
-
-- **Right-size their resources.** Open a workspace → **Edit limits** → set CPU / memory (e.g. bump Dana to `4` cores / `8Gi` for a heavy build). Applying it patches the live pod **and commits the new limits back to the GitOps repo**, so the change is durable across redeploys instead of being silently reverted on the next reconcile. (It restarts the pod, so it warns you first.) Live CPU/mem/disk usage and an estimated monthly cost sit right above the control.
-- **Keep them current.** Each workspace shows its running release and an **update** action that rolls it to the latest version — the new image tag is written back to GitOps too. Users can also self-update from their own dashboard.
-- **Pause to save spend.** **Stop** scales the pod to zero (compute freed, PVC + data preserved); **Start** brings it back unchanged.
-
-#### Automation / break-glass: the CLI
-
-The same workspaces are fully operable from the Makefile — for scripting, CI, or when the console is unavailable. Config lives in the GitOps repo; `make users-sync` checks it out locally so the CLI and the console share one source of truth:
-
-```bash
-make users-sync                   # pull the GitOps config store into .users/
-make new-user      USER=<name>    # scaffold a workspace (prints the OAuth-App checklist + a cookie secret)
-make validate-user USER=<name>    # placeholder / DNS / cluster-prereq sanity check
-make deploy        USER=<name>    # helm upgrade --install
-make logs|shell|test USER=<name>  # operate a running workspace
-make stop|start    USER=<name>    # scale to zero / back
-```
-
-Full CLI walkthrough: **[docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md)**.
-
----
-
-## Common Commands
-
-```bash
-# Docker image
-make build                        # build for amd64 (loads into local Docker)
-make push                         # build + push (single buildx invocation)
-make clean                        # remove the local image tag
-
-# Per-user lifecycle
-make deploy   USER=<name>         # helm upgrade --install
-make ship     USER=<name>         # build + push + roll the pod
-make rollback USER=<name>         # helm rollback to previous revision
-make logs     USER=<name>         # tail pod logs
-make shell    USER=<name>         # exec into the IDE container
-make test     USER=<name>         # node/yarn/gh/code-server version check
-
-# Dashboard SPA
-make dashboard-web                # type-check + vite build → web/dist
-make dashboard-web-test           # vitest unit tests (~50 tests)
-make dashboard-web-install        # yarn install only
-make dashboard-web-clean          # rm -rf dist + node_modules
-
-# Tests across the repo
-make test-all-units               # SPA (vitest) + server.py (unittest)
-make python-tests                 # server.py only
-make test-coverage                # Run tests with terminal coverage summary
-make coverage                     # Generate comprehensive HTML coverage reports
-
-# Cluster status
-make status                       # helm + pod status
-```
-
-`make help` (or just `make`) lists everything with one-line descriptions.
-
----
-
-## Build Sessions (Claude / OpenCode)
-
-Each **build session** is an interactive Claude Code or OpenCode tmux session inside the workspace pod. Sessions are created via the dashboard ("New build") or the JSON API and survive pod restarts; output is mirrored to a log file under `~/.kube-coder/tasks/<task_id>/`.
-
-The dashboard's **New build** flow is intentionally minimal — pick an assistant + working directory, give the session a memorable random name (e.g. `funny-kitty-37`), hit **Start build**, and you land directly in the live terminal. No prompt textarea: type your first prompt inside the session, the way you would in any REPL.
+Guardrails (max spawn depth, max concurrent agents) keep a runaway loop from fork-bombing the pod.
 
 ### API
 
@@ -299,169 +132,201 @@ curl -s https://<user>.dev.example.com/oauth/api/claude/tasks \
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/claude/tasks` | Create a build (prompt optional) |
-| `POST /api/claude/tasks/terminal` | Register a bare-bash session |
 | `GET  /api/claude/tasks` | List sessions |
 | `GET  /api/claude/tasks/{id}` | Detail |
 | `GET  /api/claude/tasks/{id}/output` | Tail the tmux pane |
 | `GET  /api/claude/tasks/{id}/stream` | SSE live stream |
 | `POST /api/claude/tasks/{id}/message` | Send a follow-up prompt |
-| `POST /api/claude/tasks/{id}/prepare-terminal` | Wire ttyd to this session |
-| `POST /api/claude/tasks/{id}/rename` | Rename (display only) |
 | `DELETE /api/claude/tasks/{id}` | Kill the tmux session |
 
-### `/remote-task` Skill (Claude Code)
-
-```bash
-/remote-task --workspace imran --prompt "investigate flaky test in foo_test.py"
-```
-
-Sends the prompt to a remote workspace's `/api/claude/tasks` endpoint and streams the result back. Used to dispatch work to a stronger workspace from a lighter local one.
+Full reference: [`docs/claude-task-api.md`](docs/claude-task-api.md). There's also a `/remote-task` skill to dispatch a prompt from a lighter workspace to a stronger one and stream the result back.
 
 ---
 
-## Persistent Memory
+## What's in a workspace
 
-Each workspace has a SQLite-backed memory store accessible via:
+Every workspace exposes the same set of surfaces, all behind a single GitHub OAuth login:
 
-- **Dashboard** → Memory route (CRUD with history + relations)
-- **MCP server** auto-spawned by Claude/OpenCode (read + write from inside the assistant)
+| Surface | What it is | Access URL |
+|---|---|---|
+| **Dashboard SPA** | Vite + Preact app: Desktop, Hypervisor, Build, Memory, Triggers, Apps, Skills, Files, Settings | `/` |
+| **Hypervisor** | Chat that reports live state and acts on the pod | `/` → Hypervisor |
+| **Terminal** | ttyd-attached tmux, reachable from any browser | `/oauth/terminal/` |
+| **VS Code** | `code-server` rooted at `/home/dev` | `/oauth/vscode/?folder=/home/dev` |
+| **In-pod browser** | Chrome on a virtual X display, viewed via noVNC | `/oauth/vnc-direct/vnc.html` |
+| **Metrics + health** | Live CPU / Mem / Disk + service health | `/oauth/metrics`, `/oauth/health` |
+| **Assistants** | Claude Code, Codex, Gemini, Ante, OpenCode, LibreFang | per-session |
+
+### The dashboard
+
+<img width="100%" alt="Desktop home tab with a start-a-build composer, shortcuts, and recent activity" src="docs/screenshots/desktop-prompt-composer.png" />
+
+The dashboard at `/` is a single Preact app:
+
+- **Desktop** — your workspace home: a top-of-page composer to start a build in one line, pinned shortcuts, and recent activity.
+- **Build** — live + past agent sessions on the left, a detail pane on the right with **Terminal**, **Preview** (split ttyd ┃ noVNC), **Send message** (chat mirror of the tmux pane, with image paste), **Info**, and **Subagents** tabs.
+- **Memory** — persistent, SQLite-backed memory with history + relations, mirrored over MCP.
+- **Triggers** — webhooks + cron jobs that spawn builds on a schedule or an inbound POST.
+- **Apps** — pin a running port (e.g. `:3000`) to preview your app inside the dashboard.
+- **Skills** — browse and sync `SKILL.md` files across every harness in the pod.
+- **Files** — read the PVC, upload files, make directories.
+- **Settings** — appearance, GitHub identity, subscription logins, browser/VNC controls, and real-time metrics with alerts.
+
+A persistent top bar shows live CPU/mem/disk and one-click VS Code + New-terminal buttons. **It's fully responsive** — below 720px the rail collapses to a bottom nav, the detail pane becomes a swipeable sheet, and the layout re-flows for touch.
+
+---
+
+## Persistent memory
+
+Every workspace has a SQLite-backed memory store — facts about you, your projects, and your conventions — reachable three ways:
+
+- **Dashboard → Memory** (CRUD with history + relations)
+- **MCP server** auto-spawned for every agent (read + write from inside the assistant)
 - **REST** at `/api/memory`
 
-Claude reads memory on demand through the memory MCP tools. Optional pre-injection (`KC_MEMORY_PREINJECT=1`, off by default) prefixes a new build's prompt with the top relevant records — a similarity search over namespace+key+value+tags — inside a `<workspace_memories>` block.
-
-<!-- TODO: screenshot of Memory route with history tab open -->
+Agents read it on demand; optional pre-injection (`KC_MEMORY_PREINJECT=1`, off by default) prefixes a new build's prompt with the most relevant records. It's how the Hypervisor "remembers that I deploy with `make ship`" and how a fresh session already knows your setup. Deep dive: [`docs/persistent-memory.md`](docs/persistent-memory.md).
 
 ---
 
-## Triggers — Webhooks, Crons, Completion Hooks
+## Triggers — webhooks, crons, completion hooks
 
-Three ways to dispatch a build session without clicking "New build":
+Three ways to start a build without clicking **New build**:
 
-1. **Completion hooks** — Register a webhook URL on a session that fires when the assistant finishes (status, output URL, summary).
-2. **Webhooks** — Accept inbound POSTs; convert the body to a build prompt using a template.
-3. **Crons** — UNIX cron expressions that POST to a webhook on schedule.
+1. **Completion hooks** — fire a webhook when an agent finishes (status, output URL, summary).
+2. **Webhooks** — accept inbound POSTs and turn the body into a build prompt via a template.
+3. **Crons** — UNIX cron expressions that POST to a webhook on a schedule.
 
-All three live under `Triggers` in the dashboard. Mutual references between tasks and triggers are tracked in the memory store so you can see what fired what.
-
-<!-- TODO: screenshot of Triggers route with webhook + cron example -->
+All three live under **Triggers**, and what-fired-what is tracked in the memory store.
 
 ---
 
-## Pluggable AI Assistants
+## Pluggable AI assistants
 
-Every build session — and every orchestrator sub-agent — picks its assistant at create-time, so you can mix them freely in a single workspace. Keys live in `users-private/<name>/secrets/assistant.yaml` (gitignored); the public-repo defaults are empty, so it ships Claude-only out of the box.
+Every session — and every orchestrator sub-agent — picks its assistant at create-time, so you can mix them freely in one workspace. Keys live in `users-private/<name>/secrets/assistant.yaml` (gitignored); the public defaults are empty, so it ships Claude-only out of the box, and users can add their own provider keys self-service from **Settings**.
 
 | Assistant | Backend | Configure with |
 |---|---|---|
 | **Claude Code** (default) | Anthropic API key or subscription login | `claude.apiKey`, or `make shell USER=<name>` → `claude` to log in once |
-| **Ante** | Antigma's terminal-native agent; defaults to **DeepSeek v3.2 via OpenRouter** | `assistant.openrouter.apiKey` (CLI pre-installed — no separate key) |
-| **Google Gemini** | Google's open-source `gemini` CLI against the native Gemini API (default `gemini-2.5-pro`) | `assistant.gemini.apiKey` (+ optional `model`) |
-| **OpenCode → OpenRouter** | any OpenRouter model (default `anthropic/claude-sonnet-4`) | `assistant.openrouter.apiKey` + `model` |
-| **OpenCode → DeepSeek** | DeepSeek native API (`deepseek-chat` / `deepseek-reasoner`) | `assistant.deepseek.apiKey` |
-| **LibreFang** | open-source agent OS; reuses whatever provider keys are set | `assistant.librefang.agent` |
-
-(A narrow in-pod `kc-harness` against a local/fallback model is also available for advanced setups.)
+| **Codex** | OpenAI's terminal agent; ChatGPT OAuth (no API key) | `codex login` once in the pod |
+| **Google Gemini** | Google's `gemini` CLI (default `gemini-2.5-pro`) | `assistant.gemini.apiKey` |
+| **Ante** | Antigma's terminal agent; defaults to **DeepSeek v3.2 via OpenRouter** | `assistant.openrouter.apiKey` (CLI pre-installed) |
+| **OpenCode → OpenRouter** | any OpenRouter model | `assistant.openrouter.apiKey` + `model` |
+| **OpenCode → DeepSeek** | DeepSeek native API | `assistant.deepseek.apiKey` |
+| **LibreFang** | open-source agent OS; reuses set provider keys | `assistant.librefang.agent` |
 
 ### A "Claude-like" agent without an Anthropic key — Ante + DeepSeek
 
-Pair the **[Ante](https://ante.run/)** CLI — a terminal-native, tool-using coding agent pre-installed in every workspace — with **DeepSeek** and you get a Claude-Code-style experience: autonomous multi-step edits, shell/file tools, and the **same MCP memory + orchestrator servers** Claude uses, at a fraction of the cost.
-
-- Set **`OPENROUTER_API_KEY`** (`assistant.openrouter.apiKey`) and Ante automatically defaults to **`deepseek/deepseek-v3.2`** (~$0.23 / $0.34 per 1M input/output tokens). Override per workspace with `KC_ANTE_MODEL`.
-- It's fast and cheap enough to be the **default background sub-agent** in the orchestrator, and in practice handles real coding tasks well — a solid daily driver when you'd rather not spend Claude tokens.
-- Prefer DeepSeek's native API? Set **`DEEPSEEK_API_KEY`** (`assistant.deepseek.apiKey`) and choose the **DeepSeek** assistant (OpenCode → `deepseek-chat`).
+Pair the [**Ante**](https://ante.run/) CLI — pre-installed in every workspace — with **DeepSeek** and you get a Claude-Code-style experience: autonomous multi-step edits, shell/file tools, and the **same MCP memory + orchestrator servers** Claude uses, at a fraction of the cost. Set `OPENROUTER_API_KEY` and Ante defaults to `deepseek/deepseek-v3.2` (~$0.23 / $0.34 per 1M in/out tokens) — cheap enough to be the default background sub-agent in the orchestrator.
 
 ---
 
-## Pre-installed Stack
+## Mobile app (iOS & Android)
 
-| Component | Version |
-|---|---|
-| Node.js | 20 LTS |
-| `code-server` | v4.123.0 |
-| Claude Code CLI | 2.1.172 |
-| OpenCode CLI | 1.17.3 |
-| Ante CLI | 0.preview.37 (stable channel) |
-| LibreFang | v2026.6.10-beta.17 |
-| ttyd | 1.7.7 |
-| tmux, yarn, gh, jq, ripgrep, fzf | latest from Ubuntu |
+<img width="500" height="580" alt="kube-coder mobile app" src="https://github.com/user-attachments/assets/d2f2e7ad-7939-4ad1-9623-d9fa1d4e3278" />
 
-Bump versions in `devlaptop/Dockerfile` and run `make push` to rebuild.
-
----
-
-## Testing & Code Quality
-
-kube-coder includes comprehensive test suites for both frontend and backend components with detailed coverage reporting.
-
-### Test Coverage
-
-| Component | Coverage | Framework |
-|---|---|---|
-| **Frontend (Dashboard)** | 41.6% | Vitest + @testing-library |
-| **Backend (Python API)** | 74% | unittest + coverage.py |
-| **Overall** | 60% | Statement-weighted average |
-
-### Running Tests
+Beyond the responsive web dashboard, kube-coder ships a native **Expo / React Native app** ([`mobile/`](mobile/)) to drive your workspace from your phone: list / create / message / kill agent sessions, tail their **color terminal output** with a control-key bar (Shift-Tab, Esc, arrows, Ctrl-C, Paste), chat with the **Hypervisor**, attach photos to a follow-up, search memory, and watch live metrics — all over the workspace's Bearer-token API. It points at **any** kube-coder host: a cloud workspace, or a local minikube one via `make mobile-forward`.
 
 ```bash
-# Run all unit tests (SPA + Python)
-make test-all-units
-
-# Run tests with coverage reports
-make coverage
-
-# Quick terminal coverage summary
-make test-coverage
-
-# Frontend tests only
-make dashboard-web-test
-
-# Python tests only  
-make python-tests
+cd mobile && npm install
+npm run ios          # iOS Simulator   (or: npm run android / npm run web)
 ```
 
-### Coverage Reports
+Enter your **workspace host** + **API token** (copy both from **Settings → Mobile app**) on the first screen. Store builds use EAS — no Mac needed:
 
-Detailed HTML coverage reports are generated:
+```bash
+make mobile-build         # EAS cloud build (iOS .ipa + Android .aab)
+make mobile-screenshots   # regenerate App Store / Play Store screenshots
+```
 
-- **Frontend**: `charts/workspace/web/coverage/index.html`
-- **Backend**: `charts/workspace/htmlcov/index.html`
-
-Run `make coverage` to generate comprehensive reports with overall coverage calculation.
-
-### Test Structure
-
-- **Frontend**: 50+ Vitest unit tests covering React components, state management, and API integration
-- **Backend**: 180+ Python unit tests covering API endpoints, business logic, and integration scenarios
-- **CI Integration**: All tests run automatically on GitHub Actions
+Full walkthrough: [`mobile/README.md`](mobile/README.md).
 
 ---
 
-## Repository Layout
+## Quick start
 
+kube-coder runs two ways — pick the one that fits:
+
+| | **Local (minikube)** | **Cloud / multi-tenant** |
+|---|---|---|
+| Best for | trying it out, dev, offline | real deployments, teams |
+| Needs | Docker + minikube | a cluster, registry, DNS, GitHub OAuth |
+| Auth | http basic (`admin`/`admin`) | GitHub OAuth2 (or basic) |
+| TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
+| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md) |
+
+> **📖 Follow-along walkthroughs:**
+> - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
+> - [Deploying on Kubernetes (multi-tenant, OAuth + TLS)](docs/deploy-on-kubernetes.md) — cluster → per-user workspace
+
+### Option A — Local (minikube)
+
+Run the whole stack on a local single-node cluster — no cloud account, registry, DNS, or TLS.
+
+**Prerequisites:** Docker, minikube, kubectl, helm (`brew install minikube kubectl helm` on macOS).
+
+```bash
+make local          # start minikube, build the image, deploy, and print access info
 ```
-charts/
-├── base-infrastructure/   # ingress, oauth2-proxy, cert-manager bits
-└── workspace/             # per-user workspace chart
-    ├── server.py          # API + dashboard backend (tmux, memory, metrics)
-    └── web/               # Vite + Preact SPA (the dashboard at /)
-        ├── src/
-        │   ├── routes/    # /tasks, /memory, /triggers, /files, /settings
-        │   ├── components/  # Topbar, Rail, BottomSheet, Drawer, MetricsBar, …
-        │   ├── store/     # signals: tasks, ui, metrics, router
-        │   └── api/       # typed fetch wrappers (client.ts, tasks.ts, metrics.ts)
-        ├── scripts/shoot.mjs   # playwright screenshots
-        └── package.json   # node 20, yarn 1.22.x
-deployments/               # public sample per-user values.yaml + secrets
-users-private/             # gitignored; the _controller bootstrap config lives here
-.users/                    # gitignored checkout of the GitOps store (make users-sync)
-                           #   ← provisioned workspace config (values + secrets) lives here
-devlaptop/Dockerfile       # workspace image (Vite SPA baked into /opt/dashboard-dist)
-mobile/                    # native Expo / React Native app (iOS + Android, EAS builds)
-ios-assets/, android-assets/  # generated App Store / Play Store screenshots
-secrets/                   # template + per-user secret YAMLs
-Makefile                   # all common commands (`make help`)
+
+**Then reach the dashboard:**
+
+```bash
+echo '127.0.0.1  kube-coder.local' | sudo tee -a /etc/hosts   # one time
+make local-forward                                            # keep running in a terminal
+# open http://kube-coder.local:8080/   →   basic auth: admin / admin
 ```
+
+`make local` wraps steps that each run on their own (`local-up`, `local-build`, `local-secret`, `local-deploy`, `local-info`, `local-down`). Everything targets the minikube context explicitly, so it never touches a remote cluster. Full guide: [docs/local-development.md](docs/local-development.md).
+
+### Option B — Cloud / multi-tenant
+
+**Prerequisites:** Kubernetes 1.19+, Helm 3.0+, an nginx-ingress controller, **wildcard DNS** (`*.<your-domain>` → the ingress IP), a GitHub OAuth App for the controller console, a private GitHub repo as the GitOps config store, and a `regcred` image-pull secret.
+
+```bash
+make deploy-base                  # base infra: nginx-ingress, oauth2-proxy, cert-manager
+make ship-controller-config       # the admin console (workspace-controller)
+```
+
+Two things make self-service onboarding work; you set them once:
+
+- **Wildcard DNS** — point `*.<your-domain>` at your ingress IP. Every workspace lives at `<github-login>.<your-domain>`, so a new user's host resolves the moment they're created, and **cert-manager + Let's Encrypt** issues its TLS cert on first request.
+- **The console's GitHub OAuth App + admin allowlist** — gates the dashboard at `controller.<your-domain>`; only allowlisted logins may administer workspaces. One-time config: [docs/PROVISIONING.md](docs/PROVISIONING.md).
+
+#### Onboard a user — the 2-minute dashboard flow
+
+> **Scenario.** Dana (`@dana-codes`) joins Monday morning and needs a full cloud workspace before standup.
+
+1. **Open the console** at `https://controller.<your-domain>` → **New workspace**.
+2. **Look up the user** — type `dana-codes`, hit **Look up**. The controller confirms it's a real GitHub account and shows the host: `dana-codes.<your-domain>`.
+3. **Create a GitHub OAuth App** — the one manual step (GitHub has no API for it). The form shows the exact Homepage + callback URLs.
+   > ⚠️ It must be an **OAuth App** (Client ID starts with `Ov…`), *not* a GitHub App (`Iv…`), which silently 404s the login.
+4. **Paste & create** — drop the Client ID + Secret into the form → **Create workspace**. The controller commits Dana's config to your GitOps repo and launches a provisioner Job; the page streams the rollout: *Starting → Deploying → **Workspace ready***.
+5. **Hand it off** — send Dana `https://dana-codes.<your-domain>`. She signs in with her own GitHub account (she, and only she, is on the allowlist) and lands in VS Code, a terminal, and Claude Code. Elapsed time: a couple minutes, most of it the image pull.
+
+#### Manage a user — limits, updates, lifecycle
+
+<img width="406" height="292" alt="controller edit-limits panel" src="https://github.com/user-attachments/assets/c82035dc-2c67-4aae-ac39-5041f7a4e7f5" />
+<img width="375" height="556" alt="controller mobile management" src="https://github.com/user-attachments/assets/261df033-7576-43f1-b094-8aea551acc6f" />
+
+All per-workspace, in the same console:
+
+- **Right-size resources** — **Edit limits** → set CPU / memory. Applying patches the live pod **and** commits the new limits to GitOps, so it's durable across redeploys. Live usage + estimated monthly cost sit right above the control.
+- **Keep them current** — each workspace shows its release and an **update** action; users can also self-update from their own dashboard.
+- **Pause to save spend** — **Stop** scales the pod to zero (PVC preserved); **Start** brings it back unchanged.
+
+#### Automation / break-glass: the CLI
+
+The same workspaces are fully operable from the Makefile — for scripting, CI, or when the console is down. Config lives in the GitOps repo; `make users-sync` checks it out locally so CLI and console share one source of truth:
+
+```bash
+make users-sync                   # pull the GitOps config store into .users/
+make new-user      USER=<name>    # scaffold a workspace (prints the OAuth-App checklist)
+make deploy        USER=<name>    # helm upgrade --install
+make logs|shell|test USER=<name>  # operate a running workspace
+make stop|start    USER=<name>    # scale to zero / back
+```
+
+Full CLI walkthrough: [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md).
 
 ---
 
@@ -482,7 +347,90 @@ Makefile                   # all common commands (`make help`)
                                                         └───────────────────┘
 ```
 
-Per-user PVC mounted at `/home/dev` survives pod restarts; tmux sessions attached to it survive too, so an in-flight Claude build keeps running even if the dashboard tab is closed.
+A per-user PVC mounted at `/home/dev` survives pod restarts; the tmux sessions attached to it survive too, so an in-flight agent build keeps running even after you close the tab. `oauth2-proxy` injects `X-Auth-Request-User` on every `/oauth/*` route; each workspace's proxy is pinned to exactly one GitHub login.
+
+### Repository layout
+
+```
+charts/
+├── base-infrastructure/   # ingress, oauth2-proxy, cert-manager
+└── workspace/             # per-user workspace chart
+    ├── server.py          # API + dashboard backend (tmux, memory, metrics, hypervisor)
+    ├── hypervisor_session.py  # structured agent-session runner + per-CLI adapters
+    ├── mcp_dashboard.py   # dashboard MCP server (read/act on the pod)
+    └── web/               # Vite + Preact SPA (the dashboard at /)
+        ├── src/routes/    # desktop, hypervisor, tasks, memory, triggers, apps, skills, files, settings
+        ├── src/store/     # signals: tasks, ui, metrics, router
+        └── scripts/shoot.mjs   # playwright screenshots
+deployments/               # public sample per-user values.yaml + secrets
+users-private/             # gitignored; controller bootstrap config
+mobile/                    # native Expo / React Native app (iOS + Android, EAS builds)
+devlaptop/Dockerfile       # the workspace image (SPA baked into /opt/dashboard-dist)
+Makefile                   # all common commands (`make help`)
+```
+
+---
+
+## Pre-installed stack
+
+| Component | Version |
+|---|---|
+| Node.js | 20 LTS |
+| `code-server` (VS Code) | v4.x |
+| Claude Code CLI | 2.1.174 |
+| Codex CLI | 0.144.3 |
+| OpenCode CLI | 1.17.4 |
+| Ante CLI | stable channel |
+| LibreFang | 2026.x beta |
+| ttyd | 1.7.7 |
+| tmux, yarn, gh, jq, ripgrep, fzf | latest from Ubuntu |
+
+Bump versions in `devlaptop/Dockerfile` and run `make push` to rebuild.
+
+---
+
+## Common commands
+
+```bash
+# Docker image
+make build / make push / make clean
+
+# Per-user lifecycle
+make deploy   USER=<name>         # helm upgrade --install
+make ship     USER=<name>         # build + push + roll the pod
+make rollback USER=<name>         # helm rollback
+make logs|shell|test USER=<name>  # operate a running workspace
+
+# Dashboard SPA
+make dashboard-web                # type-check + vite build → web/dist
+make dashboard-web-test           # vitest unit tests
+
+# Tests across the repo
+make test-all-units               # SPA (vitest) + server.py (unittest)
+make coverage                     # HTML coverage reports
+
+# Cluster status
+make status                       # helm + pod status
+```
+
+`make help` (or just `make`) lists everything with one-line descriptions.
+
+---
+
+## Testing & code quality
+
+| Component | Coverage | Framework |
+|---|---|---|
+| **Frontend (Dashboard)** | 41.6% | Vitest + @testing-library |
+| **Backend (Python API)** | 74% | unittest + coverage.py |
+| **Overall** | 60% | statement-weighted average |
+
+```bash
+make test-all-units    # SPA + Python unit tests (run before every PR)
+make coverage          # HTML reports → web/coverage/ and htmlcov/
+```
+
+All tests run automatically on GitHub Actions.
 
 ---
 
@@ -494,69 +442,38 @@ make dashboard-web
 DASHBOARD_DIST_DIR=$(pwd)/charts/workspace/web/dist \
   python3 charts/workspace/web/dev_server.py
 # → http://127.0.0.1:7070
-
-# Tests
-make test-all-units
-make coverage           # Generate comprehensive coverage reports
 ```
 
-Pull requests welcome — please run `make test-all-units` and ensure adequate test coverage before opening a PR. Use `make coverage` to verify coverage thresholds are met.
+Pull requests welcome — please run `make test-all-units` and keep coverage healthy before opening a PR. Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-## Dependencies and Acknowledgments
+## Acknowledgments
 
-kube-coder builds upon the shoulders of remarkable open-source projects and services that make modern development environments possible:
+kube-coder stands on excellent open source:
 
-**Core Infrastructure & Orchestration**
-- **[Kubernetes](https://kubernetes.io)** and **[Helm](https://helm.sh)** for enterprise-grade container orchestration and deployment
-- **[NGINX Ingress Controller](https://kubernetes.github.io/ingress-nginx/)** for sophisticated routing and traffic management
-
-**Development Environments**
-- **[VS Code / code-server](https://github.com/coder/code-server)** for a full-featured browser-based IDE experience
-- **[tmux](https://github.com/tmux/tmux)** for persistent terminal sessions and multiplexing
-- **[ttyd](https://github.com/tsl0922/ttyd)** for browser-based terminal access
-- **[noVNC](https://novnc.com/)** and **[Xvfb](https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml)** for in-pod browser virtualization
-
-**AI-Powered Development Assistants**
-- **[Claude Code](https://code.anthropic.com/)** for state-of-the-art AI pair programming
-- **[OpenCode](https://opencode.ai/)** for flexible, open-source compatible AI assistance
-- **[Ante](https://antigma.ai/)** for advanced terminal-based AI interactions
-
-**Security & Authentication**
-- **[oauth2-proxy](https://github.com/oauth2-proxy/oauth2-proxy)** for robust OAuth2 authentication with GitHub integration
-
-**Dashboard & User Interface**
-- **[Preact](https://preactjs.com/)** and **[Vite](https://vitejs.dev/)** for lightning-fast, modern dashboard development
-- **[Playwright](https://playwright.dev/)** for comprehensive testing and automation
-
-**Utility & Tooling**
-- **Ubuntu** base system with latest versions of `yarn`, `gh`, `jq`, `ripgrep`, `fzf`, and other essential developer tools
-
-
-## Contact & Demo Requests
-
-Interested in a demonstration, enterprise deployment, or custom integration? Our team is ready to help you transform your development workflow.
-
-**Professional Inquiries:** scalebaseio@gmail.com
-
-## New provisioning video
-
-https://github.com/user-attachments/assets/d9e6c19c-28ab-4f5e-963a-08b1d0a7085a
-
-## Marketing Video
-
-https://github.com/user-attachments/assets/1e4d1bd5-ec9c-4f4e-88ba-7c2b79593a4c
-
-## Demo Video
-
-https://github.com/user-attachments/assets/f5821e5c-a834-4db2-a34d-2d405c3daef2
-
-
-
-
+- **[Kubernetes](https://kubernetes.io)** + **[Helm](https://helm.sh)** — orchestration & deployment
+- **[NGINX Ingress](https://kubernetes.github.io/ingress-nginx/)** + **[oauth2-proxy](https://github.com/oauth2-proxy/oauth2-proxy)** — routing & auth
+- **[VS Code / code-server](https://github.com/coder/code-server)**, **[tmux](https://github.com/tmux/tmux)**, **[ttyd](https://github.com/tsl0922/ttyd)**, **[noVNC](https://novnc.com/)** + **[Xvfb](https://www.x.org/)** — the dev surfaces
+- **[Claude Code](https://code.anthropic.com/)**, **[Codex](https://github.com/openai/codex)**, **[OpenCode](https://opencode.ai/)**, **[Ante](https://ante.run/)** — the coding agents
+- **[Preact](https://preactjs.com/)** + **[Vite](https://vitejs.dev/)** + **[Playwright](https://playwright.dev/)** — the dashboard & its screenshots
 
 ---
+
+## Videos
+
+| | |
+|---|---|
+| **New-user provisioning** | https://github.com/user-attachments/assets/d9e6c19c-28ab-4f5e-963a-08b1d0a7085a |
+| **Marketing** | https://github.com/user-attachments/assets/1e4d1bd5-ec9c-4f4e-88ba-7c2b79593a4c |
+| **Demo** | https://github.com/user-attachments/assets/f5821e5c-a834-4db2-a34d-2d405c3daef2 |
+
+---
+
+## Contact
+
+Interested in a demo, an enterprise deployment, or a custom integration?
+**scalebaseio@gmail.com** · [KubeCoder.com](https://kubecoder.com/) · [r/kubecoder](https://www.reddit.com/r/kubecoder/)
 
 ## License
 
