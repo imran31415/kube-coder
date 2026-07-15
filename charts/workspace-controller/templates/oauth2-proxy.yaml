@@ -65,8 +65,12 @@ spec:
         - --cookie-secure=true
         - --cookie-domain={{ .Values.controller.host }}
         - --cookie-path=/
-        - --cookie-expire=24h0m0s
-        - --cookie-refresh=1h0m0s
+        # GitHub OAuth apps issue no refresh token, so oauth2-proxy can't renew a
+        # session — it is hard-capped at cookie-expire, then forces a full
+        # re-login. Default 30d (was 24h, which re-logged admins in ~daily).
+        # cookie-refresh is a no-op for GitHub (nothing to refresh); default 0.
+        - --cookie-expire={{ .Values.oauth2.cookieExpire | default "720h0m0s" }}
+        - --cookie-refresh={{ .Values.oauth2.cookieRefresh | default "0" }}
         - --whitelist-domain={{ .Values.controller.host }}
         - --redirect-url=https://{{ .Values.controller.host }}/oauth2/callback
         {{- if .Values.oauth2.githubUsers }}
@@ -78,7 +82,10 @@ spec:
         {{- if .Values.oauth2.githubTeam }}
         - --github-team={{ .Values.oauth2.githubTeam }}
         {{- end }}
-        - --skip-provider-button=false
+        # Skip oauth2-proxy's interstitial "Sign in with GitHub" page so a
+        # re-auth bounces straight through GitHub (silent when the GitHub
+        # session is still alive) instead of requiring an extra manual click.
+        - --skip-provider-button=true
         - --pass-access-token=true
         - --pass-user-headers=true
         - --set-xauthrequest=true
