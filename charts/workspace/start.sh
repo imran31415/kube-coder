@@ -128,6 +128,25 @@ tmux source-file /home/dev/.tmux.conf 2>/dev/null || true
 # Runs in READONLY_MODE too — the readonly gate is for *runtime* mutations
 # from HTTP clients, not boot-time setup. The public demo needs the docs
 # tree at /home/dev/kube-coder/docs/ to populate the in-app /docs route.
+# github.com auth in this workspace is ALWAYS brokered by the credential helper
+# (the App token, or the user's own `gh` in personal mode) — never a raw
+# per-repo `http.<url>.extraheader`. A stale extraheader is a known footgun: a
+# prior in-workspace git session (an agent fumbling auth) can persist one with a
+# now-dead token into a repo's local config, and because an extraheader wins
+# over the helper it then breaks EVERY git op in that repo (fetch/pull/push all
+# 401), even though the helper is perfectly healthy. Scrub any such stale header
+# from the workspace's own kube-coder clone AND the global config on every boot
+# so this self-heals instead of wedging the user. Safe to always remove: we
+# never legitimately set one for github.com.
+# Target the workspace's persisted global config file directly (the interactive
+# terminals' ~/.gitconfig symlinks here), not `--global` — start.sh's own $HOME
+# may differ from the terminal user's.
+git config --file /home/dev/.credentials/.config/git/config \
+  --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+if [ -d /home/dev/kube-coder/.git ]; then
+  git -C /home/dev/kube-coder config --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+fi
+
 (
   if [ ! -d /home/dev/kube-coder/.git ]; then
     log_stage "cloning kube-coder source into /home/dev/kube-coder"
