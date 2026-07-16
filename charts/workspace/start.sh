@@ -135,6 +135,14 @@ tmux source-file /home/dev/.tmux.conf 2>/dev/null || true
       && log_stage "kube-coder source clone complete" \
       || log_stage "WARNING: kube-coder clone failed (network?); will retry on next pod start"
   else
+    # A past manual `git push` workaround may have baked a now-stale
+    # `http.<host>.extraheader` Basic token into .git/config. Because git sends
+    # a hardcoded extraheader verbatim, it shadows the self-refreshing global
+    # credential.helper and — once the hourly App token rotates — silently
+    # breaks every git op on this clone, including the pull just below (which
+    # then falls into the "skipped" branch and leaves the source stale forever).
+    # Strip it so the dynamic helper is always used. Idempotent no-op when absent.
+    git -C /home/dev/kube-coder config --unset-all http.https://github.com/.extraheader 2>/dev/null || true
     log_stage "refreshing kube-coder source (git pull --ff-only)"
     ( cd /home/dev/kube-coder && git pull --ff-only origin main >/dev/null 2>&1 ) \
       && log_stage "kube-coder source refreshed" \
