@@ -1171,43 +1171,26 @@ class ClaudeTaskManager:
         def send_prompt():
             # Wait for the assistant's TUI to finish drawing before pasting,
             # rather than a blind fixed delay. Pasting into a half-drawn screen
-            # (banner, MCP download, or a leftover dialog) drops the prompt.
-            ClaudeTaskManager._wait_for_pane_ready(session_name)
+            # (banner, MCP download, or a leftover dialog) drops the prompt. For
+            # Claude we insist on a real composer-ready signal (issue #288)
+            # rather than mere screen stability, which its staggered startup
+            # notices trip falsely.
             try:
-                subprocess.run(
-                    ['tmux', 'load-buffer', '-b', f'prompt-{task_id}', prompt_file],
-                    capture_output=True, text=True, check=True,
-                )
-                subprocess.run(
-                    ['tmux', 'paste-buffer', '-b', f'prompt-{task_id}', '-t', session_name],
-                    capture_output=True, text=True, check=True,
-                )
-                # Settle delay so the bracketed paste is fully ingested before
-                # Enter — otherwise Enter can be absorbed into the paste and the
-                # prompt never submits. See send_followup for details.
-                time.sleep(0.4)
-                before = ClaudeTaskManager._capture_pane(session_name)
-                subprocess.run(
-                    ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                    capture_output=True, text=True,
-                )
-                # Verify submission: a successful submit changes the screen (the
-                # input clears / the assistant starts working). If nothing moved,
-                # the Enter was likely absorbed into the bracketed paste — nudge
-                # it once more. An extra Enter on an empty input is a no-op.
-                time.sleep(0.8)
-                after = ClaudeTaskManager._capture_pane(session_name)
-                if before is not None and after == before:
-                    subprocess.run(
-                        ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                        capture_output=True, text=True,
-                    )
-                subprocess.run(
-                    ['tmux', 'delete-buffer', '-b', f'prompt-{task_id}'],
-                    capture_output=True, text=True,
-                )
+                ClaudeTaskManager._wait_for_pane_ready(
+                    session_name, expect_composer=(assistant == 'claude'))
+                delivered = ClaudeTaskManager._deliver_prompt(
+                    session_name, prompt_file, f'prompt-{task_id}')
             except Exception as e:
                 print(f"[ClaudeTaskManager] Failed to send prompt: {e}")
+                delivered = False
+            # Surface delivery so the dashboard can flag an idle task whose
+            # initial prompt never landed (composer stayed empty).
+            try:
+                ClaudeTaskManager._atomic_update_meta(
+                    task_dir, lambda m: m.__setitem__('prompt_delivered', delivered))
+            except Exception as e:
+                print(f"[ClaudeTaskManager] prompt_delivered update failed: {e}",
+                      file=sys.stderr)
 
         threading.Thread(target=send_prompt, daemon=True).start()
 
@@ -1499,34 +1482,15 @@ class ClaudeTaskManager:
         with open(prompt_file, 'w') as f:
             f.write(prompt)
 
-        try:
-            buf_name = f'followup-{task_id}'
-            subprocess.run(
-                ['tmux', 'load-buffer', '-b', buf_name, prompt_file],
-                capture_output=True, text=True, check=True,
-            )
-            subprocess.run(
-                ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
-                capture_output=True, text=True, check=True,
-            )
-            if submit:
-                # Let the TUI finish ingesting the bracketed paste before Enter.
-                # Claude/OpenCode wrap pasted text in bracketed-paste escapes; if
-                # Enter lands in the same read cycle it gets absorbed into the
-                # pasted content and the message sits in the input unsent (the
-                # "it just sets the input" bug). A short settle delay makes Enter
-                # register as a submit.
-                time.sleep(0.4)
-                subprocess.run(
-                    ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                    capture_output=True, text=True,
-                )
-            subprocess.run(
-                ['tmux', 'delete-buffer', '-b', buf_name],
-                capture_output=True, text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            return None, f'Failed to send follow-up: {e}'
+        # Reuse the shared paste+verify path (issue #288). The TUI is already
+        # settled for a follow-up, but the verify+retry still guards against a
+        # dropped paste, and Claude/OpenCode's bracketed-paste Enter-absorption
+        # is handled by the helper's nudge (the "it just sets the input" bug).
+        buf_name = f'followup-{task_id}'
+        delivered = ClaudeTaskManager._deliver_prompt(
+            session_name, prompt_file, buf_name, submit=submit)
+        if not delivered:
+            return None, 'Failed to send follow-up'
 
         # A paste (no submit) leaves the text sitting in the input box — nothing
         # was actually sent, so don't record a followup or flip status. Return
@@ -1721,26 +1685,152 @@ class ClaudeTaskManager:
         return r.stdout if r.returncode == 0 else None
 
     @staticmethod
-    def _wait_for_pane_ready(session_name, floor=2.0, ceiling=12.0, interval=0.6):
-        """Block until the session's rendered screen settles, then return.
+    def _pane_input_ready(pane):
+        """True when the pane shows a live REPL composer ready for input.
 
-        Replaces a blind fixed delay before pasting the initial prompt. A
-        freshly spawned CLI may still be drawing its banner or downloading MCP
-        servers; pasting into a half-drawn TUI can drop the prompt. We wait at
-        least `floor` seconds, then return once two consecutive captures
-        `interval` apart are identical (the screen stopped changing), giving up
-        after `ceiling` seconds so a perpetually-animating UI still gets the
-        prompt. Best-effort; safe if capture fails (falls back to the timeout).
+        Detects Claude Code / OpenCode's interactive state: the shortcuts
+        footer ('for shortcuts') plus an input-prompt affordance (the box
+        composer's `> ` / `❯`). This is the signal that the TUI has finished
+        its staggered startup paint (banner, promos, plan-limit / auto-update
+        notices) and will actually accept a pasted prompt. Screen *stability*
+        alone is not enough — a quiet gap between two async notices looks
+        settled while the composer still isn't accepting input, which silently
+        drops the initial paste (issue #288).
+        """
+        if not pane:
+            return False
+        if 'for shortcuts' not in pane:
+            return False
+        return '> ' in pane or '❯' in pane
+
+    @staticmethod
+    def _screen_advanced(before, after):
+        """True if the pane visibly changed between two captures.
+
+        Used to confirm a paste actually landed (empty composer → content)
+        and that Enter registered as a submit (composer cleared / assistant
+        started working). If either capture is unavailable we can't tell, so
+        we assume it advanced — better than re-pasting into a session we
+        can't observe (which would duplicate the text).
+        """
+        if before is None or after is None:
+            return True
+        return after != before
+
+    @staticmethod
+    def _deliver_prompt(session_name, prompt_file, buf_name, submit=True,
+                        retries=3):
+        """Paste a prompt file into a live tmux TUI and verify delivery.
+
+        Shared path for the initial prompt (create_task) and follow-ups
+        (send_followup). Loads `prompt_file` into a tmux buffer, pastes it
+        into the session's composer, and — when `submit` — presses Enter.
+
+        Claude/OpenCode wrap pasted text in bracketed-paste escapes; a paste
+        into a still-initializing TUI is silently *dropped*, and re-sending
+        Enter cannot recover a dropped paste (the composer is empty). So we
+        verify the paste landed by comparing pane captures; if it didn't, we
+        retry the whole load+paste — safe precisely because a dropped paste
+        left the composer empty, so there's nothing to duplicate. Once the
+        paste lands we send Enter and, if the submit doesn't register (Enter
+        absorbed into the bracketed paste), nudge Enter once more.
+
+        Returns True once the prompt is delivered (and submitted, when
+        `submit`), else False after exhausting `retries`.
+        """
+        for _ in range(max(1, retries)):
+            try:
+                subprocess.run(
+                    ['tmux', 'load-buffer', '-b', buf_name, prompt_file],
+                    capture_output=True, text=True, check=True,
+                )
+                before = ClaudeTaskManager._capture_pane(session_name)
+                subprocess.run(
+                    ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
+                    capture_output=True, text=True, check=True,
+                )
+                # Settle so the bracketed paste is fully ingested before we
+                # look (and before Enter — otherwise Enter is absorbed into
+                # the paste and the prompt never submits).
+                time.sleep(0.4)
+                pasted = ClaudeTaskManager._capture_pane(session_name)
+            except subprocess.CalledProcessError as e:
+                print(f'[ClaudeTaskManager] paste failed: {e}', file=sys.stderr)
+                ClaudeTaskManager._delete_buffer(buf_name)
+                continue
+
+            if not ClaudeTaskManager._screen_advanced(before, pasted):
+                # Paste was dropped (composer unchanged) — retry the whole
+                # load+paste. The empty composer means no risk of duplication.
+                ClaudeTaskManager._delete_buffer(buf_name)
+                continue
+
+            if not submit:
+                ClaudeTaskManager._delete_buffer(buf_name)
+                return True
+
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                capture_output=True, text=True,
+            )
+            time.sleep(0.8)
+            after = ClaudeTaskManager._capture_pane(session_name)
+            if ClaudeTaskManager._screen_advanced(pasted, after):
+                ClaudeTaskManager._delete_buffer(buf_name)
+                return True
+            # Enter likely absorbed into the paste — nudge once more. An
+            # extra Enter on an empty input is a harmless no-op.
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                capture_output=True, text=True,
+            )
+            time.sleep(0.6)
+            after2 = ClaudeTaskManager._capture_pane(session_name)
+            ClaudeTaskManager._delete_buffer(buf_name)
+            return ClaudeTaskManager._screen_advanced(pasted, after2)
+        return False
+
+    @staticmethod
+    def _delete_buffer(buf_name):
+        subprocess.run(
+            ['tmux', 'delete-buffer', '-b', buf_name],
+            capture_output=True, text=True,
+        )
+
+    @staticmethod
+    def _wait_for_pane_ready(session_name, floor=2.0, ceiling=12.0, interval=0.6,
+                             expect_composer=False):
+        """Block until the session's TUI is ready for a pasted prompt.
+
+        Prefers a real input-readiness signal — the composer affordance (see
+        _pane_input_ready) — over mere screen stability. A freshly spawned CLI
+        paints staggered async startup notices (banner, promos, plan-limit /
+        auto-update warnings); a quiet gap between them can look 'settled'
+        while the composer still isn't accepting input, silently dropping the
+        pasted prompt (issue #288). Returns True once the composer is
+        detected.
+
+        When `expect_composer` is False (non-Claude UIs without that footer),
+        falls back to the old settle heuristic — two identical captures
+        `interval` apart — so those launches don't stall. Gives up after
+        `ceiling` seconds either way so a perpetually-animating UI still gets
+        the prompt (the paste path then verifies + retries delivery).
+        Best-effort; safe if capture fails.
         """
         time.sleep(floor)
         deadline = time.time() + max(0.0, ceiling - floor)
         prev = ClaudeTaskManager._capture_pane(session_name)
+        if ClaudeTaskManager._pane_input_ready(prev):
+            return True
         while time.time() < deadline:
             time.sleep(interval)
             cur = ClaudeTaskManager._capture_pane(session_name)
-            if cur is not None and cur == prev:
-                return
+            if ClaudeTaskManager._pane_input_ready(cur):
+                return True
+            if not expect_composer and cur is not None and cur == prev:
+                return False
             prev = cur
+        return False
 
     @staticmethod
     def _is_safe_response_url(url):
