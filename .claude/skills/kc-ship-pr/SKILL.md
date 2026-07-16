@@ -1,6 +1,6 @@
 ---
 name: kc-ship-pr
-description: Commit local changes and open a pull request against kube-coder from inside a workspace pod, where `git push` is broken. Use when the user wants to push a branch or open/update a PR and the only credential available is the workspace GitHub App token.
+description: Commit local changes and open a pull request against kube-coder from inside a workspace pod. Use when the user wants to push a branch or open/update a PR with the workspace GitHub App token.
 user-invocable: true
 allowed-tools: Bash, Read
 argument-hint: "[PR title] (optional; inferred from the commit if omitted)"
@@ -8,31 +8,35 @@ argument-hint: "[PR title] (optional; inferred from the commit if omitted)"
 
 # Ship a PR from a kube-coder workspace
 
-Inside a workspace pod, **`git push` does not work.** The only GitHub credential
-is the App installation token (`/home/dev/.credentials/.github-token`, `ghs_…`),
-and every git-over-HTTPS push with it fails:
+The only GitHub credential here is the App installation token
+(`/home/dev/.credentials/.github-token`, `ghs_…`). The token-refresh sidecar
+installs a **self-refreshing global `credential.helper`** that reads that file
+fresh on every call, so ordinary **`git push` works** — no Git Data API dance
+needed. `gh api` also works (it reads `GITHUB_TOKEN` from `~/.github-env`).
 
-```
-remote: Invalid username or token. Password authentication is not supported for Git operations.
-```
+There is no user-level `gh auth login` and no SSH key here, so do **not** suggest
+`gh auth login` or a fork — the App token pushes to `origin` directly.
 
-…even though the token **does** have `contents:write` (the repo's `permissions`
-object misleadingly reports `push:false` — ignore it). The reliable path is to
-build the branch through the **GitHub Git Data API** (blobs → tree → commit →
-ref) and open the PR via REST. This skill automates that.
-
-There is no user-level `gh auth` and no SSH key here, so do **not** suggest
-`gh auth login`, `gh pr create`, or a fork — they won't work headless.
+> **If `git push` is wedged** — `remote: Invalid username or token` or
+> `could not read Username` — the cause is almost always a **stale baked
+> `http.<host>.extraheader`** in `.git/config` (a point-in-time token from an
+> old workaround; git sends it verbatim and it shadows the good helper).
+> Fix it, then push normally:
+> ```bash
+> git config --unset-all http.https://github.com/.extraheader
+> ```
+> Only if push is *still* broken after that, fall back to the Git Data API
+> (§3b). See your `github-auth` memory for the full background.
 
 ## Steps
 
 Given the working tree already has the changes staged/committed on a feature
 branch (create one first if the user is on `main`):
 
-### 1. Commit locally (for a clean record + message source)
+### 1. Commit locally
 
 ```bash
-cd /home/dev/kube-coder
+cd /home/dev/kube-coder   # or your worktree
 git add -A            # or specific paths
 git commit -m "<type>(<scope>): <summary>
 
@@ -43,18 +47,21 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ### 2. Re-sync onto current origin/main (avoid a stale base)
 
-`origin` HTTPS fetch also needs the credential-helper/extraheader cleared. The
-repo is public, so an unauthenticated fetch works:
-
 ```bash
-git -c credential.helper= -c http.https://github.com/.extraheader= \
-    fetch https://github.com/imran31415/kube-coder.git main
-# Rebase the feature branch onto the freshly-fetched main so uploaded blobs
-# don't clobber upstream changes to the same files.
-git rebase FETCH_HEAD
+git fetch origin main && git rebase origin/main
 ```
 
-### 3. Push the branch via the Git Data API
+If the credential helper is somehow unavailable, the repo is public so an
+unauthenticated fetch also works:
+`git -c credential.helper= -c http.https://github.com/.extraheader= fetch https://github.com/imran31415/kube-coder.git main`
+
+### 3. Push the branch
+
+```bash
+git push -u origin <branch>
+```
+
+### 3b. Fallback — push via the Git Data API (only if `git push` stays wedged)
 
 Run this Python (token from env or the credential file). Set `BRANCH` and list
 the changed files in `FILES`:
@@ -142,5 +149,7 @@ you haven't at least `bash -n`/typecheck/test-run locally — CI round-trips are
 
 ## See also
 
-- Your `github-auth` memory has the full background on why git push fails here.
-- To update an already-open PR, repeat step 3 in PATCH mode onto its branch head.
+- Your `github-auth` memory has the full background on the App-token auth setup
+  and the stale-extraheader footgun.
+- To add a commit to an already-open PR, just `git push` again; if you're using
+  the §3b fallback, repeat it in PATCH mode onto the branch head.
