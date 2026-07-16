@@ -38,7 +38,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # vendored deps (npm 11.x: tar>=7.5, minimatch>=10.2, glob>=13, cross-spawn
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
-ARG NPM_VERSION=11.17.0
+ARG NPM_VERSION=11.18.0
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g npm@${NPM_VERSION} \
@@ -65,12 +65,12 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 
 # code-server (VS Code in the browser, MIT-licensed)
 # https://github.com/coder/code-server
-# Pinned for reproducible builds. Bumped 4.123.0 -> 4.125.0 to ship patched
-# vendored deps Trivy flagged: ws 8.20.1 -> 8.21.0 (CVE-2026-48779, HIGH) and
-# js-yaml 4.1.1 -> 4.2.0 (CVE-2026-53550). Note: the deps bundled under
-# lib/vscode/ (undici, ws, tar) track the upstream VS Code build code-server
-# vendors and only move when code-server rebases onto a newer VS Code.
-ARG CODE_SERVER_VERSION=4.125.0
+# Pinned for reproducible builds. Bumped 4.125.0 -> 4.128.0 to ship patched
+# vendored deps Trivy flagged: undici 7.24.4 -> 7.28.0 (HIGH) + tar 7.5.13 ->
+# 7.5.16 (MEDIUM) + ws. Note: the deps bundled under lib/vscode/ (undici, ws,
+# tar) track the upstream VS Code build code-server vendors and only move when
+# code-server rebases onto a newer VS Code — so bumping code-server is the lever.
+ARG CODE_SERVER_VERSION=4.128.0
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_${ARCH}.deb" -o /tmp/cs.deb \
   && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
@@ -79,7 +79,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # https://docs.anthropic.com/en/docs/claude-code/setup
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
-ARG CLAUDE_CODE_VERSION=2.1.174
+ARG CLAUDE_CODE_VERSION=2.1.211
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -87,7 +87,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # OpenRouter directly and any OpenAI-compatible base URL (e.g. a self-hosted
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
-ARG OPENCODE_VERSION=1.17.4
+ARG OPENCODE_VERSION=1.18.3
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
@@ -96,7 +96,7 @@ RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 # pod; credentials + sessions live under $CODEX_HOME (~/.codex), which start.sh
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
-ARG CODEX_VERSION=0.144.3
+ARG CODEX_VERSION=0.144.5
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 # Antigravity CLI (agy) — Google's terminal-native coding agent. Selected
@@ -145,7 +145,7 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
 # static musl build, fall back to glibc. The installer pulls this exact
 # tarball (librefang/librefang releases); we just skip its WAF-gated front
 # door. Bump LIBREFANG_VERSION (a release tag) + rebuild to update.
-ARG LIBREFANG_VERSION=v2026.6.11-beta.18
+ARG LIBREFANG_VERSION=v2026.7.11
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) LF_ARCH=x86_64 ;; \
