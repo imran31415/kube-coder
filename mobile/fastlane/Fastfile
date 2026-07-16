@@ -64,14 +64,19 @@ platform :ios do
   # deterministically by scripts/sync-ios-screenshots.rb (delete-then-upload,
   # single pass) via `make mobile-ios-screenshots`. These lanes push listing
   # TEXT only.
+  # force: true skips deliver's interactive HTML-preview confirmation. These
+  # lanes run non-interactively (make target / CI, no TTY), where the prompt
+  # crashes with "Could not retrieve response as fastlane runs in non-interactive
+  # mode". The preview only re-renders the metadata/ files we're pushing, so
+  # skipping the confirmation is safe.
   desc "Push App Store listing text to App Store Connect (no screenshots, no binary)"
   lane :metadata do
-    deliver(skip_screenshots: true)
+    deliver(skip_screenshots: true, force: true)
   end
 
   desc "Alias of `metadata` — listing text only (name, description, keywords, …)"
   lane :metadata_text do
-    deliver(skip_screenshots: true)
+    deliver(skip_screenshots: true, force: true)
   end
 end
 
