@@ -283,25 +283,11 @@ class ClaudeAdapter(Adapter):
                 ctx['claude_session_id'] = o['session_id']
             return []
         if t == 'assistant':
-            for b in (o.get('message', {}) or {}).get('content', []) or []:
-                bt = b.get('type')
-                if bt == 'text' and b.get('text', '').strip():
-                    out.append({'role': 'assistant', 'type': 'message',
-                                'text': b['text']})
-                elif bt == 'tool_use':
-                    out.append({'role': 'assistant', 'type': 'tool_call',
-                                'tool_id': b.get('id', ''),
-                                'tool': {'name': b.get('name', 'tool'),
-                                         'input': b.get('input', {})}})
-            return out
+            # Shared with the session-log parser so the live stream and the
+            # durable log normalize to byte-identical canonical events.
+            return _claude_assistant_events((o.get('message', {}) or {}).get('content'))
         if t == 'user':
-            for b in (o.get('message', {}) or {}).get('content', []) or []:
-                if b.get('type') == 'tool_result':
-                    out.append({'role': 'system', 'type': 'tool_result',
-                                'tool_use_id': b.get('tool_use_id', ''),
-                                'is_error': bool(b.get('is_error')),
-                                'text': _stringify(b.get('content'))})
-            return out
+            return _claude_user_events((o.get('message', {}) or {}).get('content'))
         if t == 'result':
             if o.get('session_id'):
                 ctx['claude_session_id'] = o['session_id']
@@ -807,6 +793,134 @@ def hypervisor_health() -> Dict[str, Any]:
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Claude Code JSONL session log — locate + parse into canonical events
+#
+# Every Claude turn (both the interactive Build-tab tasks AND our headless
+# `claude -p` threads) is durably recorded by Claude Code itself, one JSON
+# object per line, under ~/.claude/projects/<escaped-cwd>/<session_id>.jsonl.
+# That log is a cleaner, complete source than the live pipe capture: it never
+# drops a turn to a server restart or a truncated stream, and it carries the
+# full assistant text + every tool_use / tool_result.
+#
+# We normalize it into the SAME canonical event shape the live ClaudeAdapter
+# emits (below helpers are shared by both), so the frontend renders it with no
+# special-casing. `HypervisorSession.transcript()` prefers this log when the
+# thread is idle and falls back to the live events.jsonl capture otherwise.
+# ───────────────────────────────────────────────────────────────────────────
+# Content-record types in the log that carry no chat content (titles, mode
+# switches, file snapshots, queue bookkeeping, …) — skipped by the parser.
+_LOG_CONTENT_TYPES = frozenset({'user', 'assistant'})
+
+
+def _claude_assistant_events(content: Any) -> List[Dict[str, Any]]:
+    """Assistant content blocks → canonical `message` / `tool_call` events.
+    `thinking` and any other block types are intentionally dropped. Shared by
+    the live ClaudeAdapter stream parser and the session-log parser so both
+    produce byte-identical event shapes."""
+    out: List[Dict[str, Any]] = []
+    for b in content or []:
+        if not isinstance(b, dict):
+            continue
+        bt = b.get('type')
+        if bt == 'text' and b.get('text', '').strip():
+            out.append({'role': 'assistant', 'type': 'message', 'text': b['text']})
+        elif bt == 'tool_use':
+            out.append({'role': 'assistant', 'type': 'tool_call',
+                        'tool_id': b.get('id', ''),
+                        'tool': {'name': b.get('name', 'tool'),
+                                 'input': b.get('input', {})}})
+    return out
+
+
+def _claude_user_events(content: Any) -> List[Dict[str, Any]]:
+    """User content → canonical events. A string is a real user turn; a block
+    list is Claude feeding tool results back (each → a `tool_result` event)."""
+    if isinstance(content, str):
+        text = content.strip()
+        return [{'role': 'user', 'type': 'message', 'text': content}] if text else []
+    out: List[Dict[str, Any]] = []
+    for b in content or []:
+        if not isinstance(b, dict):
+            continue
+        bt = b.get('type')
+        if bt == 'tool_result':
+            out.append({'role': 'system', 'type': 'tool_result',
+                        'tool_use_id': b.get('tool_use_id', ''),
+                        'is_error': bool(b.get('is_error')),
+                        'text': _stringify(b.get('content'))})
+        elif bt == 'text' and b.get('text', '').strip():
+            out.append({'role': 'user', 'type': 'message', 'text': b['text']})
+    return out
+
+
+def claude_project_dir(workdir: str) -> str:
+    """~/.claude/projects/<escaped-cwd> for a working directory. Claude Code
+    slugifies the cwd by replacing every non-alphanumeric character with '-'
+    (verified against on-disk dirs, e.g. /home/dev/.worktrees/kc →
+    -home-dev--worktrees-kc)."""
+    slug = re.sub(r'[^A-Za-z0-9]', '-', workdir or '')
+    return os.path.join(WORKSPACE_HOME, '.claude', 'projects', slug)
+
+
+def locate_claude_session_log(workdir: str,
+                              session_id: Optional[str] = None) -> Optional[str]:
+    """Path to a Claude Code JSONL session log, or None if there isn't one.
+
+    Prefers the exact <session_id>.jsonl (deterministic — we know a thread's
+    Claude session id). Absent an id, falls back to the most-recently-modified
+    .jsonl in the project dir (the last session Claude opened for that cwd)."""
+    proj = claude_project_dir(workdir)
+    if session_id:
+        p = os.path.join(proj, f'{session_id}.jsonl')
+        return p if os.path.isfile(p) else None
+    try:
+        logs = [os.path.join(proj, n) for n in os.listdir(proj)
+                if n.endswith('.jsonl')]
+    except OSError:
+        return None
+    if not logs:
+        return None
+    return max(logs, key=lambda p: os.path.getmtime(p))
+
+
+def parse_claude_session_log(path: str) -> List[Dict[str, Any]]:
+    """Parse a Claude Code JSONL session log into an ordered list of canonical
+    partial events (the same schema every adapter emits — role/type/text/tool/
+    tool_use_id/…). ```choice fences in assistant prose are expanded into
+    `choice` events, exactly as the live append path does, so quick-reply
+    pickers still render. Non-conversational record types, sub-agent
+    (`isSidechain`) lines, and synthetic (`isMeta`) lines are skipped. A
+    malformed line is tolerated, never fatal — a partial log still renders."""
+    out: List[Dict[str, Any]] = []
+    try:
+        f = open(path)
+    except OSError:
+        return out
+    with f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(o, dict):
+                continue
+            if o.get('isSidechain') or o.get('isMeta'):
+                continue
+            t = o.get('type')
+            if t not in _LOG_CONTENT_TYPES:
+                continue
+            content = (o.get('message') or {}).get('content')
+            partials = (_claude_assistant_events(content) if t == 'assistant'
+                        else _claude_user_events(content))
+            for p in partials:
+                out.extend(_expand_choices(p))
+    return out
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # HypervisorSession — one chat thread backed by a runner + events.jsonl
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -1032,6 +1146,67 @@ class HypervisorSession:
                         out.append(e)
         except OSError:
             pass
+        return out
+
+    def transcript(self, since_seq: int = 0) -> Dict[str, Any]:
+        """The thread's render-ready transcript + its `source`.
+
+        Prefers Claude Code's own JSONL **session log** (canonical, complete,
+        restart-proof) for an idle Claude thread, re-stamped with contiguous
+        seq/ts so the frontend's cursor still works. Falls back to the live
+        `events.jsonl` **capture** (the successor to tmux pane scraping) while a
+        turn is streaming, for a non-Claude adapter, or whenever the log can't
+        be located/parsed — so a transcript always renders.
+
+        Hypervisor-only system notices (turn errors, "⏹ Stopped by user")
+        can't appear in Claude's log, so any trailing ones from the capture are
+        carried over onto the log-sourced transcript."""
+        capture = self.read_events()
+        log_events = self._session_log_events()
+        if log_events is None:
+            return {'events': [e for e in capture if e.get('seq', 0) > since_seq],
+                    'source': 'capture'}
+        # Carry over trailing hypervisor-synthetic notices (errors / stop
+        # markers) the log has no record of — tool_results ARE in the log, so
+        # only plain system messages + errors are appended.
+        extras = [e for e in capture if e.get('role') == 'system'
+                  and e.get('type') in ('error', 'message')]
+        stamped = self._stamp(log_events + [dict(e) for e in extras])
+        return {'events': [e for e in stamped if e.get('seq', 0) > since_seq],
+                'source': 'session_log'}
+
+    def _session_log_events(self) -> Optional[List[Dict[str, Any]]]:
+        """Parsed Claude session-log events for this thread, or None when the
+        log shouldn't/can't be used (non-Claude, still streaming, no id, or the
+        file is missing/empty). None means 'fall back to the live capture'."""
+        meta = self.read_meta() or {}
+        if meta.get('adapter_kind') != 'claude':
+            return None
+        # A live turn is still being written; the capture streams it best.
+        if self.status() == 'running':
+            return None
+        ctx = meta.get('adapter', {}) or {}
+        sid = ctx.get('claude_session_id')
+        if not sid:
+            return None
+        path = locate_claude_session_log(ctx.get('workdir') or WORKSPACE_HOME, sid)
+        if not path:
+            return None
+        events = parse_claude_session_log(path)
+        return events or None
+
+    @staticmethod
+    def _stamp(partials: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Assign contiguous seq (1..N) + a ts to partial events for delivery.
+        The log has no seq of its own; the frontend re-fetches the full
+        transcript each poll (since=0), so simple positional numbering is
+        correct and stable."""
+        out = []
+        for i, p in enumerate(partials, start=1):
+            e = dict(p)
+            e['seq'] = i
+            e.setdefault('ts', _now())
+            out.append(e)
         return out
 
     def _next_seq(self) -> int:

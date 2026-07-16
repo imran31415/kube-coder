@@ -42,7 +42,7 @@ export interface HvEvent {
  *  `file` blocks here. */
 export type Block =
   | { kind: 'prose'; text: string }
-  | { kind: 'activity'; label: string; detail: string; error?: boolean }
+  | { kind: 'activity'; label: string; detail: string; error?: boolean; ok?: boolean }
   | { kind: 'embed'; port: number; title?: string; height?: number }
   | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number }
   | { kind: 'file'; path: string; title?: string; height?: number }
@@ -172,14 +172,18 @@ export function buildTurns(events: HvEvent[]): Turn[] {
       if (e.tool_use_id && renderIds.has(e.tool_use_id) && !e.is_error) continue;
       const blocks = openAgent().blocks;
       const last = [...blocks].reverse().find((b) => b.kind === 'activity') as
-        | { kind: 'activity'; label: string; detail: string; error?: boolean }
+        | { kind: 'activity'; label: string; detail: string; error?: boolean; ok?: boolean }
         | undefined;
       const result = (e.text || '').trim();
-      if (last && result) {
-        last.detail = `${last.detail}\n\n— result —\n${result}`.trim();
+      if (last) {
+        // A tool call resolved: mark its outcome so the chip reads as a
+        // completed run (✓/✗) — distinct from an unresolved call or plain
+        // prose. Fold the body in when there is one.
+        if (result) last.detail = `${last.detail}\n\n— result —\n${result}`.trim();
         if (e.is_error) last.error = true;
+        else last.ok = true;
       } else if (result) {
-        blocks.push({ kind: 'activity', label: 'Result', detail: result, error: e.is_error });
+        blocks.push({ kind: 'activity', label: 'Result', detail: result, error: e.is_error, ok: !e.is_error });
       }
     } else if (e.type === 'error') {
       openAgent().blocks.push({

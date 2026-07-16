@@ -12,6 +12,7 @@ import {
   renameThread,
   type HypervisorConfig,
   type HypervisorThread,
+  type TranscriptSource,
 } from '../api/hypervisor';
 import type { HvEvent } from '../routes/hypervisor/transcript';
 import { listTasks, type TaskSummary } from '../api/tasks';
@@ -40,6 +41,10 @@ export const activeThreadId = signal<string | null>(null);
  *  tool calls/results, errors). Rendered by buildTurns() in transcript.ts. */
 export const events = signal<HvEvent[]>([]);
 export const activeStatus = signal<string>('');
+/** Where the rendered transcript is sourced from — 'session_log' (Claude Code's
+ *  own JSONL log) or 'capture' (the live stream fallback). Drives a small chip
+ *  in the chat so it's clear the transcript is the structured, durable one. */
+export const transcriptSource = signal<TranscriptSource | null>(null);
 
 export const sending = signal(false);
 /** True from the moment the user hits Stop until the turn actually ends, so the
@@ -125,6 +130,7 @@ async function pollActive(): Promise<void> {
     if (activeThreadId.value !== id) return;
     events.value = detail.events;
     activeStatus.value = detail.thread.status;
+    transcriptSource.value = detail.source ?? null;
   } catch {
     /* transient — next tick retries */
   }
@@ -134,6 +140,7 @@ export async function openThread(id: string): Promise<void> {
   activeThreadId.value = id;
   events.value = [];
   activeStatus.value = '';
+  transcriptSource.value = null;
   chatError.value = null;
   await pollActive();
   startPolling();
@@ -144,6 +151,7 @@ export function closeThread(): void {
   activeThreadId.value = null;
   events.value = [];
   activeStatus.value = '';
+  transcriptSource.value = null;
 }
 
 let optimisticSeq = -1;

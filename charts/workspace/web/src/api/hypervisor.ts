@@ -37,9 +37,15 @@ export interface HypervisorThread {
   deleted_at?: number | null;
 }
 
+/** Where a thread's rendered transcript came from: `session_log` = parsed from
+ *  Claude Code's own JSONL session log (structured, complete); `capture` = the
+ *  live events.jsonl stream capture (the fallback, successor to pane scraping). */
+export type TranscriptSource = 'session_log' | 'capture';
+
 export interface ThreadDetail {
   thread: HypervisorThread;
   events: HvEvent[];
+  source?: TranscriptSource;
 }
 
 /** One normalized entry in the observability timeline (server-side

@@ -545,5 +545,221 @@ class ChoiceExpansionTest(unittest.TestCase):
             hs.HYPERVISOR_DIR = orig
 
 
+FIXTURE_LOG = os.path.join(HERE, 'fixtures', 'claude_session_log_sample.jsonl')
+
+
+class ClaudeSessionLogParseTest(unittest.TestCase):
+    """Parsing Claude Code's own JSONL session log into canonical events
+    (issue #208) — sourced from a sample log under tests/fixtures/."""
+
+    def setUp(self):
+        self.events = hs.parse_claude_session_log(FIXTURE_LOG)
+
+    def test_user_string_prompt_becomes_message(self):
+        first = self.events[0]
+        self.assertEqual(first, {'role': 'user', 'type': 'message',
+                                 'text': 'Check the git status and pick a fix'})
+
+    def test_assistant_text_becomes_message(self):
+        msgs = [e for e in self.events
+                if e['role'] == 'assistant' and e['type'] == 'message']
+        self.assertIn('On it — let me look at the tree.',
+                      [m['text'] for m in msgs])
+
+    def test_tool_use_and_result_are_paired_and_distinct(self):
+        calls = [e for e in self.events if e['type'] == 'tool_call']
+        results = [e for e in self.events if e['type'] == 'tool_result']
+        self.assertEqual([c['tool']['name'] for c in calls], ['Bash', 'Read'])
+        self.assertEqual(calls[0]['tool_id'], 'toolu_1')
+        # tool_result carries the matching id, error flag, and stringified body.
+        by_id = {r['tool_use_id']: r for r in results}
+        self.assertFalse(by_id['toolu_1']['is_error'])
+        self.assertIn('server.py', by_id['toolu_1']['text'])
+        self.assertTrue(by_id['toolu_2']['is_error'])
+        self.assertEqual(by_id['toolu_2']['text'], 'File not found')
+        # A tool_call/result is a different event type than plain prose.
+        self.assertNotIn('tool_call',
+                         [e['type'] for e in self.events if e['role'] == 'user'])
+
+    def test_thinking_blocks_are_dropped(self):
+        self.assertNotIn('internal reasoning that must be dropped',
+                         [e.get('text') for e in self.events])
+
+    def test_choice_fence_is_expanded(self):
+        choices = [e for e in self.events if e['type'] == 'choice']
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0]['options'], ['Revert the change', 'Patch forward'])
+        self.assertEqual(choices[0]['question'], 'Pick an approach')
+        # The prose before the fence survives as its own message.
+        self.assertIn('Which fix do you want?',
+                      [e.get('text') for e in self.events])
+
+    def test_noise_records_are_skipped(self):
+        texts = [e.get('text') or '' for e in self.events]
+        self.assertFalse(any('synthetic reminder' in t for t in texts))    # isMeta
+        self.assertFalse(any('sub-agent chatter' in t for t in texts))     # sidechain
+        # summary / system / file-history-snapshot lines contribute nothing.
+        roles = {(e['role'], e['type']) for e in self.events}
+        self.assertNotIn(('system', 'message'), roles)
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(hs.parse_claude_session_log('/no/such/file.jsonl'), [])
+
+
+class ClaudeContentHelperTest(unittest.TestCase):
+    def test_user_string_vs_blocklist(self):
+        self.assertEqual(hs._claude_user_events('hello'),
+                         [{'role': 'user', 'type': 'message', 'text': 'hello'}])
+        self.assertEqual(hs._claude_user_events('   '), [])
+        out = hs._claude_user_events(
+            [{'type': 'tool_result', 'tool_use_id': 't9', 'content': 'ok'}])
+        self.assertEqual(out[0]['type'], 'tool_result')
+        self.assertEqual(out[0]['tool_use_id'], 't9')
+
+    def test_assistant_text_and_tool_use(self):
+        out = hs._claude_assistant_events([
+            {'type': 'text', 'text': 'hi'},
+            {'type': 'thinking', 'thinking': 'secret'},
+            {'type': 'tool_use', 'id': 't1', 'name': 'Bash', 'input': {'command': 'ls'}},
+        ])
+        self.assertEqual([e['type'] for e in out], ['message', 'tool_call'])
+        self.assertEqual(out[1]['tool']['name'], 'Bash')
+
+
+class LocateSessionLogTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.WORKSPACE_HOME
+        hs.WORKSPACE_HOME = self.tmp
+        # /home/dev/.worktrees/kc → escaped-cwd dir under <tmp>/.claude/projects.
+        self.workdir = '/home/dev/.worktrees/kc'
+        self.projdir = hs.claude_project_dir(self.workdir)
+        os.makedirs(self.projdir, exist_ok=True)
+
+    def tearDown(self):
+        hs.WORKSPACE_HOME = self._orig
+
+    def test_escaped_cwd_slug(self):
+        self.assertTrue(self.projdir.endswith('-home-dev--worktrees-kc'))
+
+    def test_exact_session_id_match(self):
+        p = os.path.join(self.projdir, 'sess-abc.jsonl')
+        open(p, 'w').close()
+        self.assertEqual(
+            hs.locate_claude_session_log(self.workdir, 'sess-abc'), p)
+
+    def test_missing_session_id_file_is_none(self):
+        self.assertIsNone(
+            hs.locate_claude_session_log(self.workdir, 'nope'))
+
+    def test_newest_jsonl_when_no_id(self):
+        old = os.path.join(self.projdir, 'old.jsonl')
+        new = os.path.join(self.projdir, 'new.jsonl')
+        open(old, 'w').close()
+        open(new, 'w').close()
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+        self.assertEqual(hs.locate_claude_session_log(self.workdir), new)
+
+    def test_no_project_dir_is_none(self):
+        self.assertIsNone(
+            hs.locate_claude_session_log('/some/other/dir', 'x'))
+
+
+class TranscriptSourceTest(unittest.TestCase):
+    """HypervisorSession.transcript() source selection + fallback (issue #208)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_dir = hs.HYPERVISOR_DIR
+        self._orig_home = hs.WORKSPACE_HOME
+        hs.HYPERVISOR_DIR = os.path.join(self.tmp, 'threads')
+        hs.WORKSPACE_HOME = os.path.join(self.tmp, 'home')
+        os.makedirs(hs.HYPERVISOR_DIR, exist_ok=True)
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig_dir
+        hs.WORKSPACE_HOME = self._orig_home
+
+    def _mk(self, assistant='claude', workdir='/w'):
+        return hs.HypervisorSession.create(
+            assistant=assistant, workdir=workdir, cli_cmd=assistant,
+            preamble='', title='x')
+
+    def _write_log(self, workdir, sid, lines):
+        proj = hs.claude_project_dir(workdir)
+        os.makedirs(proj, exist_ok=True)
+        with open(os.path.join(proj, f'{sid}.jsonl'), 'w') as f:
+            for o in lines:
+                f.write(json.dumps(o) + '\n')
+
+    def test_falls_back_to_capture_for_non_claude(self):
+        s = self._mk(assistant='ante')
+        s._append([{'role': 'user', 'type': 'message', 'text': 'hi'}])
+        tx = s.transcript()
+        self.assertEqual(tx['source'], 'capture')
+        self.assertEqual([e['text'] for e in tx['events']], ['hi'])
+
+    def test_falls_back_to_capture_when_no_session_id(self):
+        s = self._mk()  # claude, but no claude_session_id captured yet
+        s._append([{'role': 'user', 'type': 'message', 'text': 'hi'}])
+        self.assertEqual(s.transcript()['source'], 'capture')
+
+    def test_sources_from_session_log_when_available(self):
+        s = self._mk(workdir='/w')
+        # Record the captured Claude session id, as an idle finished turn would.
+        m = s.read_meta()
+        m['adapter']['claude_session_id'] = 'sid-1'
+        s._write_meta(m)
+        self._write_log('/w', 'sid-1', [
+            {'type': 'user', 'message': {'role': 'user', 'content': 'do it'}},
+            {'type': 'assistant', 'message': {'role': 'assistant',
+                'content': [{'type': 'text', 'text': 'done'}]}},
+        ])
+        tx = s.transcript()
+        self.assertEqual(tx['source'], 'session_log')
+        self.assertEqual([(e['role'], e['text']) for e in tx['events']],
+                         [('user', 'do it'), ('assistant', 'done')])
+        # Re-stamped with contiguous seq for the frontend cursor.
+        self.assertEqual([e['seq'] for e in tx['events']], [1, 2])
+
+    def test_running_turn_prefers_live_capture(self):
+        s = self._mk(workdir='/w')
+        m = s.read_meta()
+        m['adapter']['claude_session_id'] = 'sid-2'
+        m['status'] = 'running'
+        s._write_meta(m)
+        self._write_log('/w', 'sid-2', [
+            {'type': 'assistant', 'message': {'role': 'assistant',
+                'content': [{'type': 'text', 'text': 'from log'}]}}])
+        s._append([{'role': 'user', 'type': 'message', 'text': 'live'}])
+        with hs._RUNLOCK:
+            hs._RUNNING[s.id] = True
+        try:
+            tx = s.transcript()
+        finally:
+            with hs._RUNLOCK:
+                hs._RUNNING.pop(s.id, None)
+        self.assertEqual(tx['source'], 'capture')
+        self.assertEqual([e['text'] for e in tx['events']], ['live'])
+
+    def test_carries_over_error_marker_from_capture(self):
+        s = self._mk(workdir='/w')
+        m = s.read_meta()
+        m['adapter']['claude_session_id'] = 'sid-3'
+        s._write_meta(m)
+        self._write_log('/w', 'sid-3', [
+            {'type': 'assistant', 'message': {'role': 'assistant',
+                'content': [{'type': 'text', 'text': 'ok'}]}}])
+        s._append([{'role': 'system', 'type': 'error', 'text': 'claude exited 1'}])
+        tx = s.transcript()
+        self.assertEqual(tx['source'], 'session_log')
+        self.assertEqual(tx['events'][-1],
+                         {'role': 'system', 'type': 'error',
+                          'text': 'claude exited 1',
+                          'seq': tx['events'][-1]['seq'],
+                          'ts': tx['events'][-1]['ts']})
+
+
 if __name__ == '__main__':
     unittest.main()

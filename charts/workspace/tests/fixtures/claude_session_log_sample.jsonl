@@ -1,0 +1,14 @@
+{"type":"summary","summary":"Working on a deploy script","leafUuid":"abc"}
+{"type":"system","subtype":"init","sessionId":"sess-1"}
+{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"Check the git status and pick a fix"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"internal reasoning that must be dropped"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"On it — let me look at the tree."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"git status --short"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":[{"type":"text","text":" M server.py"}]}]}}
+{"type":"file-history-snapshot","messageId":"x","snapshot":{}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"/home/dev/server.py"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"File not found"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Which fix do you want?\n```choice\nPick an approach\n- Revert the change\n- Patch forward\n```"}]}}
+{"type":"user","isMeta":true,"message":{"role":"user","content":"synthetic reminder — must be skipped"}}
+{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"sub-agent chatter — must be skipped"}]}}
+{"not":"json but valid line skipped by type filter"}
