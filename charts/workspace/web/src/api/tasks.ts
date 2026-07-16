@@ -69,12 +69,33 @@ export interface HookDelivery {
   last_attempt_at?: number;
 }
 
+/** One tappable choice the backend parsed off the live TUI screen. `index` is
+ *  the digit to send for a numbered permission menu (1, 2, 3…) or 'y'/'n' for a
+ *  yes/no prompt — send it verbatim to select that option. */
+export interface PromptOption {
+  index: number | string;
+  label: string;
+}
+
+/** A structured interactive prompt the backend detected on the task's screen
+ *  (server.py parse_screen_prompt, issue #204). When present, the Send-message
+ *  composer renders one quick-reply button per option so approving a tool call
+ *  is one tap instead of typing into the raw terminal. */
+export interface PendingPrompt {
+  kind: 'choice' | 'yesno';
+  question?: string | null;
+  options: PromptOption[];
+}
+
 export interface TaskDetail extends TaskSummary {
   workdir?: string;
   session_id?: string;
   tmux_session?: string;
   assistant?: string;
   recent_output?: string;
+  // Structured interactive prompt on the live screen, or null when none — drives
+  // the Send-message tab's quick-reply buttons (issue #204).
+  pending_prompt?: PendingPrompt | null;
   // Completion-hook (response_url) delivery state, when a hook was attempted.
   hook_delivery?: HookDelivery;
   // Server occasionally adds fields we don't model; allow them.
