@@ -464,7 +464,6 @@ kube-coder stands on excellent open source:
 
 | | |
 |---|---|
-| **Quick use case: building a PDF shopping list** | https://github.com/user-attachments/assets/f48e0e10-199d-4df5-8588-449fb9da89a7 
 | **New-user provisioning** | https://github.com/user-attachments/assets/d9e6c19c-28ab-4f5e-963a-08b1d0a7085a |
 | **Marketing** | https://github.com/user-attachments/assets/1e4d1bd5-ec9c-4f4e-88ba-7c2b79593a4c |
 | **Demo** | https://github.com/user-attachments/assets/f5821e5c-a834-4db2-a34d-2d405c3daef2 |
