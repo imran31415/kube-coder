@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { TaskStatus } from '../../api/tasks';
+import type { TaskStatus, PendingPrompt, PromptOption } from '../../api/tasks';
+import { getTask } from '../../api/tasks';
 import { sendFollowup } from '../../store/tasks';
 import { pushToast } from '../../store/ui';
 import { Button } from '../../components/primitives/Button';
@@ -27,6 +28,33 @@ interface Attachment {
   status: 'uploading' | 'ready' | 'error';
 }
 
+/** How often the Send-message tab re-checks the live screen for an interactive
+ *  prompt while the task is running. The global task poll is SSE-gated to a slow
+ *  fallback (~45s), so we run a focused check here — only while this tab is
+ *  mounted and visible — to surface quick-reply buttons within a few seconds. */
+const PROMPT_POLL_MS = 4000;
+
+/** Validate the server's (untrusted-shape) pending_prompt into a PendingPrompt,
+ *  or null. Anything malformed → null so the plain composer stays in control.
+ *  Exported for unit tests. */
+export function readPendingPrompt(p: unknown): PendingPrompt | null {
+  if (!p || typeof p !== 'object') return null;
+  const o = p as Record<string, unknown>;
+  if (o.kind !== 'choice' && o.kind !== 'yesno') return null;
+  if (!Array.isArray(o.options)) return null;
+  const options: PromptOption[] = [];
+  for (const raw of o.options) {
+    if (!raw || typeof raw !== 'object') continue;
+    const { index, label } = raw as Record<string, unknown>;
+    const okIndex = typeof index === 'number' || typeof index === 'string';
+    if (!okIndex || typeof label !== 'string') continue;
+    options.push({ index, label });
+  }
+  if (options.length < 2) return null;
+  const question = typeof o.question === 'string' ? o.question : null;
+  return { kind: o.kind, question, options };
+}
+
 /**
  * Send-message tab. Embeds the live ttyd terminal directly (same attach the
  * Session tab uses) so the user sees the real session — including the
@@ -48,6 +76,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
 
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [prompt, setPrompt] = useState<PendingPrompt | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -61,6 +90,36 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   useEffect(() => () => {
     for (const a of attachRef.current) URL.revokeObjectURL(a.previewUrl);
   }, []);
+
+  // Poll the task's live screen for an interactive prompt (numbered permission
+  // menu / yes-no) so we can render quick-reply buttons. Only runs while the
+  // task is alive and this tab is visible; a static screen keeps returning the
+  // same prompt, and it clears the moment the task moves on. Fail-safe: any
+  // fetch error keeps the last state rather than flashing buttons off.
+  useEffect(() => {
+    if (!isRunning) {
+      setPrompt(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        try {
+          const t = await getTask(taskId);
+          if (!cancelled) setPrompt(readPendingPrompt(t.pending_prompt));
+        } catch {
+          /* transient fetch error — keep the last known prompt */
+        }
+      }
+      if (!cancelled) timer = setTimeout(tick, PROMPT_POLL_MS);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [taskId, isRunning]);
 
   const readOnly = serverMode.value.readOnly;
   const uploading = attachments.some((a) => a.status === 'uploading');
@@ -179,6 +238,21 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     }
   }
 
+  // Tapping a quick-reply button sends the option's key ("2", "y", …) as a
+  // normal follow-up (submit=true) — the same POST /message path typing would
+  // use. Hide the buttons immediately (optimistic); the next poll confirms the
+  // task moved on. See the parser in server.py for how options are detected.
+  async function onChoose(opt: PromptOption) {
+    if (busy || readOnly) return;
+    setBusy(true);
+    setPrompt(null);
+    try {
+      await sendFollowup(taskId, String(opt.index));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function onKey(e: KeyboardEvent) {
     // Cmd/Ctrl+Enter sends; plain Enter inserts a newline.
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -200,6 +274,27 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
         onDragOver={onDragOver}
         onDragLeave={() => setDragOver(false)}
       >
+        {prompt && !readOnly && (
+          <div class="mc-choice" role="group" aria-label="Quick reply choices">
+            {prompt.question && <div class="mc-choice-q">{prompt.question}</div>}
+            <div class="mc-choice-opts">
+              {prompt.options.map((o) => (
+                <button
+                  key={String(o.index)}
+                  type="button"
+                  class="mc-choice-opt"
+                  disabled={busy}
+                  onClick={() => void onChoose(o)}
+                >
+                  <span class="mc-choice-num">{o.index}</span>
+                  <span class="mc-choice-text">{o.label}</span>
+                </button>
+              ))}
+            </div>
+            <div class="mc-choice-hint">Or type your own reply below.</div>
+          </div>
+        )}
+
         {attachments.length > 0 && (
           <div class="mc-attachments">
             {attachments.map((a) => (

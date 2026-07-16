@@ -52,3 +52,7 @@ charts/workspace/web/coverage/
 *.coverage
 .coverage
 .coverage.*
+
+# graphify skill output (knowledge-graph HTML/JSON/audit) — regenerable
+# artifacts written by `/graphify`, not source.
+graphify-out/

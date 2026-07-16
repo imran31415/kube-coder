@@ -186,6 +186,138 @@ def strip_ansi(text):
     return _ANSI_RE.sub('', text)
 
 
+# --- Interactive-prompt screen parser (issue #204) ------------------------
+# When a Claude Code task pauses on an in-terminal prompt — the numbered
+# permission menu or a free-form yes/no question — we parse the captured tmux
+# pane into a structured description the dashboard renders as tappable
+# quick-reply buttons (one tap to approve, instead of typing into the raw ttyd
+# iframe — the highest-value mobile win). The parser is deliberately server-side
+# so web AND the native mobile app both benefit from one implementation.
+#
+# Parsing a TUI is brittle, so we anchor on Claude Code's real layout and fail
+# safe: anything unrecognized returns None, and the plain composer stays fully
+# in control. See parse_screen_prompt for the two recognized shapes.
+
+# A numbered option line, e.g. "❯ 1. Yes" or "2. Yes, and don't ask again".
+# The leading ❯ is Claude Code's selection caret (only the highlighted option
+# carries it); we accept a plain '>' as a fallback for terminals that render it
+# that way. The trailing "N. " requires a dot AND a space so version strings
+# like "1.2.3" never match.
+_PROMPT_OPTION_RE = re.compile(r'^(?:(❯|>)\s*)?(\d+)\.\s+(.+)$')
+
+# A free-form yes/no marker: (y/n), [y/n], (yes/no), with tolerant spacing.
+_YESNO_RE = re.compile(
+    r'[\(\[]\s*y(?:es)?\s*/\s*n(?:o)?\s*[\)\]]', re.IGNORECASE)
+
+# A line made up solely of box-drawing / rule characters (the borders tmux
+# captures around Claude's prompt box). Treated as blank for question lookup.
+_BOX_ONLY_RE = re.compile(r'^[\s─-╿|]+$')
+
+
+def _normalize_prompt_line(line):
+    """Strip trailing whitespace and the vertical box borders tmux captures so a
+    bordered TUI line like '│ ❯ 1. Yes           │' becomes '❯ 1. Yes'. Lines
+    that are only box-drawing rules collapse to '' so they're skipped."""
+    s = line.strip().strip('│┃|').strip()
+    if not s or _BOX_ONLY_RE.match(s):
+        return ''
+    return s
+
+
+def parse_screen_prompt(text):
+    """Parse the most-recent Claude Code TUI screen for an interactive prompt the
+    user must answer, returning a structured description the dashboard renders as
+    buttons — or None when no known prompt is on screen.
+
+    Two shapes are recognized:
+
+      1. A numbered choice block (the permission prompt):
+             Do you want to proceed?
+             ❯ 1. Yes
+               2. Yes, and don't ask again
+               3. No, and tell Claude what to do differently
+         → {'kind': 'choice', 'question': 'Do you want to proceed?',
+            'options': [{'index': 1, 'label': 'Yes'}, ...]}
+
+      2. A free-form yes/no question carrying a (y/n) marker:
+             Continue? (y/n)
+         → {'kind': 'yesno', 'question': 'Continue?',
+            'options': [{'index': 'y', 'label': 'Yes'},
+                        {'index': 'n', 'label': 'No'}]}
+
+    We only trust a numbered block that (a) starts at 1 and runs sequentially,
+    (b) has >= 2 options, and (c) shows the ❯ selection caret — the caret is the
+    anchor that distinguishes a live permission menu from an ordinary numbered
+    list Claude may have printed in prose. Blocks are scanned bottom-up so the
+    live prompt (always at the foot of the screen) wins.
+    """
+    if not text:
+        return None
+
+    norm = [_normalize_prompt_line(l) for l in text.splitlines()]
+
+    # --- 1. Numbered choice block ---------------------------------------
+    # Map each option line to (index, label, has_caret).
+    opt_lines = {}
+    for i, s in enumerate(norm):
+        m = _PROMPT_OPTION_RE.match(s)
+        if m:
+            opt_lines[i] = (int(m.group(2)), m.group(3).strip(), m.group(1) is not None)
+
+    # Group consecutive option-line indices into blocks.
+    blocks = []
+    cur = []
+    prev = None
+    for i in sorted(opt_lines):
+        if prev is not None and i != prev + 1:
+            blocks.append(cur)
+            cur = []
+        cur.append(i)
+        prev = i
+    if cur:
+        blocks.append(cur)
+
+    # Prefer the bottom-most valid block (the live prompt).
+    for block in reversed(blocks):
+        opts = [opt_lines[i] for i in block]
+        indices = [o[0] for o in opts]
+        has_caret = any(o[2] for o in opts)
+        if len(opts) >= 2 and has_caret and indices == list(range(1, len(opts) + 1)):
+            # Question = nearest non-blank normalized line above the block.
+            question = None
+            for j in range(block[0] - 1, -1, -1):
+                if norm[j]:
+                    question = norm[j]
+                    break
+            return {
+                'kind': 'choice',
+                'question': question,
+                'options': [{'index': o[0], 'label': o[1]} for o in opts],
+            }
+
+    # --- 2. Free-form yes/no --------------------------------------------
+    for i in range(len(norm) - 1, -1, -1):
+        s = norm[i]
+        if s and _YESNO_RE.search(s):
+            q = _YESNO_RE.sub('', s).strip().rstrip('?').strip()
+            question = f'{q}?' if q else None
+            if not question:
+                for j in range(i - 1, -1, -1):
+                    if norm[j]:
+                        question = norm[j]
+                        break
+            return {
+                'kind': 'yesno',
+                'question': question,
+                'options': [
+                    {'index': 'y', 'label': 'Yes'},
+                    {'index': 'n', 'label': 'No'},
+                ],
+            }
+
+    return None
+
+
 # How long a task's rendered tmux screen must stay unchanged before we treat
 # it as waiting-for-input. While an agent works it streams output / animates a
 # spinner+timer, so the screen keeps changing; a static screen means it has
@@ -1290,6 +1422,13 @@ class ClaudeTaskManager:
         if result.returncode == 0 and result.stdout.strip():
             recent_output = result.stdout
         meta['recent_output'] = recent_output
+        # Structured interactive prompt (numbered permission menu / yes-no) the
+        # dashboard renders as tappable quick-reply buttons (issue #204). Wrapped
+        # so a parser hiccup never breaks task-detail; None means "no buttons".
+        try:
+            meta['pending_prompt'] = parse_screen_prompt(recent_output)
+        except Exception:
+            meta['pending_prompt'] = None
         return meta
 
     @staticmethod

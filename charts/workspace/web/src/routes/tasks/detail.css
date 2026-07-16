@@ -256,6 +256,67 @@
 }
 .mc-file-input { display: none; }
 
+/* Quick-reply buttons for an interactive prompt the backend parsed off the live
+   screen (issue #204). Mirrors the hypervisor chat's choice picker so the two
+   read as one system; one tap sends the option instead of typing into ttyd. */
+.mc-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+}
+.mc-choice-q {
+  font-weight: 550;
+  font-size: 13px;
+  color: var(--text);
+}
+.mc-choice-opts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+}
+.mc-choice-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--size-2) var(--size-3);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.mc-choice-opt:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.mc-choice-opt:disabled { opacity: 0.55; cursor: default; }
+.mc-choice-num {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--text-muted);
+  background: var(--surface-3);
+  border-radius: 999px;
+}
+.mc-choice-text { flex: 1; min-width: 0; }
+.mc-choice-hint {
+  font-size: 0.78rem;
+  color: var(--text-subtle);
+  font-style: italic;
+}
+
 /* Highlight the composer while an image file is dragged over it. */
 .mc-composer--dragover {
   outline: 2px dashed var(--accent);
