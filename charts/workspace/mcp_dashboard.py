@@ -268,6 +268,18 @@ def _t_show_media(a):
     return _ok(f'Rendering {media_kind} ({where}) in the chat.')
 
 
+def _t_show_file(a):
+    path = (a.get('path') or '').strip()
+    if not path:
+        return _err('path is required (a file under /home/dev, e.g. docs/plan.md)')
+    if path.startswith(('http://', 'https://')):
+        return _err('path must be a workspace file under /home/dev, not a URL')
+    # The client fetches /api/files/preview to classify the file and renders
+    # markdown/text/code/image/video inline (PDF & HTML in a sandboxed frame);
+    # existence + type are resolved there, so just echo a confirmation.
+    return _ok(f'Rendering file {path} in the chat.')
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Tool handlers — safe write
 # ───────────────────────────────────────────────────────────────────────────
@@ -468,6 +480,23 @@ TOOLS: Dict[str, Any] = {
             'title': {'type': 'string', 'description': 'Optional caption.'},
             'height': {'type': 'number', 'description': 'Optional max height in px.'},
         }, required=['media_kind']),
+    'show_file': _tool(
+        'show_file',
+        'Render a document or file inline in the Hypervisor chat for review — '
+        'markdown, text/code, PDF, HTML, or an image/video — from a workspace '
+        'file path under /home/dev. Call this proactively whenever you create or '
+        'reference a document you want the user to see (e.g. a plan, README, '
+        'report, or generated file). Markdown renders formatted; PDF/HTML render '
+        'in a sandboxed viewer.',
+        _t_show_file,
+        properties={
+            'path': {'type': 'string',
+                     'description': 'A file under /home/dev (relative), e.g. docs/plan.md.'},
+            'title': {'type': 'string',
+                      'description': 'Optional caption shown above the file.'},
+            'height': {'type': 'number',
+                       'description': 'Optional viewer height in px (used for PDF/HTML).'},
+        }, required=['path']),
 
     # ── safe write ────────────────────────────────────────────────────────
     'create_task': _tool(

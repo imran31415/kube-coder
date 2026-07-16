@@ -20,9 +20,19 @@ import mcp_dashboard as m  # noqa: E402
 
 class RenderToolsTest(unittest.TestCase):
     def test_tools_registered_as_read(self):
-        for name in ('show_app_preview', 'show_media'):
+        for name in ('show_app_preview', 'show_media', 'show_file'):
             self.assertIn(name, m.TOOLS)
             self.assertEqual(m.TOOLS[name]['kind'], 'read')  # available under READONLY_MODE
+
+    def test_show_file_requires_a_path(self):
+        self.assertTrue(m._t_show_file({}).get('isError'))
+        self.assertTrue(m._t_show_file({'path': ''}).get('isError'))
+        # A URL is not a workspace file — reject it (that's show_media's job).
+        self.assertTrue(m._t_show_file({'path': 'https://x/a.pdf'}).get('isError'))
+
+    def test_show_file_accepts_a_workspace_path(self):
+        self.assertFalse(m._t_show_file({'path': 'docs/plan.md'}).get('isError'))
+        self.assertFalse(m._t_show_file({'path': 'report.pdf', 'title': 'Q3'}).get('isError'))
 
     def test_show_media_requires_exactly_one_source(self):
         self.assertTrue(m._t_show_media({'media_kind': 'image'}).get('isError'))

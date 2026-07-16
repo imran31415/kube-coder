@@ -18,6 +18,7 @@ import { WorkspaceContext } from './WorkspaceContext';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
 import { proxyUrl } from '../../api/apps';
 import { withOauthPrefix } from '../../api/client';
+import { previewFile, fileRawUrl, fileViewUrl, downloadFile, type FilePreview } from '../../api/files';
 import { isImageFile, imagesFromClipboard, uploadTaskImage } from '../tasks/imageAttach';
 
 /** A user-attached image being uploaded to the workspace so the agent can read
@@ -122,6 +123,97 @@ function MediaBlock({
   );
 }
 
+const MARKDOWN_RE = /\.(md|markdown|mdx)$/i;
+
+/** A document/file the agent asked to show (via show_file). We classify it with
+ *  /api/files/preview and render inline: markdown formatted, text/code in a
+ *  scroll box, image/video like MediaBlock, and PDF/HTML/SVG in a sandboxed
+ *  <iframe> served by /api/files/view. Anything else offers a download. */
+function FileBlock({ path, title, height }: { path: string; title?: string; height?: number }) {
+  const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setPreview(null);
+    setError(null);
+    previewFile(path)
+      .then((p) => live && setPreview(p))
+      .catch((e) => live && setError(e?.message || 'could not load'));
+    return () => {
+      live = false;
+    };
+  }, [path]);
+
+  const name = path.split('/').pop() || path;
+  const frameH = height && height >= 80 ? height : 420;
+  const mime = preview?.mime || '';
+  const isPdf = mime === 'application/pdf';
+  const inFrame =
+    isPdf || ['text/html', 'application/xhtml+xml', 'image/svg+xml', 'text/xml', 'application/xml'].includes(mime);
+
+  const head = (
+    <figcaption class="hv-file-head">
+      <span class="hv-file-name">
+        <Icon name="files" size={12} /> {title || name}
+      </span>
+      <button type="button" class="hv-file-btn" onClick={() => downloadFile(path, name)}>
+        Download <Icon name="download" size={11} />
+      </button>
+    </figcaption>
+  );
+
+  let body;
+  if (error) {
+    body = <div class="hv-file-msg hv-file-err">Couldn’t load {name}: {error}</div>;
+  } else if (!preview) {
+    body = <div class="hv-file-msg">Loading {name}…</div>;
+  } else if (preview.kind === 'image') {
+    body = <img class="hv-file-media" src={fileRawUrl(path)} alt={title || name} loading="lazy" />;
+  } else if (preview.kind === 'video') {
+    body = <video class="hv-file-media" src={fileRawUrl(path)} controls preload="metadata" />;
+  } else if (inFrame) {
+    // PDF needs no sandbox attr (the browser's viewer works framed and can't
+    // script the parent); HTML/SVG/XML get an empty sandbox + the server's
+    // `CSP: sandbox` so they render but can't touch the dashboard origin.
+    body = (
+      <iframe
+        class="hv-file-frame"
+        style={{ height: `${frameH}px` }}
+        src={fileViewUrl(path)}
+        title={title || name}
+        {...(isPdf ? {} : { sandbox: '' as const })}
+      />
+    );
+  } else if (preview.kind === 'text') {
+    if (MARKDOWN_RE.test(path) || mime === 'text/markdown') {
+      body = (
+        <div
+          class="hv-prose hv-file-md"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(preview.content) }}
+        />
+      );
+    } else {
+      body = <pre class="hv-file-code mono">{preview.content}</pre>;
+    }
+  } else {
+    body = (
+      <div class="hv-file-msg">
+        {name} is a binary file — <button type="button" class="hv-file-link" onClick={() => downloadFile(path, name)}>download it</button> to view.
+      </div>
+    );
+  }
+
+  const truncated = preview?.kind === 'text' && preview.truncated;
+  return (
+    <figure class="hv-file">
+      {head}
+      {body}
+      {truncated && <div class="hv-file-note">Preview truncated — download for the full file.</div>}
+    </figure>
+  );
+}
+
 /** A multiple-choice prompt the agent emitted (a ```choice block). Options are
  *  clickable buttons; clicking one sends it as the next message — no need to
  *  type "1". Only the latest turn's picker is `interactive`; historical ones
@@ -202,6 +294,8 @@ function AgentBlocks({
                 height={b.height}
               />
             );
+          case 'file':
+            return <FileBlock key={i} path={b.path} title={b.title} height={b.height} />;
           case 'choice':
             return (
               <ChoiceBlock

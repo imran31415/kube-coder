@@ -919,6 +919,98 @@
   color: var(--text-subtle);
 }
 
+/* ── Inline document/file rendering (show_file) ──────────────────────────── */
+.hv-file {
+  margin: 2px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.hv-file-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.hv-file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hv-file-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.hv-file-btn:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.hv-file-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+.hv-file-media {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  max-height: 480px;
+  margin: 0 auto;
+  background: var(--surface-2);
+}
+.hv-file-md { padding: 10px 12px; }
+.hv-file-code {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+  background: var(--surface);
+}
+.hv-file-msg {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.hv-file-err { color: var(--danger, #c0392b); }
+.hv-file-link {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.hv-file-note {
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: var(--text-subtle);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
 /* ── Composer image attachments ──────────────────────────────────────────── */
 .hv-attach-btn {
   flex-shrink: 0;

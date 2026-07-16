@@ -5,10 +5,11 @@
  * scraping), which buildTurns() folds into user bubbles + agent turns (prose +
  * expandable tool-activity chips). See charts/workspace/hypervisor_session.py.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -29,11 +30,14 @@ import {
   authHeaders,
   createThread,
   deleteThread,
+  fileDownloadBrowserUrl,
   fileRawUrl,
+  fileViewUrl,
   getHypervisorConfig,
   getThreadDetail,
   listDeletedThreads,
   listThreads,
+  previewFile,
   restoreThread,
   renameThread,
   sendThreadMessage,
@@ -41,8 +45,9 @@ import {
   uploadTaskImage,
 } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
+import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
-import type { HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
+import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
 import { buildTurns, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
@@ -813,6 +818,9 @@ function Block({
   if (block.kind === 'media') {
     return <MediaBlock block={block} />;
   }
+  if (block.kind === 'file') {
+    return <FileBlock block={block} />;
+  }
   if (block.kind === 'choice') {
     return <ChoiceBlock question={block.question} options={block.options} interactive={interactive} onChoose={onChoose} />;
   }
@@ -925,6 +933,122 @@ function VideoBlock({
     <View>
       <VideoView player={player} style={[styles.mediaImg, { height }]} contentFit="contain" nativeControls />
       {title ? <Text style={styles.mediaCap}>{title}</Text> : null}
+    </View>
+  );
+}
+
+const MARKDOWN_RE = /\.(md|markdown|mdx)$/i;
+// MIME types /api/files/view serves inline in a WebView (PDF direct; the rest
+// CSP-sandboxed server-side). Kept in sync with the web FileBlock.
+const FRAME_MIME = ['text/html', 'application/xhtml+xml', 'image/svg+xml', 'text/xml', 'application/xml'];
+
+/** A document/file the agent asked to show (via show_file). We classify it with
+ *  /api/files/preview and render inline: markdown formatted, text/code in a
+ *  scrollable mono box, image/video streamed from /api/files/raw, and PDF/HTML/
+ *  SVG/XML in a WebView pointed at /api/files/view. Anything else (or an Android
+ *  PDF, which WebView can't render inline) falls back to an open/download card —
+ *  parity with the web tab's FileBlock. */
+function FileBlock({ block }: { block: Extract<HvBlock, { kind: 'file' }> }) {
+  const { path, title, height } = block;
+  const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setPreview(null);
+    setError(null);
+    previewFile(path)
+      .then((p) => alive && setPreview(p))
+      .catch((e) => alive && setError(e instanceof Error ? e.message : 'Failed to load'));
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+
+  const name = path.split('/').pop() || path;
+  const mime = preview?.mime || '';
+  const isPdf = mime === 'application/pdf';
+  const isFrame = isPdf || FRAME_MIME.includes(mime);
+  const frameH = height && height >= 80 ? height : 420;
+  // Android's system WebView has no built-in PDF viewer, so an inline <iframe>
+  // to a PDF renders blank; fall back to the open/download card there (and on
+  // any WebView load error) rather than showing an empty box.
+  const androidPdf = isPdf && Platform.OS === 'android';
+
+  const openExternally = () => void Linking.openURL(fileDownloadBrowserUrl(path)).catch(() => {});
+
+  let body: ReactNode;
+  if (error) {
+    body = <Text style={styles.fileMsgErr}>Couldn’t load {name}: {error}</Text>;
+  } else if (!preview) {
+    body = <Text style={styles.fileMsg}>Loading {name}…</Text>;
+  } else if (preview.kind === 'image') {
+    body = (
+      <Image
+        source={{ uri: fileRawUrl(path), headers: authHeaders() }}
+        style={[styles.mediaImg, { height: frameH }]}
+        resizeMode="contain"
+      />
+    );
+  } else if (preview.kind === 'video') {
+    body = <VideoBlock uri={fileRawUrl(path)} headers={authHeaders()} height={frameH} title={title} />;
+  } else if (isFrame && !androidPdf) {
+    body = (
+      <View style={[styles.fileFrame, { height: frameH }]}>
+        <WebView
+          source={{ uri: fileViewUrl(path), headers: authHeaders() }}
+          style={styles.fileFrameWeb}
+          originWhitelist={['*']}
+          // A single self-contained doc: the Bearer header rides the top-level
+          // request, so — unlike AppEmbed — no app-session cookie bootstrap is
+          // needed. On a load failure, degrade to the open/download card.
+          onError={() => setError('This file can’t be shown inline.')}
+          startInLoadingState={false}
+        />
+      </View>
+    );
+  } else if (preview.kind === 'text' && (MARKDOWN_RE.test(path) || mime === 'text/markdown')) {
+    body = (
+      <ScrollView style={styles.fileScroll} contentContainerStyle={styles.fileScrollInner} nestedScrollEnabled>
+        <Markdown text={preview.content} />
+      </ScrollView>
+    );
+  } else if (preview.kind === 'text') {
+    body = (
+      <ScrollView style={styles.fileScroll} contentContainerStyle={styles.fileScrollInner} nestedScrollEnabled>
+        <Text style={styles.fileCode}>{preview.content}</Text>
+      </ScrollView>
+    );
+  } else {
+    // binary (or an Android PDF) → an info card with an open/download action.
+    body = (
+      <View style={styles.fileFallback}>
+        <Ionicons name="document-outline" size={32} color={colors.textFaint} />
+        <Text style={styles.fileMsg}>
+          {androidPdf ? 'PDFs open in your browser on Android.' : `${name} is a binary file.`}
+        </Text>
+        <Pressable onPress={openExternally} style={styles.fileOpenBtn}>
+          <Ionicons name="open-outline" size={14} color={colors.accent} />
+          <Text style={styles.fileOpenText}>Open / download</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const truncated = preview?.kind === 'text' && preview.truncated;
+  return (
+    <View style={styles.embed}>
+      <View style={styles.embedHead}>
+        <Ionicons name="document-text-outline" size={12} color={colors.textMuted} />
+        <Text style={styles.embedTitle} numberOfLines={1}>
+          {title || name}
+        </Text>
+        <Pressable onPress={openExternally} hitSlop={8} style={({ pressed }) => pressed && { opacity: 0.6 }}>
+          <Ionicons name="download-outline" size={15} color={colors.textMuted} />
+        </Pressable>
+      </View>
+      {body}
+      {truncated ? <Text style={styles.fileNote}>Preview truncated — open for the full file.</Text> : null}
     </View>
   );
 }
@@ -1269,4 +1393,23 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface2,
   },
   mediaCap: { marginTop: 4, color: colors.textFaint, fontSize: font.size.xs },
+  // show_file blocks — reuse the embed frame chrome above, plus these bodies.
+  fileFrame: { backgroundColor: '#fff' },
+  fileFrameWeb: { flex: 1, backgroundColor: '#fff' },
+  fileScroll: { maxHeight: 380, backgroundColor: colors.bg },
+  fileScrollInner: { padding: space.md },
+  fileCode: { color: colors.text, fontSize: font.size.xs, fontFamily: font.mono, lineHeight: 17 },
+  fileMsg: { color: colors.textMuted, fontSize: font.size.sm, textAlign: 'center', padding: space.md },
+  fileMsgErr: { color: colors.danger, fontSize: font.size.sm, padding: space.md },
+  fileFallback: { alignItems: 'center', gap: space.sm, paddingVertical: space.xl },
+  fileOpenBtn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  fileOpenText: { color: colors.accent, fontSize: font.size.sm, fontWeight: '600' },
+  fileNote: {
+    color: colors.textFaint,
+    fontSize: font.size.xs,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
 });

@@ -29,6 +29,12 @@ export const previewFile = (path: string) => apiGet<FilePreview>('/api/files/pre
 export const fileRawUrl = (path: string) =>
   `${withOauthPrefix('/api/files/raw')}?path=${encodeURIComponent(path)}`;
 
+/** Same-origin URL for viewing a document inline (PDF/HTML/SVG) in a sandboxed
+ *  <iframe>. The server sends `Content-Security-Policy: sandbox` for HTML/SVG so
+ *  it can't touch the dashboard origin. Auth rides the oauth2 session cookie. */
+export const fileViewUrl = (path: string) =>
+  `${withOauthPrefix('/api/files/view')}?path=${encodeURIComponent(path)}`;
+
 /**
  * Download a file via an authenticated fetch → Blob → object-URL anchor. Going
  * through apiRaw (rather than a bare <a href>) keeps the Bearer token + the

@@ -731,6 +731,15 @@ export function fileRawUrl(path: string): string {
   return `${(host || '').replace(/\/+$/, '')}/api/files/raw?path=${encodeURIComponent(path)}`;
 }
 
+/** Absolute URL for viewing a document inline (PDF/HTML/SVG/XML) served by
+ *  /api/files/view. Non-PDF docs are CSP-sandboxed server-side. Pair with
+ *  authHeaders() on a WebView so the Bearer token authenticates the top-level
+ *  request (single self-contained doc — no app-session cookie bootstrap). */
+export function fileViewUrl(path: string): string {
+  const { host } = getConfig();
+  return `${(host || '').replace(/\/+$/, '')}/api/files/view?path=${encodeURIComponent(path)}`;
+}
+
 export function authHeaders(): Record<string, string> {
   const { token } = getConfig();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -788,6 +797,15 @@ export async function renameFile(from: string, to: string): Promise<string> {
 export function fileDownloadUrl(path: string): string {
   const { host } = getConfig();
   return `${(host || '').replace(/\/+$/, '')}/api/files/download?path=${encodeURIComponent(path)}`;
+}
+
+/** Browser-facing download URL for "open / download" from a phone: the
+ *  /oauth-prefixed route (like appBrowserUrl), where the user's oauth2 session
+ *  cookie authenticates — the bare Bearer-only URL 401s in a system browser
+ *  (Linking.openURL can't attach a header). Works for the public demo too. */
+export function fileDownloadBrowserUrl(path: string): string {
+  const { host } = getConfig();
+  return `${(host || '').replace(/\/+$/, '')}/oauth/api/files/download?path=${encodeURIComponent(path)}`;
 }
 
 // ---- Provider keys ---------------------------------------------------------
