@@ -46,6 +46,16 @@ tests:
           path: data["github-app-token.py"]
           pattern: 'configure_git\(token, get_auth_mode\(\)\)'
 
+  - it: start.sh scrubs a stale baked extraheader before the boot kube-coder pull
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # A past manual push workaround can bake a now-stale http.<host>.extraheader
+      # Basic token into the clone; git sends it verbatim and it shadows the
+      # self-refreshing credential.helper, wedging the boot pull. Strip it first.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'config --unset-all http\.https://github\.com/\.extraheader'
+
   - it: the daemon configmap is absent when no GitHub App is configured
     template: templates/github-app-token-refresh.yaml
     asserts:
