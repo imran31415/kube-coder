@@ -29,22 +29,32 @@ function readCurrent(): string {
 
 export const currentPath = signal<string>(readCurrent());
 
+/** The ingress prefix currently in use (e.g. `/oauth`), or '' at the root. */
+function currentPrefix(): string {
+  if (typeof window === 'undefined') return '';
+  const here = window.location.pathname;
+  for (const pref of PREFIXES) {
+    if (here === pref || here.startsWith(pref + '/')) return pref;
+  }
+  return '';
+}
+
+/**
+ * Build a full URL for an app-level route under the current ingress prefix.
+ * Use for the `href` of in-app anchors so right-click/⌘-click "open in new
+ * tab" keeps the `/oauth` (or other) prefix the SPA was served from.
+ */
+export function routeHref(path: string): string {
+  return `${currentPrefix()}${path === '/' ? '/' : path}`;
+}
+
 export function navigate(path: string, replace = false) {
   if (typeof window === 'undefined') {
     currentPath.value = path;
     return;
   }
-  // Find which prefix is currently in use so pushState keeps the user under
-  // the same external URL shape (ingress-aware).
-  const here = window.location.pathname;
-  let prefix = '';
-  for (const pref of PREFIXES) {
-    if (here === pref || here.startsWith(pref + '/')) {
-      prefix = pref;
-      break;
-    }
-  }
-  const url = `${prefix}${path === '/' ? '/' : path}`;
+  // Keep pushState under the same external URL shape (ingress-aware).
+  const url = routeHref(path);
   if (replace) window.history.replaceState({}, '', url);
   else window.history.pushState({}, '', url);
   currentPath.value = path;

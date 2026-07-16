@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { currentPath, navigate, normalize, matchRoute } from './router';
+import { currentPath, navigate, normalize, matchRoute, routeHref } from './router';
 
 beforeEach(() => {
   window.history.replaceState({}, '', '/');
@@ -37,6 +37,18 @@ describe('navigate()', () => {
     // history length should be unchanged after replaceState
     expect(window.history.length).toBe(startLen);
     expect(currentPath.value).toBe('/tasks');
+  });
+});
+
+describe('routeHref()', () => {
+  it('returns the bare path at the root (no ingress prefix)', () => {
+    window.history.replaceState({}, '', '/');
+    expect(routeHref('/apps/3000')).toBe('/apps/3000');
+  });
+
+  it('carries the /oauth ingress prefix so new-tab links stay authed', () => {
+    window.history.replaceState({}, '', '/oauth/hypervisor');
+    expect(routeHref('/apps/3000')).toBe('/oauth/apps/3000');
   });
 });
 
