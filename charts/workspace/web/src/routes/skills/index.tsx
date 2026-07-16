@@ -19,6 +19,7 @@ import {
   syncingSkill,
 } from '../../store/skills';
 import { sheetOpen } from '../../store/ui';
+import { startChatFromPrompt } from '../../store/desktop';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { Input } from '../../components/primitives/Input';
 import { Button } from '../../components/primitives/Button';
@@ -37,6 +38,21 @@ import './skills.css';
  * the system badges show which harnesses share it, and a "divergent"
  * badge flags same-name skills whose content has drifted apart.
  */
+
+// Explains the two ways to add a skill — shown as the header help tooltip and
+// referenced by the "Add skill" button below it.
+const ADD_SKILL_HELP =
+  'Two ways to add a skill:\n' +
+  '• Chat in the Hypervisor and ask an agent to create one\n' +
+  '• Click “Add skill” to launch a chat that scaffolds one for you';
+
+// Seed message for the chat the "Add skill" button starts.
+const ADD_SKILL_PROMPT =
+  'I want to add a new skill to this workspace. Ask me what the skill should ' +
+  'do and which agent harness(es) it is for, then scaffold a SKILL.md under ' +
+  'the appropriate skills directory (e.g. .claude/skills/) so it shows up in ' +
+  'the Skills tab.';
+
 export function SkillsRoute() {
   const isMobile = useIsMobile();
 
@@ -55,13 +71,34 @@ export function SkillsRoute() {
 
   return (
     <div class="route route-skills">
-      <header class="route-header">
+      <header class="route-header route-header-with-action">
         <div>
           <h1 class="route-title">Skills</h1>
           <p class="route-subtitle muted">
             Agent capabilities discovered across every harness — {skills.value.length} skills
             from {skillSystems.value.length || '…'} system{skillSystems.value.length === 1 ? '' : 's'}.
           </p>
+        </div>
+        <div class="skl-header-actions">
+          <span
+            class="skl-help"
+            role="img"
+            tabindex={0}
+            aria-label={ADD_SKILL_HELP}
+            title={ADD_SKILL_HELP}
+          >
+            <Icon name="info" size={15} />
+          </span>
+          <MutatorOnly>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void startChatFromPrompt(ADD_SKILL_PROMPT, '/home/dev')}
+              title="Launches a Hypervisor chat that scaffolds a new skill"
+            >
+              <Icon name="plus" size={12} /> Add skill
+            </Button>
+          </MutatorOnly>
         </div>
       </header>
 

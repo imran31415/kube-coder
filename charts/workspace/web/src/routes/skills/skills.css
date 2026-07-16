@@ -20,6 +20,20 @@
   max-height: calc(100vh - 180px);
 }
 
+/* Header actions — help tooltip + "Add skill" launcher. */
+.skl-header-actions { display: flex; align-items: center; gap: var(--size-2); flex-shrink: 0; }
+.skl-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: help;
+  border-radius: var(--radius-pill);
+  transition: color var(--motion-fast);
+}
+.skl-help:hover, .skl-help:focus-visible { color: var(--text); }
+.skl-help:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* Toolbar */
 .skl-toolbar { display: flex; flex-direction: column; gap: var(--size-2); margin-bottom: var(--size-2); }
 .skl-facet-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }

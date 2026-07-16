@@ -38,6 +38,7 @@ export type IconName =
   | 'image'
   | 'trash'
   | 'pencil'
+  | 'info'
   | 'hypervisor'
   | 'desktop';
 
@@ -236,6 +237,14 @@ const PATHS: Record<IconName, JSX.Element> = {
   pencil: (
     <>
       <path d="M4 16l1-3 8-8 2 2-8 8-3 1z" />
+    </>
+  ),
+  // Circled "i" — a lightweight help/info affordance.
+  info: (
+    <>
+      <circle cx="10" cy="10" r="7.5" />
+      <path d="M10 13.5V9" />
+      <path d="M10 6.6h0.01" />
     </>
   ),
 };
