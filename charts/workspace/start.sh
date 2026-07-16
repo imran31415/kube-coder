@@ -167,6 +167,24 @@ fi
       && log_stage "kube-coder source refreshed" \
       || log_stage "NOTE: git pull skipped (local commits or offline); existing clone retained"
   fi
+
+  # Expose Hypervisor-facing orchestration skills at USER scope. The dashboard
+  # Hypervisor runs Claude Code at /home/dev, so it only sees skills under
+  # ~/.claude/skills (user) and /home/dev/.claude/skills (project) — NOT the
+  # repo's /home/dev/kube-coder/.claude/skills, which are in scope only from
+  # inside the repo dir. Symlink the ones meant to drive work from the
+  # Hypervisor into user scope so `/kc-issue` et al. resolve there. Symlinks
+  # (not copies) so a later `git pull` on the clone refreshes them for free;
+  # target /home/dev explicitly since start.sh's own $HOME may differ from the
+  # dev user's. Runs after the clone/pull above so the source is present.
+  if [ -d /home/dev/kube-coder/.claude/skills ]; then
+    mkdir -p /home/dev/.claude/skills
+    for _skill in kc-issue; do
+      _src="/home/dev/kube-coder/.claude/skills/$_skill"
+      [ -d "$_src" ] && ln -sfn "$_src" "/home/dev/.claude/skills/$_skill"
+    done
+    log_stage "linked Hypervisor-global skills into ~/.claude/skills"
+  fi
 ) &
 
 # Render an OpenCode config file whenever at least one OpenCode-backed
