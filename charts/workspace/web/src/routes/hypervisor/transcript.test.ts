@@ -36,6 +36,20 @@ describe('buildTurns', () => {
     }
   });
 
+  it('renders show_file as a file block (and drops it when path is missing)', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'f1',
+           tool: { name: 'mcp__dashboard__show_file', input: { path: 'docs/plan.md', title: 'Plan', height: 500 } } }, 1),
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 'f2',
+           tool: { name: 'mcp__dashboard__show_file', input: {} } }, 2),
+    ]);
+    if (turns[0].role === 'agent') {
+      // path-less call renders no file block; it degrades to an activity chip.
+      const files = turns[0].blocks.filter((b) => b.kind === 'file');
+      expect(files).toEqual([{ kind: 'file', path: 'docs/plan.md', title: 'Plan', height: 500 }]);
+    }
+  });
+
   it('keeps a render tool error visible instead of swallowing it', () => {
     const turns = buildTurns([
       ev({ role: 'assistant', type: 'tool_call', tool_id: 'm1',

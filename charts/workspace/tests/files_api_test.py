@@ -211,6 +211,78 @@ class FilesApiTests(_Base):
         finally:
             os.remove(img)
 
+    def test_view_pdf_inline_with_ranges(self):
+        pdf = os.path.join(self.tmpdir, 'doc.pdf')
+        with open(pdf, 'wb') as f:
+            f.write(b'%PDF-1.4\n' + b'x' * 100)
+        try:
+            status, body, resp = self._req('GET', '/api/files/view?path=doc.pdf')
+            self.assertEqual(status, 200)
+            self.assertEqual(resp.headers.get('Content-Type'), 'application/pdf')
+            self.assertEqual(resp.headers.get('Content-Disposition'), 'inline')
+            self.assertEqual(resp.headers.get('X-Content-Type-Options'), 'nosniff')
+            self.assertEqual(resp.headers.get('Accept-Ranges'), 'bytes')
+            # PDFs must NOT get the sandbox CSP — it breaks the browser viewer.
+            self.assertIsNone(resp.headers.get('Content-Security-Policy'))
+            self.assertTrue(body.startswith(b'%PDF'))
+        finally:
+            os.remove(pdf)
+
+    def test_view_pdf_range_request(self):
+        pdf = os.path.join(self.tmpdir, 'ranged.pdf')
+        with open(pdf, 'wb') as f:
+            f.write(b'%PDF-1.4\n' + b'abcdefghij')
+        try:
+            r = urllib.request.Request(self._url('/api/files/view?path=ranged.pdf'),
+                                       headers={'Range': 'bytes=0-3'})
+            with urllib.request.urlopen(r, timeout=5) as resp:
+                self.assertEqual(resp.status, 206)
+                self.assertEqual(resp.read(), b'%PDF')
+                self.assertIn('bytes 0-3/', resp.headers.get('Content-Range', ''))
+        finally:
+            os.remove(pdf)
+
+    def test_view_html_is_sandboxed(self):
+        html = os.path.join(self.tmpdir, 'page.html')
+        with open(html, 'w') as f:
+            f.write('<h1>hi</h1><script>alert(1)</script>')
+        try:
+            status, body, resp = self._req('GET', '/api/files/view?path=page.html')
+            self.assertEqual(status, 200)
+            self.assertEqual(resp.headers.get('Content-Type'), 'text/html')
+            # The XSS defusal: unique origin, scripts blocked.
+            self.assertEqual(resp.headers.get('Content-Security-Policy'), 'sandbox')
+            self.assertEqual(resp.headers.get('X-Content-Type-Options'), 'nosniff')
+            self.assertIn(b'<h1>hi</h1>', body)
+        finally:
+            os.remove(html)
+
+    def test_view_svg_is_sandboxed(self):
+        svg = os.path.join(self.tmpdir, 'pic.svg')
+        with open(svg, 'w') as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+        try:
+            status, _body, resp = self._req('GET', '/api/files/view?path=pic.svg')
+            self.assertEqual(status, 200)
+            self.assertEqual(resp.headers.get('Content-Type'), 'image/svg+xml')
+            self.assertEqual(resp.headers.get('Content-Security-Policy'), 'sandbox')
+        finally:
+            os.remove(svg)
+
+    def test_view_rejects_non_document_type(self):
+        # text/plain is rendered client-side via /preview, never served inline here.
+        status, _body, _ = self._req('GET', '/api/files/view?path=hello.txt')
+        self.assertEqual(status, 415)
+
+    def test_view_missing_404(self):
+        status, _body, _ = self._req('GET', '/api/files/view?path=nope.pdf')
+        self.assertEqual(status, 404)
+
+    def test_view_traversal_rejected(self):
+        q = urllib.parse.quote('../../etc/passwd', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/view?path={q}')
+        self.assertEqual(status, 400)
+
     def test_rename_moves_file(self):
         with open(os.path.join(self.tmpdir, 'old.txt'), 'w') as f:
             f.write('x')
@@ -289,6 +361,16 @@ class FilesApiReadonlyTests(_Base):
         status, body, _ = self._req('GET', '/api/files/preview?path=hello.txt')
         self.assertEqual(status, 200)
         self.assertEqual(body['kind'], 'text')
+
+    def test_view_allowed_in_readonly(self):
+        pdf = os.path.join(self.tmpdir, 'ro.pdf')
+        with open(pdf, 'wb') as f:
+            f.write(b'%PDF-1.4\n')
+        try:
+            status, _body, _ = self._req('GET', '/api/files/view?path=ro.pdf')
+            self.assertEqual(status, 200)
+        finally:
+            os.remove(pdf)
 
 
 if __name__ == '__main__':

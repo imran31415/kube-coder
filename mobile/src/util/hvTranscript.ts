@@ -12,6 +12,7 @@ export type HvBlock =
   | { kind: 'activity'; label: string; detail: string; error?: boolean }
   | { kind: 'embed'; port: number; title?: string; height?: number }
   | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number }
+  | { kind: 'file'; path: string; title?: string; height?: number }
   | { kind: 'choice'; question?: string; options: string[] };
 
 export type HvTurn =
@@ -21,6 +22,7 @@ export type HvTurn =
 /** MCP render tools whose tool_call renders inline instead of a text chip. */
 const APP_PREVIEW_TOOL = 'mcp__dashboard__show_app_preview';
 const MEDIA_TOOL = 'mcp__dashboard__show_media';
+const FILE_TOOL = 'mcp__dashboard__show_file';
 
 function num(v: unknown): number | undefined {
   const n = typeof v === 'string' ? Number(v) : (v as number);
@@ -44,6 +46,11 @@ function renderBlock(name: string, input: unknown): HvBlock | null {
     const url = str(a.url);
     if (!path && !url) return null;
     return { kind: 'media', mediaKind, path, url, title: str(a.title), height: num(a.height) };
+  }
+  if (name === FILE_TOOL) {
+    const path = str(a.path);
+    if (!path) return null;
+    return { kind: 'file', path, title: str(a.title), height: num(a.height) };
   }
   return null;
 }

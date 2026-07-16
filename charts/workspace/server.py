@@ -111,10 +111,12 @@ HYPERVISOR_PREAMBLE = (
     "tell the user exactly what you'll do and get their explicit approval in the "
     "chat, then call again with confirm=true. "
     "You can also render rich content inline in this chat: call show_app_preview "
-    "with a running app's port to embed a LIVE preview of it, and show_media to "
+    "with a running app's port to embed a LIVE preview of it, show_media to "
     "display an image or video (a workspace file path under /home/dev, or an http "
-    "URL). Do this proactively — when you start or build an app, show its preview; "
-    "when you produce a screenshot or image, show it. "
+    "URL), and show_file to render a document/file for review (markdown, text, "
+    "code, PDF, or HTML from a /home/dev path). Do this proactively — when you "
+    "start or build an app, show its preview; when you produce a screenshot, show "
+    "it; when you create or reference a doc (a plan, README, report), show_file it. "
     "Prefer these tools for any question about, or action on, the workspace. "
     "Answer from tool results, not memory. Be concise and conversational. "
     "When you need the user to make a discrete choice between a few options, "
@@ -4173,6 +4175,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/files/preview':
             self.handle_file_preview()
             return
+        # Stream a document inline for the Hypervisor chat's sandboxed viewer
+        # (PDF/HTML/SVG). Markdown/text render client-side via /preview.
+        if claude_path == '/api/files/view':
+            self.handle_file_view()
+            return
 
         super().do_GET()
 
@@ -6756,6 +6763,105 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({'kind': 'text', 'path': rel_out, 'mime': ctype or 'text/plain',
                         'size': size, 'content': text, 'truncated': truncated})
+
+    # Document types the Hypervisor chat renders in a sandboxed <iframe>/WebView
+    # (markdown/text/code are rendered client-side from /api/files/preview, and
+    # image/video stream from /api/files/raw, so only these need serving inline).
+    VIEW_INLINE_MIME = {
+        'application/pdf',
+        'text/html', 'application/xhtml+xml',
+        'image/svg+xml',
+        'text/xml', 'application/xml',
+    }
+
+    def handle_file_view(self):
+        """GET /api/files/view?path=<rel> — stream a workspace DOCUMENT inline so
+        the Hypervisor chat can render it in a sandboxed frame (PDF, HTML, SVG).
+
+        Auth-gated + traversal-guarded (reuses _resolve_under_home_dev), like
+        /api/files/raw. Restricted to a small document allowlist (VIEW_INLINE_MIME).
+
+        SECURITY: the dashboard is served from this same origin with no CSP, so
+        serving an arbitrary HTML/JS file inline would be stored XSS. We defuse
+        that with `Content-Security-Policy: sandbox` (no allow-scripts, no
+        allow-same-origin) on every response *except* application/pdf — the
+        browser's PDF viewer already isolates any embedded JS, and the sandbox
+        directive would break it. Always send nosniff + inline. PDFs support a
+        single Range so large-file seeking works.
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.urlparse(self.path).query
+        rel = (urllib.parse.parse_qs(qs).get('path', [''])[0] or '').strip()
+        try:
+            target = self._resolve_under_home_dev(rel)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        if not os.path.isfile(target):
+            self.send_json({'error': 'not a file'}, 404)
+            return
+        ctype = mimetypes.guess_type(target)[0] or ''
+        if ctype not in self.VIEW_INLINE_MIME:
+            self.send_json(
+                {'error': f'{ctype or "this file type"} cannot be viewed inline; '
+                          'use /api/files/preview (text) or /api/files/download'}, 415)
+            return
+        is_pdf = ctype == 'application/pdf'
+        try:
+            size = os.path.getsize(target)
+            start, end = 0, size - 1
+            is_range = False
+            # Range only matters for the PDF viewer; text/HTML docs are small.
+            rng = self.headers.get('Range', '') if is_pdf else ''
+            m = re.match(r'^bytes=(\d*)-(\d*)$', rng.strip()) if rng else None
+            if m and size > 0:
+                s, e = m.group(1), m.group(2)
+                if s:
+                    start = int(s)
+                    end = int(e) if e else size - 1
+                elif e:  # suffix range: last N bytes
+                    start = max(0, size - int(e))
+                    end = size - 1
+                if start > end or start >= size:
+                    self.send_response(416)
+                    self.send_header('Content-Range', f'bytes */{size}')
+                    self.end_headers()
+                    return
+                is_range = True
+            length = end - start + 1
+            with open(target, 'rb') as fh:
+                self.send_response(206 if is_range else 200)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Length', str(length))
+                if is_pdf:
+                    self.send_header('Accept-Ranges', 'bytes')
+                    if is_range:
+                        self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                else:
+                    # Neutralize any active content in HTML/SVG/XML: unique origin,
+                    # no scripts, no access to the dashboard's cookies/DOM.
+                    self.send_header('Content-Security-Policy', 'sandbox')
+                self.send_header('Content-Disposition', 'inline')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Cache-Control', 'private, max-age=60')
+                self.end_headers()
+                fh.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = fh.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client went away mid-stream; headers already sent
+        except OSError as e:
+            try:
+                self.send_json({'error': f'read failed: {e}'}, 500)
+            except Exception:
+                pass
 
     def handle_file_delete(self):
         """DELETE /api/files?path=<rel> — remove a file or an EMPTY directory
