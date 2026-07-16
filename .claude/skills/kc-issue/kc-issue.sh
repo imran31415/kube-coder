@@ -77,7 +77,9 @@ cmd_new() {
     echo "kc-issue: reusing existing worktree $wt" >&2
   else
     local env_block
-    env_block=$(bash "$WT_HELPER" new "$slug" origin/main) \
+    # worktree.sh derives the repo from $PWD, so run it FROM the repo — never
+    # rely on the caller's cwd (that made this cwd-dependent and flaky).
+    env_block=$(cd "$REPO_ROOT" && bash "$WT_HELPER" new "$slug" origin/main) \
       || die "worktree helper failed"
     # env_block = export KC_WT=... KC_WT_BRANCH=... PORT=...
     eval "$env_block"
