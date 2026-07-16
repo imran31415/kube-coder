@@ -17,6 +17,7 @@ import {
 import { WorkspaceContext } from './WorkspaceContext';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
 import { proxyUrl } from '../../api/apps';
+import { navigate, routeHref } from '../../store/router';
 import { withOauthPrefix } from '../../api/client';
 import { previewFile, fileRawUrl, fileViewUrl, downloadFile, type FilePreview } from '../../api/files';
 import { isImageFile, imagesFromClipboard, uploadTaskImage } from '../tasks/imageAttach';
@@ -76,8 +77,19 @@ function EmbedBlock({ port, title, height }: { port: number; title?: string; hei
           <button type="button" class="hv-embed-btn" onClick={() => setKey((k) => k + 1)}>
             Reload
           </button>
-          <a class="hv-embed-btn" href={`/apps/${port}`}>
-            Open <Icon name="link" size={11} />
+          <a
+            class="hv-embed-btn"
+            href={routeHref(`/apps/${port}`)}
+            onClick={(e) => {
+              // Left-click → SPA navigation to the app's Apps-view page (keeps
+              // dashboard state, ingress-prefix aware). Modifier-clicks fall
+              // through to the browser so "open in new tab" still works.
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+              e.preventDefault();
+              navigate(`/apps/${port}`);
+            }}
+          >
+            Open in Apps <Icon name="link" size={11} />
           </a>
         </span>
       </figcaption>
