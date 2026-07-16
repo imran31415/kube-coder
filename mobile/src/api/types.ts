@@ -216,6 +216,8 @@ export interface HypervisorThread {
   status: string;
   created_at: number | null;
   updated_at: number | null;
+  // Present (unix seconds) only on soft-deleted threads in the trash view.
+  deleted_at?: number | null;
 }
 
 export interface HypervisorThreadDetail {

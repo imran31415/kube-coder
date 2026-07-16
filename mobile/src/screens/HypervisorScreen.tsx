@@ -32,7 +32,9 @@ import {
   fileRawUrl,
   getHypervisorConfig,
   getThreadDetail,
+  listDeletedThreads,
   listThreads,
+  restoreThread,
   renameThread,
   sendThreadMessage,
   stopThread,
@@ -83,6 +85,10 @@ export default function HypervisorScreen() {
   const [headerH, setHeaderH] = useState(56);
   const [config, setConfig] = useState<HypervisorConfig | null>(null);
   const [threads, setThreads] = useState<HypervisorThread[]>([]);
+  // "Recently deleted" — soft-deleted threads (issue #260). Loaded lazily the
+  // first time the trash section is opened in the chats sheet.
+  const [deletedThreads, setDeletedThreads] = useState<HypervisorThread[]>([]);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [events, setEvents] = useState<HvEvent[]>([]);
   const [status, setStatus] = useState<string>('');
@@ -105,6 +111,14 @@ export default function HypervisorScreen() {
   const refreshThreads = useCallback(async () => {
     try {
       setThreads(await listThreads());
+    } catch {
+      /* keep last-good */
+    }
+  }, []);
+
+  const refreshDeletedThreads = useCallback(async () => {
+    try {
+      setDeletedThreads(await listDeletedThreads());
     } catch {
       /* keep last-good */
     }
@@ -209,6 +223,8 @@ export default function HypervisorScreen() {
     }
     if (activeId === id) newChat();
     void refreshThreads();
+    // Keep the trash section in sync only if it's already been loaded.
+    if (deletedThreads.length > 0 || trashOpen) void refreshDeletedThreads();
   }
 
   // Optimistically patch the in-memory list so the sheet + header update
@@ -234,6 +250,23 @@ export default function HypervisorScreen() {
       confirmLabel: 'Delete',
       destructive: true,
       onConfirm: () => void removeThread(t.id),
+    });
+  }
+
+  async function reviveThread(id: string) {
+    try {
+      await restoreThread(id);
+    } catch {
+      /* best effort */
+    }
+    void Promise.all([refreshThreads(), refreshDeletedThreads()]);
+  }
+
+  function toggleTrash() {
+    setTrashOpen((v) => {
+      const next = !v;
+      if (next) void refreshDeletedThreads();
+      return next;
     });
   }
 
@@ -379,6 +412,10 @@ export default function HypervisorScreen() {
         onDelete={confirmRemove}
         onRename={renameThreadTitle}
         onNew={newChat}
+        deletedThreads={deletedThreads}
+        trashOpen={trashOpen}
+        onToggleTrash={toggleTrash}
+        onRestore={(t) => void reviveThread(t.id)}
       />
 
       <KeyboardAvoidingView
@@ -563,6 +600,10 @@ function ChatsSheet({
   onDelete,
   onRename,
   onNew,
+  deletedThreads,
+  trashOpen,
+  onToggleTrash,
+  onRestore,
 }: {
   visible: boolean;
   threads: HypervisorThread[];
@@ -572,6 +613,10 @@ function ChatsSheet({
   onDelete: (t: HypervisorThread) => void;
   onRename: (id: string, title: string) => void;
   onNew: () => void;
+  deletedThreads: HypervisorThread[];
+  trashOpen: boolean;
+  onToggleTrash: () => void;
+  onRestore: (t: HypervisorThread) => void;
 }) {
   const insets = useSafeAreaInsets();
   // Inline rename: the row being edited plus its draft text.
@@ -692,6 +737,53 @@ function ChatsSheet({
             );
           })}
         </ScrollView>
+
+        {/* Recently deleted — a collapsible trash so an accidental delete is
+            recoverable (issue #260). Soft-deleted threads keep their files;
+            Restore clears the tombstone. Server-side GC hard-purges old ones. */}
+        <Pressable
+          onPress={onToggleTrash}
+          style={styles.trashToggle}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: trashOpen }}
+        >
+          <Ionicons name={trashOpen ? 'chevron-down' : 'chevron-forward'} size={13} color={colors.textFaint} />
+          <Text style={styles.trashToggleText}>Recently deleted</Text>
+          {deletedThreads.length > 0 && (
+            <View style={styles.trashCount}>
+              <Text style={styles.trashCountText}>{deletedThreads.length}</Text>
+            </View>
+          )}
+        </Pressable>
+        {trashOpen && (
+          <ScrollView style={styles.trashList} contentContainerStyle={styles.sheetListInner}>
+            {deletedThreads.length === 0 && <Text style={styles.trashEmpty}>Nothing here.</Text>}
+            {deletedThreads.map((t) => (
+              <View key={t.id} style={styles.chatRow}>
+                <View style={styles.chatRowMain}>
+                  <View style={[styles.dot, { backgroundColor: colors.textFaint }]} />
+                  <View style={styles.chatRowBody}>
+                    <Text numberOfLines={1} style={[styles.chatRowTitle, styles.chatRowTitleDeleted]}>
+                      {t.title || 'New chat'}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.chatRowMeta}>
+                      {t.assistant || 'agent'}
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={() => onRestore(t)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Restore chat"
+                  style={({ pressed }) => [styles.restoreBtn, pressed && { opacity: 0.6 }]}
+                >
+                  <Text style={styles.restoreBtnText}>Restore</Text>
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        )}
       </View>
     </Modal>
   );
@@ -940,6 +1032,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  trashToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  trashToggleText: {
+    color: colors.textFaint,
+    fontSize: font.size.xs,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  trashCount: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface2,
+  },
+  trashCountText: { color: colors.textMuted, fontSize: 10, fontWeight: '700' },
+  trashList: { flexGrow: 0, maxHeight: 220 },
+  trashEmpty: { color: colors.textFaint, fontSize: font.size.sm, paddingHorizontal: space.md, paddingVertical: space.sm },
+  chatRowTitleDeleted: { textDecorationLine: 'line-through', color: colors.textFaint },
+  restoreBtn: {
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+    marginRight: space.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  restoreBtnText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
   transcript: { padding: space.lg, gap: space.md },
   welcome: { paddingTop: space.xxl, gap: space.lg },
   suggests: { gap: space.sm, paddingHorizontal: space.lg },

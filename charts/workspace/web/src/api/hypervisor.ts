@@ -33,6 +33,8 @@ export interface HypervisorThread {
   status: ThreadStatus;
   created_at: number | null;
   updated_at: number | null;
+  // Present (unix seconds) only on soft-deleted threads in the trash view.
+  deleted_at?: number | null;
 }
 
 export interface ThreadDetail {
@@ -47,6 +49,12 @@ export const listThreads = () =>
   apiGet<{ threads: HypervisorThread[] }>('/api/hypervisor/threads').then(
     (r) => r.threads ?? [],
   );
+
+/** The "Recently deleted" trash view — soft-deleted threads only. */
+export const listDeletedThreads = () =>
+  apiGet<{ threads: HypervisorThread[] }>(
+    '/api/hypervisor/threads?deleted=1',
+  ).then((r) => r.threads ?? []);
 
 export const createThread = (opts: { message?: string; assistant?: string; workdir?: string }) =>
   apiPost<{ thread: HypervisorThread }>('/api/hypervisor/threads', opts).then(
@@ -77,3 +85,9 @@ export const stopThread = (id: string) =>
 
 export const deleteThread = (id: string) =>
   apiDelete<{ ok: boolean }>(`/api/hypervisor/threads/${encodeURIComponent(id)}`);
+
+/** Undo a soft-delete: clears deleted_at so the chat reappears in the list. */
+export const restoreThread = (id: string) =>
+  apiPost<{ ok: boolean; restored: boolean }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/restore`,
+  );

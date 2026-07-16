@@ -729,22 +729,94 @@ class HypervisorSession:
         return self
 
     @classmethod
-    def list(cls) -> List[Dict[str, Any]]:
+    def list(cls, include_deleted: bool = False,
+             only_deleted: bool = False) -> List[Dict[str, Any]]:
+        """List threads, newest first.
+
+        Soft-deleted threads (meta carrying ``deleted_at``) are hidden by
+        default. ``only_deleted`` returns just the tombstones (the "Recently
+        deleted" view); ``include_deleted`` returns both.
+        """
         if not os.path.isdir(HYPERVISOR_DIR):
             return []
         out = []
         for tid in os.listdir(HYPERVISOR_DIR):
             s = cls.get(tid)
-            if s:
-                m = s.read_meta()
-                if m:
-                    out.append(s.summary(m))
-        out.sort(key=lambda t: t.get('updated_at') or 0, reverse=True)
+            if not s:
+                continue
+            m = s.read_meta()
+            if not m:
+                continue
+            is_deleted = m.get('deleted_at') is not None
+            if only_deleted and not is_deleted:
+                continue
+            if is_deleted and not (include_deleted or only_deleted):
+                continue
+            out.append(s.summary(m))
+        # Tombstones sort by when they were deleted; live threads by activity.
+        key = 'deleted_at' if only_deleted else 'updated_at'
+        out.sort(key=lambda t: t.get(key) or 0, reverse=True)
         return out
 
     def delete(self) -> None:
+        """Soft-delete: stamp ``deleted_at`` so the thread drops out of the
+        default listing but its files (thread.json + events.jsonl) survive for
+        `revive()`. A separate `purge_deleted()` hard-removes old tombstones so
+        the PVC doesn't grow unbounded. Mirrors MemoryManager.soft_delete."""
+        m = self.read_meta()
+        if m is None:
+            return
+        m['deleted_at'] = int(_now())
+        # Preserve the thread's original activity ordering across a
+        # delete→restore round-trip: don't let _write_meta bump updated_at.
+        self._write_meta(m, touch=False)
+
+    def revive(self) -> bool:
+        """Clear ``deleted_at`` so a soft-deleted thread reappears in the
+        default listing. Returns False if the thread is missing or wasn't
+        deleted. Leaves ``updated_at`` untouched so restore preserves order."""
+        m = self.read_meta()
+        if m is None or m.get('deleted_at') is None:
+            return False
+        m.pop('deleted_at', None)
+        self._write_meta(m, touch=False)
+        return True
+
+    def hard_delete(self) -> None:
+        """Irreversibly remove the thread directory. Used by `purge_deleted`
+        for old tombstones — the pre-soft-delete behaviour."""
         import shutil
         shutil.rmtree(self.dir, ignore_errors=True)
+
+    @classmethod
+    def purge_deleted(cls, older_than_days: Optional[float] = None) -> Dict[str, Any]:
+        """Hard-delete soft-deleted threads to bound disk use.
+
+        Without this, `delete()` tombstones dirs forever. Removes every thread
+        whose ``deleted_at`` is set and (if given) older than the cutoff.
+        Idempotent — a call with nothing to purge is a cheap no-op. Mirrors
+        MemoryManager.purge_deleted (server.py). Returns a count."""
+        if not os.path.isdir(HYPERVISOR_DIR):
+            return {'purged': 0}
+        cutoff = None
+        if older_than_days is not None:
+            cutoff = _now() - float(older_than_days) * 86400.0
+        purged = 0
+        for tid in list(os.listdir(HYPERVISOR_DIR)):
+            s = cls.get(tid)
+            if not s:
+                continue
+            m = s.read_meta()
+            if not m:
+                continue
+            deleted_at = m.get('deleted_at')
+            if deleted_at is None:
+                continue
+            if cutoff is not None and float(deleted_at) >= cutoff:
+                continue
+            s.hard_delete()
+            purged += 1
+        return {'purged': purged}
 
     # ── meta ───────────────────────────────────────────────────────────────
     def read_meta(self) -> Optional[Dict[str, Any]]:
@@ -754,8 +826,12 @@ class HypervisorSession:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def _write_meta(self, meta: Dict[str, Any]) -> None:
-        meta['updated_at'] = _now()
+    def _write_meta(self, meta: Dict[str, Any], touch: bool = True) -> None:
+        # `touch=False` persists a metadata change (soft-delete/revive) without
+        # bumping updated_at, so a delete→restore round-trip keeps the thread's
+        # place in the activity-sorted list.
+        if touch:
+            meta['updated_at'] = _now()
         tmp = self.meta_path + '.tmp'
         with open(tmp, 'w') as f:
             json.dump(meta, f, indent=2)
@@ -789,6 +865,9 @@ class HypervisorSession:
             'status': self.status(),
             'created_at': m.get('created_at'),
             'updated_at': m.get('updated_at'),
+            # Present (unix seconds) only on soft-deleted threads — lets the UI
+            # render/sort the "Recently deleted" section.
+            'deleted_at': m.get('deleted_at'),
         }
 
     # ── events ─────────────────────────────────────────────────────────────

@@ -352,6 +352,96 @@ class CodexAdapterTest(unittest.TestCase):
                                 'text': 'plain non-json line'}])
 
 
+class SoftDeleteTest(unittest.TestCase):
+    """Soft-delete / revive / purge lifecycle (issue #260)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+
+    def _mk(self, title='x'):
+        return hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title=title)
+
+    def test_delete_is_soft_and_hides_from_default_list(self):
+        s = self._mk('keep-me')
+        s.delete()
+        # Files survive — a hard rmtree would have removed the dir.
+        self.assertTrue(os.path.isfile(s.meta_path))
+        self.assertIsNotNone(s.read_meta().get('deleted_at'))
+        # Excluded from the default listing, present in the trash view.
+        self.assertEqual(hs.HypervisorSession.list(), [])
+        deleted = hs.HypervisorSession.list(only_deleted=True)
+        self.assertEqual([t['id'] for t in deleted], [s.id])
+        self.assertIsNotNone(deleted[0]['deleted_at'])
+        # include_deleted returns both live + tombstoned.
+        self.assertEqual(len(hs.HypervisorSession.list(include_deleted=True)), 1)
+
+    def test_delete_preserves_updated_at_ordering(self):
+        s = self._mk()
+        before = s.read_meta()['updated_at']
+        s.delete()
+        self.assertEqual(s.read_meta()['updated_at'], before)
+
+    def test_revive_clears_tombstone(self):
+        s = self._mk('oops')
+        s.delete()
+        self.assertTrue(s.revive())
+        self.assertIsNone(s.read_meta().get('deleted_at'))
+        self.assertEqual([t['id'] for t in hs.HypervisorSession.list()], [s.id])
+        self.assertEqual(hs.HypervisorSession.list(only_deleted=True), [])
+
+    def test_revive_on_live_thread_is_false(self):
+        s = self._mk()
+        self.assertFalse(s.revive())
+
+    def test_revive_preserves_full_event_history(self):
+        s = self._mk('with history')
+        s._append([{'role': 'user', 'type': 'message', 'text': 'one'}])
+        s._append([{'role': 'assistant', 'type': 'message', 'text': 'two'}])
+        s._append([{'role': 'user', 'type': 'message', 'text': 'three'}])
+        before = s.read_events()
+
+        s.delete()
+        # Soft-delete must not touch events.jsonl at all.
+        self.assertEqual(s.read_events(), before)
+
+        self.assertTrue(s.revive())
+        after = s.read_events()
+        self.assertEqual(after, before)
+        self.assertEqual([e['seq'] for e in after], [1, 2, 3])
+        self.assertEqual([e['text'] for e in after], ['one', 'two', 'three'])
+
+    def test_purge_removes_only_old_tombstones(self):
+        live = self._mk('live')
+        recent = self._mk('recent')
+        old = self._mk('old')
+        recent.delete()
+        old.delete()
+        # Backdate the "old" tombstone well past the cutoff.
+        m = old.read_meta()
+        m['deleted_at'] = int(hs._now()) - 40 * 86400
+        old._write_meta(m, touch=False)
+
+        res = hs.HypervisorSession.purge_deleted(older_than_days=30)
+        self.assertEqual(res['purged'], 1)
+        self.assertFalse(os.path.isdir(old.dir))        # hard-removed
+        self.assertTrue(os.path.isfile(recent.meta_path))  # recent tombstone kept
+        self.assertTrue(os.path.isfile(live.meta_path))    # live untouched
+
+    def test_purge_all_tombstones_when_no_cutoff(self):
+        s = self._mk()
+        s.delete()
+        res = hs.HypervisorSession.purge_deleted()
+        self.assertEqual(res['purged'], 1)
+        self.assertFalse(os.path.isdir(s.dir))
+
+
 class StopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

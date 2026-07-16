@@ -298,6 +298,62 @@
 }
 .hv-dot-waiting-for-input { background: var(--warn); }
 .hv-dot-error { background: var(--danger); }
+.hv-dot-deleted { background: var(--text-subtle); opacity: 0.5; }
+
+/* ── Recently deleted (soft-delete trash, issue #260) ────────────────── */
+.hv-trash {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.hv-trash-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: color var(--motion-fast);
+}
+.hv-trash-toggle:hover { color: var(--text-muted); }
+.hv-trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+/* The trash row title isn't a button (no re-open), just a static label. */
+.hv-thread-open-static {
+  cursor: default;
+  color: var(--text-subtle);
+}
+.hv-thread-deleted .hv-thread-title { text-decoration: line-through; }
+.hv-thread-restore {
+  flex-shrink: 0;
+  margin-right: 6px;
+  padding: 3px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
+}
+.hv-thread-restore:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
 
 /* ── Main column ─────────────────────────────────────────────────────── */
 .hv-main {

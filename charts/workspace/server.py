@@ -4960,7 +4960,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        threads = HypervisorSession.list() if _HYPERVISOR_AVAILABLE else []
+        # ?deleted=1 → the "Recently deleted" trash view (soft-deleted only).
+        # The query string is stripped from the route match, so re-parse it.
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        only_deleted = (qs.get('deleted') or [''])[0] in ('1', 'true')
+        if not _HYPERVISOR_AVAILABLE:
+            self.send_json({'threads': []})
+            return
+        threads = HypervisorSession.list(only_deleted=only_deleted)
         self.send_json({'threads': threads})
 
     def handle_hypervisor_create_thread(self):
@@ -5074,8 +5081,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         session = self._hv_session_or_404(thread_id)
         if session is None:
             return
+        # Soft-delete: the thread drops out of the default listing but its files
+        # survive so it can be restored from "Recently deleted".
         session.delete()
         self.send_json({'ok': True})
+
+    def handle_hypervisor_restore_thread(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        revived = session.revive()
+        self.send_json({'ok': True, 'restored': revived})
 
     def handle_claude_regenerate_token(self):
         if not self.check_oauth_only():
@@ -7809,6 +7828,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self.handle_hypervisor_stop(m.group(1))
                     return
+                # /api/hypervisor/threads/{id}/restore — undo a soft-delete
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/restore$', path)
+                if m:
+                    self.handle_hypervisor_restore_thread(m.group(1))
+                    return
                 # /api/hypervisor/threads/{id}/rename — set a custom chat title
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/rename$', path)
                 if m:
@@ -8611,6 +8635,41 @@ if __name__ == "__main__":
             print(f'[skills] multi-harness skills syncer started ({_skills_interval}s)')
         except Exception as e:
             print(f'[skills] syncer start failed: {e}', file=sys.stderr)
+
+    # Hypervisor chat GC (#260): chats are soft-deleted (thread.json stamped
+    # with deleted_at) so an accidental delete can be restored from "Recently
+    # deleted". Hard-purge tombstones older than KC_HYPERVISOR_GC_DAYS on boot
+    # and periodically so the PVC doesn't grow unbounded. Defaults to 30 days;
+    # set <=0 to keep tombstones forever (manual purge only).
+    if _HYPERVISOR_AVAILABLE:
+        try:
+            _hv_gc_days = float(os.environ.get('KC_HYPERVISOR_GC_DAYS', '30') or '30')
+        except (TypeError, ValueError):
+            _hv_gc_days = 30.0
+        if _hv_gc_days > 0:
+            try:
+                _hv_gc_interval_h = float(
+                    os.environ.get('KC_HYPERVISOR_GC_INTERVAL_H', '12') or '12')
+            except (TypeError, ValueError):
+                _hv_gc_interval_h = 12.0
+
+            def _hv_gc_loop(days, interval_s):
+                while True:
+                    try:
+                        res = HypervisorSession.purge_deleted(older_than_days=days)
+                        if res.get('purged'):
+                            print(f"[hypervisor] gc purged {res['purged']} "
+                                  f"deleted chat(s)")
+                    except Exception as e:
+                        print(f'[hypervisor] gc pass failed: {e}', file=sys.stderr)
+                    time.sleep(interval_s)
+
+            t = threading.Thread(
+                target=_hv_gc_loop, args=(_hv_gc_days, _hv_gc_interval_h * 3600),
+                name='hypervisor-gc', daemon=True)
+            t.start()
+            print(f'[hypervisor] periodic GC started '
+                  f'(>{_hv_gc_days}d every {_hv_gc_interval_h}h)')
 
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless
