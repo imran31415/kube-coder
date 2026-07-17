@@ -48,10 +48,15 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
 # hypervisor_session: structured agent sessions backing the Hypervisor chat.
 # Same delivery as the memory package (copied next to server.py at /tmp/browser).
 try:
-    from hypervisor_session import HypervisorSession
+    from hypervisor_session import (
+        HypervisorSession, build_activity as hv_build_activity,
+        hypervisor_health as hv_health,
+    )
     _HYPERVISOR_AVAILABLE = True
 except Exception as _hv_import_err:  # broken install shouldn't crash the server
     HypervisorSession = None  # type: ignore
+    hv_build_activity = None  # type: ignore
+    hv_health = None  # type: ignore
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
 
@@ -4112,6 +4117,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/hypervisor/threads':
             self.handle_hypervisor_list_threads()
             return
+        elif claude_path == '/api/hypervisor/health':
+            self.handle_hypervisor_health()
+            return
         elif claude_path == '/api/workspace/dirs':
             self.handle_workspace_dirs()
             return
@@ -4127,6 +4135,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Threads are structured agent sessions (hypervisor_session.py); the
         # frontend polls this endpoint with ?since=<seq> for new canonical
         # events. No SSE/tmux stream — there is no terminal to stream.
+        # /api/hypervisor/threads/{id}/activity — observability timeline +
+        # bounded runner.log tail (must precede the plain threads/{id} route).
+        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/activity$', claude_path)
+        if m:
+            self.handle_hypervisor_get_activity(m.group(1))
+            return
         m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', claude_path)
         if m:
             self.handle_hypervisor_get_thread(m.group(1))
@@ -5114,6 +5128,37 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'thread': session.summary(),
             'events': session.read_events(since_seq=since),
         })
+
+    def handle_hypervisor_get_activity(self, thread_id):
+        """Per-thread observability view: a normalized activity timeline (tool
+        calls + results + durations, errors, status transitions) derived from
+        events.jsonl, plus a bounded tail of the runner.log (subprocess stderr +
+        runner diagnostics). Read-only; behind the same auth gate as the thread
+        endpoint."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        if hv_build_activity is None:
+            self.send_json({'error': 'Hypervisor unavailable'}, 503)
+            return
+        activity = hv_build_activity(session.read_events())
+        activity['thread'] = session.summary()
+        activity['runner_log'] = session.read_runner_log()
+        self.send_json(activity)
+
+    def handle_hypervisor_health(self):
+        """Global hypervisor runner health: live turn/subprocess counts and a
+        per-thread status + recent-error snapshot. Read-only, auth-gated."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not _HYPERVISOR_AVAILABLE or hv_health is None:
+            self.send_json({'error': 'Hypervisor unavailable'}, 503)
+            return
+        self.send_json(hv_health())
 
     def handle_hypervisor_send_message(self, thread_id):
         if not self.check_claude_auth():

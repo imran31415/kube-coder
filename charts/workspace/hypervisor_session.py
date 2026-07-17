@@ -105,6 +105,15 @@ _ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|[\x00-\x08
 # Per-turn wall-clock ceiling for a fallback CLI (Claude manages its own).
 FALLBACK_TURN_TIMEOUT = float(os.environ.get('KC_HYPERVISOR_FALLBACK_TIMEOUT', '180'))
 
+# Size ceiling for a thread's runner.log — the bounded on-disk capture of the
+# CLI subprocess's stderr + per-turn runner diagnostics (issue: hypervisor
+# observability). Capped so the PVC can't grow unbounded; when exceeded we keep
+# the tail (the recent, relevant lines) and drop the head. Env-overridable.
+try:
+    RUNNER_LOG_MAX_BYTES = int(os.environ.get('KC_HYPERVISOR_RUNNER_LOG_MAX', str(256 * 1024)))
+except ValueError:
+    RUNNER_LOG_MAX_BYTES = 256 * 1024
+
 # The Hypervisor gives Claude a MINIMAL, curated MCP set — `dashboard` (the
 # workspace UI actions: metrics/tasks/apps + create_task/pin_app/gated kill…)
 # and `memory` — instead of the full seeded config (playwright,
@@ -668,6 +677,136 @@ def _stringify(v: Any) -> str:
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Activity view — a normalized observability timeline over events.jsonl
+# ───────────────────────────────────────────────────────────────────────────
+def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pure transform of an events.jsonl list into a user-facing activity view
+    (issue: hypervisor observability). Deterministic and side-effect free so
+    it's trivially unit-testable.
+
+    Produces:
+      * timeline — ordered entries (seq-sorted) of the operationally interesting
+        events: tool calls (each paired with its result + duration + ok/error
+        status), standalone errors, and status transitions. Plain chat messages
+        are the transcript itself, so they're counted but not repeated here.
+      * counts   — {tool_calls, tool_results, tool_errors, errors, messages}.
+
+    A tool_call is matched to its tool_result by tool_id == tool_use_id. An
+    unmatched call stays 'pending' (turn still running or the CLI never
+    returned a result); an unmatched result is surfaced as its own orphan entry
+    so nothing is silently dropped.
+    """
+    timeline: List[Dict[str, Any]] = []
+    pending: Dict[str, int] = {}  # tool_id -> index into timeline
+    counts = {'tool_calls': 0, 'tool_results': 0, 'tool_errors': 0,
+              'errors': 0, 'messages': 0}
+
+    for e in sorted(events, key=lambda x: x.get('seq', 0)):
+        etype = e.get('type')
+        seq = e.get('seq')
+        ts = e.get('ts')
+        if etype == 'message':
+            counts['messages'] += 1
+        elif etype == 'tool_call':
+            counts['tool_calls'] += 1
+            tool = e.get('tool') or {}
+            tool_id = e.get('tool_id')
+            entry = {
+                'kind': 'tool',
+                'seq': seq,
+                'ts': ts,
+                'tool': tool.get('name'),
+                'input': tool.get('input'),
+                'tool_id': tool_id,
+                'status': 'pending',
+                'result_text': None,
+                'result_seq': None,
+                'duration_ms': None,
+            }
+            timeline.append(entry)
+            if tool_id is not None:
+                pending[tool_id] = len(timeline) - 1
+        elif etype == 'tool_result':
+            counts['tool_results'] += 1
+            is_error = bool(e.get('is_error'))
+            if is_error:
+                counts['tool_errors'] += 1
+            use_id = e.get('tool_use_id')
+            idx = pending.pop(use_id, None) if use_id is not None else None
+            if idx is not None:
+                entry = timeline[idx]
+                entry['status'] = 'error' if is_error else 'ok'
+                entry['result_text'] = e.get('text')
+                entry['result_seq'] = seq
+                if isinstance(ts, (int, float)) and isinstance(entry.get('ts'), (int, float)):
+                    entry['duration_ms'] = max(0, round((ts - entry['ts']) * 1000))
+            else:
+                # Result with no matching call — keep it visible.
+                timeline.append({
+                    'kind': 'tool_result_orphan',
+                    'seq': seq,
+                    'ts': ts,
+                    'tool_use_id': use_id,
+                    'status': 'error' if is_error else 'ok',
+                    'result_text': e.get('text'),
+                })
+        elif etype == 'error':
+            counts['errors'] += 1
+            timeline.append({
+                'kind': 'error', 'seq': seq, 'ts': ts, 'text': e.get('text'),
+            })
+        elif etype == 'status':
+            timeline.append({
+                'kind': 'status', 'seq': seq, 'ts': ts,
+                'status': e.get('status'),
+            })
+        # 'choice' and any unknown types are chat-surface concerns, not activity.
+
+    return {'timeline': timeline, 'counts': counts}
+
+
+def hypervisor_health() -> Dict[str, Any]:
+    """Global hypervisor runner health: how many turns are live right now, which
+    threads they belong to and whether their subprocess is still alive, plus a
+    per-thread last-status + recent-error snapshot. Read-only; safe to call from
+    an auth-gated GET. Bounded — only scans thread listing metadata, not full
+    transcripts."""
+    with _RUNLOCK:
+        running_ids = [tid for tid, v in _RUNNING.items() if v]
+        proc_alive = {tid: (p.poll() is None)
+                      for tid, p in _PROCS.items()}
+    threads = []
+    try:
+        listed = HypervisorSession.list()
+    except Exception:
+        listed = []
+    total_recent_errors = 0
+    for summ in listed:
+        tid = summ.get('id')
+        errs = 0
+        try:
+            evs = HypervisorSession(tid).read_events()
+            errs = sum(1 for e in evs[-100:] if e.get('type') == 'error')
+        except Exception:
+            errs = 0
+        total_recent_errors += errs
+        threads.append({
+            'id': tid,
+            'title': summ.get('title'),
+            'status': summ.get('status'),
+            'running': tid in running_ids,
+            'subprocess_alive': proc_alive.get(tid, False),
+            'recent_errors': errs,
+        })
+    return {
+        'running_count': len(running_ids),
+        'subprocess_count': sum(1 for a in proc_alive.values() if a),
+        'recent_error_count': total_recent_errors,
+        'threads': threads,
+    }
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # HypervisorSession — one chat thread backed by a runner + events.jsonl
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -690,6 +829,12 @@ class HypervisorSession:
         self.dir = os.path.join(HYPERVISOR_DIR, thread_id)
         self.meta_path = os.path.join(self.dir, 'thread.json')
         self.events_path = os.path.join(self.dir, 'events.jsonl')
+        # Bounded capture of the CLI subprocess's stderr + per-turn runner
+        # diagnostics, so a stalled/failed turn is debuggable from the UI
+        # without attaching to stderr. Serialized by _runner_log_lock because
+        # the stderr-drain thread and the runner thread both write to it.
+        self.runner_log_path = os.path.join(self.dir, 'runner.log')
+        self._runner_log_lock = threading.Lock()
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     @classmethod
@@ -1002,6 +1147,83 @@ class HypervisorSession:
                 return True
         return False
 
+    # ── runner diagnostics (bounded runner.log) ─────────────────────────────
+    def append_runner_log(self, text: str) -> None:
+        """Append `text` to the bounded runner.log, keeping only the tail once
+        it grows past RUNNER_LOG_MAX_BYTES. Never raises — best-effort logging
+        must not perturb a turn."""
+        if not text:
+            return
+        line = text if text.endswith('\n') else text + '\n'
+        try:
+            with self._runner_log_lock:
+                with open(self.runner_log_path, 'a', encoding='utf-8',
+                          errors='replace') as f:
+                    f.write(line)
+                self._cap_runner_log_locked()
+        except OSError:
+            pass
+
+    def _cap_runner_log_locked(self) -> None:
+        """Trim runner.log back to the last RUNNER_LOG_MAX_BYTES when it grows
+        past 1.5x the cap. The 1.5x hysteresis is important: the streaming path
+        can drive one append per stderr line, and trimming on every append once
+        over the cap would make each append O(n) (an O(n^2) chatty turn). We
+        instead let it overshoot by 50%, then rewrite once — O(1) amortized.
+        Drops the now-partial leading line and prepends a truncation marker so
+        the retained tail stays line-valid and honest. Caller must hold
+        _runner_log_lock. File size stays bounded at ~1.5x the cap."""
+        try:
+            if os.path.getsize(self.runner_log_path) <= int(RUNNER_LOG_MAX_BYTES * 1.5):
+                return
+            with open(self.runner_log_path, 'rb') as f:
+                f.seek(-RUNNER_LOG_MAX_BYTES, os.SEEK_END)
+                tail = f.read()
+        except OSError:
+            return
+        nl = tail.find(b'\n')
+        if nl != -1:
+            tail = tail[nl + 1:]
+        marker = b'[runner.log truncated - older lines dropped]\n'
+        try:
+            with open(self.runner_log_path, 'wb') as f:
+                f.write(marker + tail)
+        except OSError:
+            pass
+
+    def read_runner_log(self, tail_bytes: int = 16384) -> str:
+        """Return the last `tail_bytes` bytes of runner.log as text (empty if
+        absent). Trims a partial leading line so the result starts on a line
+        boundary — used by the activity endpoint's raw-log tail."""
+        try:
+            size = os.path.getsize(self.runner_log_path)
+            with open(self.runner_log_path, 'rb') as f:
+                if size > tail_bytes:
+                    f.seek(-tail_bytes, os.SEEK_END)
+                data = f.read()
+        except OSError:
+            return ''
+        if size > tail_bytes:
+            nl = data.find(b'\n')
+            if nl != -1:
+                data = data[nl + 1:]
+        return data.decode('utf-8', errors='replace')
+
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        """Continuously drain the CLI subprocess's stderr into runner.log.
+
+        REQUIRED for the streaming path: the caller consumes proc.stdout in a
+        loop and never reads stderr, so a chatty CLI that writes past the
+        stderr pipe buffer (~64 KB) would block on write while we wait on
+        stdout that never comes — a real deadlock that surfaced as a 'hung
+        chat'. Draining stderr here removes that, and persists the diagnostics
+        the UI needs to explain a failed/stalled turn."""
+        try:
+            for line in proc.stderr:
+                self.append_runner_log(line.rstrip('\n'))
+        except (OSError, ValueError):
+            pass
+
     def _run_turn(self, text: str, first: bool, meta: Dict[str, Any]) -> None:
         adapter = _adapter_for(meta.get('assistant', ''))
         ctx = meta.get('adapter', {})
@@ -1028,6 +1250,9 @@ class HypervisorSession:
             )
             with _RUNLOCK:
                 _PROCS[self.id] = proc
+            self.append_runner_log(
+                f'--- turn start ({time.strftime("%Y-%m-%d %H:%M:%S")}) '
+                f'assistant={meta.get("assistant")} cwd={spec.get("cwd") or WORKSPACE_HOME} ---')
             if spec.get('stdin') is not None:
                 try:
                     proc.stdin.write(spec['stdin'])
@@ -1036,30 +1261,44 @@ class HypervisorSession:
                     pass
 
             if spec.get('buffer_stdout'):
-                # Fallback path: collect stdout, then emit once.
+                # Fallback path: collect stdout, then emit once. communicate()
+                # drains BOTH pipes, so stderr can't deadlock here — capture it
+                # into runner.log instead of discarding it.
                 try:
-                    out, _ = proc.communicate(timeout=spec.get('timeout'))
+                    out, err = proc.communicate(timeout=spec.get('timeout'))
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    out, _ = proc.communicate()
+                    out, err = proc.communicate()
                     self._append([{'role': 'system', 'type': 'error',
                                    'text': 'assistant timed out'}])
+                    self.append_runner_log('runner: assistant timed out; process killed')
+                if err:
+                    self.append_runner_log(err)
                 # A user stop kills the process; its partial/garbled output isn't
                 # a real answer, so skip finalize and let the stopped marker land.
                 if not self._stop_requested():
                     self._append(adapter.finalize_buffered(ctx, proc.returncode, out))
             else:
                 # Streaming path: parse each stdout line into canonical events.
+                # We consume stdout here and NEVER read stderr in this loop, so a
+                # chatty CLI could fill the stderr pipe and deadlock — drain it
+                # concurrently into runner.log (see _drain_stderr).
+                stderr_thread = threading.Thread(
+                    target=self._drain_stderr, args=(proc,), daemon=True)
+                stderr_thread.start()
                 for line in proc.stdout:
                     self._append(adapter.parse(ctx, line))
                 proc.wait()
+                stderr_thread.join(timeout=2)
                 if not self._stop_requested():
                     self._append(adapter.finalize(ctx, proc.returncode))
         except FileNotFoundError:
             self._append([{'role': 'system', 'type': 'error',
                            'text': f'assistant binary not found: {meta.get("assistant")}'}])
+            self.append_runner_log(f'runner: assistant binary not found: {meta.get("assistant")}')
         except Exception as e:  # never crash the server thread
             _log(f'turn error: {type(e).__name__}: {e}')
+            self.append_runner_log(f'runner error: {type(e).__name__}: {e}')
             self._append([{'role': 'system', 'type': 'error',
                            'text': f'{type(e).__name__}: {e}'}])
         finally:
