@@ -60,6 +60,24 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
 
+# gateway: the Conversation Gateway (issue #306) — chat with the Hypervisor from
+# outside the app over a channel (WhatsApp first). Channel-agnostic core here;
+# the WhatsApp adapter lives in adapters/whatsapp.py. Same colocated-package
+# delivery as memory/hypervisor_session.
+try:
+    from gateway import (ConversationGateway, IdentityRegistry,
+                        LocalHypervisorClient, RawRequest)
+    from adapters.whatsapp import WhatsAppAdapter
+    _GATEWAY_AVAILABLE = True
+except Exception as _gw_import_err:  # broken install shouldn't crash the server
+    ConversationGateway = None  # type: ignore
+    IdentityRegistry = None  # type: ignore
+    LocalHypervisorClient = None  # type: ignore
+    RawRequest = None  # type: ignore
+    WhatsAppAdapter = None  # type: ignore
+    _GATEWAY_AVAILABLE = False
+    print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
+
 # Multi-harness skills subsystem (issue #187) — same colocated-package
 # convention as `memory`. Read-only surface over SKILL.md-style files
 # discovered from every supported agent harness (Claude Code, OpenCode,
@@ -143,6 +161,55 @@ HYPERVISOR_PREAMBLE = (
     "words), and never put anything after the block. The user can always type a "
     "different answer instead of clicking one.]\n\n"
 )
+# Conversation Gateway (issue #306) — public host the gateway advertises when
+# minting a pairing code, so the user knows which WhatsApp number to message.
+# Purely informational; the number itself is configured on the provider side.
+GATEWAY_WHATSAPP_NUMBER = os.environ.get('KC_WHATSAPP_NUMBER', '')
+
+# Lazily-built singleton Conversation Gateway + one WhatsApp adapter instance.
+# Built on first use (and at startup) so the turn-complete observer is installed
+# before any gateway-dispatched turn can finish. Guarded so a broken install or a
+# disabled hypervisor degrades to a 503 rather than a crash.
+_GATEWAY = None            # type: ignore
+_GATEWAY_ADAPTER = None    # type: ignore
+_GATEWAY_LOCK = threading.Lock()
+
+
+def _gateway_client_factory(binding):
+    """Build a HypervisorClient for a workspace binding. Phase 1 is one number
+    per workspace, so every binding targets THIS pod's HypervisorSession — the
+    same operations the /api/hypervisor/* facade performs (issue D5). A shared
+    number router (Phase 2) would swap this to target a remote pod."""
+    assistant = ClaudeTaskManager.resolve_assistant(HYPERVISOR_DEFAULT_ASSISTANT)
+    cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=True)
+    return LocalHypervisorClient(
+        HypervisorSession, assistant=assistant, workdir=HYPERVISOR_WORKDIR,
+        cli_cmd=cli_cmd, preamble=HYPERVISOR_PREAMBLE)
+
+
+def get_gateway():
+    """The process-wide ConversationGateway, or None when unavailable. Installs
+    the turn-complete observer exactly once on first construction."""
+    global _GATEWAY, _GATEWAY_ADAPTER
+    if not (_GATEWAY_AVAILABLE and _HYPERVISOR_AVAILABLE):
+        return None
+    with _GATEWAY_LOCK:
+        if _GATEWAY is None:
+            _GATEWAY = ConversationGateway(
+                registry=IdentityRegistry(),
+                client_factory=_gateway_client_factory,
+                token_verifier=ClaudeTaskManager.verify_token)
+            _GATEWAY.install_turn_observer()
+            _GATEWAY_ADAPTER = WhatsAppAdapter()
+            print('[gateway] conversation gateway ready (whatsapp)')
+        return _GATEWAY
+
+
+def get_gateway_adapter():
+    get_gateway()
+    return _GATEWAY_ADAPTER
+
+
 # TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
 # X-Auth-Request-User / X-Auth-Request-Email / Remote-User headers from the
 # request. Without it we ignore those headers — the only ways to authenticate
@@ -4378,6 +4445,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/workspace/dirs':
             self.handle_workspace_dirs()
             return
+        # Conversation Gateway (issue #306): Meta GET verify handshake (NO auth —
+        # the provider can't carry an OAuth session) + link list (bearer).
+        elif claude_path == '/api/gateway/whatsapp/webhook':
+            self.handle_gateway_whatsapp_verify()
+            return
+        elif claude_path == '/api/gateway/links':
+            self.handle_gateway_link_list()
+            return
 
         # /api/claude/tasks/{id}/stream — Server-Sent Events
         m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/stream$', claude_path)
@@ -4841,6 +4916,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._webhook_id = m.group(1)
                 self.handle_webhook_delete()
+                return
+            # Conversation Gateway (issue #306): revoke a link by id (== the
+            # sha256 identity hash).
+            m = re.match(r'^/api/gateway/link/([a-f0-9]{64})$', path)
+            if m:
+                self.handle_gateway_link_delete(m.group(1))
                 return
             m = re.match(r'^/api/crons/([a-z0-9-]+)$', path)
             if m:
@@ -6079,6 +6160,149 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not host:
             return f'/api/webhooks/{webhook_id}'
         return f'{proto}://{host}/api/webhooks/{webhook_id}'
+
+    # --- Conversation Gateway handlers (issue #306) ---
+    # The inbound webhook + Meta GET handshake are intentionally NOT behind
+    # check_claude_auth: external providers (Twilio/Meta) can't carry an OAuth
+    # session, so they authenticate via the provider signature verified in the
+    # adapter — exactly the handle_webhook_receive posture. The link CRUD
+    # endpoints DO require bearer/OAuth (they manage identity bindings).
+
+    def _gateway_raw_request(self, method):
+        """Build a gateway.RawRequest from this HTTP request: raw body (capped),
+        parsed form (Twilio), full external URL (Twilio signs over it), headers,
+        and query. Returns None if the body exceeds the 1 MiB cap."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length < 0 or content_length > 1 * 1024 * 1024:
+            return None
+        raw_body = self.rfile.read(content_length) if content_length else b''
+        ctype = self.headers.get('Content-Type', '') or ''
+        form = {}
+        if 'application/x-www-form-urlencoded' in ctype and raw_body:
+            parsed = urllib.parse.parse_qs(
+                raw_body.decode('utf-8', 'replace'), keep_blank_values=True)
+            form = {k: v[0] for k, v in parsed.items()}
+        host = self.headers.get('Host', '')
+        proto = self.headers.get('X-Forwarded-Proto', 'https')
+        path = self.path.split('?', 1)[0]
+        url = f'{proto}://{host}{path}' if host else path
+        query = {k: v[0] for k, v in urllib.parse.parse_qs(
+            urllib.parse.urlparse(self.path).query).items()}
+        headers = {k: v for k, v in self.headers.items()}
+        return RawRequest(method=method, url=url, headers=headers,
+                          raw_body=raw_body, form=form, query=query)
+
+    def handle_gateway_whatsapp_webhook(self):
+        """Inbound WhatsApp webhook. Provider-signature authed (in the adapter),
+        idempotent on the provider message id, fast 200 so retries stop."""
+        gw = get_gateway()
+        adapter = get_gateway_adapter()
+        if gw is None or adapter is None:
+            self.send_json({'error': 'gateway unavailable'}, 503)
+            return
+        raw = self._gateway_raw_request('POST')
+        if raw is None:
+            self.send_json({'error': 'payload too large'}, 413)
+            return
+        result = gw.handle_inbound(adapter, raw)
+        self.send_json({'status': result.action}, result.status)
+
+    def handle_gateway_whatsapp_verify(self):
+        """Meta Cloud API GET verification handshake — echo hub.challenge on a
+        verify-token match, else 403. No-op (403) for providers without a
+        handshake (Twilio)."""
+        adapter = get_gateway_adapter()
+        if adapter is None:
+            self.send_response(503)
+            self.end_headers()
+            return
+        raw = self._gateway_raw_request('GET')
+        challenge = adapter.handshake(raw) if raw is not None else None
+        if challenge is not None:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(str(challenge).encode('utf-8'))
+        else:
+            self.send_response(403)
+            self.end_headers()
+
+    def _current_bearer_token(self):
+        """The workspace Bearer token the app already holds — stored with the
+        pairing so revoking/rotating the token also orphans the WhatsApp link."""
+        try:
+            with open(ClaudeTaskManager.TOKEN_FILE) as f:
+                return f.read().strip()
+        except OSError:
+            return ''
+
+    def handle_gateway_link_create(self):
+        """Mint a single-use pairing code (dashboard 'Link WhatsApp'). The user
+        sends this code once over WhatsApp to bind their number."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        gw = get_gateway()
+        if gw is None:
+            self.send_json({'error': 'gateway unavailable'}, 503)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        workspace = (data.get('workspace') or 'workspace').strip()[:64] or 'workspace'
+        host = (data.get('workspace_host') or self.headers.get('Host', '')).strip()
+        token = self._current_bearer_token()
+        if not token:
+            self.send_json({'error': 'workspace has no API token yet'}, 409)
+            return
+        try:
+            code = gw.registry.mint_pairing_code(
+                workspace=workspace, workspace_host=host, token=token,
+                ttl_seconds=600)
+        except Exception as e:
+            self.send_json({'error': f'could not mint pairing code: {e}'}, 500)
+            return
+        self.send_json({
+            'code': code,
+            'expires_in': 600,
+            'whatsapp_number': GATEWAY_WHATSAPP_NUMBER,
+            'workspace': workspace,
+        }, 201)
+
+    def handle_gateway_link_list(self):
+        """List the identity bindings — redacted (no raw number, no token)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        gw = get_gateway()
+        if gw is None:
+            self.send_json({'links': [], 'available': False})
+            return
+        self.send_json({
+            'links': gw.registry.list_links(),
+            'available': True,
+            'whatsapp_number': GATEWAY_WHATSAPP_NUMBER,
+            'proactive': get_gateway_adapter().capabilities.proactive
+                if get_gateway_adapter() else False,
+        })
+
+    def handle_gateway_link_delete(self, link_id):
+        """Revoke a link by id (== identity hash). The `unlink` keyword does the
+        same over WhatsApp."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        gw = get_gateway()
+        if gw is None:
+            self.send_json({'error': 'gateway unavailable'}, 503)
+            return
+        ok = gw.registry.revoke(link_id)
+        self.send_json({'ok': ok}, 200 if ok else 404)
 
     # --- Cron handlers ---
     # CRUD uses check_claude_auth (dashboard / scripts). The cron-fire receiver
@@ -8368,6 +8592,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Hypervisor chat threads
             elif path == "/api/hypervisor/threads":
                 self.handle_hypervisor_create_thread()
+            # Conversation Gateway (issue #306): inbound WhatsApp webhook
+            # (provider-signature authed, NOT bearer) + link enrollment (bearer).
+            elif path == "/api/gateway/whatsapp/webhook":
+                self.handle_gateway_whatsapp_webhook()
+            elif path == "/api/gateway/link":
+                self.handle_gateway_link_create()
             # Provider keys (dashboard Settings)
             elif path == "/api/provider-keys":
                 self.handle_provider_keys_set()
@@ -9300,6 +9530,17 @@ if __name__ == "__main__":
             t.start()
             print(f'[hypervisor] periodic GC started '
                   f'(>{_hv_gc_days}d every {_hv_gc_interval_h}h)')
+
+    # Conversation Gateway (issue #306): build the gateway + install its
+    # turn-complete observer at startup so a turn dispatched over WhatsApp
+    # delivers its result even if the first inbound races the runner. Lazy
+    # get_gateway() also installs it, but doing it here makes it deterministic.
+    if _GATEWAY_AVAILABLE and _HYPERVISOR_AVAILABLE:
+        try:
+            if get_gateway() is not None:
+                print('[gateway] turn-complete observer installed')
+        except Exception as e:
+            print(f'[gateway] startup init failed: {e}', file=sys.stderr)
 
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless
