@@ -42,6 +42,42 @@ export interface ThreadDetail {
   events: HvEvent[];
 }
 
+/** One normalized entry in the observability timeline (server-side
+ *  build_activity). `kind` discriminates the shape. */
+export interface ActivityEntry {
+  kind: 'tool' | 'tool_result_orphan' | 'error' | 'status';
+  seq: number;
+  ts: number | null;
+  // kind === 'tool'
+  tool?: string | null;
+  input?: unknown;
+  tool_id?: string | null;
+  status?: 'ok' | 'error' | 'pending' | string;
+  result_text?: string | null;
+  result_seq?: number | null;
+  duration_ms?: number | null;
+  // kind === 'tool_result_orphan'
+  tool_use_id?: string | null;
+  // kind === 'error'
+  text?: string | null;
+}
+
+export interface ActivityCounts {
+  tool_calls: number;
+  tool_results: number;
+  tool_errors: number;
+  errors: number;
+  messages: number;
+}
+
+export interface ThreadActivity {
+  thread: HypervisorThread;
+  timeline: ActivityEntry[];
+  counts: ActivityCounts;
+  /** Bounded tail of the runner.log (subprocess stderr + runner diagnostics). */
+  runner_log: string;
+}
+
 export const getHypervisorConfig = () =>
   apiGet<HypervisorConfig>('/api/hypervisor/config');
 
@@ -64,6 +100,12 @@ export const createThread = (opts: { message?: string; assistant?: string; workd
 export const getThread = (id: string, since = 0) =>
   apiGet<ThreadDetail>(
     `/api/hypervisor/threads/${encodeURIComponent(id)}?since=${since}`,
+  );
+
+/** Per-thread observability: normalized activity timeline + runner.log tail. */
+export const getThreadActivity = (id: string) =>
+  apiGet<ThreadActivity>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/activity`,
   );
 
 export const sendThreadMessage = (id: string, message: string) =>

@@ -15,6 +15,7 @@ import {
   stopMessage,
 } from '../../store/hypervisor';
 import { WorkspaceContext } from './WorkspaceContext';
+import { ActivityPanel } from './ActivityPanel';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
@@ -436,6 +437,7 @@ export function Chat() {
   return (
     <div class="hv-chat">
       {active && <WorkspaceContext />}
+      {active && <ActivityPanel threadId={active} running={working} />}
 
       <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll}>
         {empty ? (
