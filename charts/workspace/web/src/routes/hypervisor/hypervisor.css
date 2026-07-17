@@ -786,6 +786,7 @@
 
 /* ── Composer (mirrors the Build tab's .mc-composer) ─────────────────── */
 .hv-composer {
+  position: relative; /* anchor for the slash-command popover */
   flex-shrink: 0;
   border-top: 1px solid var(--border);
   background: var(--surface);
@@ -815,6 +816,106 @@
   background: var(--bg);
 }
 .hv-composer .btn { min-height: 44px; }
+
+/* ── Slash-command / skill picker (issue #302) ─────────────────────────────── */
+.hv-slash-btn { font-weight: 700; }
+.hv-slash-glyph { font-size: 17px; line-height: 1; }
+
+/* Popover floats above the composer so it clears the on-screen keyboard on
+   mobile and isn't clipped by the transcript's scroll container. */
+.hv-slash-menu {
+  position: absolute;
+  left: var(--size-4);
+  right: var(--size-4);
+  bottom: calc(100% - var(--size-2));
+  z-index: 30;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2, 0 8px 28px rgba(0, 0, 0, 0.28));
+  padding: 4px;
+}
+.hv-slash-menu-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted, var(--text));
+}
+.hv-slash-menu-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
+.hv-slash-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.hv-slash-item.is-active { background: var(--surface-2); }
+.hv-slash-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.hv-slash-name {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.hv-slash-args {
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  color: var(--text-muted, var(--text));
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hv-slash-kind {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted, var(--text));
+}
+.hv-slash-kind-skill {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.hv-slash-desc {
+  font-size: 12px;
+  color: var(--text-muted, var(--text));
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .hv-banner {
   margin: var(--size-2) var(--size-4) 0;

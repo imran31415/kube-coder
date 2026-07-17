@@ -11,10 +11,13 @@ import {
   chatError,
   selectedAssistant,
   config,
+  threads,
   transcriptSource,
   sendMessage,
   stopMessage,
 } from '../../store/hypervisor';
+import type { HypervisorCommand } from '../../api/hypervisor';
+import { supportsSlash, slashToken, matchCommands } from './slashPicker';
 import { WorkspaceContext } from './WorkspaceContext';
 import { ActivityPanel } from './ActivityPanel';
 import { buildTurns, renderMarkdown, type Block } from './transcript';
@@ -342,12 +345,67 @@ function AgentBlocks({
   );
 }
 
+/** The `/` autocomplete popover: skills + custom slash commands filtered by the
+ *  typed prefix. Presentational — open/close, filtering and keyboard nav live in
+ *  Chat's composer. Renders above the composer (both desktop and mobile, so it
+ *  clears the on-screen keyboard) and stays tap- and keyboard-navigable for the
+ *  Expo-wrapped app, which has no hover. */
+function SlashMenu({
+  items,
+  activeIndex,
+  onHover,
+  onPick,
+}: {
+  items: HypervisorCommand[];
+  activeIndex: number;
+  onHover: (i: number) => void;
+  onPick: (c: HypervisorCommand) => void;
+}) {
+  return (
+    <div class="hv-slash-menu" role="listbox" aria-label="Slash commands and skills">
+      <div class="hv-slash-menu-head">
+        Slash commands &amp; skills
+        <span class="hv-slash-menu-hint">↑↓ to move · Enter to insert</span>
+      </div>
+      {items.map((c, i) => (
+        <button
+          key={`${c.kind}:${c.name}`}
+          type="button"
+          role="option"
+          aria-selected={i === activeIndex}
+          class={`hv-slash-item ${i === activeIndex ? 'is-active' : ''}`}
+          // onMouseDown (not onClick): fires before the textarea's blur so the
+          // caret/focus isn't lost mid-pick; preventDefault keeps focus put.
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onPick(c);
+          }}
+          onMouseEnter={() => onHover(i)}
+        >
+          <span class="hv-slash-item-main">
+            <span class="hv-slash-name">/{c.name}</span>
+            {c.argument_hint && <span class="hv-slash-args">{c.argument_hint}</span>}
+            <span class={`hv-slash-kind hv-slash-kind-${c.kind}`}>{c.kind}</span>
+          </span>
+          {c.description && <span class="hv-slash-desc">{c.description}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Chat() {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Inline feedback when the user tries to attach something we can't send
   // (video, or an unsupported type) — never a silent drop.
   const [attachError, setAttachError] = useState<string | null>(null);
+  // Slash-command / skill picker (issue #302): index of the highlighted entry
+  // and a per-Esc dismiss flag (cleared on the next keystroke so re-typing the
+  // token reopens it). The menu's *open* state is otherwise derived from the
+  // draft — no separate "open" boolean to keep in sync.
+  const [menuIndex, setMenuIndex] = useState(0);
+  const [menuDismissed, setMenuDismissed] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -448,13 +506,6 @@ export function Chat() {
     taRef.current?.focus();
   }
 
-  function onKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submit();
-    }
-  }
-
   const busy = sending.value;
   const working = status === 'running';
   // Input is locked whenever a turn is in flight — not just during the brief
@@ -468,6 +519,70 @@ export function Chat() {
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
+
+  // ── Slash-command / skill picker (issue #302) ──────────────────────────────
+  // The agent a message will actually run under: the active thread's fixed
+  // assistant, or — for a not-yet-created chat — the sidebar selection. The
+  // picker only appears when that agent expands `/name` (Claude today).
+  const activeThread = threads.value.find((t) => t.id === active);
+  const effectiveAssistant = active ? activeThread?.assistant ?? '' : selectedAssistant.value;
+  const slashEnabled = supportsSlash(effectiveAssistant) && !readOnly;
+  const commands = config.value?.commands ?? [];
+  const token = slashEnabled ? slashToken(draft) : null;
+  const matches = useMemo(
+    () => (token === null ? [] : matchCommands(commands, token)),
+    [token, commands],
+  );
+  const showMenu = token !== null && !menuDismissed && !blocked && matches.length > 0;
+  // Keep the highlight in range as the filtered list shrinks/grows.
+  useEffect(() => {
+    setMenuIndex((i) => (i >= matches.length ? 0 : i));
+  }, [matches.length]);
+
+  function pickCommand(cmd: HypervisorCommand) {
+    // Insert `/<name> ` — the trailing space both completes the token (closing
+    // the menu, since slashToken() now returns null) and positions the caret to
+    // type arguments. Command stays the first token so Claude expands it.
+    setDraft(`/${cmd.name} `);
+    setMenuDismissed(false);
+    setMenuIndex(0);
+    taRef.current?.focus();
+  }
+
+  function onDraftInput(value: string) {
+    setDraft(value);
+    // Any edit clears a prior Esc-dismiss so re-typing the token reopens the menu.
+    if (menuDismissed) setMenuDismissed(false);
+  }
+
+  function onKeyDown(e: KeyboardEvent) {
+    if (showMenu) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMenuIndex((i) => (i + 1) % matches.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMenuIndex((i) => (i - 1 + matches.length) % matches.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        pickCommand(matches[Math.min(menuIndex, matches.length - 1)]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMenuDismissed(true);
+        return;
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  }
 
   return (
     <div class="hv-chat">
@@ -624,6 +739,14 @@ export function Chat() {
         }}
         onDragOver={(e) => e.preventDefault()}
       >
+        {showMenu && (
+          <SlashMenu
+            items={matches}
+            activeIndex={Math.min(menuIndex, matches.length - 1)}
+            onHover={setMenuIndex}
+            onPick={pickCommand}
+          />
+        )}
         <input
           ref={fileRef}
           type="file"
@@ -646,6 +769,24 @@ export function Chat() {
         >
           <Icon name="upload" size={16} />
         </button>
+        {slashEnabled && commands.length > 0 && (
+          <button
+            type="button"
+            class="hv-attach-btn hv-slash-btn"
+            onClick={() => {
+              // Tap-only affordance (mobile): seed the token so the menu opens
+              // without a physical `/` key. No-op if a command is already typed.
+              if (slashToken(draft) === null) onDraftInput('/');
+              setMenuDismissed(false);
+              taRef.current?.focus();
+            }}
+            disabled={blocked}
+            title="Slash commands & skills"
+            aria-label="Slash commands and skills"
+          >
+            <span class="hv-slash-glyph">/</span>
+          </button>
+        )}
         <textarea
           ref={taRef}
           class="hv-composer-input"
@@ -655,9 +796,9 @@ export function Chat() {
               ? 'Read-only workspace — you can still ask about state'
               : working
                 ? 'Kube-Coder is working… press Stop to interrupt'
-                : 'Message Kube-Coder…  (paste or attach a file, Enter to send)'
+                : 'Message Kube-Coder…  (paste, attach, or / for commands)'
           }
-          onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
+          onInput={(e) => onDraftInput((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKeyDown}
           onPaste={(e) => {
             const files = filesFromClipboard(e.clipboardData);
