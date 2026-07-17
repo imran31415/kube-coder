@@ -728,6 +728,7 @@ install -m 0644 /browser-config/skills__init__.py            /tmp/browser/skills
 install -m 0644 /browser-config/skills_model.py              /tmp/browser/skills/model.py
 install -m 0644 /browser-config/skills_parser.py             /tmp/browser/skills/parser.py
 install -m 0644 /browser-config/skills_sync.py               /tmp/browser/skills/sync.py
+install -m 0644 /browser-config/skills_commands.py           /tmp/browser/skills/commands.py
 install -m 0644 /browser-config/skills_providers__init__.py  /tmp/browser/skills/providers/__init__.py
 install -m 0644 /browser-config/skills_providers_claude.py   /tmp/browser/skills/providers/claude.py
 install -m 0644 /browser-config/skills_providers_opencode.py /tmp/browser/skills/providers/opencode.py

@@ -44,6 +44,8 @@ data:
 {{ .Files.Get "skills/parser.py" | indent 4 }}
   skills_sync.py: |
 {{ .Files.Get "skills/sync.py" | indent 4 }}
+  skills_commands.py: |
+{{ .Files.Get "skills/commands.py" | indent 4 }}
   skills_providers__init__.py: |
 {{ .Files.Get "skills/providers/__init__.py" | indent 4 }}
   skills_providers_claude.py: |
