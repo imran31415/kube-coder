@@ -774,6 +774,80 @@ def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {'timeline': timeline, 'counts': counts}
 
 
+def build_messageable(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pure transform of an events.jsonl list into a clean, *sendable* view of a
+    turn — the "messageable projection" (issue #306, shared with the CarPlay
+    work #301). A raw turn interleaves assistant prose with `tool_call` /
+    `tool_result` JSON that is meaningless in a chat/voice channel; this collapses
+    all of that tool churn to a COUNT and keeps only the human-readable prose,
+    the pending `choice` picker, and any errors.
+
+    Sibling to build_activity(): same seq-sorted single pass, but where
+    build_activity produces an operator timeline, this produces what a person on
+    the other end of WhatsApp/voice should actually receive. Deterministic and
+    side-effect free (trivially unit-testable), and — crucially — it does NOT
+    touch the event schema: it's a read-only consumer.
+
+    Returns:
+      * text        — assistant/system prose joined on blank lines (user turns
+                      are the person's own input, so they're excluded).
+      * choice      — the LAST pending {options, question} picker, or None.
+      * errors      — list of error strings surfaced during the turn.
+      * counts      — {tool_calls, tool_results, tool_errors, messages, errors}.
+      * has_prose   — whether any assistant/system prose was produced (lets the
+                      caller fall back to a tool-count summary for a turn that
+                      only ran tools and said nothing — never send an empty body).
+    """
+    prose: List[str] = []
+    choice: Optional[Dict[str, Any]] = None
+    errors: List[str] = []
+    counts = {'tool_calls': 0, 'tool_results': 0, 'tool_errors': 0,
+              'messages': 0, 'errors': 0}
+    for e in sorted(events, key=lambda x: x.get('seq', 0)):
+        etype = e.get('type')
+        if etype == 'message':
+            # The person's own inbound isn't part of what we send back.
+            if e.get('role') == 'user':
+                continue
+            text = (e.get('text') or '').strip()
+            if text:
+                counts['messages'] += 1
+                prose.append(text)
+        elif etype == 'tool_call':
+            counts['tool_calls'] += 1
+        elif etype == 'tool_result':
+            counts['tool_results'] += 1
+            if e.get('is_error'):
+                counts['tool_errors'] += 1
+        elif etype == 'error':
+            counts['errors'] += 1
+            text = (e.get('text') or '').strip()
+            if text:
+                errors.append(text)
+                prose.append(f'⚠️ {text}')
+        elif etype == 'choice':
+            opts = [o for o in (e.get('options') or []) if isinstance(o, str)]
+            if opts:
+                choice = {'options': opts, 'question': e.get('question') or ''}
+    return {
+        'text': '\n\n'.join(prose).strip(),
+        'choice': choice,
+        'errors': errors,
+        'counts': counts,
+        'has_prose': bool(prose),
+    }
+
+
+def summarize_tool_activity(counts: Dict[str, Any]) -> str:
+    """A one-line, human-readable summary of a turn's tool churn — e.g.
+    "ran 3 commands" — for a streamed progress ping or a footer on an otherwise
+    tool-only turn. Empty string when nothing ran."""
+    n = counts.get('tool_calls', 0)
+    if not n:
+        return ''
+    return f'ran {n} command{"s" if n != 1 else ""}'
+
+
 def hypervisor_health() -> Dict[str, Any]:
     """Global hypervisor runner health: how many turns are live right now, which
     threads they belong to and whether their subprocess is still alive, plus a
@@ -958,6 +1032,49 @@ _PROCS: Dict[str, subprocess.Popen] = {}
 # marker (instead of a spurious error) and skip the adapter's finalize.
 _STOPPING: set = set()
 _RUNLOCK = threading.Lock()
+
+# ───────────────────────────────────────────────────────────────────────────
+# Turn-complete observers (issue #306 — Conversation Gateway)
+#
+# A turn ends in exactly ONE place: _run_turn's `finally` block, which flips
+# meta status back to 'idle'. That single transition is the hook every outbound
+# channel (WhatsApp today, voice/SMS later) needs to deliver a finished turn.
+# The gateway registers ONE observer here; the runner is otherwise unchanged —
+# the finally block just fans out the thread_id to whoever registered. Observers
+# run synchronously on the runner thread AFTER status is persisted, are wrapped
+# so a raised exception can never perturb the turn, and must return promptly
+# (spin up their own thread for slow work). Registration is idempotent.
+# ───────────────────────────────────────────────────────────────────────────
+_TURN_OBSERVERS: List[Callable[[str], None]] = []
+_OBSERVER_LOCK = threading.Lock()
+
+
+def register_turn_observer(cb: Callable[[str], None]) -> None:
+    """Register a callable invoked with a thread_id whenever that thread's turn
+    transitions status → idle. Idempotent (the same callable registers once)."""
+    with _OBSERVER_LOCK:
+        if cb not in _TURN_OBSERVERS:
+            _TURN_OBSERVERS.append(cb)
+
+
+def unregister_turn_observer(cb: Callable[[str], None]) -> None:
+    with _OBSERVER_LOCK:
+        try:
+            _TURN_OBSERVERS.remove(cb)
+        except ValueError:
+            pass
+
+
+def _notify_turn_complete(thread_id: str) -> None:
+    """Fan the status→idle transition out to every registered observer. Never
+    raises — a misbehaving observer must not break the runner's finally."""
+    with _OBSERVER_LOCK:
+        observers = list(_TURN_OBSERVERS)
+    for cb in observers:
+        try:
+            cb(thread_id)
+        except Exception as e:  # never perturb the runner
+            _log(f'turn observer error: {type(e).__name__}: {e}')
 
 
 class HypervisorSession:
@@ -1471,19 +1588,29 @@ class HypervisorSession:
             self.append_runner_log(
                 f'--- turn start ({time.strftime("%Y-%m-%d %H:%M:%S")}) '
                 f'assistant={meta.get("assistant")} cwd={spec.get("cwd") or WORKSPACE_HOME} ---')
-            if spec.get('stdin') is not None:
+            buffered = spec.get('buffer_stdout')
+            stdin_data = spec.get('stdin')
+            # Streaming path writes+closes stdin up front so it can then read
+            # stdout in a loop. The buffered path must NOT pre-close stdin —
+            # communicate() writes and closes it itself, and closing it here
+            # first makes communicate()'s flush raise "I/O operation on closed
+            # file", failing every stdin-fed fallback turn. So hand stdin to
+            # communicate(input=…) instead (see the buffered branch below).
+            if stdin_data is not None and not buffered:
                 try:
-                    proc.stdin.write(spec['stdin'])
+                    proc.stdin.write(stdin_data)
                     proc.stdin.close()
                 except (BrokenPipeError, OSError):
                     pass
 
-            if spec.get('buffer_stdout'):
+            if buffered:
                 # Fallback path: collect stdout, then emit once. communicate()
                 # drains BOTH pipes, so stderr can't deadlock here — capture it
-                # into runner.log instead of discarding it.
+                # into runner.log instead of discarding it. Passing input=
+                # feeds+closes stdin exactly once (fixes the double-close above).
                 try:
-                    out, err = proc.communicate(timeout=spec.get('timeout'))
+                    out, err = proc.communicate(input=stdin_data,
+                                                timeout=spec.get('timeout'))
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     out, err = proc.communicate()
@@ -1532,3 +1659,7 @@ class HypervisorSession:
             m['adapter'] = ctx  # persist any session id the adapter captured
             m['status'] = 'idle'
             self._write_meta(m)
+            # Single turn-complete hook: fan the status→idle transition out to
+            # any registered observer (the Conversation Gateway's outbound
+            # delivery, issue #306). Best-effort; never perturbs the runner.
+            _notify_turn_complete(self.id)

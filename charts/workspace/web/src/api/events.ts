@@ -33,6 +33,7 @@ const EVENT_TYPES = [
   'trigger.fired',
   'memory.changed',
   'skills.changed',
+  'gateway.preview',
 ];
 
 let es: EventSource | null = null;

@@ -1,0 +1,53 @@
+{{- if eq .Values.ingress.auth.type "oauth2" }}
+# Ingress for the Conversation Gateway inbound webhook (issue #306). Like
+# ingress-webhooks.yaml this bypasses the OAuth2 proxy because the messaging
+# provider (Twilio / Meta) can't carry an OAuth session — it authenticates via
+# the provider signature (X-Twilio-Signature / X-Hub-Signature-256) verified
+# inside the workspace pod's WhatsApp adapter.
+#
+# IMPORTANT: only the fixed webhook path is exposed here. The link CRUD paths
+# (/api/gateway/link, /api/gateway/links) stay behind OAuth via
+# ingress-oauth2.yaml's /oauth/(api/.*) rule — they manage identity bindings and
+# require an authenticated dashboard session. The exact-path match below can't
+# collide with those.
+#
+# No rewrite-target: the provider signs (Twilio) and we verify over the exact
+# public URL, so the path must reach the pod unchanged.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ws-{{ .Values.user.name }}-gateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # 1 MiB cap mirrors the in-pod content-length check in the gateway handler.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /api/gateway/whatsapp/webhook
+        pathType: Exact
+        backend:
+          service:
+            name: ws-{{ .Values.user.name }}
+            port:
+              number: 6080
+{{- end }}

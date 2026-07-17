@@ -461,6 +461,40 @@
   cursor: not-allowed;
 }
 
+/* Chat ↔ Walkie-Talkie segmented switch (issue #306). */
+.hv-modeswitch {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  gap: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+.hv-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-pill);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.hv-mode:hover {
+  color: var(--text);
+}
+.hv-mode-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
+
 /* ── Chat body ───────────────────────────────────────────────────────── */
 .hv-chat {
   display: flex;

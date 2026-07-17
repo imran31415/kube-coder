@@ -1,0 +1,450 @@
+/* Walkie-Talkie — a clean, professional handheld-radio device that houses the
+   in-app WhatsApp gateway preview (issue #306). Theme-aware via app tokens; the
+   LCD stays a realistic dark readout in both light and dark themes. */
+
+.wt {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  padding: var(--size-4);
+  overflow: auto;
+}
+
+.wt-device {
+  --wt-lcd-bg: #0c1512;
+  --wt-lcd-fg: #cfefe0;
+  --wt-lcd-dim: #6f8c81;
+  width: 100%;
+  max-width: 460px;
+  align-self: stretch;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  gap: var(--size-3);
+  padding: var(--size-3);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border-2);
+  border-radius: calc(var(--radius-lg) + 6px);
+  box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* ── head: antenna · LCD · speaker grille ───────────────────────────────── */
+.wt-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: stretch;
+  gap: var(--size-2);
+}
+
+.wt-antenna {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 2px;
+  width: 12px;
+}
+.wt-antenna-rod {
+  width: 4px;
+  height: 26px;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, var(--text-subtle), var(--border-2));
+}
+.wt-antenna-tip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: -3px;
+  background: var(--text-muted);
+}
+
+.wt-lcd {
+  background: var(--wt-lcd-bg);
+  color: var(--wt-lcd-fg);
+  border-radius: var(--radius);
+  border: 1px solid #05100c;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.55);
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+.wt-lcd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.wt-lcd-sub {
+  color: var(--wt-lcd-dim);
+  font-size: 10.5px;
+}
+.wt-lcd-label {
+  color: var(--wt-lcd-dim);
+  letter-spacing: 0.08em;
+}
+.wt-lcd-value {
+  color: var(--wt-lcd-fg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wt-lcd-sep {
+  color: var(--wt-lcd-dim);
+}
+.wt-lcd-status {
+  margin-left: auto;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.wt-led {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--wt-lcd-dim);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+.wt-led-live {
+  background: var(--success);
+  box-shadow: 0 0 7px var(--success);
+}
+.wt-led-busy {
+  background: var(--warn);
+  box-shadow: 0 0 7px var(--warn);
+  animation: wt-pulse 1s ease-in-out infinite;
+}
+.wt-led-down {
+  background: var(--danger);
+  box-shadow: 0 0 6px var(--danger);
+}
+.wt-led-off {
+  background: var(--wt-lcd-dim);
+}
+@keyframes wt-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.wt-grille {
+  width: 26px;
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-3);
+  background-image: radial-gradient(var(--border-2) 1.1px, transparent 1.2px);
+  background-size: 6px 6px;
+  border: 1px solid var(--border);
+}
+
+/* ── screen: the conversation ───────────────────────────────────────────── */
+.wt-screen {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  padding: var(--size-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.wt-empty {
+  margin: auto;
+  text-align: center;
+  max-width: 30ch;
+  color: var(--text-muted);
+}
+.wt-empty-title {
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+.wt-empty-sub {
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+.wt-wire-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.wt-error {
+  color: var(--danger);
+  font-size: 12.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+}
+
+.wt-notice {
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 3px 12px;
+}
+
+.wt-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 86%;
+}
+.wt-msg-in {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.wt-msg-out {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.wt-bubble {
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.45;
+  box-shadow: var(--shadow-1);
+}
+.wt-msg-in .wt-bubble {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-bottom-right-radius: 4px;
+}
+.wt-msg-out .wt-bubble {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+.wt-msg-template .wt-bubble {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface-2));
+}
+.wt-bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.wt-tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--warn);
+  margin-bottom: 4px;
+}
+
+.wt-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.wt-reply {
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.wt-reply:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.wt-reply:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.wt-wire {
+  font-family: var(--font-mono);
+}
+.wt-wire-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-subtle);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.wt-wire-toggle:hover {
+  color: var(--text-muted);
+}
+.wt-wire-provider {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.wt-wire-body {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--wt-lcd-bg);
+  color: var(--wt-lcd-fg);
+  border-radius: var(--radius-sm);
+  white-space: pre;
+}
+
+/* ── control deck: input + push-to-talk ─────────────────────────────────── */
+.wt-deck {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  padding: var(--size-2);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.wt-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--bg);
+  color: var(--text);
+}
+.wt-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.wt-ptt {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  color: var(--on-accent);
+  background: radial-gradient(circle at 50% 35%, var(--accent-strong, var(--accent)), var(--accent));
+  box-shadow: var(--shadow-2), inset 0 -3px 6px rgba(0, 0, 0, 0.25),
+    inset 0 2px 3px rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+}
+.wt-ptt:active:not(:disabled) {
+  transform: translateY(1px) scale(0.97);
+  box-shadow: var(--shadow-1), inset 0 -1px 3px rgba(0, 0, 0, 0.3);
+}
+.wt-ptt:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.wt-ptt-ring {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+}
+.wt-ptt-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* ── side controls: sim switch + reset ──────────────────────────────────── */
+.wt-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+  padding: 0 var(--size-1);
+}
+.wt-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.wt-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.wt-switch-track {
+  width: 38px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  position: relative;
+  transition: background var(--motion-fast);
+}
+.wt-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--motion-fast), background var(--motion-fast);
+}
+.wt-switch input:checked + .wt-switch-track {
+  background: color-mix(in srgb, var(--warn) 35%, var(--surface-3));
+  border-color: var(--warn);
+}
+.wt-switch input:checked + .wt-switch-track .wt-switch-thumb {
+  transform: translateX(16px);
+  background: var(--warn);
+}
+.wt-switch-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.25;
+}
+.wt-switch-hint {
+  font-size: 10.5px;
+  color: var(--text-subtle);
+}
+
+.wt-ctl-btn {
+  font-size: 12.5px;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.wt-ctl-btn:hover {
+  color: var(--text);
+  border-color: var(--text-subtle);
+}
