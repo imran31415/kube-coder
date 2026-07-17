@@ -922,6 +922,35 @@ class ClaudeTaskManager:
             return requested
         return 'claude'
 
+    # Unattended task sources — no human is watching the live terminal, so the
+    # CLI must launch in auto-approve/skip-permissions mode or it stalls on the
+    # API-key dialog and per-tool permission prompts (issue #296). The
+    # interactive Build tab (source null / 'manual') is deliberately excluded:
+    # a person watches that terminal and answers its prompts.
+    _UNATTENDED_SOURCE_PREFIXES = ('webhook:', 'cron:', 'desktop:')
+    _UNATTENDED_SOURCES = ('hypervisor-tool',)
+
+    @staticmethod
+    def _is_unattended_source(source):
+        if not source:
+            return False
+        s = str(source)
+        return (s in ClaudeTaskManager._UNATTENDED_SOURCES
+                or s.startswith(ClaudeTaskManager._UNATTENDED_SOURCE_PREFIXES))
+
+    @staticmethod
+    def resolve_auto_approve(source, explicit=None):
+        """Decide whether a new task launches its CLI with skip-permissions.
+
+        An explicit request (the body's `auto_approve` flag) always wins, in
+        both directions. When it is absent (None), fall back to the source
+        default: unattended sources (hypervisor-tool, webhook:*, cron:*,
+        desktop:*) auto-approve so they don't stall on prompts; the interactive
+        Build tab (source null / 'manual') stays off. See issue #296."""
+        if explicit is not None:
+            return bool(explicit)
+        return ClaudeTaskManager._is_unattended_source(source)
+
     @staticmethod
     def assistant_command(assistant, auto_approve=False):
         # auto_approve launches the interactive REPL with the CLI's
@@ -4883,6 +4912,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         disable_memory_injection = bool(data.get('disable_memory_injection'))
         assistant = data.get('assistant') or None
         parent_task_id = data.get('parent_task_id') or None
+        # Skip-permissions default: honor an explicit body flag; otherwise let
+        # the source decide — unattended sources auto-approve, the interactive
+        # Build tab does not (issue #296).
+        auto_approve = ClaudeTaskManager.resolve_auto_approve(
+            source, data.get('auto_approve'))
         if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
             self.send_json({'error': 'response_url must be http(s)'}, 400)
             return
@@ -4895,6 +4929,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             disable_memory_injection=disable_memory_injection,
             assistant=assistant,
             parent_task_id=parent_task_id,
+            auto_approve=auto_approve,
         )
         if task.get('status') == 'rejected':
             self.send_json({'error': task.get('error')}, 429)

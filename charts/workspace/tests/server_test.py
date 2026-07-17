@@ -415,6 +415,50 @@ class AssistantSelectionTests(unittest.TestCase):
             'claude',
         )
 
+    def test_auto_approve_defaults_on_for_unattended_sources(self):
+        # Unattended sources have no human to answer the CLI's prompts, so with
+        # no explicit body flag they default to the skip-permissions command
+        # (issue #296).
+        for src in ('hypervisor-tool', 'webhook:abc', 'cron:nightly',
+                    'desktop:xyz'):
+            self.assertTrue(
+                server.ClaudeTaskManager.resolve_auto_approve(src, None),
+                msg=f'expected {src!r} to default auto_approve on',
+            )
+            cmd = server.ClaudeTaskManager.assistant_command(
+                'claude',
+                auto_approve=server.ClaudeTaskManager.resolve_auto_approve(
+                    src, None),
+            )
+            self.assertEqual(cmd, 'claude --dangerously-skip-permissions')
+
+    def test_auto_approve_defaults_off_for_interactive_source(self):
+        # The interactive Build tab (source null / 'manual') keeps prompting.
+        for src in (None, '', 'manual'):
+            self.assertFalse(
+                server.ClaudeTaskManager.resolve_auto_approve(src, None),
+                msg=f'expected {src!r} to default auto_approve off',
+            )
+            cmd = server.ClaudeTaskManager.assistant_command(
+                'claude',
+                auto_approve=server.ClaudeTaskManager.resolve_auto_approve(
+                    src, None),
+            )
+            self.assertEqual(cmd, 'claude')
+
+    def test_auto_approve_body_flag_overrides_source_default(self):
+        # An explicit body flag wins in BOTH directions over the source default.
+        # Force OFF for an unattended source…
+        self.assertFalse(
+            server.ClaudeTaskManager.resolve_auto_approve('hypervisor-tool', False))
+        self.assertFalse(
+            server.ClaudeTaskManager.resolve_auto_approve('webhook:abc', False))
+        # …and force ON for the interactive Build tab.
+        self.assertTrue(
+            server.ClaudeTaskManager.resolve_auto_approve('manual', True))
+        self.assertTrue(
+            server.ClaudeTaskManager.resolve_auto_approve(None, True))
+
     @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
     def test_create_task_records_assistant_and_uses_cli(self, mock_run):
         os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'

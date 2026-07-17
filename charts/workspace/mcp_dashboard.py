@@ -288,7 +288,13 @@ def _t_create_task(a):
     prompt = (a.get('prompt') or '').strip()
     if not prompt:
         return _err('prompt is required')
-    body = {'prompt': prompt, 'source': 'hypervisor-tool'}
+    # Hypervisor-spawned tasks are unattended — nobody is watching the live
+    # terminal to answer the CLI's API-key dialog or per-tool permission
+    # prompts — so launch in auto-approve/skip-permissions mode by default. A
+    # caller can pass auto_approve=false to force the interactive behavior.
+    auto_approve = a.get('auto_approve')
+    body = {'prompt': prompt, 'source': 'hypervisor-tool',
+            'auto_approve': True if auto_approve is None else bool(auto_approve)}
     if a.get('workdir'):
         body['workdir'] = a['workdir']
     if a.get('assistant'):
@@ -512,6 +518,11 @@ TOOLS: Dict[str, Any] = {
                         'description': 'Working directory (default /home/dev).'},
             'assistant': {'type': 'string',
                           'description': 'Which agent to run it (default claude).'},
+            'auto_approve': {'type': 'boolean',
+                             'description': 'Skip permission prompts so the '
+                             'unattended task does not stall (default true). '
+                             'Set false to run with interactive approval '
+                             'prompts.'},
         }, required=['prompt'], kind='write'),
     'send_task_message': _tool(
         'send_task_message',
