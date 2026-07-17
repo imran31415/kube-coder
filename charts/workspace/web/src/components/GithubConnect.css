@@ -1,0 +1,86 @@
+.ghc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  align-items: flex-start;
+}
+
+.ghc-compact {
+  gap: var(--size-1);
+}
+
+.ghc-hint,
+.ghc-lead {
+  font-size: 12.5px;
+  margin: 0;
+}
+
+.ghc-lead {
+  color: var(--text);
+}
+
+.ghc-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.ghc-connected {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--success);
+  font-size: 13px;
+}
+
+.ghc-code-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  flex-wrap: wrap;
+}
+
+.ghc-code {
+  font-size: 22px;
+  letter-spacing: 3px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  user-select: all;
+}
+
+.ghc-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  flex-wrap: wrap;
+}
+
+.ghc-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  margin: 0;
+}
+
+.ghc-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: ghc-spin 0.8s linear infinite;
+}
+
+@keyframes ghc-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ghc-spinner { animation: none; }
+}

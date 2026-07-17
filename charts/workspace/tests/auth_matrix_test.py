@@ -106,6 +106,15 @@ class LegacyAuthGateTests(unittest.TestCase):
     def test_gh_complete_auth_requires_auth(self):
         self._expect_401('/api/github/cli/complete-auth')
 
+    def test_gh_connect_start_requires_auth(self):
+        self._expect_401('/api/github/connect/start')
+
+    def test_gh_connect_poll_requires_auth(self):
+        self._expect_401('/api/github/connect/poll')
+
+    def test_gh_connect_cancel_requires_auth(self):
+        self._expect_401('/api/github/connect/cancel')
+
 
 def _get(url, headers=None):
     req = urllib.request.Request(url, method='GET')

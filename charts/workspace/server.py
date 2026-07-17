@@ -126,6 +126,11 @@ HYPERVISOR_PREAMBLE = (
     "it; when you create or reference a doc (a plan, README, report), show_file it. "
     "Prefer these tools for any question about, or action on, the workspace. "
     "Answer from tool results, not memory. Be concise and conversational. "
+    "If the user wants to connect their own GitHub account (push to their "
+    "repos, use their identity), first check get_github_status; if they are "
+    "not on a personal login, point them to Settings → GitHub & SSH and its "
+    "one-click \"Connect GitHub account\" button, which walks them through the "
+    "browser sign-in — no terminal or `gh auth login` needed. "
     "When you need the user to make a discrete choice between a few options, "
     "write your normal explanation, then END the message with a fenced choice "
     "block the chat renders as clickable buttons:\n"
@@ -549,6 +554,140 @@ class GitHubManager:
         os.chmod(GitHubManager.AUTH_MODE_FILE, 0o600)
         GitHubManager._apply_auth_mode(mode)
         return GitHubManager.get_full_status()
+
+    # ── Browser-less "Connect GitHub" web login (issue #303) ──────────────
+    # First-time users struggle to connect a *personal* GitHub account: it
+    # means opening a terminal and driving the interactive `gh auth login
+    # --web` device flow by hand. We drive that flow server-side instead —
+    # spawn gh in a dedicated tmux session, scrape the one-time device code
+    # so the dashboard can show it with a one-click "Open GitHub" link, and
+    # poll to completion — then flip the workspace to 'personal' mode. No
+    # terminal required.
+    WEB_LOGIN_SESSION = 'kc-gh-web-login'
+    # gh's one-time device code, e.g. "1A2B-3C4D".
+    _DEVICE_CODE_RE = re.compile(r'\b([A-Z0-9]{4}-[A-Z0-9]{4})\b')
+    _DEVICE_URL_RE = re.compile(r'(https://github\.com/login/device)')
+    # Sentinel we append after gh exits so the pane can be classified even
+    # after the process ends (the session lingers via `sleep`, see below).
+    _GH_EXIT_RE = re.compile(r'__KC_GH_EXIT__:(\d+)')
+    _LOGGED_IN_RE = re.compile(r'Logged in as\s+(\S+)', re.IGNORECASE)
+
+    @staticmethod
+    def _tmux(*args):
+        return subprocess.run(['tmux', *args], capture_output=True, text=True)
+
+    @staticmethod
+    def web_login_running():
+        """True while the background `gh auth login` session is still alive."""
+        return GitHubManager._tmux(
+            'has-session', '-t', GitHubManager.WEB_LOGIN_SESSION).returncode == 0
+
+    @staticmethod
+    def cancel_web_login():
+        """Tear down the background login session (idempotent)."""
+        GitHubManager._tmux('kill-session', '-t', GitHubManager.WEB_LOGIN_SESSION)
+
+    @staticmethod
+    def _capture_web_login_pane():
+        r = GitHubManager._tmux(
+            'capture-pane', '-p', '-t', GitHubManager.WEB_LOGIN_SESSION)
+        return r.stdout if r.returncode == 0 else ''
+
+    @staticmethod
+    def parse_device_code(pane):
+        """Pull gh's one-time device code + verification URL out of the captured
+        tmux pane. Returns {'code','verification_uri'} once the code is on
+        screen, else None. Pure/text-only so it unit-tests without a real gh."""
+        if not pane:
+            return None
+        m = GitHubManager._DEVICE_CODE_RE.search(pane)
+        if not m:
+            return None
+        url = GitHubManager._DEVICE_URL_RE.search(pane)
+        return {
+            'code': m.group(1),
+            'verification_uri': url.group(1) if url else 'https://github.com/login/device',
+        }
+
+    @staticmethod
+    def classify_web_login(pane):
+        """Classify the login session from its pane: 'success' | 'failed' |
+        'pending'. Anchored on the exit-code sentinel we print after gh, so a
+        clean exit (0) is success and any non-zero is failure. Pure/testable."""
+        m = GitHubManager._GH_EXIT_RE.search(pane or '')
+        if not m:
+            return 'pending'
+        return 'success' if m.group(1) == '0' else 'failed'
+
+    @staticmethod
+    def start_web_login(timeout=25):
+        """Kick off `gh auth login --web` in a background tmux session and return
+        the one-time device code for the dashboard to display. We deliberately
+        run the *real* gh binary with GH_TOKEN stripped (bypassing the mode
+        shim) so the login writes a personal token to hosts.yml regardless of
+        the current mode; the mode is only flipped to 'personal' once poll()
+        confirms success. Raises RuntimeError if no code appears in `timeout`s."""
+        GitHubManager.cancel_web_login()
+        gh_bin = '/usr/bin/gh' if os.path.exists('/usr/bin/gh') else 'gh'
+        # env -u strips the App token for THIS gh only, so gh stores a personal
+        # login instead of refusing ("GH_TOKEN is being used for auth"). The
+        # exit sentinel + trailing sleep keep the pane readable after gh ends.
+        inner = (
+            f'env -u GH_TOKEN -u GITHUB_TOKEN {gh_bin} auth login '
+            '--hostname github.com --git-protocol https --web --skip-ssh-key; '
+            "printf '__KC_GH_EXIT__:%s\\n' \"$?\"; sleep 600"
+        )
+        started = GitHubManager._tmux(
+            'new-session', '-d', '-s', GitHubManager.WEB_LOGIN_SESSION,
+            'bash', '-lc', inner)
+        if started.returncode != 0:
+            raise RuntimeError(
+                (started.stderr or 'could not start login session').strip())
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            parsed = GitHubManager.parse_device_code(
+                GitHubManager._capture_web_login_pane())
+            if parsed:
+                # gh waits on "Press Enter to open in your browser" — answer it
+                # so gh proceeds to poll GitHub for authorization.
+                GitHubManager._tmux(
+                    'send-keys', '-t', GitHubManager.WEB_LOGIN_SESSION, 'Enter')
+                parsed['in_progress'] = True
+                return parsed
+            time.sleep(0.5)
+        GitHubManager.cancel_web_login()
+        raise RuntimeError(
+            'Timed out waiting for GitHub to issue a sign-in code. Check the '
+            "workspace's network access and try again.")
+
+    @staticmethod
+    def poll_web_login():
+        """Report progress of the background login and, on success, switch the
+        workspace to 'personal' mode + clean up. Returns the full GitHub status
+        augmented with 'connected' (bool) and 'in_progress' (bool), plus an
+        'error' string on failure."""
+        running = GitHubManager.web_login_running()
+        pane = GitHubManager._capture_web_login_pane() if running else ''
+        state = GitHubManager.classify_web_login(pane)
+        if state == 'success':
+            if GitHubManager.get_auth_mode() != 'personal':
+                GitHubManager.set_auth_mode('personal')
+            user_m = GitHubManager._LOGGED_IN_RE.search(pane)
+            GitHubManager.cancel_web_login()
+            status = GitHubManager.get_full_status()
+            status.update(connected=True, in_progress=False)
+            if user_m:
+                status['connected_user'] = user_m.group(1)
+            return status
+        if state == 'failed' or not running:
+            GitHubManager.cancel_web_login()
+            status = GitHubManager.get_full_status()
+            status.update(connected=False, in_progress=False,
+                          error='GitHub sign-in did not complete. Please try again.')
+            return status
+        status = GitHubManager.get_full_status()
+        status.update(connected=False, in_progress=True)
+        return status
 
     @staticmethod
     def get_ssh_status():
@@ -8100,6 +8239,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_gh_login_instructions()
             elif path == "/api/github/cli/complete-auth":
                 self.handle_gh_check_auth()
+            elif path == "/api/github/connect/start":
+                self.handle_gh_web_login_start()
+            elif path == "/api/github/connect/poll":
+                self.handle_gh_web_login_poll()
+            elif path == "/api/github/connect/cancel":
+                self.handle_gh_web_login_cancel()
             # Claude Task API endpoints
             elif path == "/api/claude/tasks":
                 self.handle_claude_create_task()
@@ -8547,6 +8692,37 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps(status).encode())
+
+    def handle_gh_web_login_start(self):
+        """Start the browser-less 'Connect GitHub' device flow (issue #303) and
+        return the one-time code + verification URL for the dashboard to show.
+        Auth-gated; blocked in read-only demo via the do_POST chokepoint."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            self.send_json(GitHubManager.start_web_login(), 200)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 502)
+
+    def handle_gh_web_login_poll(self):
+        """Poll the in-flight device flow. On success the workspace is switched
+        to 'personal' mode server-side and the response carries connected:true."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            self.send_json(GitHubManager.poll_web_login(), 200)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_gh_web_login_cancel(self):
+        """Abort an in-flight device flow (user closed the dialog)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        GitHubManager.cancel_web_login()
+        self.send_json({'ok': True}, 200)
 
     def check_service_health(self, host, port):
         """Check if a service is listening on the given port"""

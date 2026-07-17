@@ -11,6 +11,7 @@ import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
+import { GithubConnect } from '../../components/GithubConnect';
 import { pushToast } from '../../store/ui';
 
 const MODES: { id: GitAuthMode; label: string }[] = [
@@ -96,6 +97,17 @@ export function GitSection() {
   return (
     <section class="settings-section">
       <h2 class="settings-section-title">GitHub &amp; SSH</h2>
+
+      <div class="settings-row">
+        <div class="settings-row-label">Connect account</div>
+        <div class="settings-row-control settings-row-control-stack">
+          <GithubConnect
+            connected={mode === 'personal' && !!ghUser}
+            user={ghUser}
+            onConnected={() => void refresh()}
+          />
+        </div>
+      </div>
 
       <div class="settings-row">
         <div class="settings-row-label">Auth mode</div>

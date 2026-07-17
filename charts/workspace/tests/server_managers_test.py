@@ -284,5 +284,100 @@ class AuthModeTests(unittest.TestCase):
         self.assertTrue(any('--replace-all' in c and 'credential.helper' in c for c in calls))
 
 
+class WebLoginParseTests(unittest.TestCase):
+    """Pure pane-scraping for the browser-less 'Connect GitHub' flow (#303)."""
+
+    def test_parse_device_code_extracts_code_and_url(self):
+        pane = (
+            '! First copy your one-time code: 1A2B-3C4D\n'
+            'Press Enter to open https://github.com/login/device in your browser...\n'
+        )
+        out = GH.parse_device_code(pane)
+        self.assertEqual(out['code'], '1A2B-3C4D')
+        self.assertEqual(out['verification_uri'], 'https://github.com/login/device')
+
+    def test_parse_device_code_defaults_url_when_absent(self):
+        out = GH.parse_device_code('one-time code: WXYZ-6789 now')
+        self.assertEqual(out['code'], 'WXYZ-6789')
+        self.assertEqual(out['verification_uri'], 'https://github.com/login/device')
+
+    def test_parse_device_code_none_before_code(self):
+        self.assertIsNone(GH.parse_device_code('Waiting for the code...'))
+        self.assertIsNone(GH.parse_device_code(''))
+
+    def test_classify_pending_without_sentinel(self):
+        self.assertEqual(GH.classify_web_login('polling GitHub...'), 'pending')
+
+    def test_classify_success_on_zero_exit(self):
+        pane = '✓ Logged in as octocat\n__KC_GH_EXIT__:0\n'
+        self.assertEqual(GH.classify_web_login(pane), 'success')
+
+    def test_classify_failed_on_nonzero_exit(self):
+        self.assertEqual(GH.classify_web_login('error\n__KC_GH_EXIT__:1\n'), 'failed')
+
+
+class WebLoginDriveTests(unittest.TestCase):
+    """Session-driving for start/poll, with tmux + status mocked."""
+
+    def test_start_returns_code_and_answers_enter(self):
+        panes = iter(['\n', '! First copy your one-time code: 1A2B-3C4D\n'])
+        sent = []
+
+        def fake_tmux(*args):
+            if args[0] == 'capture-pane':
+                return _proc(0, stdout=next(panes))
+            if args[0] == 'send-keys':
+                sent.append(args)
+            return _proc(0)
+        with mock.patch.object(GH, '_tmux', side_effect=fake_tmux), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.os.path, 'exists', return_value=True):
+            out = GH.start_web_login(timeout=5)
+        self.assertEqual(out['code'], '1A2B-3C4D')
+        self.assertTrue(out['in_progress'])
+        # We must answer gh's "Press Enter" prompt so it starts polling.
+        self.assertTrue(any('Enter' in s for s in sent))
+
+    def test_start_times_out_raises(self):
+        with mock.patch.object(GH, '_tmux', return_value=_proc(0, stdout='...')), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=[0, 1, 999]), \
+             mock.patch.object(server.os.path, 'exists', return_value=True):
+            with self.assertRaises(RuntimeError):
+                GH.start_web_login(timeout=5)
+
+    def test_poll_success_switches_to_personal(self):
+        pane = '✓ Logged in as octocat\n__KC_GH_EXIT__:0\n'
+        with mock.patch.object(GH, 'web_login_running', return_value=True), \
+             mock.patch.object(GH, '_capture_web_login_pane', return_value=pane), \
+             mock.patch.object(GH, 'get_auth_mode', return_value='app'), \
+             mock.patch.object(GH, 'set_auth_mode') as set_mode, \
+             mock.patch.object(GH, 'cancel_web_login') as cancel, \
+             mock.patch.object(GH, 'get_full_status', return_value={'auth_mode': 'personal'}):
+            out = GH.poll_web_login()
+        set_mode.assert_called_once_with('personal')
+        cancel.assert_called_once()
+        self.assertTrue(out['connected'])
+        self.assertFalse(out['in_progress'])
+        self.assertEqual(out['connected_user'], 'octocat')
+
+    def test_poll_reports_in_progress(self):
+        with mock.patch.object(GH, 'web_login_running', return_value=True), \
+             mock.patch.object(GH, '_capture_web_login_pane', return_value='polling...'), \
+             mock.patch.object(GH, 'get_full_status', return_value={}):
+            out = GH.poll_web_login()
+        self.assertFalse(out['connected'])
+        self.assertTrue(out['in_progress'])
+
+    def test_poll_failure_when_session_gone(self):
+        with mock.patch.object(GH, 'web_login_running', return_value=False), \
+             mock.patch.object(GH, 'cancel_web_login'), \
+             mock.patch.object(GH, 'get_full_status', return_value={}):
+            out = GH.poll_web_login()
+        self.assertFalse(out['connected'])
+        self.assertFalse(out['in_progress'])
+        self.assertIn('error', out)
+
+
 if __name__ == '__main__':
     unittest.main()

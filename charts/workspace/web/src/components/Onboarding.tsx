@@ -7,6 +7,7 @@ import { pushToast } from '../store/ui';
 import { Button } from './primitives/Button';
 import { Input } from './primitives/Input';
 import { Icon } from './Icon';
+import { GithubConnect } from './GithubConnect';
 import './Onboarding.css';
 
 const DONE_KEY = 'kc.onboardingDone';
@@ -65,7 +66,7 @@ export function Onboarding() {
       pushToast('SSH key generated', { kind: 'success' });
       const s = await githubStatus();
       setStatus(s);
-      setStep(3);
+      setStep(4);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Keygen failed', { kind: 'danger' });
     } finally {
@@ -124,6 +125,24 @@ export function Onboarding() {
       ),
     },
     {
+      title: 'Connect your GitHub account',
+      body: (
+        <>
+          <p class="muted">
+            Connect your personal GitHub so Claude can push to your repos and use your
+            identity. Sign in with your browser — no terminal needed.
+          </p>
+          <GithubConnect compact onConnected={() => setStep(3)} />
+        </>
+      ),
+      action: (
+        <>
+          <Button variant="ghost" onClick={() => setStep(3)}>Skip</Button>
+          <Button variant="primary" onClick={() => setStep(3)}>Continue</Button>
+        </>
+      ),
+    },
+    {
       title: 'Generate an SSH key',
       body: status?.ssh_key_exists ? (
         <p class="muted">A key already exists. The public key is shown in Settings — add it to GitHub if you haven't yet.</p>
@@ -132,13 +151,13 @@ export function Onboarding() {
       ),
       action: (
         <>
-          <Button variant="ghost" onClick={() => setStep(3)}>Skip</Button>
+          <Button variant="ghost" onClick={() => setStep(4)}>Skip</Button>
           {!status?.ssh_key_exists ? (
             <Button variant="primary" disabled={!email.trim() || busy} onClick={genKey}>
               <Icon name="plus" size={14} /> Generate key
             </Button>
           ) : (
-            <Button variant="primary" onClick={() => setStep(3)}>Continue</Button>
+            <Button variant="primary" onClick={() => setStep(4)}>Continue</Button>
           )}
         </>
       ),
