@@ -571,6 +571,13 @@ class GitHubManager:
     # after the process ends (the session lingers via `sleep`, see below).
     _GH_EXIT_RE = re.compile(r'__KC_GH_EXIT__:(\d+)')
     _LOGGED_IN_RE = re.compile(r'Logged in as\s+(\S+)', re.IGNORECASE)
+    # When a personal login already exists in hosts.yml, gh asks to confirm
+    # before re-authenticating ("You're already logged in to github.com as X.
+    # Do you want to re-authenticate? (Y/n)"). We answer 'y' so *reconnecting*
+    # a different account is as seamless as a first-time connect (issue #303).
+    # Matches "re-authenticate"/"reauthenticate" but not "Authentication
+    # complete", so it never fires on gh's success banner.
+    _REAUTH_RE = re.compile(r're-?authenticate', re.IGNORECASE)
 
     @staticmethod
     def _tmux(*args):
@@ -620,13 +627,24 @@ class GitHubManager:
         return 'success' if m.group(1) == '0' else 'failed'
 
     @staticmethod
+    def _send_keys(*keys):
+        GitHubManager._tmux(
+            'send-keys', '-t', GitHubManager.WEB_LOGIN_SESSION, *keys)
+
+    @staticmethod
     def start_web_login(timeout=25):
         """Kick off `gh auth login --web` in a background tmux session and return
         the one-time device code for the dashboard to display. We deliberately
         run the *real* gh binary with GH_TOKEN stripped (bypassing the mode
         shim) so the login writes a personal token to hosts.yml regardless of
         the current mode; the mode is only flipped to 'personal' once poll()
-        confirms success. Raises RuntimeError if no code appears in `timeout`s."""
+        confirms success. Raises RuntimeError if no code appears in `timeout`s.
+
+        Works for both first-time connect and *reconnect*: when a personal
+        login already exists gh first asks to confirm re-authentication, which
+        we auto-answer 'y' so the two paths feel identical. Answering (rather
+        than pre-emptively logging out) is non-destructive — the existing login
+        survives if the user abandons the flow."""
         GitHubManager.cancel_web_login()
         gh_bin = '/usr/bin/gh' if os.path.exists('/usr/bin/gh') else 'gh'
         # env -u strips the App token for THIS gh only, so gh stores a personal
@@ -644,16 +662,22 @@ class GitHubManager:
             raise RuntimeError(
                 (started.stderr or 'could not start login session').strip())
         deadline = time.time() + timeout
+        answered_reauth = False
         while time.time() < deadline:
-            parsed = GitHubManager.parse_device_code(
-                GitHubManager._capture_web_login_pane())
+            pane = GitHubManager._capture_web_login_pane()
+            parsed = GitHubManager.parse_device_code(pane)
             if parsed:
                 # gh waits on "Press Enter to open in your browser" — answer it
                 # so gh proceeds to poll GitHub for authorization.
-                GitHubManager._tmux(
-                    'send-keys', '-t', GitHubManager.WEB_LOGIN_SESSION, 'Enter')
+                GitHubManager._send_keys('Enter')
                 parsed['in_progress'] = True
                 return parsed
+            if not answered_reauth and GitHubManager._REAUTH_RE.search(pane):
+                # "Do you want to re-authenticate? (Y/n)" — confirm so gh moves
+                # on to issue a device code. Guarded so the lingering prompt in
+                # scrollback isn't answered twice.
+                GitHubManager._send_keys('y', 'Enter')
+                answered_reauth = True
             time.sleep(0.5)
         GitHubManager.cancel_web_login()
         raise RuntimeError(

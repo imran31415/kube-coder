@@ -338,6 +338,54 @@ class WebLoginDriveTests(unittest.TestCase):
         # We must answer gh's "Press Enter" prompt so it starts polling.
         self.assertTrue(any('Enter' in s for s in sent))
 
+    def test_start_reconnect_answers_reauth_then_returns_code(self):
+        # Reconnect: gh finds an existing login and asks to re-authenticate
+        # before it will issue a device code.
+        panes = iter([
+            "You're already logged in to github.com as octocat. "
+            'Do you want to re-authenticate? (Y/n)\n',
+            '! First copy your one-time code: 1A2B-3C4D\n',
+        ])
+        sent = []
+
+        def fake_tmux(*args):
+            if args[0] == 'capture-pane':
+                return _proc(0, stdout=next(panes))
+            if args[0] == 'send-keys':
+                sent.append(args)
+            return _proc(0)
+        with mock.patch.object(GH, '_tmux', side_effect=fake_tmux), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.os.path, 'exists', return_value=True):
+            out = GH.start_web_login(timeout=5)
+        self.assertEqual(out['code'], '1A2B-3C4D')
+        # We confirmed the re-auth prompt with 'y' ...
+        self.assertTrue(any('y' in s for s in sent), sent)
+        # ... and still answered the later "Press Enter to open browser".
+        self.assertTrue(any(s[-1] == 'Enter' and 'y' not in s for s in sent), sent)
+
+    def test_start_answers_reauth_only_once(self):
+        # The prompt lingers in scrollback after we answer; don't re-send 'y'.
+        panes = iter([
+            'Do you want to re-authenticate? (Y/n)\n',
+            'Do you want to re-authenticate? (Y/n)\n',  # still on screen
+            'one-time code: WXYZ-6789\n',
+        ])
+        sent = []
+
+        def fake_tmux(*args):
+            if args[0] == 'capture-pane':
+                return _proc(0, stdout=next(panes))
+            if args[0] == 'send-keys':
+                sent.append(args)
+            return _proc(0)
+        with mock.patch.object(GH, '_tmux', side_effect=fake_tmux), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.os.path, 'exists', return_value=True):
+            GH.start_web_login(timeout=5)
+        y_sends = [s for s in sent if 'y' in s]
+        self.assertEqual(len(y_sends), 1, sent)
+
     def test_start_times_out_raises(self):
         with mock.patch.object(GH, '_tmux', return_value=_proc(0, stdout='...')), \
              mock.patch.object(server.time, 'sleep'), \
