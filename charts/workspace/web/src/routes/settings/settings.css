@@ -245,6 +245,70 @@
 .health-cell-name { font-weight: 500; }
 .health-cell-port { font-size: 11px; }
 
+/* Running builds/chats + ports lists on the metrics tab (issue #285). Each is
+   a labelled block with a count Pill and an info tooltip explaining what's in
+   it, then a stack of rows that link to the live session / app. */
+.metrics-running { margin-top: var(--size-4); }
+.metrics-running-head {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  margin-bottom: var(--size-2);
+}
+.metrics-running-title { font-size: 13px; font-weight: 600; margin: 0; }
+.metrics-info {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted, var(--muted));
+  cursor: help;
+}
+.metrics-empty { font-size: 12.5px; }
+.metrics-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.metrics-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.metrics-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.metrics-item-label {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.metrics-item-meta { font-size: 11px; flex: 0 0 auto; }
+.metrics-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+/* On narrow (mobile) viewports let the meta wrap under the label and keep the
+   actions pinned to the right so the row stays tappable. */
+@media (max-width: 520px) {
+  .metrics-item-meta { display: none; }
+}
+
 /* Mobile section: a read-only value field that flexes wide, with its Copy /
    Reveal buttons sitting inline beside it. Wraps on narrow viewports. */
 .settings-copy-row {
