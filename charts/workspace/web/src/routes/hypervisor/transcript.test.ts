@@ -101,7 +101,7 @@ describe('buildTurns', () => {
     }
   });
 
-  it('folds a tool_result into the preceding tool call', () => {
+  it('folds a tool_result into the preceding tool call and marks it resolved', () => {
     const turns = buildTurns([
       ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',
            tool: { name: 'Bash', input: { command: 'echo hi' } } }, 1),
@@ -110,7 +110,40 @@ describe('buildTurns', () => {
     if (turns[0].role === 'agent') {
       expect(turns[0].blocks).toHaveLength(1);
       const b = turns[0].blocks[0];
-      if (b.kind === 'activity') expect(b.detail).toContain('hi');
+      if (b.kind === 'activity') {
+        expect(b.detail).toContain('hi');
+        expect(b.ok).toBe(true); // ✓ outcome distinguishes a resolved run
+        expect(b.error).toBeFalsy();
+      }
+    }
+  });
+
+  it('marks an unresolved tool call as neither ok nor error', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',
+           tool: { name: 'Bash', input: { command: 'sleep 5' } } }, 1),
+    ]);
+    if (turns[0].role === 'agent') {
+      const b = turns[0].blocks[0];
+      if (b.kind === 'activity') {
+        expect(b.ok).toBeFalsy();
+        expect(b.error).toBeFalsy();
+      }
+    }
+  });
+
+  it('marks an errored tool_result as error, not ok', () => {
+    const turns = buildTurns([
+      ev({ role: 'assistant', type: 'tool_call', tool_id: 't1',
+           tool: { name: 'Read', input: { file_path: '/nope' } } }, 1),
+      ev({ role: 'system', type: 'tool_result', tool_use_id: 't1', is_error: true, text: 'not found' }, 2),
+    ]);
+    if (turns[0].role === 'agent') {
+      const b = turns[0].blocks[0];
+      if (b.kind === 'activity') {
+        expect(b.error).toBe(true);
+        expect(b.ok).toBeFalsy();
+      }
     }
   });
 

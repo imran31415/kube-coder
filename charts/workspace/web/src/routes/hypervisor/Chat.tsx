@@ -11,6 +11,7 @@ import {
   chatError,
   selectedAssistant,
   config,
+  transcriptSource,
   sendMessage,
   stopMessage,
 } from '../../store/hypervisor';
@@ -59,14 +60,16 @@ const SUGGESTIONS = [
   'Remember that I deploy with `make ship`',
 ];
 
-/** One tool/command run — collapsed by default, expandable to the raw detail. */
-function ActivityChip({ label, detail, error }: { label: string; detail: string; error?: boolean }) {
+/** One tool/command run — collapsed by default, expandable to the raw detail.
+ *  A resolved call shows a ✓/✗ outcome so tool activity reads distinctly from
+ *  plain messages (and from a still-running call). */
+function ActivityChip({ label, detail, error, ok }: { label: string; detail: string; error?: boolean; ok?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <div class={`hv-activity ${open ? 'is-open' : ''} ${error ? 'is-error' : ''}`}>
+    <div class={`hv-activity ${open ? 'is-open' : ''} ${error ? 'is-error' : ''} ${ok ? 'is-ok' : ''}`}>
       <button type="button" class="hv-activity-head" onClick={() => setOpen((v) => !v)}>
         <span class="hv-activity-icon">
-          <Icon name="terminal" size={12} />
+          <Icon name={error ? 'close' : ok ? 'check' : 'terminal'} size={12} />
         </span>
         <span class="hv-activity-label">{label}</span>
         <Icon name="chevron-down" size={13} class="hv-activity-caret" />
@@ -332,7 +335,7 @@ function AgentBlocks({
               />
             );
           default:
-            return <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} />;
+            return <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} ok={b.ok} />;
         }
       })}
     </>
@@ -500,6 +503,11 @@ export function Chat() {
           </div>
         ) : (
           <div class="hv-transcript-flow">
+            {transcriptSource.value === 'session_log' && (
+              <div class="hv-source-chip" title="Rendered from Claude Code's own JSONL session log — the complete, structured record of this thread.">
+                <Icon name="check" size={11} /> Structured transcript · session log
+              </div>
+            )}
             {turns.map((t, i) =>
               t.role === 'user' ? (
                 <div key={i} class="hv-msg hv-msg-user">

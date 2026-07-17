@@ -454,6 +454,23 @@
   gap: var(--size-3);
 }
 
+/* A quiet badge noting the transcript came from Claude Code's structured JSONL
+   session log (vs. the live stream capture fallback). */
+.hv-source-chip {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-subtle);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+.hv-source-chip svg { color: var(--success, #2e7d32); }
+
 .hv-welcome-host {
   margin: auto;
   width: 100%;
@@ -626,6 +643,9 @@
 }
 .hv-activity.is-error .hv-activity-icon,
 .hv-activity.is-error .hv-activity-label { color: var(--danger, #c0392b); }
+/* A resolved (successful) tool run — a quiet success accent on the icon only,
+   so the chip reads as "done" without shouting over the prose around it. */
+.hv-activity.is-ok:not(.is-error) .hv-activity-icon { color: var(--success, #2e7d32); }
 .hv-activity-detail {
   margin: 0;
   padding: 9px 11px;

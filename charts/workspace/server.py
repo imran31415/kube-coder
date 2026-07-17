@@ -5124,9 +5124,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             since = int((urllib.parse.parse_qs(qs).get('since') or ['0'])[0])
         except (TypeError, ValueError):
             since = 0
+        # Prefer Claude Code's own JSONL session log (structured, complete,
+        # restart-proof) for the transcript; fall back to the live events.jsonl
+        # capture when it's unavailable. `source` tells the client which won.
+        tx = session.transcript(since_seq=since)
         self.send_json({
             'thread': session.summary(),
-            'events': session.read_events(since_seq=since),
+            'events': tx['events'],
+            'source': tx['source'],
         })
 
     def handle_hypervisor_get_activity(self, thread_id):
