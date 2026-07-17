@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { fmtDuration, entryTone, entryLabel, totalErrors, clip } from './activity';
-import type { ActivityEntry } from '../../api/hypervisor';
+import {
+  fmtDuration, entryTone, entryLabel, totalErrors, clip,
+  toolTitle, toolSubtitle, primaryArg, summaryBadges, categoryOf,
+} from './activity';
+import type { ActivityEntry, ActivityCounts } from '../../api/hypervisor';
+
+const counts = (p: Partial<ActivityCounts>): ActivityCounts => ({
+  tool_calls: 0, tool_results: 0, tool_errors: 0, errors: 0, messages: 0,
+  builds: 0, subagents: 0, ...p,
+});
 
 describe('fmtDuration', () => {
   it('formats sub-second, seconds, and minutes', () => {
@@ -47,10 +55,53 @@ describe('entryLabel', () => {
 
 describe('totalErrors', () => {
   it('sums tool errors and hard errors', () => {
-    expect(totalErrors({ tool_calls: 3, tool_results: 3, tool_errors: 2, errors: 1, messages: 4 })).toBe(3);
-    expect(totalErrors({ tool_calls: 1, tool_results: 1, tool_errors: 0, errors: 0, messages: 1 })).toBe(0);
+    expect(totalErrors(counts({ tool_errors: 2, errors: 1 }))).toBe(3);
+    expect(totalErrors(counts({}))).toBe(0);
     expect(totalErrors(null)).toBe(0);
     expect(totalErrors(undefined)).toBe(0);
+  });
+});
+
+describe('category helpers', () => {
+  const tool = (p: Partial<ActivityEntry>): ActivityEntry =>
+    ({ kind: 'tool', seq: 1, ts: 1, status: 'ok', ...p } as ActivityEntry);
+
+  it('categoryOf defaults to tool', () => {
+    expect(categoryOf(tool({}))).toBe('tool');
+    expect(categoryOf(tool({ category: 'build' }))).toBe('build');
+  });
+
+  it('toolTitle reads like a working log per category', () => {
+    expect(toolTitle(tool({ category: 'build' }))).toBe('Started build');
+    expect(toolTitle(tool({ category: 'subagent', subagent_type: 'explore' }))).toBe('Sub-agent · explore');
+    expect(toolTitle(tool({ category: 'subagent' }))).toBe('Sub-agent');
+    expect(toolTitle(tool({ category: 'tool', label: 'Bash' }))).toBe('Bash');
+  });
+
+  it('toolSubtitle prefers sub-agent description, else a primary arg', () => {
+    expect(toolSubtitle(tool({ category: 'subagent', description: 'map the codebase' }))).toBe('map the codebase');
+    expect(toolSubtitle(tool({ category: 'tool', input: { command: 'npm run build' } }))).toBe('npm run build');
+    expect(toolSubtitle(tool({ category: 'tool', input: {} }))).toBe('');
+  });
+
+  it('primaryArg picks the most meaningful field', () => {
+    expect(primaryArg({ command: 'ls -la' })).toBe('ls -la');
+    expect(primaryArg({ prompt: 'do a thing', extra: 1 })).toBe('do a thing');
+    expect(primaryArg({ port: 8080 })).toBe('8080');
+    expect(primaryArg('raw string')).toBe('raw string');
+    expect(primaryArg(null)).toBe('');
+    expect(primaryArg({ nothing: true })).toBe('');
+  });
+
+  it('summaryBadges lists tools + non-zero high-signal categories', () => {
+    const b = summaryBadges(counts({ tool_calls: 5, builds: 1, subagents: 2 }));
+    expect(b.map((x) => x.key)).toEqual(['tools', 'builds', 'subagents']);
+    expect(b.map((x) => x.label)).toEqual(['5 tools', '1 build', '2 sub-agents']);
+  });
+
+  it('summaryBadges omits zero categories and handles null', () => {
+    expect(summaryBadges(counts({ tool_calls: 1 })).map((x) => x.key)).toEqual(['tools']);
+    expect(summaryBadges(null)).toEqual([]);
   });
 });
 

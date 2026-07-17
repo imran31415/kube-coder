@@ -68,6 +68,16 @@ export interface ThreadDetail {
   source?: TranscriptSource;
 }
 
+/** Semantic category the backend assigns each tool call so the panel can
+ *  surface high-signal side-effects (sub-builds, sub-agents, …) distinctly. */
+export type ActivityCategory =
+  | 'build'
+  | 'subagent'
+  | 'app'
+  | 'memory'
+  | 'task'
+  | 'tool';
+
 /** One normalized entry in the observability timeline (server-side
  *  build_activity). `kind` discriminates the shape. */
 export interface ActivityEntry {
@@ -76,12 +86,20 @@ export interface ActivityEntry {
   ts: number | null;
   // kind === 'tool'
   tool?: string | null;
+  /** Un-namespaced tool name (mcp__dashboard__create_task -> create_task). */
+  label?: string | null;
+  category?: ActivityCategory;
   input?: unknown;
   tool_id?: string | null;
   status?: 'ok' | 'error' | 'pending' | string;
   result_text?: string | null;
   result_seq?: number | null;
   duration_ms?: number | null;
+  // category === 'build': the created task id, for a deep-link.
+  task_id?: string | null;
+  // category === 'subagent'
+  subagent_type?: string | null;
+  description?: string | null;
   // kind === 'tool_result_orphan'
   tool_use_id?: string | null;
   // kind === 'error'
@@ -94,6 +112,8 @@ export interface ActivityCounts {
   tool_errors: number;
   errors: number;
   messages: number;
+  builds: number;
+  subagents: number;
 }
 
 export interface ThreadActivity {

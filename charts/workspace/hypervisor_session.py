@@ -688,6 +688,61 @@ def _stringify(v: Any) -> str:
 # ───────────────────────────────────────────────────────────────────────────
 # Activity view — a normalized observability timeline over events.jsonl
 # ───────────────────────────────────────────────────────────────────────────
+
+# Map a tool name to a semantic category so the activity view can call out the
+# high-signal side-effects — sub-builds, sub-agents, apps, memory — as
+# first-class entries instead of undifferentiated "tool" rows. Built-in tools
+# (Task, Bash, Edit…) arrive bare; the curated dashboard/memory MCP tools arrive
+# namespaced as mcp__<server>__<tool>, so we classify on the un-namespaced base.
+_MCP_NAME_RE = re.compile(r'^mcp__[^_]+__(.+)$')
+_TOOL_CATEGORIES = {
+    'create_task': 'build',        # spins up a background task/build
+    'Task': 'subagent',            # Claude's built-in sub-agent spawn
+    'pin_app': 'app',
+    'show_app_preview': 'app',
+    'add_memory': 'memory',
+    'search_memory': 'memory',
+    'list_memory': 'memory',
+    'delete_memory': 'memory',
+    'send_task_message': 'task',
+    'kill_task': 'task',
+    'get_task': 'task',
+    'get_task_output': 'task',
+    'list_tasks': 'task',
+}
+
+
+def _tool_base_name(name: Optional[str]) -> str:
+    """The un-namespaced tool name: mcp__dashboard__create_task -> create_task,
+    Bash -> Bash."""
+    if not name:
+        return ''
+    m = _MCP_NAME_RE.match(name)
+    return m.group(1) if m else name
+
+
+def _classify_tool(name: Optional[str]) -> str:
+    """Semantic category for a tool call: build | subagent | app | memory |
+    task | tool. Drives the activity view's grouping/badges."""
+    return _TOOL_CATEGORIES.get(_tool_base_name(name), 'tool')
+
+
+def _extract_task_id(text: Optional[str]) -> Optional[str]:
+    """Pull the created task_id out of a create_task tool result. The result is
+    the (pretty-printed) JSON body of POST /api/claude/tasks, which carries
+    task_id; fall back to a regex if it isn't cleanly parseable."""
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict) and isinstance(data.get('task_id'), str):
+            return data['task_id']
+    except (json.JSONDecodeError, ValueError):
+        pass
+    m = re.search(r'"task_id"\s*:\s*"([^"]+)"', text)
+    return m.group(1) if m else None
+
+
 def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Pure transform of an events.jsonl list into a user-facing activity view
     (issue: hypervisor observability). Deterministic and side-effect free so
@@ -696,9 +751,16 @@ def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     Produces:
       * timeline — ordered entries (seq-sorted) of the operationally interesting
         events: tool calls (each paired with its result + duration + ok/error
-        status), standalone errors, and status transitions. Plain chat messages
-        are the transcript itself, so they're counted but not repeated here.
-      * counts   — {tool_calls, tool_results, tool_errors, errors, messages}.
+        status, and a semantic `category`), standalone errors, and status
+        transitions. Plain chat messages are the transcript itself, so they're
+        counted but not repeated here.
+      * counts   — {tool_calls, tool_results, tool_errors, errors, messages,
+        builds, subagents}.
+
+    Each tool entry carries a `category` (build | subagent | app | memory |
+    task | tool) so the UI can surface the high-signal side-effects. A `build`
+    entry additionally carries the created `task_id` (for a deep-link); a
+    `subagent` entry carries `subagent_type` + `description` from its input.
 
     A tool_call is matched to its tool_result by tool_id == tool_use_id. An
     unmatched call stays 'pending' (turn still running or the CLI never
@@ -708,7 +770,7 @@ def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     timeline: List[Dict[str, Any]] = []
     pending: Dict[str, int] = {}  # tool_id -> index into timeline
     counts = {'tool_calls': 0, 'tool_results': 0, 'tool_errors': 0,
-              'errors': 0, 'messages': 0}
+              'errors': 0, 'messages': 0, 'builds': 0, 'subagents': 0}
 
     for e in sorted(events, key=lambda x: x.get('seq', 0)):
         etype = e.get('type')
@@ -720,18 +782,36 @@ def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             counts['tool_calls'] += 1
             tool = e.get('tool') or {}
             tool_id = e.get('tool_id')
+            name = tool.get('name')
+            tool_input = tool.get('input')
+            category = _classify_tool(name)
             entry = {
                 'kind': 'tool',
                 'seq': seq,
                 'ts': ts,
-                'tool': tool.get('name'),
-                'input': tool.get('input'),
+                'tool': name,
+                'label': _tool_base_name(name),
+                'category': category,
+                'input': tool_input,
                 'tool_id': tool_id,
                 'status': 'pending',
                 'result_text': None,
                 'result_seq': None,
                 'duration_ms': None,
+                # Filled per-category below / at result time.
+                'task_id': None,
+                'subagent_type': None,
+                'description': None,
             }
+            if category == 'build':
+                counts['builds'] += 1
+            elif category == 'subagent':
+                counts['subagents'] += 1
+                if isinstance(tool_input, dict):
+                    st = tool_input.get('subagent_type')
+                    desc = tool_input.get('description')
+                    entry['subagent_type'] = st if isinstance(st, str) else None
+                    entry['description'] = desc if isinstance(desc, str) else None
             timeline.append(entry)
             if tool_id is not None:
                 pending[tool_id] = len(timeline) - 1
@@ -749,6 +829,10 @@ def build_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
                 entry['result_seq'] = seq
                 if isinstance(ts, (int, float)) and isinstance(entry.get('ts'), (int, float)):
                     entry['duration_ms'] = max(0, round((ts - entry['ts']) * 1000))
+                # A successful sub-build carries the created task_id in its
+                # result — lift it so the UI can deep-link to the task.
+                if entry.get('category') == 'build' and not is_error:
+                    entry['task_id'] = _extract_task_id(e.get('text'))
             else:
                 # Result with no matching call — keep it visible.
                 timeline.append({
