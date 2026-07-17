@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
+import { navigate } from '../../store/router';
 import { getThreadActivity, type ActivityEntry, type ThreadActivity } from '../../api/hypervisor';
-import { fmtDuration, entryTone, entryLabel, totalErrors, clip } from './activity';
+import {
+  fmtDuration, entryTone, entryLabel, totalErrors, clip,
+  CATEGORY_META, categoryOf, toolTitle, toolSubtitle, summaryBadges,
+} from './activity';
 
 /**
  * Collapsible observability panel for the active hypervisor thread (issue:
@@ -70,8 +74,15 @@ export function ActivityPanel({ threadId, running }: { threadId: string; running
         <span class="hv-ap-title">Activity</span>
         {counts && (
           <span class="hv-ap-badges">
-            <span class="hv-ap-badge">{counts.tool_calls} {counts.tool_calls === 1 ? 'tool' : 'tools'}</span>
-            {errs > 0 && <span class="hv-ap-badge hv-ap-badge--err">{errs} {errs === 1 ? 'error' : 'errors'}</span>}
+            {summaryBadges(counts).map((b) => (
+              <span key={b.key} class={`hv-ap-badge hv-ap-badge--${b.key}`}>
+                <Icon name={b.icon} size={11} />
+                {b.label}
+              </span>
+            ))}
+            {errs > 0 && (
+              <span class="hv-ap-badge hv-ap-badge--err">{errs} {errs === 1 ? 'error' : 'errors'}</span>
+            )}
           </span>
         )}
         <Icon name="chevron-down" size={13} class={`hv-ap-caret${open ? ' hv-ap-caret--open' : ''}`} />
@@ -113,26 +124,53 @@ export function ActivityPanel({ threadId, running }: { threadId: string; running
 
 function ActivityRow({ e }: { e: ActivityEntry }) {
   const tone = entryTone(e);
-  const label = entryLabel(e);
-  const detail =
-    e.kind === 'error'
-      ? clip(e.text)
-      : e.kind === 'tool' && e.status === 'error'
-        ? clip(e.result_text)
-        : e.kind === 'tool_result_orphan'
-          ? clip(e.result_text)
+
+  // Non-tool rows (bare errors, status transitions, orphan results) keep the
+  // simple one-line treatment.
+  if (e.kind !== 'tool') {
+    const detail =
+      e.kind === 'error' ? clip(e.text)
+        : e.kind === 'tool_result_orphan' ? clip(e.result_text)
           : '';
+    return (
+      <li class={`hv-ap-row hv-ap-row--${e.kind}`}>
+        <span class={`hv-ap-dot hv-ap-dot--${tone}`} aria-hidden="true" />
+        <span class="hv-ap-label">{entryLabel(e)}</span>
+        {detail && <span class="hv-ap-detail">{detail}</span>}
+      </li>
+    );
+  }
+
+  // Tool rows read like Claude Code's working log: a category-tinted icon, the
+  // action title, a representative argument/description, timing, and — for a
+  // sub-build — a tappable chip that deep-links to the spawned task.
+  const cat = categoryOf(e);
+  const meta = CATEGORY_META[cat];
+  const subtitle = toolSubtitle(e);
+  const errText = e.status === 'error' ? clip(e.result_text) : '';
   return (
-    <li class={`hv-ap-row hv-ap-row--${e.kind}`}>
+    <li class={`hv-ap-row hv-ap-row--tool hv-ap-row--${cat}`}>
       <span class={`hv-ap-dot hv-ap-dot--${tone}`} aria-hidden="true" />
-      <span class="hv-ap-label">{label}</span>
-      {e.kind === 'tool' && e.status === 'pending' && (
-        <span class="hv-ap-running">running…</span>
+      <span class={`hv-ap-cat hv-ap-cat--${cat}`} title={meta.label}>
+        <Icon name={meta.icon} size={12} />
+      </span>
+      <span class="hv-ap-title-row">
+        <span class="hv-ap-toolname">{toolTitle(e)}</span>
+        {subtitle && <span class="hv-ap-sub">{subtitle}</span>}
+      </span>
+      {e.status === 'pending' && <span class="hv-ap-running">running…</span>}
+      {e.duration_ms != null && <span class="hv-ap-dur">{fmtDuration(e.duration_ms)}</span>}
+      {cat === 'build' && e.task_id && (
+        <button
+          type="button"
+          class="hv-ap-link"
+          title="Open this task"
+          onClick={() => navigate(`/tasks/${encodeURIComponent(e.task_id as string)}`)}
+        >
+          <Icon name="link" size={11} /> {e.task_id}
+        </button>
       )}
-      {e.kind === 'tool' && e.duration_ms != null && (
-        <span class="hv-ap-dur">{fmtDuration(e.duration_ms)}</span>
-      )}
-      {detail && <span class="hv-ap-detail">{detail}</span>}
+      {errText && <span class="hv-ap-detail hv-ap-detail--err">{errText}</span>}
     </li>
   );
 }

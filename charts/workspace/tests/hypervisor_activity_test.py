@@ -40,7 +40,7 @@ class BuildActivityTests(unittest.TestCase):
         self.assertEqual(r['timeline'], [])
         self.assertEqual(r['counts'], {
             'tool_calls': 0, 'tool_results': 0, 'tool_errors': 0,
-            'errors': 0, 'messages': 0})
+            'errors': 0, 'messages': 0, 'builds': 0, 'subagents': 0})
 
     def test_tool_call_paired_with_ok_result_and_duration(self):
         events = [
@@ -140,6 +140,72 @@ class BuildActivityTests(unittest.TestCase):
         ]
         r = build_activity(events)
         self.assertEqual(r['timeline'], [])
+
+
+class ToolClassificationTests(unittest.TestCase):
+    """Tier A: build_activity classifies tool calls into semantic categories and
+    lifts the identifiers the UI needs (created task_id, sub-agent info), so the
+    activity view can call out sub-builds / sub-agents as first-class entries."""
+
+    def test_classify_and_base_name(self):
+        self.assertEqual(hv._tool_base_name('mcp__dashboard__create_task'), 'create_task')
+        self.assertEqual(hv._tool_base_name('Bash'), 'Bash')
+        self.assertEqual(hv._classify_tool('mcp__dashboard__create_task'), 'build')
+        self.assertEqual(hv._classify_tool('Task'), 'subagent')
+        self.assertEqual(hv._classify_tool('mcp__dashboard__pin_app'), 'app')
+        self.assertEqual(hv._classify_tool('mcp__memory__add_memory'), 'memory')
+        self.assertEqual(hv._classify_tool('mcp__dashboard__kill_task'), 'task')
+        self.assertEqual(hv._classify_tool('Bash'), 'tool')
+        self.assertEqual(hv._classify_tool(None), 'tool')
+
+    def test_extract_task_id(self):
+        self.assertEqual(hv._extract_task_id('{"task_id": "kube-coder-abc", "status": "queued"}'), 'kube-coder-abc')
+        # Pretty-printed / surrounded by prose still works via the regex fallback.
+        self.assertEqual(hv._extract_task_id('Created task.\n{\n  "task_id": "t-9"\n}'), 't-9')
+        self.assertIsNone(hv._extract_task_id('no id here'))
+        self.assertIsNone(hv._extract_task_id(None))
+
+    def test_build_call_gets_category_and_task_id(self):
+        events = [
+            _ev(1, 'tool_call', tool={'name': 'mcp__dashboard__create_task', 'input': {'prompt': 'run tests'}}, tool_id='b1'),
+            _ev(2, 'tool_result', tool_use_id='b1', text='{"task_id": "kube-coder-xyz"}', is_error=False),
+        ]
+        r = build_activity(events)
+        entry = r['timeline'][0]
+        self.assertEqual(entry['category'], 'build')
+        self.assertEqual(entry['label'], 'create_task')
+        self.assertEqual(entry['task_id'], 'kube-coder-xyz')
+        self.assertEqual(r['counts']['builds'], 1)
+
+    def test_failed_build_has_no_task_id(self):
+        events = [
+            _ev(1, 'tool_call', tool={'name': 'mcp__dashboard__create_task', 'input': {}}, tool_id='b1'),
+            _ev(2, 'tool_result', tool_use_id='b1', text='error: prompt is required', is_error=True),
+        ]
+        r = build_activity(events)
+        self.assertEqual(r['timeline'][0]['category'], 'build')
+        self.assertIsNone(r['timeline'][0]['task_id'])
+        self.assertEqual(r['counts']['builds'], 1)
+
+    def test_subagent_call_lifts_type_and_description(self):
+        events = [
+            _ev(1, 'tool_call', tool={'name': 'Task', 'input': {
+                'subagent_type': 'Explore', 'description': 'map the codebase'}}, tool_id='s1'),
+        ]
+        r = build_activity(events)
+        entry = r['timeline'][0]
+        self.assertEqual(entry['category'], 'subagent')
+        self.assertEqual(entry['subagent_type'], 'Explore')
+        self.assertEqual(entry['description'], 'map the codebase')
+        self.assertEqual(r['counts']['subagents'], 1)
+
+    def test_generic_tool_is_category_tool(self):
+        events = [_ev(1, 'tool_call', tool={'name': 'Bash', 'input': {'command': 'ls'}}, tool_id='x1')]
+        r = build_activity(events)
+        self.assertEqual(r['timeline'][0]['category'], 'tool')
+        self.assertEqual(r['timeline'][0]['label'], 'Bash')
+        self.assertEqual(r['counts']['builds'], 0)
+        self.assertEqual(r['counts']['subagents'], 0)
 
 
 class RunnerLogTests(unittest.TestCase):
