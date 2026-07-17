@@ -339,8 +339,12 @@ spec:
         # Resource caps prevent a runaway `docker build` (fork bomb,
         # 10GB layer, etc.) from starving every other workspace on the
         # node. Override per-workspace via .Values.build.dindResources.
+        # The dind daemon idles near-zero when no build is running, so its
+        # CPU REQUEST (scheduler reservation) is small (50m) — it bursts to
+        # the 2-core limit during a build. A large request just strands node
+        # capacity (see the ide `resources` note in values.yaml).
         resources:
-{{ toYaml (.Values.build.dindResources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi") "limits" (dict "cpu" "2" "memory" "4Gi"))) | indent 10 }}
+{{ toYaml (.Values.build.dindResources | default (dict "requests" (dict "cpu" "50m" "memory" "256Mi") "limits" (dict "cpu" "2" "memory" "4Gi"))) | indent 10 }}
         volumeMounts:
         - name: docker-certs
           mountPath: /certs/client

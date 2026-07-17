@@ -153,7 +153,14 @@ update:
 # values.yaml rather than raising this shared default.
 resources:
   requests:
-    cpu: "250m"
+    # CPU request is the SCHEDULER RESERVATION, not a usage cap (that's limits).
+    # An idle workspace (code-server + server.py) sits well under 100m and
+    # bursts to the 2-core limit on demand regardless of this floor, so a high
+    # request just strands node capacity as unschedulable reservation. Kept low
+    # (100m) so nodes pack efficiently; a workspace that needs a guaranteed
+    # higher baseline overrides this in its own values.yaml. See #95 / the
+    # node-pool over-reservation that wedged scheduling at ~96% requested.
+    cpu: "100m"
     memory: 1Gi
   limits:
     cpu: "2"
