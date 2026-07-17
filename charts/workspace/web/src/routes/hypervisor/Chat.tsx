@@ -21,14 +21,26 @@ import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
 import { withOauthPrefix } from '../../api/client';
 import { previewFile, fileRawUrl, fileViewUrl, downloadFile, type FilePreview } from '../../api/files';
-import { isImageFile, imagesFromClipboard, uploadTaskImage } from '../tasks/imageAttach';
+import {
+  isImageFile,
+  isAllowedFile,
+  isVideoFile,
+  filesFromClipboard,
+  uploadTaskFile,
+  ATTACH_ACCEPT,
+} from '../tasks/imageAttach';
 
-/** A user-attached image being uploaded to the workspace so the agent can read
+/** A user-attached file being uploaded to the workspace so the agent can read
  *  it — same mechanism as the Build tab: upload, then the file's absolute path
- *  is appended to the outgoing message and Claude reads it by path. */
+ *  is appended to the outgoing message and Claude reads it by path. Images get
+ *  an object-URL thumbnail; other allowed types (pdf/md/txt/csv/code/…) render
+ *  as an icon + filename chip. */
 interface Attachment {
   id: string;
-  previewUrl: string;
+  name: string;
+  kind: 'image' | 'file';
+  /** Object URL for the thumbnail — images only. */
+  previewUrl?: string;
   path?: string;
   status: 'uploading' | 'ready' | 'error';
 }
@@ -330,6 +342,9 @@ function AgentBlocks({
 export function Chat() {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Inline feedback when the user tries to attach something we can't send
+  // (video, or an unsupported type) — never a silent drop.
+  const [attachError, setAttachError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -339,13 +354,29 @@ export function Chat() {
   const pinnedRef = useRef(true);
 
   function addFiles(files: File[]) {
-    const imgs = files.filter(isImageFile);
-    for (const file of imgs) {
+    if (!files.length) return;
+    const allowed = files.filter(isAllowedFile);
+    const rejected = files.filter((f) => !isAllowedFile(f));
+    // Surface a clear reason for anything we drop — video gets its own message
+    // since it's a "not yet" rather than a "never".
+    if (rejected.length) {
+      setAttachError(
+        rejected.some(isVideoFile)
+          ? "Video can't be read by the Hypervisor yet."
+          : "This file type can't be sent to the Hypervisor.",
+      );
+    } else if (allowed.length) {
+      setAttachError(null);
+    }
+    for (const file of allowed) {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const previewUrl = URL.createObjectURL(file);
-      setAttachments((a) => [...a, { id, previewUrl, status: 'uploading' }]);
+      const kind = isImageFile(file) ? 'image' : 'file';
+      // Only images get an object-URL thumbnail; other types show an icon chip.
+      const previewUrl = kind === 'image' ? URL.createObjectURL(file) : undefined;
+      const name = file.name || (kind === 'image' ? 'image' : 'file');
+      setAttachments((a) => [...a, { id, name, kind, previewUrl, status: 'uploading' }]);
       // Reuse the Build tab's uploader; 'hypervisor' → .claude-tasks/hypervisor/attachments.
-      void uploadTaskImage('hypervisor', file)
+      void uploadTaskFile('hypervisor', file)
         .then((path) =>
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x))),
         )
@@ -358,7 +389,7 @@ export function Chat() {
   function removeAttachment(id: string) {
     setAttachments((a) => {
       const x = a.find((t) => t.id === id);
-      if (x) URL.revokeObjectURL(x.previewUrl);
+      if (x?.previewUrl) URL.revokeObjectURL(x.previewUrl);
       return a.filter((t) => t.id !== id);
     });
   }
@@ -407,8 +438,9 @@ export function Chat() {
     if (!value && paths.length === 0) return;
     const finalText = [value, ...paths].filter(Boolean).join('\n');
     setDraft('');
-    attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
+    attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);
+    setAttachError(null);
     void sendMessage(finalText);
     taRef.current?.focus();
   }
@@ -526,11 +558,36 @@ export function Chat() {
 
       {chatError.value && <div class="hv-banner hv-banner-error">{chatError.value}</div>}
 
+      {attachError && (
+        <div class="hv-banner hv-banner-error" role="alert">
+          {attachError}
+          <button
+            type="button"
+            class="hv-banner-x"
+            onClick={() => setAttachError(null)}
+            aria-label="Dismiss"
+          >
+            <Icon name="close" size={11} />
+          </button>
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div class="hv-attachments">
           {attachments.map((a) => (
-            <div key={a.id} class={`hv-attachment is-${a.status}`}>
-              <img src={a.previewUrl} alt="attachment" />
+            <div
+              key={a.id}
+              class={`hv-attachment is-${a.status} ${a.kind === 'file' ? 'is-doc' : ''}`}
+              title={a.name}
+            >
+              {a.kind === 'image' && a.previewUrl ? (
+                <img src={a.previewUrl} alt={a.name} />
+              ) : (
+                <span class="hv-attachment-doc">
+                  <Icon name="files" size={16} />
+                  <span class="hv-attachment-name">{a.name}</span>
+                </span>
+              )}
               <button
                 type="button"
                 class="hv-attachment-x"
@@ -552,7 +609,7 @@ export function Chat() {
         }}
         onDrop={(e) => {
           const files = Array.from(e.dataTransfer?.files || []);
-          if (files.some(isImageFile)) {
+          if (files.length) {
             e.preventDefault();
             addFiles(files);
           }
@@ -562,7 +619,7 @@ export function Chat() {
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept={ATTACH_ACCEPT}
           multiple
           style={{ display: 'none' }}
           onChange={(e) => {
@@ -576,10 +633,10 @@ export function Chat() {
           class="hv-attach-btn"
           onClick={() => fileRef.current?.click()}
           disabled={blocked}
-          title="Attach image"
-          aria-label="Attach image"
+          title="Attach a file (image, pdf, text, code…)"
+          aria-label="Attach a file"
         >
-          <Icon name="image" size={16} />
+          <Icon name="upload" size={16} />
         </button>
         <textarea
           ref={taRef}
@@ -590,15 +647,15 @@ export function Chat() {
               ? 'Read-only workspace — you can still ask about state'
               : working
                 ? 'Kube-Coder is working… press Stop to interrupt'
-                : 'Message Kube-Coder…  (paste or attach an image, Enter to send)'
+                : 'Message Kube-Coder…  (paste or attach a file, Enter to send)'
           }
           onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKeyDown}
           onPaste={(e) => {
-            const imgs = imagesFromClipboard(e.clipboardData);
-            if (imgs.length) {
+            const files = filesFromClipboard(e.clipboardData);
+            if (files.length) {
               e.preventDefault();
-              addFiles(imgs);
+              addFiles(files);
             }
           }}
           rows={1}

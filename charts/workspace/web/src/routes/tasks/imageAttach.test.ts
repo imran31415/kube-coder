@@ -1,5 +1,17 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { extForImageMime, isImageFile, imagesFromClipboard, readClipboard } from './imageAttach';
+import {
+  extForImageMime,
+  extForFile,
+  isImageFile,
+  isAllowedFile,
+  isVideoFile,
+  imagesFromClipboard,
+  filesFromClipboard,
+  readClipboard,
+  ATTACH_ACCEPT,
+} from './imageAttach';
+
+const file = (name: string, type = '') => new File([''], name, { type });
 
 describe('extForImageMime', () => {
   it('maps common image MIME types to their extension', () => {
@@ -26,6 +38,79 @@ describe('isImageFile', () => {
     expect(isImageFile(new File([''], 'a.txt', { type: 'text/plain' }))).toBe(false);
     expect(isImageFile(null)).toBe(false);
     expect(isImageFile(undefined)).toBe(false);
+  });
+});
+
+describe('isVideoFile', () => {
+  it('accepts video/* and rejects the rest', () => {
+    expect(isVideoFile(file('clip.mp4', 'video/mp4'))).toBe(true);
+    expect(isVideoFile(file('a.png', 'image/png'))).toBe(false);
+    expect(isVideoFile(null)).toBe(false);
+  });
+});
+
+describe('isAllowedFile', () => {
+  it('accepts docs / text / structured files by extension', () => {
+    for (const n of ['notes.txt', 'README.md', 'doc.markdown', 'report.pdf', 'data.csv', 'x.json', 'app.log', 'k8s.yaml', 'c.yml', 'page.html', 'feed.xml']) {
+      expect(isAllowedFile(file(n))).toBe(true);
+    }
+  });
+
+  it('accepts common source-code files', () => {
+    for (const n of ['a.ts', 'b.tsx', 'c.js', 'main.py', 'srv.go', 'lib.rs', 'App.java', 'q.sql', 'style.css']) {
+      expect(isAllowedFile(file(n))).toBe(true);
+    }
+  });
+
+  it('accepts images (extension or MIME)', () => {
+    expect(isAllowedFile(file('a.png', 'image/png'))).toBe(true);
+    expect(isAllowedFile(file('pasted', 'image/jpeg'))).toBe(true); // no extension, MIME wins
+  });
+
+  it('rejects video with any extension or MIME', () => {
+    expect(isAllowedFile(file('movie.mp4', 'video/mp4'))).toBe(false);
+    expect(isAllowedFile(file('movie.mov'))).toBe(false);
+    expect(isAllowedFile(file('novideoext', 'video/webm'))).toBe(false);
+  });
+
+  it('rejects unsupported binary types', () => {
+    expect(isAllowedFile(file('archive.zip', 'application/zip'))).toBe(false);
+    expect(isAllowedFile(file('a.exe', 'application/octet-stream'))).toBe(false);
+    expect(isAllowedFile(file('noext'))).toBe(false);
+    expect(isAllowedFile(null)).toBe(false);
+    expect(isAllowedFile(undefined)).toBe(false);
+  });
+});
+
+describe('extForFile', () => {
+  it('prefers the original filename extension (kept lower-case)', () => {
+    expect(extForFile(file('report.pdf', 'application/pdf'))).toBe('pdf');
+    expect(extForFile(file('NOTES.MD', 'text/markdown'))).toBe('md');
+    expect(extForFile(file('a.txt', 'text/plain'))).toBe('txt');
+    expect(extForFile(file('Component.tsx'))).toBe('tsx');
+  });
+
+  it('keeps the real extension even when the MIME would map elsewhere', () => {
+    // A .pdf must never be rewritten to .png just because MIME is unknown.
+    expect(extForFile(file('doc.pdf', 'application/octet-stream'))).toBe('pdf');
+  });
+
+  it('falls back to the MIME map for extension-less blobs', () => {
+    expect(extForFile(file('pasted', 'image/png'))).toBe('png');
+    expect(extForFile(file('pasted', 'image/jpeg'))).toBe('jpg');
+  });
+
+  it('falls back to png only for extension-less unknown blobs', () => {
+    expect(extForFile(file('pasted', ''))).toBe('png');
+  });
+});
+
+describe('ATTACH_ACCEPT', () => {
+  it('includes image/* and representative document/code extensions', () => {
+    expect(ATTACH_ACCEPT).toContain('image/*');
+    expect(ATTACH_ACCEPT).toContain('.pdf');
+    expect(ATTACH_ACCEPT).toContain('.md');
+    expect(ATTACH_ACCEPT).toContain('.tsx');
   });
 });
 
@@ -57,6 +142,24 @@ describe('imagesFromClipboard', () => {
 
   it('skips image items whose getAsFile returns null', () => {
     expect(imagesFromClipboard(data([item('file', 'image/png', null)]))).toEqual([]);
+  });
+
+  it('filesFromClipboard returns every file item regardless of type', () => {
+    const png = new File([''], 'x.png', { type: 'image/png' });
+    const pdf = new File([''], 'y.pdf', { type: 'application/pdf' });
+    const out = filesFromClipboard(
+      data([
+        item('string', 'text/plain', null), // not a file → skipped
+        item('file', 'image/png', png),
+        item('file', 'application/pdf', pdf),
+        item('file', 'application/zip', null), // null file → skipped
+      ]),
+    );
+    expect(out).toEqual([png, pdf]);
+  });
+
+  it('filesFromClipboard returns [] for null data', () => {
+    expect(filesFromClipboard(null)).toEqual([]);
   });
 });
 
