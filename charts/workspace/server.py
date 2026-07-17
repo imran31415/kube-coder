@@ -66,15 +66,20 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
 # delivery as memory/hypervisor_session.
 try:
     from gateway import (ConversationGateway, IdentityRegistry,
-                        LocalHypervisorClient, RawRequest)
+                        LocalHypervisorClient, RawRequest, GatewayPreview,
+                        INTERNAL_IDENTITY)
     from adapters.whatsapp import WhatsAppAdapter
+    from adapters.internal import LoopbackAdapter
     _GATEWAY_AVAILABLE = True
 except Exception as _gw_import_err:  # broken install shouldn't crash the server
     ConversationGateway = None  # type: ignore
     IdentityRegistry = None  # type: ignore
     LocalHypervisorClient = None  # type: ignore
     RawRequest = None  # type: ignore
+    GatewayPreview = None  # type: ignore
+    INTERNAL_IDENTITY = 'internal:local'  # type: ignore
     WhatsAppAdapter = None  # type: ignore
+    LoopbackAdapter = None  # type: ignore
     _GATEWAY_AVAILABLE = False
     print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
 
@@ -172,6 +177,8 @@ GATEWAY_WHATSAPP_NUMBER = os.environ.get('KC_WHATSAPP_NUMBER', '')
 # disabled hypervisor degrades to a 503 rather than a crash.
 _GATEWAY = None            # type: ignore
 _GATEWAY_ADAPTER = None    # type: ignore
+_GATEWAY_PREVIEW = None     # type: ignore  # Walkie-Talkie preview orchestrator
+_GATEWAY_LOOPBACK = None    # type: ignore  # in-app loopback ChannelAdapter
 _GATEWAY_LOCK = threading.Lock()
 
 
@@ -189,25 +196,44 @@ def _gateway_client_factory(binding):
 
 def get_gateway():
     """The process-wide ConversationGateway, or None when unavailable. Installs
-    the turn-complete observer exactly once on first construction."""
-    global _GATEWAY, _GATEWAY_ADAPTER
+    the turn-complete observer exactly once on first construction, and wires the
+    Walkie-Talkie preview (its window probe + loopback adapter) into the SAME
+    core so the in-app preview behaves identically to real WhatsApp."""
+    global _GATEWAY, _GATEWAY_ADAPTER, _GATEWAY_PREVIEW, _GATEWAY_LOOPBACK
     if not (_GATEWAY_AVAILABLE and _HYPERVISOR_AVAILABLE):
         return None
     with _GATEWAY_LOCK:
         if _GATEWAY is None:
-            _GATEWAY = ConversationGateway(
+            preview = GatewayPreview()
+            gw = ConversationGateway(
                 registry=IdentityRegistry(),
                 client_factory=_gateway_client_factory,
-                token_verifier=ClaudeTaskManager.verify_token)
-            _GATEWAY.install_turn_observer()
+                token_verifier=ClaudeTaskManager.verify_token,
+                window_probe=preview.window_probe)
+            gw.install_turn_observer()
+            _GATEWAY = gw
             _GATEWAY_ADAPTER = WhatsAppAdapter()
-            print('[gateway] conversation gateway ready (whatsapp)')
+            _GATEWAY_PREVIEW = preview
+            _GATEWAY_LOOPBACK = LoopbackAdapter(
+                preview.transcript, publish=EventBroker.publish,
+                identity=INTERNAL_IDENTITY)
+            print('[gateway] conversation gateway ready (whatsapp + loopback preview)')
         return _GATEWAY
 
 
 def get_gateway_adapter():
     get_gateway()
     return _GATEWAY_ADAPTER
+
+
+def get_gateway_preview():
+    get_gateway()
+    return _GATEWAY_PREVIEW
+
+
+def get_gateway_loopback():
+    get_gateway()
+    return _GATEWAY_LOOPBACK
 
 
 # TRUSTED_PROXY=true tells check_claude_auth it's safe to honor
@@ -4453,6 +4479,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/gateway/links':
             self.handle_gateway_link_list()
             return
+        elif claude_path == '/api/gateway/internal/transcript':
+            self.handle_gateway_internal_transcript()
+            return
 
         # /api/claude/tasks/{id}/stream — Server-Sent Events
         m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/stream$', claude_path)
@@ -6303,6 +6332,142 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         ok = gw.registry.revoke(link_id)
         self.send_json({'ok': ok}, 200 if ok else 404)
+
+    # --- Walkie-Talkie preview (in-app loopback) ---
+    # Bearer-authed (it's the app user). Drives the SAME gateway core through the
+    # loopback adapter so the preview shows exactly what WhatsApp would see —
+    # projection, choice→buttons, chunking, ack/final, out-of-window template —
+    # while running a real Hypervisor turn locally.
+
+    def _gw_preview_bundle(self):
+        """(gateway, preview, loopback) or None if the gateway is unavailable."""
+        gw = get_gateway()
+        preview = get_gateway_preview()
+        loop = get_gateway_loopback()
+        if gw is None or preview is None or loop is None:
+            return None
+        return gw, preview, loop
+
+    def _gw_internal_status(self, gw):
+        """(thread_id, busy) for the internal identity's active thread."""
+        rec = gw.registry.lookup(INTERNAL_IDENTITY)
+        if not rec:
+            return None, False
+        binding = gw.registry.select_binding(rec)
+        thread_id = binding.get('default_thread_id') if binding else None
+        busy = False
+        if thread_id and _HYPERVISOR_AVAILABLE:
+            s = HypervisorSession.get(thread_id)
+            busy = bool(s and s.status() == 'running')
+        return thread_id, busy
+
+    def handle_gateway_internal_inbound(self):
+        """Send a message into the loopback as if it arrived over WhatsApp."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        bundle = self._gw_preview_bundle()
+        if bundle is None:
+            self.send_json({'error': 'gateway unavailable'}, 503)
+            return
+        gw, preview, loop = bundle
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        text = (data.get('text') or '').strip()
+        button = (data.get('button') or '').strip()
+        display = button or text
+        if not display:
+            self.send_json({'error': 'text is required'}, 400)
+            return
+        # Record the user's own bubble + the inbound "wire" (the provider webhook
+        # shape WhatsApp would POST) so the UI can show both sides of the wire.
+        preview.transcript.add('in', display, kind='message', wire={
+            'inbound': {'from': INTERNAL_IDENTITY, 'text': text, 'button': button}})
+        raw = RawRequest(method='POST', form={
+            'from': INTERNAL_IDENTITY, 'text': text, 'button': button})
+        result = gw.handle_inbound(loop, raw)
+        self.send_json({'ok': True, 'action': result.action,
+                        'cursor': preview.transcript.cursor()})
+
+    def handle_gateway_internal_transcript(self):
+        """Poll the preview transcript (both directions, each with its wire
+        payload) since a cursor, plus link/simulate/thread status."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        bundle = self._gw_preview_bundle()
+        if bundle is None:
+            self.send_json({'available': False, 'messages': []})
+            return
+        gw, preview, loop = bundle
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            since = int((qs.get('since') or ['0'])[0])
+        except (TypeError, ValueError):
+            since = 0
+        thread_id, busy = self._gw_internal_status(gw)
+        self.send_json({
+            'available': True,
+            'messages': preview.transcript.since(since),
+            'cursor': preview.transcript.cursor(),
+            'linked': gw.registry.is_linked(INTERNAL_IDENTITY),
+            'simulate_out_of_window': preview.simulate_out_of_window,
+            'provider': loop.wire_provider.name,
+            'identity': INTERNAL_IDENTITY,
+            'busy': busy,
+            'thread_id': thread_id,
+        })
+
+    def handle_gateway_internal_control(self):
+        """Link (mint+inject a pairing code so the real enrollment path shows in
+        the transcript), toggle the out-of-window simulation, or reset."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        bundle = self._gw_preview_bundle()
+        if bundle is None:
+            self.send_json({'error': 'gateway unavailable'}, 503)
+            return
+        gw, preview, loop = bundle
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        action = (data.get('action') or '').strip()
+        if action == 'link':
+            if gw.registry.is_linked(INTERNAL_IDENTITY):
+                self.send_json({'ok': True, 'linked': True})
+                return
+            token = self._current_bearer_token()
+            if not token:
+                self.send_json({'error': 'workspace has no API token yet'}, 409)
+                return
+            code = gw.registry.mint_pairing_code(
+                workspace=preview.workspace,
+                workspace_host=self.headers.get('Host', ''), token=token)
+            # Inject the code as a loopback inbound so the REAL pairing path runs
+            # and the code→"✅ Linked" exchange is visible in the transcript.
+            preview.transcript.add('in', code, kind='notice', wire={
+                'inbound': {'from': INTERNAL_IDENTITY, 'text': code}})
+            gw.handle_inbound(loop, RawRequest(form={
+                'from': INTERNAL_IDENTITY, 'text': code}))
+            self.send_json({'ok': True,
+                            'linked': gw.registry.is_linked(INTERNAL_IDENTITY)})
+        elif action == 'simulate':
+            preview.simulate_out_of_window = bool(data.get('on'))
+            self.send_json({'ok': True,
+                            'simulate_out_of_window': preview.simulate_out_of_window})
+        elif action == 'reset':
+            gw.registry.revoke_identity(INTERNAL_IDENTITY)
+            preview.transcript.clear()
+            preview.simulate_out_of_window = False
+            self.send_json({'ok': True})
+        else:
+            self.send_json({'error': "action must be 'link', 'simulate', or 'reset'"}, 400)
 
     # --- Cron handlers ---
     # CRUD uses check_claude_auth (dashboard / scripts). The cron-fire receiver
@@ -8598,6 +8763,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_gateway_whatsapp_webhook()
             elif path == "/api/gateway/link":
                 self.handle_gateway_link_create()
+            # Walkie-Talkie in-app loopback preview (bearer-authed).
+            elif path == "/api/gateway/internal/inbound":
+                self.handle_gateway_internal_inbound()
+            elif path == "/api/gateway/internal/control":
+                self.handle_gateway_internal_control()
             # Provider keys (dashboard Settings)
             elif path == "/api/provider-keys":
                 self.handle_provider_keys_set()

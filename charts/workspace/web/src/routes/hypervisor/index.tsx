@@ -29,8 +29,11 @@ import {
 import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { currentPath, navigate, pathSuffix } from '../../store/router';
 import { Chat } from './Chat';
+import { WalkieTalkie } from './WalkieTalkie';
 import { partitionThreads, type ChatTab } from './chatTabs';
 import './hypervisor.css';
+
+type MainView = 'chat' | 'walkie';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
   running: 'success',
@@ -47,6 +50,9 @@ export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
+  // Which surface fills the main pane: the normal chat, or the Walkie-Talkie
+  // WhatsApp-gateway preview (issue #306) — a child view of the Hypervisor tab.
+  const [mainView, setMainView] = useState<MainView>('chat');
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -379,14 +385,44 @@ export function HypervisorRoute() {
             </button>
           )}
           <span class="hv-topbar-title">
-            {activeThread ? activeThread.title || 'Chat' : 'Kube-Coder'}
+            {mainView === 'walkie'
+              ? 'Walkie-Talkie'
+              : activeThread
+                ? activeThread.title || 'Chat'
+                : 'Kube-Coder'}
           </span>
+          <div
+            class="hv-modeswitch"
+            role="tablist"
+            aria-label="Hypervisor view"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainView === 'chat'}
+              class={`hv-mode ${mainView === 'chat' ? 'hv-mode-active' : ''}`}
+              onClick={() => setMainView('chat')}
+            >
+              <Icon name="chat" size={13} /> Chat
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainView === 'walkie'}
+              class={`hv-mode ${mainView === 'walkie' ? 'hv-mode-active' : ''}`}
+              onClick={() => setMainView('walkie')}
+              title="Preview the WhatsApp gateway locally"
+            >
+              <Icon name="link" size={13} /> Walkie-Talkie
+            </button>
+          </div>
           <div class="hv-topbar-meta">
             {/* Model switcher (#308) — works for a not-yet-created chat (sets the
                 new-thread default) and for the open thread (switches it live; the
                 change lands on the next turn). Shown only when the effective
-                assistant offers a model choice. */}
-            {models.length > 0 && (
+                assistant offers a model choice, and only in chat mode (the
+                Walkie-Talkie view has no per-thread model picker). */}
+            {mainView === 'chat' && models.length > 0 && (
               <label class="hv-model-picker" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
                 <span class="hv-model-label">Model</span>
                 <select
@@ -406,20 +442,21 @@ export function HypervisorRoute() {
                 </select>
               </label>
             )}
-            {active && status && (
+            {mainView === 'chat' && active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
                 {statusLabel(status as ThreadStatus)}
               </Pill>
             )}
-            {(activeThread?.assistant || selectedAssistant.value) && (
-              <Pill mono>{activeThread?.assistant || selectedAssistant.value}</Pill>
-            )}
+            {mainView === 'chat' &&
+              (activeThread?.assistant || selectedAssistant.value) && (
+                <Pill mono>{activeThread?.assistant || selectedAssistant.value}</Pill>
+              )}
           </div>
         </header>
 
         {configError.value && <div class="hv-banner hv-banner-error">{configError.value}</div>}
 
-        <Chat />
+        {mainView === 'walkie' ? <WalkieTalkie /> : <Chat />}
       </section>
     </div>
   );

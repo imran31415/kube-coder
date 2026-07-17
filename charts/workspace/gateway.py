@@ -706,6 +706,7 @@ class ConversationGateway:
                  policy: Optional[LongTurnPolicy] = None,
                  rate_limiter: Optional[RateLimiter] = None,
                  window_seconds: float = 24 * 3600,
+                 window_probe: Optional[Callable[[str], Optional[bool]]] = None,
                  send_ack: bool = True):
         self.registry = registry or IdentityRegistry()
         self.client_factory = client_factory
@@ -714,6 +715,11 @@ class ConversationGateway:
         self.policy = policy or LongTurnPolicy()
         self.rate_limiter = rate_limiter or RateLimiter()
         self.window_seconds = window_seconds
+        # Optional per-identity override of the 24-h window decision, returning
+        # True/False to force, or None to defer to the real last-inbound clock.
+        # The Walkie-Talkie preview uses it to demo the out-of-window template
+        # path locally without a real 24-h gap (issue #306 follow-up).
+        self.window_probe = window_probe
         self.send_ack = send_ack
         self.sequencer = OutboundSequencer()
         # Idempotency for inbound (provider msg id), mirroring _ReplayCache.
@@ -757,6 +763,10 @@ class ConversationGateway:
 
     # ── window ───────────────────────────────────────────────────────────────
     def _window_open(self, channel_identity: str) -> bool:
+        if self.window_probe is not None:
+            forced = self.window_probe(channel_identity)
+            if forced is not None:
+                return bool(forced)
         last = self._last_inbound.get(channel_identity)
         return last is not None and (_now() - last) < self.window_seconds
 
@@ -1101,3 +1111,83 @@ class EchoAdapter:
 
     def last(self) -> Optional[OutboundMessage]:
         return self.sent[-1] if self.sent else None
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Walkie-Talkie preview (in-app loopback) — see what WhatsApp would see, locally
+#
+# The preview drives the SAME gateway core through a LOOPBACK channel adapter
+# (adapters/internal.py) whose transport is the dashboard instead of Twilio/Meta.
+# It advertises WhatsApp's Capabilities, so the projection, choice→buttons,
+# chunking, ack/final policy, and out-of-window template selection all behave
+# exactly as they would on real WhatsApp. The transcript below is the durable-
+# enough (in-memory, single-pod) buffer the UI polls / gets pushed.
+# ───────────────────────────────────────────────────────────────────────────
+INTERNAL_IDENTITY = 'internal:local'
+
+
+class PreviewTranscript:
+    """Bounded, monotonically-seq'd log of preview messages (both directions),
+    each carrying the human text PLUS the raw provider "wire" payload so the UI
+    can show exactly what WhatsApp would send/receive. In-memory: this is a local
+    developer preview, not a system of record."""
+
+    def __init__(self, capacity: int = 500):
+        self._items: "collections.deque[Dict[str, Any]]" = collections.deque(maxlen=capacity)
+        self._seq = 0
+        self._lock = threading.Lock()
+
+    def add(self, direction: str, text: str, *, wire: Any = None,
+            quick_replies: Optional[List[str]] = None, kind: str = 'message',
+            meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        with self._lock:
+            self._seq += 1
+            item = {
+                'seq': self._seq,
+                'ts': _now(),
+                'direction': direction,          # 'in' (user) | 'out' (agent)
+                'kind': kind,                     # message | template | notice
+                'text': text or '',
+                'quick_replies': quick_replies or [],
+                'wire': wire,                     # provider payload(s) or parsed inbound
+                'meta': meta or {},
+            }
+            self._items.append(item)
+            return item
+
+    def since(self, seq: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(i) for i in self._items if i['seq'] > seq]
+
+    def cursor(self) -> int:
+        with self._lock:
+            return self._seq
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+            # Keep seq monotonic across a clear so a mid-poll client that holds a
+            # stale cursor doesn't re-see cleared rows as "new".
+
+
+class GatewayPreview:
+    """Orchestrates the Walkie-Talkie loopback: holds the transcript, the
+    simulate-out-of-window toggle, the internal identity, and the window probe
+    that lets the shared gateway force the out-of-window path for THIS identity
+    only. The loopback adapter + control wiring live where the gateway/adapter
+    instances are available (server.py); this class stays import-cycle-free."""
+
+    def __init__(self, workspace: str = 'default'):
+        self.transcript = PreviewTranscript()
+        self.simulate_out_of_window = False
+        self.workspace = workspace
+        self.identity = INTERNAL_IDENTITY
+
+    def window_probe(self, channel_identity: str) -> Optional[bool]:
+        """Force the window CLOSED for the internal identity when simulating —
+        so a finished turn takes the out-of-window TEMPLATE path. Returns None
+        (defer to the real clock) for every other identity, so the real WhatsApp
+        channel sharing this gateway is unaffected."""
+        if self.simulate_out_of_window and channel_identity == self.identity:
+            return False
+        return None

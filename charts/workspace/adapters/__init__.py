@@ -6,3 +6,4 @@ outbound send). The channel-agnostic core lives in `gateway.py`.
 """
 
 from .whatsapp import WhatsAppAdapter  # noqa: F401
+from .internal import LoopbackAdapter  # noqa: F401
