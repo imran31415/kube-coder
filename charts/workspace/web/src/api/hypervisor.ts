@@ -16,12 +16,26 @@ export interface HypervisorAssistant {
   model?: string;
 }
 
+/** One entry in the composer's `/` picker: an invocable skill or a custom
+ *  Claude slash command. `name` is the bare token (no leading slash); the
+ *  composer inserts `/<name> ` and Claude expands it on the turn. */
+export interface HypervisorCommand {
+  name: string;
+  kind: 'command' | 'skill';
+  description: string;
+  argument_hint: string;
+  scope: string;
+}
+
 export interface HypervisorConfig {
   enabled: boolean;
   defaultAssistant: string;
   workdir: string;
   readOnly: boolean;
   assistants: HypervisorAssistant[];
+  /** Slash-command / skill picker source (issue #302). Claude-scoped today —
+   *  the composer shows the picker only when the selected agent is `claude`. */
+  commands?: HypervisorCommand[];
 }
 
 export type ThreadStatus = 'idle' | 'running' | 'error' | 'unknown';

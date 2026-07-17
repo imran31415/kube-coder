@@ -68,11 +68,13 @@ try:
     from skills.sync import SkillsSyncer
     from skills.providers import PROVIDERS as SKILL_PROVIDERS
     from skills.model import SKILL_NAME_RE
+    from skills.commands import discover_commands
     _SKILLS_AVAILABLE = True
 except Exception as _skills_import_err:  # broken install shouldn't crash the server
     SkillsSyncer = None  # type: ignore
     SKILL_PROVIDERS = {}  # type: ignore
     SKILL_NAME_RE = None  # type: ignore
+    discover_commands = None  # type: ignore
     _SKILLS_AVAILABLE = False
     print(f'[skills] import failed: {_skills_import_err}', file=sys.stderr)
 
@@ -5100,7 +5102,60 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'workdir': HYPERVISOR_WORKDIR,
             'readOnly': READONLY_MODE,
             'assistants': ClaudeTaskManager.available_assistants(),
+            # Invocable skills + custom slash commands the composer's `/` picker
+            # offers (issue #302). Claude-scoped: the Hypervisor runs Claude at
+            # /home/dev and that adapter is the one confirmed to expand `/name`
+            # inline in headless print mode — so the frontend shows the picker
+            # only for the `claude` assistant. Provider expansion (ante/opencode)
+            # is a follow-up: the source can grow a `systems` filter without a
+            # client redesign.
+            'commands': self._hypervisor_commands(),
         })
+
+    @staticmethod
+    def _hypervisor_commands():
+        """Composer picker source: custom `/commands` + invocable skills.
+
+        Each entry: {name, kind: 'command'|'skill', description,
+        argument_hint, scope}. Deduped by name (a custom command shadows a
+        same-named skill). Never raises — a discovery hiccup degrades to
+        fewer picker entries, never a broken config response."""
+        out = []
+        seen = set()
+        # Custom slash commands (.claude/commands/*.md) — Claude-native, not in
+        # the skills registry.
+        if _SKILLS_AVAILABLE and discover_commands is not None:
+            try:
+                for c in discover_commands():
+                    if c['name'] in seen:
+                        continue
+                    seen.add(c['name'])
+                    out.append({**c, 'kind': 'command'})
+            except Exception as e:
+                print(f'[hypervisor] command discovery failed: {e}',
+                      file=sys.stderr)
+        # Invocable skills the registry already tracks, filtered to those Claude
+        # can actually run (systems includes 'claude').
+        if _SKILLS_AVAILABLE and SkillsSyncer is not None:
+            try:
+                for r in SkillsSyncer.snapshot():
+                    if not r.user_invocable or 'claude' not in r.systems:
+                        continue
+                    if r.name in seen:
+                        continue
+                    seen.add(r.name)
+                    out.append({
+                        'name': r.name,
+                        'kind': 'skill',
+                        'description': r.description,
+                        'argument_hint': r.argument_hint,
+                        'scope': r.scope,
+                    })
+            except Exception as e:
+                print(f'[hypervisor] skill picker snapshot failed: {e}',
+                      file=sys.stderr)
+        out.sort(key=lambda c: c['name'])
+        return out
 
     def handle_hypervisor_list_threads(self):
         if not self.check_claude_auth():
