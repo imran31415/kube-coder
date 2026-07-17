@@ -4,7 +4,7 @@ templates:
 tests:
   - it: derives the quota from the pod's resources (default kaniko workspace)
     # ide 4Gi/2 (chart default), no dind. limits = ide + overhead (2000m/4096Mi);
-    # requests = ide requests 250m/1Gi + overheadReq (500m/1024Mi).
+    # requests = ide requests 100m/1Gi + overheadReq (500m/1024Mi).
     set:
       user.name: alice
       namespace: ws-alice
@@ -20,7 +20,7 @@ tests:
           value: ws-alice
       - equal:
           path: spec.hard["requests.cpu"]
-          value: "750m"
+          value: "600m"
       - equal:
           path: spec.hard["requests.memory"]
           value: 2048Mi
