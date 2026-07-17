@@ -154,6 +154,44 @@ class ListDeletedFilterTest(HypervisorRouteTestBase):
         self.assertNotIn(live.id, ids)
 
 
+class SetModelHandlerTest(HypervisorRouteTestBase):
+    """POST /api/hypervisor/threads/{id}/model — the in-chat model switcher
+    (#308). The handler validates against the thread's own assistant."""
+
+    def _post(self, h, tid, body):
+        h.read_json_body.return_value = body
+        server.BrowserHandler.handle_hypervisor_set_model(h, tid)
+
+    def test_sets_a_listed_model(self):
+        s = self._mk()
+        h = self._handler()
+        self._post(h, s.id, {'model': 'opus'})
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertEqual(obj['thread']['model'], 'opus')
+        self.assertEqual(s.read_meta()['adapter']['model'], 'opus')
+
+    def test_off_list_model_falls_back_to_default(self):
+        s = self._mk()
+        h = self._handler()
+        self._post(h, s.id, {'model': 'totally-made-up'})
+        obj, _ = self.last()
+        # resolve_model defends the boundary → the assistant's default.
+        self.assertEqual(obj['thread']['model'], 'default')
+
+    def test_unauthorized_is_401(self):
+        s = self._mk()
+        h = self._handler(authed=False)
+        self._post(h, s.id, {'model': 'opus'})
+        self.assertEqual(self.last()[1], 401)
+        self.assertEqual(s.read_meta()['adapter']['model'], '')
+
+    def test_missing_thread_is_404(self):
+        h = self._handler()
+        self._post(h, 'no-such-id', {'model': 'opus'})
+        self.assertEqual(self.last()[1], 404)
+
+
 class HypervisorReadonlyGateTest(unittest.TestCase):
     """DELETE /api/hypervisor/threads/{id} and POST .../restore are both
     registered in do_DELETE / do_POST AFTER the shared `_readonly_block()`

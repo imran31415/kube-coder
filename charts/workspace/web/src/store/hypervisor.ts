@@ -10,6 +10,7 @@ import {
   listDeletedThreads,
   restoreThread,
   renameThread,
+  setThreadModel,
   type HypervisorConfig,
   type HypervisorThread,
   type TranscriptSource,
@@ -55,6 +56,27 @@ export const chatError = signal<string | null>(null);
 /** The assistant a NEW thread will use (defaults to config.defaultAssistant). */
 export const selectedAssistant = signal<string>('');
 
+/** The model a NEW thread will use (#308) — the selected assistant's default
+ *  (first entry of its `models`) unless the user picks another. '' when the
+ *  assistant offers no model choice. For an already-open thread the switcher
+ *  acts on that thread instead (setActiveThreadModel). */
+export const selectedModel = signal<string>('');
+
+/** Selectable models for an assistant id, from the loaded config (default
+ *  first). Empty when the assistant offers no in-chat model choice. */
+export function assistantModels(assistantId: string | null | undefined): string[] {
+  if (!assistantId) return [];
+  const a = (config.value?.assistants ?? []).find((x) => x.id === assistantId);
+  return a?.models ?? [];
+}
+
+/** Pick the assistant a new chat will use, resetting the model to that
+ *  assistant's default so the switcher never shows an off-list model. */
+export function setSelectedAssistant(assistantId: string): void {
+  selectedAssistant.value = assistantId;
+  selectedModel.value = assistantModels(assistantId)[0] ?? '';
+}
+
 /** Live workspace "entities" surfaced as chips in the chat — currently the
  *  other tasks/agents running in the pod, so the user can see what the
  *  Hypervisor is talking about without leaving the chat. */
@@ -77,6 +99,11 @@ export async function initHypervisor(): Promise<void> {
     config.value = cfg;
     if (!selectedAssistant.value) {
       selectedAssistant.value = cfg.defaultAssistant || 'claude';
+    }
+    // Seed the model to the selected assistant's default now that the config
+    // (and its per-assistant model lists) is loaded (#308).
+    if (!selectedModel.value) {
+      selectedModel.value = assistantModels(selectedAssistant.value)[0] ?? '';
     }
   } catch (e) {
     configError.value = e instanceof Error ? e.message : 'Failed to load config';
@@ -174,6 +201,7 @@ export async function sendMessage(text: string): Promise<void> {
       const thread = await createThread({
         message: trimmed,
         assistant: selectedAssistant.value || undefined,
+        model: selectedModel.value || undefined,
       });
       await refreshThreads();
       await openThread(thread.id);
@@ -231,6 +259,25 @@ export async function renameThreadTitle(id: string, title: string): Promise<void
     await refreshThreads();
   } catch {
     // Roll back to the last-good list on failure.
+    threads.value = prev;
+  }
+}
+
+/** Switch the model (#308). With a thread open, updates that thread server-side
+ *  (takes effect next turn) and optimistically patches the list so the switcher
+ *  reflects it at once; with no thread open, just updates the new-chat default. */
+export async function setActiveThreadModel(model: string): Promise<void> {
+  const id = activeThreadId.value;
+  if (!id) {
+    selectedModel.value = model;
+    return;
+  }
+  const prev = threads.value;
+  threads.value = prev.map((t) => (t.id === id ? { ...t, model } : t));
+  try {
+    await setThreadModel(id, model);
+    await refreshThreads();
+  } catch {
     threads.value = prev;
   }
 }

@@ -258,6 +258,12 @@ class ClaudeAdapter(Adapter):
             # Role/context note goes into the system prompt, not the user turn,
             # so it never shows up as a chat bubble or pollutes the title.
             argv += ['--append-system-prompt', ctx['preamble']]
+        # Per-thread model (#308): read fresh each turn so an in-chat switch
+        # takes effect on the next turn and carries across --resume. `default`
+        # (and '') mean "let Claude Code pick" — omit the flag.
+        model = (ctx.get('model') or '').strip()
+        if model and model != 'default':
+            argv += ['--model', model]
         # Headless `claude -p` silently prefers ANTHROPIC_API_KEY when it's set,
         # which routes to pay-per-use API billing (and fails outright when that
         # balance is empty). Drop it so the session uses the workspace's Claude
@@ -494,11 +500,24 @@ class OpencodeAdapter(_StructuredCliAdapter):
         msg = text if not (first and ctx.get('preamble')) \
             else ctx['preamble'] + '\n\n' + text
         argv = ['opencode', 'run', msg, '--format', 'json']
-        # Reuse the model the workspace configured (assistant_command builds
-        # `opencode --model '<provider>/<model>'`).
+        # Model resolution (#308). The workspace-configured default lives in
+        # cli_cmd (assistant_command builds `opencode --model '<provider>/<model>'`,
+        # e.g. `openrouter/anthropic/claude-sonnet-4` or `deepseek/deepseek-chat`).
+        # A per-thread switch stores just the provider-native model id in
+        # ctx['model'] (e.g. `deepseek/deepseek-chat-v3-0324:free` for OpenRouter,
+        # `deepseek-reasoner` for native DeepSeek); we keep the same opencode
+        # provider prefix and swap the model, so the switcher never has to know
+        # the prefix. Read fresh each turn so a mid-session switch takes effect.
+        base = None
         m = re.search(r"--model\s+'?([^'\s]+)", ctx.get('cli_cmd', '') or '')
         if m:
-            argv += ['--model', m.group(1)]
+            base = m.group(1)
+        selected = (ctx.get('model') or '').strip()
+        if selected:
+            prefix = base.split('/', 1)[0] if base else 'openrouter'
+            argv += ['--model', f'{prefix}/{selected}']
+        elif base:
+            argv += ['--model', base]
         sid = ctx.get('opencode_session_id')
         if sid:
             argv += ['-s', sid]
@@ -571,7 +590,11 @@ class CodexAdapter(_StructuredCliAdapter):
         opts = ['--json', '--skip-git-repo-check',
                 '--dangerously-bypass-approvals-and-sandbox',
                 '-C', ctx.get('workdir') or WORKSPACE_HOME]
-        model = os.environ.get('KC_CODEX_MODEL', '')
+        # A per-thread model (#308) wins over the pod default (KC_CODEX_MODEL);
+        # read fresh each turn so a mid-session switch takes effect. Codex has no
+        # in-chat model list by default (its ids move fast) — this only fires
+        # when an operator populates KC_CODEX_MODELS.
+        model = (ctx.get('model') or os.environ.get('KC_CODEX_MODEL', '')).strip()
         if model:
             opts += ['--model', model]
         return opts
@@ -953,7 +976,8 @@ class HypervisorSession:
     # ── lifecycle ──────────────────────────────────────────────────────────
     @classmethod
     def create(cls, assistant: str, workdir: str, cli_cmd: str,
-               preamble: str = '', title: str = '') -> 'HypervisorSession':
+               preamble: str = '', title: str = '',
+               model: str = '') -> 'HypervisorSession':
         os.makedirs(HYPERVISOR_DIR, exist_ok=True)
         thread_id = f'{int(time.time())}-{uuid.uuid4().hex[:8]}'
         self = cls(thread_id)
@@ -968,12 +992,14 @@ class HypervisorSession:
             'status': 'idle',
             'created_at': _now(),
             'updated_at': _now(),
-            # adapter ctx — carries per-thread state (session ids, preamble).
+            # adapter ctx — carries per-thread state (session ids, preamble,
+            # and the selected model when the adapter honours one — #308).
             'adapter': {
                 'assistant': assistant,
                 'workdir': workdir,
                 'cli_cmd': cli_cmd,
                 'preamble': preamble,
+                'model': model or '',
             },
         }
         self._write_meta(meta)
@@ -1115,12 +1141,29 @@ class HypervisorSession:
         self._write_meta(meta)
         return self.summary(meta)
 
+    def set_model(self, model: str) -> Optional[Dict[str, Any]]:
+        """Switch the thread's model (#308). Stored in the adapter ctx so the
+        next turn's build() reads it; takes effect from the next turn on (a
+        running turn already spawned keeps its model). Returns the updated
+        summary, or None if the thread is gone. Left untouched (updated_at not
+        bumped) so a mid-session model tweak doesn't reorder the chat list."""
+        meta = self.read_meta()
+        if meta is None:
+            return None
+        ctx = meta.setdefault('adapter', {})
+        ctx['model'] = (model or '').strip()
+        self._write_meta(meta, touch=False)
+        return self.summary(meta)
+
     def summary(self, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         m = meta or self.read_meta() or {}
         return {
             'id': self.id,
             'title': m.get('title', 'New chat'),
             'assistant': m.get('assistant'),
+            # The per-thread model when the adapter honours one ('' otherwise),
+            # so the switcher reflects a reopened thread's choice (#308).
+            'model': (m.get('adapter') or {}).get('model') or '',
             'status': self.status(),
             'created_at': m.get('created_at'),
             'updated_at': m.get('updated_at'),

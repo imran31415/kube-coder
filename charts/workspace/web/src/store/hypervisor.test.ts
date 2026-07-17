@@ -4,14 +4,16 @@ import type { HypervisorThread } from '../api/hypervisor';
 // Mock the API + router collaborators so the store's rename action is exercised
 // in isolation — no network, no history mutation. vi.hoisted runs before the
 // mock factories so the spies exist when they capture them (TDZ dodge).
-const { renameThread, listThreads } = vi.hoisted(() => ({
+const { renameThread, listThreads, setThreadModel } = vi.hoisted(() => ({
   renameThread: vi.fn(),
   listThreads: vi.fn(),
+  setThreadModel: vi.fn(),
 }));
 
 vi.mock('../api/hypervisor', () => ({
   renameThread: (...a: unknown[]) => renameThread(...a),
   listThreads: (...a: unknown[]) => listThreads(...a),
+  setThreadModel: (...a: unknown[]) => setThreadModel(...a),
   // Unused-by-these-tests exports the store imports at module load.
   getHypervisorConfig: vi.fn(),
   createThread: vi.fn(),
@@ -26,7 +28,18 @@ vi.mock('./router', () => ({
   currentPath: { value: '/hypervisor' },
 }));
 
-import { threads, renameThreadTitle } from './hypervisor';
+import {
+  threads,
+  renameThreadTitle,
+  config,
+  activeThreadId,
+  selectedAssistant,
+  selectedModel,
+  assistantModels,
+  setSelectedAssistant,
+  setActiveThreadModel,
+} from './hypervisor';
+import type { HypervisorConfig } from '../api/hypervisor';
 
 function thread(over: Partial<HypervisorThread> = {}): HypervisorThread {
   return {
@@ -40,10 +53,29 @@ function thread(over: Partial<HypervisorThread> = {}): HypervisorThread {
   };
 }
 
+function cfg(over: Partial<HypervisorConfig> = {}): HypervisorConfig {
+  return {
+    enabled: true,
+    defaultAssistant: 'claude',
+    workdir: '/home/dev',
+    readOnly: false,
+    assistants: [
+      { id: 'claude', label: 'Claude Code', models: ['default', 'opus', 'sonnet'] },
+      { id: 'ante', label: 'Ante CLI', models: [] },
+    ],
+    ...over,
+  };
+}
+
 beforeEach(() => {
   renameThread.mockReset();
   listThreads.mockReset();
+  setThreadModel.mockReset();
   threads.value = [thread({ id: 'a', title: 'old' }), thread({ id: 'b', title: 'other' })];
+  config.value = cfg();
+  activeThreadId.value = null;
+  selectedAssistant.value = 'claude';
+  selectedModel.value = 'default';
 });
 
 describe('renameThreadTitle', () => {
@@ -70,5 +102,46 @@ describe('renameThreadTitle', () => {
     renameThread.mockRejectedValue(new Error('boom'));
     await renameThreadTitle('a', 'renamed');
     expect(threads.value.find((t) => t.id === 'a')?.title).toBe('old');
+  });
+});
+
+describe('model switcher (#308)', () => {
+  it('assistantModels reads the list from config, default first', () => {
+    expect(assistantModels('claude')).toEqual(['default', 'opus', 'sonnet']);
+    expect(assistantModels('ante')).toEqual([]);
+    expect(assistantModels(null)).toEqual([]);
+  });
+
+  it('setSelectedAssistant resets the model to the assistant default', () => {
+    selectedModel.value = 'opus';
+    setSelectedAssistant('ante'); // no models → clears the selection
+    expect(selectedAssistant.value).toBe('ante');
+    expect(selectedModel.value).toBe('');
+    setSelectedAssistant('claude'); // back to a model-bearing assistant
+    expect(selectedModel.value).toBe('default');
+  });
+
+  it('setActiveThreadModel updates only the new-chat default when no thread is open', async () => {
+    activeThreadId.value = null;
+    await setActiveThreadModel('sonnet');
+    expect(selectedModel.value).toBe('sonnet');
+    expect(setThreadModel).not.toHaveBeenCalled();
+  });
+
+  it('setActiveThreadModel optimistically patches the open thread and calls the API', async () => {
+    activeThreadId.value = 'a';
+    setThreadModel.mockResolvedValue(thread({ id: 'a', model: 'opus' }));
+    listThreads.mockResolvedValue([thread({ id: 'a', model: 'opus' }), thread({ id: 'b' })]);
+    await setActiveThreadModel('opus');
+    expect(setThreadModel).toHaveBeenCalledWith('a', 'opus');
+    expect(threads.value.find((t) => t.id === 'a')?.model).toBe('opus');
+  });
+
+  it('setActiveThreadModel rolls back the list when the API rejects', async () => {
+    activeThreadId.value = 'a';
+    threads.value = [thread({ id: 'a', model: 'default' })];
+    setThreadModel.mockRejectedValue(new Error('boom'));
+    await setActiveThreadModel('opus');
+    expect(threads.value.find((t) => t.id === 'a')?.model).toBe('default');
   });
 });

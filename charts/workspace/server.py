@@ -1051,7 +1051,78 @@ class ClaudeTaskManager:
                 model=os.environ.get('KC_HARNESS_MODEL')
                       or os.environ.get('KC_FALLBACK_MODEL', 'qwen3:32b-q4_K_M'),
             ))
+        # Selectable models for the Hypervisor's in-chat model switcher (#308).
+        # Only assistants whose adapter honours a per-thread `model` populate a
+        # non-empty list; the frontend shows the switcher only then. First entry
+        # is the default.
+        for a in out:
+            a['models'] = ClaudeTaskManager.available_models(a['id'])
         return out
+
+    # Models the in-chat switcher offers per assistant (issue #308). An assistant
+    # appears here only when its adapter threads a per-thread `--model`:
+    # claude (aliases; `default` means "let the CLI pick" → the adapter omits
+    # --model), and the two opencode providers (native model ids; the adapter
+    # keeps the opencode provider prefix and swaps the model). Every list is
+    # overridable per assistant via a comma-separated env var (below), so an
+    # operator can curate exactly what their deployment offers. Codex/Antigravity
+    # honour ctx['model'] too but ship no default list — their ids move fast, so
+    # they only get a switcher when the operator sets the env var.
+    _CLAUDE_MODELS = ('default', 'opus', 'sonnet', 'haiku')
+
+    # assistant id → env var that (when set) fully replaces its model list.
+    _MODEL_LIST_ENV = {
+        'claude': 'KC_CLAUDE_MODELS',
+        'opencode-openrouter': 'KC_OPENROUTER_MODELS',
+        'opencode-deepseek': 'KC_DEEPSEEK_MODELS',
+        'codex': 'KC_CODEX_MODELS',
+        'antigravity': 'KC_ANTIGRAVITY_MODELS',
+    }
+
+    @staticmethod
+    def _builtin_models(assistant_id):
+        """The default model list for an assistant, before any env override.
+        Free/cheap options are surfaced but the assistant's existing configured
+        default stays first so behaviour doesn't silently change (#308)."""
+        if assistant_id == 'claude':
+            return list(ClaudeTaskManager._CLAUDE_MODELS)
+        if assistant_id == 'opencode-openrouter':
+            # First = the workspace's configured default (unchanged behaviour);
+            # then the free DeepSeek chat model so it's one tap away. These are
+            # OpenRouter model ids; the opencode adapter prepends `openrouter/`.
+            default = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
+            return _dedup_keep_order(
+                [default, 'deepseek/deepseek-chat-v3-0324:free'])
+        if assistant_id == 'opencode-deepseek':
+            # Native DeepSeek API ids; the opencode adapter prepends `deepseek/`.
+            default = os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
+            return _dedup_keep_order([default, 'deepseek-chat', 'deepseek-reasoner'])
+        return []
+
+    @staticmethod
+    def available_models(assistant_id):
+        """Selectable model ids for `assistant_id`, default first. Empty when the
+        assistant has no in-chat model choice (the switcher stays hidden). An env
+        override (see _MODEL_LIST_ENV) fully replaces the built-in list."""
+        env_key = ClaudeTaskManager._MODEL_LIST_ENV.get(assistant_id)
+        if env_key:
+            override = (os.environ.get(env_key) or '').strip()
+            if override:
+                return [m.strip() for m in override.split(',') if m.strip()]
+        return ClaudeTaskManager._builtin_models(assistant_id)
+
+    @staticmethod
+    def resolve_model(assistant, requested):
+        """Validate a requested model against the assistant's allow-list; fall
+        back to the assistant's default (first entry). Returns '' when the
+        assistant offers no model choice — the dashboard hides the switcher, but
+        webhooks/CLI callers are free-form so we defend the boundary."""
+        models = ClaudeTaskManager.available_models(assistant)
+        if not models:
+            return ''
+        if requested and requested in models:
+            return requested
+        return models[0]
 
     @staticmethod
     def resolve_assistant(requested):
@@ -2305,6 +2376,20 @@ def _shell_quote(s):
     """Quote a string for safe use in a shell command."""
     import shlex
     return shlex.quote(s)
+
+
+def _dedup_keep_order(items):
+    """Drop duplicates and empties, preserving first-seen order. Used to build
+    model lists where a configured default is prepended to a curated set and may
+    already appear in it (#308)."""
+    seen = set()
+    out = []
+    for it in items:
+        it = (it or '').strip()
+        if it and it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
 
 
 class WorkspaceManager:
@@ -5326,6 +5411,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         assistant = ClaudeTaskManager.resolve_assistant(
             data.get('assistant') or HYPERVISOR_DEFAULT_ASSISTANT)
         workdir = data.get('workdir') or HYPERVISOR_WORKDIR
+        # Per-thread model choice (#308) — validated against the assistant's
+        # allow-list; '' when the assistant offers no choice (adapter default).
+        model = ClaudeTaskManager.resolve_model(assistant, data.get('model'))
         # cli_cmd is only consumed by the non-structured fallback adapter; the
         # Claude adapter builds its own argv. auto_approve keeps any fallback
         # CLI from blocking on an approval it can't answer.
@@ -5333,7 +5421,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         try:
             session = HypervisorSession.create(
                 assistant=assistant, workdir=workdir, cli_cmd=cli_cmd,
-                preamble=HYPERVISOR_PREAMBLE, title=message)
+                preamble=HYPERVISOR_PREAMBLE, title=message, model=model)
         except Exception as e:
             self.send_json({'error': f'failed to start chat: {e}'}, 500)
             return
@@ -5433,6 +5521,31 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'title is required'}, 400)
             return
         summary = session.set_title(title)
+        if summary is None:
+            self.send_json({'error': 'not found'}, 404)
+            return
+        self.send_json({'thread': summary})
+
+    def handle_hypervisor_set_model(self, thread_id):
+        """Switch a live thread's model (#308). Takes effect on the next turn —
+        the Claude adapter reads ctx['model'] each build, and `--resume` carries
+        the same session across the change. Validated against the thread's own
+        assistant so a client can't smuggle in an off-list model."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        meta = session.read_meta() or {}
+        model = ClaudeTaskManager.resolve_model(
+            meta.get('assistant') or '', data.get('model'))
+        summary = session.set_model(model)
         if summary is None:
             self.send_json({'error': 'not found'}, 404)
             return
@@ -8318,6 +8431,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/rename$', path)
                 if m:
                     self.handle_hypervisor_rename_thread(m.group(1))
+                    return
+                # /api/hypervisor/threads/{id}/model — switch the model (#308)
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/model$', path)
+                if m:
+                    self.handle_hypervisor_set_model(m.group(1))
                     return
                 # /api/skills/{name}/sync — cross-harness install (PR2).
                 # Stricter name charset than the GET route: only the

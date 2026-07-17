@@ -14,6 +14,9 @@ export interface HypervisorAssistant {
   label: string;
   default?: boolean;
   model?: string;
+  /** Selectable models for the in-chat model switcher (#308), default first.
+   *  Empty/absent → the assistant offers no model choice (switcher hidden). */
+  models?: string[];
 }
 
 /** One entry in the composer's `/` picker: an invocable skill or a custom
@@ -44,6 +47,9 @@ export interface HypervisorThread {
   id: string;
   title: string;
   assistant: string | null;
+  // The thread's selected model when its assistant offers a choice (#308);
+  // '' when none. Reflected by the in-chat switcher when the thread is open.
+  model?: string;
   status: ThreadStatus;
   created_at: number | null;
   updated_at: number | null;
@@ -112,7 +118,12 @@ export const listDeletedThreads = () =>
     '/api/hypervisor/threads?deleted=1',
   ).then((r) => r.threads ?? []);
 
-export const createThread = (opts: { message?: string; assistant?: string; workdir?: string }) =>
+export const createThread = (opts: {
+  message?: string;
+  assistant?: string;
+  workdir?: string;
+  model?: string;
+}) =>
   apiPost<{ thread: HypervisorThread }>('/api/hypervisor/threads', opts).then(
     (r) => r.thread,
   );
@@ -138,6 +149,13 @@ export const renameThread = (id: string, title: string) =>
   apiPost<{ thread: HypervisorThread }>(
     `/api/hypervisor/threads/${encodeURIComponent(id)}/rename`,
     { title },
+  ).then((r) => r.thread);
+
+/** Switch a live thread's model (#308). Takes effect on the next turn. */
+export const setThreadModel = (id: string, model: string) =>
+  apiPost<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/model`,
+    { model },
   ).then((r) => r.thread);
 
 export const stopThread = (id: string) =>

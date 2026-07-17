@@ -484,6 +484,100 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertIn('&& claude', shell_cmd)
 
 
+class HypervisorModelSelectionTests(unittest.TestCase):
+    """The Hypervisor's in-chat model switcher (#308). available_models() lists
+    what each assistant offers (default first) and resolve_model() defends the
+    boundary against a caller passing an off-list or empty model."""
+
+    _ENV_KEYS = ('KC_CLAUDE_MODELS', 'KC_OPENROUTER_MODELS', 'KC_OPENROUTER_MODEL',
+                 'KC_DEEPSEEK_MODELS', 'KC_DEEPSEEK_MODEL', 'KC_CODEX_MODELS',
+                 'KC_CODEX_MODEL', 'KC_ANTIGRAVITY_MODELS')
+
+    def setUp(self):
+        # Snapshot then clear every env var the model resolver reads, so a
+        # developer's shell config can't skew the built-in defaults under test.
+        self._saved = {k: os.environ.pop(k, None) for k in self._ENV_KEYS}
+
+    def tearDown(self):
+        for k in self._ENV_KEYS:
+            os.environ.pop(k, None)
+            if self._saved.get(k) is not None:
+                os.environ[k] = self._saved[k]
+
+    def test_claude_lists_default_first(self):
+        models = server.ClaudeTaskManager.available_models('claude')
+        self.assertEqual(models[0], 'default')
+        self.assertIn('opus', models)
+        self.assertIn('sonnet', models)
+
+    def test_openrouter_lists_configured_default_first_then_free_deepseek(self):
+        models = server.ClaudeTaskManager.available_models('opencode-openrouter')
+        self.assertEqual(models[0], 'anthropic/claude-sonnet-4')  # unchanged default
+        self.assertIn('deepseek/deepseek-chat-v3-0324:free', models)  # the ask
+
+    def test_openrouter_respects_configured_default(self):
+        os.environ['KC_OPENROUTER_MODEL'] = 'meta-llama/llama-4'
+        models = server.ClaudeTaskManager.available_models('opencode-openrouter')
+        self.assertEqual(models[0], 'meta-llama/llama-4')
+        self.assertIn('deepseek/deepseek-chat-v3-0324:free', models)
+
+    def test_deepseek_native_lists_chat_and_reasoner(self):
+        models = server.ClaudeTaskManager.available_models('opencode-deepseek')
+        self.assertEqual(models[0], 'deepseek-chat')
+        self.assertIn('deepseek-reasoner', models)
+
+    def test_codex_has_no_default_list_but_env_populates(self):
+        self.assertEqual(server.ClaudeTaskManager.available_models('codex'), [])
+        os.environ['KC_CODEX_MODELS'] = 'gpt-5-codex, o4-mini'
+        self.assertEqual(
+            server.ClaudeTaskManager.available_models('codex'),
+            ['gpt-5-codex', 'o4-mini'],
+        )
+
+    def test_non_model_assistant_has_empty_list(self):
+        self.assertEqual(server.ClaudeTaskManager.available_models('ante'), [])
+
+    def test_env_override_replaces_claude_models(self):
+        os.environ['KC_CLAUDE_MODELS'] = ' sonnet , opus ,, '
+        self.assertEqual(
+            server.ClaudeTaskManager.available_models('claude'),
+            ['sonnet', 'opus'],
+        )
+
+    def test_available_assistants_attaches_models(self):
+        os.environ['OPENROUTER_API_KEY'] = 'sk-or-test'
+        try:
+            avail = server.ClaudeTaskManager.available_assistants()
+        finally:
+            os.environ.pop('OPENROUTER_API_KEY', None)
+        claude = [a for a in avail if a['id'] == 'claude'][0]
+        self.assertEqual(claude['models'][0], 'default')
+        router = [a for a in avail if a['id'] == 'opencode-openrouter'][0]
+        self.assertIn('deepseek/deepseek-chat-v3-0324:free', router['models'])
+
+    def test_resolve_model_accepts_listed_value(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', 'opus'), 'opus')
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model(
+                'opencode-openrouter', 'deepseek/deepseek-chat-v3-0324:free'),
+            'deepseek/deepseek-chat-v3-0324:free')
+
+    def test_resolve_model_falls_back_to_default_on_junk(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', 'gpt-9'), 'default')
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', None), 'default')
+        # OpenRouter junk → its configured default (first entry), not free.
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('opencode-openrouter', 'nope'),
+            'anthropic/claude-sonnet-4')
+
+    def test_resolve_model_empty_when_assistant_has_no_choice(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('ante', 'opus'), '')
+
+
 class WebhookManagerTests(unittest.TestCase):
     """Tests for WebhookManager: config CRUD, HMAC verification, prompt rendering."""
 

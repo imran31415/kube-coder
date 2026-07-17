@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -91,6 +92,26 @@ class ClaudeAdapterParseTest(unittest.TestCase):
         spec = self.a.build(self.ctx, 'hello', first=True)
         self.assertEqual(spec['env']['HOME'], hs.WORKSPACE_HOME)
         self.assertNotIn('ANTHROPIC_API_KEY', spec['env'])
+
+    def test_build_passes_selected_model(self):
+        self.ctx['model'] = 'opus'
+        spec = self.a.build(self.ctx, 'hello', first=True)
+        self.assertIn('--model', spec['argv'])
+        self.assertEqual(spec['argv'][spec['argv'].index('--model') + 1], 'opus')
+
+    def test_build_omits_model_flag_for_default_and_empty(self):
+        for m in ('default', '', '   '):
+            self.ctx['model'] = m
+            spec = self.a.build(self.ctx, 'hello', first=True)
+            self.assertNotIn('--model', spec['argv'], m)
+
+    def test_build_model_carries_across_resume(self):
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['model'] = 'sonnet'
+        spec = self.a.build(self.ctx, 'hello', first=False)
+        self.assertIn('--resume', spec['argv'])
+        self.assertIn('--model', spec['argv'])
+        self.assertIn('sonnet', spec['argv'])
 
 
 class FallbackAdapterTest(unittest.TestCase):
@@ -212,6 +233,47 @@ class SetTitleTest(unittest.TestCase):
         self.assertEqual(meta['title'], 'Pinned name')
 
 
+class SetModelTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+
+    def _new(self, model=''):
+        return hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title='hi', model=model)
+
+    def test_create_stores_model_in_ctx_and_summary(self):
+        s = self._new(model='opus')
+        self.assertEqual(s.read_meta()['adapter']['model'], 'opus')
+        self.assertEqual(s.summary()['model'], 'opus')
+
+    def test_create_defaults_model_to_empty(self):
+        s = self._new()
+        self.assertEqual(s.read_meta()['adapter']['model'], '')
+        self.assertEqual(s.summary()['model'], '')
+
+    def test_set_model_updates_ctx_and_summary(self):
+        s = self._new()
+        summary = s.set_model('  sonnet  ')
+        self.assertEqual(summary['model'], 'sonnet')  # trimmed
+        self.assertEqual(s.read_meta()['adapter']['model'], 'sonnet')
+
+    def test_set_model_does_not_bump_updated_at(self):
+        s = self._new()
+        before = s.read_meta()['updated_at']
+        s.set_model('haiku')
+        self.assertEqual(s.read_meta()['updated_at'], before)
+
+    def test_set_model_on_missing_thread_returns_none(self):
+        s = hs.HypervisorSession('nope-does-not-exist')
+        self.assertIsNone(s.set_model('opus'))
+
+
 class AnteAdapterTest(unittest.TestCase):
     def setUp(self):
         self.a = hs.AnteAdapter()
@@ -279,6 +341,23 @@ class OpencodeAdapterTest(unittest.TestCase):
         ctx['opencode_session_id'] = 'ses_x'
         self.assertIn('-s', self.a.build(ctx, 'again', first=False)['argv'])
 
+    def test_build_selected_model_keeps_openrouter_prefix(self):
+        # A per-thread switch (#308) stores the OpenRouter model id; the adapter
+        # keeps the opencode `openrouter/` provider prefix from cli_cmd.
+        ctx = {'cli_cmd': "opencode --model 'openrouter/anthropic/claude-sonnet-4'",
+               'model': 'deepseek/deepseek-chat-v3-0324:free'}
+        spec = self.a.build(ctx, 'hi', first=True)
+        i = spec['argv'].index('--model')
+        self.assertEqual(spec['argv'][i + 1],
+                         'openrouter/deepseek/deepseek-chat-v3-0324:free')
+
+    def test_build_selected_model_keeps_deepseek_prefix(self):
+        ctx = {'cli_cmd': "opencode --model 'deepseek/deepseek-chat'",
+               'model': 'deepseek-reasoner'}
+        spec = self.a.build(ctx, 'hi', first=True)
+        i = spec['argv'].index('--model')
+        self.assertEqual(spec['argv'][i + 1], 'deepseek/deepseek-reasoner')
+
 
 class CodexAdapterTest(unittest.TestCase):
     def setUp(self):
@@ -342,6 +421,14 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(spec2['argv'][:3], ['codex', 'exec', 'resume'])
         self.assertIn('tid-9', spec2['argv'])
         self.assertEqual(spec2['argv'][-1], 'again')
+
+    def test_build_prefers_ctx_model_over_env(self):
+        # A per-thread model (#308) beats KC_CODEX_MODEL.
+        ctx = {'workdir': '/home/dev', 'model': 'gpt-5-codex'}
+        with mock.patch.dict(hs.os.environ, {'KC_CODEX_MODEL': 'o4-mini'}):
+            spec = self.a.build(ctx, 'hi', first=True)
+        i = spec['argv'].index('--model')
+        self.assertEqual(spec['argv'][i + 1], 'gpt-5-codex')
 
     def test_raw_fallback_when_no_structured_events(self):
         ctx = {}

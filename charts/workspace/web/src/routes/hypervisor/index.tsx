@@ -13,6 +13,10 @@ import {
   activeThreadId,
   activeStatus,
   selectedAssistant,
+  selectedModel,
+  assistantModels,
+  setSelectedAssistant,
+  setActiveThreadModel,
   initHypervisor,
   openThread,
   newChat,
@@ -75,6 +79,14 @@ export function HypervisorRoute() {
   const active = activeThreadId.value;
   const activeThread = list.find((t) => t.id === active) ?? null;
   const status = activeStatus.value;
+
+  // Model switcher (#308): an open thread uses its own assistant + stored model;
+  // a not-yet-created chat uses the sidebar's assistant + new-thread default.
+  const effectiveAssistant = activeThread?.assistant || selectedAssistant.value;
+  const models = assistantModels(effectiveAssistant);
+  const currentModel = active
+    ? activeThread?.model || models[0] || ''
+    : selectedModel.value || models[0] || '';
 
   // Split into what you're working with now vs. older chats. Derived purely
   // from status + updated_at (see chatTabs.ts) — no server change needed.
@@ -201,7 +213,7 @@ export function HypervisorRoute() {
           <select
             class="hv-agent-select"
             value={selectedAssistant.value}
-            onChange={(e) => (selectedAssistant.value = (e.target as HTMLSelectElement).value)}
+            onChange={(e) => setSelectedAssistant((e.target as HTMLSelectElement).value)}
             aria-label="Chat agent"
           >
             {(cfg?.assistants ?? []).map((a) => (
@@ -370,6 +382,30 @@ export function HypervisorRoute() {
             {activeThread ? activeThread.title || 'Chat' : 'Kube-Coder'}
           </span>
           <div class="hv-topbar-meta">
+            {/* Model switcher (#308) — works for a not-yet-created chat (sets the
+                new-thread default) and for the open thread (switches it live; the
+                change lands on the next turn). Shown only when the effective
+                assistant offers a model choice. */}
+            {models.length > 0 && (
+              <label class="hv-model-picker" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
+                <span class="hv-model-label">Model</span>
+                <select
+                  class="hv-model-select"
+                  value={currentModel}
+                  disabled={status === 'running'}
+                  onChange={(e) =>
+                    void setActiveThreadModel((e.target as HTMLSelectElement).value)
+                  }
+                  aria-label="Chat model"
+                >
+                  {models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
                 {statusLabel(status as ThreadStatus)}
