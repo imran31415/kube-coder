@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { listThreads, listDeletedThreads, deleteThread, restoreThread } from './hypervisor';
+import { listThreads, listDeletedThreads, deleteThread, restoreThread, setThreadModel } from './hypervisor';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -65,5 +65,15 @@ describe('hypervisor soft-delete api (#260)', () => {
     const calls = capture({ ok: true, restored: true });
     await restoreThread('a b');
     expect(calls[0].url).toContain('/api/hypervisor/threads/a%20b/restore');
+  });
+});
+
+describe('hypervisor model switcher api (#308)', () => {
+  it('setThreadModel POSTs the model endpoint and returns the thread', async () => {
+    const calls = capture({ thread: { id: 't1', title: 'x', assistant: 'claude', model: 'opus', status: 'idle', created_at: 1, updated_at: 1 } });
+    const r = await setThreadModel('t1', 'opus');
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toContain('/api/hypervisor/threads/t1/model');
+    expect(r.model).toBe('opus');
   });
 });

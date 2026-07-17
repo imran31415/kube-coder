@@ -427,6 +427,40 @@
   flex-shrink: 0;
 }
 
+/* In-chat model switcher (#308) — a compact labelled select in the topbar. */
+.hv-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.hv-model-label {
+  font-size: 10.5px;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.hv-model-select {
+  max-width: 130px;
+  padding: 4px 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--motion-fast);
+}
+.hv-model-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.hv-model-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* ── Chat body ───────────────────────────────────────────────────────── */
 .hv-chat {
   display: flex;
@@ -963,6 +997,10 @@
   }
   .hv-composer-input { font-size: 16px; }
   .hv-agent-select { font-size: 16px; }
+  /* Match the agent select: 16px avoids iOS's focus-zoom; hide the "Model"
+     label on narrow screens so the select fits the crowded topbar. */
+  .hv-model-select { font-size: 16px; max-width: 108px; }
+  .hv-model-label { display: none; }
   .hv-sidebar {
     position: absolute;
     z-index: 40;

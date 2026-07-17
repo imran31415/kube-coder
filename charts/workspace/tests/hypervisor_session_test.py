@@ -92,6 +92,26 @@ class ClaudeAdapterParseTest(unittest.TestCase):
         self.assertEqual(spec['env']['HOME'], hs.WORKSPACE_HOME)
         self.assertNotIn('ANTHROPIC_API_KEY', spec['env'])
 
+    def test_build_passes_selected_model(self):
+        self.ctx['model'] = 'opus'
+        spec = self.a.build(self.ctx, 'hello', first=True)
+        self.assertIn('--model', spec['argv'])
+        self.assertEqual(spec['argv'][spec['argv'].index('--model') + 1], 'opus')
+
+    def test_build_omits_model_flag_for_default_and_empty(self):
+        for m in ('default', '', '   '):
+            self.ctx['model'] = m
+            spec = self.a.build(self.ctx, 'hello', first=True)
+            self.assertNotIn('--model', spec['argv'], m)
+
+    def test_build_model_carries_across_resume(self):
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['model'] = 'sonnet'
+        spec = self.a.build(self.ctx, 'hello', first=False)
+        self.assertIn('--resume', spec['argv'])
+        self.assertIn('--model', spec['argv'])
+        self.assertIn('sonnet', spec['argv'])
+
 
 class FallbackAdapterTest(unittest.TestCase):
     def test_strips_ansi_and_emits_message(self):
@@ -210,6 +230,47 @@ class SetTitleTest(unittest.TestCase):
                 and meta.get('title', 'New chat') in ('New chat', '')):
             meta['title'] = 'auto title from message'
         self.assertEqual(meta['title'], 'Pinned name')
+
+
+class SetModelTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+
+    def _new(self, model=''):
+        return hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title='hi', model=model)
+
+    def test_create_stores_model_in_ctx_and_summary(self):
+        s = self._new(model='opus')
+        self.assertEqual(s.read_meta()['adapter']['model'], 'opus')
+        self.assertEqual(s.summary()['model'], 'opus')
+
+    def test_create_defaults_model_to_empty(self):
+        s = self._new()
+        self.assertEqual(s.read_meta()['adapter']['model'], '')
+        self.assertEqual(s.summary()['model'], '')
+
+    def test_set_model_updates_ctx_and_summary(self):
+        s = self._new()
+        summary = s.set_model('  sonnet  ')
+        self.assertEqual(summary['model'], 'sonnet')  # trimmed
+        self.assertEqual(s.read_meta()['adapter']['model'], 'sonnet')
+
+    def test_set_model_does_not_bump_updated_at(self):
+        s = self._new()
+        before = s.read_meta()['updated_at']
+        s.set_model('haiku')
+        self.assertEqual(s.read_meta()['updated_at'], before)
+
+    def test_set_model_on_missing_thread_returns_none(self):
+        s = hs.HypervisorSession('nope-does-not-exist')
+        self.assertIsNone(s.set_model('opus'))
 
 
 class AnteAdapterTest(unittest.TestCase):

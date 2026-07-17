@@ -484,6 +484,56 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertIn('&& claude', shell_cmd)
 
 
+class HypervisorModelSelectionTests(unittest.TestCase):
+    """The Hypervisor's in-chat model switcher (#308). available_models() lists
+    what each assistant offers (default first) and resolve_model() defends the
+    boundary against a caller passing an off-list or empty model."""
+
+    def setUp(self):
+        self._saved = os.environ.pop('KC_CLAUDE_MODELS', None)
+
+    def tearDown(self):
+        os.environ.pop('KC_CLAUDE_MODELS', None)
+        if self._saved is not None:
+            os.environ['KC_CLAUDE_MODELS'] = self._saved
+
+    def test_claude_lists_default_first(self):
+        models = server.ClaudeTaskManager.available_models('claude')
+        self.assertEqual(models[0], 'default')
+        self.assertIn('opus', models)
+        self.assertIn('sonnet', models)
+
+    def test_non_model_assistant_has_empty_list(self):
+        self.assertEqual(server.ClaudeTaskManager.available_models('ante'), [])
+
+    def test_env_override_replaces_claude_models(self):
+        os.environ['KC_CLAUDE_MODELS'] = ' sonnet , opus ,, '
+        self.assertEqual(
+            server.ClaudeTaskManager.available_models('claude'),
+            ['sonnet', 'opus'],
+        )
+
+    def test_available_assistants_attaches_models(self):
+        claude = [a for a in server.ClaudeTaskManager.available_assistants()
+                  if a['id'] == 'claude'][0]
+        self.assertIn('models', claude)
+        self.assertEqual(claude['models'][0], 'default')
+
+    def test_resolve_model_accepts_listed_value(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', 'opus'), 'opus')
+
+    def test_resolve_model_falls_back_to_default_on_junk(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', 'gpt-9'), 'default')
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', None), 'default')
+
+    def test_resolve_model_empty_when_assistant_has_no_choice(self):
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('ante', 'opus'), '')
+
+
 class WebhookManagerTests(unittest.TestCase):
     """Tests for WebhookManager: config CRUD, HMAC verification, prompt rendering."""
 

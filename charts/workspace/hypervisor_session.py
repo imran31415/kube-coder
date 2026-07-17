@@ -258,6 +258,12 @@ class ClaudeAdapter(Adapter):
             # Role/context note goes into the system prompt, not the user turn,
             # so it never shows up as a chat bubble or pollutes the title.
             argv += ['--append-system-prompt', ctx['preamble']]
+        # Per-thread model (#308): read fresh each turn so an in-chat switch
+        # takes effect on the next turn and carries across --resume. `default`
+        # (and '') mean "let Claude Code pick" — omit the flag.
+        model = (ctx.get('model') or '').strip()
+        if model and model != 'default':
+            argv += ['--model', model]
         # Headless `claude -p` silently prefers ANTHROPIC_API_KEY when it's set,
         # which routes to pay-per-use API billing (and fails outright when that
         # balance is empty). Drop it so the session uses the workspace's Claude
@@ -953,7 +959,8 @@ class HypervisorSession:
     # ── lifecycle ──────────────────────────────────────────────────────────
     @classmethod
     def create(cls, assistant: str, workdir: str, cli_cmd: str,
-               preamble: str = '', title: str = '') -> 'HypervisorSession':
+               preamble: str = '', title: str = '',
+               model: str = '') -> 'HypervisorSession':
         os.makedirs(HYPERVISOR_DIR, exist_ok=True)
         thread_id = f'{int(time.time())}-{uuid.uuid4().hex[:8]}'
         self = cls(thread_id)
@@ -968,12 +975,14 @@ class HypervisorSession:
             'status': 'idle',
             'created_at': _now(),
             'updated_at': _now(),
-            # adapter ctx — carries per-thread state (session ids, preamble).
+            # adapter ctx — carries per-thread state (session ids, preamble,
+            # and the selected model when the adapter honours one — #308).
             'adapter': {
                 'assistant': assistant,
                 'workdir': workdir,
                 'cli_cmd': cli_cmd,
                 'preamble': preamble,
+                'model': model or '',
             },
         }
         self._write_meta(meta)
@@ -1115,12 +1124,29 @@ class HypervisorSession:
         self._write_meta(meta)
         return self.summary(meta)
 
+    def set_model(self, model: str) -> Optional[Dict[str, Any]]:
+        """Switch the thread's model (#308). Stored in the adapter ctx so the
+        next turn's build() reads it; takes effect from the next turn on (a
+        running turn already spawned keeps its model). Returns the updated
+        summary, or None if the thread is gone. Left untouched (updated_at not
+        bumped) so a mid-session model tweak doesn't reorder the chat list."""
+        meta = self.read_meta()
+        if meta is None:
+            return None
+        ctx = meta.setdefault('adapter', {})
+        ctx['model'] = (model or '').strip()
+        self._write_meta(meta, touch=False)
+        return self.summary(meta)
+
     def summary(self, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         m = meta or self.read_meta() or {}
         return {
             'id': self.id,
             'title': m.get('title', 'New chat'),
             'assistant': m.get('assistant'),
+            # The per-thread model when the adapter honours one ('' otherwise),
+            # so the switcher reflects a reopened thread's choice (#308).
+            'model': (m.get('adapter') or {}).get('model') or '',
             'status': self.status(),
             'created_at': m.get('created_at'),
             'updated_at': m.get('updated_at'),
