@@ -10,7 +10,7 @@ import type { ExpoConfig } from 'expo/config';
 const config: ExpoConfig = {
   name: 'kube-coder',
   slug: 'kube-coder-mobile',
-  version: '1.1',
+  version: '1.2',
   orientation: 'portrait',
   icon: './assets/icon.png',
   scheme: 'kubecoder',
