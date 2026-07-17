@@ -920,23 +920,57 @@ class ClaudeTaskManager:
             a['models'] = ClaudeTaskManager.available_models(a['id'])
         return out
 
-    # Models the in-chat switcher offers per assistant (issue #308). Today only
-    # the Claude adapter threads a per-thread `--model`, so it's the one with a
-    # real list; the mechanism is general — another adapter grows a list here and
-    # starts honouring ctx['model'] to join in. `default` means "let the CLI pick"
-    # (the adapter omits --model for it). Claude Code accepts these aliases.
+    # Models the in-chat switcher offers per assistant (issue #308). An assistant
+    # appears here only when its adapter threads a per-thread `--model`:
+    # claude (aliases; `default` means "let the CLI pick" → the adapter omits
+    # --model), and the two opencode providers (native model ids; the adapter
+    # keeps the opencode provider prefix and swaps the model). Every list is
+    # overridable per assistant via a comma-separated env var (below), so an
+    # operator can curate exactly what their deployment offers. Codex/Antigravity
+    # honour ctx['model'] too but ship no default list — their ids move fast, so
+    # they only get a switcher when the operator sets the env var.
     _CLAUDE_MODELS = ('default', 'opus', 'sonnet', 'haiku')
+
+    # assistant id → env var that (when set) fully replaces its model list.
+    _MODEL_LIST_ENV = {
+        'claude': 'KC_CLAUDE_MODELS',
+        'opencode-openrouter': 'KC_OPENROUTER_MODELS',
+        'opencode-deepseek': 'KC_DEEPSEEK_MODELS',
+        'codex': 'KC_CODEX_MODELS',
+        'antigravity': 'KC_ANTIGRAVITY_MODELS',
+    }
+
+    @staticmethod
+    def _builtin_models(assistant_id):
+        """The default model list for an assistant, before any env override.
+        Free/cheap options are surfaced but the assistant's existing configured
+        default stays first so behaviour doesn't silently change (#308)."""
+        if assistant_id == 'claude':
+            return list(ClaudeTaskManager._CLAUDE_MODELS)
+        if assistant_id == 'opencode-openrouter':
+            # First = the workspace's configured default (unchanged behaviour);
+            # then the free DeepSeek chat model so it's one tap away. These are
+            # OpenRouter model ids; the opencode adapter prepends `openrouter/`.
+            default = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
+            return _dedup_keep_order(
+                [default, 'deepseek/deepseek-chat-v3-0324:free'])
+        if assistant_id == 'opencode-deepseek':
+            # Native DeepSeek API ids; the opencode adapter prepends `deepseek/`.
+            default = os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
+            return _dedup_keep_order([default, 'deepseek-chat', 'deepseek-reasoner'])
+        return []
 
     @staticmethod
     def available_models(assistant_id):
         """Selectable model ids for `assistant_id`, default first. Empty when the
-        assistant has no in-chat model choice (the switcher stays hidden)."""
-        if assistant_id == 'claude':
-            override = (os.environ.get('KC_CLAUDE_MODELS') or '').strip()
+        assistant has no in-chat model choice (the switcher stays hidden). An env
+        override (see _MODEL_LIST_ENV) fully replaces the built-in list."""
+        env_key = ClaudeTaskManager._MODEL_LIST_ENV.get(assistant_id)
+        if env_key:
+            override = (os.environ.get(env_key) or '').strip()
             if override:
                 return [m.strip() for m in override.split(',') if m.strip()]
-            return list(ClaudeTaskManager._CLAUDE_MODELS)
-        return []
+        return ClaudeTaskManager._builtin_models(assistant_id)
 
     @staticmethod
     def resolve_model(assistant, requested):
@@ -2203,6 +2237,20 @@ def _shell_quote(s):
     """Quote a string for safe use in a shell command."""
     import shlex
     return shlex.quote(s)
+
+
+def _dedup_keep_order(items):
+    """Drop duplicates and empties, preserving first-seen order. Used to build
+    model lists where a configured default is prepended to a curated set and may
+    already appear in it (#308)."""
+    seen = set()
+    out = []
+    for it in items:
+        it = (it or '').strip()
+        if it and it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
 
 
 class WorkspaceManager:

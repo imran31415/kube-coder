@@ -500,11 +500,24 @@ class OpencodeAdapter(_StructuredCliAdapter):
         msg = text if not (first and ctx.get('preamble')) \
             else ctx['preamble'] + '\n\n' + text
         argv = ['opencode', 'run', msg, '--format', 'json']
-        # Reuse the model the workspace configured (assistant_command builds
-        # `opencode --model '<provider>/<model>'`).
+        # Model resolution (#308). The workspace-configured default lives in
+        # cli_cmd (assistant_command builds `opencode --model '<provider>/<model>'`,
+        # e.g. `openrouter/anthropic/claude-sonnet-4` or `deepseek/deepseek-chat`).
+        # A per-thread switch stores just the provider-native model id in
+        # ctx['model'] (e.g. `deepseek/deepseek-chat-v3-0324:free` for OpenRouter,
+        # `deepseek-reasoner` for native DeepSeek); we keep the same opencode
+        # provider prefix and swap the model, so the switcher never has to know
+        # the prefix. Read fresh each turn so a mid-session switch takes effect.
+        base = None
         m = re.search(r"--model\s+'?([^'\s]+)", ctx.get('cli_cmd', '') or '')
         if m:
-            argv += ['--model', m.group(1)]
+            base = m.group(1)
+        selected = (ctx.get('model') or '').strip()
+        if selected:
+            prefix = base.split('/', 1)[0] if base else 'openrouter'
+            argv += ['--model', f'{prefix}/{selected}']
+        elif base:
+            argv += ['--model', base]
         sid = ctx.get('opencode_session_id')
         if sid:
             argv += ['-s', sid]
@@ -577,7 +590,11 @@ class CodexAdapter(_StructuredCliAdapter):
         opts = ['--json', '--skip-git-repo-check',
                 '--dangerously-bypass-approvals-and-sandbox',
                 '-C', ctx.get('workdir') or WORKSPACE_HOME]
-        model = os.environ.get('KC_CODEX_MODEL', '')
+        # A per-thread model (#308) wins over the pod default (KC_CODEX_MODEL);
+        # read fresh each turn so a mid-session switch takes effect. Codex has no
+        # in-chat model list by default (its ids move fast) — this only fires
+        # when an operator populates KC_CODEX_MODELS.
+        model = (ctx.get('model') or os.environ.get('KC_CODEX_MODEL', '')).strip()
         if model:
             opts += ['--model', model]
         return opts

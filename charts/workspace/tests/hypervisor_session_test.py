@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -340,6 +341,23 @@ class OpencodeAdapterTest(unittest.TestCase):
         ctx['opencode_session_id'] = 'ses_x'
         self.assertIn('-s', self.a.build(ctx, 'again', first=False)['argv'])
 
+    def test_build_selected_model_keeps_openrouter_prefix(self):
+        # A per-thread switch (#308) stores the OpenRouter model id; the adapter
+        # keeps the opencode `openrouter/` provider prefix from cli_cmd.
+        ctx = {'cli_cmd': "opencode --model 'openrouter/anthropic/claude-sonnet-4'",
+               'model': 'deepseek/deepseek-chat-v3-0324:free'}
+        spec = self.a.build(ctx, 'hi', first=True)
+        i = spec['argv'].index('--model')
+        self.assertEqual(spec['argv'][i + 1],
+                         'openrouter/deepseek/deepseek-chat-v3-0324:free')
+
+    def test_build_selected_model_keeps_deepseek_prefix(self):
+        ctx = {'cli_cmd': "opencode --model 'deepseek/deepseek-chat'",
+               'model': 'deepseek-reasoner'}
+        spec = self.a.build(ctx, 'hi', first=True)
+        i = spec['argv'].index('--model')
+        self.assertEqual(spec['argv'][i + 1], 'deepseek/deepseek-reasoner')
+
 
 class CodexAdapterTest(unittest.TestCase):
     def setUp(self):
@@ -403,6 +421,14 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(spec2['argv'][:3], ['codex', 'exec', 'resume'])
         self.assertIn('tid-9', spec2['argv'])
         self.assertEqual(spec2['argv'][-1], 'again')
+
+    def test_build_prefers_ctx_model_over_env(self):
+        # A per-thread model (#308) beats KC_CODEX_MODEL.
+        ctx = {'workdir': '/home/dev', 'model': 'gpt-5-codex'}
+        with mock.patch.dict(hs.os.environ, {'KC_CODEX_MODEL': 'o4-mini'}):
+            spec = self.a.build(ctx, 'hi', first=True)
+        i = spec['argv'].index('--model')
+        self.assertEqual(spec['argv'][i + 1], 'gpt-5-codex')
 
     def test_raw_fallback_when_no_structured_events(self):
         ctx = {}

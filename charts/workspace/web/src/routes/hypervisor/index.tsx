@@ -387,7 +387,7 @@ export function HypervisorRoute() {
                 change lands on the next turn). Shown only when the effective
                 assistant offers a model choice. */}
             {models.length > 0 && (
-              <label class="hv-model-picker" title="Model for this chat">
+              <label class="hv-model-picker" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
                 <span class="hv-model-label">Model</span>
                 <select
                   class="hv-model-select"
