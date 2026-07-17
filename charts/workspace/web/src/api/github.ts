@@ -41,6 +41,34 @@ export function githubDisplayName(s: GithubFullStatus | null | undefined): strin
   return name || null;
 }
 
+/** One-time device code + verification URL for the browser-less connect flow. */
+export interface GithubConnectStart {
+  code: string;
+  verification_uri: string;
+  in_progress?: boolean;
+}
+
+/** Poll result for the connect flow: the full status plus progress flags. */
+export interface GithubConnectPoll extends GithubFullStatus {
+  connected: boolean;
+  in_progress: boolean;
+  connected_user?: string;
+  error?: string;
+}
+
+/** Start the server-driven `gh auth login --web` device flow (issue #303). */
+export const startGithubConnect = () =>
+  apiPost<GithubConnectStart>('/api/github/connect/start', {});
+
+/** Poll the in-flight connect flow; on success the server has already switched
+ *  the workspace to 'personal' mode. */
+export const pollGithubConnect = () =>
+  apiPost<GithubConnectPoll>('/api/github/connect/poll', {});
+
+/** Abort an in-flight connect flow (user closed the dialog). */
+export const cancelGithubConnect = () =>
+  apiPost<{ ok: true }>('/api/github/connect/cancel', {});
+
 export const generateSshKey = (email: string) =>
   apiPost<{ public_key: string }>('/api/github/ssh/generate', { email });
 
