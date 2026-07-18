@@ -1023,11 +1023,29 @@
   @supports not (height: 100dvh) {
     .route-hypervisor { height: calc(100vh - var(--topbar-total) - var(--bottomnav-total)); }
   }
+  /* Keyboard open: the fixed bottom nav is hidden behind the keyboard (see
+     :root[data-keyboard-open] rule in BottomNav.css), so stop reserving its
+     height — otherwise the composer floats a whole nav-bar above the keyboard.
+     Sizing against the visual viewport (100dvh, keyboard-shrunk on Android;
+     the reclaimed nav space covers the iOS-overlay case) keeps it flush. */
+  :root[data-keyboard-open='true'] .route-hypervisor {
+    height: calc(100dvh - var(--topbar-total));
+  }
+  @supports not (height: 100dvh) {
+    :root[data-keyboard-open='true'] .route-hypervisor {
+      height: calc(100vh - var(--topbar-total));
+    }
+  }
   /* ≥16px font on the input/select stops iOS Safari from auto-zooming (and
      hard-scrolling) the moment the field is focused — a big source of the jump.
      Also pad the composer past the home-indicator safe area. */
   .hv-composer {
     padding-bottom: calc(var(--size-3) + var(--safe-bottom));
+  }
+  /* Keyboard covers the home indicator, so drop the safe-area padding and let
+     the composer rest flush on top of the keyboard. */
+  :root[data-keyboard-open='true'] .hv-composer {
+    padding-bottom: var(--size-3);
   }
   .hv-composer-input { font-size: 16px; }
   .hv-agent-select { font-size: 16px; }

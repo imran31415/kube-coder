@@ -10,6 +10,10 @@
 }
 @media (max-width: 720px) {
   .bottomnav { display: flex; }
+  /* While the on-screen keyboard is open the nav is hidden behind it; hide it
+     outright so routes can reclaim its reserved height and dock the composer
+     flush on the keyboard (see useKeyboardInset). */
+  :root[data-keyboard-open='true'] .bottomnav { display: none; }
 }
 
 .bn-item {

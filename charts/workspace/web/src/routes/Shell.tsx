@@ -4,6 +4,7 @@ import { useEffect } from 'preact/hooks';
 import { currentPath, matchRoute } from '../store/router';
 import { paletteOpen, sheetOpen } from '../store/ui';
 import { useShortcut } from '../hooks/useShortcut';
+import { useKeyboardInset } from '../hooks/useKeyboardInset';
 import { Topbar } from '../components/Topbar';
 import { Rail } from '../components/Rail';
 import { BottomNav } from '../components/BottomNav';
@@ -54,6 +55,11 @@ export function Shell() {
     paletteOpen.value = !paletteOpen.value;
   });
   // `?` is wired inside ShortcutsHelp itself.
+
+  // Track the on-screen keyboard so mobile chat composers sit flush against it
+  // (toggles html[data-keyboard-open]). No-op on desktop / browsers without
+  // visualViewport.
+  useKeyboardInset();
 
   // Set the document title from the active route AND prepend a (N) prefix
   // when tasks are paused waiting for human input. Tab-bar visibility of the
