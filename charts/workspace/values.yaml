@@ -232,7 +232,8 @@ controller:
 #     prefer `kaniko` unless `docker run` is required.
 build:
   mode: kaniko
-  kanikoImage: gcr.io/kaniko-project/executor:latest
+  # Pinned for reproducible builds; Renovate bumps the tag+digest weekly.
+  kanikoImage: gcr.io/kaniko-project/executor:v1.24.0
   pushSecretName: regcred
   defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
 

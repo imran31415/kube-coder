@@ -1,0 +1,63 @@
+# Self-hosted Renovate — keeps the pinned image/tool/action versions fresh.
+#
+# Runs weekly (and on-demand) and opens grouped "chore(deps)" PRs for anything
+# that has drifted: devlaptop CLI tool ARGs, the kaniko builder image, base
+# container image digests, GitHub Actions SHAs, and SPA/controller npm/pip deps.
+# Config lives in ../../renovate.json.
+#
+# This is the self-hosted flavour (no Mend GitHub App install required). It
+# needs a token with `contents:write` + `pull-requests:write` on this repo,
+# stored as the RENOVATE_TOKEN secret:
+#   - Fine-grained PAT (recommended): Contents RW, Pull requests RW, Workflows RW.
+#   - or a classic PAT with `repo` + `workflow` scope.
+# A PAT (not the default GITHUB_TOKEN) is used so Renovate's PRs can trigger the
+# CI workflow — PRs opened by GITHUB_TOKEN do not fire other workflows.
+name: renovate
+
+on:
+  schedule:
+    # Mondays ~02:00 America/Los_Angeles (09:00 UTC) — inside the renovate.json
+    # schedule window so PRs land at a predictable weekly time.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: "Renovate log level"
+        required: false
+        default: "info"
+        type: choice
+        options: [debug, info, warn]
+      dryRun:
+        description: "Dry run (no PRs/branches written)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Renovate
+        uses: renovatebot/github-action@v46.1.19
+        with:
+          configurationFile: renovate.json
+          token: ${{ secrets.RENOVATE_TOKEN }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_ONBOARDING: "false"
+          RENOVATE_REQUIRE_CONFIG: "required"
+          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
+          # GitHub token for release/tag datasource lookups (avoids anonymous
+          # API rate limits). Reuses the same PAT.
+          GITHUB_COM_TOKEN: ${{ secrets.RENOVATE_TOKEN }}

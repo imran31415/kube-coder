@@ -38,6 +38,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # vendored deps (npm 11.x: tar>=7.5, minimatch>=10.2, glob>=13, cross-spawn
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
+# renovate: datasource=npm depName=npm
 ARG NPM_VERSION=11.18.0
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
@@ -52,10 +53,14 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
     && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# Install standalone docker-compose for compatibility
+# Install standalone docker-compose for compatibility.
+# Pinned for reproducible builds — Renovate bumps COMPOSE_VERSION weekly
+# (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
+# renovate: datasource=github-releases depName=docker/compose
+ARG COMPOSE_VERSION=v5.3.1
 RUN ARCH=$(dpkg --print-architecture) \
     && if [ "$ARCH" = "amd64" ]; then COMPOSE_ARCH="x86_64"; elif [ "$ARCH" = "arm64" ]; then COMPOSE_ARCH="aarch64"; else COMPOSE_ARCH="$ARCH"; fi \
-    && curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/bin/docker-compose \
+    && curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/bin/docker-compose \
     && chmod +x /usr/local/bin/docker-compose
 
 # Install kubectl
@@ -70,6 +75,7 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 # 7.5.16 (MEDIUM) + ws. Note: the deps bundled under lib/vscode/ (undici, ws,
 # tar) track the upstream VS Code build code-server vendors and only move when
 # code-server rebases onto a newer VS Code — so bumping code-server is the lever.
+# renovate: datasource=github-releases depName=coder/code-server
 ARG CODE_SERVER_VERSION=4.128.0
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_${ARCH}.deb" -o /tmp/cs.deb \
@@ -79,6 +85,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # https://docs.anthropic.com/en/docs/claude-code/setup
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
+# renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.211
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
@@ -87,6 +94,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # OpenRouter directly and any OpenAI-compatible base URL (e.g. a self-hosted
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
+# renovate: datasource=npm depName=opencode-ai
 ARG OPENCODE_VERSION=1.18.3
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
@@ -96,6 +104,7 @@ RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 # pod; credentials + sessions live under $CODEX_HOME (~/.codex), which start.sh
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
+# renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.144.5
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
@@ -121,10 +130,14 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # /opt/ante/ante on boot — this gives a writable, persistent binary location
 # (the pod blocks runtime sudo, so we can't repoint /usr/local/bin at runtime),
 # while the image stays the source of truth: bump ANTE_VERSION + rebuild to
-# update. Version is pinned to the `stable` channel for reproducible builds.
+# update. Pinned to a concrete release manifest (the `stable` channel floats)
+# for reproducible builds. Ante ships no GitHub releases / OCI tag, so Renovate
+# can't auto-track it — this is a documented manual-bump exception (see
+# docs/SUPPLY_CHAIN.md); check https://download.ante.run/channels/stable/manifest.json
+# for the current version.
 # https://docs.antigma.ai
-ARG ANTE_VERSION=stable
-RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
+ARG ANTE_VERSION=v0.preview.60
+RUN curl -fsSL https://ante.run/install.sh | bash -s -- "https://download.ante.run/releases/${ANTE_VERSION}/manifest.json" \
     && mkdir -p /opt/ante \
     && install -m 0755 "$HOME/.ante/bin/ante" /opt/ante/ante \
     && test -x /opt/ante/ante \
@@ -145,6 +158,7 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- ${ANTE_VERSION} \
 # static musl build, fall back to glibc. The installer pulls this exact
 # tarball (librefang/librefang releases); we just skip its WAF-gated front
 # door. Bump LIBREFANG_VERSION (a release tag) + rebuild to update.
+# renovate: datasource=github-releases depName=librefang/librefang
 ARG LIBREFANG_VERSION=v2026.7.11
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
@@ -168,6 +182,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Pinned to a known-good version so transient 502s from GitHub's release CDN
 # don't break the build (we hit them repeatedly while bumping to v1.7.1).
 # To bump: update TTYD_VERSION, rebuild image.
+# renovate: datasource=github-releases depName=tsl0922/ttyd
 ARG TTYD_VERSION=1.7.7
 RUN apt-get update && apt-get install -y wget \
     && ARCH=$(dpkg --print-architecture) \
@@ -189,6 +204,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
 # sqlite-vec loadable extension — enables vector search inside SQLite for the
 # persistent-memory subsystem (Phase 2 activates this). Shipped as a single
 # .so so the dashboard + MCP memory server can `conn.load_extension('vec0')`.
+# renovate: datasource=github-releases depName=asg017/sqlite-vec
 ARG SQLITE_VEC_VERSION=0.1.9
 RUN ARCH=$(dpkg --print-architecture) \
  && case "$ARCH" in amd64) VEC_ARCH=x86_64 ;; arm64) VEC_ARCH=aarch64 ;; *) VEC_ARCH=$ARCH ;; esac \
@@ -215,15 +231,21 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # two-image pattern.
 RUN apt-get update && apt-get install -y \
     xvfb x11vnc novnc websockify wget file \
-    fluxbox xterm \
+    fluxbox xterm xz-utils \
     x11-xserver-utils \
     libgtk-3-0 libdbus-glib-1-2 libxt6 libwayland-client0 \
-    && rm -rf /var/lib/apt/lists/* \
-    && wget -O /tmp/firefox.tar.bz2 "https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US" \
-    && file /tmp/firefox.tar.bz2 \
-    && tar -xf /tmp/firefox.tar.bz2 -C /opt/ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Firefox pinned to an explicit release (the `firefox-latest` redirect floats).
+# Renovate does not have a Mozilla datasource, so this is a documented
+# manual-bump exception (see docs/SUPPLY_CHAIN.md): current version at
+# https://product-details.mozilla.org/1.0/firefox_versions.json (LATEST_FIREFOX_VERSION).
+ARG FIREFOX_VERSION=152.0.6
+RUN wget -O /tmp/firefox.tar.xz "https://download-installer.cdn.mozilla.net/pub/firefox/releases/${FIREFOX_VERSION}/linux-x86_64/en-US/firefox-${FIREFOX_VERSION}.tar.xz" \
+    && file /tmp/firefox.tar.xz \
+    && tar -xf /tmp/firefox.tar.xz -C /opt/ \
     && ln -s /opt/firefox/firefox /usr/local/bin/firefox \
-    && rm /tmp/firefox.tar.bz2
+    && rm /tmp/firefox.tar.xz
 
 # Create a simple script to start the browser service.
 # Uses buildkit heredoc syntax (`RUN <<OUTER`) so the inner shell heredoc

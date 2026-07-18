@@ -1,0 +1,75 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "timezone": "America/Los_Angeles",
+  "schedule": ["* 0-6 * * 1"],
+  "labels": ["dependencies", "supply-chain"],
+  "commitMessagePrefix": "chore(deps):",
+  "prConcurrentLimit": 6,
+  "prHourlyLimit": 0,
+  "dependencyDashboardTitle": "Renovate: weekly dependency dashboard",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Pinned CLI/tool versions declared as ARG *_VERSION in the devlaptop image, annotated with a `# renovate:` datasource hint on the preceding line.",
+      "managerFilePatterns": ["devlaptop/Dockerfile"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\nARG \\S+=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Kaniko builder image pinned in Helm values and the controller's generated values template.",
+      "managerFilePatterns": [
+        "charts/base-infrastructure/values.yaml",
+        "charts/workspace/values.yaml",
+        "charts/workspace/tests/test-values.yaml",
+        "charts/workspace-controller/controller.py"
+      ],
+      "matchStrings": [
+        "kanikoImage: (?<depName>gcr\\.io/kaniko-project/executor):(?<currentValue>[^\\s@\"]+)(@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group the devlaptop image CLI/tool bumps into one weekly PR.",
+      "matchFileNames": ["devlaptop/Dockerfile"],
+      "groupName": "devlaptop CLI tools"
+    },
+    {
+      "description": "Kaniko builder image — pin tag + digest, keep on its own.",
+      "matchDepNames": ["gcr.io/kaniko-project/executor"],
+      "groupName": "kaniko builder image"
+    },
+    {
+      "description": "Base OS/node images — pin + track digests together.",
+      "matchManagers": ["dockerfile"],
+      "matchDepNames": ["node", "ubuntu"],
+      "groupName": "base container images"
+    },
+    {
+      "description": "Pin and update GitHub Actions by digest, grouped.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "SPA/controller dev dependencies are low-risk — batch them.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "groupName": "npm dev dependencies"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security", "dependencies"],
+    "schedule": ["at any time"]
+  },
+  "osvVulnerabilityAlerts": true
+}
