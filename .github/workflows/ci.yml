@@ -202,18 +202,38 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: SCA Scanning (JavaScript/TypeScript)
-        run: |
-          # The SPA uses yarn classic (yarn.lock, no package-lock.json), so
-          # `npm audit` aborted with ENOLOCK and scanned nothing. yarn audit
-          # reads yarn.lock directly. It exits non-zero when advisories exist,
-          # so keep the `|| echo` to stay non-blocking.
-          cd charts/workspace/web
-          yarn audit --level high || echo "Vulnerabilities found"
+      - name: Generate SBOM (Syft)
+        # SPDX-JSON software bill of materials for the built image, uploaded as
+        # a CI artifact. Runs regardless of the scan result so the SBOM is
+        # always available for triage.
+        uses: anchore/sbom-action@v0.24.0
         if: success() || failure()
+        with:
+          image: kube-coder-ci:latest
+          format: spdx-json
+          output-file: kube-coder-sbom.spdx.json
+          artifact-name: kube-coder-sbom.spdx.json
 
-      - name: SCA Scanning (Python)
-        run: |
-          pip install safety
-          safety check --full-report || echo "Vulnerabilities found"
+      - name: SCA Scanning (SPA dependencies)
+        # yarn-classic advisories via audit-ci (blocking). Gates on high+
+        # severity; the per-package audit-ci.jsonc allowlist covers dev/build-
+        # time advisories that don't ship in the runtime image (tracked for
+        # upgrade by Renovate). See docs/SUPPLY_CHAIN.md.
         if: success() || failure()
+        run: |
+          set -euo pipefail
+          for dir in charts/workspace/web charts/workspace-controller/web; do
+            echo "::group::audit-ci ${dir}"
+            (cd "${dir}" && npx --yes audit-ci@^7 --config audit-ci.jsonc)
+            echo "::endgroup::"
+          done
+
+      - name: SCA Scanning (Python dependencies)
+        # pip-audit (PyPA, OSV-backed, no account required) over the pinned
+        # runtime deps (blocking). Replaces the former `safety check`, which
+        # scanned only the runner's own install — the app is stdlib-only apart
+        # from these. Allowlist unfixable advisories with `--ignore-vuln <ID>`.
+        if: success() || failure()
+        run: |
+          python -m pip install --upgrade pip-audit
+          pip-audit -r devlaptop/requirements.txt --desc

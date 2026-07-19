@@ -216,9 +216,11 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Python deps for memory-system embeddings (Voyage AI / OpenAI) and HTTP
 # retries. Installed eagerly so Phase 2 activation needs only a value flip.
 # --break-system-packages is required on Ubuntu 24.04 (PEP 668).
-RUN pip3 install --break-system-packages --no-cache-dir \
-    voyageai==0.4.0 \
-    httpx==0.28.1
+# Pins live in devlaptop/requirements.txt (single source of truth: the image
+# installs from it and CI pip-audits it). Build context is the repo root.
+COPY devlaptop/requirements.txt /tmp/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
 
 # Install browser with noVNC for web access.
 # `file` lets the post-download tarball check below work.
