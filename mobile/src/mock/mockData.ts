@@ -17,6 +17,11 @@ import type {
   Health,
   MemoryRecord,
   Metrics,
+  PreviewControlAction,
+  PreviewControlResult,
+  PreviewMessage,
+  PreviewSendResult,
+  PreviewState,
   SkillRecord,
   TaskDetail,
   TaskSummary,
@@ -393,4 +398,132 @@ export function mockFilePreview(path: string): FilePreview {
     return { kind: 'text', path, mime: 'text/plain', size, content: node.content, truncated: false };
   }
   return { kind: 'binary', path, mime: 'application/octet-stream', size };
+}
+
+// ---- Walkie-Talkie (WhatsApp gateway loopback preview) ---------------------
+// A small in-memory transcript so the demo/screenshot build renders a populated
+// Walkie screen, and send/control mutate it just enough to feel live. Mirrors
+// the server's /api/gateway/internal/* shapes. Text/quick-reply only — no audio.
+const MOCK_WALKIE_IDENTITY = 'internal:walkie';
+
+function seedWalkieMessages(): PreviewMessage[] {
+  return [
+    {
+      seq: 1,
+      ts: NOW - 90,
+      direction: 'out',
+      kind: 'notice',
+      text: '✅ Linked — send a message to talk to your workspace.',
+      quick_replies: [],
+      wire: null,
+      meta: {},
+    },
+    {
+      seq: 2,
+      ts: NOW - 60,
+      direction: 'in',
+      kind: 'message',
+      text: 'status',
+      quick_replies: [],
+      wire: { inbound: { from: MOCK_WALKIE_IDENTITY, text: 'status' } },
+      meta: {},
+    },
+    {
+      seq: 3,
+      ts: NOW - 58,
+      direction: 'out',
+      kind: 'message',
+      text: 'Workspace is healthy ✅\n• CPU 38%\n• Memory 54%\n• 2 running builds',
+      quick_replies: ['recent builds', 'open desktop'],
+      wire: {
+        provider: 'meta',
+        payloads: [
+          {
+            messaging_product: 'whatsapp',
+            to: MOCK_WALKIE_IDENTITY,
+            type: 'interactive',
+            interactive: {
+              type: 'button',
+              body: { text: 'Workspace is healthy ✅' },
+              action: {
+                buttons: [
+                  { type: 'reply', reply: { id: 'recent builds', title: 'recent builds' } },
+                  { type: 'reply', reply: { id: 'open desktop', title: 'open desktop' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      meta: {},
+    },
+  ];
+}
+
+let mockWalkieMessages: PreviewMessage[] = seedWalkieMessages();
+let mockWalkieLinked = true;
+let mockWalkieSimulate = false;
+
+function mockWalkieCursor(): number {
+  return mockWalkieMessages.length ? mockWalkieMessages[mockWalkieMessages.length - 1].seq : 0;
+}
+
+function pushWalkie(m: Omit<PreviewMessage, 'seq' | 'ts'>): void {
+  mockWalkieMessages.push({ ...m, seq: mockWalkieCursor() + 1, ts: Math.floor(Date.now() / 1000) });
+}
+
+/** Full preview state (the web + mobile screens fetch since=0 and replace). */
+export function mockPreviewState(): PreviewState {
+  return {
+    available: true,
+    messages: mockWalkieMessages.map((m) => ({ ...m })),
+    cursor: mockWalkieCursor(),
+    linked: mockWalkieLinked,
+    simulate_out_of_window: mockWalkieSimulate,
+    provider: 'meta',
+    identity: MOCK_WALKIE_IDENTITY,
+    busy: false,
+    thread_id: 'mock-thread',
+  };
+}
+
+/** Record an inbound (typed text or a tapped quick-reply) + a canned reply. */
+export function mockPreviewSend(text: string, button?: string): PreviewSendResult {
+  const display = (button ?? text).trim();
+  pushWalkie({
+    direction: 'in',
+    kind: 'message',
+    text: display,
+    quick_replies: [],
+    wire: { inbound: { from: MOCK_WALKIE_IDENTITY, text, button: button ?? '' } },
+    meta: {},
+  });
+  pushWalkie({
+    direction: 'out',
+    kind: mockWalkieSimulate ? 'template' : 'message',
+    text: `You said “${display}”. (demo reply — connect a workspace for a real agent turn.)`,
+    quick_replies: ['status', 'recent builds'],
+    wire: {
+      provider: 'meta',
+      payloads: [{ messaging_product: 'whatsapp', to: MOCK_WALKIE_IDENTITY, type: 'text', text: { body: display } }],
+    },
+    meta: {},
+  });
+  return { ok: true, action: 'reply', cursor: mockWalkieCursor() };
+}
+
+/** Link / toggle out-of-window simulation / reset — mirrors the control API. */
+export function mockPreviewControl(action: PreviewControlAction, on?: boolean): PreviewControlResult {
+  if (action === 'link') {
+    mockWalkieLinked = true;
+    return { ok: true, linked: true };
+  }
+  if (action === 'simulate') {
+    mockWalkieSimulate = !!on;
+    return { ok: true, simulate_out_of_window: mockWalkieSimulate };
+  }
+  // reset
+  mockWalkieMessages = seedWalkieMessages();
+  mockWalkieSimulate = false;
+  return { ok: true };
 }

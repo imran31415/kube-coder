@@ -152,6 +152,11 @@ async function shots(page, device, outDir) {
   // 7) Metrics
   await go(page, 'Metrics');
   await shot('07-metrics.png');
+
+  // 8) Walkie-Talkie — the in-app WhatsApp gateway preview
+  await go(page, 'Walkie-Talkie');
+  await sleep(700);
+  await shot('08-walkie.png');
 }
 
 async function main() {

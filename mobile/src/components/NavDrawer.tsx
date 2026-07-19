@@ -17,6 +17,7 @@ type Item = { name: string; label: string; icon: keyof typeof Ionicons.glyphMap;
 const ITEMS: Item[] = [
   { name: 'Desktop', label: 'Desktop', icon: 'grid-outline' },
   { name: 'Hypervisor', label: 'Hypervisor', icon: 'chatbubbles-outline' },
+  { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },
   { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
   { name: 'Apps', label: 'Apps', icon: 'globe-outline' },
   { name: 'Memory', label: 'Memory', icon: 'bookmark-outline' },
