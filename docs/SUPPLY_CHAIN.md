@@ -72,9 +72,42 @@ Two artifacts have no datasource Renovate can track and are bumped by hand
   at `https://product-details.mozilla.org/1.0/firefox_versions.json`
   (`LATEST_FIREFOX_VERSION`).
 
-## Remaining work (follow-up PRs on #104)
+## Software Composition Analysis (SCA)
 
-- [ ] **Blocking SCA** — make `yarn audit` / `safety` in `ci.yml` fail the build
-      at a chosen severity, with a curated allowlist (mirrors `.trivyignore`).
-- [ ] **SBOM** — generate with Syft in CI and attach to releases.
-- [ ] **Signing** — cosign keyless image signing + provenance attestation.
+CI fails on high/critical dependency advisories, with curated allowlists for
+accepted/unfixable cases (the `.trivyignore` pattern, applied to source deps):
+
+| Layer | Tool | Gate | Allowlist |
+|-------|------|------|-----------|
+| SPA deps (yarn classic) | `audit-ci` | high+ | `charts/*/web/audit-ci.jsonc` (GHSA IDs) |
+| Python deps | `pip-audit` | any | `--ignore-vuln <ID>` in `ci.yml` |
+| Image (OS + Python + Node CLIs) | Trivy | CRITICAL/HIGH | `.trivyignore` + `ignore-unfixed` |
+
+Notes:
+- The SPA allowlist currently holds five **dev/build-time** advisories
+  (vite / vitest / happy-dom) that never ship in the runtime image, which
+  carries only built static assets. Renovate proposes their upgrades weekly;
+  prune each entry once the dep is bumped past its patched version.
+- Python runtime deps are pinned in **`devlaptop/requirements.txt`** — the
+  single source of truth the image installs from *and* CI audits. The app is
+  otherwise stdlib-only.
+- **`pip-audit`** (PyPA, OSV-backed, no account) replaces the former
+  `safety check`, which required an account for its DB and, without a target
+  file, scanned only the runner's own install rather than the project.
+
+## Software Bill of Materials (SBOM)
+
+CI generates an SPDX-JSON SBOM of the built image with Syft
+(`anchore/sbom-action`) and uploads it as the `kube-coder-sbom.spdx.json`
+artifact on every run.
+
+## Remaining work (follow-up on #104)
+
+- [ ] **Image signing** — cosign keyless signing + provenance/SBOM attestation.
+      Blocked on a publish pipeline: CI builds with `push: false` (smoke test)
+      and images ship via `make push` (kaniko → the DigitalOcean registry), so
+      there is no CI-pushed digest to sign. Recommended next step: add a
+      publish-and-sign job (e.g. push to GHCR on tags using the built-in
+      `GITHUB_TOKEN`, then `cosign sign` + `cosign attest` the SBOM), or wire
+      cosign into `scripts/buildx-push.sh`. Needs a maintainer decision on
+      publish topology before wiring.
