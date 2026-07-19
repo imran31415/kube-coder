@@ -35,14 +35,29 @@ naming its datasource, so Renovate's custom manager can resolve upgrades.
   summarizing everything pending. A human reviews and merges — nothing
   auto-merges.
 
-### One-time setup
+### Setup
 
-Add a repo secret **`RENOVATE_TOKEN`** — a token with `contents:write` +
-`pull-requests:write` (fine-grained PAT: Contents RW, Pull requests RW,
-Workflows RW; or a classic PAT with `repo` + `workflow`). A PAT rather than the
-default `GITHUB_TOKEN` is required so Renovate's PRs trigger CI. Then trigger a
-first run from the Actions tab (**Run workflow → dry run: true**) to sanity-check
-before it opens live PRs.
+**No setup required to start** — the workflow falls back to the built-in
+`GITHUB_TOKEN`, so a first run works out of the box. Trigger one from the
+Actions tab (**Run workflow → dry run: true**) to sanity-check before it opens
+live PRs.
+
+**Recommended:** add a repo secret **`RENOVATE_TOKEN`** (a PAT). Two things a
+PAT buys you that `GITHUB_TOKEN` can't:
+
+1. Renovate's PRs **trigger CI** — PRs opened by `GITHUB_TOKEN` do not fire
+   other workflows, so without a PAT you'd have to nudge each Renovate PR to
+   run CI.
+2. A higher github.com datasource rate limit.
+
+Create it at **Settings → Developer settings → Personal access tokens**
+(fine-grained: Contents RW + Pull requests RW + Workflows RW on this repo; or a
+classic PAT with `repo` + `workflow`), then add it under **Settings → Secrets
+and variables → Actions → New repository secret** named `RENOVATE_TOKEN`, or:
+
+```bash
+gh secret set RENOVATE_TOKEN --repo imran31415/kube-coder   # paste the PAT when prompted
+```
 
 ## Manual-bump exceptions
 
