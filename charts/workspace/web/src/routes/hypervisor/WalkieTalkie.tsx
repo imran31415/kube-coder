@@ -6,37 +6,24 @@ import {
   sendPreview,
   previewControl,
   type PreviewState,
-  type PreviewMessage,
 } from '../../api/gatewayPreview';
 import './walkie.css';
 
 /**
- * Walkie-Talkie — the in-app WhatsApp preview (issue #306).
+ * Walkie-Talkie — the in-app loopback preview (issue #306).
  *
  * A clean, device-branded loopback: type a message and it runs through the SAME
- * Conversation Gateway core the real WhatsApp webhook uses, driving a real
- * Hypervisor turn, and comes back rendered exactly as WhatsApp would show it
- * (bubbles, tap-buttons, ≤4096 chunks). The "wire" disclosure on each message
- * reveals the raw Twilio/Meta payload it becomes on the wire. Only the transport
- * is simulated — the agent and the whole pipeline are real.
+ * Conversation Gateway core a real messaging channel would use, driving a real
+ * Hypervisor turn, and comes back rendered as chat bubbles with tap-buttons
+ * (≤4096-char chunks, out-of-window templates). Today only the internal loopback
+ * transport is wired up — other providers will be added soon. The agent and the
+ * whole pipeline are real; only the transport is simulated.
  */
-function fmtWire(m: PreviewMessage): string {
-  if (!m.wire) return '';
-  const payload =
-    m.direction === 'in' ? m.wire.inbound ?? {} : m.wire.payloads ?? [];
-  try {
-    return JSON.stringify(payload, null, 2);
-  } catch {
-    return String(payload);
-  }
-}
-
 export function WalkieTalkie() {
   const [state, setState] = useState<PreviewState | null>(null);
   const [draft, setDraft] = useState('');
   const [busySend, setBusySend] = useState(false);
   const [error, setError] = useState('');
-  const [openWire, setOpenWire] = useState<Record<number, boolean>>({});
   const bodyRef = useRef<HTMLDivElement>(null);
   const linkTried = useRef(false);
 
@@ -110,7 +97,6 @@ export function WalkieTalkie() {
 
   const linked = !!state?.linked;
   const busy = !!state?.busy;
-  const provider = (state?.provider || 'meta').toUpperCase();
   const signal = !state?.available
     ? 'off'
     : busy
@@ -138,13 +124,13 @@ export function WalkieTalkie() {
           <div class="wt-lcd" role="status" aria-live="polite">
             <div class="wt-lcd-row">
               <span class="wt-lcd-label">CH</span>
-              <span class="wt-lcd-value">WhatsApp</span>
+              <span class="wt-lcd-value">Loopback</span>
               <span class={`wt-led wt-led-${signal}`} aria-hidden="true" />
               <span class="wt-lcd-status">{signalLabel}</span>
             </div>
             <div class="wt-lcd-row wt-lcd-sub">
-              <span class="wt-lcd-label">PROVIDER</span>
-              <span class="wt-lcd-value">{provider}</span>
+              <span class="wt-lcd-label">MODE</span>
+              <span class="wt-lcd-value">INTERNAL LOOPBACK</span>
               <span class="wt-lcd-sep">·</span>
               <span class="wt-lcd-label">WINDOW</span>
               <span class="wt-lcd-value">
@@ -155,16 +141,16 @@ export function WalkieTalkie() {
           <div class="wt-grille" aria-hidden="true" />
         </div>
 
-        {/* ── screen: the conversation as WhatsApp would render it ── */}
+        {/* ── screen: the conversation as chat bubbles ── */}
         <div class="wt-screen" ref={bodyRef}>
           {error && <div class="wt-error">{error}</div>}
           {state && state.messages.length === 0 && (
             <div class="wt-empty">
               <p class="wt-empty-title">Press to talk to your workspace</p>
               <p class="wt-empty-sub">
-                Messages run through the real WhatsApp gateway pipeline — locally.
-                Expand <span class="wt-wire-chip">wire</span> on any bubble to see
-                the exact provider payload.
+                Messages run through the real Conversation Gateway pipeline —
+                locally, in internal loopback mode. Other providers will be
+                added soon.
               </p>
             </div>
           )}
@@ -177,8 +163,6 @@ export function WalkieTalkie() {
                 </div>
               );
             }
-            const wireOpen = !!openWire[m.seq];
-            const wire = fmtWire(m);
             return (
               <div
                 key={m.seq}
@@ -205,22 +189,6 @@ export function WalkieTalkie() {
                     </div>
                   )}
                 </div>
-                {wire && (
-                  <div class="wt-wire">
-                    <button
-                      type="button"
-                      class="wt-wire-toggle"
-                      aria-expanded={wireOpen}
-                      onClick={() =>
-                        setOpenWire((o) => ({ ...o, [m.seq]: !o[m.seq] }))
-                      }
-                    >
-                      {wireOpen ? '▾' : '▸'} wire
-                      <span class="wt-wire-provider">{provider}</span>
-                    </button>
-                    {wireOpen && <pre class="wt-wire-body">{wire}</pre>}
-                  </div>
-                )}
               </div>
             );
           })}

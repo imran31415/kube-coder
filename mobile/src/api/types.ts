@@ -225,17 +225,17 @@ export interface HypervisorThreadDetail {
   events: HvEvent[];
 }
 
-// ---- Walkie-Talkie (WhatsApp gateway loopback preview) ---------------------
+// ---- Walkie-Talkie (internal loopback preview) -----------------------------
 // Mirrors charts/workspace/web/src/api/gatewayPreview.ts and the backend
-// /api/gateway/internal/* handlers (server.py). A loopback preview of the
-// WhatsApp gateway: messages run through the real Conversation Gateway core and
-// come back rendered the way WhatsApp would show them, each carrying the raw
-// provider "wire" payload. Text/quick-reply only — no device audio.
+// /api/gateway/internal/* handlers (server.py). An internal loopback channel:
+// messages run through the real Conversation Gateway core and come back as chat
+// bubbles. Only the internal loopback transport is connected today; other
+// providers will be added soon. Text/quick-reply only — no device audio.
 export interface PreviewWire {
   provider?: string;
-  /** Outbound provider message objects (Meta/Twilio), as they'd hit the wire. */
+  /** Outbound provider message objects, as they'd hit the wire. */
   payloads?: unknown[];
-  /** Inbound provider webhook shape (what WhatsApp would POST to us). */
+  /** Inbound provider webhook shape. */
   inbound?: Record<string, unknown>;
   error?: string;
 }

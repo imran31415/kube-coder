@@ -1,5 +1,5 @@
 /* Walkie-Talkie — a clean, professional handheld-radio device that houses the
-   in-app WhatsApp gateway preview (issue #306). Theme-aware via app tokens; the
+   in-app internal loopback preview (issue #306). Theme-aware via app tokens; the
    LCD stays a realistic dark readout in both light and dark themes. */
 
 .wt {
@@ -170,15 +170,6 @@
   line-height: 1.5;
   margin: 0;
 }
-.wt-wire-chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 0 5px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-}
-
 .wt-error {
   color: var(--danger);
   font-size: 12.5px;
@@ -271,45 +262,6 @@
 .wt-reply:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.wt-wire {
-  font-family: var(--font-mono);
-}
-.wt-wire-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-subtle);
-  background: none;
-  border: none;
-  padding: 2px 0;
-  cursor: pointer;
-}
-.wt-wire-toggle:hover {
-  color: var(--text-muted);
-}
-.wt-wire-provider {
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-}
-.wt-wire-body {
-  margin: 4px 0 0;
-  padding: 8px 10px;
-  font-size: 11px;
-  line-height: 1.45;
-  max-height: 220px;
-  overflow: auto;
-  background: var(--wt-lcd-bg);
-  color: var(--wt-lcd-fg);
-  border-radius: var(--radius-sm);
-  white-space: pre;
 }
 
 /* ── control deck: input + push-to-talk ─────────────────────────────────── */
