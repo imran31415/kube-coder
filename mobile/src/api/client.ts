@@ -22,6 +22,9 @@ import {
   mockHealth,
   mockMemory,
   mockMetrics,
+  mockPreviewControl,
+  mockPreviewSend,
+  mockPreviewState,
   mockSkills,
   mockTaskDetail,
   mockTasks,
@@ -39,6 +42,10 @@ import type {
   LaunchResult,
   MemoryRecord,
   Metrics,
+  PreviewControlAction,
+  PreviewControlResult,
+  PreviewSendResult,
+  PreviewState,
   SkillRecord,
   TaskDetail,
   TaskSummary,
@@ -721,6 +728,52 @@ export async function deleteThread(id: string): Promise<void> {
 /** Undo a soft-delete: clears deleted_at so the chat reappears in the list. */
 export async function restoreThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+}
+
+// ---- Walkie-Talkie (WhatsApp gateway loopback preview) ---------------------
+// The in-app preview of the WhatsApp gateway: messages run through the same
+// Conversation Gateway core the real webhook uses and come back rendered the
+// way WhatsApp would show them. Polled with ?since like the other streams — no
+// SSE (EventSource can't send a Bearer header). Mirrors the web client at
+// charts/workspace/web/src/api/gatewayPreview.ts. Text/quick-reply only.
+
+/** Poll the preview transcript (both directions, each with its wire payload)
+ *  since a cursor, plus link/simulate/thread status. */
+export async function fetchPreview(since = 0): Promise<PreviewState> {
+  if (getConfig().mock) {
+    await delay(120);
+    return mockPreviewState();
+  }
+  return request<PreviewState>('/api/gateway/internal/transcript', { query: { since } });
+}
+
+/** Send a message into the loopback as if it arrived over WhatsApp. Pass a
+ *  quick-reply label as `button`; otherwise `text` is the typed message. */
+export async function sendPreview(text: string, button?: string): Promise<PreviewSendResult> {
+  if (getConfig().mock) {
+    await delay(150);
+    return mockPreviewSend(text, button);
+  }
+  return request<PreviewSendResult>('/api/gateway/internal/inbound', {
+    method: 'POST',
+    body: button ? { button } : { text },
+  });
+}
+
+/** Link (auto-pair so the preview is usable), toggle the out-of-window
+ *  simulation (`on`), or reset the transcript. */
+export async function previewControl(
+  action: PreviewControlAction,
+  on?: boolean,
+): Promise<PreviewControlResult> {
+  if (getConfig().mock) {
+    await delay(100);
+    return mockPreviewControl(action, on);
+  }
+  return request<PreviewControlResult>('/api/gateway/internal/control', {
+    method: 'POST',
+    body: { action, on },
+  });
 }
 
 /** Absolute URL for a workspace media file served by /api/files/raw. Pair with

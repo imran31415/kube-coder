@@ -116,6 +116,10 @@ async function openDrawerAndGo(page, item) {
 // ---------- Path B: cold start → Desktop build composer → TaskDetail
 {
   const page = await freshPage();
+  // The composer now defaults to chat mode (screenshots.mjs already accounts
+  // for this) — flip it to build mode before the build placeholder exists.
+  await clickVisible(page.getByText('Start a build instead', { exact: true }), 'switch to build mode');
+  await sleep(300);
   await page.getByPlaceholder('Describe a build to run…').fill('nav check: escape from detail');
   await clickVisible(page.getByLabel('Start build'), 'start build');
   await sleep(1500);
@@ -135,7 +139,7 @@ async function openDrawerAndGo(page, item) {
 // ---------- Path D: drawer to every top-level screen, then nested details
 {
   const page = await freshPage();
-  for (const item of ['Builds', 'Apps', 'Memory', 'Files', 'Skills', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
+  for (const item of ['Walkie-Talkie', 'Builds', 'Apps', 'Memory', 'Files', 'Skills', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
     await openDrawerAndGo(page, item);
     await assertEscape(page, `Top-level: ${item}`, `05-top-${item.toLowerCase()}.png`);
   }

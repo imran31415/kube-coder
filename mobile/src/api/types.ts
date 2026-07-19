@@ -224,3 +224,58 @@ export interface HypervisorThreadDetail {
   thread: HypervisorThread;
   events: HvEvent[];
 }
+
+// ---- Walkie-Talkie (WhatsApp gateway loopback preview) ---------------------
+// Mirrors charts/workspace/web/src/api/gatewayPreview.ts and the backend
+// /api/gateway/internal/* handlers (server.py). A loopback preview of the
+// WhatsApp gateway: messages run through the real Conversation Gateway core and
+// come back rendered the way WhatsApp would show them, each carrying the raw
+// provider "wire" payload. Text/quick-reply only — no device audio.
+export interface PreviewWire {
+  provider?: string;
+  /** Outbound provider message objects (Meta/Twilio), as they'd hit the wire. */
+  payloads?: unknown[];
+  /** Inbound provider webhook shape (what WhatsApp would POST to us). */
+  inbound?: Record<string, unknown>;
+  error?: string;
+}
+
+export type PreviewDirection = 'in' | 'out';
+export type PreviewKind = 'message' | 'template' | 'notice';
+
+export interface PreviewMessage {
+  seq: number;
+  ts: number;
+  direction: PreviewDirection;
+  kind: PreviewKind;
+  text: string;
+  quick_replies: string[];
+  wire: PreviewWire | null;
+  meta: Record<string, unknown>;
+}
+
+export interface PreviewState {
+  available: boolean;
+  messages: PreviewMessage[];
+  cursor: number;
+  linked: boolean;
+  simulate_out_of_window: boolean;
+  provider: string;
+  identity: string;
+  busy: boolean;
+  thread_id: string | null;
+}
+
+export interface PreviewSendResult {
+  ok: boolean;
+  action: string;
+  cursor: number;
+}
+
+export type PreviewControlAction = 'link' | 'simulate' | 'reset';
+
+export interface PreviewControlResult {
+  ok: boolean;
+  linked?: boolean;
+  simulate_out_of_window?: boolean;
+}
