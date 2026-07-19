@@ -202,7 +202,7 @@ export default function WalkieScreen() {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={insets.top + 108}
+        keyboardVerticalOffset={0}
       >
         <ScrollView
           ref={scrollRef}
