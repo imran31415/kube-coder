@@ -24,6 +24,7 @@ import './Shell.css';
 const TasksRoute = lazy<ComponentType>(() => import('./tasks/index').then((m) => ({ default: m.TasksRoute })));
 const DesktopRoute = lazy<ComponentType>(() => import('./desktop/index').then((m) => ({ default: m.DesktopRoute })));
 const HypervisorRoute = lazy<ComponentType>(() => import('./hypervisor/index').then((m) => ({ default: m.HypervisorRoute })));
+const WalkieRoute = lazy<ComponentType>(() => import('./walkie/index').then((m) => ({ default: m.WalkieRoute })));
 const MemoryRoute = lazy<ComponentType>(() => import('./memory/index').then((m) => ({ default: m.MemoryRoute })));
 const TriggersRoute = lazy<ComponentType>(() => import('./triggers/index').then((m) => ({ default: m.TriggersRoute })));
 const FilesRoute = lazy<ComponentType>(() => import('./files/index').then((m) => ({ default: m.FilesRoute })));
@@ -36,6 +37,7 @@ const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/tasks': TasksRoute,
   '/desktop': DesktopRoute,
   '/hypervisor': HypervisorRoute,
+  '/walkie': WalkieRoute,
   '/memory': MemoryRoute,
   '/skills': SkillsRoute,
   '/apps': AppsRoute,

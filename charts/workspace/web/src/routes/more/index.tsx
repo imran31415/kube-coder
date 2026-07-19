@@ -55,6 +55,12 @@ export function MoreSheet() {
     // the "secondary" set the More sheet absorbs. Triggers moved here
     // when BottomNav switched its third slot to Desktop.
     {
+      label: 'Walkie-Talkie',
+      icon: 'walkie',
+      onSelect: () => { navigate('/walkie'); sheetOpen.value = null; },
+      hint: 'Chat with your workspace over the WhatsApp gateway preview',
+    },
+    {
       label: 'Apps',
       icon: 'apps',
       onSelect: () => { navigate('/apps'); sheetOpen.value = null; },

@@ -461,41 +461,37 @@
   cursor: not-allowed;
 }
 
-/* Chat ↔ Walkie-Talkie segmented switch (issue #306). */
-.hv-modeswitch {
-  display: inline-flex;
-  flex-shrink: 0;
-  padding: 2px;
-  gap: 2px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-}
-.hv-mode {
+/* Link out to the Walkie-Talkie tab (issue #306). Walkie-Talkie is its own
+   top-level route now; this pill just keeps it one hop from an open chat. */
+.hv-walkie-link {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex-shrink: 0;
   padding: 5px 12px;
-  border: none;
-  background: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  font: inherit;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text-muted);
+  text-decoration: none;
   cursor: pointer;
   transition: background var(--motion-fast), color var(--motion-fast);
 }
-.hv-mode:hover {
-  color: var(--text);
-}
-.hv-mode-active {
+.hv-walkie-link:hover {
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow-1);
 }
 
 /* ── Chat body ───────────────────────────────────────────────────────── */
+/* "How the Hypervisor works" guide sits between the topbar and the chat,
+   flush with the transcript padding and collapsed to a slim bar by default. */
+.hv-main > .guide {
+  margin: var(--size-3) var(--size-4) 0;
+}
+
 .hv-chat {
   display: flex;
   flex-direction: column;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
+import { GuidePanel } from '../../components/GuidePanel';
 import { Button } from '../../components/primitives/Button';
 import { Pill } from '../../components/primitives/Pill';
 import { EmptyState } from '../../components/primitives/EmptyState';
@@ -27,13 +28,10 @@ import {
   closeThread,
 } from '../../store/hypervisor';
 import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
-import { currentPath, navigate, pathSuffix } from '../../store/router';
+import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { Chat } from './Chat';
-import { WalkieTalkie } from './WalkieTalkie';
 import { partitionThreads, type ChatTab } from './chatTabs';
 import './hypervisor.css';
-
-type MainView = 'chat' | 'walkie';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
   running: 'success',
@@ -50,9 +48,6 @@ export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
-  // Which surface fills the main pane: the normal chat, or the Walkie-Talkie
-  // WhatsApp-gateway preview (issue #306) — a child view of the Hypervisor tab.
-  const [mainView, setMainView] = useState<MainView>('chat');
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -385,44 +380,27 @@ export function HypervisorRoute() {
             </button>
           )}
           <span class="hv-topbar-title">
-            {mainView === 'walkie'
-              ? 'Walkie-Talkie'
-              : activeThread
-                ? activeThread.title || 'Chat'
-                : 'Kube-Coder'}
+            {activeThread ? activeThread.title || 'Chat' : 'Kube-Coder'}
           </span>
-          <div
-            class="hv-modeswitch"
-            role="tablist"
-            aria-label="Hypervisor view"
+          {/* Walkie-Talkie is now its own top-level tab (/walkie); keep a link
+              here so the WhatsApp-gateway preview is still one hop from a chat. */}
+          <a
+            class="hv-walkie-link"
+            href={routeHref('/walkie')}
+            onClick={(e) => {
+              e.preventDefault();
+              navigate('/walkie');
+            }}
+            title="Open the Walkie-Talkie — preview the WhatsApp gateway locally"
           >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mainView === 'chat'}
-              class={`hv-mode ${mainView === 'chat' ? 'hv-mode-active' : ''}`}
-              onClick={() => setMainView('chat')}
-            >
-              <Icon name="chat" size={13} /> Chat
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mainView === 'walkie'}
-              class={`hv-mode ${mainView === 'walkie' ? 'hv-mode-active' : ''}`}
-              onClick={() => setMainView('walkie')}
-              title="Preview the WhatsApp gateway locally"
-            >
-              <Icon name="link" size={13} /> Walkie-Talkie
-            </button>
-          </div>
+            <Icon name="walkie" size={13} /> Walkie-Talkie
+          </a>
           <div class="hv-topbar-meta">
             {/* Model switcher (#308) — works for a not-yet-created chat (sets the
                 new-thread default) and for the open thread (switches it live; the
                 change lands on the next turn). Shown only when the effective
-                assistant offers a model choice, and only in chat mode (the
-                Walkie-Talkie view has no per-thread model picker). */}
-            {mainView === 'chat' && models.length > 0 && (
+                assistant offers a model choice. */}
+            {models.length > 0 && (
               <label class="hv-model-picker" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
                 <span class="hv-model-label">Model</span>
                 <select
@@ -442,21 +420,49 @@ export function HypervisorRoute() {
                 </select>
               </label>
             )}
-            {mainView === 'chat' && active && status && (
+            {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
                 {statusLabel(status as ThreadStatus)}
               </Pill>
             )}
-            {mainView === 'chat' &&
-              (activeThread?.assistant || selectedAssistant.value) && (
-                <Pill mono>{activeThread?.assistant || selectedAssistant.value}</Pill>
-              )}
+            {(activeThread?.assistant || selectedAssistant.value) && (
+              <Pill mono>{activeThread?.assistant || selectedAssistant.value}</Pill>
+            )}
           </div>
         </header>
 
         {configError.value && <div class="hv-banner hv-banner-error">{configError.value}</div>}
 
-        {mainView === 'walkie' ? <WalkieTalkie /> : <Chat />}
+        <GuidePanel
+          title="How the Hypervisor works"
+          storageKey="kc.guide.hypervisor"
+          intro="The Hypervisor is a chat layer over your workspace's coding agents. Every chat is a real agent session (Claude, OpenCode, …) that reads your live workspace and acts on it through the same tools you use — not a sandboxed toy."
+          steps={[
+            {
+              title: 'Pick an agent, then New',
+              body: 'Choose the CLI agent (and model) in the left sidebar, then start a chat with New.',
+            },
+            {
+              title: 'Ask or instruct',
+              body: 'Ask about your workspace or hand it a task — it reads live state (files, git, running apps) and acts on it.',
+            },
+            {
+              title: 'Watch it work',
+              body: 'The status pill shows thinking → idle. Switch the model mid-thread; the change lands on the next turn.',
+            },
+            {
+              title: 'Everything persists',
+              body: 'Chats are saved under Active and Past. Rename, delete, or restore them from Recently deleted anytime.',
+            },
+          ]}
+          scenarios={[
+            { prompt: 'What is running on this workspace right now?', outcome: 'lists the live loopback ports and apps' },
+            { prompt: 'Clone imran31415/pool-hall and run its tests', outcome: 'clones, installs, runs, and reports back' },
+            { prompt: 'Open a PR for the change on my branch', outcome: 'pushes and opens a GitHub PR with gh' },
+          ]}
+        />
+
+        <Chat />
       </section>
     </div>
   );

@@ -7,6 +7,7 @@ const ICONS: Record<string, IconName> = {
   '/tasks': 'tasks',
   '/desktop': 'desktop',
   '/hypervisor': 'hypervisor',
+  '/walkie': 'walkie',
   '/memory': 'memory',
   '/skills': 'skills',
   '/apps': 'apps',
