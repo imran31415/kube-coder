@@ -1,0 +1,106 @@
+# Release: build the devlaptop image, publish it to GHCR, and sign it with
+# keyless cosign (Sigstore OIDC — no long-lived keys, logged to Rekor) plus
+# BuildKit-native SBOM and SLSA provenance attestations.
+#
+# Fires on the repo's release tags (`devlaptop-v*`, cut from green main by
+# scripts/release.sh). This is additive: the DigitalOcean deploy image still
+# ships via `make push`; GHCR is the signed, attested, publicly-verifiable
+# artifact. No secrets required — the built-in GITHUB_TOKEN pushes to GHCR and
+# the OIDC id-token mints the signing certificate.
+#
+# Verify a released image:
+#   cosign verify ghcr.io/imran31415/kube-coder/devlaptop:<version> \
+#     --certificate-identity-regexp '^https://github.com/imran31415/kube-coder/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#   cosign download sbom       ghcr.io/imran31415/kube-coder/devlaptop:<version>
+#   cosign verify-attestation  ghcr.io/imran31415/kube-coder/devlaptop:<version> \
+#     --type slsaprovenance --certificate-identity-regexp ... --certificate-oidc-issuer ...
+name: release
+
+on:
+  push:
+    tags: ["devlaptop-v*"]
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Build only — do not push or sign"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-sign:
+    name: Publish & sign (GHCR)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push image to GHCR
+      id-token: write   # keyless cosign (Sigstore OIDC)
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}/devlaptop
+      PUSH: ${{ github.event_name == 'push' || !inputs.dryRun }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags + labels
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          # devlaptop-v1.2.3 -> 1.2.3 ; also a long-sha tag; latest on tag push.
+          tags: |
+            type=match,pattern=devlaptop-v(.*),group=1
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build, push, and attest (SBOM + SLSA provenance)
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: devlaptop/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # BuildKit attaches an in-toto SBOM + max-mode SLSA provenance
+          # attestation to the image in the registry (OCI referrers).
+          sbom: true
+          provenance: mode=max
+
+      - name: Sign the image (keyless) and self-verify
+        if: env.PUSH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          cosign verify "${IMAGE}@${DIGEST}" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            > /dev/null
+          echo "Signed & verified ${IMAGE}@${DIGEST}"

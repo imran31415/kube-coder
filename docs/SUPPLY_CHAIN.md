@@ -101,13 +101,35 @@ CI generates an SPDX-JSON SBOM of the built image with Syft
 (`anchore/sbom-action`) and uploads it as the `kube-coder-sbom.spdx.json`
 artifact on every run.
 
-## Remaining work (follow-up on #104)
+## Image signing + provenance (releases)
 
-- [ ] **Image signing** — cosign keyless signing + provenance/SBOM attestation.
-      Blocked on a publish pipeline: CI builds with `push: false` (smoke test)
-      and images ship via `make push` (kaniko → the DigitalOcean registry), so
-      there is no CI-pushed digest to sign. Recommended next step: add a
-      publish-and-sign job (e.g. push to GHCR on tags using the built-in
-      `GITHUB_TOKEN`, then `cosign sign` + `cosign attest` the SBOM), or wire
-      cosign into `scripts/buildx-push.sh`. Needs a maintainer decision on
-      publish topology before wiring.
+On each release tag (`devlaptop-v*`), the [`release`](../.github/workflows/release.yml)
+workflow builds the image, publishes it to **GHCR**, and:
+
+- **Signs it** with **keyless cosign** (Sigstore OIDC — no long-lived keys;
+  the signature is logged to the Rekor transparency log).
+- Attaches a BuildKit-native **SBOM** and **max-mode SLSA provenance**
+  attestation to the image (OCI referrers).
+- **Self-verifies** the signature in-job, so a broken signing step fails the
+  release.
+
+This is **additive** and needs **no secrets** (the built-in `GITHUB_TOKEN`
+pushes to GHCR; the OIDC `id-token` mints the certificate). The DigitalOcean
+deploy image still ships via `make push`; GHCR is the signed, publicly
+verifiable artifact.
+
+### Verifying a released image
+
+```bash
+IMG=ghcr.io/imran31415/kube-coder/devlaptop:<version>
+cosign verify "$IMG" \
+  --certificate-identity-regexp '^https://github.com/imran31415/kube-coder/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign download sbom "$IMG"
+cosign verify-attestation "$IMG" --type slsaprovenance \
+  --certificate-identity-regexp '^https://github.com/imran31415/kube-coder/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+With all four items (pinning + weekly Renovate, blocking SCA, SBOM, signing)
+in place, #104 is complete.
