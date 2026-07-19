@@ -383,7 +383,7 @@ export function HypervisorRoute() {
             {activeThread ? activeThread.title || 'Chat' : 'Kube-Coder'}
           </span>
           {/* Walkie-Talkie is now its own top-level tab (/walkie); keep a link
-              here so the WhatsApp-gateway preview is still one hop from a chat. */}
+              here so the loopback preview is still one hop from a chat. */}
           <a
             class="hv-walkie-link"
             href={routeHref('/walkie')}
@@ -391,7 +391,7 @@ export function HypervisorRoute() {
               e.preventDefault();
               navigate('/walkie');
             }}
-            title="Open the Walkie-Talkie — preview the WhatsApp gateway locally"
+            title="Open the Walkie-Talkie — talk to your workspace over the internal loopback"
           >
             <Icon name="walkie" size={13} /> Walkie-Talkie
           </a>

@@ -3,20 +3,19 @@ import { apiGet, apiPost } from './client';
 /**
  * Client for the Walkie-Talkie in-app loopback preview (issue #306).
  *
- * The preview drives the SAME Conversation Gateway core through a loopback
- * channel adapter that advertises WhatsApp's capabilities, so what you see here
- * is exactly what the WhatsApp integration would send/receive — projection,
- * choice → buttons, chunking, ack/final policy, out-of-window template — while a
- * real Hypervisor turn runs locally. Each message also carries the raw provider
- * "wire" payload so the UI can reveal what WhatsApp actually gets on the wire.
+ * The preview drives the SAME Conversation Gateway core through an internal
+ * loopback channel adapter, so what you see here — projection, choice → buttons,
+ * chunking, ack/final policy, out-of-window template — is exactly how the gateway
+ * behaves, while a real Hypervisor turn runs locally. Only the internal loopback
+ * transport is connected today; other providers will be added soon.
  * See charts/workspace/server.py handle_gateway_internal_* + adapters/internal.py.
  */
 
 export interface PreviewWire {
   provider?: string;
-  /** Outbound provider message objects (Meta/Twilio), as they'd hit the wire. */
+  /** Outbound provider message objects, as they'd hit the wire. */
   payloads?: unknown[];
-  /** Inbound provider webhook shape (what WhatsApp would POST to us). */
+  /** Inbound provider webhook shape. */
   inbound?: Record<string, unknown>;
   error?: string;
 }

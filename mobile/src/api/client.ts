@@ -730,10 +730,11 @@ export async function restoreThread(id: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 }
 
-// ---- Walkie-Talkie (WhatsApp gateway loopback preview) ---------------------
-// The in-app preview of the WhatsApp gateway: messages run through the same
-// Conversation Gateway core the real webhook uses and come back rendered the
-// way WhatsApp would show them. Polled with ?since like the other streams — no
+// ---- Walkie-Talkie (internal loopback preview) -----------------------------
+// The in-app loopback channel: messages run through the same Conversation
+// Gateway core a real messaging channel would use and come back as chat
+// bubbles. Only the internal loopback transport is connected today; other
+// providers will be added soon. Polled with ?since like the other streams — no
 // SSE (EventSource can't send a Bearer header). Mirrors the web client at
 // charts/workspace/web/src/api/gatewayPreview.ts. Text/quick-reply only.
 
@@ -747,8 +748,8 @@ export async function fetchPreview(since = 0): Promise<PreviewState> {
   return request<PreviewState>('/api/gateway/internal/transcript', { query: { since } });
 }
 
-/** Send a message into the loopback as if it arrived over WhatsApp. Pass a
- *  quick-reply label as `button`; otherwise `text` is the typed message. */
+/** Send a message into the internal loopback channel. Pass a quick-reply label
+ *  as `button`; otherwise `text` is the typed message. */
 export async function sendPreview(text: string, button?: string): Promise<PreviewSendResult> {
   if (getConfig().mock) {
     await delay(150);

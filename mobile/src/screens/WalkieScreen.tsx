@@ -1,11 +1,12 @@
 /**
- * Walkie-Talkie — the in-app WhatsApp gateway preview, on mobile. Parity with
+ * Walkie-Talkie — the in-app internal loopback preview, on mobile. Parity with
  * the dashboard SPA's WalkieTalkie (charts/workspace/web/src/routes/hypervisor/
  * WalkieTalkie.tsx): type a message and it runs through the SAME Conversation
- * Gateway core the real WhatsApp webhook uses — driving a real Hypervisor turn —
- * and comes back rendered the way WhatsApp would show it (bubbles, tap-buttons,
- * out-of-window templates). Each bubble can reveal the raw provider "wire"
- * payload. Only the transport is simulated; the agent and pipeline are real.
+ * Gateway core a real messaging channel would use — driving a real Hypervisor
+ * turn — and comes back as chat bubbles with tap-buttons and out-of-window
+ * templates. Only the internal loopback transport is connected today; other
+ * providers will be added soon. The agent and pipeline are real; only the
+ * transport is simulated.
  *
  * Transport: poll-only (usePolling, 2s, focus-aware). The web component layers
  * SSE on top of a 2s safety poll, but EventSource can't send a Bearer header
@@ -29,23 +30,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fetchPreview, previewControl, sendPreview } from '../api/client';
-import type { PreviewMessage, PreviewState } from '../api/types';
+import type { PreviewState } from '../api/types';
 import { EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
 import { usePolling } from '../util/usePolling';
 import { useKeyboardVisible } from '../util/useKeyboard';
 import { colors, font, radius, space } from '../theme';
-
-/** The raw provider payload a bubble becomes on the wire — outbound messages
- *  carry the Meta/Twilio message objects, inbound carries the webhook shape. */
-function fmtWire(m: PreviewMessage): string {
-  if (!m.wire) return '';
-  const payload = m.direction === 'in' ? m.wire.inbound ?? {} : m.wire.payloads ?? [];
-  try {
-    return JSON.stringify(payload, null, 2);
-  } catch {
-    return String(payload);
-  }
-}
 
 const SIGNAL_COLOR: Record<string, string> = {
   live: colors.success,
@@ -61,7 +50,6 @@ export default function WalkieScreen() {
   const [draft, setDraft] = useState('');
   const [busySend, setBusySend] = useState(false);
   const [error, setError] = useState('');
-  const [openWire, setOpenWire] = useState<Record<number, boolean>>({});
   const scrollRef = useRef<ScrollView | null>(null);
   const linkTried = useRef(false);
   // Only auto-scroll while pinned to the bottom, so reading history isn't yanked
@@ -142,14 +130,10 @@ export default function WalkieScreen() {
     }
   }
 
-  function toggleWire(seq: number) {
-    setOpenWire((o) => ({ ...o, [seq]: !o[seq] }));
-  }
-
   if (!state) {
     return (
       <SafeAreaView style={styles.root} edges={['top']}>
-        <ScreenHeader title="Walkie-Talkie" subtitle="WhatsApp gateway preview" />
+        <ScreenHeader title="Walkie-Talkie" subtitle="Internal loopback preview" />
         {error ? (
           <EmptyState icon="radio-outline" title="Gateway unavailable" subtitle={error} />
         ) : (
@@ -161,7 +145,6 @@ export default function WalkieScreen() {
 
   const linked = !!state.linked;
   const busy = !!state.busy;
-  const provider = (state.provider || 'meta').toUpperCase();
   const signal = !state.available ? 'off' : busy ? 'busy' : linked ? 'live' : 'down';
   const signalLabel = !state.available
     ? 'OFFLINE'
@@ -177,7 +160,7 @@ export default function WalkieScreen() {
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScreenHeader
         title="Walkie-Talkie"
-        subtitle="Talk to your workspace over WhatsApp"
+        subtitle="Talk to your workspace over the internal loopback"
         right={
           <View style={styles.status} accessibilityRole="text">
             <View style={[styles.led, { backgroundColor: SIGNAL_COLOR[signal] }]} />
@@ -186,14 +169,14 @@ export default function WalkieScreen() {
         }
       />
 
-      {/* Channel readout — provider + in/out-of-window state, mirroring the web
+      {/* Channel readout — mode + in/out-of-window state, mirroring the web
           device's LCD row. */}
       <View style={styles.lcd}>
         <Text style={styles.lcdLabel}>CH</Text>
-        <Text style={styles.lcdValue}>WhatsApp</Text>
+        <Text style={styles.lcdValue}>Loopback</Text>
         <Text style={styles.lcdSep}>·</Text>
-        <Text style={styles.lcdLabel}>PROVIDER</Text>
-        <Text style={styles.lcdValue}>{provider}</Text>
+        <Text style={styles.lcdLabel}>MODE</Text>
+        <Text style={styles.lcdValue}>INTERNAL LOOPBACK</Text>
         <Text style={styles.lcdSep}>·</Text>
         <Text style={styles.lcdLabel}>WINDOW</Text>
         <Text style={styles.lcdValue}>{windowLabel}</Text>
@@ -216,7 +199,7 @@ export default function WalkieScreen() {
               <EmptyState
                 icon="radio-outline"
                 title="Press to talk to your workspace"
-                subtitle="Messages run through the real WhatsApp gateway pipeline — locally. Expand “wire” on any bubble to see the exact provider payload."
+                subtitle="Messages run through the real Conversation Gateway pipeline — locally, in internal loopback mode. Other providers will be added soon."
               />
             </View>
           ) : (
@@ -232,8 +215,6 @@ export default function WalkieScreen() {
                 );
               }
               const isOut = m.direction === 'out';
-              const wire = fmtWire(m);
-              const wireOpen = !!openWire[m.seq];
               return (
                 <View key={m.seq} style={[styles.msgRow, isOut ? styles.msgRowOut : styles.msgRowIn]}>
                   <View style={[styles.bubble, isOut ? styles.bubbleOut : styles.bubbleIn]}>
@@ -254,26 +235,6 @@ export default function WalkieScreen() {
                       </View>
                     )}
                   </View>
-                  {wire ? (
-                    <View style={[styles.wireWrap, isOut ? styles.wireWrapOut : styles.wireWrapIn]}>
-                      <Pressable
-                        onPress={() => toggleWire(m.seq)}
-                        hitSlop={6}
-                        accessibilityRole="button"
-                        accessibilityState={{ expanded: wireOpen }}
-                        style={styles.wireToggle}
-                      >
-                        <Ionicons name={wireOpen ? 'chevron-down' : 'chevron-forward'} size={11} color={colors.textFaint} />
-                        <Text style={styles.wireToggleText}>wire</Text>
-                        <Text style={styles.wireProvider}>{provider}</Text>
-                      </Pressable>
-                      {wireOpen && (
-                        <ScrollView horizontal style={styles.wireBody} contentContainerStyle={styles.wireBodyInner}>
-                          <Text style={styles.wireCode}>{wire}</Text>
-                        </ScrollView>
-                      )}
-                    </View>
-                  ) : null}
                 </View>
               );
             })
@@ -382,7 +343,7 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
     borderWidth: 1,
   },
-  // Outbound (from the workspace/agent) reads as the "received" WhatsApp bubble;
+  // Outbound (from the workspace/agent) reads as the "received" chat bubble;
   // inbound (you) is the accent-tinted "sent" bubble on the right.
   bubbleOut: { backgroundColor: colors.card, borderColor: colors.border },
   bubbleIn: { backgroundColor: colors.surface2, borderColor: colors.borderStrong },
@@ -407,32 +368,6 @@ const styles = StyleSheet.create({
   replyPressed: { opacity: 0.7 },
   replyOff: { opacity: 0.5 },
   replyText: { color: colors.info, fontSize: font.size.sm, fontWeight: '600' },
-  wireWrap: { maxWidth: '100%' },
-  wireWrapOut: { alignItems: 'flex-end' },
-  wireWrapIn: { alignItems: 'flex-start' },
-  wireToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2 },
-  wireToggleText: { color: colors.textFaint, fontSize: font.size.xs, fontWeight: '600' },
-  wireProvider: {
-    color: colors.textFaint,
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-  },
-  wireBody: {
-    maxHeight: 220,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    backgroundColor: colors.bg,
-    marginTop: 2,
-  },
-  wireBodyInner: { padding: space.sm },
-  wireCode: { color: colors.textMuted, fontSize: font.size.xs, fontFamily: font.mono, lineHeight: 17 },
   controls: {
     flexDirection: 'row',
     alignItems: 'center',

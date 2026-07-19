@@ -400,7 +400,7 @@ export function mockFilePreview(path: string): FilePreview {
   return { kind: 'binary', path, mime: 'application/octet-stream', size };
 }
 
-// ---- Walkie-Talkie (WhatsApp gateway loopback preview) ---------------------
+// ---- Walkie-Talkie (internal loopback preview) -----------------------------
 // A small in-memory transcript so the demo/screenshot build renders a populated
 // Walkie screen, and send/control mutate it just enough to feel live. Mirrors
 // the server's /api/gateway/internal/* shapes. Text/quick-reply only — no audio.
@@ -436,10 +436,10 @@ function seedWalkieMessages(): PreviewMessage[] {
       text: 'Workspace is healthy ✅\n• CPU 38%\n• Memory 54%\n• 2 running builds',
       quick_replies: ['recent builds', 'open desktop'],
       wire: {
-        provider: 'meta',
+        provider: 'internal',
         payloads: [
           {
-            messaging_product: 'whatsapp',
+            messaging_product: 'internal',
             to: MOCK_WALKIE_IDENTITY,
             type: 'interactive',
             interactive: {
@@ -480,7 +480,7 @@ export function mockPreviewState(): PreviewState {
     cursor: mockWalkieCursor(),
     linked: mockWalkieLinked,
     simulate_out_of_window: mockWalkieSimulate,
-    provider: 'meta',
+    provider: 'internal',
     identity: MOCK_WALKIE_IDENTITY,
     busy: false,
     thread_id: 'mock-thread',
@@ -504,8 +504,8 @@ export function mockPreviewSend(text: string, button?: string): PreviewSendResul
     text: `You said “${display}”. (demo reply — connect a workspace for a real agent turn.)`,
     quick_replies: ['status', 'recent builds'],
     wire: {
-      provider: 'meta',
-      payloads: [{ messaging_product: 'whatsapp', to: MOCK_WALKIE_IDENTITY, type: 'text', text: { body: display } }],
+      provider: 'internal',
+      payloads: [{ messaging_product: 'internal', to: MOCK_WALKIE_IDENTITY, type: 'text', text: { body: display } }],
     },
     meta: {},
   });

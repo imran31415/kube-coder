@@ -58,7 +58,7 @@ export function MoreSheet() {
       label: 'Walkie-Talkie',
       icon: 'walkie',
       onSelect: () => { navigate('/walkie'); sheetOpen.value = null; },
-      hint: 'Chat with your workspace over the WhatsApp gateway preview',
+      hint: 'Chat with your workspace over the internal loopback preview',
     },
     {
       label: 'Apps',
