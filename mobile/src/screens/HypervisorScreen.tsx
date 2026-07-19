@@ -84,10 +84,6 @@ export default function HypervisorScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const keyboardVisible = useKeyboardVisible();
-  // Measured header height → the KeyboardAvoidingView's offset (the composer
-  // must rise by exactly the space above it, or it over/under-shoots the
-  // keyboard). Defaults to a sane guess until the first layout pass.
-  const [headerH, setHeaderH] = useState(56);
   const [config, setConfig] = useState<HypervisorConfig | null>(null);
   const [threads, setThreads] = useState<HypervisorThread[]>([]);
   // "Recently deleted" — soft-deleted threads (issue #260). Loaded lazily the
@@ -381,7 +377,6 @@ export default function HypervisorScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
-      <View onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}>
       <ScreenHeader
         title={activeThread ? activeThread.title || 'Chat' : 'Hypervisor'}
         subtitle={activeThread ? `via ${activeThread.assistant || agentName}` : 'Talk to your workspace'}
@@ -406,7 +401,6 @@ export default function HypervisorScreen() {
           </View>
         }
       />
-      </View>
 
       <ChatsSheet
         visible={chatsOpen}
@@ -426,7 +420,7 @@ export default function HypervisorScreen() {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={insets.top + headerH}
+        keyboardVerticalOffset={0}
       >
         <ScrollView
           ref={scrollRef}
