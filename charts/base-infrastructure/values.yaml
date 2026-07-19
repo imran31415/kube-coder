@@ -9,5 +9,6 @@ registry:
 # Build configuration
 build:
   mode: buildkit  # kaniko or buildkit
-  kanikoImage: gcr.io/kaniko-project/executor:latest
+  # Pinned for reproducible builds; Renovate bumps the tag+digest weekly.
+  kanikoImage: gcr.io/kaniko-project/executor:v1.24.0
   defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
