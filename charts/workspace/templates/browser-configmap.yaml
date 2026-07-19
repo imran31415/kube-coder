@@ -62,3 +62,11 @@ data:
 {{ .Files.Get "mcp_dashboard.py" | indent 4 }}
   hypervisor_session.py: |
 {{ .Files.Get "hypervisor_session.py" | indent 4 }}
+  gateway.py: |
+{{ .Files.Get "gateway.py" | indent 4 }}
+  adapters__init__.py: |
+{{ .Files.Get "adapters/__init__.py" | indent 4 }}
+  adapters_whatsapp.py: |
+{{ .Files.Get "adapters/whatsapp.py" | indent 4 }}
+  adapters_internal.py: |
+{{ .Files.Get "adapters/internal.py" | indent 4 }}
