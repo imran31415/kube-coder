@@ -2,8 +2,10 @@
 # keyless cosign (Sigstore OIDC — no long-lived keys, logged to Rekor) plus
 # BuildKit-native SBOM and SLSA provenance attestations.
 #
-# Fires on the repo's release tags (`devlaptop-v*`, cut from green main by
-# scripts/release.sh). This is additive: the DigitalOcean deploy image still
+# Fires on the repo's release tags — `v<X.Y.Z>`, cut from green main by
+# scripts/release.sh (`TAG="$VER"`). NB: `devlaptop-v<X.Y.Z>` is the *image* tag,
+# NOT the git tag, so the trigger + metadata pattern below key off `v*`. This is
+# additive: the DigitalOcean deploy image still
 # ships via `make push`; GHCR is the signed, attested, publicly-verifiable
 # artifact. No secrets required — the built-in GITHUB_TOKEN pushes to GHCR and
 # the OIDC id-token mints the signing certificate.
@@ -19,7 +21,8 @@ name: release
 
 on:
   push:
-    tags: ["devlaptop-v*"]
+    # Release tags are `v1.2.3` (git tag), not `devlaptop-v1.2.3` (image tag).
+    tags: ["v[0-9]*"]
   workflow_dispatch:
     inputs:
       dryRun:
@@ -68,9 +71,9 @@ jobs:
         uses: docker/metadata-action@v6.2.0
         with:
           images: ${{ env.IMAGE }}
-          # devlaptop-v1.2.3 -> 1.2.3 ; also a long-sha tag; latest on tag push.
+          # v1.2.3 -> 1.2.3 ; also a long-sha tag; latest on tag push.
           tags: |
-            type=match,pattern=devlaptop-v(.*),group=1
+            type=match,pattern=v(.*),group=1
             type=sha,format=long
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
