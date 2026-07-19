@@ -734,6 +734,20 @@ install -m 0644 /browser-config/skills_providers_claude.py   /tmp/browser/skills
 install -m 0644 /browser-config/skills_providers_opencode.py /tmp/browser/skills/providers/opencode.py
 install -m 0644 /browser-config/skills_providers_ante.py     /tmp/browser/skills/providers/ante.py
 install -m 0644 /browser-config/skills_providers_antigravity.py /tmp/browser/skills/providers/antigravity.py
+
+# The Conversation Gateway (issue #306) — chat with the Hypervisor over a
+# channel (WhatsApp) plus the in-app Walkie-Talkie loopback preview — ships
+# gateway.py flat and the adapters/ package as flat keys (configmap keys
+# cannot contain "/"). Reassemble next to server.py so `import gateway` and
+# `from adapters.internal import ...` resolve; without this the gateway
+# subsystem self-disables (_GATEWAY_AVAILABLE=False) and every
+# /api/gateway/* call 503s.
+mkdir -p /tmp/browser/adapters
+install -m 0644 /browser-config/gateway.py           /tmp/browser/gateway.py
+install -m 0644 /browser-config/adapters__init__.py  /tmp/browser/adapters/__init__.py
+install -m 0644 /browser-config/adapters_whatsapp.py /tmp/browser/adapters/whatsapp.py
+install -m 0644 /browser-config/adapters_internal.py /tmp/browser/adapters/internal.py
+
 # Seed the per-user MCP server + user-prompt-submit hook next to the
 # SQLite file so claude config points at PVC-backed paths that survive
 # configmap rotations.
