@@ -1,0 +1,38 @@
+/* Walkie-Talkie route shell. Reserves the full main-pane height (topbar-aware,
+   and bottom-nav-aware on mobile) so the handheld device — `.wt { height:100% }`
+   — has a height context to fill and center against. Mirrors .route-hypervisor
+   so the page sits flush like the rest of the nav. */
+.route-walkie {
+  height: calc(100dvh - var(--topbar-total));
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+/* The guide sits flush at the top with a little breathing room; the device
+   fills whatever height is left below it. */
+.route-walkie > .guide {
+  margin: var(--size-3) var(--size-3) 0;
+}
+.route-walkie-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+@supports not (height: 100dvh) {
+  .route-walkie {
+    height: calc(100vh - var(--topbar-total));
+  }
+}
+
+@media (max-width: 720px) {
+  .route-walkie {
+    height: calc(100dvh - var(--topbar-total) - var(--bottomnav-total));
+  }
+  @supports not (height: 100dvh) {
+    .route-walkie {
+      height: calc(100vh - var(--topbar-total) - var(--bottomnav-total));
+    }
+  }
+}

@@ -1,0 +1,150 @@
+/* Collapsible "How this works" guide. Theme-aware via app tokens; sits flush
+   at the top of a page and stays a slim labelled bar until opened. */
+.guide {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.guide-open {
+  background: var(--surface-2);
+}
+
+.guide-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  width: 100%;
+  padding: var(--size-2) var(--size-3);
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--motion-fast);
+}
+.guide-toggle:hover {
+  background: var(--surface-3);
+}
+.guide-toggle-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.guide-toggle-title {
+  flex: 1;
+  min-width: 0;
+}
+.guide-toggle-chevron {
+  color: var(--text-subtle);
+  flex-shrink: 0;
+}
+
+.guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-3);
+  padding: 0 var(--size-3) var(--size-3);
+  max-height: 42vh;
+  overflow-y: auto;
+}
+
+.guide-intro {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* ── numbered steps ─────────────────────────────────────────────────────── */
+.guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.guide-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-2);
+}
+.guide-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.guide-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.guide-step-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.guide-step-body {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── "Try it" sample scenarios ──────────────────────────────────────────── */
+.guide-scenarios {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  padding-top: var(--size-2);
+  border-top: 1px solid var(--border);
+}
+.guide-scenarios-head {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+.guide-scenario-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.guide-scenario {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+.guide-scenario-prompt {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+.guide-scenario-arrow {
+  color: var(--text-subtle);
+}
+.guide-scenario-outcome {
+  font-size: 12px;
+}

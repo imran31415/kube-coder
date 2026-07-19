@@ -40,6 +40,7 @@ export type IconName =
   | 'pencil'
   | 'info'
   | 'hypervisor'
+  | 'walkie'
   | 'desktop';
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -191,6 +192,14 @@ const PATHS: Record<IconName, JSX.Element> = {
   link: (
     <>
       <path d="M9 11l-2 2a3 3 0 0 1-4-4l2-2M11 9l2-2a3 3 0 0 1 4 4l-2 2M7 13l6-6" />
+    </>
+  ),
+  // Handheld radio — antenna + body + PTT grille — the Walkie-Talkie mark.
+  walkie: (
+    <>
+      <path d="M13 3l3 3" />
+      <rect x="5" y="6" width="8" height="12" rx="1.5" />
+      <path d="M7 9h4M9 12v4" />
     </>
   ),
   unlink: (

@@ -77,6 +77,7 @@ export const ROUTES: RouteDef[] = [
   // bare visit to the dashboard.
   { path: '/desktop', title: 'Desktop' },
   { path: '/hypervisor', title: 'Hypervisor' },
+  { path: '/walkie', title: 'Walkie-Talkie' },
   { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },
   { path: '/skills', title: 'Skills' },
