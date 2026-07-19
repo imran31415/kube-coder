@@ -1,0 +1,20 @@
+{
+  // Blocking SCA gate for the dashboard SPA (yarn classic). Fails CI on
+  // high/critical advisories. See docs/SUPPLY_CHAIN.md.
+  //
+  // The allowlisted advisories below are all in build/test-time
+  // devDependencies (vite dev server, vitest UI, happy-dom test DOM). None
+  // ship in the runtime image, which carries only the built static assets —
+  // so they are not reachable in the deployed artifact. Patched versions
+  // exist; Renovate proposes the upgrades weekly. Prune an entry once the
+  // corresponding dep is bumped past its patched version.
+  "high": true,
+  "allowlist": [
+    "GHSA-37j7-fg3j-429f", // happy-dom  <20.0.0   VM context escape
+    "GHSA-w4gp-fjgq-3q4g", // happy-dom  <20.8.9   fetch credentials
+    "GHSA-6q6h-j7hj-3r64", // happy-dom  <20.8.8   ESM compiler
+    "GHSA-5xrq-8626-4rwp", // vitest     <3.2.6    UI server RCE
+    "GHSA-fx2h-pf6j-xcff"  // vite       <6.4.3    server.fs.deny bypass (Windows)
+  ],
+  "report-type": "summary"
+}

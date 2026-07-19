@@ -1,0 +1,9 @@
+# Runtime Python dependencies for the devlaptop image.
+#
+# The dashboard (server.py) and controller (controller.py) are otherwise
+# stdlib-only; these two packages back the memory-system embeddings
+# (Voyage AI / OpenAI) and HTTP retries. This file is the single source of
+# truth — the image installs from it (devlaptop/Dockerfile) and CI runs
+# pip-audit against it (.github/workflows/ci.yml). Renovate keeps it bumped.
+voyageai==0.4.0
+httpx==0.28.1
