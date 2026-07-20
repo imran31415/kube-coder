@@ -38,8 +38,10 @@ import {
   assistantModels,
   setSelectedAssistant,
   setActiveThreadModel,
+  sameTranscript,
 } from './hypervisor';
 import type { HypervisorConfig } from '../api/hypervisor';
+import type { HvEvent } from '../routes/hypervisor/transcript';
 
 function thread(over: Partial<HypervisorThread> = {}): HypervisorThread {
   return {
@@ -143,5 +145,48 @@ describe('model switcher (#308)', () => {
     setThreadModel.mockRejectedValue(new Error('boom'));
     await setActiveThreadModel('opus');
     expect(threads.value.find((t) => t.id === 'a')?.model).toBe('default');
+  });
+});
+
+describe('sameTranscript (#348)', () => {
+  function evt(over: Partial<HvEvent> = {}): HvEvent {
+    return { seq: 1, ts: 1, role: 'user', type: 'message', text: 'hi', ...over };
+  }
+
+  it('treats a re-fetched but unchanged transcript as the same', () => {
+    const prev = [evt(), evt({ seq: 2, role: 'assistant', text: 'hello' })];
+    // A poll returns fresh object identities for identical content.
+    const next = prev.map((e) => ({ ...e }));
+    expect(sameTranscript(prev, next, 'session_log', 'session_log')).toBe(true);
+  });
+
+  it('treats two empty transcripts as the same', () => {
+    expect(sameTranscript([], [], null, null)).toBe(true);
+  });
+
+  it('detects an appended event', () => {
+    const prev = [evt()];
+    const next = [evt(), evt({ seq: 2, role: 'assistant', text: 'hello' })];
+    expect(sameTranscript(prev, next, 'capture', 'capture')).toBe(false);
+  });
+
+  it('detects the server replacing an optimistic (negative-seq) tail', () => {
+    // sendMessage appends the user turn with a negative seq; the next poll
+    // returns the server-recorded event — same length, different tail.
+    const prev = [evt(), evt({ seq: -1, text: 'sent' })];
+    const next = [evt(), evt({ seq: 2, text: 'sent' })];
+    expect(sameTranscript(prev, next, 'capture', 'capture')).toBe(false);
+  });
+
+  it('detects a changed last-event text at the same seq', () => {
+    const prev = [evt({ role: 'assistant', text: 'partial' })];
+    const next = [evt({ role: 'assistant', text: 'partial + more' })];
+    expect(sameTranscript(prev, next, 'capture', 'capture')).toBe(false);
+  });
+
+  it('always counts a source flip as changed (seqs are re-stamped)', () => {
+    const prev = [evt()];
+    const next = [evt()];
+    expect(sameTranscript(prev, next, 'capture', 'session_log')).toBe(false);
   });
 });

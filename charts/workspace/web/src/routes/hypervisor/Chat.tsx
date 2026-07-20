@@ -465,18 +465,40 @@ export function Chat() {
   useEffect(() => {
     const el = taRef.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    // Resize inside rAF so the intermediate height:auto (needed to measure
+    // scrollHeight) is never painted — Firefox otherwise flashes the composer
+    // between the two heights on every keystroke, resizing the transcript
+    // above it in the same frame (#348).
+    const raf = requestAnimationFrame(() => {
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [draft]);
+
+  // The pin write below dispatches a real `scroll` event; this flag keeps
+  // onTranscriptScroll from re-measuring off that echo — mid-composer-resize
+  // it read a stale clientHeight and closed the jiggle feedback loop (#348).
+  const programmaticScrollRef = useRef(false);
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+    if (!el || !pinnedRef.current) return;
+    const before = el.scrollTop;
+    el.scrollTop = el.scrollHeight;
+    // Only arm the guard when the viewport actually moved — an unmoved
+    // scrollTop fires no event, and a stale flag would swallow the user's
+    // next real scroll.
+    if (el.scrollTop !== before) programmaticScrollRef.current = true;
   }, [turns]);
 
   // Track pin state: pinned when within ~80px of the bottom. Scrolling up
   // unpins (so polls stop yanking down); scrolling back to the bottom re-pins.
   function onTranscriptScroll() {
+    if (programmaticScrollRef.current) {
+      programmaticScrollRef.current = false;
+      return;
+    }
     const el = scrollRef.current;
     if (!el) return;
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
