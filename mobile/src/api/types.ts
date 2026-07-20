@@ -16,6 +16,16 @@ export interface TaskDetail extends TaskSummary {
   tmux_session?: string;
 }
 
+/** A candidate working directory from /api/workspace/dirs — the top-level
+ *  folders under /home/dev, newest-touched first (same source as the web
+ *  pickers). Note the server field is `is_git_repo`, not the web SPA's
+ *  optimistic `is_git`. */
+export interface WorkdirOption {
+  path: string;
+  label?: string;
+  is_git_repo?: boolean;
+}
+
 export interface MemoryRecord {
   namespace: string;
   key: string;

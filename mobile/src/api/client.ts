@@ -28,6 +28,7 @@ import {
   mockSkills,
   mockTaskDetail,
   mockTasks,
+  mockWorkdirs,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -49,6 +50,7 @@ import type {
   SkillRecord,
   TaskDetail,
   TaskSummary,
+  WorkdirOption,
 } from './types';
 
 export class ApiError extends Error {
@@ -303,6 +305,18 @@ export async function createTask(input: {
     return t;
   }
   return withId(await request<TaskSummary>('/api/claude/tasks', { method: 'POST', body: input }));
+}
+
+/** Candidate working directories for the new-chat/new-task pickers — the
+ *  top-level folders under /home/dev, same /api/workspace/dirs endpoint the
+ *  web Build tab and Hypervisor Folder picker use. */
+export async function listWorkspaceDirs(): Promise<WorkdirOption[]> {
+  if (getConfig().mock) {
+    await delay(80);
+    return [...mockWorkdirs];
+  }
+  const d = await request<{ dirs?: WorkdirOption[] }>('/api/workspace/dirs');
+  return d.dirs ?? [];
 }
 
 export async function sendMessage(id: string, prompt: string): Promise<void> {
