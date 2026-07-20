@@ -15,6 +15,7 @@ import {
   activeStatus,
   selectedAssistant,
   selectedModel,
+  selectedWorkdir,
   assistantModels,
   setSelectedAssistant,
   setActiveThreadModel,
@@ -28,6 +29,7 @@ import {
   closeThread,
 } from '../../store/hypervisor';
 import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
+import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { Chat } from './Chat';
 import { partitionThreads, type ChatTab } from './chatTabs';
@@ -56,9 +58,13 @@ export function HypervisorRoute() {
   // Inline rename: the thread whose title is being edited, plus its draft text.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
+  // Workspace folders for the new-chat workdir picker (#345). Same source as
+  // the Build tab's picker; empty list → free-text fallback.
+  const [dirs, setDirs] = useState<WorkdirOption[]>([]);
 
   useEffect(() => {
     void initHypervisor();
+    listWorkdirs().then(setDirs).catch(() => setDirs([]));
     return () => closeThread();
   }, []);
 
@@ -224,6 +230,43 @@ export function HypervisorRoute() {
               </option>
             ))}
           </select>
+        </label>
+
+        {/* Where a NEW chat starts (#345). The backend has always accepted a
+            per-thread workdir; this picker finally passes it, so starting an
+            agent in a repo no longer burns a first message on `cd`. An open
+            thread keeps the folder it was created in. */}
+        <label class="hv-agent-picker">
+          <span class="hv-eyebrow">Folder</span>
+          {dirs.length > 0 ? (
+            <select
+              class="hv-agent-select"
+              value={selectedWorkdir.value}
+              onChange={(e) => (selectedWorkdir.value = (e.target as HTMLSelectElement).value)}
+              aria-label="Folder for new chats"
+              title="The folder a new chat starts in"
+            >
+              {/* Keep the current value selectable even when it isn't in the
+                  server's list (e.g. a custom HYPERVISOR_WORKDIR). */}
+              {selectedWorkdir.value && !dirs.some((d) => d.path === selectedWorkdir.value) && (
+                <option value={selectedWorkdir.value}>{selectedWorkdir.value}</option>
+              )}
+              {dirs.map((d) => (
+                <option key={d.path} value={d.path}>
+                  {d.label ?? d.path}
+                  {d.is_git ? '  (git)' : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              class="hv-agent-select"
+              value={selectedWorkdir.value}
+              onInput={(e) => (selectedWorkdir.value = (e.target as HTMLInputElement).value)}
+              aria-label="Folder for new chats"
+              placeholder={cfg?.workdir || '/home/dev'}
+            />
+          )}
         </label>
 
         <div class="hv-thread-list">
@@ -440,7 +483,7 @@ export function HypervisorRoute() {
           steps={[
             {
               title: 'Pick an agent, then New',
-              body: 'Choose the CLI agent (and model) in the left sidebar, then start a chat with New.',
+              body: 'Choose the CLI agent (plus model and starting folder) in the left sidebar, then start a chat with New.',
             },
             {
               title: 'Ask or instruct',
