@@ -41,6 +41,10 @@
     "vite": "6.4.3",
     "vitest": "2.1.9"
   },
+  "_comment_esbuild": "Pin one esbuild: vite 6 needs 0.25.x but vitest 2.1.9 (bundled vite 5) pulls 0.21.5, and yarn hoisting mixes them -> 'Host version 0.21.5 does not match binary 0.25.12'. Remove once vitest is on v3.",
+  "resolutions": {
+    "esbuild": "0.25.12"
+  },
   "engines": {
     "node": ">=20"
   }
