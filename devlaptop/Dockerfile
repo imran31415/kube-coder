@@ -8,7 +8,13 @@
 #   2. The main Ubuntu stage that runs in the workspace pod. It copies the
 #      built dist/ into /opt/dashboard-dist/, which server.py serves at /next.
 
-FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS dashboard-builder
+# Build the SPA on the NATIVE build platform (not the emulated target). The
+# dist/ output is architecture-independent static JS/CSS/HTML, so building it
+# under QEMU emulation buys nothing — and newer esbuild (via vite 6) crashes
+# with "The service was stopped" when emulated (amd64-on-arm64). $BUILDPLATFORM
+# keeps this stage native (fast + stable) while the runtime stage stays on the
+# target arch. See the runtime `FROM` below.
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS dashboard-builder
 WORKDIR /web
 # Copy package manifests first so dep-install layer is cacheable.
 COPY charts/workspace/web/package.json ./package.json
