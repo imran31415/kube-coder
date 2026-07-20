@@ -5,7 +5,7 @@
  * (assistant prose, tool calls/results, errors), so there is NO screen
  * scraping: we just fold events into user bubbles and agent turns.
  */
-import type { HvEvent } from '../api/types';
+import type { HvEvent, TranscriptSource } from '../api/types';
 
 export type HvBlock =
   | { kind: 'prose'; text: string }
@@ -18,6 +18,30 @@ export type HvBlock =
 export type HvTurn =
   | { role: 'user'; text: string }
   | { role: 'agent'; blocks: HvBlock[] };
+
+/** True when a freshly polled transcript is content-identical to the one we
+ *  already hold — the mobile port of the web store's sameTranscript() (#348,
+ *  ported for #371). Each 2s poll re-fetches the full transcript, so the
+ *  events array gets a fresh identity every tick even when nothing changed;
+ *  assigning it unconditionally re-rendered the whole transcript (Markdown
+ *  included) and re-fired the scroll-pin effect's scrollToEnd on an idle
+ *  chat. Events are append-only and immutable per seq within a source, so
+ *  length + last-event equality is a sufficient content proxy — it also
+ *  catches the optimistic negative-seq user turn being replaced by the
+ *  server event (same length, different tail seq). A source flip (capture ↔
+ *  session_log) re-stamps seqs, so it always counts as changed. */
+export function sameTranscript(
+  prev: HvEvent[],
+  next: HvEvent[],
+  prevSource: TranscriptSource | null,
+  nextSource: TranscriptSource | null,
+): boolean {
+  if (prevSource !== nextSource || prev.length !== next.length) return false;
+  if (next.length === 0) return true;
+  const a = prev[prev.length - 1];
+  const b = next[next.length - 1];
+  return a.seq === b.seq && a.type === b.type && a.text === b.text;
+}
 
 /** MCP render tools whose tool_call renders inline instead of a text chip. */
 const APP_PREVIEW_TOOL = 'mcp__dashboard__show_app_preview';

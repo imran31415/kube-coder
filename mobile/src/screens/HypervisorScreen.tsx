@@ -47,8 +47,8 @@ import {
 import { AppEmbed } from '../components/AppEmbed';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
-import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread } from '../api/types';
-import { buildTurns, type HvBlock } from '../util/hvTranscript';
+import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource } from '../api/types';
+import { buildTurns, sameTranscript, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
@@ -104,6 +104,9 @@ export default function HypervisorScreen() {
   const [selectedAssistant, setSelectedAssistant] = useState<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
+  // Which store the server built the last transcript from (session_log vs
+  // capture) — a flip re-stamps seqs, so the poll guard must see it.
+  const transcriptSource = useRef<TranscriptSource | null>(null);
   // Whether the view is pinned to the bottom. We only auto-scroll on new events
   // while pinned — so scrolling up to read history isn't yanked back down by the
   // 2s poll. Starts true; onScroll flips it as the user scrolls.
@@ -144,7 +147,14 @@ export default function HypervisorScreen() {
       try {
         const d = await getThreadDetail(activeId, 0);
         if (!alive || d.thread.id !== activeId) return;
-        setEvents(d.events);
+        // Only swap `events` when content actually changed, keeping its
+        // identity stable across idle ticks — otherwise every 2s poll
+        // re-rendered the transcript and re-fired the scroll-pin effect's
+        // animated scrollToEnd (#371, the mobile leg of web #348).
+        const src = d.source ?? null;
+        const prevSrc = transcriptSource.current;
+        transcriptSource.current = src;
+        setEvents((prev) => (sameTranscript(prev, d.events, prevSrc, src) ? prev : d.events));
         setStatus(d.thread.status);
       } catch {
         /* transient */
@@ -202,6 +212,7 @@ export default function HypervisorScreen() {
   function openThread(id: string) {
     setActiveId(id);
     setEvents([]);
+    transcriptSource.current = null;
     setStatus('');
     setError(null);
     setChatsOpen(false);
@@ -210,6 +221,7 @@ export default function HypervisorScreen() {
   function newChat() {
     setActiveId(null);
     setEvents([]);
+    transcriptSource.current = null;
     setStatus('');
     setError(null);
     setDraft('');
@@ -348,7 +360,10 @@ export default function HypervisorScreen() {
       // Reflect the halt immediately rather than waiting for the next poll.
       const d = await getThreadDetail(activeId, 0);
       if (d.thread.id === activeId) {
-        setEvents(d.events);
+        const src = d.source ?? null;
+        const prevSrc = transcriptSource.current;
+        transcriptSource.current = src;
+        setEvents((prev) => (sameTranscript(prev, d.events, prevSrc, src) ? prev : d.events));
         setStatus(d.thread.status);
       }
     } catch (e) {
