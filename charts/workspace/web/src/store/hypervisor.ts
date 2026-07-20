@@ -146,18 +146,44 @@ function startPolling(): void {
   pollTimer = window.setInterval(pollActive, 2000);
 }
 
+/** True when a freshly polled transcript is content-identical to the one we
+ *  already hold. Each poll re-fetches the full transcript, so `detail.events`
+ *  is a new array identity every tick even when nothing changed — assigning it
+ *  unconditionally re-fired every `events` subscriber (notably the chat's
+ *  scroll-pin effect) every 2s on an idle thread (#348). Events are
+ *  append-only and immutable per seq within a source, so length + last-event
+ *  equality is a sufficient content proxy; a source flip (capture ↔
+ *  session_log) re-stamps seqs, so it always counts as changed. */
+export function sameTranscript(
+  prev: HvEvent[],
+  next: HvEvent[],
+  prevSource: TranscriptSource | null,
+  nextSource: TranscriptSource | null,
+): boolean {
+  if (prevSource !== nextSource || prev.length !== next.length) return false;
+  if (next.length === 0) return true;
+  const a = prev[prev.length - 1];
+  const b = next[next.length - 1];
+  return a.seq === b.seq && a.type === b.type && a.text === b.text;
+}
+
 async function pollActive(): Promise<void> {
   const id = activeThreadId.value;
   if (!id) return;
   try {
     // Re-fetch the full (small) transcript each tick — simplest correct model
-    // for a chat; the event log is append-only so this never flickers.
+    // for a chat.
     const detail = await getThread(id, 0);
     // Guard against a late poll landing after the user switched threads.
     if (activeThreadId.value !== id) return;
-    events.value = detail.events;
+    // Only swap `events` when content actually changed, keeping its identity
+    // stable across idle ticks — see sameTranscript (#348).
+    const source = detail.source ?? null;
+    if (!sameTranscript(events.value, detail.events, transcriptSource.value, source)) {
+      events.value = detail.events;
+    }
     activeStatus.value = detail.thread.status;
-    transcriptSource.value = detail.source ?? null;
+    transcriptSource.value = source;
   } catch {
     /* transient — next tick retries */
   }
