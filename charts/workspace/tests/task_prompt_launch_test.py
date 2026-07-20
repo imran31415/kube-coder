@@ -94,6 +94,114 @@ class EnsureClaudeTrustTests(unittest.TestCase):
         self.assertIs(self._read()['projects']['/w']['hasTrustDialogAccepted'], True)
 
 
+class ApiKeyRejectSeedTests(unittest.TestCase):
+    """Pre-answering No to "Do you want to use this API key?" (issue #375).
+
+    Claude Code records the answer as the key's last 20 characters under
+    customApiKeyResponses.{approved,rejected} in ~/.claude.json.
+    """
+
+    KEY = 'sk-ant-api03-' + 'x' * 75 + '7D6hPvKKA0g-8bB7sgAA'
+    TAIL = KEY[-20:]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, '.claude.json')
+
+    def _read(self):
+        with open(self.cfg) as f:
+            return json.load(f)
+
+    def _seed_trust(self, workdir='/w'):
+        # Get the trust/onboarding flags in place so later writes are
+        # attributable to the key-rejection seeding alone.
+        self.assertTrue(CTM._ensure_claude_trust(workdir, config_path=self.cfg))
+
+    def test_missing_file_seeds_rejected(self):
+        self.assertFalse(os.path.exists(self.cfg))
+        wrote = CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                         reject_api_key=self.KEY)
+        self.assertTrue(wrote)
+        resp = self._read()['customApiKeyResponses']
+        self.assertEqual(resp['rejected'], [self.TAIL])
+        self.assertEqual(resp['approved'], [])
+
+    def test_idempotent_no_rewrite(self):
+        CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                 reject_api_key=self.KEY)
+        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                                  reject_api_key=self.KEY))
+        self.assertEqual(self._read()['customApiKeyResponses']['rejected'],
+                         [self.TAIL])
+
+    def test_existing_approval_is_respected(self):
+        # The user already answered Yes for this key — never override that.
+        self._seed_trust()
+        cfg = self._read()
+        cfg['customApiKeyResponses'] = {'approved': [self.TAIL], 'rejected': []}
+        with open(self.cfg, 'w') as f:
+            json.dump(cfg, f)
+        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                                  reject_api_key=self.KEY))
+        resp = self._read()['customApiKeyResponses']
+        self.assertEqual(resp['approved'], [self.TAIL])
+        self.assertEqual(resp['rejected'], [])
+
+    def test_existing_entries_preserved(self):
+        self._seed_trust()
+        cfg = self._read()
+        cfg['customApiKeyResponses'] = {'approved': ['otherKeyTail000000AA'],
+                                        'rejected': ['oldRejectedTail00000'],
+                                        'extra': 'kept'}
+        with open(self.cfg, 'w') as f:
+            json.dump(cfg, f)
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                                 reject_api_key=self.KEY))
+        resp = self._read()['customApiKeyResponses']
+        self.assertEqual(resp['approved'], ['otherKeyTail000000AA'])
+        self.assertEqual(resp['rejected'], ['oldRejectedTail00000', self.TAIL])
+        self.assertEqual(resp['extra'], 'kept')
+
+    def test_no_key_leaves_responses_absent(self):
+        CTM._ensure_claude_trust('/w', config_path=self.cfg)
+        self.assertNotIn('customApiKeyResponses', self._read())
+
+
+class ApiKeyToRejectTests(unittest.TestCase):
+    """Gating for which env ANTHROPIC_API_KEY gets pre-rejected."""
+
+    def _call(self, env_key='sk-ant-test', overlay=None, status=None):
+        with mock.patch.dict(os.environ,
+                             {'ANTHROPIC_API_KEY': env_key} if env_key else {},
+                             clear=False), \
+             mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                               return_value=overlay or {}), \
+             mock.patch.object(server.SubscriptionStatusManager, '_claude_status',
+                               return_value=status or {'logged_in': False}):
+            if not env_key:
+                os.environ.pop('ANTHROPIC_API_KEY', None)
+            return CTM._api_key_to_reject()
+
+    def test_rejects_env_key_with_subscription(self):
+        key = self._call(status={'logged_in': True, 'kind': 'subscription'})
+        self.assertEqual(key, 'sk-ant-test')
+
+    def test_no_env_key(self):
+        self.assertIsNone(self._call(env_key=None,
+                                     status={'logged_in': True,
+                                             'kind': 'subscription'}))
+
+    def test_pasted_settings_key_is_kept(self):
+        # A key set in Settings is an explicit opt-in to API-key auth.
+        self.assertIsNone(self._call(overlay={'ANTHROPIC_API_KEY': 'sk-ant-test'},
+                                     status={'logged_in': True,
+                                             'kind': 'subscription'}))
+
+    def test_no_subscription_login_keeps_key(self):
+        # Without a subscription login the env key may be the only auth.
+        self.assertIsNone(self._call(status={'logged_in': False}))
+
+
 # A realistic idle Claude Code composer: the shortcuts footer plus the box
 # input affordance. This is the "really ready for input" screen — distinct
 # from a momentary quiet gap between startup notices.

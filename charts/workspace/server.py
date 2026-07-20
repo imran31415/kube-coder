@@ -1464,11 +1464,16 @@ class ClaudeTaskManager:
         # or a custom fallback endpoint) when those providers are configured
         # on the workspace and the caller passes the matching `assistant`
         # value. See ClaudeTaskManager.assistant_command().
-        # Pre-accept Claude's folder-trust dialog for this workdir so the
-        # auto-pasted initial prompt below isn't swallowed by it (see
-        # _ensure_claude_trust). Only relevant for the Claude CLI.
+        # Pre-accept Claude's folder-trust dialog for this workdir, and
+        # pre-answer No to the "Do you want to use this API key?" dialog a
+        # pod-env ANTHROPIC_API_KEY triggers alongside a subscription login,
+        # so the auto-pasted initial prompt below isn't swallowed by either
+        # (see _ensure_claude_trust / _api_key_to_reject, #375). Only
+        # relevant for the Claude CLI.
         if assistant == 'claude':
-            ClaudeTaskManager._ensure_claude_trust(workdir)
+            ClaudeTaskManager._ensure_claude_trust(
+                workdir,
+                reject_api_key=ClaudeTaskManager._api_key_to_reject())
 
         cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=auto_approve)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
@@ -1952,7 +1957,31 @@ class ClaudeTaskManager:
                 fcntl.flock(lockf, fcntl.LOCK_UN)
 
     @staticmethod
-    def _ensure_claude_trust(workdir, config_path=None):
+    def _api_key_to_reject():
+        """The env ANTHROPIC_API_KEY worth pre-rejecting at launch, or None.
+
+        With a subscription (OAuth) login active, a pod-env ANTHROPIC_API_KEY
+        makes Claude Code ask "Do you want to use this API key?" on launch —
+        a third startup dialog that swallows the auto-pasted prompt exactly
+        like the trust dialog (#375). Subscription is the default auth on
+        these workspaces, so the answer is No (using the key would also
+        silently shift billing from the subscription to API credits).
+
+        Two cases keep the key: a key the user explicitly pasted in Settings
+        (ProviderKeysManager) is an opt-in to API-key auth, and without a
+        subscription login the env key may be the only working auth.
+        """
+        env_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        if not env_key:
+            return None
+        if 'ANTHROPIC_API_KEY' in ProviderKeysManager.env_overlay():
+            return None
+        if SubscriptionStatusManager._claude_status().get('kind') != 'subscription':
+            return None
+        return env_key
+
+    @staticmethod
+    def _ensure_claude_trust(workdir, config_path=None, reject_api_key=None):
         """Pre-accept Claude Code's folder-trust + onboarding for `workdir`.
 
         A freshly launched interactive `claude` shows "Do you trust the files
@@ -1962,7 +1991,13 @@ class ClaudeTaskManager:
         dismisses it — the prompt is silently lost.
 
         We seed top-level `hasCompletedOnboarding` and
-        `projects[workdir].hasTrustDialogAccepted` in ~/.claude.json. Idempotent:
+        `projects[workdir].hasTrustDialogAccepted` in ~/.claude.json. When
+        `reject_api_key` is given (see _api_key_to_reject) we additionally
+        pre-answer No to the "Do you want to use this API key?" dialog:
+        Claude Code records answers as the key's LAST 20 CHARACTERS (verified
+        against a live config — not a hash) under
+        `customApiKeyResponses.{approved,rejected}`; an existing answer in
+        either list is the user's and is respected. Idempotent:
         only writes when a value is actually missing, so steady-state launches
         do zero writes and don't race a live Claude rewriting the same file.
         Best-effort — never raises, never clobbers an unreadable/invalid config.
@@ -1999,6 +2034,23 @@ class ClaudeTaskManager:
                     if proj.get('hasTrustDialogAccepted') is not True:
                         proj['hasTrustDialogAccepted'] = True
                         changed = True
+
+                    if reject_api_key:
+                        tail = reject_api_key[-20:]
+                        resp = cfg.get('customApiKeyResponses')
+                        if not isinstance(resp, dict):
+                            resp = {}
+                        approved = resp.get('approved')
+                        approved = approved if isinstance(approved, list) else []
+                        rejected = resp.get('rejected')
+                        rejected = rejected if isinstance(rejected, list) else []
+                        if tail not in approved and tail not in rejected:
+                            cfg['customApiKeyResponses'] = {
+                                **resp,
+                                'approved': approved,
+                                'rejected': rejected + [tail],
+                            }
+                            changed = True
 
                     if not changed:
                         return False
