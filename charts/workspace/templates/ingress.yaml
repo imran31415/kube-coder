@@ -17,6 +17,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # nginx defaults to 1m, which 413s /api/files/upload bodies long before
+    # server.py's MAX_UPLOAD_BYTES (200 MiB) check ever runs (issue #344).
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.bodySize | default "200m" | quote }}
     {{- if .Values.holdingPage.enabled }}
     # During a self-serve update the workspace pod is Recreate-restarted and
     # this upstream has no Ready endpoint for ~1 min. Serve the always-up

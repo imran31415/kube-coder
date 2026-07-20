@@ -1,0 +1,29 @@
+suite: oauth2 ingress tests
+templates:
+  - templates/ingress-oauth2.yaml
+values:
+  - test-values.yaml
+set:
+  ingress.auth.type: oauth2
+tests:
+  # The -oauth2-api ingress (document 1) fronts /oauth/api/files/upload;
+  # nginx's 1m default 413s uploads before server.py's 200 MiB
+  # MAX_UPLOAD_BYTES check runs (issue #344).
+  - it: should allow upload-sized request bodies on the oauth2 api ingress
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.name
+          value: ws-testuser-oauth2-api
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: "200m"
+
+  - it: should honor ingress.bodySize override on the oauth2 api ingress
+    documentIndex: 1
+    set:
+      ingress.bodySize: "500m"
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: "500m"

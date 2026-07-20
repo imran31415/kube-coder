@@ -43,3 +43,21 @@ tests:
       - equal:
           path: spec.rules[0].http.paths[0].backend.service.port.number
           value: 6080
+
+  # nginx's 1m default 413s uploads before server.py's 200 MiB
+  # MAX_UPLOAD_BYTES check runs (issue #344).
+  - it: should allow upload-sized request bodies on the main ingress
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: "200m"
+
+  - it: should honor ingress.bodySize override
+    documentIndex: 0
+    set:
+      ingress.bodySize: "500m"
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: "500m"
