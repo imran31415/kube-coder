@@ -12,8 +12,9 @@
  * what a coding agent produces in chat, matching the web tab's `breaks: true`
  * (a single newline inside a paragraph is a line break).
  */
-import { Fragment, type ReactNode } from 'react';
-import { Linking, StyleSheet, Text, View } from 'react-native';
+import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { colors, font, radius, space } from '../theme';
 
 /** One block-level element parsed from the source. */
@@ -197,6 +198,48 @@ function parseInline(text: string, keyBase: string): ReactNode[] {
   return nodes;
 }
 
+/** A fenced code block with a Copy button in its corner (issue #351) — parity
+ *  with the web chat's hv-code-copy. Uses expo-clipboard like the rest of the
+ *  app (FilesScreen, GitIdentityCard); "Copied" reverts after a beat. */
+function CodeBlock({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  async function copy() {
+    try {
+      await Clipboard.setStringAsync(text);
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+  return (
+    <View style={styles.codeBlock}>
+      <Pressable
+        onPress={() => void copy()}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel="Copy code"
+        style={({ pressed }) => [styles.codeCopy, pressed && { opacity: 0.6 }]}
+      >
+        <Text style={[styles.codeCopyText, copied && styles.codeCopyTextOn]}>
+          {copied ? 'Copied' : 'Copy'}
+        </Text>
+      </Pressable>
+      <Text style={styles.codeBlockText} selectable>
+        {text}
+      </Text>
+    </View>
+  );
+}
+
 const HEADING_STYLE = [styles_h(1), styles_h(2), styles_h(3), styles_h(4), styles_h(5), styles_h(6)];
 
 /** Render a block of markdown as native RN nodes. Reused for the Hypervisor
@@ -215,11 +258,7 @@ export function Markdown({ text, style }: { text: string; style?: object }) {
               </Text>
             );
           case 'code':
-            return (
-              <View key={key} style={styles.codeBlock}>
-                <Text style={styles.codeBlockText}>{b.text}</Text>
-              </View>
-            );
+            return <CodeBlock key={key} text={b.text} />;
           case 'rule':
             return <View key={key} style={styles.rule} />;
           case 'quote':
@@ -281,8 +320,23 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radius.md,
     padding: space.sm,
+    paddingRight: 64, // keep the first lines clear of the Copy button
   },
   codeBlockText: { fontFamily: font.mono, fontSize: font.size.sm, color: colors.text, lineHeight: 19 },
+  codeCopy: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    zIndex: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  codeCopyText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+  codeCopyTextOn: { color: colors.accent },
   rule: { height: 1, backgroundColor: colors.border, marginVertical: space.xs },
   quote: {
     borderLeftWidth: 3,

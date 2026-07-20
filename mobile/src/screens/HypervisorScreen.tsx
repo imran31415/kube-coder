@@ -22,6 +22,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -49,7 +50,7 @@ import { AppEmbed } from '../components/AppEmbed';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
 import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource, WorkdirOption } from '../api/types';
-import { buildTurns, sameTranscript, type HvBlock } from '../util/hvTranscript';
+import { buildTurns, sameTranscript, turnCopyText, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
@@ -114,6 +115,28 @@ export default function HypervisorScreen() {
   // while pinned — so scrolling up to read history isn't yanked back down by the
   // 2s poll. Starts true; onScroll flips it as the user scrolls.
   const pinnedRef = useRef(true);
+  // Per-message copy feedback (issue #351, parity with the web chat): key of
+  // the message whose button currently reads "Copied", reverted after a beat.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  async function copyMessage(key: string, text: string) {
+    if (!text) return;
+    try {
+      await Clipboard.setStringAsync(text);
+      setCopiedKey(key);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopiedKey(null), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -477,8 +500,26 @@ export default function HypervisorScreen() {
               turn.role === 'user' ? (
                 <View key={i} style={styles.userRow}>
                   <View style={styles.userBubble}>
-                    <Text style={styles.userText}>{turn.text}</Text>
+                    <Text style={styles.userText} selectable>
+                      {turn.text}
+                    </Text>
                   </View>
+                  <Pressable
+                    onPress={() => void copyMessage(`u${i}`, turn.text)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Copy message"
+                    style={({ pressed }) => [styles.msgCopy, pressed && { opacity: 0.6 }]}
+                  >
+                    <Ionicons
+                      name={copiedKey === `u${i}` ? 'checkmark' : 'copy-outline'}
+                      size={13}
+                      color={copiedKey === `u${i}` ? colors.accent : colors.textFaint}
+                    />
+                    <Text style={[styles.msgCopyText, copiedKey === `u${i}` && { color: colors.accent }]}>
+                      {copiedKey === `u${i}` ? 'Copied' : 'Copy'}
+                    </Text>
+                  </Pressable>
                 </View>
               ) : (
                 <View key={i} style={styles.agentRow}>
@@ -487,6 +528,24 @@ export default function HypervisorScreen() {
                     <Text style={styles.agentName}>Kube-Coder</Text>
                     <Text style={styles.agentVia}>via {agentName}</Text>
                     {working && i === turns.length - 1 && <Text style={styles.working}>· working…</Text>}
+                    {turnCopyText(turn.blocks) ? (
+                      <Pressable
+                        onPress={() => void copyMessage(`a${i}`, turnCopyText(turn.blocks))}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Copy message"
+                        style={({ pressed }) => [styles.turnCopy, pressed && { opacity: 0.6 }]}
+                      >
+                        <Ionicons
+                          name={copiedKey === `a${i}` ? 'checkmark' : 'copy-outline'}
+                          size={13}
+                          color={copiedKey === `a${i}` ? colors.accent : colors.textFaint}
+                        />
+                        <Text style={[styles.msgCopyText, copiedKey === `a${i}` && { color: colors.accent }]}>
+                          {copiedKey === `a${i}` ? 'Copied' : 'Copy'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                   {turn.blocks.map((b, j) => (
                     <Block
@@ -1288,6 +1347,10 @@ const styles = StyleSheet.create({
   },
   suggestText: { color: colors.textMuted, fontSize: font.size.sm },
   userRow: { alignItems: 'flex-end' },
+  // Per-message copy affordances (issue #351).
+  msgCopy: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 6, paddingVertical: 3, marginTop: 2 },
+  msgCopyText: { color: colors.textFaint, fontSize: font.size.xs, fontWeight: '600' },
+  turnCopy: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 6, paddingVertical: 2 },
   userBubble: {
     maxWidth: '86%',
     backgroundColor: colors.surface2,

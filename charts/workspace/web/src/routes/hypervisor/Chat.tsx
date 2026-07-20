@@ -20,7 +20,7 @@ import type { HypervisorCommand } from '../../api/hypervisor';
 import { supportsSlash, slashToken, matchCommands } from './slashPicker';
 import { WorkspaceContext } from './WorkspaceContext';
 import { ActivityPanel } from './ActivityPanel';
-import { buildTurns, renderMarkdown, type Block } from './transcript';
+import { buildTurns, renderMarkdown, turnCopyText, type Block } from './transcript';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
 import { withOauthPrefix } from '../../api/client';
@@ -413,6 +413,51 @@ export function Chat() {
   // while pinned — so scrolling up to read history isn't yanked back down by the
   // 2s poll. Starts true; the scroll handler flips it as the user scrolls.
   const pinnedRef = useRef(true);
+  // Per-message copy feedback (issue #351): key of the message whose button
+  // currently reads "Copied", reverted after a beat.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  async function copyMessage(key: string, text: string) {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopiedKey(null), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
+  // Fenced-code Copy buttons live inside sanitized markdown HTML (see
+  // renderMarkdown), so clicks are delegated from the transcript container
+  // instead of bound per-button. Feedback mutates the button directly — it's
+  // static HTML outside the vdom, so there's no state to render from.
+  function onTranscriptClick(e: MouseEvent) {
+    const btn = (e.target as HTMLElement).closest?.('.hv-code-copy');
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const code = btn.parentElement?.querySelector('pre')?.textContent ?? '';
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(code.replace(/\n$/, ''));
+        btn.textContent = 'Copied';
+        btn.classList.add('is-copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('is-copied');
+        }, 1500);
+      } catch {
+        /* clipboard unavailable */
+      }
+    })();
+  }
 
   function addFiles(files: File[]) {
     if (!files.length) return;
@@ -611,7 +656,7 @@ export function Chat() {
       {active && <WorkspaceContext />}
       {active && <ActivityPanel threadId={active} running={working} />}
 
-      <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll}>
+      <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
         {empty ? (
           <div class="hv-welcome-host">
             <EmptyState
@@ -649,6 +694,16 @@ export function Chat() {
               t.role === 'user' ? (
                 <div key={i} class="hv-msg hv-msg-user">
                   <div class="hv-bubble">{t.text}</div>
+                  <button
+                    type="button"
+                    class="hv-copy-btn hv-msg-copy"
+                    onClick={() => void copyMessage(`u${i}`, t.text)}
+                    title="Copy message"
+                    aria-label="Copy message"
+                  >
+                    <Icon name={copiedKey === `u${i}` ? 'check' : 'copy'} size={12} />
+                    {copiedKey === `u${i}` ? 'Copied' : 'Copy'}
+                  </button>
                 </div>
               ) : (
                 <div key={i} class="hv-turn">
@@ -665,6 +720,18 @@ export function Chat() {
                           <i />
                           <i />
                         </span>
+                      )}
+                      {turnCopyText(t.blocks) && (
+                        <button
+                          type="button"
+                          class="hv-copy-btn hv-turn-copy"
+                          onClick={() => void copyMessage(`a${i}`, turnCopyText(t.blocks))}
+                          title="Copy message"
+                          aria-label="Copy message"
+                        >
+                          <Icon name={copiedKey === `a${i}` ? 'check' : 'copy'} size={12} />
+                          {copiedKey === `a${i}` ? 'Copied' : 'Copy'}
+                        </button>
                       )}
                     </div>
                     <AgentBlocks

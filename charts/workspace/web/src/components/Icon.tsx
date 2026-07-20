@@ -34,6 +34,7 @@ export type IconName =
   | 'unlink'
   | 'download'
   | 'upload'
+  | 'copy'
   | 'apps'
   | 'image'
   | 'trash'
@@ -210,6 +211,12 @@ const PATHS: Record<IconName, JSX.Element> = {
   download: (
     <>
       <path d="M10 3v9M6 9l4 4 4-4M4 16h12" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="7.5" y="7.5" width="9" height="9" rx="1.6" />
+      <path d="M4.5 12.5h-1A1.5 1.5 0 0 1 2 11V4.5A1.5 1.5 0 0 1 3.5 3H10a1.5 1.5 0 0 1 1.5 1.5v1" />
     </>
   ),
   upload: (
