@@ -62,6 +62,12 @@ export const selectedAssistant = signal<string>('');
  *  acts on that thread instead (setActiveThreadModel). */
 export const selectedModel = signal<string>('');
 
+/** The folder a NEW thread starts in (#345) — seeded from config.workdir (the
+ *  server's HYPERVISOR_WORKDIR) so the picker shows the real default. '' is
+ *  passed as no workdir, letting the server default apply. A thread keeps the
+ *  folder it was created in for life; this only affects the next new chat. */
+export const selectedWorkdir = signal<string>('');
+
 /** Selectable models for an assistant id, from the loaded config (default
  *  first). Empty when the assistant offers no in-chat model choice. */
 export function assistantModels(assistantId: string | null | undefined): string[] {
@@ -104,6 +110,9 @@ export async function initHypervisor(): Promise<void> {
     // (and its per-assistant model lists) is loaded (#308).
     if (!selectedModel.value) {
       selectedModel.value = assistantModels(selectedAssistant.value)[0] ?? '';
+    }
+    if (!selectedWorkdir.value) {
+      selectedWorkdir.value = cfg.workdir || '';
     }
   } catch (e) {
     configError.value = e instanceof Error ? e.message : 'Failed to load config';
@@ -228,6 +237,7 @@ export async function sendMessage(text: string): Promise<void> {
         message: trimmed,
         assistant: selectedAssistant.value || undefined,
         model: selectedModel.value || undefined,
+        workdir: selectedWorkdir.value || undefined,
       });
       await refreshThreads();
       await openThread(thread.id);

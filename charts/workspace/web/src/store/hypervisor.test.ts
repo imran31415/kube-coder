@@ -4,20 +4,22 @@ import type { HypervisorThread } from '../api/hypervisor';
 // Mock the API + router collaborators so the store's rename action is exercised
 // in isolation — no network, no history mutation. vi.hoisted runs before the
 // mock factories so the spies exist when they capture them (TDZ dodge).
-const { renameThread, listThreads, setThreadModel } = vi.hoisted(() => ({
+const { renameThread, listThreads, setThreadModel, createThread, getThread } = vi.hoisted(() => ({
   renameThread: vi.fn(),
   listThreads: vi.fn(),
   setThreadModel: vi.fn(),
+  createThread: vi.fn(),
+  getThread: vi.fn(),
 }));
 
 vi.mock('../api/hypervisor', () => ({
   renameThread: (...a: unknown[]) => renameThread(...a),
   listThreads: (...a: unknown[]) => listThreads(...a),
   setThreadModel: (...a: unknown[]) => setThreadModel(...a),
+  createThread: (...a: unknown[]) => createThread(...a),
+  getThread: (...a: unknown[]) => getThread(...a),
   // Unused-by-these-tests exports the store imports at module load.
   getHypervisorConfig: vi.fn(),
-  createThread: vi.fn(),
-  getThread: vi.fn(),
   sendThreadMessage: vi.fn(),
   stopThread: vi.fn(),
   deleteThread: vi.fn(),
@@ -35,10 +37,13 @@ import {
   activeThreadId,
   selectedAssistant,
   selectedModel,
+  selectedWorkdir,
   assistantModels,
   setSelectedAssistant,
   setActiveThreadModel,
   sameTranscript,
+  sendMessage,
+  closeThread,
 } from './hypervisor';
 import type { HypervisorConfig } from '../api/hypervisor';
 import type { HvEvent } from '../routes/hypervisor/transcript';
@@ -73,11 +78,14 @@ beforeEach(() => {
   renameThread.mockReset();
   listThreads.mockReset();
   setThreadModel.mockReset();
+  createThread.mockReset();
+  getThread.mockReset();
   threads.value = [thread({ id: 'a', title: 'old' }), thread({ id: 'b', title: 'other' })];
   config.value = cfg();
   activeThreadId.value = null;
   selectedAssistant.value = 'claude';
   selectedModel.value = 'default';
+  selectedWorkdir.value = '';
 });
 
 describe('renameThreadTitle', () => {
@@ -188,5 +196,32 @@ describe('sameTranscript (#348)', () => {
     const prev = [evt()];
     const next = [evt()];
     expect(sameTranscript(prev, next, 'capture', 'session_log')).toBe(false);
+  });
+});
+
+describe('workdir picker (#345)', () => {
+  function stubNewThread() {
+    createThread.mockResolvedValue(thread({ id: 'new' }));
+    listThreads.mockResolvedValue([thread({ id: 'new' })]);
+    getThread.mockResolvedValue({ thread: thread({ id: 'new' }), events: [] });
+  }
+
+  it('sendMessage forwards the selected workdir when creating a thread', async () => {
+    stubNewThread();
+    selectedWorkdir.value = '/home/dev/myrepo';
+    await sendMessage('hello');
+    expect(createThread).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'hello', workdir: '/home/dev/myrepo' }),
+    );
+    closeThread(); // stop the transcript poll the new thread started
+  });
+
+  it('sendMessage omits workdir when unset so the server default applies', async () => {
+    stubNewThread();
+    await sendMessage('hello');
+    expect(createThread).toHaveBeenCalledWith(
+      expect.objectContaining({ workdir: undefined }),
+    );
+    closeThread();
   });
 });
