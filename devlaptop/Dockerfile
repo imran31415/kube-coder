@@ -8,7 +8,7 @@
 #   2. The main Ubuntu stage that runs in the workspace pod. It copies the
 #      built dist/ into /opt/dashboard-dist/, which server.py serves at /next.
 
-FROM node:20-bookworm-slim AS dashboard-builder
+FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS dashboard-builder
 WORKDIR /web
 # Copy package manifests first so dep-install layer is cacheable.
 COPY charts/workspace/web/package.json ./package.json
@@ -17,7 +17,7 @@ RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install;
 COPY charts/workspace/web/ ./
 RUN yarn build
 
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # `apt-get upgrade` patches base-image OS packages that ship with known CVEs
