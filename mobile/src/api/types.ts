@@ -230,9 +230,15 @@ export interface HypervisorThread {
   deleted_at?: number | null;
 }
 
+// Where the rendered transcript came from — 'session_log' (Claude Code's own
+// JSONL log) or 'capture' (the live events.jsonl fallback). A flip re-stamps
+// event seqs, so the poll guard treats it as a content change.
+export type TranscriptSource = 'session_log' | 'capture';
+
 export interface HypervisorThreadDetail {
   thread: HypervisorThread;
   events: HvEvent[];
+  source?: TranscriptSource;
 }
 
 // ---- Walkie-Talkie (internal loopback preview) -----------------------------
