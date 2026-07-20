@@ -2,6 +2,7 @@ import { render, screen, within, fireEvent } from '@testing-library/preact';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { CommandPalette } from './CommandPalette';
 import { paletteOpen } from '../store/ui';
+import { currentPath } from '../store/router';
 
 beforeEach(() => {
   paletteOpen.value = false;
@@ -44,6 +45,17 @@ describe('CommandPalette', () => {
     render(<CommandPalette />);
     const dialog = screen.getByRole('dialog', { name: 'Command palette' });
     within(dialog).getByText('Go to Memory').click();
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('offers a "New chat" action that lands on the Hypervisor new-chat state (#347)', () => {
+    paletteOpen.value = true;
+    render(<CommandPalette />);
+    const input = screen.getByPlaceholderText('Search tasks, memories, triggers, actions…') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'new chat' } });
+    const dialog = screen.getByRole('dialog', { name: 'Command palette' });
+    within(dialog).getByText('New chat').click();
+    expect(currentPath.value).toBe('/hypervisor');
     expect(paletteOpen.value).toBe(false);
   });
 

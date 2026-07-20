@@ -46,6 +46,17 @@ function staticActions(): PaletteEntry[] {
       },
     },
     {
+      id: 'action:new-chat',
+      group: 'Actions',
+      label: 'New chat',
+      icon: 'plus',
+      match: 'new chat create conversation thread hypervisor',
+      // Bare /hypervisor is the new-chat state: the route's URL effect calls
+      // newChat() when there's no thread id in the path, mirroring the
+      // sidebar's "New" button.
+      onSelect: () => navigate('/hypervisor'),
+    },
+    {
       id: 'action:new-memory',
       group: 'Actions',
       label: 'New memory',
