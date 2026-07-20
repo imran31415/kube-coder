@@ -41,6 +41,11 @@ image:
 #     "none"   — bare TLS; anyone can hit it (use only with readOnly: true)
 ingress:
   className: nginx
+  # Max request body nginx accepts on the authed dashboard ingresses (main
+  # and oauth2 /oauth/api). Without this nginx's 1m default rejects
+  # /api/files/upload bodies with a 413 before they reach server.py. Keep in
+  # sync with MAX_UPLOAD_BYTES in server.py (200 MiB).
+  bodySize: "200m"
   # Emit a configuration-snippet on the Bearer-API ingress that strips identity
   # headers at the edge. Only enable on clusters whose ingress-nginx allows
   # snippet annotations — with snippets disabled (this cluster: CVE-2021-25742

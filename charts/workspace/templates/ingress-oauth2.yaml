@@ -71,6 +71,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # This ingress fronts /oauth/api/files/upload too — same 1m nginx default
+    # vs MAX_UPLOAD_BYTES (200 MiB) mismatch as the main ingress (issue #344).
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.bodySize | default "200m" | quote }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
