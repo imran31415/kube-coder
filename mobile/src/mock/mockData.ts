@@ -25,9 +25,16 @@ import type {
   SkillRecord,
   TaskDetail,
   TaskSummary,
+  WorkdirOption,
 } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
+
+export const mockWorkdirs: WorkdirOption[] = [
+  { path: '/home/dev/kube-coder', label: 'kube-coder', is_git_repo: true },
+  { path: '/home/dev/storefront', label: 'storefront', is_git_repo: true },
+  { path: '/home/dev/api-service', label: 'api-service' },
+];
 
 export const mockTasks: TaskSummary[] = [
   {

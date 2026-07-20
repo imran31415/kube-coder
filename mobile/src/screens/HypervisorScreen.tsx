@@ -37,6 +37,7 @@ import {
   getThreadDetail,
   listDeletedThreads,
   listThreads,
+  listWorkspaceDirs,
   previewFile,
   restoreThread,
   renameThread,
@@ -47,7 +48,7 @@ import {
 import { AppEmbed } from '../components/AppEmbed';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
-import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource } from '../api/types';
+import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource, WorkdirOption } from '../api/types';
 import { buildTurns, sameTranscript, type HvBlock } from '../util/hvTranscript';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
@@ -69,10 +70,6 @@ interface Attachment {
   path?: string;
   status: 'uploading' | 'ready' | 'error';
 }
-
-// Chats default to the workspace root, matching the Desktop composer's "Dev"
-// default. Mobile has no folder picker, so this is the single source of truth.
-const CHAT_WORKDIR = '/home/dev';
 
 /** Params other screens (the Desktop composer, its Activity feed) can pass when
  *  navigating to the Hypervisor tab: seed + auto-send a first message, or open
@@ -102,6 +99,12 @@ export default function HypervisorScreen() {
   const [chatsOpen, setChatsOpen] = useState(false);
   // Assistant chosen for the NEXT new chat (existing threads keep their own).
   const [selectedAssistant, setSelectedAssistant] = useState<string | undefined>(undefined);
+  // Folder the NEXT new chat starts in (#370, parity with web #345/#368) —
+  // seeded from config.workdir so the picker shows the real server default.
+  // '' omits workdir on create, letting the server default apply. A thread
+  // keeps the folder it was created in for life.
+  const [selectedWorkdir, setSelectedWorkdir] = useState('');
+  const [dirs, setDirs] = useState<WorkdirOption[]>([]);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
   // Which store the server built the last transcript from (session_log vs
@@ -134,8 +137,14 @@ export default function HypervisorScreen() {
         setConfig(c);
         // Seed the new-chat assistant picker with the workspace default.
         setSelectedAssistant((prev) => prev ?? c.defaultAssistant);
+        // Seed the folder picker with the server default (HYPERVISOR_WORKDIR).
+        setSelectedWorkdir((prev) => prev || c.workdir || '');
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load config'));
+    // Folder choices for new chats; an empty list falls back to free text.
+    void listWorkspaceDirs()
+      .then(setDirs)
+      .catch(() => setDirs([]));
     void refreshThreads();
   }, [refreshThreads]);
 
@@ -339,7 +348,11 @@ export default function HypervisorScreen() {
     ]);
     try {
       if (!activeId) {
-        const thread = await createThread(finalText, selectedAssistant || config?.defaultAssistant, CHAT_WORKDIR);
+        const thread = await createThread(
+          finalText,
+          selectedAssistant || config?.defaultAssistant,
+          selectedWorkdir.trim() || undefined,
+        );
         await refreshThreads();
         openThread(thread.id);
       } else {
@@ -548,6 +561,65 @@ export default function HypervisorScreen() {
             })}
           </ScrollView>
         )}
+
+        {/* New-chat folder picker (#370) — parity with the web sidebar Folder
+            select (#345/#368). Only shown when starting a NEW chat; an open
+            thread keeps the folder it was created in. The server default
+            (config.workdir) is offered as the first chip since /api/workspace/
+            dirs only lists folders UNDER it; when the list is empty entirely,
+            fall back to free text like the web picker and NewTaskScreen. */}
+        {!activeThread &&
+          (dirs.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.asstRow}
+              contentContainerStyle={styles.asstRowContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Ionicons name="folder-outline" size={14} color={colors.textFaint} />
+              {config?.workdir && !dirs.some((d) => d.path === config.workdir) && (
+                <Pressable
+                  onPress={() => setSelectedWorkdir(config.workdir)}
+                  style={[styles.asstChip, selectedWorkdir === config.workdir && styles.asstChipOn]}
+                >
+                  <Text
+                    style={[styles.asstChipText, selectedWorkdir === config.workdir && styles.asstChipTextOn]}
+                  >
+                    {config.workdir}
+                  </Text>
+                </Pressable>
+              )}
+              {dirs.map((d) => {
+                const on = selectedWorkdir === d.path;
+                return (
+                  <Pressable
+                    key={d.path}
+                    onPress={() => setSelectedWorkdir(d.path)}
+                    style={[styles.asstChip, on && styles.asstChipOn]}
+                  >
+                    <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>
+                      {(d.label ?? d.path) + (d.is_git_repo ? ' (git)' : '')}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            <View style={styles.workdirRow}>
+              <Ionicons name="folder-outline" size={14} color={colors.textFaint} />
+              <TextInput
+                style={styles.workdirInput}
+                value={selectedWorkdir}
+                onChangeText={setSelectedWorkdir}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder={config?.workdir || '/home/dev'}
+                placeholderTextColor={colors.textFaint}
+                accessibilityLabel="Folder for new chats"
+              />
+            </View>
+          ))}
 
         <View
           style={[
@@ -1299,6 +1371,26 @@ const styles = StyleSheet.create({
   asstChipOn: { backgroundColor: colors.accent + '22', borderColor: colors.accent },
   asstChipText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '500' },
   asstChipTextOn: { color: colors.accent, fontWeight: '700' },
+  // Free-text folder fallback when /api/workspace/dirs returns nothing.
+  workdirRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs + 2,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  workdirInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: font.size.sm,
+    backgroundColor: colors.surface2,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: 6,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
