@@ -6,6 +6,15 @@
 @media (max-width: 720px) {
   .route { padding: var(--size-4); }
 }
+/* Wider tiers so large monitors aren't wasted (#349). A cap stays in
+   place for readable line lengths; routes that need edge-to-edge
+   (tasks, hypervisor) opt out of the container entirely. */
+@media (min-width: 1600px) {
+  .route { max-width: 1400px; }
+}
+@media (min-width: 2200px) {
+  .route { max-width: 1720px; }
+}
 
 .route-header {
   display: flex; flex-direction: column; gap: 4px;
