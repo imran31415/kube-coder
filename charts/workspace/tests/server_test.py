@@ -510,6 +510,17 @@ class HypervisorModelSelectionTests(unittest.TestCase):
         self.assertIn('opus', models)
         self.assertIn('sonnet', models)
 
+    def test_claude_offers_fable_5_as_non_default_opt_in(self):
+        """Fable 5 (#361) is selectable but never the fallback: it's priced
+        above Opus tier, so resolve_model must not land on it unless the user
+        explicitly picked it."""
+        models = server.ClaudeTaskManager.available_models('claude')
+        self.assertIn('claude-fable-5', models)
+        self.assertNotEqual(models[0], 'claude-fable-5')
+        self.assertEqual(
+            server.ClaudeTaskManager.resolve_model('claude', 'claude-fable-5'),
+            'claude-fable-5')
+
     def test_openrouter_lists_configured_default_first_then_free_deepseek(self):
         models = server.ClaudeTaskManager.available_models('opencode-openrouter')
         self.assertEqual(models[0], 'anthropic/claude-sonnet-4')  # unchanged default
