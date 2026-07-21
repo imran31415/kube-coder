@@ -7,7 +7,7 @@ import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { serverMode } from '../../store/server-mode';
 import { TerminalPane } from './TerminalPane';
-import { getSessionSignals } from './sessionSignals';
+import { getSessionSignals, type DraftAttachment } from './sessionSignals';
 import { imagesFromClipboard, isImageFile, uploadTaskImage } from './imageAttach';
 
 export interface MessageChatProps {
@@ -15,17 +15,6 @@ export interface MessageChatProps {
   status: TaskStatus;
   /** Optional human-readable task name for the header line. */
   taskName?: string | null;
-}
-
-/** One image attached to the composer, tracked from paste/drop → upload. */
-interface Attachment {
-  id: string;
-  name: string;
-  /** Object URL for the local thumbnail preview. */
-  previewUrl: string;
-  /** Absolute on-disk path Claude Code will read; set once uploaded. */
-  path?: string;
-  status: 'uploading' | 'ready' | 'error';
 }
 
 /** How often the Send-message tab re-checks the live screen for an interactive
@@ -74,22 +63,26 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   // sending a follow-up is exactly how the user unblocks it.
   const isRunning = status === 'running' || status === 'waiting-for-input';
 
-  const [msg, setMsg] = useState('');
+  // Draft state (text + attachment chips) lives in the per-task session-signal
+  // store, NOT component state: TaskDetail unmounts this component on every
+  // tab switch, and losing a half-composed message when hopping to Session
+  // and back was issue #391. Reading .value in render subscribes the
+  // component, so these behave exactly like useState during a session.
+  // Preview object URLs are revoked on remove/clear/send — deliberately not
+  // on unmount, or thumbnails would break when the user returns to the tab.
+  const session = getSessionSignals(taskId);
+  const msg = session.draftText.value;
+  const attachments = session.draftAttachments.value;
+  const setMsg = (v: string) => { session.draftText.value = v; };
+  const setAttachments = (fn: (a: DraftAttachment[]) => DraftAttachment[]) => {
+    session.draftAttachments.value = fn(session.draftAttachments.value);
+  };
+
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState<PendingPrompt | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-
-  // Mirror attachments into a ref so the unmount cleanup can revoke every
-  // object URL without capturing a stale closure (and without re-registering
-  // the effect on every attachment change).
-  const attachRef = useRef<Attachment[]>([]);
-  attachRef.current = attachments;
-  useEffect(() => () => {
-    for (const a of attachRef.current) URL.revokeObjectURL(a.previewUrl);
-  }, []);
 
   // Poll the task's live screen for an interactive prompt (numbered permission
   // menu / yes-no) so we can render quick-reply buttons. Only runs while the
@@ -129,14 +122,15 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   // Receive clipboard text from the TaskBar "Paste from clipboard" action and
   // drop it into the composer (appending to whatever's already typed) so the
   // user can review before sending.
-  const session = getSessionSignals(taskId);
   const paste = session.pasteRequest.value;
   const lastPasteNonce = useRef<number>(paste?.nonce ?? 0);
   useEffect(() => {
     if (!paste || paste.nonce === lastPasteNonce.current) return;
     lastPasteNonce.current = paste.nonce;
-    setMsg((m) => (m ? `${m}${m.endsWith('\n') ? '' : '\n'}${paste.text}` : paste.text));
+    const m = session.draftText.value;
+    setMsg(m ? `${m}${m.endsWith('\n') ? '' : '\n'}${paste.text}` : paste.text);
     inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paste]);
 
   // Receive clipboard IMAGES from the same toolbar "Paste" action and run them
@@ -164,7 +158,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     for (const file of imgs) {
       const id = `${Date.now().toString(36)}-${Math.round(Math.random() * 1e9).toString(36)}`;
       const previewUrl = URL.createObjectURL(file);
-      const att: Attachment = { id, name: file.name || 'pasted image', previewUrl, status: 'uploading' };
+      const att: DraftAttachment = { id, name: file.name || 'pasted image', previewUrl, status: 'uploading' };
       setAttachments((a) => [...a, att]);
       void (async () => {
         try {
@@ -187,8 +181,8 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
   }
 
   function clearAttachments() {
-    for (const a of attachRef.current) URL.revokeObjectURL(a.previewUrl);
-    setAttachments([]);
+    for (const a of session.draftAttachments.value) URL.revokeObjectURL(a.previewUrl);
+    setAttachments(() => []);
   }
 
   function onPaste(e: ClipboardEvent) {
