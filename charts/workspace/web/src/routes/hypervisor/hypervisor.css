@@ -662,6 +662,60 @@
 .hv-prose strong { font-weight: 650; }
 .hv-prose a { color: var(--accent); text-decoration: underline; }
 
+/* Copy affordances (issue #351) — quiet ghost buttons on every message. Always
+   visible on touch (no hover to discover them); hover/focus-revealed where a
+   fine pointer exists so the transcript stays calm. */
+.hv-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-subtle);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.hv-copy-btn:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.hv-turn-copy { margin-left: auto; }
+.hv-msg-copy { margin-top: 2px; }
+@media (hover: hover) and (pointer: fine) {
+  .hv-msg-copy,
+  .hv-turn-copy { opacity: 0; transition: opacity 0.12s; }
+  .hv-msg:hover .hv-msg-copy,
+  .hv-turn:hover .hv-turn-copy,
+  .hv-msg-copy:focus-visible,
+  .hv-turn-copy:focus-visible { opacity: 1; }
+}
+
+/* Fenced code inside prose — renderMarkdown wraps each block so a Copy button
+   can sit over its top-right corner (the button HTML rides through DOMPurify;
+   Chat.tsx handles its clicks by delegation). */
+.hv-prose .hv-codewrap { position: relative; margin: 0 0 8px; }
+.hv-prose > .hv-codewrap:last-child { margin-bottom: 0; }
+.hv-prose .hv-codewrap pre { margin: 0; padding-right: 64px; }
+.hv-code-copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.hv-code-copy:hover { color: var(--text); background: var(--surface-2); }
+.hv-code-copy.is-copied { color: var(--accent); border-color: var(--accent); }
+
 /* Tool / command run — a compact chip, expandable to the raw detail. */
 .hv-activity {
   border: 1px solid var(--border);

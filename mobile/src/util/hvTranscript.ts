@@ -19,6 +19,18 @@ export type HvTurn =
   | { role: 'user'; text: string }
   | { role: 'agent'; blocks: HvBlock[] };
 
+/** The prose of an agent turn as plain markdown — what the per-turn copy
+ *  button (issue #351) puts on the clipboard. Tool chips / embeds / media are
+ *  activity, not the message, so only prose blocks count. Mirrors the web
+ *  transcript.ts turnCopyText(). */
+export function turnCopyText(blocks: HvBlock[]): string {
+  return blocks
+    .filter((b): b is Extract<HvBlock, { kind: 'prose' }> => b.kind === 'prose')
+    .map((b) => b.text.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 /** True when a freshly polled transcript is content-identical to the one we
  *  already hold — the mobile port of the web store's sameTranscript() (#348,
  *  ported for #371). Each 2s poll re-fetches the full transcript, so the

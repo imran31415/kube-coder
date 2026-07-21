@@ -1,4 +1,4 @@
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 
 /**
@@ -198,14 +198,47 @@ export function buildTurns(events: HvEvent[]): Turn[] {
   return turns;
 }
 
-let mdReady = false;
-/** Render assistant prose as safe HTML — same marked+DOMPurify path the Docs
- *  tab uses, so bullets / `code` / **bold** look native. */
+/** The prose of an agent turn as plain markdown — what a per-turn copy button
+ *  puts on the clipboard. Tool chips / embeds / media are activity, not the
+ *  message, so only prose blocks count. */
+export function turnCopyText(blocks: Block[]): string {
+  return blocks
+    .filter((b): b is Extract<Block, { kind: 'prose' }> => b.kind === 'prose')
+    .map((b) => b.text.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** Own Marked instance — the Docs tab mutates the shared `marked` singleton's
+ *  options per render, so chat rendering keeps its config (and the code-copy
+ *  renderer below) isolated instead of leaking either way. */
+const md = new Marked({ gfm: true, breaks: true });
+md.use({
+  renderer: {
+    // Fenced code blocks get a Copy button (issue #351). It lives inside the
+    // sanitized HTML, so the click is handled by delegation in Chat.tsx.
+    code({ text: body, lang }) {
+      // The lang tag lands in a class attribute — keep only identifier-ish
+      // characters rather than trusting HTML escaping across sanitizers.
+      const tag = (lang || '').split(/\s+/)[0].replace(/[^\w.+-]/g, '');
+      const cls = tag ? ` class="language-${tag}"` : '';
+      return (
+        '<div class="hv-codewrap">' +
+        '<button type="button" class="hv-code-copy" aria-label="Copy code">Copy</button>' +
+        `<pre><code${cls}>${escapeHtml(body)}\n</code></pre>` +
+        '</div>'
+      );
+    },
+  },
+});
+
+/** Render assistant prose as safe HTML — same marked+DOMPurify approach the
+ *  Docs tab uses, so bullets / `code` / **bold** look native. */
 export function renderMarkdown(text: string): string {
-  if (!mdReady) {
-    marked.setOptions({ gfm: true, breaks: true });
-    mdReady = true;
-  }
-  const html = marked.parse(text, { async: false }) as string;
+  const html = md.parse(text, { async: false }) as string;
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
 }

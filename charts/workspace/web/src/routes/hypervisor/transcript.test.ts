@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTurns, type HvEvent } from './transcript';
+import { buildTurns, renderMarkdown, turnCopyText, type Block, type HvEvent } from './transcript';
 
 function ev(partial: Partial<HvEvent> & Pick<HvEvent, 'role' | 'type'>, seq: number): HvEvent {
   return { seq, ts: seq, ...partial } as HvEvent;
@@ -192,5 +192,46 @@ describe('buildTurns', () => {
       const b = turns[0].blocks[0];
       if (b.kind === 'activity') expect(b.label).toBe('get metrics');
     }
+  });
+});
+
+describe('renderMarkdown code copy (issue #351)', () => {
+  it('wraps a fenced code block with a Copy button that survives sanitizing', () => {
+    // Leading paragraph: happy-dom + DOMPurify unwraps the FIRST element of a
+    // sanitized fragment (test-env quirk only — browsers keep it), so don't
+    // let the codewrap be first.
+    const html = renderMarkdown('Run this:\n\n```bash\nls -la\n```');
+    expect(html).toContain('class="hv-codewrap"');
+    expect(html).toContain('class="hv-code-copy"');
+    expect(html).toContain('<pre><code class="language-bash">ls -la');
+  });
+
+  it('escapes code content and strips a hostile language tag', () => {
+    const html = renderMarkdown('x\n\n```<img src=x onerror=alert(1)>\n<script>alert(1)</script>\n```');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('leaves inline code without a copy button', () => {
+    const html = renderMarkdown('run `ls -la` now');
+    expect(html).toContain('<code>ls -la</code>');
+    expect(html).not.toContain('hv-code-copy');
+  });
+});
+
+describe('turnCopyText', () => {
+  it('joins prose blocks and skips activity/embed blocks', () => {
+    const blocks: Block[] = [
+      { kind: 'prose', text: 'First paragraph.' },
+      { kind: 'activity', label: 'Ran command', detail: 'ls' },
+      { kind: 'embed', port: 3000 },
+      { kind: 'prose', text: 'Second paragraph.' },
+    ];
+    expect(turnCopyText(blocks)).toBe('First paragraph.\n\nSecond paragraph.');
+  });
+
+  it('returns an empty string for a turn with no prose', () => {
+    expect(turnCopyText([{ kind: 'activity', label: 'Ran command', detail: 'ls' }])).toBe('');
   });
 });
