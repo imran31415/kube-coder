@@ -1,0 +1,61 @@
+suite: ephemeral-home rc bootstrap (#334)
+# Interactive shells run with HOME=/home/ubuntu, which is rebuilt from skel
+# on every pod restart. Without re-seeding its rc files at boot, nothing puts
+# the persistent /home/dev/.local/bin on PATH, and the GitHub App env hook
+# would land in /home/dev rc files that no shell ever reads.
+templates:
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: seeds both /home/ubuntu rc files via bootstrap_rc in start.sh
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'bootstrap_rc\(\)'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'for rc in "\$HOME_DIR/\.profile" "\$HOME_DIR/\.bashrc"'
+      # idempotency: a marker grep guards the append, so repeated boots
+      # don't stack duplicate blocks.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'grep -qF "\$marker" "\$rc"'
+
+  - it: puts /home/dev/.local/bin on PATH without duplicating the entry
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'mkdir -p /home/dev/\.local/bin'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: '\[ -d /home/dev/\.local/bin \] && case ":\$PATH:" in'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'export PATH="/home/dev/\.local/bin:\$PATH"'
+
+  - it: routes the GitHub App env hook through bootstrap_rc, not /home/dev rc files
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "bootstrap_rc '/home/dev/\\.profile\\.d-github-env'"
+      # the old dead-file writes must not come back
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: 'for rc in /home/dev/\.bashrc /home/dev/\.profile'
+
+  - it: mirrors the PATH bootstrap into the SSH sidecar when ssh is enabled
+    template: templates/ssh-server-configmap.yaml
+    set:
+      ssh.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["entrypoint.sh"]
+          pattern: 'for rc in /home/ubuntu/\.profile /home/ubuntu/\.bashrc'
+      - matchRegex:
+          path: data["entrypoint.sh"]
+          pattern: 'export PATH="/home/dev/\.local/bin:\$PATH"'

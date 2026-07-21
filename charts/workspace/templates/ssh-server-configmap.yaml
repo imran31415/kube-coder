@@ -89,19 +89,41 @@ data:
     mkdir -p /home/dev/.credentials/.expo \
              /home/dev/.credentials/.docker \
              /home/dev/.credentials/.aws \
-             /home/dev/.credentials/.config/gcloud
+             /home/dev/.credentials/.config/gcloud \
+             /home/dev/.credentials/.config/.wrangler
     chmod 700 /home/dev/.credentials/.expo /home/dev/.credentials/.docker \
-              /home/dev/.credentials/.aws /home/dev/.credentials/.config/gcloud
+              /home/dev/.credentials/.aws /home/dev/.credentials/.config/gcloud \
+              /home/dev/.credentials/.config/.wrangler
     touch /home/dev/.credentials/.npmrc /home/dev/.credentials/.git-credentials
     chmod 600 /home/dev/.credentials/.npmrc /home/dev/.credentials/.git-credentials
     ln -sfn /home/dev/.credentials/.expo           /home/ubuntu/.expo
     ln -sfn /home/dev/.credentials/.docker         /home/ubuntu/.docker
     ln -sfn /home/dev/.credentials/.aws            /home/ubuntu/.aws
     ln -sfn /home/dev/.credentials/.config/gcloud  /home/ubuntu/.config/gcloud
+    ln -sfn /home/dev/.credentials/.config/.wrangler /home/ubuntu/.config/.wrangler
     ln -sf  /home/dev/.credentials/.npmrc           /home/ubuntu/.npmrc
     ln -sf  /home/dev/.credentials/.git-credentials /home/ubuntu/.git-credentials
     chown -h ubuntu:ubuntu /home/ubuntu/.expo /home/ubuntu/.docker /home/ubuntu/.aws \
-            /home/ubuntu/.config/gcloud /home/ubuntu/.npmrc /home/ubuntu/.git-credentials 2>/dev/null || true
+            /home/ubuntu/.config/gcloud /home/ubuntu/.config/.wrangler \
+            /home/ubuntu/.npmrc /home/ubuntu/.git-credentials 2>/dev/null || true
+
+    # Put user-installed tools on the PVC (/home/dev/.local/bin) on PATH for
+    # SSH sessions too (issue #334; kept in sync with the ide container's
+    # start.sh bootstrap_rc). This sidecar has its OWN ephemeral /home/ubuntu,
+    # so the rc files must be re-seeded here on every restart. Absolute paths
+    # only — $HOME is /home/ubuntu and is wiped on restart.
+    for rc in /home/ubuntu/.profile /home/ubuntu/.bashrc; do
+      touch "$rc"
+      grep -qF '/home/dev/.local/bin' "$rc" || cat >> "$rc" <<'PATHRC'
+
+    # --- kube-coder: user-installed tools on the PVC (issue #334) ---
+    [ -d /home/dev/.local/bin ] && case ":$PATH:" in
+      *":/home/dev/.local/bin:"*) ;;
+      *) export PATH="/home/dev/.local/bin:$PATH" ;;
+    esac
+    PATHRC
+      chown ubuntu:ubuntu "$rc" 2>/dev/null || true
+    done
 
     # When a GitHub App is configured, the ide container's token-refresh
     # daemon writes a fresh GITHUB_TOKEN to /home/dev/.profile.d-github-env
