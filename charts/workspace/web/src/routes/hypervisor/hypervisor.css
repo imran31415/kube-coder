@@ -12,6 +12,8 @@
 .route-hypervisor {
   position: relative;
   display: grid;
+  /* Fallback only — on desktop index.tsx sets the live template inline
+     (sidebar-px / 6px handle / chat-fr) for the draggable splitter. */
   grid-template-columns: 264px 1fr;
   height: calc(100dvh - var(--topbar-total));
   min-height: 0;
@@ -28,7 +30,47 @@
   flex-direction: column;
   min-height: 0;
   background: var(--bg);
-  border-right: 1px solid var(--border);
+  /* No border-right on desktop — the splitter handle is the divider. The
+     mobile slide-over restores the hairline (see the mobile block below). */
+}
+
+/* Draggable splitter between the sidebar and the chat column (#350). Mirrors
+   the Build tab's .term-pane-split-handle idiom (routes/tasks/detail.css) so
+   pane resize feels identical across the app. Desktop only — on mobile the
+   sidebar is a slide-over and index.tsx doesn't render the handle. */
+.hv-split-handle {
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  touch-action: none; /* the handle owns its gestures on touch screens */
+}
+/* Grip affordance: a short centered bar that brightens on hover/drag. */
+.hv-split-handle::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 36px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+.hv-split-handle:hover::after,
+.hv-split-handle:focus-visible::after,
+.hv-split-dragging .hv-split-handle::after {
+  background: var(--accent);
+  opacity: 1;
+}
+/* While dragging, embedded iframes (app previews, file views) must not
+   swallow the pointer stream — pointer capture on the handle covers modern
+   browsers, this covers the rest. Also stop text selection mid-drag. */
+.hv-split-dragging {
+  user-select: none;
+}
+.hv-split-dragging iframe {
+  pointer-events: none;
 }
 
 .hv-sidebar-head {
@@ -1114,6 +1156,9 @@
     transform: translateX(-100%);
     transition: transform var(--motion-base);
     box-shadow: var(--shadow-2);
+    /* The desktop divider is the splitter handle; the slide-over gets the
+       plain hairline back. */
+    border-right: 1px solid var(--border);
   }
   .route-hypervisor[data-sidebar-open='true'] .hv-sidebar {
     transform: translateX(0);

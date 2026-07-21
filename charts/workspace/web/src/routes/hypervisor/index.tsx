@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
 import { GuidePanel } from '../../components/GuidePanel';
 import { Button } from '../../components/primitives/Button';
@@ -33,6 +33,14 @@ import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { Chat } from './Chat';
 import { partitionThreads, type ChatTab } from './chatTabs';
+import {
+  SIDEBAR_W_DEFAULT,
+  SIDEBAR_W_KEY,
+  SIDEBAR_W_MAX,
+  SIDEBAR_W_MIN,
+  clampSidebarW,
+  initialSidebarW,
+} from './sidebarSplit';
 import './hypervisor.css';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
@@ -61,6 +69,51 @@ export function HypervisorRoute() {
   // Workspace folders for the new-chat workdir picker (#345). Same source as
   // the Build tab's picker; empty list → free-text fallback.
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
+
+  // Draggable sidebar splitter (#350, desktop only) — resizes the chat column
+  // against the sidebar. Mirrors the Build tab's TerminalPane split handle:
+  // pointer capture keeps the drag alive over the transcript's embedded
+  // iframes, and a dragging class additionally turns off their pointer-events
+  // so no embedded document swallows the stream. Width persists per browser.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [sidebarW, setSidebarW] = useState<number>(() => {
+    try {
+      return initialSidebarW(localStorage.getItem(SIDEBAR_W_KEY));
+    } catch {
+      return SIDEBAR_W_DEFAULT;
+    }
+  });
+  const [splitDragging, setSplitDragging] = useState(false);
+  const sidebarWRef = useRef(sidebarW);
+  sidebarWRef.current = sidebarW;
+
+  function persistSidebarW(px: number) {
+    try {
+      localStorage.setItem(SIDEBAR_W_KEY, String(Math.round(px)));
+    } catch {
+      /* noop */
+    }
+  }
+  function onSplitPointerDown(e: PointerEvent) {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setSplitDragging(true);
+  }
+  function onSplitPointerMove(e: PointerEvent) {
+    if (!splitDragging) return;
+    const el = rootRef.current;
+    if (!el) return;
+    setSidebarW(clampSidebarW(e.clientX - el.getBoundingClientRect().left));
+  }
+  function onSplitPointerUp() {
+    if (!splitDragging) return;
+    setSplitDragging(false);
+    persistSidebarW(sidebarWRef.current);
+  }
+  function resetSplit() {
+    setSidebarW(SIDEBAR_W_DEFAULT);
+    persistSidebarW(SIDEBAR_W_DEFAULT);
+  }
 
   useEffect(() => {
     void initHypervisor();
@@ -158,7 +211,14 @@ export function HypervisorRoute() {
   }
 
   return (
-    <div class="route route-hypervisor" data-sidebar-open={sidebarOpen ? 'true' : 'false'}>
+    // The inline column template implements the draggable sidebar splitter —
+    // only set on desktop so it can't override the mobile slide-over layout.
+    <div
+      ref={rootRef}
+      class={`route route-hypervisor ${splitDragging ? 'hv-split-dragging' : ''}`}
+      data-sidebar-open={sidebarOpen ? 'true' : 'false'}
+      style={!isMobile ? { gridTemplateColumns: `${sidebarW}px 6px 1fr` } : undefined}
+    >
       <div class="hv-scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
 
       <aside class="hv-sidebar">
@@ -388,6 +448,32 @@ export function HypervisorRoute() {
           )}
         </div>
       </aside>
+
+      {!isMobile && (
+        <div
+          class="hv-split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar — drag, arrow keys, or double-click to reset"
+          aria-valuenow={Math.round(sidebarW)}
+          aria-valuemin={SIDEBAR_W_MIN}
+          aria-valuemax={SIDEBAR_W_MAX}
+          tabIndex={0}
+          title="Drag to resize · double-click to reset"
+          onPointerDown={onSplitPointerDown}
+          onPointerMove={onSplitPointerMove}
+          onPointerUp={onSplitPointerUp}
+          onPointerCancel={onSplitPointerUp}
+          onDblClick={resetSplit}
+          onKeyDown={(e: KeyboardEvent) => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            e.preventDefault();
+            const next = clampSidebarW(sidebarW + (e.key === 'ArrowLeft' ? -16 : 16));
+            setSidebarW(next);
+            persistSidebarW(next);
+          }}
+        />
+      )}
 
       <ConfirmDialog
         open={pendingDelete !== null}
