@@ -1,6 +1,6 @@
 ---
 name: kc-preflight
-description: Run kube-coder's full CI suite locally before pushing — helm lint + unit tests, server.py tests, dashboard SPA build + vitest, and shell syntax checks. Use before opening or updating a PR so CI is green on the first push.
+description: Run kube-coder's full CI suite locally before pushing — helm lint + unit tests, server.py tests, dashboard + controller SPA builds + vitest, and shell syntax checks. Use before opening or updating a PR so CI is green on the first push.
 user-invocable: true
 allowed-tools: Bash, Read
 argument-hint: "[all | web | python | helm | shell] (default: all)"
@@ -46,14 +46,19 @@ make python-tests
 # equivalently: cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py'
 ```
 
-## `web` — dashboard SPA typecheck, build, and vitest
+## `web` — SPA typecheck, build, and vitest (BOTH apps)
 
-CI runs the build (which is `tsc --noEmit && vite build`) then vitest:
+There are two SPAs with separate lockfiles and CI jobs: the dashboard
+(`charts/workspace/web`) and the controller (`charts/workspace-controller/web`).
+CI runs each build (which is `tsc --noEmit && vite build`) then vitest — mirror
+both:
 
 ```bash
-yarn --cwd charts/workspace/web install --frozen-lockfile   # first run only
-yarn --cwd charts/workspace/web build      # tsc + vite
-yarn --cwd charts/workspace/web test       # vitest run
+for dir in charts/workspace/web charts/workspace-controller/web; do
+  yarn --cwd "$dir" install --frozen-lockfile   # first run only
+  yarn --cwd "$dir" build      # tsc + vite
+  yarn --cwd "$dir" test       # vitest run
+done
 ```
 
 Ignore the `DOMException [NetworkError] … /oauth/terminal/` noise in
@@ -88,7 +93,8 @@ End with a table:
 |---|---|
 | helm lint/template/unittest | ✅ / ❌ |
 | server.py tests | ✅ / ❌ |
-| SPA build + vitest | ✅ / ❌ |
+| dashboard SPA build + vitest | ✅ / ❌ |
+| controller SPA build + vitest | ✅ / ❌ |
 | shell `bash -n` | ✅ / ❌ |
 
 If everything passes, tell the user it's safe to run **kc-ship-pr**.
