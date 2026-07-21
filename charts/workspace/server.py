@@ -1161,7 +1161,16 @@ class ClaudeTaskManager:
     # operator can curate exactly what their deployment offers. Codex/Antigravity
     # honour ctx['model'] too but ship no default list — their ids move fast, so
     # they only get a switcher when the operator sets the env var.
-    _CLAUDE_MODELS = ('default', 'opus', 'sonnet', 'haiku')
+    #
+    # Fable 5 (#361) rides as the full model id — Claude Code has no short
+    # alias for it — and sits last so it can never become the fallback default
+    # (resolve_model falls back to the first entry): it's priced above Opus
+    # tier ($10/$50 per MTok) and behaves differently at the API (always-on
+    # thinking, safety-classifier refusals, 30-day data-retention requirement),
+    # so it must stay an explicit per-thread opt-in. Those API differences are
+    # handled inside the Claude Code CLI itself; this layer only passes
+    # `--model claude-fable-5` through.
+    _CLAUDE_MODELS = ('default', 'opus', 'sonnet', 'haiku', 'claude-fable-5')
 
     # assistant id → env var that (when set) fully replaces its model list.
     _MODEL_LIST_ENV = {
