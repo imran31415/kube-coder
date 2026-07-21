@@ -12,7 +12,8 @@
 | `/home/dev/.credentials/**` | ✅ | SSH keys, git config, gh tokens (symlinked to `~/.ssh`, `~/.gitconfig`, `~/.config/gh`). |
 | `/home/dev/.claude-tasks/**` | ✅ | Task state — meta.json, output.log, transcripts. |
 | `/home/dev/.claude-memory/memory.db` | ✅ | Persistent memory SQLite. |
-| `~/.local/bin/*` | ✅ | Tools you install yourself. Add to `PATH` in `~/.bashrc`. |
+| `/home/dev/.local/bin/*` | ✅ | Tools you install yourself. Already on `PATH` in every shell. |
+| `~/.local/bin`, `~/.bashrc`, … | ❌ | `$HOME` is `/home/ubuntu` — ephemeral. Use `/home/dev/...` absolute paths instead. |
 | `/tmp/**` | ❌ | Ephemeral, lost on restart. |
 | `apt-get install ...` packages | ❌ | Re-installed on next restart unless persisted. |
 

@@ -675,6 +675,110 @@ register_provider(TWILIO_SPEC, _twilio_factory)
 register_provider(META_SPEC, _meta_factory)
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Provider registry (issue #328)
+# ───────────────────────────────────────────────────────────────────────────
+# provider_id → (spec, factory). The factory maps a flat creds dict (keyed by
+# the spec's CredentialField.key values) onto the provider's kwargs constructor.
+DEFAULT_PROVIDER_ID = 'twilio'
+_ProviderFactory = Callable[[Dict[str, str]], _Provider]
+_REGISTRY: 'Dict[str, Tuple[ProviderSpec, _ProviderFactory]]' = {}
+
+
+def register_provider(spec: ProviderSpec, factory: _ProviderFactory) -> None:
+    """Register a provider so build_provider/list_providers can see it. Called
+    at import time; adding a provider is a new adapter class + one call here."""
+    _REGISTRY[spec.id] = (spec, factory)
+
+
+def list_providers() -> List[ProviderSpec]:
+    """All registered provider specs, in registration order (data for the UI)."""
+    return [spec for spec, _factory in _REGISTRY.values()]
+
+
+def get_provider_spec(provider_id: str) -> Optional[ProviderSpec]:
+    entry = _REGISTRY.get((provider_id or '').strip().lower())
+    return entry[0] if entry else None
+
+
+def build_provider(provider_id: str,
+                   creds: Optional[Dict[str, str]] = None) -> _Provider:
+    """Construct a provider from its id + a flat creds dict. Raises ValueError
+    on an unknown id so API callers (stage 2) fail loudly; env callers normalize
+    the id first so they never hit that path."""
+    entry = _REGISTRY.get((provider_id or '').strip().lower())
+    if entry is None:
+        raise ValueError(f'unknown provider: {provider_id!r}')
+    _spec, factory = entry
+    return factory(creds or {})
+
+
+# -- Twilio -------------------------------------------------------------------
+TWILIO_SPEC = ProviderSpec(
+    id='twilio',
+    display_name='Twilio',
+    credential_fields=[
+        CredentialField(
+            key='account_sid', label='Account SID', secret=False,
+            placeholder='ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+            help_url='https://www.twilio.com/console'),
+        CredentialField(
+            key='auth_token', label='Auth Token', secret=True,
+            help_url='https://www.twilio.com/console'),
+    ],
+    sender_field=CredentialField(
+        key='from_number', label='WhatsApp sender number', secret=False,
+        placeholder='whatsapp:+14155238886',
+        help_url='https://www.twilio.com/docs/whatsapp'),
+    capabilities=TWILIO_CAPS,
+)
+
+
+def _twilio_factory(creds: Dict[str, str]) -> _Provider:
+    return TwilioProvider(
+        auth_token=creds.get('auth_token', ''),
+        account_sid=creds.get('account_sid', ''),
+        from_number=creds.get('from_number', ''))
+
+
+# -- Meta ---------------------------------------------------------------------
+META_SPEC = ProviderSpec(
+    id='meta',
+    display_name='Meta (WhatsApp Cloud API)',
+    credential_fields=[
+        CredentialField(
+            key='access_token', label='Access Token', secret=True,
+            help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
+        CredentialField(
+            key='app_secret', label='App Secret', secret=True,
+            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
+        CredentialField(
+            key='verify_token', label='Webhook Verify Token', secret=False,
+            placeholder='a token you choose',
+            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
+    ],
+    # Meta's sending identity is the opaque Phone Number ID (the WABA sender),
+    # not a dialable number — so it lives here, not among the numbered fields.
+    sender_field=CredentialField(
+        key='phone_number_id', label='Phone Number ID', secret=False,
+        placeholder='1234567890',
+        help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
+    capabilities=META_CAPS,
+)
+
+
+def _meta_factory(creds: Dict[str, str]) -> _Provider:
+    return MetaProvider(
+        app_secret=creds.get('app_secret', ''),
+        verify_token=creds.get('verify_token', ''),
+        phone_number_id=creds.get('phone_number_id', ''),
+        access_token=creds.get('access_token', ''))
+
+
+register_provider(TWILIO_SPEC, _twilio_factory)
+register_provider(META_SPEC, _meta_factory)
+
+
 def _provider_from_env() -> _Provider:
     """Build the configured provider from env, via the registry. Env stays a
     valid source for platform-managed deployments. KC_WHATSAPP_PROVIDER selects

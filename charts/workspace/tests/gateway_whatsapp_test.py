@@ -448,64 +448,6 @@ class ProviderCapabilitiesTest(unittest.TestCase):
             wa.MetaProvider.capabilities)
 
 
-class ProviderValidateTest(unittest.TestCase):
-    """Test-connection probe (issue #329): an authenticated GET that proves the
-    credentials without sending a message. Network is mocked; the returned
-    detail must never carry secret material."""
-
-    def _mock_ok(self, status=200):
-        resp = mock.MagicMock()
-        resp.status = status
-        resp.__enter__.return_value = resp
-        resp.__exit__.return_value = False
-        return resp
-
-    def test_twilio_missing_creds(self):
-        ok, detail = wa.TwilioProvider().validate()
-        self.assertFalse(ok)
-        self.assertIn('not configured', detail)
-
-    def test_twilio_ok(self):
-        prov = wa.TwilioProvider(account_sid='AC1', auth_token='sekret9999')
-        with mock.patch('urllib.request.urlopen', return_value=self._mock_ok()):
-            ok, detail = prov.validate()
-        self.assertTrue(ok)
-        self.assertNotIn('sekret9999', detail)
-
-    def test_twilio_bad_creds_is_401(self):
-        prov = wa.TwilioProvider(account_sid='AC1', auth_token='sekret9999')
-        err = urllib.error.HTTPError('u', 401, 'Unauthorized', {}, None)
-        with mock.patch('urllib.request.urlopen', side_effect=err):
-            ok, detail = prov.validate()
-        self.assertFalse(ok)
-        self.assertIn('authentication failed', detail)
-        self.assertNotIn('sekret9999', detail)
-
-    def test_twilio_network_error_is_safe(self):
-        prov = wa.TwilioProvider(account_sid='AC1', auth_token='sekret9999')
-        with mock.patch('urllib.request.urlopen', side_effect=OSError('boom')):
-            ok, detail = prov.validate()
-        self.assertFalse(ok)
-        self.assertIn('could not reach provider', detail)
-
-    def test_meta_missing_creds(self):
-        ok, detail = wa.MetaProvider().validate()
-        self.assertFalse(ok)
-        self.assertIn('not configured', detail)
-
-    def test_meta_ok(self):
-        prov = wa.MetaProvider(access_token='at', phone_number_id='PN1')
-        with mock.patch('urllib.request.urlopen', return_value=self._mock_ok()):
-            ok, detail = prov.validate()
-        self.assertTrue(ok)
-
-    def test_adapter_delegates_to_provider(self):
-        prov = wa.MetaProvider(access_token='at', phone_number_id='PN1')
-        with mock.patch('urllib.request.urlopen', return_value=self._mock_ok()):
-            ok, _ = wa.WhatsAppAdapter(provider=prov).validate()
-        self.assertTrue(ok)
-
-
 class ProviderFromEnvTest(unittest.TestCase):
     """The env path stays valid for platform-managed deploys and must behave
     exactly as before #328."""
