@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Label, ScreenHeader } from '../components/ui';
 import { ControllerConnectModal } from '../components/ControllerConnectModal';
 import { GitIdentityCard } from '../components/GitIdentityCard';
+import { McpServersCard } from '../components/McpServersCard';
 import { ProviderKeysCard } from '../components/ProviderKeysCard';
 import { UpdatesCard } from '../components/UpdatesCard';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
@@ -78,6 +79,8 @@ export default function SettingsScreen() {
         ) : null}
 
         {!cfg.mock ? <ProviderKeysCard readOnly={isDemo} /> : null}
+
+        {!cfg.mock ? <McpServersCard readOnly={isDemo} /> : null}
 
         {/* Identity + self-serve updates. Shown read-only on the public demo and
             in the mock build (where they render canned data), interactive on a
