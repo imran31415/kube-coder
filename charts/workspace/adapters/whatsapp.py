@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -177,6 +178,12 @@ class _Provider:
     def send(self, msg: OutboundMessage, caps: Capabilities) -> DeliveryResult:
         raise NotImplementedError
 
+    def validate(self) -> 'Tuple[bool, str]':
+        """Cheaply check the configured credentials against the provider WITHOUT
+        sending a message to a real user (issue #329, POST /api/gateway/test).
+        Returns (ok, detail); detail must NEVER contain secret material."""
+        return False, 'validation not implemented for this provider'
+
 
 class TwilioProvider(_Provider):
     """Twilio WhatsApp — SMS-shaped form webhook + REST Messages API.
@@ -294,6 +301,20 @@ class TwilioProvider(_Provider):
             'Content-Type': 'application/x-www-form-urlencoded',
         })
         return _do_send(req, id_key='sid')
+
+    def validate(self) -> 'Tuple[bool, str]':
+        """Authenticated GET of the Account resource — proves the SID+token pair
+        without sending anything. 200 → ok; 401 → bad creds."""
+        if not (self.account_sid and self.auth_token):
+            return False, 'credentials not configured'
+        url = (f'https://api.twilio.com/2010-04-01/Accounts/'
+               f'{self.account_sid}.json')
+        auth = base64.b64encode(
+            f'{self.account_sid}:{self.auth_token}'.encode()).decode()
+        req = urllib.request.Request(url, method='GET', headers={
+            'Authorization': f'Basic {auth}',
+        })
+        return _do_validate(req)
 
 
 class MetaProvider(_Provider):
@@ -459,6 +480,17 @@ class MetaProvider(_Provider):
             })
         return _do_send(req, id_key='messages')
 
+    def validate(self) -> 'Tuple[bool, str]':
+        """Authenticated GET of the phone-number node — proves the access token
+        can reach the configured sender. 200 → ok; 401/403 → bad creds."""
+        if not (self.phone_number_id and self.access_token):
+            return False, 'credentials not configured'
+        url = f'{self.GRAPH}/{self.phone_number_id}'
+        req = urllib.request.Request(url, method='GET', headers={
+            'Authorization': f'Bearer {self.access_token}',
+        })
+        return _do_validate(req)
+
 
 def _allow_unsigned() -> bool:
     """Opt-in escape hatch for dev/sandbox — mirrors WebhookManager's
@@ -485,6 +517,23 @@ def _do_send(req: urllib.request.Request, *, id_key: str) -> DeliveryResult:
         return DeliveryResult(ok=True, provider_msg_id=pid, status=status)
     except Exception as e:  # network / HTTP error — surface, never crash
         return DeliveryResult(ok=False, error=f'{type(e).__name__}: {e}')
+
+
+def _do_validate(req: urllib.request.Request) -> 'Tuple[bool, str]':
+    """Execute a credential-probe GET with a short timeout; never raises and
+    never echoes secret material (the request carries the auth header, not the
+    detail we return). 2xx → ok; HTTP status / network error → a safe message."""
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = getattr(resp, 'status', 200)
+        return (200 <= status < 300), f'HTTP {status}'
+    except urllib.error.HTTPError as e:
+        # 401/403 → bad creds; other codes → surface the status, never the body.
+        if e.code in (401, 403):
+            return False, 'authentication failed — check credentials'
+        return False, f'provider returned HTTP {e.code}'
+    except Exception as e:  # network / DNS / timeout — never crash
+        return False, f'could not reach provider ({type(e).__name__})'
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -515,6 +564,11 @@ class WhatsAppAdapter:
 
     def outbound(self, msg: OutboundMessage) -> DeliveryResult:
         return self.provider.send(msg, self.capabilities)
+
+    def validate(self) -> 'Tuple[bool, str]':
+        """Test-connection: probe the configured provider's credentials without
+        sending a message to a real user (issue #329)."""
+        return self.provider.validate()
 
 
 # ───────────────────────────────────────────────────────────────────────────

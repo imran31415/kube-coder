@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - platform shim
 
 import gateway as gw  # noqa: E402
 import server  # noqa: E402
+from adapters import whatsapp as wa  # noqa: E402
 
 
 class GatewayRouteTestBase(unittest.TestCase):
@@ -198,6 +199,131 @@ class VerifyHandshakeTest(GatewayRouteTestBase):
         h.end_headers.side_effect = lambda: None
         server.BrowserHandler.handle_gateway_whatsapp_verify(h)
         self.assertIn(403, statuses)
+
+
+class GatewayCredentialsRouteTest(GatewayRouteTestBase):
+    """The messaging config endpoints (issue #329): catalog, redacted
+    get/put/delete, test-connection — and the hot-swap of the live adapter on
+    save/clear."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp2 = tempfile.mkdtemp()
+        self._orig_creds = server.GatewayCredentialsManager.CREDS_FILE
+        server.GatewayCredentialsManager.CREDS_FILE = os.path.join(
+            self.tmp2, 'gateway-credentials.json')
+        # env fallback must be deterministic for the delete test.
+        self._saved_env = {k: os.environ.pop(k, None) for k in (
+            'KC_WHATSAPP_PROVIDER', 'KC_TWILIO_ACCOUNT_SID', 'KC_TWILIO_AUTH_TOKEN',
+            'KC_TWILIO_FROM')}
+
+    def tearDown(self):
+        server.GatewayCredentialsManager.CREDS_FILE = self._orig_creds
+        for k, v in self._saved_env.items():
+            if v is not None:
+                os.environ[k] = v
+        super().tearDown()
+
+    # -- catalog --
+    def test_providers_catalog(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_providers(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        ids = [p['id'] for p in obj['providers']]
+        self.assertIn('twilio', ids)
+        self.assertIn('meta', ids)
+        self.assertTrue(obj['providers'][0]['credential_fields'])
+
+    def test_providers_unauthorized_is_401(self):
+        h = self._handler(authed=False)
+        server.BrowserHandler.handle_gateway_providers(h)
+        self.assertEqual(self.last()[1], 401)
+
+    # -- get/put/delete --
+    def test_get_empty_is_unconfigured(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_credentials_get(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertFalse(obj['credentials']['configured'])
+
+    def test_credentials_unauthorized_is_401(self):
+        h = self._handler(authed=False)
+        server.BrowserHandler.handle_gateway_credentials_get(h)
+        self.assertEqual(self.last()[1], 401)
+
+    def test_put_sets_hot_swaps_and_redacts(self):
+        h = self._handler()
+        h.read_json_body.return_value = {
+            'provider_id': 'twilio',
+            'creds': {'account_sid': 'AC1', 'auth_token': 'super-secret-9999'},
+            'sender_number': 'whatsapp:+14155238886'}
+        server.BrowserHandler.handle_gateway_credentials_put(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertTrue(obj['ok'])
+        # Response is redacted — the raw secret never round-trips back.
+        self.assertNotIn('super-secret-9999', repr(obj))
+        # Store persisted the creds.
+        raw = server.GatewayCredentialsManager.get_raw()
+        self.assertEqual(raw['creds']['auth_token'], 'super-secret-9999')
+        # Live adapter hot-swapped to a Twilio provider carrying the new creds.
+        self.assertIsInstance(server._GATEWAY_ADAPTER.provider, wa.TwilioProvider)
+        self.assertEqual(server._GATEWAY_ADAPTER.provider.account_sid, 'AC1')
+
+    def test_put_unknown_provider_is_400(self):
+        h = self._handler()
+        h.read_json_body.return_value = {'provider_id': 'nope', 'creds': {}}
+        server.BrowserHandler.handle_gateway_credentials_put(h)
+        self.assertEqual(self.last()[1], 400)
+
+    def test_put_bad_json_is_400(self):
+        h = self._handler()
+        h.read_json_body.side_effect = ValueError('bad')
+        server.BrowserHandler.handle_gateway_credentials_put(h)
+        self.assertEqual(self.last()[1], 400)
+
+    def test_get_after_put_hides_secret(self):
+        server.GatewayCredentialsManager.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': 'super-secret-9999'})
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_credentials_get(h)
+        obj, status = self.last()
+        self.assertTrue(obj['credentials']['configured'])
+        self.assertNotIn('super-secret-9999', repr(obj))
+
+    def test_delete_clears_and_falls_back_to_env(self):
+        server.GatewayCredentialsManager.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': 'super-secret-9999'})
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_credentials_delete(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertTrue(obj['ok'])
+        self.assertIsNone(server.GatewayCredentialsManager.get_raw())
+        # Adapter rebuilt to the env fallback (no env set → empty Twilio).
+        self.assertIsInstance(server._GATEWAY_ADAPTER.provider, wa.TwilioProvider)
+        self.assertEqual(server._GATEWAY_ADAPTER.provider.account_sid, '')
+
+    # -- test-connection --
+    def test_test_empty_store_is_400(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_test(h)
+        obj, status = self.last()
+        self.assertEqual(status, 400)
+        self.assertFalse(obj['ok'])
+
+    def test_test_passes_with_valid_creds(self):
+        server.GatewayCredentialsManager.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': 'super-secret-9999'})
+        h = self._handler()
+        with mock.patch.object(wa.TwilioProvider, 'validate',
+                               return_value=(True, 'HTTP 200')):
+            server.BrowserHandler.handle_gateway_test(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertTrue(obj['ok'])
 
 
 if __name__ == '__main__':
