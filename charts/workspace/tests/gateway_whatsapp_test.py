@@ -18,6 +18,8 @@ import json
 import os
 import sys
 import unittest
+import urllib.error
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))

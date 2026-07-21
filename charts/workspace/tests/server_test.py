@@ -879,6 +879,115 @@ class ProviderKeysManagerTests(unittest.TestCase):
         self.assertEqual(server.ProviderKeysManager.env_overlay(), {'OPENROUTER_API_KEY': 'k'})
 
 
+class GatewayCredentialsManagerTests(unittest.TestCase):
+    """Per-workspace messaging credentials (issue #329): set/clear, spec-driven
+    redaction that never leaks a secret, allowlisted field set, merge that
+    preserves a blank secret, provider switch, atomic 0600 write."""
+
+    SECRET = 'twilio-auth-secret-9999'
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='kctest-gc-')
+        self._orig_file = server.GatewayCredentialsManager.CREDS_FILE
+        server.GatewayCredentialsManager.CREDS_FILE = os.path.join(
+            self.tmpdir, 'gateway-credentials.json')
+
+    def tearDown(self):
+        server.GatewayCredentialsManager.CREDS_FILE = self._orig_file
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    @property
+    def M(self):
+        return server.GatewayCredentialsManager
+
+    def test_empty_store(self):
+        self.assertIsNone(self.M.get_raw())
+        self.assertFalse(self.M.public_view()['configured'])
+
+    def test_set_stores_flat_creds_including_sender(self):
+        ok, err = self.M.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET},
+            sender_number='whatsapp:+14155238886')
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        raw = self.M.get_raw()
+        self.assertEqual(raw['provider_id'], 'twilio')
+        self.assertEqual(raw['creds']['account_sid'], 'AC1')
+        self.assertEqual(raw['creds']['auth_token'], self.SECRET)
+        # Sender folds into the provider's sender_field key.
+        self.assertEqual(raw['creds']['from_number'], 'whatsapp:+14155238886')
+
+    def test_public_view_never_leaks_secret(self):
+        self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET},
+                   sender_number='whatsapp:+1')
+        view = self.M.public_view()
+        self.assertTrue(view['configured'])
+        # Secret field: set + hint, NEVER a value.
+        self.assertTrue(view['fields']['auth_token']['set'])
+        self.assertEqual(view['fields']['auth_token']['hint'], '…9999')
+        self.assertNotIn('value', view['fields']['auth_token'])
+        # Non-secret identifiers may surface their value.
+        self.assertEqual(view['fields']['account_sid']['value'], 'AC1')
+        self.assertEqual(view['fields']['from_number']['value'], 'whatsapp:+1')
+        # The raw secret must not appear anywhere in the serialized view.
+        self.assertNotIn(self.SECRET, json.dumps(view))
+        self.assertNotIn('auth-secret', json.dumps(view))
+
+    def test_unknown_provider_rejected(self):
+        ok, err = self.M.set('nope', {'x': 'y'})
+        self.assertFalse(ok)
+        self.assertIn('unknown provider', err or '')
+        self.assertIsNone(self.M.get_raw())
+
+    def test_unknown_field_keys_dropped(self):
+        self.M.set('meta', {
+            'access_token': 'at', 'app_secret': 'as', 'verify_token': 'vt',
+            'phone_number_id': 'PN', 'EVIL': 'should-not-persist'})
+        raw = self.M.get_raw()
+        self.assertNotIn('EVIL', raw['creds'])
+        self.assertEqual(set(raw['creds']), {
+            'access_token', 'app_secret', 'verify_token', 'phone_number_id'})
+
+    def test_blank_secret_preserved_on_update(self):
+        self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET},
+                   sender_number='whatsapp:+1')
+        # Re-save with a blank token (form left the masked secret untouched) and
+        # a new sender — the token must survive, the sender must update.
+        self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': ''},
+                   sender_number='whatsapp:+2')
+        raw = self.M.get_raw()
+        self.assertEqual(raw['creds']['auth_token'], self.SECRET)
+        self.assertEqual(raw['creds']['from_number'], 'whatsapp:+2')
+
+    def test_switching_provider_starts_fresh(self):
+        self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET})
+        self.M.set('meta', {'access_token': 'at', 'phone_number_id': 'PN'})
+        raw = self.M.get_raw()
+        self.assertEqual(raw['provider_id'], 'meta')
+        # No Twilio creds carried across the switch.
+        self.assertNotIn('auth_token', raw['creds'])
+        self.assertNotIn('account_sid', raw['creds'])
+
+    def test_clear_disables_channel(self):
+        self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET})
+        self.assertTrue(self.M.clear())
+        self.assertIsNone(self.M.get_raw())
+        # Idempotent — clearing an already-empty store is fine.
+        self.assertTrue(self.M.clear())
+
+    def test_validate_stored_empty(self):
+        ok, detail = self.M.validate_stored()
+        self.assertFalse(ok)
+        self.assertEqual(detail, 'no credentials configured')
+
+    @unittest.skipIf(sys.platform == 'win32', 'chmod bits are a no-op on Windows')
+    def test_written_file_is_0600(self):
+        self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET})
+        mode = os.stat(self.M.CREDS_FILE).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+
 class SubscriptionStatusManagerTests(unittest.TestCase):
     """Tests for SubscriptionStatusManager: reads plan/expiry from credential
     files, NEVER surfaces token material, logout only via the CLI subcommand."""

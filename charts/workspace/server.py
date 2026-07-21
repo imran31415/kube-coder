@@ -68,7 +68,10 @@ try:
     from gateway import (ConversationGateway, IdentityRegistry,
                         LocalHypervisorClient, RawRequest, GatewayPreview,
                         INTERNAL_IDENTITY)
-    from adapters.whatsapp import WhatsAppAdapter
+    from adapters.whatsapp import (WhatsAppAdapter, build_provider as
+                                   gw_build_provider, list_providers as
+                                   gw_list_providers, get_provider_spec as
+                                   gw_get_provider_spec)
     from adapters.internal import LoopbackAdapter
     _GATEWAY_AVAILABLE = True
 except Exception as _gw_import_err:  # broken install shouldn't crash the server
@@ -79,6 +82,9 @@ except Exception as _gw_import_err:  # broken install shouldn't crash the server
     GatewayPreview = None  # type: ignore
     INTERNAL_IDENTITY = 'internal:local'  # type: ignore
     WhatsAppAdapter = None  # type: ignore
+    gw_build_provider = None  # type: ignore
+    gw_list_providers = None  # type: ignore
+    gw_get_provider_spec = None  # type: ignore
     LoopbackAdapter = None  # type: ignore
     _GATEWAY_AVAILABLE = False
     print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
@@ -220,13 +226,42 @@ def get_gateway():
                 window_probe=preview.window_probe)
             gw.install_turn_observer()
             _GATEWAY = gw
-            _GATEWAY_ADAPTER = WhatsAppAdapter()
+            _GATEWAY_ADAPTER = _build_gateway_adapter()
             _GATEWAY_PREVIEW = preview
             _GATEWAY_LOOPBACK = LoopbackAdapter(
                 preview.transcript, publish=EventBroker.publish,
                 identity=INTERNAL_IDENTITY)
             print('[gateway] conversation gateway ready (whatsapp + loopback preview)')
         return _GATEWAY
+
+
+def _build_gateway_adapter():
+    """Construct the WhatsApp adapter from the per-workspace credential store
+    (issue #329), falling back to env (issue #328 `_provider_from_env`) when the
+    store is empty or names an unknown provider. This is what makes saving creds
+    hot-swap the live provider with no pod restart."""
+    if WhatsAppAdapter is None:
+        return None
+    raw = GatewayCredentialsManager.get_raw()
+    if raw and raw.get('provider_id') and gw_build_provider is not None:
+        try:
+            provider = gw_build_provider(raw['provider_id'], raw.get('creds') or {})
+            return WhatsAppAdapter(provider=provider)
+        except ValueError:
+            # Stored provider id is unknown (e.g. removed) — fall back to env so
+            # the channel degrades gracefully rather than 500-ing.
+            pass
+    return WhatsAppAdapter()
+
+
+def rebuild_gateway_adapter():
+    """Rebuild the live adapter from the store after a credential change so the
+    inbound webhook path and capability probes see the new provider immediately.
+    No-op if the gateway subsystem was never constructed."""
+    global _GATEWAY_ADAPTER
+    with _GATEWAY_LOCK:
+        if _GATEWAY is not None:
+            _GATEWAY_ADAPTER = _build_gateway_adapter()
 
 
 def get_gateway_adapter():
@@ -3090,6 +3125,147 @@ class ProviderKeysManager:
                 if isinstance(data.get(p), str) and data[p].strip()}
 
 
+class GatewayCredentialsManager:
+    """Per-workspace messaging-provider credentials (issue #329), persisted on
+    the PVC and read by the WhatsApp adapter at construction so saving new creds
+    hot-swaps the live provider — no pod restart. Same discipline as
+    ProviderKeysManager (one JSON on the PVC, atomic 0600 write, redacted public
+    view) but the field set is DRIVEN by the provider registry (issue #328): a
+    provider's spec declares which fields exist and which are secret, so this
+    store never hardcodes provider knowledge.
+
+    Stored shape: {"provider_id": "twilio", "creds": {<field_key>: value, ...}}.
+    `creds` is flat and keyed by the provider spec's field_keys() (credential
+    fields + the sender field), so it drops straight into build_provider().
+    """
+
+    CREDS_FILE = '/home/dev/.claude-tasks/gateway-credentials.json'
+
+    @classmethod
+    def _read(cls):
+        try:
+            with open(cls.CREDS_FILE) as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    @classmethod
+    def _write(cls, data):
+        os.makedirs(os.path.dirname(cls.CREDS_FILE), mode=0o700, exist_ok=True)
+        tmp = cls.CREDS_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.chmod(tmp, 0o600)
+        # os.replace is atomic on both POSIX and Windows (os.rename raises on
+        # Windows when the target exists), so re-saving credentials never fails.
+        os.replace(tmp, cls.CREDS_FILE)
+
+    @staticmethod
+    def _spec(provider_id):
+        """The provider spec from the registry, or None if unknown/unavailable."""
+        if gw_get_provider_spec is None:
+            return None
+        return gw_get_provider_spec(provider_id)
+
+    @classmethod
+    def get_raw(cls):
+        """The stored {provider_id, creds} incl. secret values, or None when the
+        channel is unconfigured. The ONLY getter that returns secrets — read by
+        _build_gateway_adapter() at construction, never logged or returned to a
+        client."""
+        data = cls._read()
+        pid = data.get('provider_id')
+        if not pid:
+            return None
+        creds = data.get('creds')
+        return {'provider_id': pid, 'creds': creds if isinstance(creds, dict) else {}}
+
+    @classmethod
+    def set(cls, provider_id, creds, sender_number=None):
+        """Persist provider + creds. Validates the provider against the registry,
+        keeps only fields the spec declares (allowlist), folds sender_number into
+        its spec field, and preserves an existing secret when the incoming value
+        is blank AND the provider is unchanged (so the form needn't re-enter a
+        masked secret). Switching providers starts fresh. Returns (ok, err)."""
+        provider_id = (provider_id or '').strip().lower()
+        spec = cls._spec(provider_id)
+        if spec is None:
+            return False, 'unknown provider'
+        incoming = dict(creds) if isinstance(creds, dict) else {}
+        if sender_number is not None:
+            incoming[spec.sender_field.key] = sender_number
+        allowed = set(spec.field_keys())
+        prev = cls._read()
+        same_provider = prev.get('provider_id') == provider_id
+        prev_creds = prev.get('creds') if isinstance(prev.get('creds'), dict) else {}
+        out = {}
+        for key in allowed:
+            val = incoming.get(key)
+            if isinstance(val, str) and val.strip():
+                out[key] = val.strip()
+            elif same_provider and isinstance(prev_creds.get(key), str) and prev_creds[key]:
+                # Blank/absent on update → keep the previously-stored value.
+                out[key] = prev_creds[key]
+        cls._write({'provider_id': provider_id, 'creds': out})
+        return True, None
+
+    @classmethod
+    def clear(cls):
+        """Remove the store — disables the channel (adapter falls back to env).
+        Idempotent."""
+        try:
+            os.remove(cls.CREDS_FILE)
+        except OSError:
+            pass
+        return True
+
+    @classmethod
+    def public_view(cls):
+        """Redacted view for the UI, spec-driven. Per declared field: `set` bool
+        always; secret fields add a last-4 `hint` and NEVER the value; non-secret
+        identifiers (account SID, verify token, sender number) may include
+        `value`. Empty store → {configured: false}."""
+        data = cls._read()
+        pid = data.get('provider_id')
+        spec = cls._spec(pid) if pid else None
+        if not pid or spec is None:
+            return {'configured': False, 'provider_id': None, 'fields': {}}
+        creds = data.get('creds') if isinstance(data.get('creds'), dict) else {}
+        fields = {}
+        for f in list(spec.credential_fields) + [spec.sender_field]:
+            v = creds.get(f.key)
+            is_set = isinstance(v, str) and bool(v)
+            entry = {'set': is_set}
+            if f.secret:
+                entry['hint'] = (f'…{v[-4:]}' if is_set and len(v) >= 4 else '')
+            elif is_set:
+                entry['value'] = v
+            fields[f.key] = entry
+        return {
+            'configured': True,
+            'provider_id': pid,
+            'sender_field': spec.sender_field.key,
+            'fields': fields,
+        }
+
+    @classmethod
+    def validate_stored(cls):
+        """Test-connection over the stored creds: build the provider and probe it
+        WITHOUT sending to a real user. Returns (ok, detail); detail never
+        contains secret material."""
+        raw = cls.get_raw()
+        if raw is None:
+            return False, 'no credentials configured'
+        if gw_build_provider is None:
+            return False, 'gateway unavailable'
+        try:
+            provider = gw_build_provider(raw['provider_id'], raw['creds'])
+        except ValueError:
+            return False, 'unknown provider'
+        return provider.validate()
+
+
 class SubscriptionStatusManager:
     """Read-only view of subscription-based CLI logins (Claude Max/Pro OAuth,
     Codex ChatGPT OAuth) so the Settings UI can show "logged in via subscription"
@@ -4552,6 +4728,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif claude_path == '/api/gateway/links':
             self.handle_gateway_link_list()
             return
+        elif claude_path == '/api/gateway/providers':
+            self.handle_gateway_providers()
+            return
+        elif claude_path == '/api/gateway/credentials':
+            self.handle_gateway_credentials_get()
+            return
         elif claude_path == '/api/gateway/internal/transcript':
             self.handle_gateway_internal_transcript()
             return
@@ -5024,6 +5206,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             m = re.match(r'^/api/gateway/link/([a-f0-9]{64})$', path)
             if m:
                 self.handle_gateway_link_delete(m.group(1))
+                return
+            # Messaging provider credentials (issue #329): clear the store.
+            if path == '/api/gateway/credentials':
+                self.handle_gateway_credentials_delete()
                 return
             m = re.match(r'^/api/crons/([a-z0-9-]+)$', path)
             if m:
@@ -6405,6 +6591,81 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         ok = gw.registry.revoke(link_id)
         self.send_json({'ok': ok}, 200 if ok else 404)
+
+    # --- Messaging provider config (issue #329) ---
+    # The data-driven catalog + per-workspace credential store the Settings
+    # "Messaging / WhatsApp" section (stage 3) drives. Credentials are stored on
+    # the PVC (0600, redacted in every read), and saving hot-swaps the live
+    # adapter so the inbound webhook uses the new provider with no pod restart.
+
+    def handle_gateway_providers(self):
+        """The provider catalog + each provider's field spec (issue #328), so the
+        Settings form is entirely data-driven. No secrets — just the schema."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if gw_list_providers is None:
+            self.send_json({'providers': [], 'available': False})
+            return
+        self.send_json({
+            'providers': [s.to_dict() for s in gw_list_providers()],
+            'available': True,
+        })
+
+    def handle_gateway_credentials_get(self):
+        """Current selection, redacted (never a secret value)."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'credentials': GatewayCredentialsManager.public_view()})
+
+    def handle_gateway_credentials_put(self):
+        """Set provider + creds + sender number, then hot-swap the live adapter.
+        Responds with the redacted view (so the client never round-trips a
+        secret back)."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        provider_id = (data.get('provider_id') or '').strip()
+        creds = data.get('creds')
+        if creds is not None and not isinstance(creds, dict):
+            self.send_json({'error': 'creds must be an object'}, 400)
+            return
+        ok, err = GatewayCredentialsManager.set(
+            provider_id, creds or {}, sender_number=data.get('sender_number'))
+        if not ok:
+            self.send_json({'error': err}, 400)
+            return
+        rebuild_gateway_adapter()
+        self.send_json({'ok': True,
+                        'credentials': GatewayCredentialsManager.public_view()})
+
+    def handle_gateway_credentials_delete(self):
+        """Clear the store (disables the channel) and hot-swap back to the env
+        fallback."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        GatewayCredentialsManager.clear()
+        rebuild_gateway_adapter()
+        self.send_json({'ok': True})
+
+    def handle_gateway_test(self):
+        """Validate the stored creds against the provider — no message to a real
+        user. 400 when nothing is configured yet."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        ok, detail = GatewayCredentialsManager.validate_stored()
+        if not ok and detail == 'no credentials configured':
+            self.send_json({'ok': False, 'detail': detail}, 400)
+            return
+        self.send_json({'ok': ok, 'detail': detail})
 
     # --- Walkie-Talkie preview (in-app loopback) ---
     # Bearer-authed (it's the app user). Drives the SAME gateway core through the
@@ -8600,6 +8861,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'PUT'):
             return
+        # Messaging provider credentials (issue #329) — set provider + creds.
+        if path == '/api/gateway/credentials':
+            self.handle_gateway_credentials_put()
+            return
         self.send_response(501)
         self.end_headers()
 
@@ -8838,6 +9103,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_gateway_whatsapp_webhook()
             elif path == "/api/gateway/link":
                 self.handle_gateway_link_create()
+            # Messaging provider credentials (issue #329): test-connection.
+            elif path == "/api/gateway/test":
+                self.handle_gateway_test()
             # Walkie-Talkie in-app loopback preview (bearer-authed).
             elif path == "/api/gateway/internal/inbound":
                 self.handle_gateway_internal_inbound()

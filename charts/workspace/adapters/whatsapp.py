@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -177,6 +178,12 @@ class _Provider:
     def send(self, msg: OutboundMessage, caps: Capabilities) -> DeliveryResult:
         raise NotImplementedError
 
+    def validate(self) -> 'Tuple[bool, str]':
+        """Cheaply check the configured credentials against the provider WITHOUT
+        sending a message to a real user (issue #329, POST /api/gateway/test).
+        Returns (ok, detail); detail must NEVER contain secret material."""
+        return False, 'validation not implemented for this provider'
+
 
 class TwilioProvider(_Provider):
     """Twilio WhatsApp — SMS-shaped form webhook + REST Messages API.
@@ -294,6 +301,20 @@ class TwilioProvider(_Provider):
             'Content-Type': 'application/x-www-form-urlencoded',
         })
         return _do_send(req, id_key='sid')
+
+    def validate(self) -> 'Tuple[bool, str]':
+        """Authenticated GET of the Account resource — proves the SID+token pair
+        without sending anything. 200 → ok; 401 → bad creds."""
+        if not (self.account_sid and self.auth_token):
+            return False, 'credentials not configured'
+        url = (f'https://api.twilio.com/2010-04-01/Accounts/'
+               f'{self.account_sid}.json')
+        auth = base64.b64encode(
+            f'{self.account_sid}:{self.auth_token}'.encode()).decode()
+        req = urllib.request.Request(url, method='GET', headers={
+            'Authorization': f'Basic {auth}',
+        })
+        return _do_validate(req)
 
 
 class MetaProvider(_Provider):
@@ -459,6 +480,17 @@ class MetaProvider(_Provider):
             })
         return _do_send(req, id_key='messages')
 
+    def validate(self) -> 'Tuple[bool, str]':
+        """Authenticated GET of the phone-number node — proves the access token
+        can reach the configured sender. 200 → ok; 401/403 → bad creds."""
+        if not (self.phone_number_id and self.access_token):
+            return False, 'credentials not configured'
+        url = f'{self.GRAPH}/{self.phone_number_id}'
+        req = urllib.request.Request(url, method='GET', headers={
+            'Authorization': f'Bearer {self.access_token}',
+        })
+        return _do_validate(req)
+
 
 def _allow_unsigned() -> bool:
     """Opt-in escape hatch for dev/sandbox — mirrors WebhookManager's
@@ -485,6 +517,23 @@ def _do_send(req: urllib.request.Request, *, id_key: str) -> DeliveryResult:
         return DeliveryResult(ok=True, provider_msg_id=pid, status=status)
     except Exception as e:  # network / HTTP error — surface, never crash
         return DeliveryResult(ok=False, error=f'{type(e).__name__}: {e}')
+
+
+def _do_validate(req: urllib.request.Request) -> 'Tuple[bool, str]':
+    """Execute a credential-probe GET with a short timeout; never raises and
+    never echoes secret material (the request carries the auth header, not the
+    detail we return). 2xx → ok; HTTP status / network error → a safe message."""
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = getattr(resp, 'status', 200)
+        return (200 <= status < 300), f'HTTP {status}'
+    except urllib.error.HTTPError as e:
+        # 401/403 → bad creds; other codes → surface the status, never the body.
+        if e.code in (401, 403):
+            return False, 'authentication failed — check credentials'
+        return False, f'provider returned HTTP {e.code}'
+    except Exception as e:  # network / DNS / timeout — never crash
+        return False, f'could not reach provider ({type(e).__name__})'
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -515,6 +564,115 @@ class WhatsAppAdapter:
 
     def outbound(self, msg: OutboundMessage) -> DeliveryResult:
         return self.provider.send(msg, self.capabilities)
+
+    def validate(self) -> 'Tuple[bool, str]':
+        """Test-connection: probe the configured provider's credentials without
+        sending a message to a real user (issue #329)."""
+        return self.provider.validate()
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Provider registry (issue #328)
+# ───────────────────────────────────────────────────────────────────────────
+# provider_id → (spec, factory). The factory maps a flat creds dict (keyed by
+# the spec's CredentialField.key values) onto the provider's kwargs constructor.
+DEFAULT_PROVIDER_ID = 'twilio'
+_ProviderFactory = Callable[[Dict[str, str]], _Provider]
+_REGISTRY: 'Dict[str, Tuple[ProviderSpec, _ProviderFactory]]' = {}
+
+
+def register_provider(spec: ProviderSpec, factory: _ProviderFactory) -> None:
+    """Register a provider so build_provider/list_providers can see it. Called
+    at import time; adding a provider is a new adapter class + one call here."""
+    _REGISTRY[spec.id] = (spec, factory)
+
+
+def list_providers() -> List[ProviderSpec]:
+    """All registered provider specs, in registration order (data for the UI)."""
+    return [spec for spec, _factory in _REGISTRY.values()]
+
+
+def get_provider_spec(provider_id: str) -> Optional[ProviderSpec]:
+    entry = _REGISTRY.get((provider_id or '').strip().lower())
+    return entry[0] if entry else None
+
+
+def build_provider(provider_id: str,
+                   creds: Optional[Dict[str, str]] = None) -> _Provider:
+    """Construct a provider from its id + a flat creds dict. Raises ValueError
+    on an unknown id so API callers (stage 2) fail loudly; env callers normalize
+    the id first so they never hit that path."""
+    entry = _REGISTRY.get((provider_id or '').strip().lower())
+    if entry is None:
+        raise ValueError(f'unknown provider: {provider_id!r}')
+    _spec, factory = entry
+    return factory(creds or {})
+
+
+# -- Twilio -------------------------------------------------------------------
+TWILIO_SPEC = ProviderSpec(
+    id='twilio',
+    display_name='Twilio',
+    credential_fields=[
+        CredentialField(
+            key='account_sid', label='Account SID', secret=False,
+            placeholder='ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+            help_url='https://www.twilio.com/console'),
+        CredentialField(
+            key='auth_token', label='Auth Token', secret=True,
+            help_url='https://www.twilio.com/console'),
+    ],
+    sender_field=CredentialField(
+        key='from_number', label='WhatsApp sender number', secret=False,
+        placeholder='whatsapp:+14155238886',
+        help_url='https://www.twilio.com/docs/whatsapp'),
+    capabilities=TWILIO_CAPS,
+)
+
+
+def _twilio_factory(creds: Dict[str, str]) -> _Provider:
+    return TwilioProvider(
+        auth_token=creds.get('auth_token', ''),
+        account_sid=creds.get('account_sid', ''),
+        from_number=creds.get('from_number', ''))
+
+
+# -- Meta ---------------------------------------------------------------------
+META_SPEC = ProviderSpec(
+    id='meta',
+    display_name='Meta (WhatsApp Cloud API)',
+    credential_fields=[
+        CredentialField(
+            key='access_token', label='Access Token', secret=True,
+            help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
+        CredentialField(
+            key='app_secret', label='App Secret', secret=True,
+            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
+        CredentialField(
+            key='verify_token', label='Webhook Verify Token', secret=False,
+            placeholder='a token you choose',
+            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
+    ],
+    # Meta's sending identity is the opaque Phone Number ID (the WABA sender),
+    # not a dialable number — so it lives here, not among the numbered fields.
+    sender_field=CredentialField(
+        key='phone_number_id', label='Phone Number ID', secret=False,
+        placeholder='1234567890',
+        help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
+    capabilities=META_CAPS,
+)
+
+
+def _meta_factory(creds: Dict[str, str]) -> _Provider:
+    return MetaProvider(
+        app_secret=creds.get('app_secret', ''),
+        verify_token=creds.get('verify_token', ''),
+        phone_number_id=creds.get('phone_number_id', ''),
+        access_token=creds.get('access_token', ''))
+
+
+register_provider(TWILIO_SPEC, _twilio_factory)
+register_provider(META_SPEC, _meta_factory)
 
 
 # ───────────────────────────────────────────────────────────────────────────
