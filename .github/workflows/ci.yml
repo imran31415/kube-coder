@@ -116,6 +116,31 @@ jobs:
       - name: Vitest
         run: yarn --cwd charts/workspace/web test
 
+  # The controller SPA has its own lockfile and vitest suite; without this job
+  # its tests never ran in CI (the SCA gate above already covers both SPAs).
+  controller-web-tests:
+    name: Controller SPA Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '20'
+          cache: 'yarn'
+          cache-dependency-path: charts/workspace-controller/web/yarn.lock
+
+      - name: Install SPA deps
+        run: yarn --cwd charts/workspace-controller/web install --frozen-lockfile
+
+      - name: Type-check + build
+        run: yarn --cwd charts/workspace-controller/web build
+
+      - name: Vitest
+        run: yarn --cwd charts/workspace-controller/web test
+
   docker-build:
     name: Docker Build Smoke Test
     runs-on: ubuntu-latest

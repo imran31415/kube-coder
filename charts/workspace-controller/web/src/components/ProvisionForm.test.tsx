@@ -24,6 +24,7 @@ vi.mock('../api/provision', async (orig) => ({
 }));
 
 import { ProvisionForm } from './ProvisionForm';
+import { route } from '../router';
 import { provisionConfig } from '../store';
 
 const sampleUser = (over: Partial<ValidateUserResponse> = {}): ValidateUserResponse => ({
@@ -40,7 +41,11 @@ const sampleUser = (over: Partial<ValidateUserResponse> = {}): ValidateUserRespo
 
 describe('ProvisionForm (create view)', () => {
   beforeEach(() => {
+    // jsdom delivers hashchange asynchronously, so setting location.hash alone
+    // leaves the route signal on the previous test's path until the event loop
+    // turns — sync the signal directly to make each test's route deterministic.
     location.hash = '#/provision';
+    route.value = '/provision';
     provisionConfig.value = { enabled: true, workspaceDomain: 'dev.scalebase.io', oauthAppNewUrl: 'https://github.com/settings/applications/new' };
     respondValidate = () => Promise.resolve(sampleUser());
     respondStatus = () => Promise.resolve({ slug: 'octocat', job: 'pending', message: '', workspace: null, url: '' });
@@ -104,6 +109,7 @@ describe('ProvisionForm (create view)', () => {
         url: 'https://octocat.dev.scalebase.io/',
       });
     location.hash = '#/provision/octocat';
+    route.value = '/provision/octocat';
     render(<ProvisionForm />);
     await waitFor(() => expect(screen.getByText('Provisioning incomplete')).toBeInTheDocument());
     expect(screen.queryByText('Workspace ready')).not.toBeInTheDocument();
