@@ -3667,6 +3667,10 @@ class UpdateManager:
         body = {'version': version} if version else {}
         return UpdateManager._request('POST', 'update', body=body)
 
+    @staticmethod
+    def do_restart():
+        return UpdateManager._request('POST', 'restart', body={})
+
 
 class DesktopManager:
     """Backs the /api/desktop endpoints — the customizable launcher grid on
@@ -8791,6 +8795,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.test_chrome()
             elif path == "/api/workspace/update":
                 self.handle_workspace_update()
+            elif path == "/api/workspace/restart":
+                self.handle_workspace_restart()
             # GitHub configuration endpoints
             elif path == "/api/github/ssh/generate":
                 self.handle_ssh_generate()
@@ -9171,6 +9177,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         except (ValueError, OSError):
             data = {}
         status, payload = UpdateManager.do_update(data.get('version') or None)
+        self.send_json(payload, status)
+
+    def handle_workspace_restart(self):
+        """Broker a plain restart (current image, no version change) for THIS
+        workspace to the controller (#352). Same token-gated self-serve channel
+        as update, so the controller authorizes it on our own user only."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not UpdateManager.enabled():
+            self.send_json({'error': 'self-serve restart not configured'}, 501)
+            return
+        status, payload = UpdateManager.do_restart()
         self.send_json(payload, status)
 
     def handle_ssh_generate(self):

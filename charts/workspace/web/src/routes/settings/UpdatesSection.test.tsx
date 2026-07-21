@@ -5,6 +5,7 @@ import type { WorkspaceVersion, UpdateResult } from '../../api/update';
 let version: () => Promise<WorkspaceVersion>;
 let rolled = true;
 const updates: number[] = [];
+const restarts: number[] = [];
 vi.mock('../../api/update', async (orig) => ({
   ...(await orig<typeof import('../../api/update')>()),
   getWorkspaceVersion: () => version(),
@@ -18,6 +19,10 @@ vi.mock('../../api/update', async (orig) => ({
       persisted: true,
     } as UpdateResult);
   },
+  restartWorkspace: () => {
+    restarts.push(1);
+    return Promise.resolve({ ok: true, rolled: true });
+  },
 }));
 
 import { UpdatesSection } from './UpdatesSection';
@@ -25,6 +30,7 @@ import { UpdatesSection } from './UpdatesSection';
 describe('UpdatesSection', () => {
   beforeEach(() => {
     updates.length = 0;
+    restarts.length = 0;
     rolled = true;
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     // The restart overlay polls /health via fetch — stub it so the effect's
@@ -68,6 +74,34 @@ describe('UpdatesSection', () => {
     render(<UpdatesSection />);
     fireEvent.click(await screen.findByText('Restart & update'));
     await waitFor(() => expect(updates).toHaveLength(1));
+    expect(screen.queryByText('Your workspace is restarting…')).toBeNull();
+  });
+
+  it('offers a plain restart even when up to date, and brokers it on click', async () => {
+    version = () =>
+      Promise.resolve({
+        available: true,
+        version: 'v1.4.0',
+        latestVersion: 'v1.4.0',
+        updateAvailable: false,
+      });
+    render(<UpdatesSection />);
+    const btn = await screen.findByRole('button', { name: 'Restart workspace' });
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(btn);
+    await waitFor(() => expect(restarts).toHaveLength(1));
+    expect(updates).toHaveLength(0);
+    // A restart always rolls the pod — the overlay takes over.
+    await screen.findByText('Your workspace is restarting…');
+  });
+
+  it('does not restart when the confirm dialog is declined', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    version = () =>
+      Promise.resolve({ available: true, version: 'v1.4.0', updateAvailable: false });
+    render(<UpdatesSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart workspace' }));
+    expect(restarts).toHaveLength(0);
     expect(screen.queryByText('Your workspace is restarting…')).toBeNull();
   });
 

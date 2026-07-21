@@ -724,6 +724,63 @@ class SetWorkspaceImageTest(unittest.TestCase):
         self.assertIsNone(result['reconcile'])
 
 
+class RestartWorkspaceTest(unittest.TestCase):
+    """#352 — a plain restart rolls the pod on its current image, with no
+    release version required and no GitOps/provisioning side effects."""
+
+    def setUp(self):
+        controller.WORKSPACE_PREFIX = 'ws-'
+        self._orig_find = controller.find_workspace
+        self._orig_run = controller._kubectl_run
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}',
+            'version': 'v1.3.0', 'desiredReplicas': 1}
+
+    def tearDown(self):
+        controller.find_workspace = self._orig_find
+        controller._kubectl_run = self._orig_run
+
+    def test_rollout_restarts_in_own_namespace(self):
+        captured = {}
+        controller._kubectl_run = lambda args, namespace=None: captured.update(
+            args=args, namespace=namespace)
+        result = controller.restart_workspace('octo')
+        self.assertEqual(captured['args'],
+                         ['rollout', 'restart', 'deployment/ws-octo'])
+        self.assertEqual(captured['namespace'], 'ws-octo')
+        self.assertTrue(result['rolled'])
+        self.assertEqual(result['user'], 'octo')
+        self.assertEqual(result['version'], 'v1.3.0')
+
+    def test_no_release_version_needed(self):
+        # Unlike set_workspace_image, restart must work when no release is
+        # resolvable at all (the exact gap that motivated #352).
+        self.addCleanup(setattr, controller, 'latest_version', controller.latest_version)
+        controller.latest_version = lambda: None
+        controller._kubectl_run = lambda args, namespace=None: None
+        self.assertTrue(controller.restart_workspace('octo')['rolled'])
+
+    def test_stopped_workspace_refused(self):
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}',
+            'version': 'v1.3.0', 'desiredReplicas': 0}
+        controller._kubectl_run = lambda args, namespace=None: self.fail(
+            'must not touch a stopped workspace')
+        with self.assertRaises(ValueError):
+            controller.restart_workspace('octo')
+
+    def test_invalid_name_raises(self):
+        with self.assertRaises(ValueError):
+            controller.restart_workspace('Bad User!')
+
+    def test_unknown_workspace_raises_lookup(self):
+        def _absent(user):
+            raise LookupError(user)
+        controller.find_workspace = _absent
+        with self.assertRaises(LookupError):
+            controller.restart_workspace('octo')
+
+
 class RestrictedListenerTest(unittest.TestCase):
     """The self-serve listener must 404 every admin/header-trusting route so a
     workspace pod that can reach it can never drive the admin API."""
@@ -761,8 +818,10 @@ class RestrictedListenerTest(unittest.TestCase):
     def test_self_serve_route_regexes(self):
         self.assertTrue(controller._SELF_SERVE_GET_RE.match('/api/self/workspaces/octo/version'))
         self.assertTrue(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo-1/update'))
+        self.assertTrue(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo/restart'))
         self.assertIsNone(controller._SELF_SERVE_GET_RE.match('/api/workspaces/octo/version'))
         self.assertIsNone(controller._SELF_SERVE_POST_RE.match('/api/self/workspaces/octo/stop'))
+        self.assertIsNone(controller._SELF_SERVE_POST_RE.match('/api/workspaces/octo/restart'))
 
 
 class PerWorkspaceNamespaceTest(unittest.TestCase):
