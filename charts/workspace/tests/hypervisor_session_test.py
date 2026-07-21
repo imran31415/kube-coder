@@ -114,6 +114,99 @@ class ClaudeAdapterParseTest(unittest.TestCase):
         self.assertIn('sonnet', spec['argv'])
 
 
+class BgWatcherNoticeTest(unittest.TestCase):
+    """Background watchers die at the per-turn CLI process boundary (#378):
+    arms are tracked during the turn, promoted to lost_bg_watchers at turn
+    end, and surfaced as a truthful system-prompt notice on the next turn."""
+
+    def setUp(self):
+        self.a = hs.ClaudeAdapter()
+        self.ctx = {'workdir': '/home/dev', 'preamble': 'PRE'}
+
+    @staticmethod
+    def _tool_line(name, tool_input):
+        return json.dumps({'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'id': 't1', 'name': name,
+             'input': tool_input}]}})
+
+    def test_background_bash_is_tracked(self):
+        self.a.parse(self.ctx, self._tool_line(
+            'Bash', {'command': 'until done; do sleep 30; done',
+                     'run_in_background': True,
+                     'description': 'poll for PR'}))
+        self.assertEqual(self.ctx['_turn_bg_watchers'],
+                         ['Bash background command: poll for PR'])
+
+    def test_monitor_is_tracked(self):
+        self.a.parse(self.ctx, self._tool_line('Monitor', {}))
+        self.assertEqual(self.ctx['_turn_bg_watchers'], ['Monitor'])
+
+    def test_foreground_bash_is_not_tracked(self):
+        self.a.parse(self.ctx, self._tool_line('Bash', {'command': 'ls'}))
+        self.a.parse(self.ctx, self._tool_line(
+            'Bash', {'command': 'ls', 'run_in_background': False}))
+        self.assertNotIn('_turn_bg_watchers', self.ctx)
+
+    def test_finalize_promotes_armed_watchers_to_lost(self):
+        self.ctx['_turn_bg_watchers'] = ['Bash background command: poll']
+        out = self.a.finalize(self.ctx, 0)
+        self.assertEqual(out, [])  # no transcript noise
+        self.assertNotIn('_turn_bg_watchers', self.ctx)
+        self.assertEqual(self.ctx['lost_bg_watchers'],
+                         ['Bash background command: poll'])
+
+    def test_finalize_accumulates_across_unnoticed_turns(self):
+        self.ctx['lost_bg_watchers'] = ['Monitor']
+        self.ctx['_turn_bg_watchers'] = ['Bash background command: poll']
+        self.a.finalize(self.ctx, 0)
+        self.assertEqual(self.ctx['lost_bg_watchers'],
+                         ['Monitor', 'Bash background command: poll'])
+
+    def test_build_resume_injects_notice_once(self):
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['lost_bg_watchers'] = ['Bash background command: poll for PR']
+        spec = self.a.build(self.ctx, 'any update?', first=False)
+        self.assertIn('--append-system-prompt', spec['argv'])
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('did NOT survive', note)
+        self.assertIn('poll for PR', note)
+        self.assertIn('create_task', note)
+        # Consumed: the next build carries no notice.
+        self.assertNotIn('lost_bg_watchers', self.ctx)
+        spec2 = self.a.build(self.ctx, 'thanks', first=False)
+        self.assertNotIn('--append-system-prompt', spec2['argv'])
+
+    def test_build_clears_stale_same_turn_tracking(self):
+        # A user-stopped turn skips finalize; its arms were genuinely killed
+        # and must not leak into the next turn's tracking.
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['_turn_bg_watchers'] = ['Monitor']
+        spec = self.a.build(self.ctx, 'hello', first=False)
+        self.assertNotIn('_turn_bg_watchers', self.ctx)
+        self.assertNotIn('--append-system-prompt', spec['argv'])
+
+    def test_first_turn_notice_joins_preamble(self):
+        # Degenerate but safe: no session id yet + lost watchers → one
+        # --append-system-prompt carrying preamble AND notice.
+        self.ctx['lost_bg_watchers'] = ['Monitor']
+        spec = self.a.build(self.ctx, 'hello', first=True)
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('PRE', note)
+        self.assertIn('did NOT survive', note)
+
+    def test_notice_caps_listing(self):
+        lost = [f'Bash background command: watch {i}' for i in range(8)]
+        note = hs._lost_watcher_note(lost)
+        self.assertIn('watch 4', note)
+        self.assertNotIn('watch 5', note)
+        self.assertIn('+3 more', note)
+
+    def test_describe_truncates_long_commands(self):
+        desc = hs._describe_bg_watcher('Bash', {'command': 'x' * 300})
+        self.assertLessEqual(len(desc), 160)
+        self.assertIn('...', desc)
+
+
 class FallbackAdapterTest(unittest.TestCase):
     def test_strips_ansi_and_emits_message(self):
         a = hs.FallbackAdapter()

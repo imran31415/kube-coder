@@ -228,6 +228,65 @@ class Adapter:
         return []
 
 
+# Background watchers (issue #378): each Hypervisor turn is its OWN `claude -p`
+# process, so a `Bash run_in_background` poll loop or a `Monitor` armed mid-turn
+# dies (or is orphaned untracked) the moment the turn ends — the next turn's
+# fresh process resumes the transcript but not the background-task registry, and
+# the agent gets only a misleading "no completion record / may have been
+# stopped" ghost notification. We can't keep those watchers alive, but we can be
+# truthful about them: track arms during the turn, persist the lost ones in the
+# adapter ctx at turn end, and open the NEXT turn with a system-prompt notice
+# telling the agent exactly what died and how to wait across turns instead.
+_LOST_WATCHERS_SHOWN = 5  # cap the per-notice list; the rest is "+N more"
+
+
+def _describe_bg_watcher(name: str, tool_input: Any) -> str:
+    """One short human/agent-readable line for an armed background watcher."""
+    d = tool_input if isinstance(tool_input, dict) else {}
+    if name == 'Bash':
+        what = d.get('description') or d.get('command') or ''
+        label = 'Bash background command'
+    else:
+        what = d.get('description') or d.get('command') or d.get('condition') or ''
+        label = name
+    what = ' '.join(str(what).split())
+    if len(what) > 120:
+        what = what[:117] + '...'
+    return f'{label}: {what}' if what else label
+
+
+def _track_bg_watchers(ctx: Dict[str, Any],
+                       events: List[Dict[str, Any]]) -> None:
+    """Record any background watcher armed by this turn's tool calls."""
+    for e in events:
+        if e.get('type') != 'tool_call':
+            continue
+        tool = e.get('tool') or {}
+        name = tool.get('name') or ''
+        d = tool.get('input') if isinstance(tool.get('input'), dict) else {}
+        if (name == 'Bash' and d.get('run_in_background')) or name == 'Monitor':
+            ctx.setdefault('_turn_bg_watchers', []).append(
+                _describe_bg_watcher(name, d))
+
+
+def _lost_watcher_note(lost: List[str]) -> str:
+    shown = lost[:_LOST_WATCHERS_SHOWN]
+    listing = '; '.join(shown)
+    if len(lost) > len(shown):
+        listing += f'; +{len(lost) - len(shown)} more'
+    return (
+        '[Hypervisor turn-boundary notice] Background watchers you armed last '
+        'turn did NOT survive it — each Hypervisor turn runs in a fresh '
+        'headless CLI process, so Bash run_in_background commands and Monitors '
+        'die when the turn ends. Any "no completion record / may have been '
+        'stopped" task notification about them means exactly that; the user '
+        f'did not stop anything. Lost: {listing}. If you were waiting on a '
+        'condition, re-check it directly now. To wait across turns, use the '
+        'dashboard create_task tool (tmux-backed, survives turns) or write '
+        'state to a file and re-check it next turn.'
+    )
+
+
 class ClaudeAdapter(Adapter):
     """`claude -p --output-format stream-json` — full structured transport.
 
@@ -240,6 +299,10 @@ class ClaudeAdapter(Adapter):
     kind = 'claude'
 
     def build(self, ctx, text, first):
+        # A stopped turn skips finalize, so stale same-turn watcher tracking may
+        # linger; a fresh turn always starts with a clean arm list. (Watchers
+        # from a user stop were genuinely killpg'd — no notice owed for those.)
+        ctx.pop('_turn_bg_watchers', None)
         argv = [
             'claude', '-p', text,
             '--output-format', 'stream-json',
@@ -252,12 +315,22 @@ class ClaudeAdapter(Adapter):
             '--strict-mcp-config',
         ]
         sid = ctx.get('claude_session_id')
+        sys_prompt: List[str] = []
         if sid:
             argv += ['--resume', sid]
         elif ctx.get('preamble'):
             # Role/context note goes into the system prompt, not the user turn,
             # so it never shows up as a chat bubble or pollutes the title.
-            argv += ['--append-system-prompt', ctx['preamble']]
+            sys_prompt.append(ctx['preamble'])
+        # Watchers lost at the previous turn boundary (#378): deliver the
+        # truthful notice via the system prompt — same channel as the preamble,
+        # so it never renders as a chat bubble — then clear it (one notice per
+        # loss, not an echo on every later turn).
+        lost = ctx.pop('lost_bg_watchers', None)
+        if lost:
+            sys_prompt.append(_lost_watcher_note(lost))
+        if sys_prompt:
+            argv += ['--append-system-prompt', '\n\n'.join(sys_prompt)]
         # Per-thread model (#308): read fresh each turn so an in-chat switch
         # takes effect on the next turn and carries across --resume. `default`
         # (and '') mean "let Claude Code pick" — omit the flag.
@@ -291,7 +364,10 @@ class ClaudeAdapter(Adapter):
         if t == 'assistant':
             # Shared with the session-log parser so the live stream and the
             # durable log normalize to byte-identical canonical events.
-            return _claude_assistant_events((o.get('message', {}) or {}).get('content'))
+            events = _claude_assistant_events(
+                (o.get('message', {}) or {}).get('content'))
+            _track_bg_watchers(ctx, events)
+            return events
         if t == 'user':
             return _claude_user_events((o.get('message', {}) or {}).get('content'))
         if t == 'result':
@@ -305,6 +381,13 @@ class ClaudeAdapter(Adapter):
         return []
 
     def finalize(self, ctx, rc):
+        # The turn's CLI process is gone, taking every armed background watcher
+        # with it (#378). Promote them to lost_bg_watchers — ctx is persisted to
+        # thread.json, so the next turn's build() (even after a server restart)
+        # opens with the truthful notice instead of a silent loss.
+        armed = ctx.pop('_turn_bg_watchers', None)
+        if armed:
+            ctx['lost_bg_watchers'] = (ctx.get('lost_bg_watchers') or []) + armed
         if rc not in (0, None):
             return [{'role': 'system', 'type': 'error',
                      'text': f'claude exited with code {rc}'}]
