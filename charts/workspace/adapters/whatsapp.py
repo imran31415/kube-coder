@@ -35,8 +35,8 @@ import json
 import os
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from gateway import (Capabilities, DeliveryResult, InboundMessage, MediaItem,
                     OutboundMessage, RawRequest, chunk_text)
@@ -90,10 +90,80 @@ def render_choice(options: List[str], caps: Capabilities) -> InteractiveSpec:
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Provider catalog — declarative spec (issue #328)
+# ───────────────────────────────────────────────────────────────────────────
+# Each provider declares WHAT it needs (credential fields + sender field) and
+# WHAT it can do (Capabilities) as data. A registry maps provider_id → (spec,
+# adapter factory), so `build_provider(id, creds)` constructs a provider from a
+# flat creds dict and `list_providers()` exposes the specs. The spec is fully
+# JSON-serializable (via to_dict) — the Settings form in stage 3 is rendered
+# entirely from it, so adding a provider is a new adapter class + one
+# register_provider(...) call, never a UI or core change.
+@dataclass
+class CredentialField:
+    """One credential the user must supply for a provider. Also the schema the
+    stage-3 Settings form renders from and the key the stage-2 store persists
+    under, so `key` doubles as the creds-dict / storage key."""
+    key: str                    # creds-dict key AND future storage key
+    label: str                  # UI label
+    secret: bool = True         # masked in UI; redacted in stage-2 public_view()
+    placeholder: str = ''
+    help_url: str = ''
+    required: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'key': self.key,
+            'label': self.label,
+            'secret': self.secret,
+            'placeholder': self.placeholder,
+            'help_url': self.help_url,
+            'required': self.required,
+        }
+
+
+@dataclass
+class ProviderSpec:
+    """Declarative description of a messaging provider — its identity, the
+    credential fields it needs, its sending-identity field, and its
+    Capabilities. Serializable so the UI is data-driven."""
+    id: str                             # 'twilio' | 'meta'
+    display_name: str
+    credential_fields: List[CredentialField]
+    sender_field: CredentialField       # provider-specific sending identity
+    capabilities: Capabilities
+
+    def field_keys(self) -> List[str]:
+        """Every creds-dict key this provider consumes (credentials + sender)."""
+        return [f.key for f in self.credential_fields] + [self.sender_field.key]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'display_name': self.display_name,
+            'credential_fields': [f.to_dict() for f in self.credential_fields],
+            'sender_field': self.sender_field.to_dict(),
+            'capabilities': asdict(self.capabilities),
+        }
+
+
+# WhatsApp platform capabilities are the same across providers EXCEPT proactive:
+# out-of-window sends need an approved template, which the real Meta Cloud API
+# supports but the Twilio sandbox does not.
+_WA_CAPS = dict(buttons=True, max_buttons=3, max_list_rows=10, media=True,
+                typing_indicator=True, max_text_len=WHATSAPP_MAX_TEXT)
+TWILIO_CAPS = Capabilities(proactive=False, **_WA_CAPS)
+META_CAPS = Capabilities(proactive=True, **_WA_CAPS)
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Provider seam
 # ───────────────────────────────────────────────────────────────────────────
 class _Provider:
     name = 'base'
+    # Providers declare their capabilities as a class attribute; the adapter
+    # reads provider.capabilities instead of branching on the provider type.
+    capabilities: Capabilities = Capabilities()
 
     def verify(self, raw: RawRequest) -> bool:
         raise NotImplementedError
@@ -116,6 +186,7 @@ class TwilioProvider(_Provider):
     quick-reply. Signature: base64(HMAC-SHA1(AuthToken, URL + sorted k+v))."""
 
     name = 'twilio'
+    capabilities = TWILIO_CAPS
 
     def __init__(self, *, auth_token: str = '', account_sid: str = '',
                  from_number: str = ''):
@@ -234,6 +305,7 @@ class MetaProvider(_Provider):
     body) — already matches kube-coder's generic verifier."""
 
     name = 'meta'
+    capabilities = META_CAPS
     GRAPH = 'https://graph.facebook.com/v19.0'
 
     def __init__(self, *, app_secret: str = '', verify_token: str = '',
@@ -427,14 +499,10 @@ class WhatsAppAdapter:
 
     def __init__(self, provider: Optional[_Provider] = None):
         self.provider = provider or _provider_from_env()
-        self.capabilities = Capabilities(
-            buttons=True, max_buttons=3, max_list_rows=10, media=True,
-            typing_indicator=True,
-            # Free-form only inside the 24-h window; proactive out-of-window
-            # requires an approved template — which we CAN do on the real Cloud
-            # API (Meta), but not the Twilio sandbox. Advertise per provider.
-            proactive=isinstance(self.provider, MetaProvider),
-            max_text_len=WHATSAPP_MAX_TEXT)
+        # Capabilities are declared by the provider (proactive out-of-window
+        # sends need an approved template — Meta Cloud API only, not the Twilio
+        # sandbox), so the adapter reads them rather than branching on type.
+        self.capabilities = self.provider.capabilities
 
     def verify(self, raw: RawRequest) -> bool:
         return self.provider.verify(raw)
@@ -449,17 +517,126 @@ class WhatsAppAdapter:
         return self.provider.send(msg, self.capabilities)
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Provider registry (issue #328)
+# ───────────────────────────────────────────────────────────────────────────
+# provider_id → (spec, factory). The factory maps a flat creds dict (keyed by
+# the spec's CredentialField.key values) onto the provider's kwargs constructor.
+DEFAULT_PROVIDER_ID = 'twilio'
+_ProviderFactory = Callable[[Dict[str, str]], _Provider]
+_REGISTRY: 'Dict[str, Tuple[ProviderSpec, _ProviderFactory]]' = {}
+
+
+def register_provider(spec: ProviderSpec, factory: _ProviderFactory) -> None:
+    """Register a provider so build_provider/list_providers can see it. Called
+    at import time; adding a provider is a new adapter class + one call here."""
+    _REGISTRY[spec.id] = (spec, factory)
+
+
+def list_providers() -> List[ProviderSpec]:
+    """All registered provider specs, in registration order (data for the UI)."""
+    return [spec for spec, _factory in _REGISTRY.values()]
+
+
+def get_provider_spec(provider_id: str) -> Optional[ProviderSpec]:
+    entry = _REGISTRY.get((provider_id or '').strip().lower())
+    return entry[0] if entry else None
+
+
+def build_provider(provider_id: str,
+                   creds: Optional[Dict[str, str]] = None) -> _Provider:
+    """Construct a provider from its id + a flat creds dict. Raises ValueError
+    on an unknown id so API callers (stage 2) fail loudly; env callers normalize
+    the id first so they never hit that path."""
+    entry = _REGISTRY.get((provider_id or '').strip().lower())
+    if entry is None:
+        raise ValueError(f'unknown provider: {provider_id!r}')
+    _spec, factory = entry
+    return factory(creds or {})
+
+
+# -- Twilio -------------------------------------------------------------------
+TWILIO_SPEC = ProviderSpec(
+    id='twilio',
+    display_name='Twilio',
+    credential_fields=[
+        CredentialField(
+            key='account_sid', label='Account SID', secret=False,
+            placeholder='ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+            help_url='https://www.twilio.com/console'),
+        CredentialField(
+            key='auth_token', label='Auth Token', secret=True,
+            help_url='https://www.twilio.com/console'),
+    ],
+    sender_field=CredentialField(
+        key='from_number', label='WhatsApp sender number', secret=False,
+        placeholder='whatsapp:+14155238886',
+        help_url='https://www.twilio.com/docs/whatsapp'),
+    capabilities=TWILIO_CAPS,
+)
+
+
+def _twilio_factory(creds: Dict[str, str]) -> _Provider:
+    return TwilioProvider(
+        auth_token=creds.get('auth_token', ''),
+        account_sid=creds.get('account_sid', ''),
+        from_number=creds.get('from_number', ''))
+
+
+# -- Meta ---------------------------------------------------------------------
+META_SPEC = ProviderSpec(
+    id='meta',
+    display_name='Meta (WhatsApp Cloud API)',
+    credential_fields=[
+        CredentialField(
+            key='access_token', label='Access Token', secret=True,
+            help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
+        CredentialField(
+            key='app_secret', label='App Secret', secret=True,
+            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
+        CredentialField(
+            key='verify_token', label='Webhook Verify Token', secret=False,
+            placeholder='a token you choose',
+            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
+    ],
+    # Meta's sending identity is the opaque Phone Number ID (the WABA sender),
+    # not a dialable number — so it lives here, not among the numbered fields.
+    sender_field=CredentialField(
+        key='phone_number_id', label='Phone Number ID', secret=False,
+        placeholder='1234567890',
+        help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
+    capabilities=META_CAPS,
+)
+
+
+def _meta_factory(creds: Dict[str, str]) -> _Provider:
+    return MetaProvider(
+        app_secret=creds.get('app_secret', ''),
+        verify_token=creds.get('verify_token', ''),
+        phone_number_id=creds.get('phone_number_id', ''),
+        access_token=creds.get('access_token', ''))
+
+
+register_provider(TWILIO_SPEC, _twilio_factory)
+register_provider(META_SPEC, _meta_factory)
+
+
 def _provider_from_env() -> _Provider:
-    """Build the configured provider from env. KC_WHATSAPP_PROVIDER selects
-    twilio (default) or meta; each reads its own credential vars."""
+    """Build the configured provider from env, via the registry. Env stays a
+    valid source for platform-managed deployments. KC_WHATSAPP_PROVIDER selects
+    twilio (default) or meta; the id is normalized to a known provider before
+    build_provider, so this never raises on a bad value (any non-'meta' → twilio,
+    preserving the pre-#328 behavior)."""
     which = os.environ.get('KC_WHATSAPP_PROVIDER', 'twilio').strip().lower()
     if which == 'meta':
-        return MetaProvider(
-            app_secret=os.environ.get('KC_META_APP_SECRET', ''),
-            verify_token=os.environ.get('KC_META_VERIFY_TOKEN', ''),
-            phone_number_id=os.environ.get('KC_META_PHONE_NUMBER_ID', ''),
-            access_token=os.environ.get('KC_META_ACCESS_TOKEN', ''))
-    return TwilioProvider(
-        auth_token=os.environ.get('KC_TWILIO_AUTH_TOKEN', ''),
-        account_sid=os.environ.get('KC_TWILIO_ACCOUNT_SID', ''),
-        from_number=os.environ.get('KC_TWILIO_FROM', ''))
+        return build_provider('meta', {
+            'app_secret': os.environ.get('KC_META_APP_SECRET', ''),
+            'verify_token': os.environ.get('KC_META_VERIFY_TOKEN', ''),
+            'phone_number_id': os.environ.get('KC_META_PHONE_NUMBER_ID', ''),
+            'access_token': os.environ.get('KC_META_ACCESS_TOKEN', ''),
+        })
+    return build_provider('twilio', {
+        'auth_token': os.environ.get('KC_TWILIO_AUTH_TOKEN', ''),
+        'account_sid': os.environ.get('KC_TWILIO_ACCOUNT_SID', ''),
+        'from_number': os.environ.get('KC_TWILIO_FROM', ''),
+    })

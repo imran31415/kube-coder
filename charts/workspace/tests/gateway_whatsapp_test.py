@@ -330,5 +330,168 @@ class AdapterWiringTest(unittest.TestCase):
         self.assertEqual(a.capabilities.max_text_len, 4096)
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Provider registry + declarative spec (issue #328)
+# ───────────────────────────────────────────────────────────────────────────
+class ProviderRegistryTest(unittest.TestCase):
+    def test_list_providers_has_twilio_and_meta(self):
+        ids = [s.id for s in wa.list_providers()]
+        self.assertIn('twilio', ids)
+        self.assertIn('meta', ids)
+
+    def test_build_twilio_from_creds(self):
+        prov = wa.build_provider('twilio', {
+            'account_sid': 'AC123', 'auth_token': 'tok', 'from_number': 'whatsapp:+1'})
+        self.assertIsInstance(prov, wa.TwilioProvider)
+        self.assertEqual(prov.account_sid, 'AC123')
+        self.assertEqual(prov.auth_token, 'tok')
+        self.assertEqual(prov.from_number, 'whatsapp:+1')
+
+    def test_build_meta_from_creds(self):
+        prov = wa.build_provider('meta', {
+            'app_secret': 'sec', 'verify_token': 'vt',
+            'phone_number_id': 'PN1', 'access_token': 'at'})
+        self.assertIsInstance(prov, wa.MetaProvider)
+        self.assertEqual(prov.app_secret, 'sec')
+        self.assertEqual(prov.verify_token, 'vt')
+        self.assertEqual(prov.phone_number_id, 'PN1')
+        self.assertEqual(prov.access_token, 'at')
+
+    def test_build_is_case_insensitive(self):
+        self.assertIsInstance(wa.build_provider('META', {}), wa.MetaProvider)
+        self.assertIsInstance(wa.build_provider('Twilio', {}), wa.TwilioProvider)
+
+    def test_build_unknown_raises(self):
+        with self.assertRaises(ValueError):
+            wa.build_provider('nope', {})
+
+    def test_build_with_none_creds_is_empty(self):
+        prov = wa.build_provider('twilio', None)
+        self.assertEqual(prov.account_sid, '')
+        self.assertEqual(prov.auth_token, '')
+
+    def test_build_with_empty_creds_is_empty(self):
+        prov = wa.build_provider('meta', {})
+        self.assertEqual(prov.app_secret, '')
+        self.assertEqual(prov.phone_number_id, '')
+
+    def test_get_provider_spec(self):
+        self.assertEqual(wa.get_provider_spec('twilio').id, 'twilio')
+        self.assertIsNone(wa.get_provider_spec('nope'))
+
+
+class ProviderSpecSerializationTest(unittest.TestCase):
+    def test_specs_are_json_serializable(self):
+        for spec in wa.list_providers():
+            # Must not raise — the stage-3 Settings form is driven by this.
+            json.dumps(spec.to_dict())
+
+    def test_serialization_round_trips(self):
+        for spec in wa.list_providers():
+            d = spec.to_dict()
+            self.assertEqual(json.loads(json.dumps(d)), d)
+
+    def test_spec_shape_is_complete(self):
+        d = wa.get_provider_spec('twilio').to_dict()
+        self.assertEqual(d['id'], 'twilio')
+        self.assertTrue(d['display_name'])
+        self.assertTrue(d['credential_fields'])
+        for f in d['credential_fields']:
+            self.assertIn('key', f)
+            self.assertIn('label', f)
+            self.assertIn('secret', f)
+        self.assertIn('key', d['sender_field'])
+        # Capabilities serialize as their dataclass fields.
+        self.assertIn('proactive', d['capabilities'])
+        self.assertIn('max_text_len', d['capabilities'])
+
+    def test_secret_flags_are_correct(self):
+        tw = {f.key: f for f in wa.get_provider_spec('twilio').credential_fields}
+        self.assertTrue(tw['auth_token'].secret)
+        self.assertFalse(tw['account_sid'].secret)
+        mt = {f.key: f for f in wa.get_provider_spec('meta').credential_fields}
+        self.assertTrue(mt['app_secret'].secret)
+        self.assertTrue(mt['access_token'].secret)
+        self.assertFalse(mt['verify_token'].secret)
+        # Sender fields are non-secret identifiers, not credentials.
+        self.assertFalse(wa.get_provider_spec('meta').sender_field.secret)
+
+    def test_field_keys_cover_factory_inputs(self):
+        # Every key the factory reads must be declared on the spec, so the
+        # stage-2 store and stage-3 form know the full set.
+        self.assertEqual(
+            set(wa.get_provider_spec('twilio').field_keys()),
+            {'account_sid', 'auth_token', 'from_number'})
+        self.assertEqual(
+            set(wa.get_provider_spec('meta').field_keys()),
+            {'access_token', 'app_secret', 'verify_token', 'phone_number_id'})
+
+
+class ProviderCapabilitiesTest(unittest.TestCase):
+    def test_capabilities_declared_per_spec(self):
+        self.assertFalse(wa.get_provider_spec('twilio').capabilities.proactive)
+        self.assertTrue(wa.get_provider_spec('meta').capabilities.proactive)
+
+    def test_whatsapp_limits_shared_across_providers(self):
+        for pid in ('twilio', 'meta'):
+            caps = wa.get_provider_spec(pid).capabilities
+            self.assertTrue(caps.buttons)
+            self.assertEqual(caps.max_buttons, 3)
+            self.assertEqual(caps.max_list_rows, 10)
+            self.assertEqual(caps.max_text_len, 4096)
+
+    def test_adapter_reads_provider_capabilities(self):
+        self.assertIs(
+            wa.WhatsAppAdapter(provider=wa.MetaProvider()).capabilities,
+            wa.MetaProvider.capabilities)
+
+
+class ProviderFromEnvTest(unittest.TestCase):
+    """The env path stays valid for platform-managed deploys and must behave
+    exactly as before #328."""
+
+    _VARS = ('KC_WHATSAPP_PROVIDER', 'KC_META_APP_SECRET', 'KC_META_VERIFY_TOKEN',
+             'KC_META_PHONE_NUMBER_ID', 'KC_META_ACCESS_TOKEN',
+             'KC_TWILIO_AUTH_TOKEN', 'KC_TWILIO_ACCOUNT_SID', 'KC_TWILIO_FROM')
+
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k, None) for k in self._VARS}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_default_is_twilio(self):
+        self.assertIsInstance(wa._provider_from_env(), wa.TwilioProvider)
+
+    def test_meta_selected(self):
+        os.environ['KC_WHATSAPP_PROVIDER'] = 'meta'
+        self.assertIsInstance(wa._provider_from_env(), wa.MetaProvider)
+
+    def test_unknown_value_falls_back_to_twilio(self):
+        os.environ['KC_WHATSAPP_PROVIDER'] = 'bogus'
+        self.assertIsInstance(wa._provider_from_env(), wa.TwilioProvider)
+
+    def test_reads_twilio_credentials(self):
+        os.environ['KC_TWILIO_ACCOUNT_SID'] = 'AC9'
+        os.environ['KC_TWILIO_AUTH_TOKEN'] = 'tk9'
+        os.environ['KC_TWILIO_FROM'] = 'whatsapp:+19'
+        prov = wa._provider_from_env()
+        self.assertEqual(prov.account_sid, 'AC9')
+        self.assertEqual(prov.auth_token, 'tk9')
+        self.assertEqual(prov.from_number, 'whatsapp:+19')
+
+    def test_reads_meta_credentials(self):
+        os.environ['KC_WHATSAPP_PROVIDER'] = 'meta'
+        os.environ['KC_META_APP_SECRET'] = 's9'
+        os.environ['KC_META_PHONE_NUMBER_ID'] = 'PN9'
+        prov = wa._provider_from_env()
+        self.assertEqual(prov.app_secret, 's9')
+        self.assertEqual(prov.phone_number_id, 'PN9')
+
+
 if __name__ == '__main__':
     unittest.main()
