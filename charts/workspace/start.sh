@@ -881,6 +881,17 @@ if command -v codex >/dev/null 2>&1; then
   done
 fi
 
+# Re-apply USER-added MCP servers (Settings → MCP servers, issue #353) on top
+# of the defaults seeded above. The registry lives on the PVC
+# (/home/dev/.claude-tasks/mcp-servers.json) but most provider configs are
+# under the ephemeral $HOME (~/.claude.json, opencode.json) or regenerated
+# each boot, so the fan-out must re-run AFTER all the seeding blocks. Runs
+# from /browser-config (same delivery as seed_claude_config.py); best-effort —
+# a failed provider never stalls boot.
+log_stage "syncing user MCP servers to provider configs"
+python3 /browser-config/mcp_registry.py --sync || \
+  log_stage "WARNING: mcp_registry.py sync failed (user MCP servers not re-applied)"
+
 log_stage "starting browser/Claude API server on :6080"
 mkdir -p /tmp/browser
 # Copy Python sources (these need a pod restart to take effect).

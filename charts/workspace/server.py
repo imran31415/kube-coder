@@ -107,6 +107,17 @@ except Exception as _skills_import_err:  # broken install shouldn't crash the se
     _SKILLS_AVAILABLE = False
     print(f'[skills] import failed: {_skills_import_err}', file=sys.stderr)
 
+# User-defined MCP servers (issue #353) — one canonical registry on the PVC,
+# fanned out to every MCP-capable assistant's native config (Claude, OpenCode,
+# Ante, Codex). Same colocated-module delivery as hypervisor_session.
+try:
+    import mcp_registry
+    _MCP_REGISTRY_AVAILABLE = True
+except Exception as _mcp_reg_import_err:  # broken install shouldn't crash the server
+    mcp_registry = None  # type: ignore
+    _MCP_REGISTRY_AVAILABLE = False
+    print(f'[mcp-registry] import failed: {_mcp_reg_import_err}', file=sys.stderr)
+
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
@@ -4776,6 +4787,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_provider_keys_list()
             return
 
+        # --- User MCP servers (dashboard Settings, issue #353) ---
+        if claude_path == '/api/mcp-servers':
+            self.handle_mcp_servers_list()
+            return
+
         # --- Subscription-login status (dashboard Settings) ---
         if claude_path == '/api/subscriptions':
             self.handle_subscriptions_list()
@@ -5190,6 +5206,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             m = re.match(r'^/api/provider-keys/([A-Z_]+)$', path)
             if m:
                 self.handle_provider_keys_delete(m.group(1))
+                return
+            # User MCP servers (issue #353): remove + fan-out cleanup.
+            m = re.match(r'^/api/mcp-servers/([A-Za-z0-9_-]+)$', path)
+            if m:
+                self.handle_mcp_servers_delete(m.group(1))
                 return
             # Log out of a subscription CLI (claude|codex) — DELETE the login.
             m = re.match(r'^/api/subscriptions/([a-z]+)$', path)
@@ -6326,6 +6347,51 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         ProviderKeysManager.delete(provider)
         self.send_json({'ok': True})
+
+    # --- User MCP servers (issue #353) ---
+    # Env values may hold API keys, so gate like provider-keys: never
+    # reachable in the unauth public demo (allow_none_mode=False), and the
+    # list view is redacted (mcp_registry.public_view — hints, never values).
+
+    def _mcp_registry_gate(self):
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return False
+        if not _MCP_REGISTRY_AVAILABLE:
+            self.send_json({'error': 'MCP registry unavailable'}, 503)
+            return False
+        return True
+
+    def handle_mcp_servers_list(self):
+        if not self._mcp_registry_gate():
+            return
+        self.send_json({'servers': mcp_registry.public_view()})
+
+    def handle_mcp_servers_set(self):
+        if not self._mcp_registry_gate():
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        name = (data.get('name') or '').strip()
+        ok, err = mcp_registry.set_server(
+            name, data.get('command') or '',
+            args=data.get('args'), env=data.get('env'),
+            enabled=data.get('enabled', True))
+        if not ok:
+            self.send_json({'error': err}, 400)
+            return
+        self.send_json({'ok': True, 'name': name, 'sync': mcp_registry.sync_all()})
+
+    def handle_mcp_servers_delete(self, name):
+        if not self._mcp_registry_gate():
+            return
+        if not mcp_registry.delete_server(name):
+            self.send_json({'error': 'MCP server not found'}, 404)
+            return
+        self.send_json({'ok': True, 'sync': mcp_registry.sync_all()})
 
     def handle_subscriptions_list(self):
         # Reports subscription-login status only (plan/expiry) — no token
@@ -9114,6 +9180,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Provider keys (dashboard Settings)
             elif path == "/api/provider-keys":
                 self.handle_provider_keys_set()
+            # User MCP servers (dashboard Settings, issue #353)
+            elif path == "/api/mcp-servers":
+                self.handle_mcp_servers_set()
             # Webhook CRUD (dashboard)
             elif path == "/api/webhooks":
                 self.handle_webhook_create()

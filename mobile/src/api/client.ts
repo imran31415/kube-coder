@@ -911,6 +911,55 @@ export async function deleteProviderKey(provider: ProviderVar): Promise<void> {
   await request(`/api/provider-keys/${provider}`, { method: 'DELETE' });
 }
 
+// ---- MCP servers -----------------------------------------------------------
+// User-defined MCP servers (issue #353), fanned out by the workspace to every
+// MCP-capable assistant's config. Must match server.py's mcp-servers handlers
+// / mcp_registry.py. GET is redacted: env values are last-4 hints, never the
+// real value; a blank value on save keeps the stored secret.
+
+export interface McpServerEntry {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>; // redacted hints like "…cc18"
+  enabled: boolean;
+}
+
+// provider → 'ok' | 'skipped: …' | 'error: …'
+export type McpSyncResults = Record<string, string>;
+
+export interface McpServerInput {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>; // real values on input; blank = keep stored
+  enabled?: boolean;
+}
+
+export async function listMcpServers(): Promise<McpServerEntry[]> {
+  if (getConfig().mock) return [];
+  const r = await request<{ servers: McpServerEntry[] }>('/api/mcp-servers');
+  return r.servers;
+}
+
+export async function saveMcpServer(entry: McpServerInput): Promise<McpSyncResults> {
+  if (getConfig().mock) return {};
+  const r = await request<{ ok: true; sync: McpSyncResults }>('/api/mcp-servers', {
+    method: 'POST',
+    body: entry,
+  });
+  return r.sync;
+}
+
+export async function deleteMcpServer(name: string): Promise<McpSyncResults> {
+  if (getConfig().mock) return {};
+  const r = await request<{ ok: true; sync: McpSyncResults }>(
+    `/api/mcp-servers/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  );
+  return r.sync;
+}
+
 // ---- Assistants ------------------------------------------------------------
 // The set of AI harnesses the workspace has enabled (claude/ante/codex/opencode
 // /…), gated backend-side on binary + key presence. Drives the New Task picker
