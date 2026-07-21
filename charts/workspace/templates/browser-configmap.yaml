@@ -62,6 +62,8 @@ data:
 {{ .Files.Get "mcp_dashboard.py" | indent 4 }}
   hypervisor_session.py: |
 {{ .Files.Get "hypervisor_session.py" | indent 4 }}
+  mcp_registry.py: |
+{{ .Files.Get "mcp_registry.py" | indent 4 }}
   gateway.py: |
 {{ .Files.Get "gateway.py" | indent 4 }}
   adapters__init__.py: |

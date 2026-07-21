@@ -3,6 +3,7 @@ import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { GitSection } from './GitSection';
 import { ProviderKeysSection } from './ProviderKeysSection';
+import { McpServersSection } from './McpServersSection';
 import { BrowserSection } from './BrowserSection';
 import { MetricsSection } from './MetricsSection';
 import { UpdatesSection } from './UpdatesSection';
@@ -80,6 +81,8 @@ export function SettingsRoute() {
       <GitSection />
 
       <ProviderKeysSection />
+
+      <McpServersSection />
 
       <BrowserSection />
 
