@@ -33,7 +33,7 @@ fi
 
 log_stage "preparing home and credential directories"
 cd /home/dev
-mkdir -p /home/dev/.local/share/code-server/extensions
+mkdir -p /home/dev/.local/bin /home/dev/.local/share/code-server/extensions
 mkdir -p ~/.config ~/.config/git ~/.config/gh
 mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh
 chmod 700 /home/dev/.credentials/.ssh
@@ -81,6 +81,37 @@ persist_cred .aws             dir    # aws configure / SSO cache
 persist_cred .config/gcloud   dir    # gcloud auth
 persist_cred .npmrc           file   # npm / yarn registry tokens
 persist_cred .git-credentials file   # git credential.helper store (non-GitHub HTTPS)
+persist_cred .config/.wrangler dir   # wrangler / Cloudflare Workers auth
+
+# Interactive shells (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
+# which is rebuilt from skel on every pod restart — so rc-file edits and
+# PATH entries made there don't survive, and rc-file edits made under
+# /home/dev are never read (issue #334). Re-assert env hooks into the
+# ephemeral rc files on each boot, the same contract as the credential
+# symlinks above. Absolute paths only: $HOME/~ must not appear inside a
+# block, because it resolves differently across shells and boot contexts.
+bootstrap_rc() {                      # $1 = grep marker, $2 = block to append
+  local marker="$1" block="$2"
+  for HOME_DIR in /home/ubuntu; do
+    [ -d "$HOME_DIR" ] || continue
+    for rc in "$HOME_DIR/.profile" "$HOME_DIR/.bashrc"; do
+      touch "$rc"
+      grep -qF "$marker" "$rc" || printf '\n%s\n' "$block" >> "$rc"
+      chown ubuntu:ubuntu "$rc" 2>/dev/null || true
+    done
+  done
+}
+
+# Put user-installed tools on the PVC on PATH for every interactive shell.
+# Without this, "install to ~/.local/bin" lands in the ephemeral
+# /home/ubuntu/.local/bin (wiped on restart), and /home/dev/.local/bin —
+# the persistent location — is never on PATH at all. The case guard keeps
+# repeated sourcing (.profile chains to .bashrc) from duplicating the entry.
+bootstrap_rc '/home/dev/.local/bin' '# --- kube-coder: user-installed tools on the PVC (issue #334) ---
+[ -d /home/dev/.local/bin ] && case ":$PATH:" in
+  *":/home/dev/.local/bin:"*) ;;
+  *) export PATH="/home/dev/.local/bin:$PATH" ;;
+esac'
 
 # CLAUDE.md is chart-managed (describes the workspace environment to
 # Claude). Always overwrite from the configmap so chart updates land
@@ -279,17 +310,17 @@ if [ -n "$GITHUB_APP_ID" ]; then
   #                          → non-interactive bash: `bash -c …`, hooks,
   #                            the gh/git credential helper — the path that
   #                            actually breaks when this is missing
-  #   2. ~/.bashrc           → interactive non-login bash
-  #   3. ~/.profile          → login shells
-  # All three read /home/dev/.profile.d-github-env, which the refresh daemon
-  # rewrites in place, so new shells pick up rotated tokens without restart.
-  GH_SRC_LINE='[ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env'
-  for rc in /home/dev/.bashrc /home/dev/.profile; do
-    touch "$rc"
-    if ! grep -qF '/home/dev/.profile.d-github-env' "$rc"; then
-      printf '\n# github-app token (rewritten in place by the refresh daemon)\n%s\n' "$GH_SRC_LINE" >> "$rc"
-    fi
-  done
+  #   2. /home/ubuntu/.bashrc  → interactive non-login bash
+  #   3. /home/ubuntu/.profile → login shells
+  # (2)/(3) go through bootstrap_rc because interactive shells run with
+  # HOME=/home/ubuntu — the previous /home/dev/.bashrc + .profile writes
+  # were files no shell ever read (issue #334). All three read
+  # /home/dev/.profile.d-github-env, which the refresh daemon rewrites in
+  # place, so new shells pick up rotated tokens without restart. The hook
+  # self-guards on auth mode, so sourcing it in "personal" mode is a no-op.
+  bootstrap_rc '/home/dev/.profile.d-github-env' \
+    '# github-app token (rewritten in place by the refresh daemon)
+[ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env'
 
   python3 /github-app/github-app-token.py --daemon &
 
