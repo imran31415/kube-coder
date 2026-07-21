@@ -99,6 +99,26 @@ class UpdateManagerTest(unittest.TestCase):
             server.UpdateManager.do_update()
         self.assertEqual(json.loads(captured['body']), {})
 
+    def test_do_restart_posts_to_restart_route(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured['method'] = req.get_method()
+            captured['body'] = req.data
+            captured['url'] = req.full_url
+            captured['token'] = req.get_header('X-kc-service-token')
+            return _Resp({'ok': True, 'rolled': True})
+
+        with mock.patch.object(server.urllib.request, 'urlopen', fake_urlopen):
+            status, payload = server.UpdateManager.do_restart()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload['rolled'])
+        self.assertEqual(captured['method'], 'POST')
+        self.assertEqual(json.loads(captured['body']), {})
+        self.assertTrue(captured['url'].endswith('/api/self/workspaces/octo/restart'))
+        self.assertEqual(captured['token'], 'shh')
+
     def test_http_error_returns_status_and_payload(self):
         def fake_urlopen(req, timeout=None):
             body = io.BytesIO(json.dumps({'error': 'no workspace ws-octo'}).encode())

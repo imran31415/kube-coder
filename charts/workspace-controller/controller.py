@@ -517,7 +517,7 @@ SELF_SERVE_PORT = int(os.environ.get('SELF_SERVE_PORT', '8081'))
 # there, so the header-trusting admin routes remain unreachable from workspace
 # pods even though the same Handler class implements them.
 _SELF_SERVE_GET_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/version$')
-_SELF_SERVE_POST_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/update$')
+_SELF_SERVE_POST_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/(update|restart)$')
 
 _SEMVER_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)$')
 
@@ -776,6 +776,29 @@ def set_workspace_image(user, target_version=None, persist=True):
         # so this update was image-tag only (legacy behavior).
         'reconcile': reconcile,
     }
+
+
+def restart_workspace(user):
+    """Plain restart: recreate the workspace pod on its CURRENT image/config.
+
+    `kubectl rollout restart` stamps kubectl.kubernetes.io/restartedAt on the
+    pod template, rolling the pod without touching the image tag, GitOps state,
+    or ConfigMaps — the remedy for a hung process or a package install that
+    needs a reboot (#352). Unlike set_workspace_image this never needs a
+    resolvable release version, so it works on deployments with no published
+    releases at all. Returns a result dict.
+    """
+    if not _USER_RE.match(user):
+        raise ValueError('invalid workspace name')
+    ws = find_workspace(user)   # targeted; raises LookupError if absent
+    if ws.get('desiredReplicas') == 0:
+        # rollout restart on a scaled-to-0 Deployment only patches the template
+        # annotation — nothing actually restarts. Refuse rather than pretend.
+        raise ValueError('workspace is stopped; start it instead of restarting')
+    _kubectl_run(['rollout', 'restart', f"deployment/{ws['deployment']}"],
+                 namespace=ws.get('namespace'))
+    invalidate_workspaces_cache()   # reflect the roll on the next console poll
+    return {'user': user, 'version': ws.get('version'), 'rolled': True}
 
 
 def workspace_version_info(user):
@@ -2246,6 +2269,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             except KubectlError as exc:
                 sys.stderr.write(f'[controller] update {user}: {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
+                return
+            self.send_json({'ok': True, **result})
+            return
+        # Plain restart: roll the pod on its current image, no version change
+        # (#352). Admin route (oauth2-gated) and the workspace-brokered
+        # self-serve route (shared-token-gated) share one handler, like /update.
+        rr = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/restart$', path)
+        sr = re.match(r'^/api/self/workspaces/([a-z0-9-]{1,41})/restart$', path)
+        if rr or sr:
+            if rr and not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            if sr and not self.check_service_token():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            user = (rr or sr).group(1)
+            try:
+                self.read_json_body()  # drain body if any; we don't need it
+                result = restart_workspace(user)
+            except ValueError as exc:
+                self.send_json({'error': str(exc)}, 400)
+                return
+            except LookupError:
+                self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
+                return
+            except KubectlError as exc:
+                sys.stderr.write(f'[controller] restart {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, **result})

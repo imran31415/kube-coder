@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import {
   getWorkspaceVersion,
+  restartWorkspace,
   updateWorkspace,
   type WorkspaceVersion,
 } from '../../api/update';
@@ -12,7 +13,10 @@ export function UpdatesSection() {
   const [info, setInfo] = useState<WorkspaceVersion | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [restarting, setRestarting] = useState(false);
+  const [restartBusy, setRestartBusy] = useState(false);
+  // null => not restarting; otherwise which action triggered the overlay
+  // (an update vs a plain restart) so the overlay copy matches.
+  const [restarting, setRestarting] = useState<null | 'update' | 'restart'>(null);
 
   async function refresh() {
     try {
@@ -91,7 +95,7 @@ export function UpdatesSection() {
       if (r.rolled) {
         // The pod is being Recreate-restarted — hand off to the full-screen
         // restarting overlay, which polls its way back to the live workspace.
-        setRestarting(true);
+        setRestarting('update');
       } else {
         // No-op update (already on target): nothing restarted, just refresh.
         pushToast(`Already up to date (${r.toVersion ?? current}).`, { kind: 'success' });
@@ -104,6 +108,30 @@ export function UpdatesSection() {
     }
   }
 
+  async function onRestart() {
+    if (
+      !window.confirm(
+        `Restart this workspace now?\n\n` +
+          `The pod restarts on its current version — running processes, ` +
+          `terminal sessions and unsaved in-memory state are lost. Your ` +
+          `/home/dev disk is preserved.`,
+      )
+    ) {
+      return;
+    }
+    setRestartBusy(true);
+    try {
+      const r = await restartWorkspace();
+      if (r.error) throw new Error(r.error);
+      // A restart always rolls the pod — hand off to the overlay.
+      setRestarting('restart');
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Restart failed', { kind: 'danger' });
+    } finally {
+      setRestartBusy(false);
+    }
+  }
+
   if (restarting) {
     return (
       <div class="ws-restarting-overlay" role="status" aria-live="polite">
@@ -111,7 +139,9 @@ export function UpdatesSection() {
           <div class="ws-restarting-spinner" aria-hidden="true" />
           <h1 class="ws-restarting-title">Your workspace is restarting…</h1>
           <p class="ws-restarting-text">
-            Applying the update and bringing your workspace back online.
+            {restarting === 'update'
+              ? 'Applying the update and bringing your workspace back online.'
+              : 'Recreating the pod and bringing your workspace back online.'}
           </p>
           <p class="ws-restarting-eta">
             This usually takes about a minute — this page returns automatically
@@ -156,6 +186,24 @@ export function UpdatesSection() {
             onClick={() => void onUpdate()}
           >
             {busy ? 'Updating…' : canUpdate ? 'Restart & update' : 'Up to date'}
+          </Button>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-label">Restart workspace</div>
+        <div class="settings-row-control settings-row-control-stack">
+          <div class="settings-row-hint muted">
+            Recreates the pod on its current version — for a hung process or a
+            package install that needs a restart. Your /home/dev disk is
+            preserved.
+          </div>
+          <Button
+            variant="secondary"
+            disabled={restartBusy || busy}
+            onClick={() => void onRestart()}
+          >
+            {restartBusy ? 'Restarting…' : 'Restart workspace'}
           </Button>
         </div>
       </div>

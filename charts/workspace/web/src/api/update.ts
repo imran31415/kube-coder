@@ -29,6 +29,16 @@ export interface UpdateResult {
   error?: string;
 }
 
+export interface RestartResult {
+  ok?: boolean;
+  user?: string;
+  version?: string | null;
+  rolled?: boolean;
+  error?: string;
+}
+
 export const getWorkspaceVersion = () => apiGet<WorkspaceVersion>('/api/workspace/version');
 
 export const updateWorkspace = () => apiPost<UpdateResult>('/api/workspace/update', {});
+
+export const restartWorkspace = () => apiPost<RestartResult>('/api/workspace/restart', {});
