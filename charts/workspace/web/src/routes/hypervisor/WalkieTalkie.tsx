@@ -84,6 +84,10 @@ export function WalkieTalkie() {
   const [showText, setShowText] = useState(!sttSupported());
   const [showHistory, setShowHistory] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // "What you said" is clamped to two lines; this holds the seq of the
+  // utterance the user expanded — a new turn re-collapses it for free
+  // because the seq no longer matches (issue #409).
+  const [youOpenSeq, setYouOpenSeq] = useState<number | null>(null);
   // Real-level tap unavailable (no getUserMedia / AudioContext, or it failed)
   // → the rings run a smooth simulated pulse instead so nothing looks broken.
   const [simPulse, setSimPulse] = useState(false);
@@ -92,6 +96,7 @@ export function WalkieTalkie() {
   const [micOpen, setMicOpen] = useState(false);
 
   const recRef = useRef<SpeechRecognitionLike | null>(null);
+  const interimElRef = useRef<HTMLDivElement>(null);
   const finalRef = useRef('');
   const tapRef = useRef<AudioTap | null>(null);
   // Hands-free VAD: the endpointer for the current phase-derived mode, and
@@ -429,15 +434,22 @@ export function WalkieTalkie() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [handsFreeOn]);
 
+  /** End the active capture — same path as tapping the orb while listening:
+   *  onend assembles the transcript and auto-sends (or dispatches 'empty'). */
+  function stopCapture() {
+    if (phaseRef.current !== 'listening') return;
+    dispatch('press'); // → transcribing; onend delivers the transcript
+    try {
+      recRef.current?.stop();
+    } catch {
+      /* already stopped */
+    }
+  }
+
   function onOrbPress() {
     const p = phaseRef.current;
     if (p === 'listening') {
-      dispatch('press'); // → transcribing; onend delivers the transcript
-      try {
-        recRef.current?.stop();
-      } catch {
-        /* already stopped */
-      }
+      stopCapture();
       return;
     }
     if (p === 'idle' || p === 'speaking' || p === 'thinking') {
@@ -517,6 +529,12 @@ export function WalkieTalkie() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [state?.cursor, showHistory]);
 
+  // The interim transcript is height-capped; keep the newest words in view.
+  useEffect(() => {
+    const el = interimElRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [interim]);
+
   // ── derived view state ────────────────────────────────────────────────────
   const linked = !!state?.linked;
   const busy = !!state?.busy;
@@ -539,6 +557,7 @@ export function WalkieTalkie() {
   // The user's line this reply answers — the newest inbound before/after the card.
   const lastIn = [...conversational].reverse().find((m) => m.direction === 'in') ?? null;
   const history = conversational.slice(0, Math.max(lastOutIdx, 0));
+  const youOpen = lastIn !== null && youOpenSeq === lastIn.seq;
   const copy = orbCopy(phase, {
     available: !!state?.available,
     linked,
@@ -697,7 +716,17 @@ export function WalkieTalkie() {
 
         {card && (
           <div class="wt-exchange">
-            {lastIn && <div class="wt-you">“{lastIn.text}”</div>}
+            {lastIn && (
+              <button
+                type="button"
+                class="wt-you"
+                aria-expanded={youOpen}
+                title={youOpen ? 'Collapse your message' : 'Show your full message'}
+                onClick={() => setYouOpenSeq(youOpen ? null : lastIn.seq)}
+              >
+                “{lastIn.text}”
+              </button>
+            )}
             <div
               class={`wt-card ${card.kind === 'template' ? 'wt-card-template' : ''}`}
               key={card.seq}
@@ -769,7 +798,7 @@ export function WalkieTalkie() {
         style="--wt-level:0"
       >
         {interim && (
-          <div class="wt-interim" aria-hidden="true">
+          <div class="wt-interim" ref={interimElRef} aria-hidden="true">
             {interim}
           </div>
         )}
@@ -794,6 +823,21 @@ export function WalkieTalkie() {
             <span class="wt-orb-label">{copy.label}</span>
           </button>
         </div>
+        {/* Explicit stop controls (issue #409): a visible tap target while
+            the mic is capturing or TTS is playing — the orb tap / barge-in
+            gestures stay, this just makes the escape hatch obvious. Both go
+            through the existing phase machine (stopCapture → 'press',
+            stopPlayback → 'quiet'). */}
+        {phase === 'listening' && (
+          <button type="button" class="wt-stop-btn" onClick={stopCapture}>
+            <Icon name="kill" size={13} /> Stop &amp; send
+          </button>
+        )}
+        {phase === 'speaking' && (
+          <button type="button" class="wt-stop-btn" onClick={stopPlayback}>
+            <Icon name="kill" size={13} /> Stop voice
+          </button>
+        )}
         <div class="wt-hint" role="status" aria-live="polite">
           {voiceHint || copy.hint}
         </div>

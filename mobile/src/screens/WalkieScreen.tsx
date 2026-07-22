@@ -29,6 +29,8 @@ import {
   AccessibilityInfo,
   Animated,
   Easing,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -117,6 +119,11 @@ export default function WalkieScreen() {
   const [showHistory, setShowHistory] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
+  // Clamped long texts, tap to expand (issue #409): the "what you said" line
+  // (keyed by message seq, so a new turn re-collapses it for free) and the
+  // pending-transcript strip.
+  const [youOpenSeq, setYouOpenSeq] = useState<number | null>(null);
+  const [pendingOpen, setPendingOpen] = useState(false);
 
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const recorderState = useAudioRecorderState(recorder, 120);
@@ -307,6 +314,7 @@ export default function WalkieScreen() {
       pendingTimer.current = null;
     }
     setPending(null);
+    setPendingOpen(false);
   }
 
   async function sendPending(text: string) {
@@ -661,7 +669,9 @@ export default function WalkieScreen() {
           </Pressable>
         )}
         {showHistory && (
-          <View style={styles.history}>
+          /* Height-capped, so it must scroll itself — a plain View here
+             silently clipped everything past the cap (issue #409). */
+          <ScrollView style={styles.history} contentContainerStyle={styles.historyContent} nestedScrollEnabled>
             {history.map((m) => {
               const isOut = m.direction === 'out';
               return (
@@ -673,7 +683,7 @@ export default function WalkieScreen() {
                 </View>
               );
             })}
-          </View>
+          </ScrollView>
         )}
 
         {!card && (
@@ -689,9 +699,22 @@ export default function WalkieScreen() {
         {card && (
           <View style={styles.exchange}>
             {lastIn && (
-              <Text style={styles.you} numberOfLines={1}>
-                “{lastIn.text}”
-              </Text>
+              <Pressable
+                onPress={() =>
+                  setYouOpenSeq(youOpenSeq === lastIn.seq ? null : lastIn.seq)
+                }
+                accessibilityRole="button"
+                accessibilityLabel={
+                  youOpenSeq === lastIn.seq
+                    ? 'Collapse your message'
+                    : 'Show your full message'
+                }
+                style={styles.youWrap}
+              >
+                <Text style={styles.you} numberOfLines={youOpenSeq === lastIn.seq ? undefined : 2}>
+                  “{lastIn.text}”
+                </Text>
+              </Pressable>
             )}
             <View style={[styles.card, card.kind === 'template' && styles.cardTemplate]}>
               {card.kind === 'template' && <Text style={styles.tmplTag}>TEMPLATE · out-of-window</Text>}
@@ -751,9 +774,15 @@ export default function WalkieScreen() {
       {/* ── undo window: transcript shown briefly before it auto-sends ── */}
       {pending && (
         <View style={styles.pendingStrip}>
-          <Text style={styles.pendingText} numberOfLines={2}>
-            “{pending}”
-          </Text>
+          <Pressable
+            onPress={() => setPendingOpen((v) => !v)}
+            accessibilityRole="button"
+            accessibilityLabel={pendingOpen ? 'Collapse transcript' : 'Show full transcript'}
+          >
+            <Text style={styles.pendingText} numberOfLines={pendingOpen ? undefined : 2}>
+              “{pending}”
+            </Text>
+          </Pressable>
           <View style={styles.pendingBtns}>
             <Pressable onPress={() => void sendPending(pending)} style={styles.pendingSend}>
               <Text style={styles.pendingSendText}>Send now</Text>
@@ -827,58 +856,88 @@ export default function WalkieScreen() {
             <Text style={[styles.orbLabel, orbDisabled && { color: colors.textMuted }]}>{copy.label}</Text>
           </Pressable>
         </View>
+        {/* Explicit stop controls (issue #409): a visible tap target while the
+            mic is capturing or narration is playing — the orb tap stays, this
+            just makes the escape hatch obvious. Both ride the existing phase
+            machine (stopRecording → 'press', stopPlayback → 'quiet'). */}
+        {phase === 'listening' && (
+          <Pressable
+            onPress={() => void stopRecording()}
+            accessibilityRole="button"
+            accessibilityLabel="Stop recording and send"
+            style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="stop" size={13} color={colors.text} />
+            <Text style={styles.stopText}>{'Stop & send'}</Text>
+          </Pressable>
+        )}
+        {phase === 'speaking' && (
+          <Pressable
+            onPress={stopPlayback}
+            accessibilityRole="button"
+            accessibilityLabel="Stop voice playback"
+            style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="stop" size={13} color={colors.text} />
+            <Text style={styles.stopText}>Stop voice</Text>
+          </Pressable>
+        )}
         <Text style={styles.hint} accessibilityLiveRegion="polite">
           {hint}
         </Text>
       </View>
 
-      {/* ── text fallback: collapsed by default, primary when STT is absent ── */}
-      <View style={[styles.fallback, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
-        {showText || !sttOn ? (
-          <View style={styles.composer}>
-            <TextInput
-              style={styles.input}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder={linked ? 'Type a message…' : 'Linking…'}
-              placeholderTextColor={colors.textFaint}
-              editable={!busySend}
-              returnKeyType="send"
-              onSubmitEditing={() => void send(draft)}
-              accessibilityLabel="Message"
-            />
-            <Pressable
-              onPress={() => void send(draft)}
-              disabled={busySend || !draft.trim()}
-              accessibilityRole="button"
-              accessibilityLabel="Send message"
-              style={[styles.sendBtn, (busySend || !draft.trim()) && styles.sendOff]}
-            >
-              <Ionicons name="send" size={16} color={colors.accentText} />
-            </Pressable>
-            {sttOn && (
+      {/* ── text fallback: collapsed by default, primary when STT is absent ──
+          KeyboardAvoidingView so the iOS keyboard doesn't cover the composer
+          (Android resizes the window itself); same pattern as TaskDetail. */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={[styles.fallback, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
+          {showText || !sttOn ? (
+            <View style={styles.composer}>
+              <TextInput
+                style={styles.input}
+                value={draft}
+                onChangeText={setDraft}
+                placeholder={linked ? 'Type a message…' : 'Linking…'}
+                placeholderTextColor={colors.textFaint}
+                editable={!busySend}
+                returnKeyType="send"
+                onSubmitEditing={() => void send(draft)}
+                accessibilityLabel="Message"
+              />
               <Pressable
-                onPress={() => setShowText(false)}
-                hitSlop={6}
+                onPress={() => void send(draft)}
+                disabled={busySend || !draft.trim()}
                 accessibilityRole="button"
-                accessibilityLabel="Hide keyboard input"
-                style={styles.ctlBtn}
+                accessibilityLabel="Send message"
+                style={[styles.sendBtn, (busySend || !draft.trim()) && styles.sendOff]}
               >
-                <Ionicons name="close" size={16} color={colors.textMuted} />
+                <Ionicons name="send" size={16} color={colors.accentText} />
               </Pressable>
-            )}
-          </View>
-        ) : (
-          <Pressable
-            onPress={() => setShowText(true)}
-            accessibilityRole="button"
-            accessibilityLabel="Type instead"
-            style={styles.typeLink}
-          >
-            <Text style={styles.typeLinkText}>Type instead</Text>
-          </Pressable>
-        )}
-      </View>
+              {sttOn && (
+                <Pressable
+                  onPress={() => setShowText(false)}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Hide keyboard input"
+                  style={styles.ctlBtn}
+                >
+                  <Ionicons name="close" size={16} color={colors.textMuted} />
+                </Pressable>
+              )}
+            </View>
+          ) : (
+            <Pressable
+              onPress={() => setShowText(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Type instead"
+              style={styles.typeLink}
+            >
+              <Text style={styles.typeLinkText}>Type instead</Text>
+            </Pressable>
+          )}
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -951,13 +1010,13 @@ const styles = StyleSheet.create({
   historyToggleText: { color: colors.textFaint, fontSize: font.size.xs, fontWeight: '600' },
   history: {
     maxHeight: 260,
-    gap: space.sm,
-    padding: space.sm,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.lg,
     backgroundColor: colors.card,
+    flexGrow: 0,
   },
+  historyContent: { gap: space.sm, padding: space.sm },
   msgRow: { maxWidth: '86%' },
   msgRowOut: { alignSelf: 'flex-start' },
   msgRowIn: { alignSelf: 'flex-end' },
@@ -981,11 +1040,12 @@ const styles = StyleSheet.create({
   welcome: { paddingVertical: space.xl },
 
   exchange: { alignItems: 'center', gap: space.sm },
+  youWrap: { maxWidth: '90%' },
   you: {
     color: colors.textFaint,
     fontSize: font.size.xs,
     fontStyle: 'italic',
-    maxWidth: '90%',
+    textAlign: 'center',
   },
   card: {
     width: '100%',
@@ -1088,6 +1148,19 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     fontFamily: font.mono,
   },
+  stopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 40,
+    paddingHorizontal: space.lg,
+    paddingVertical: 8,
+    borderRadius: radius.pill ?? 999,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.card,
+  },
+  stopText: { color: colors.text, fontSize: font.size.sm, fontWeight: '700' },
   hint: {
     minHeight: 16,
     color: colors.textMuted,
