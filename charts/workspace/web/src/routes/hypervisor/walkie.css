@@ -134,6 +134,8 @@
   top: calc(100% + 6px);
   right: 0;
   z-index: 20;
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
   width: 264px;
   display: flex;
   flex-direction: column;
@@ -181,14 +183,19 @@
 }
 
 .wt-error {
+  flex: none;
   color: var(--danger);
   font-size: 12.5px;
   padding: 6px 8px;
   border: 1px solid var(--danger);
   border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+  max-height: 22vh;
+  overflow-y: auto;
 }
 
 .wt-history-toggle {
+  flex: none;
   align-self: center;
   display: inline-flex;
   align-items: center;
@@ -262,6 +269,7 @@
   word-break: break-word;
 }
 .wt-tag {
+  flex: none;
   display: inline-block;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -289,24 +297,53 @@
 }
 
 .wt-exchange {
+  min-height: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--size-2);
 }
+/* "What you said": clamped to two lines, click to expand (issue #409 — the
+   old single-line ellipsis made anything past one line unreachable). */
 .wt-you {
+  flex: none;
+  font: inherit;
   font-size: 12.5px;
   color: var(--text-subtle);
   font-style: italic;
   max-width: 52ch;
   text-align: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+.wt-you:hover {
+  color: var(--text-muted);
+}
+.wt-you[aria-expanded='true'] {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  max-height: 28vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-/* the response card: latest agent reply, large and readable */
+/* the response card: latest agent reply, large and readable. The card is a
+   min-height:0 flex column so a long reply scrolls inside .wt-card-text
+   instead of silently clipping against the stage (issue #409). */
 .wt-card {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 560px;
   padding: var(--size-4);
@@ -321,6 +358,12 @@
   background: color-mix(in srgb, var(--warn) 8%, var(--surface));
 }
 .wt-card-text {
+  /* Text keeps the lion's share of a squeezed card (grow) but never drops
+     below ~2 readable lines; anything past the cap scrolls. */
+  flex: 1 1 auto;
+  min-height: 3.4em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   font-size: 15.5px;
   line-height: 1.6;
   color: var(--text);
@@ -341,12 +384,19 @@
 }
 
 .wt-replies {
+  /* A fat chip set yields to the reply text when the card is squeezed:
+     keep at least one row visible and scroll the rest. */
+  flex: 0 1 auto;
+  min-height: 34px;
+  overflow-y: auto;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: var(--size-3);
 }
 .wt-reply {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 12.5px;
   font-weight: 600;
   padding: 6px 14px;
@@ -367,6 +417,7 @@
 }
 
 .wt-voice-ctls {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--size-2);
@@ -384,6 +435,11 @@
 
 .wt-interim {
   max-width: 56ch;
+  /* Long dictation: cap at ~3 lines and scroll (pinned to the newest words
+     from the TSX) so the transcript can't push the orb off-screen. */
+  max-height: calc(3 * 1.5em);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   text-align: center;
   font-size: 14px;
   line-height: 1.5;
@@ -556,11 +612,37 @@
   letter-spacing: 0.12em;
 }
 
+/* Explicit stop controls (issue #409): visible while capturing / narrating.
+   Pill with a label — an unmistakable tap target, not a hidden gesture. */
+.wt-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 18px;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--wt-glow) 55%, var(--border-2));
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.wt-stop-btn:hover {
+  border-color: var(--wt-glow);
+  background: color-mix(in srgb, var(--wt-glow) 10%, var(--surface));
+}
+.wt-stop-btn svg {
+  flex: none;
+}
+
 .wt-hint {
   min-height: 18px;
   font-size: 12.5px;
   color: var(--text-muted);
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 /* ── text fallback ──────────────────────────────────────────────────────── */
@@ -731,5 +813,60 @@
   }
   .wt-history {
     max-height: 30vh;
+  }
+}
+
+/* Short/landscape viewports (issue #409): shrink the fixed-height stage so
+   the response card keeps a readable share of the screen — without this the
+   orb + chrome eat nearly everything and the scrollable card gets slivers. */
+@media (max-height: 560px) {
+  .wt {
+    gap: var(--size-1);
+    padding: var(--size-1) var(--size-3);
+  }
+  /* Too short for the floating-card layout to breathe: drop the fixed grid
+     and let the whole screen scroll as one column — orb included — instead
+     of shrinking the exchange out of existence. */
+  .wt {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .wt > *,
+  .wt-main > * {
+    flex: none;
+  }
+  .wt-main {
+    overflow-y: visible;
+    justify-content: flex-start;
+  }
+  .wt-card-text {
+    min-height: 0;
+  }
+  .wt-orb-wrap {
+    width: 136px;
+    height: 136px;
+  }
+  .wt-orb {
+    width: 96px;
+    height: 96px;
+  }
+  .wt-ring-1 {
+    inset: 17px;
+  }
+  .wt-ring-2 {
+    inset: 8px;
+  }
+  .wt-card {
+    padding: var(--size-3);
+  }
+  .wt-card-text {
+    font-size: 14px;
+  }
+  .wt-history {
+    max-height: 34vh;
+  }
+  .wt-stage {
+    padding-top: 0;
   }
 }
