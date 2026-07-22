@@ -1,106 +1,55 @@
-/* Walkie-Talkie — a clean, professional handheld-radio device that houses the
-   in-app internal loopback preview (issue #306). Theme-aware via app tokens; the
-   LCD stays a realistic dark readout in both light and dark themes. */
+/* Walkie-Talkie — voice-first push-to-talk stage (issue #401, redesigning the
+   #306 text device). One centered orb with a live visualizer; the latest
+   exchange floats above it as a response card; typing is a collapsed fallback.
+   Theme-aware via app tokens: --accent drives the input mood, --warn the
+   processing sweep, --success the speaking pulse — both themes intentional.
+
+   The visualizer is driven by a CSS custom property `--wt-level` (0..1, real
+   mic amplitude via AnalyserNode, written from rAF — transforms only, no
+   layout thrash). `[data-sim="1"]` switches to a smooth simulated pulse when
+   level data is unavailable, and prefers-reduced-motion swaps all continuous
+   motion for gentle opacity states. */
 
 .wt {
   height: 100%;
   min-height: 0;
-  display: flex;
-  justify-content: center;
-  padding: var(--size-4);
-  overflow: auto;
-}
-
-.wt-device {
-  --wt-lcd-bg: #0c1512;
-  --wt-lcd-fg: #cfefe0;
-  --wt-lcd-dim: #6f8c81;
   width: 100%;
-  max-width: 460px;
-  align-self: stretch;
+  max-width: 660px;
+  margin: 0 auto;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
-  gap: var(--size-3);
-  padding: var(--size-3);
-  background: linear-gradient(180deg, var(--surface-2), var(--surface));
-  border: 1px solid var(--border-2);
-  border-radius: calc(var(--radius-lg) + 6px);
-  box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: var(--size-2);
+  padding: var(--size-3) var(--size-4);
+  --wt-glow: var(--accent);
+}
+.wt[data-mood='processing'] {
+  --wt-glow: var(--warn);
+}
+.wt[data-mood='output'] {
+  --wt-glow: var(--success);
 }
 
-/* ── head: antenna · LCD · speaker grille ───────────────────────────────── */
-.wt-head {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: stretch;
+/* ── top strip: status chip + settings ──────────────────────────────────── */
+.wt-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--size-2);
 }
 
-.wt-antenna {
-  display: flex;
-  flex-direction: column;
+.wt-chip {
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  padding-bottom: 2px;
-  width: 12px;
-}
-.wt-antenna-rod {
-  width: 4px;
-  height: 26px;
-  border-radius: 4px 4px 0 0;
-  background: linear-gradient(180deg, var(--text-subtle), var(--border-2));
-}
-.wt-antenna-tip {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: -3px;
-  background: var(--text-muted);
-}
-
-.wt-lcd {
-  background: var(--wt-lcd-bg);
-  color: var(--wt-lcd-fg);
-  border-radius: var(--radius);
-  border: 1px solid #05100c;
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.55);
-  padding: 8px 12px;
+  gap: 7px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 12px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  min-width: 0;
-}
-.wt-lcd-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-.wt-lcd-sub {
-  color: var(--wt-lcd-dim);
-  font-size: 10.5px;
-}
-.wt-lcd-label {
-  color: var(--wt-lcd-dim);
-  letter-spacing: 0.08em;
-}
-.wt-lcd-value {
-  color: var(--wt-lcd-fg);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.wt-lcd-sep {
-  color: var(--wt-lcd-dim);
-}
-.wt-lcd-status {
-  margin-left: auto;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
 }
 
 .wt-led {
@@ -108,8 +57,8 @@
   height: 9px;
   border-radius: 50%;
   flex: none;
-  background: var(--wt-lcd-dim);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  background: var(--text-subtle);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
 .wt-led-live {
   background: var(--success);
@@ -118,58 +67,102 @@
 .wt-led-busy {
   background: var(--warn);
   box-shadow: 0 0 7px var(--warn);
-  animation: wt-pulse 1s ease-in-out infinite;
+  animation: wt-blink 1s ease-in-out infinite;
 }
 .wt-led-down {
   background: var(--danger);
   box-shadow: 0 0 6px var(--danger);
 }
 .wt-led-off {
-  background: var(--wt-lcd-dim);
+  background: var(--text-subtle);
 }
-@keyframes wt-pulse {
+@keyframes wt-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
 
-.wt-grille {
-  width: 26px;
-  border-radius: var(--radius-sm);
-  background-color: var(--surface-3);
-  background-image: radial-gradient(var(--border-2) 1.1px, transparent 1.2px);
-  background-size: 6px 6px;
-  border: 1px solid var(--border);
+.wt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.wt-icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-subtle);
+}
+.wt-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.wt-icon-btn.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
 }
 
-/* ── screen: the conversation ───────────────────────────────────────────── */
-.wt-screen {
-  min-height: 0;
-  overflow-y: auto;
+/* settings popover: the demoted utility controls + channel readout */
+.wt-menu-wrap {
+  position: relative;
+}
+.wt-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 264px;
   display: flex;
   flex-direction: column;
-  gap: var(--size-2);
+  gap: var(--size-3);
   padding: var(--size-3);
-  background: var(--bg);
-  border: 1px solid var(--border);
+  background: var(--surface);
+  border: 1px solid var(--border-2);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+}
+.wt-menu-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.wt-readout-row {
+  display: flex;
+  gap: 8px;
+}
+.wt-readout-label {
+  color: var(--text-subtle);
+  letter-spacing: 0.08em;
+  width: 58px;
+  flex: none;
+}
+.wt-readout-value {
+  color: var(--text);
+  font-weight: 600;
 }
 
-.wt-empty {
-  margin: auto;
-  text-align: center;
-  max-width: 30ch;
-  color: var(--text-muted);
+/* ── response stage ─────────────────────────────────────────────────────── */
+.wt-main {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--size-2);
+  overflow: hidden;
 }
-.wt-empty-title {
-  font-weight: 600;
-  color: var(--text);
-  margin: 0 0 4px;
-}
-.wt-empty-sub {
-  font-size: 12.5px;
-  line-height: 1.5;
-  margin: 0;
-}
+
 .wt-error {
   color: var(--danger);
   font-size: 12.5px;
@@ -178,14 +171,38 @@
   border-radius: var(--radius-sm);
 }
 
-.wt-notice {
+.wt-history-toggle {
   align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11.5px;
-  color: var(--text-muted);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text-subtle);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 10px;
   border-radius: var(--radius-pill);
-  padding: 3px 12px;
+}
+.wt-history-toggle:hover {
+  color: var(--text);
+}
+.wt-history-toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.wt-history {
+  min-height: 0;
+  max-height: 38vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+  padding: var(--size-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 .wt-msg {
@@ -202,13 +219,11 @@
   align-self: flex-start;
   align-items: flex-start;
 }
-
 .wt-bubble {
-  padding: 8px 12px;
-  border-radius: 14px;
-  font-size: 14px;
+  padding: 7px 11px;
+  border-radius: 13px;
+  font-size: 13px;
   line-height: 1.45;
-  box-shadow: var(--shadow-1);
 }
 .wt-msg-in .wt-bubble {
   background: var(--accent);
@@ -238,16 +253,86 @@
   margin-bottom: 4px;
 }
 
+.wt-empty {
+  margin: auto auto var(--size-4);
+  text-align: center;
+  max-width: 34ch;
+  color: var(--text-muted);
+}
+.wt-empty-title {
+  font-weight: 650;
+  font-size: 17px;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+.wt-empty-sub {
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.wt-exchange {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--size-2);
+}
+.wt-you {
+  font-size: 12.5px;
+  color: var(--text-subtle);
+  font-style: italic;
+  max-width: 52ch;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the response card: latest agent reply, large and readable */
+.wt-card {
+  width: 100%;
+  max-width: 560px;
+  padding: var(--size-4);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  animation: wt-reveal 0.45s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.wt-card-template {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+}
+.wt-card-text {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+@keyframes wt-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    clip-path: inset(0 0 62% 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
 .wt-replies {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: var(--size-3);
 }
 .wt-reply {
   font-size: 12.5px;
   font-weight: 600;
-  padding: 5px 12px;
+  padding: 6px 14px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--accent);
   background: transparent;
@@ -264,77 +349,261 @@
   cursor: default;
 }
 
-/* ── control deck: input + push-to-talk ─────────────────────────────────── */
-.wt-deck {
+.wt-voice-ctls {
   display: flex;
   align-items: center;
   gap: var(--size-2);
-  padding: var(--size-2);
-  background: var(--surface-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+}
+
+/* ── the stage: rings + orb + hint ──────────────────────────────────────── */
+.wt-stage {
+  --wt-level: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--size-2);
+  padding: var(--size-2) 0 0;
+}
+
+.wt-interim {
+  max-width: 56ch;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: 0.9;
+}
+
+.wt-orb-wrap {
+  position: relative;
+  width: 208px;
+  height: 208px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wt-rings {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.wt-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--wt-glow);
+  opacity: 0;
+  transition: opacity 0.35s ease, border-color 0.35s ease;
+}
+.wt-ring-1 { inset: 26px; }
+.wt-ring-2 { inset: 12px; }
+.wt-ring-3 { inset: 0; }
+
+/* idle: faint slow breathing */
+.wt[data-mood='idle'] .wt-ring-1 {
+  opacity: 0.28;
+  animation: wt-breathe 4.2s ease-in-out infinite;
+}
+.wt[data-mood='idle'] .wt-ring-2 {
+  opacity: 0.14;
+  animation: wt-breathe 4.2s ease-in-out 0.6s infinite;
+}
+@keyframes wt-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.035); }
+}
+
+/* input: rings track REAL mic amplitude via --wt-level (written from rAF) */
+.wt[data-mood='input'] .wt-ring {
+  opacity: 0.9;
+  box-shadow: 0 0 calc(6px + var(--wt-level) * 26px)
+    color-mix(in srgb, var(--wt-glow) 55%, transparent);
+}
+.wt[data-mood='input'] .wt-ring-1 {
+  transform: scale(calc(1 + var(--wt-level) * 0.1));
+  opacity: calc(0.55 + var(--wt-level) * 0.45);
+}
+.wt[data-mood='input'] .wt-ring-2 {
+  transform: scale(calc(1 + var(--wt-level) * 0.2));
+  opacity: calc(0.34 + var(--wt-level) * 0.5);
+}
+.wt[data-mood='input'] .wt-ring-3 {
+  transform: scale(calc(1 + var(--wt-level) * 0.32));
+  opacity: calc(0.18 + var(--wt-level) * 0.55);
+}
+/* no level data available → smooth simulated pulse so it never looks broken
+   (data-sim is only set while listening, so no mood gate needed) */
+.wt-stage[data-sim='1'] .wt-ring-1 {
+  animation: wt-sim 1.6s ease-in-out infinite;
+}
+.wt-stage[data-sim='1'] .wt-ring-2 {
+  animation: wt-sim 1.6s ease-in-out 0.25s infinite;
+}
+.wt-stage[data-sim='1'] .wt-ring-3 {
+  animation: wt-sim 1.6s ease-in-out 0.5s infinite;
+}
+@keyframes wt-sim {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.14); }
+}
+
+/* processing: the same geometry morphs into a rotating sweep */
+.wt[data-mood='processing'] .wt-ring-2 {
+  opacity: 0.25;
+}
+.wt-sweep {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  opacity: 0;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 292deg,
+    color-mix(in srgb, var(--wt-glow) 80%, transparent) 350deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+  transition: opacity 0.35s ease;
+}
+.wt[data-mood='processing'] .wt-sweep {
+  opacity: 1;
+  animation: wt-spin 1.3s linear infinite;
+}
+@keyframes wt-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* output: pulse in the speaking color */
+.wt[data-mood='output'] .wt-ring-1 {
+  opacity: 0.75;
+  animation: wt-sim 1.1s ease-in-out infinite;
+}
+.wt[data-mood='output'] .wt-ring-2 {
+  opacity: 0.4;
+  animation: wt-sim 1.1s ease-in-out 0.18s infinite;
+}
+.wt[data-mood='output'] .wt-ring-3 {
+  opacity: 0.2;
+  animation: wt-sim 1.1s ease-in-out 0.36s infinite;
+}
+
+/* the orb itself */
+.wt-orb {
+  position: relative;
+  z-index: 1;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--on-accent);
+  background: radial-gradient(
+    circle at 50% 32%,
+    color-mix(in srgb, var(--wt-glow) 82%, #fff 8%),
+    color-mix(in srgb, var(--wt-glow) 88%, #000 10%)
+  );
+  box-shadow:
+    0 0 calc(14px + var(--wt-level, 0) * 30px)
+      color-mix(in srgb, var(--wt-glow) 45%, transparent),
+    var(--shadow-2),
+    inset 0 -4px 10px rgba(0, 0, 0, 0.28),
+    inset 0 3px 5px rgba(255, 255, 255, 0.28);
+  transition: transform var(--motion-fast), background 0.35s ease, opacity 0.2s ease;
+}
+.wt-orb:active:not(:disabled) {
+  transform: scale(0.965);
+}
+.wt-orb:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+}
+.wt-orb:disabled {
+  cursor: default;
+  background: radial-gradient(circle at 50% 32%, var(--surface-3), var(--surface-2));
+  color: var(--text-muted);
+  box-shadow: var(--shadow-1), inset 0 -3px 8px rgba(0, 0, 0, 0.12);
+}
+.wt-orb-label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.wt-hint {
+  min-height: 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── text fallback ──────────────────────────────────────────────────────── */
+.wt-fallback {
+  display: flex;
+  justify-content: center;
+  padding-bottom: var(--size-1);
+}
+.wt-type-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.wt-type-link:hover {
+  color: var(--text);
+}
+.wt-deck {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
 }
 .wt-input {
   flex: 1;
   min-width: 0;
   font-size: 14px;
   padding: 10px 12px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   border: 1px solid var(--border-2);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text);
 }
 .wt-input:focus {
   outline: none;
   border-color: var(--accent);
 }
-
-.wt-ptt {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  flex: none;
-  border-radius: 50%;
+.wt-send {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 9px 18px;
+  border-radius: var(--radius-pill);
   border: none;
-  cursor: pointer;
+  background: var(--accent);
   color: var(--on-accent);
-  background: radial-gradient(circle at 50% 35%, var(--accent-strong, var(--accent)), var(--accent));
-  box-shadow: var(--shadow-2), inset 0 -3px 6px rgba(0, 0, 0, 0.25),
-    inset 0 2px 3px rgba(255, 255, 255, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+  cursor: pointer;
 }
-.wt-ptt:active:not(:disabled) {
-  transform: translateY(1px) scale(0.97);
-  box-shadow: var(--shadow-1), inset 0 -1px 3px rgba(0, 0, 0, 0.3);
-}
-.wt-ptt:disabled {
+.wt-send:disabled {
   opacity: 0.5;
   cursor: default;
 }
-.wt-ptt-ring {
-  position: absolute;
-  inset: 6px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-}
-.wt-ptt-label {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
 
-/* ── side controls: sim switch + reset ──────────────────────────────────── */
-.wt-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--size-2);
-  padding: 0 var(--size-1);
-}
+/* ── demoted controls (inside the popover) ──────────────────────────────── */
 .wt-switch {
   display: flex;
   align-items: center;
@@ -405,4 +674,44 @@
 .wt-ctl-btn:hover {
   color: var(--text);
   border-color: var(--text-subtle);
+}
+
+/* ── reduced motion: state changes stay, continuous motion goes ─────────── */
+@media (prefers-reduced-motion: reduce) {
+  .wt-led-busy,
+  .wt[data-mood='idle'] .wt-ring-1,
+  .wt[data-mood='idle'] .wt-ring-2,
+  .wt-stage[data-sim='1'] .wt-ring-1,
+  .wt-stage[data-sim='1'] .wt-ring-2,
+  .wt-stage[data-sim='1'] .wt-ring-3,
+  .wt[data-mood='output'] .wt-ring-1,
+  .wt[data-mood='output'] .wt-ring-2,
+  .wt[data-mood='output'] .wt-ring-3,
+  .wt[data-mood='processing'] .wt-sweep {
+    animation: none;
+  }
+  .wt-card {
+    animation: none;
+  }
+  /* moods still read clearly — as steady opacity/color states */
+  .wt[data-mood='input'] .wt-ring { opacity: 0.7; transform: none; }
+  .wt[data-mood='output'] .wt-ring-1 { opacity: 0.7; }
+  .wt[data-mood='processing'] .wt-sweep { opacity: 0.85; }
+}
+
+@media (max-width: 720px) {
+  .wt {
+    padding: var(--size-2) var(--size-3);
+  }
+  .wt-orb-wrap {
+    width: 176px;
+    height: 176px;
+  }
+  .wt-orb {
+    width: 116px;
+    height: 116px;
+  }
+  .wt-history {
+    max-height: 30vh;
+  }
 }
