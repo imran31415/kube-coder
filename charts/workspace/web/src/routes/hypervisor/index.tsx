@@ -32,6 +32,7 @@ import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { Chat } from './Chat';
+import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
 import {
   SIDEBAR_W_DEFAULT,
@@ -525,6 +526,21 @@ export function HypervisorRoute() {
             <Icon name="walkie" size={13} /> Walkie-Talkie
           </a>
           <div class="hv-topbar-meta">
+            {/* Speak replies (issue #396, tier 0) — read agent prose aloud via
+                the browser's speechSynthesis. Feature-detected; persists per
+                browser like the sidebar width. */}
+            {ttsSupported() && (
+              <button
+                type="button"
+                class={`hv-voice-toggle ${speakReplies.value ? 'is-on' : ''}`}
+                onClick={() => setSpeakReplies(!speakReplies.value)}
+                title={speakReplies.value ? 'Stop speaking replies' : 'Speak replies aloud'}
+                aria-label="Speak replies aloud"
+                aria-pressed={speakReplies.value}
+              >
+                <Icon name="speaker" size={14} />
+              </button>
+            )}
             {/* Model switcher (#308) — works for a not-yet-created chat (sets the
                 new-thread default) and for the open thread (switches it live; the
                 change lands on the next turn). Shown only when the effective

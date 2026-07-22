@@ -217,6 +217,9 @@ export interface HypervisorConfig {
   workdir: string;
   readOnly: boolean;
   assistants: HypervisorAssistant[];
+  /** Whether POST /api/hypervisor/transcribe has an STT provider key (issue
+   *  #396) — gates the composer mic on clients without SpeechRecognition. */
+  stt?: boolean;
 }
 
 export interface HypervisorThread {

@@ -23,6 +23,7 @@ const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
   { var: 'OPENROUTER_API_KEY', label: 'OpenRouter', hint: 'Powers OpenCode + OpenRouter-backed models.' },
   { var: 'DEEPSEEK_API_KEY', label: 'DeepSeek', hint: 'DeepSeek API key.' },
   { var: 'ANTHROPIC_API_KEY', label: 'Anthropic', hint: 'Overrides the Claude subscription/oauth default when set.' },
+  { var: 'OPENAI_API_KEY', label: 'OpenAI', hint: 'Whisper transcription for the voice interface (mobile mic), plus any OpenAI-backed tools.' },
 ];
 
 const SUBSCRIPTIONS: { id: SubscriptionProvider; label: string }[] = [

@@ -527,6 +527,31 @@
   box-shadow: var(--shadow-1);
 }
 
+/* Speak-replies toggle (issue #396) — a small topbar icon button; `is-on`
+   lights it accent so spoken-mode is visible at a glance. */
+.hv-voice-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: var(--text-subtle);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.hv-voice-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-strong, var(--border));
+}
+.hv-voice-toggle.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ── Chat body ───────────────────────────────────────────────────────── */
 /* "How the Hypervisor works" guide sits between the topbar and the chat,
    flush with the transcript padding and collapsed to a slim bar by default. */
@@ -1351,6 +1376,22 @@
 }
 .hv-attach-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong, var(--border)); }
 .hv-attach-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Push-to-talk mic (issue #396) — while recording the button goes danger-red
+   with a soft pulsing halo, so a hot mic is unmissable. */
+.hv-mic-btn.is-listening {
+  color: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+  animation: hv-mic-pulse 1.6s ease-out infinite;
+}
+@keyframes hv-mic-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.35); }
+  70% { box-shadow: 0 0 0 7px rgba(229, 72, 77, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hv-mic-btn.is-listening { animation: none; }
+}
 
 .hv-attachments {
   display: flex;

@@ -83,7 +83,8 @@ HYPERVISOR_DIR = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'hypervisor')
 # module can't import server.py (server imports us), so we read the same file
 # directly — keep _PROVIDER_KEY_VARS in sync with ProviderKeysManager.ALLOWED.
 _PROVIDER_KEYS_FILE = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'provider-keys.json')
-_PROVIDER_KEY_VARS = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY')
+_PROVIDER_KEY_VARS = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY',
+                      'ANTHROPIC_API_KEY', 'OPENAI_API_KEY')
 
 
 def _provider_key_overlay() -> Dict[str, str]:

@@ -104,6 +104,41 @@ next to `server.py` at `/tmp/browser/` via `browser-configmap.yaml`.
   (markdown prose + expandable tool-activity chips). No screen scraping.
 - `api/hypervisor.ts`, `store/hypervisor.ts`: canonical event types + polling.
 
+### Voice (issue #396)
+
+`routes/hypervisor/voice.ts` adds an opt-in voice layer. On the web dashboard
+it's tier 0 — zero backend involvement:
+
+- **Push-to-talk input** — a mic button in the composer uses the browser's
+  `SpeechRecognition` (Web Speech API): tap to record, tap again to stop.
+  Final transcripts land in the draft (interims render live), so dictation
+  feeds the *existing* send path and can be edited before sending.
+- **Spoken replies** — a speaker toggle in the topbar reads agent prose aloud
+  via `speechSynthesis`, enqueued at sentence boundaries so playback starts
+  before the turn completes. Code blocks, tool chips and embeds stay silent;
+  the preference persists per browser (`localStorage`, like the sidebar width).
+
+Both controls are feature-detected and simply don't render where the APIs are
+missing (e.g. `SpeechRecognition` on Firefox). **Mic capture requires a secure
+context**: the dashboard's HTTPS ingress qualifies, but a plain-HTTP
+port-forward (`kubectl port-forward` + `http://localhost:…` works only because
+localhost is a secure context; any other plain-HTTP host does not) will hide or
+break voice input.
+
+**Mobile (Expo app) + server STT (tier 1).** React Native has no
+`SpeechRecognition`, so the mobile leg records push-to-talk audio with
+`expo-audio` and POSTs it to **`POST /api/hypervisor/transcribe`** (raw audio
+body, transcript out). `server.py`'s `SpeechTranscriber` forwards to an
+OpenAI-compatible transcriptions API — key precedence: the per-workspace
+provider-key store (Settings → Provider keys, `OPENAI_API_KEY`) then the pod
+env; endpoint/model overridable via `HYPERVISOR_STT_URL` /
+`HYPERVISOR_STT_MODEL` (default `whisper-1`), so a self-hosted whisper.cpp
+server works too. `/api/hypervisor/config` reports `stt: true|false` and the
+mobile mic only renders when a key is configured. Spoken replies on mobile use
+on-device `expo-speech` with the same sentence-chunked narration logic
+(`mobile/src/util/voice.ts`, kept in sync with the web module) and the same
+per-device preference key.
+
 ## Config (`values.yaml`)
 
 ```yaml

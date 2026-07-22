@@ -52,6 +52,15 @@ const config: ExpoConfig = {
     // Inline video playback for the Hypervisor chat's video previews.
     'expo-video',
     [
+      // Push-to-talk voice input for the Hypervisor chat (issue #396) —
+      // records audio that the workspace transcribes server-side.
+      'expo-audio',
+      {
+        microphonePermission:
+          'Allow kube-coder to record a voice message to dictate to your workspace.',
+      },
+    ],
+    [
       // Allow plain-HTTP requests on Android (self-hosted / localhost minikube
       // workspaces). Production cloud hosts still use HTTPS.
       'expo-build-properties',

@@ -2,7 +2,11 @@ import { apiGet, apiPost, apiDelete } from './client';
 
 // The provider env-var names the workspace lets a user set for themselves.
 // Must match server.py ProviderKeysManager.ALLOWED.
-export type ProviderVar = 'OPENROUTER_API_KEY' | 'DEEPSEEK_API_KEY' | 'ANTHROPIC_API_KEY';
+export type ProviderVar =
+  | 'OPENROUTER_API_KEY'
+  | 'DEEPSEEK_API_KEY'
+  | 'ANTHROPIC_API_KEY'
+  | 'OPENAI_API_KEY';
 
 export interface ProviderKeyStatus {
   set: boolean;

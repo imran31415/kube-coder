@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -44,6 +45,7 @@ import {
   renameThread,
   sendThreadMessage,
   stopThread,
+  transcribeAudio,
   uploadTaskImage,
 } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
@@ -51,6 +53,14 @@ import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
 import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource, WorkdirOption } from '../api/types';
 import { buildTurns, sameTranscript, turnCopyText, type HvBlock } from '../util/hvTranscript';
+import {
+  readSpeakPref,
+  writeSpeakPref,
+  speakableText,
+  sentenceChunks,
+  speakText,
+  stopSpeaking,
+} from '../util/voice';
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
@@ -125,6 +135,104 @@ export default function HypervisorScreen() {
     },
     [],
   );
+
+  // ── Voice (issue #396) — mobile leg of the dashboard's voice interface ────
+  // STT: expo-audio records push-to-talk audio, POST /api/hypervisor/transcribe
+  // turns it into text that lands in the draft (RN has no SpeechRecognition, so
+  // unlike the web tier-0 path this always goes through the server — the mic
+  // only shows when config.stt says a provider key is set). TTS: expo-speech
+  // reads agent prose aloud, mirroring the web toggle + sentence chunking.
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [speakOn, setSpeakOn] = useState(false);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  // Per-turn narration progress: which turn we're tracking and how many chars
+  // of its speakable text have been enqueued.
+  const spokenRef = useRef({ key: '', chars: 0 });
+
+  useEffect(() => {
+    void readSpeakPref().then(setSpeakOn);
+    // Leaving the screen kills any queued speech.
+    return () => stopSpeaking();
+  }, []);
+
+  function toggleSpeak() {
+    setSpeakOn((v) => {
+      const next = !v;
+      void writeSpeakPref(next);
+      if (!next) stopSpeaking();
+      return next;
+    });
+  }
+
+  async function toggleMic() {
+    if (transcribing) return;
+    if (recording) {
+      // Stop → upload → transcript appended to the draft for review/editing —
+      // voice is an input method into the existing send path, not a bypass.
+      setRecording(false);
+      setTranscribing(true);
+      try {
+        await recorder.stop();
+        // Hand the audio session back to playback so spoken replies use the
+        // main speaker instead of the (quiet) earpiece route on iOS.
+        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+        const uri = recorder.uri;
+        if (uri) {
+          const text = (await transcribeAudio(uri)).trim();
+          if (text) setDraft((d) => (d.trim() ? `${d.trim()} ${text}` : text));
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Transcription failed');
+      } finally {
+        setTranscribing(false);
+      }
+      return;
+    }
+    const perm = await AudioModule.requestRecordingPermissionsAsync();
+    if (!perm.granted) {
+      setError('Microphone access is off — enable it in Settings to dictate messages.');
+      return;
+    }
+    try {
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setError(null);
+      setRecording(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start recording');
+    }
+  }
+
+  // Spoken replies: enqueue agent prose at sentence boundaries as it streams
+  // in (playback starts before the turn completes); flush the remainder when
+  // the turn goes idle. A turn first seen while NOT live — history loading on
+  // thread open, or the toggle just flipped — is marked already-spoken so the
+  // past is never narrated. Same tracking model as the web Chat.
+  const liveTurn = sending || status === 'running';
+  useEffect(() => {
+    if (!speakOn) return;
+    const t = buildTurns(events);
+    const last = t[t.length - 1];
+    if (!last || last.role !== 'agent') return;
+    const key = `${activeId ?? ''}#${t.length - 1}`;
+    const full = speakableText(last.blocks);
+    if (spokenRef.current.key !== key) {
+      spokenRef.current = { key, chars: liveTurn ? 0 : full.length };
+    }
+    if (full.length <= spokenRef.current.chars) return;
+    const fresh = full.slice(spokenRef.current.chars);
+    if (liveTurn) {
+      const { complete } = sentenceChunks(fresh);
+      if (!complete) return;
+      speakText(complete);
+      spokenRef.current.chars += complete.length;
+    } else {
+      speakText(fresh);
+      spokenRef.current.chars = full.length;
+    }
+  }, [events, speakOn, liveTurn, activeId]);
 
   async function copyMessage(key: string, text: string) {
     if (!text) return;
@@ -433,6 +541,26 @@ export default function HypervisorScreen() {
         subtitle={activeThread ? `via ${activeThread.assistant || agentName}` : 'Talk to your workspace'}
         right={
           <View style={styles.headerActions}>
+            {/* Speak replies (issue #396) — on-device TTS via expo-speech;
+                the preference persists per device, same key as the web. */}
+            <Pressable
+              onPress={toggleSpeak}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Speak replies aloud"
+              accessibilityState={{ selected: speakOn }}
+              style={({ pressed }) => [
+                styles.voiceToggle,
+                speakOn && styles.voiceToggleOn,
+                pressed && { opacity: 0.6 },
+              ]}
+            >
+              <Ionicons
+                name={speakOn ? 'volume-high' : 'volume-mute-outline'}
+                size={16}
+                color={speakOn ? colors.accent : colors.textMuted}
+              />
+            </Pressable>
             {threads.length > 0 && (
               <Pressable
                 onPress={() => setChatsOpen(true)}
@@ -696,11 +824,43 @@ export default function HypervisorScreen() {
           >
             <Ionicons name="image-outline" size={20} color={colors.textMuted} />
           </Pressable>
+          {/* Push-to-talk mic (issue #396): tap to record, tap again to stop —
+              audio goes to /api/hypervisor/transcribe and the transcript lands
+              in the draft. Only offered when the server has an STT key. */}
+          {config?.stt && (
+            <Pressable
+              onPress={() => void toggleMic()}
+              disabled={(blocked && !recording) || transcribing}
+              accessibilityRole="button"
+              accessibilityLabel={recording ? 'Stop recording' : 'Dictate a message'}
+              accessibilityState={{ selected: recording }}
+              style={[
+                styles.attachBtn,
+                recording && styles.micBtnOn,
+                ((blocked && !recording) || transcribing) && styles.sendBtnOff,
+              ]}
+              hitSlop={6}
+            >
+              <Ionicons
+                name={transcribing ? 'ellipsis-horizontal' : recording ? 'stop' : 'mic-outline'}
+                size={20}
+                color={recording ? colors.danger : colors.textMuted}
+              />
+            </Pressable>
+          )}
           <TextInput
             style={styles.input}
             value={draft}
             onChangeText={setDraft}
-            placeholder={working ? 'Kube-Coder is working…' : 'Message Kube-Coder…'}
+            placeholder={
+              working
+                ? 'Kube-Coder is working…'
+                : recording
+                  ? 'Recording… tap the mic to stop'
+                  : transcribing
+                    ? 'Transcribing…'
+                    : 'Message Kube-Coder…'
+            }
             placeholderTextColor={colors.textFaint}
             multiline
             // Lock input for the whole turn, not just the send request, so the
@@ -1494,6 +1654,20 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface2,
   },
+  // Voice interface (issue #396): a hot mic is unmissable, the speak toggle
+  // lights accent when replies are being read aloud.
+  micBtnOn: { borderColor: colors.danger, backgroundColor: colors.danger + '22' },
+  voiceToggle: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  voiceToggleOn: { borderColor: colors.accent, backgroundColor: colors.accent + '22' },
   attachStrip: {
     maxHeight: 72,
     borderTopWidth: 1,
