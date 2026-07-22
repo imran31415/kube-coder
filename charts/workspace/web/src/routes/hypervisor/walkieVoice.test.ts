@@ -176,12 +176,16 @@ describe('smoothLevel', () => {
 describe('createEndpointer', () => {
   // Explicit constants so the tests read as timelines, independent of preset
   // tuning: speech is ≥ 0.5, silence is < 0.25, 200ms to confirm speech,
-  // 1000ms of silence to end it, 10s utterance cap.
+  // 1000ms of silence to end it (held FIXED here — max = base; the adaptive
+  // ramp gets its own tests below), 150ms to qualify a resume, 10s cap.
   const EP = {
     onsetThreshold: 0.5,
     releaseThreshold: 0.25,
     minSpeechMs: 200,
     hangoverMs: 1000,
+    maxHangoverMs: 1000,
+    hangoverRampMs: 4000,
+    resumeMs: 150,
     maxUtteranceMs: 10000,
   };
 
@@ -227,12 +231,61 @@ describe('createEndpointer', () => {
     expect(ep.feed(0.9, 200)).toBe('speech-start');
     expect(ep.feed(0.05, 500)).toBeNull(); // pause begins
     expect(ep.feed(0.05, 1400)).toBeNull(); // 900ms — still inside hangover
-    expect(ep.feed(0.9, 1450)).toBeNull(); // resumed: same capture, no event
+    expect(ep.feed(0.9, 1450)).toBeNull(); // resumed: qualifying, no event
+    expect(ep.feed(0.9, 1600)).toBeNull(); // held 150ms — same capture again
     expect(ep.speaking()).toBe(true);
     // The hangover clock restarts from the next pause, not the first one.
     expect(ep.feed(0.05, 2000)).toBeNull();
     expect(ep.feed(0.05, 2900)).toBeNull();
     expect(ep.feed(0.05, 3100)).toBe('speech-end'); // 1100ms after 2000
+  });
+
+  it('a sub-resumeMs blip during the hangover does not restart the countdown', () => {
+    const ep = createEndpointer(EP);
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    ep.feed(0.05, 300); // pause begins
+    expect(ep.feed(0.9, 700)).toBeNull(); // breath blip crosses onset…
+    expect(ep.feed(0.05, 780)).toBeNull(); // …but dies after 80ms — not speech
+    expect(ep.speaking()).toBe(true); // the run isn't over yet
+    // speech-end still lands one hangover after the ORIGINAL pause at 300 —
+    // pre-#408 the blip re-entered speech and pushed the end past 1780.
+    expect(ep.feed(0.05, 1350)).toBe('speech-end');
+  });
+
+  it('a resume that survives the qualification window rejoins the capture', () => {
+    const ep = createEndpointer(EP);
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    ep.feed(0.05, 300); // pause begins
+    expect(ep.feed(0.9, 700)).toBeNull(); // resume candidate
+    expect(ep.feed(0.9, 850)).toBeNull(); // held 150ms — speech again
+    // The old countdown is dead: 1050ms after the first pause, no event.
+    expect(ep.feed(0.9, 1350)).toBeNull();
+    expect(ep.speaking()).toBe(true);
+    ep.feed(0.05, 1400); // fresh pause, fresh countdown
+    expect(ep.feed(0.05, 2350)).toBeNull(); // 950ms — still inside
+    expect(ep.feed(0.05, 2450)).toBe('speech-end'); // 1050ms after 1400
+  });
+
+  it('adaptive hangover: a short command end-points near the fast floor', () => {
+    const ep = createEndpointer({ ...EP, hangoverMs: 500, maxHangoverMs: 1000 });
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    ep.feed(0.05, 400); // spoke 400ms → hangover = 500 + 500·(400/4000) = 550
+    expect(ep.feed(0.05, 900)).toBeNull(); // 500ms — just under
+    expect(ep.feed(0.05, 960)).toBe('speech-end'); // 560ms ≥ 550
+  });
+
+  it('adaptive hangover: long dictation keeps the conservative ceiling', () => {
+    const ep = createEndpointer({ ...EP, hangoverMs: 500, maxHangoverMs: 1000 });
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    for (let t = 300; t <= 5000; t += 100) expect(ep.feed(0.9, t)).toBeNull();
+    ep.feed(0.05, 5100); // spoke 5.1s ≥ ramp (4s) → full 1000ms hangover
+    expect(ep.feed(0.05, 5700)).toBeNull(); // 600ms — would end a short one
+    expect(ep.feed(0.05, 6050)).toBeNull(); // 950ms — still inside
+    expect(ep.feed(0.05, 6150)).toBe('speech-end'); // 1050ms ≥ 1000
   });
 
   it('fires speech-end exactly once and can start a fresh capture after', () => {
@@ -277,8 +330,15 @@ describe('createEndpointer', () => {
       const o = ENDPOINT_OPTS[mode];
       expect(o.releaseThreshold).toBeLessThan(o.onsetThreshold);
       expect(o.minSpeechMs).toBeLessThan(o.hangoverMs);
-      expect(o.hangoverMs).toBeLessThan(o.maxUtteranceMs);
+      expect(o.hangoverMs).toBeLessThanOrEqual(o.maxHangoverMs);
+      expect(o.resumeMs).toBeLessThan(o.hangoverMs);
+      expect(o.maxHangoverMs).toBeLessThan(o.maxUtteranceMs);
     }
+    // Issue #408 acceptance: a short command must end-point well under 1s in
+    // listen/wake, while barge stays conservative against TTS echo bleed.
+    expect(ENDPOINT_OPTS.listen.hangoverMs).toBeLessThanOrEqual(600);
+    expect(ENDPOINT_OPTS.wake.hangoverMs).toBeLessThanOrEqual(600);
+    expect(ENDPOINT_OPTS.barge.hangoverMs).toBeGreaterThanOrEqual(1000);
     // Barge-in (TTS echo in the room) must be strictly harder to trigger than
     // wake, which in turn is at least as strict as plain endpointing.
     expect(ENDPOINT_OPTS.barge.onsetThreshold).toBeGreaterThan(ENDPOINT_OPTS.wake.onsetThreshold);

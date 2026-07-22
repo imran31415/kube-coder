@@ -128,13 +128,18 @@ export function smoothLevel(prev: number, next: number, attack = 0.6, release = 
   return prev + (next - prev) * k;
 }
 
-// ── voice-activity endpointer (issue #406) ───────────────────────────────────
+// ── voice-activity endpointer (issue #406, end-point latency: #408) ─────────
 // A small time-driven state machine over the level samples the clients already
 // compute (AnalyserNode RMS on web, recorder dB metering on mobile). It turns
 // a noisy 0..1 level stream into two clean events: 'speech-start' after
-// sustained speech (rejects clicks and coughs) and 'speech-end' after a full
-// hangover of silence — so a mid-sentence pause never splits a capture: speech
-// resuming inside the hangover simply continues the same run, no event.
+// sustained speech (rejects clicks and coughs) and 'speech-end' after enough
+// silence. "Enough" adapts to utterance length (issue #408): a short utterance
+// is almost always a complete command, so it end-points near the fast
+// hangoverMs floor, while long dictation — where mid-sentence thinking pauses
+// live — ramps up to the conservative maxHangoverMs, so a pause never splits a
+// capture. Speech resuming inside the hangover continues the same run, no
+// event — but only after surviving a short qualification window (resumeMs), so
+// a lone breath blip no longer restarts the whole silence countdown.
 // Hysteresis between the onset and release thresholds keeps breath noise from
 // flapping the state.
 
@@ -148,8 +153,21 @@ export interface EndpointerOptions {
   releaseThreshold: number;
   /** Speech must sustain this long before 'speech-start' fires. */
   minSpeechMs: number;
-  /** Silence must last this long before 'speech-end' fires. */
+  /** Silence that ends the shortest utterance — the fast floor of the
+   *  adaptive hangover (a short utterance is almost always a complete
+   *  command, so it should send promptly). */
   hangoverMs: number;
+  /** Silence that ends a long utterance — the slow ceiling of the adaptive
+   *  hangover, protecting dictation-style thinking pauses from splitting
+   *  the capture. Equal to hangoverMs ⇒ fixed (non-adaptive) hangover. */
+  maxHangoverMs: number;
+  /** Speech duration over which the hangover ramps linearly from hangoverMs
+   *  (at 0ms of speech) up to maxHangoverMs (at this many ms or more). */
+  hangoverRampMs: number;
+  /** A level back above onsetThreshold during the hangover must hold this
+   *  long before it cancels the pending end and rejoins the utterance —
+   *  shorter blips (a breath, a chair creak) leave the countdown running. */
+  resumeMs: number;
   /** Hard cap on one utterance — 'speech-end' fires even mid-speech. */
   maxUtteranceMs: number;
 }
@@ -167,22 +185,32 @@ export type EndpointMode =
 /**
  * Starting constants per mode, tuned on the level curves above: with
  * levelFromTimeDomain/levelFromDb, quiet speech lands ≈ 0.45, normal speech
- * ≈ 0.9, and (suppressed) room noise ≲ 0.25. Ship-and-calibrate — an adaptive
- * noise floor can layer on later without changing this shape.
+ * ≈ 0.9, and (suppressed) room noise ≲ 0.25. End-of-speech is adaptive
+ * (issue #408): listen/wake ramp 550→1100ms of required silence with
+ * utterance length, so short commands send well under 1s while dictation
+ * keeps its thinking-pause headroom; barge keeps a fixed conservative
+ * hangover because TTS echo bleed makes its level stream the least
+ * trustworthy. The adaptive noise floor remains a separate follow-up.
  */
 export const ENDPOINT_OPTS: Record<EndpointMode, EndpointerOptions> = {
   listen: {
     onsetThreshold: 0.4,
     releaseThreshold: 0.22,
     minSpeechMs: 250,
-    hangoverMs: 1250,
+    hangoverMs: 550,
+    maxHangoverMs: 1100,
+    hangoverRampMs: 4000,
+    resumeMs: 150,
     maxUtteranceMs: 30000,
   },
   wake: {
     onsetThreshold: 0.5,
     releaseThreshold: 0.25,
     minSpeechMs: 350,
-    hangoverMs: 1250,
+    hangoverMs: 550,
+    maxHangoverMs: 1100,
+    hangoverRampMs: 4000,
+    resumeMs: 150,
     maxUtteranceMs: 30000,
   },
   barge: {
@@ -190,6 +218,9 @@ export const ENDPOINT_OPTS: Record<EndpointMode, EndpointerOptions> = {
     releaseThreshold: 0.3,
     minSpeechMs: 550,
     hangoverMs: 1250,
+    maxHangoverMs: 1250,
+    hangoverRampMs: 4000,
+    resumeMs: 150,
     maxUtteranceMs: 30000,
   },
 };
@@ -206,14 +237,26 @@ export interface Endpointer {
 export function createEndpointer(opts: Partial<EndpointerOptions> = {}): Endpointer {
   const o = { ...ENDPOINT_OPTS.listen, ...opts };
   // quiet → onset (level ≥ onsetThreshold, not yet minSpeechMs) → speech
-  // speech ⇄ hangover (level under release / back over onset — same capture)
-  // hangover → quiet + 'speech-end' once silence outlasts hangoverMs.
-  let state: 'quiet' | 'onset' | 'speech' | 'hangover' = 'quiet';
+  // speech → hangover (level under release), and back over onset the run
+  //   detours through resume — the blip must hold resumeMs before it rejoins
+  //   speech; if it dies first the original silence countdown keeps running
+  // hangover → quiet + 'speech-end' once silence outlasts the adaptive
+  //   hangover for this utterance's length.
+  let state: 'quiet' | 'onset' | 'speech' | 'hangover' | 'resume' = 'quiet';
   let onsetAt = 0; // when the candidate speech run began
   let speechAt = 0; // when the confirmed utterance began
   let silenceAt = 0; // when the current silence run began
+  let resumeAt = 0; // when the candidate resume (blip) began
+  // Adaptive hangover (issue #408): required silence grows linearly with how
+  // long the user spoke before pausing, from the hangoverMs floor at 0ms of
+  // speech to the maxHangoverMs ceiling at hangoverRampMs and beyond.
+  const hangoverFor = (speechMs: number): number => {
+    const ceiling = Math.max(o.hangoverMs, o.maxHangoverMs);
+    const t = o.hangoverRampMs > 0 ? Math.min(1, speechMs / o.hangoverRampMs) : 1;
+    return o.hangoverMs + (ceiling - o.hangoverMs) * t;
+  };
   return {
-    speaking: () => state === 'speech' || state === 'hangover',
+    speaking: () => state === 'speech' || state === 'hangover' || state === 'resume',
     reset() {
       state = 'quiet';
     },
@@ -252,12 +295,26 @@ export function createEndpointer(opts: Partial<EndpointerOptions> = {}): Endpoin
             return 'speech-end';
           }
           if (level >= o.onsetThreshold) {
-            state = 'speech'; // resumed inside the hangover — same capture
+            state = 'resume'; // maybe resumed — must qualify before it counts
+            resumeAt = nowMs;
             return null;
           }
-          if (nowMs - silenceAt >= o.hangoverMs) {
+          if (nowMs - silenceAt >= hangoverFor(silenceAt - speechAt)) {
             state = 'quiet';
             return 'speech-end';
+          }
+          return null;
+        case 'resume':
+          if (nowMs - speechAt >= o.maxUtteranceMs) {
+            state = 'quiet';
+            return 'speech-end';
+          }
+          if (level < o.releaseThreshold) {
+            state = 'hangover'; // a blip, not speech — the countdown never stopped
+            return null;
+          }
+          if (nowMs - resumeAt >= o.resumeMs) {
+            state = 'speech'; // held long enough — same capture continues
           }
           return null;
       }
