@@ -672,9 +672,54 @@ export async function getHypervisorConfig(): Promise<HypervisorConfig> {
       workdir: '/home/dev',
       readOnly: false,
       assistants: [{ id: 'claude', label: 'Claude Code', default: true }],
+      stt: true,
     };
   }
   return request<HypervisorConfig>('/api/hypervisor/config');
+}
+
+/** Voice input (issue #396): upload recorded audio to the workspace's
+ *  server-side STT (POST /api/hypervisor/transcribe) and return the
+ *  transcript. React Native has no browser SpeechRecognition, so unlike the
+ *  web dashboard the mobile mic always goes through the server. */
+export async function transcribeAudio(uri: string, mimeType = 'audio/m4a'): Promise<string> {
+  if (getConfig().mock) {
+    await delay(400);
+    return 'Spin up a task to run the tests';
+  }
+  const { host, token } = getConfig();
+  if (!host || !token) throw new ApiError('Not configured', 0);
+  const fileResp = await fetch(uri);
+  const blob = await fileResp.blob();
+  const url = buildUrl(host, '/api/hypervisor/transcribe');
+  const abort = new AbortController();
+  // Transcription rides an upload + a provider round-trip — give it the same
+  // doubled budget as file uploads.
+  const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS * 2);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        // The server derives the container format (and provider filename)
+        // from this — expo-audio records m4a on both platforms.
+        'Content-Type': mimeType || blob.type || 'application/octet-stream',
+      },
+      body: blob,
+      signal: abort.signal,
+    });
+  } catch (e) {
+    const aborted = (e as Error).name === 'AbortError';
+    throw new ApiError(aborted ? 'Transcription timed out' : `Network error: ${(e as Error).message}`, 0);
+  } finally {
+    clearTimeout(timer);
+  }
+  const parsed = (await res.json().catch(() => null)) as { text?: string; error?: string } | null;
+  if (!res.ok || typeof parsed?.text !== 'string') {
+    throw new ApiError(parsed?.error || `Transcription failed (${res.status})`, res.status);
+  }
+  return parsed.text;
 }
 
 export async function listThreads(): Promise<HypervisorThread[]> {
@@ -880,7 +925,11 @@ export function fileDownloadBrowserUrl(path: string): string {
 // User-settable model-provider keys for this workspace. Must match server.py
 // ProviderKeysManager.ALLOWED. GET returns a masked view (never the key).
 
-export type ProviderVar = 'OPENROUTER_API_KEY' | 'DEEPSEEK_API_KEY' | 'ANTHROPIC_API_KEY';
+export type ProviderVar =
+  | 'OPENROUTER_API_KEY'
+  | 'DEEPSEEK_API_KEY'
+  | 'ANTHROPIC_API_KEY'
+  | 'OPENAI_API_KEY';
 
 export interface ProviderKeyStatus {
   set: boolean;
@@ -893,6 +942,7 @@ const EMPTY_PROVIDER_VIEW: ProviderKeysView = {
   OPENROUTER_API_KEY: { set: false, hint: '' },
   DEEPSEEK_API_KEY: { set: false, hint: '' },
   ANTHROPIC_API_KEY: { set: false, hint: '' },
+  OPENAI_API_KEY: { set: false, hint: '' },
 };
 
 export async function listProviderKeys(): Promise<ProviderKeysView> {

@@ -3070,7 +3070,10 @@ class ProviderKeysManager:
     KEYS_FILE = '/home/dev/.claude-tasks/provider-keys.json'
     # ONLY these env var names may ever be set/injected — never arbitrary env.
     # Keep in sync with hypervisor_session._PROVIDER_KEY_VARS.
-    ALLOWED = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY')
+    # OPENAI_API_KEY (issue #396) also powers the voice interface's server-side
+    # transcription (SpeechTranscriber) besides riding CLI spawns like the rest.
+    ALLOWED = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY',
+               'OPENAI_API_KEY')
 
     @classmethod
     def _read(cls):
@@ -3134,6 +3137,91 @@ class ProviderKeysManager:
         data = cls._read()
         return {p: data[p] for p in cls.ALLOWED
                 if isinstance(data.get(p), str) and data[p].strip()}
+
+
+class SpeechTranscriber:
+    """Server-side speech-to-text for the voice interface (issue #396, tier 1).
+
+    The web dashboard's tier-0 path uses the browser's own SpeechRecognition
+    and never touches the server; native mobile (React Native) has no such
+    API, so the Expo app records audio and POSTs it to
+    /api/hypervisor/transcribe, which forwards to an OpenAI-compatible
+    transcription endpoint. The key comes from the per-workspace provider-key
+    store (Settings → Provider keys) with the pod env as fallback — same
+    precedence as every CLI spawn's env overlay.
+    """
+
+    # Both overridable for self-hosted / compatible providers (e.g. a local
+    # whisper.cpp server exposing the OpenAI transcriptions API shape).
+    API_URL = os.environ.get(
+        'HYPERVISOR_STT_URL', 'https://api.openai.com/v1/audio/transcriptions')
+    MODEL = os.environ.get('HYPERVISOR_STT_MODEL', 'whisper-1')
+    MAX_AUDIO_BYTES = 25 * 1024 * 1024  # the OpenAI API's own per-file cap
+
+    # Extension by MIME type so the provider can sniff the container format —
+    # Expo records m4a on iOS/Android; browsers upload webm/ogg.
+    _EXT = {
+        'audio/m4a': 'm4a', 'audio/x-m4a': 'm4a', 'audio/mp4': 'm4a',
+        'audio/aac': 'aac', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
+        'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/webm': 'webm',
+        'audio/ogg': 'ogg', 'audio/flac': 'flac',
+    }
+
+    @classmethod
+    def api_key(cls):
+        key = ProviderKeysManager.env_overlay().get('OPENAI_API_KEY')
+        return key or os.environ.get('OPENAI_API_KEY', '').strip() or None
+
+    @classmethod
+    def available(cls):
+        """Whether a client mic should even be offered the server STT path."""
+        return bool(cls.api_key())
+
+    @classmethod
+    def transcribe(cls, audio, content_type='application/octet-stream',
+                   filename=None):
+        """Returns (text, None) on success or (None, (status, message)) on
+        failure — the handler maps the tuple straight onto the response."""
+        key = cls.api_key()
+        if not key:
+            return None, (503, 'No speech-to-text provider is configured — '
+                               'set an OpenAI API key under Settings → '
+                               'Provider keys (or OPENAI_API_KEY in the pod '
+                               'env).')
+        if not filename:
+            filename = 'audio.' + cls._EXT.get(content_type, 'm4a')
+        boundary = uuid.uuid4().hex
+        parts = []
+        parts.append(f'--{boundary}\r\n'
+                     'Content-Disposition: form-data; name="model"\r\n\r\n'
+                     f'{cls.MODEL}\r\n'.encode())
+        parts.append(f'--{boundary}\r\n'
+                     'Content-Disposition: form-data; name="file"; '
+                     f'filename="{filename}"\r\n'
+                     f'Content-Type: {content_type}\r\n\r\n'.encode())
+        parts.append(audio)
+        parts.append(f'\r\n--{boundary}--\r\n'.encode())
+        body = b''.join(parts)
+        req = urllib.request.Request(
+            cls.API_URL, data=body, method='POST', headers={
+                'Authorization': f'Bearer {key}',
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
+            })
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            detail = ''
+            try:
+                detail = e.read().decode('utf-8', 'replace')[:300]
+            except Exception:
+                pass
+            return None, (502, f'transcription provider error ({e.code}): '
+                               f'{detail}')
+        except Exception as e:
+            return None, (502, f'transcription request failed: {e}')
+        text = (data.get('text') or '').strip() if isinstance(data, dict) else ''
+        return text, None
 
 
 class GatewayCredentialsManager:
@@ -5724,6 +5812,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # is a follow-up: the source can grow a `systems` filter without a
             # client redesign.
             'commands': self._hypervisor_commands(),
+            # Whether POST /api/hypervisor/transcribe has a provider key to
+            # work with (issue #396) — clients without a browser SpeechRecognition
+            # (the mobile app) show the mic only when this is true.
+            'stt': SpeechTranscriber.available(),
         })
 
     @staticmethod
@@ -5893,6 +5985,38 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         session.send(message)
         self.send_json({'ok': True})
+
+    def handle_hypervisor_transcribe(self):
+        """POST /api/hypervisor/transcribe (issue #396, tier 1) — raw audio in
+        the body, transcript out. Serves clients without a browser SpeechRecognition
+        (the Expo mobile app); the transcript feeds the ordinary send path
+        client-side, so this endpoint never touches a thread itself."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+        except ValueError:
+            self.send_json({'error': 'invalid Content-Length'}, 400)
+            return
+        if content_length <= 0:
+            self.send_json({'error': 'empty audio body'}, 400)
+            return
+        if content_length > SpeechTranscriber.MAX_AUDIO_BYTES:
+            self.send_json({'error': 'audio too large '
+                            f'(max {SpeechTranscriber.MAX_AUDIO_BYTES} bytes)'}, 413)
+            return
+        audio = self.rfile.read(content_length)
+        ctype = (self.headers.get('Content-Type')
+                 or 'application/octet-stream').split(';')[0].strip()
+        # URL-encoded like the file-upload headers (header values are ISO-8859-1).
+        filename = urllib.parse.unquote(
+            (self.headers.get('X-Filename') or '').strip()) or None
+        text, err = SpeechTranscriber.transcribe(audio, ctype, filename)
+        if err is not None:
+            self.send_json({'error': err[1]}, err[0])
+            return
+        self.send_json({'text': text})
 
     def handle_hypervisor_rename_thread(self, thread_id):
         if not self.check_claude_auth():
@@ -9163,6 +9287,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Hypervisor chat threads
             elif path == "/api/hypervisor/threads":
                 self.handle_hypervisor_create_thread()
+            # Voice interface (issue #396): server-side speech-to-text
+            elif path == "/api/hypervisor/transcribe":
+                self.handle_hypervisor_transcribe()
             # Conversation Gateway (issue #306): inbound WhatsApp webhook
             # (provider-signature authed, NOT bearer) + link enrollment (bearer).
             elif path == "/api/gateway/whatsapp/webhook":

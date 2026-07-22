@@ -28,6 +28,7 @@ const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
   { var: 'OPENROUTER_API_KEY', label: 'OpenRouter', hint: 'OpenCode + OpenRouter-backed models' },
   { var: 'DEEPSEEK_API_KEY', label: 'DeepSeek', hint: 'DeepSeek API' },
   { var: 'ANTHROPIC_API_KEY', label: 'Anthropic', hint: 'Overrides the Claude oauth default' },
+  { var: 'OPENAI_API_KEY', label: 'OpenAI', hint: 'Whisper transcription for the voice mic' },
 ];
 
 export function ProviderKeysCard({ readOnly }: { readOnly?: boolean }) {
