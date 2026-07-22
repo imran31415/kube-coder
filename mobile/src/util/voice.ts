@@ -22,6 +22,19 @@ export async function writeSpeakPref(on: boolean): Promise<void> {
   await setItem(SPEAK_PREF_KEY, on ? '1' : '0');
 }
 
+// Hands-free walkie mode (issue #406) — same key as the web dashboard. On
+// mobile this gates VAD endpointing (auto-stop + auto-send on pause); open-mic
+// barge-in is web-only until the shared audio-session story is proven out.
+export const HANDS_FREE_PREF_KEY = 'kc.hv.handsfree';
+
+export async function readHandsFreePref(): Promise<boolean> {
+  return (await getItem(HANDS_FREE_PREF_KEY)) === '1';
+}
+
+export async function writeHandsFreePref(on: boolean): Promise<void> {
+  await setItem(HANDS_FREE_PREF_KEY, on ? '1' : '0');
+}
+
 /** Reduce markdown to something worth hearing: code blocks are dropped (their
  *  prose context already narrates them), links/images collapse to their text,
  *  and list/heading/emphasis markers go silent. */

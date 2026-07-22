@@ -16,6 +16,13 @@
  * continuous motion for steady states. Animation is plain RN Animated — no
  * reanimated dependency. Transport: poll-only (usePolling, 2s, focus-aware),
  * same as every other screen here.
+ *
+ * Hands-free (issue #406, phase 1 on mobile): the recorder's dB metering —
+ * already flowing for the visualizer — also feeds the shared VAD endpointer,
+ * so pausing auto-stops the capture, and the undo strip shrinks to a brief
+ * cancel flash. Open-mic barge-in stays web-only until the expo-audio /
+ * expo-speech shared-session story is proven out (recording during playback
+ * re-routes iOS to the quiet earpiece).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -45,13 +52,24 @@ import {
 import type { PreviewMessage, PreviewState } from '../api/types';
 import { EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
 import { usePolling } from '../util/usePolling';
-import { speakText, stopSpeaking, stripForSpeech, readSpeakPref, writeSpeakPref } from '../util/voice';
+import {
+  speakText,
+  stopSpeaking,
+  stripForSpeech,
+  readSpeakPref,
+  writeSpeakPref,
+  readHandsFreePref,
+  writeHandsFreePref,
+} from '../util/voice';
 import {
   transition,
   levelFromDb,
   smoothLevel,
+  createEndpointer,
+  ENDPOINT_OPTS,
   orbCopy,
   orbMood,
+  type Endpointer,
   type VoicePhase,
   type VoiceSignal,
 } from '../util/walkieVoice';
@@ -74,6 +92,10 @@ const MOOD_COLOR: Record<string, string> = {
 /** How long the transcribed text is held for review before it auto-sends. */
 const UNDO_MS = 2500;
 
+/** Hands-free keeps only a brief cancel flash — the whole point is a flow
+ *  that doesn't stall between turns. Manual PTT keeps the full window. */
+const HANDS_FREE_UNDO_MS = 900;
+
 export default function WalkieScreen() {
   const insets = useSafeAreaInsets();
   const [state, setState] = useState<PreviewState | null>(null);
@@ -87,6 +109,7 @@ export default function WalkieScreen() {
   const phaseRef = useRef<VoicePhase>('idle');
   const [sttOn, setSttOn] = useState(false);
   const [speakOn, setSpeakOn] = useState(false);
+  const [handsFreeOn, setHandsFreeOn] = useState(false);
   const [micDenied, setMicDenied] = useState(false);
   const [voiceHint, setVoiceHint] = useState('');
   const [pending, setPending] = useState<string | null>(null);
@@ -104,6 +127,8 @@ export default function WalkieScreen() {
   // (history is never narrated — only messages that arrive while watching).
   const narratedSeq = useRef<number | null>(null);
   const levelPrev = useRef(0);
+  // Hands-free VAD over the recorder metering (issue #406).
+  const epRef = useRef<Endpointer | null>(null);
 
   function dispatch(sig: VoiceSignal): VoicePhase {
     const next = transition(phaseRef.current, sig);
@@ -144,6 +169,7 @@ export default function WalkieScreen() {
       .then((c) => !dead && setSttOn(!!c.stt))
       .catch(() => undefined);
     void readSpeakPref().then((v) => !dead && setSpeakOn(v));
+    void readHandsFreePref().then((v) => !dead && setHandsFreeOn(v));
     void AccessibilityInfo.isReduceMotionEnabled().then((v) => !dead && setReduceMotion(v));
     const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
     return () => {
@@ -241,8 +267,9 @@ export default function WalkieScreen() {
     }
   }
 
-  async function stopRecording() {
-    dispatch('press'); // listening → transcribing
+  async function stopRecording(signal: 'press' | 'voice-end' = 'press') {
+    epRef.current = null;
+    dispatch(signal); // listening → transcribing
     Vibration.vibrate(10);
     try {
       await recorder.stop();
@@ -261,9 +288,13 @@ export default function WalkieScreen() {
         return;
       }
       // Undo window: show the transcript briefly, then auto-send. "Edit" drops
-      // it into the text composer instead; "Cancel" discards it.
+      // it into the text composer instead; "Cancel" discards it. Hands-free
+      // shortens this to a flash so the conversation keeps moving.
       setPending(text);
-      pendingTimer.current = setTimeout(() => void sendPending(text), UNDO_MS);
+      pendingTimer.current = setTimeout(
+        () => void sendPending(text),
+        handsFreeOn ? HANDS_FREE_UNDO_MS : UNDO_MS,
+      );
     } catch (e) {
       dispatch('cancel');
       setVoiceHint(e instanceof Error ? e.message : 'Transcription failed');
@@ -362,6 +393,14 @@ export default function WalkieScreen() {
     }
   }
 
+  function toggleHandsFree() {
+    setHandsFreeOn((v) => {
+      const next = !v;
+      void writeHandsFreePref(next);
+      return next;
+    });
+  }
+
   function toggleSpeak() {
     setSpeakOn((v) => {
       const next = !v;
@@ -402,6 +441,21 @@ export default function WalkieScreen() {
       useNativeDriver: true,
     }).start();
   }, [metering, phase, reduceMotion, levelAnim]);
+
+  // Hands-free endpointing (issue #406): the same metering samples feed the
+  // shared VAD, and end-of-speech stops the capture as if the orb was tapped.
+  // Hold-to-talk keeps manual control (press-out decides), and this runs even
+  // under reduce-motion — it's input handling, not decoration.
+  useEffect(() => {
+    if (phase !== 'listening' || !handsFreeOn || holdRef.current) {
+      epRef.current = null;
+      return;
+    }
+    if (metering == null) return; // no meter (simulator) — manual stop only
+    if (!epRef.current) epRef.current = createEndpointer(ENDPOINT_OPTS.listen);
+    const ev = epRef.current.feed(levelFromDb(metering), Date.now());
+    if (ev === 'speech-end') void stopRecording('voice-end');
+  }, [metering, phase, handsFreeOn]);
 
   // Mood loops: simulated input pulse (no meter), output pulse, idle breathe.
   useEffect(() => {
@@ -489,6 +543,8 @@ export default function WalkieScreen() {
     linked,
     stt: sttOn,
     micDenied,
+    handsFree: handsFreeOn,
+    voiceWake: false, // open-mic wake/barge-in is web-only for now
   });
   const hint = pending
     ? 'Sending in a moment — Edit to change it'
@@ -547,6 +603,18 @@ export default function WalkieScreen() {
                 {state.simulate_out_of_window ? 'CLOSED (sim)' : 'OPEN'}
               </Text>
             </View>
+            <Pressable style={styles.switchRow} onPress={toggleHandsFree} accessibilityRole="switch">
+              <Switch
+                value={handsFreeOn}
+                onValueChange={toggleHandsFree}
+                trackColor={{ true: colors.accent, false: colors.surface3 }}
+                thumbColor={colors.text}
+              />
+              <View style={styles.switchLabelWrap}>
+                <Text style={styles.switchLabel}>Hands-free</Text>
+                <Text style={styles.switchHint}>auto-send when you pause</Text>
+              </View>
+            </Pressable>
             <Pressable style={styles.switchRow} onPress={() => void toggleSim()} accessibilityRole="switch">
               <Switch
                 value={!!state.simulate_out_of_window}

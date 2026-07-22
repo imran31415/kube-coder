@@ -4,12 +4,21 @@ import {
   levelFromTimeDomain,
   levelFromDb,
   smoothLevel,
+  createEndpointer,
+  ENDPOINT_OPTS,
   orbCopy,
   orbMood,
   type VoicePhase,
 } from './walkieVoice';
 
-const OK = { available: true, linked: true, stt: true, micDenied: false };
+const OK = {
+  available: true,
+  linked: true,
+  stt: true,
+  micDenied: false,
+  handsFree: false,
+  voiceWake: false,
+};
 
 describe('transition', () => {
   it('walks the happy path: idle → listening → transcribing → sending → thinking → speaking → idle', () => {
@@ -67,6 +76,25 @@ describe('transition', () => {
     expect(transition('thinking', 'quiet')).toBe('idle');
     expect(transition('speaking', 'quiet')).toBe('idle');
     expect(transition('listening', 'quiet')).toBe('listening');
+  });
+
+  it('voice-start reaches exactly as far as a press from settled phases', () => {
+    expect(transition('idle', 'voice-start')).toBe('listening');
+    expect(transition('speaking', 'voice-start')).toBe('listening'); // voice barge-in
+    expect(transition('thinking', 'voice-start')).toBe('listening');
+  });
+
+  it('voice-start never disturbs an active capture or in-flight send', () => {
+    expect(transition('listening', 'voice-start')).toBe('listening');
+    expect(transition('transcribing', 'voice-start')).toBe('transcribing');
+    expect(transition('sending', 'voice-start')).toBe('sending');
+  });
+
+  it('voice-end only ends an active capture', () => {
+    expect(transition('listening', 'voice-end')).toBe('transcribing');
+    for (const p of ['idle', 'transcribing', 'sending', 'thinking', 'speaking'] as const) {
+      expect(transition(p, 'voice-end')).toBe(p);
+    }
   });
 
   it('cancel resets any phase to idle', () => {
@@ -145,6 +173,123 @@ describe('smoothLevel', () => {
   });
 });
 
+describe('createEndpointer', () => {
+  // Explicit constants so the tests read as timelines, independent of preset
+  // tuning: speech is ≥ 0.5, silence is < 0.25, 200ms to confirm speech,
+  // 1000ms of silence to end it, 10s utterance cap.
+  const EP = {
+    onsetThreshold: 0.5,
+    releaseThreshold: 0.25,
+    minSpeechMs: 200,
+    hangoverMs: 1000,
+    maxUtteranceMs: 10000,
+  };
+
+  it('stays quiet on silence and never fires an event', () => {
+    const ep = createEndpointer(EP);
+    for (let t = 0; t <= 5000; t += 50) expect(ep.feed(0.05, t)).toBeNull();
+    expect(ep.speaking()).toBe(false);
+  });
+
+  it('rejects blips shorter than minSpeechMs (clicks, coughs)', () => {
+    const ep = createEndpointer(EP);
+    expect(ep.feed(0.9, 0)).toBeNull();
+    expect(ep.feed(0.9, 100)).toBeNull(); // still under 200ms
+    expect(ep.feed(0.05, 150)).toBeNull(); // died before confirming
+    expect(ep.feed(0.05, 2000)).toBeNull(); // and no late speech-end either
+    expect(ep.speaking()).toBe(false);
+  });
+
+  it('fires speech-start once after sustained speech', () => {
+    const ep = createEndpointer(EP);
+    expect(ep.feed(0.9, 0)).toBeNull();
+    expect(ep.feed(0.9, 100)).toBeNull();
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    expect(ep.feed(0.9, 300)).toBeNull(); // no repeat while speech continues
+    expect(ep.speaking()).toBe(true);
+  });
+
+  it('hysteresis: the band between release and onset neither starts nor ends a run', () => {
+    const ep = createEndpointer(EP);
+    // Mid-band from quiet: not an onset.
+    expect(ep.feed(0.35, 0)).toBeNull();
+    expect(ep.feed(0.35, 500)).toBeNull();
+    expect(ep.speaking()).toBe(false);
+    // But mid-band inside a candidate run keeps it alive to confirmation.
+    expect(ep.feed(0.9, 1000)).toBeNull();
+    expect(ep.feed(0.35, 1100)).toBeNull();
+    expect(ep.feed(0.35, 1200)).toBe('speech-start');
+  });
+
+  it('a pause shorter than the hangover continues the same capture', () => {
+    const ep = createEndpointer(EP);
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    expect(ep.feed(0.05, 500)).toBeNull(); // pause begins
+    expect(ep.feed(0.05, 1400)).toBeNull(); // 900ms — still inside hangover
+    expect(ep.feed(0.9, 1450)).toBeNull(); // resumed: same capture, no event
+    expect(ep.speaking()).toBe(true);
+    // The hangover clock restarts from the next pause, not the first one.
+    expect(ep.feed(0.05, 2000)).toBeNull();
+    expect(ep.feed(0.05, 2900)).toBeNull();
+    expect(ep.feed(0.05, 3100)).toBe('speech-end'); // 1100ms after 2000
+  });
+
+  it('fires speech-end exactly once and can start a fresh capture after', () => {
+    const ep = createEndpointer(EP);
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 250)).toBe('speech-start');
+    ep.feed(0.05, 300);
+    expect(ep.feed(0.05, 1400)).toBe('speech-end');
+    expect(ep.speaking()).toBe(false);
+    expect(ep.feed(0.05, 1500)).toBeNull(); // no double end
+    ep.feed(0.9, 2000);
+    expect(ep.feed(0.9, 2200)).toBe('speech-start'); // new utterance works
+  });
+
+  it('caps runaway utterances at maxUtteranceMs, even mid-speech', () => {
+    const ep = createEndpointer(EP);
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    expect(ep.feed(0.9, 9000)).toBeNull();
+    expect(ep.feed(0.9, 10000)).toBe('speech-end');
+    expect(ep.speaking()).toBe(false);
+  });
+
+  it('reset drops an in-progress run without an event', () => {
+    const ep = createEndpointer(EP);
+    ep.feed(0.9, 0);
+    expect(ep.feed(0.9, 200)).toBe('speech-start');
+    ep.reset();
+    expect(ep.speaking()).toBe(false);
+    expect(ep.feed(0.05, 5000)).toBeNull(); // no orphaned speech-end
+  });
+
+  it('defaults to the listen preset, and presets keep sane relationships', () => {
+    const ep = createEndpointer(); // ENDPOINT_OPTS.listen
+    let t = 0;
+    let started = false;
+    for (; t <= ENDPOINT_OPTS.listen.minSpeechMs + 50 && !started; t += 50) {
+      started = ep.feed(0.9, t) === 'speech-start';
+    }
+    expect(started).toBe(true);
+    for (const mode of ['listen', 'wake', 'barge'] as const) {
+      const o = ENDPOINT_OPTS[mode];
+      expect(o.releaseThreshold).toBeLessThan(o.onsetThreshold);
+      expect(o.minSpeechMs).toBeLessThan(o.hangoverMs);
+      expect(o.hangoverMs).toBeLessThan(o.maxUtteranceMs);
+    }
+    // Barge-in (TTS echo in the room) must be strictly harder to trigger than
+    // wake, which in turn is at least as strict as plain endpointing.
+    expect(ENDPOINT_OPTS.barge.onsetThreshold).toBeGreaterThan(ENDPOINT_OPTS.wake.onsetThreshold);
+    expect(ENDPOINT_OPTS.barge.minSpeechMs).toBeGreaterThan(ENDPOINT_OPTS.wake.minSpeechMs);
+    expect(ENDPOINT_OPTS.wake.onsetThreshold).toBeGreaterThanOrEqual(
+      ENDPOINT_OPTS.listen.onsetThreshold,
+    );
+    expect(ENDPOINT_OPTS.wake.minSpeechMs).toBeGreaterThanOrEqual(ENDPOINT_OPTS.listen.minSpeechMs);
+  });
+});
+
 describe('orbCopy', () => {
   it('degraded states win over the phase and explain themselves', () => {
     expect(orbCopy('idle', { ...OK, available: false }).disabled).toBe(true);
@@ -171,6 +316,25 @@ describe('orbCopy', () => {
     expect(orbCopy('sending', OK).disabled).toBe(true);
     expect(orbCopy('thinking', OK).disabled).toBe(false);
     expect(orbCopy('speaking', OK).hint).toMatch(/interrupt/i);
+  });
+
+  it('hands-free listening explains the auto-send instead of asking for a tap', () => {
+    const c = orbCopy('listening', { ...OK, handsFree: true });
+    expect(c.label).toBe('LISTENING');
+    expect(c.hint).toMatch(/pause/i);
+    expect(c.hint).not.toMatch(/tap again/i);
+  });
+
+  it('a live open mic invites talking without a tap; a dead one keeps tap copy', () => {
+    const live = { ...OK, handsFree: true, voiceWake: true };
+    expect(orbCopy('idle', live).hint).toMatch(/start talking/i);
+    expect(orbCopy('speaking', live).hint).toMatch(/speak to interrupt/i);
+    expect(orbCopy('thinking', live).hint).toMatch(/speak/i);
+    // Mode on but the mic isn't live (tab hidden, no AEC, mobile phase 1):
+    // never promise voice wake-up the client can't deliver.
+    const dead = { ...OK, handsFree: true, voiceWake: false };
+    expect(orbCopy('idle', dead).hint).toBe('Tap, then speak');
+    expect(orbCopy('speaking', dead).hint).toMatch(/tap to interrupt/i);
   });
 });
 

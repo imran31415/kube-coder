@@ -37,6 +37,13 @@
   gap: var(--size-2);
 }
 
+.wt-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  min-width: 0;
+}
+
 .wt-chip {
   display: inline-flex;
   align-items: center;
@@ -75,6 +82,16 @@
 }
 .wt-led-off {
   background: var(--text-subtle);
+}
+/* hands-free: the open mic is always visibly flagged (issue #406) */
+.wt-chip-mic {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.wt-led-mic {
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+  animation: wt-blink 2.4s ease-in-out infinite;
 }
 @keyframes wt-blink {
   0%, 100% { opacity: 1; }
@@ -679,6 +696,7 @@
 /* ── reduced motion: state changes stay, continuous motion goes ─────────── */
 @media (prefers-reduced-motion: reduce) {
   .wt-led-busy,
+  .wt-led-mic,
   .wt[data-mood='idle'] .wt-ring-1,
   .wt[data-mood='idle'] .wt-ring-2,
   .wt-stage[data-sim='1'] .wt-ring-1,
