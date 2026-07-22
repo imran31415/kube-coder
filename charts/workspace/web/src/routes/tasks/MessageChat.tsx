@@ -304,6 +304,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
                   type="button"
                   class="mc-chip-remove"
                   title="Remove"
+                  aria-label={`Remove ${a.name}`}
                   onClick={() => removeAttachment(a.id)}
                 >
                   <Icon name="close" size={11} />
@@ -316,6 +317,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
         <textarea
           ref={inputRef}
           class="mc-input"
+          aria-label="Reply to the assistant"
           placeholder={
             readOnly
               ? 'Read-only public demo — sending follow-ups is disabled.'

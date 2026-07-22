@@ -14,6 +14,8 @@ export interface BottomSheetProps {
   open: boolean;
   onClose: () => void;
   title?: string;
+  /** Accessible dialog name for untitled sheets (no visible header). */
+  ariaLabel?: string;
   initialSnap?: Snap;
   children: ComponentChildren;
 }
@@ -23,7 +25,7 @@ const SNAP_PCT: Record<Snap, number> = {
   full: 92,
 };
 
-export function BottomSheet({ open, onClose, title, initialSnap = 'peek', children }: BottomSheetProps) {
+export function BottomSheet({ open, onClose, title, ariaLabel, initialSnap = 'peek', children }: BottomSheetProps) {
   const ref = useRef<HTMLElement | null>(null);
   useEscape(open, onClose);
   useScrollLock(open);
@@ -64,8 +66,9 @@ export function BottomSheet({ open, onClose, title, initialSnap = 'peek', childr
         class={`sheet ${open ? 'sheet-open' : ''} sheet-snap-${snap}`}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-label={title ?? ariaLabel}
         aria-hidden={!open}
+        inert={!open}
         style={{ height: `${SNAP_PCT[snap]}vh` }}
       >
         {/* When there's no title, fold the drag handle and X into one row to

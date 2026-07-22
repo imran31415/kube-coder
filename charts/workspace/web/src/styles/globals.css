@@ -31,6 +31,34 @@ code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
 .subtle { color: var(--text-subtle); }
 .mono { font-family: var(--font-mono); }
 
+/* Screen-reader-only text — visually hidden but still announced. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Global reduced-motion kill-switch (WCAG 2.2.2 / 2.3.3, #392). The
+   --motion-* zeroing in tokens.css only covers transitions that use those
+   tokens — this also stops the hardcoded infinite pulses/shimmers/spinners
+   (tasks.css, MetricsBar.css, walkie.css, detail.css, …) in one place. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Scanline overlay removed for the Linux IDE polish pass — the dashboard
    now leans on clean surfaces + restrained accent rather than themed
    character touches. Keep the rule deleted, not toggled off, so future

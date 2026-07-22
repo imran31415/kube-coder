@@ -36,6 +36,7 @@ export function Drawer({ open, onClose, title, children, width = 420 }: DrawerPr
         aria-modal="true"
         aria-label={title}
         aria-hidden={!open}
+        inert={!open}
       >
         <div class="drawer-header">
           <h2 class="drawer-title">{title}</h2>

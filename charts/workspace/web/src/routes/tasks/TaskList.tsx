@@ -168,7 +168,7 @@ export function TaskList() {
               <button
                 class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${t.status === 'waiting-for-input' ? 'tl-row-waiting' : ''} ${isStaleWaiting(t) ? 'tl-row-stale' : ''}`}
                 onClick={() => onRowClick(t)}
-                aria-current={activeId === t.task_id ? 'true' : 'false'}
+                aria-current={activeId === t.task_id ? 'true' : undefined}
               >
                 <div class="tl-row-head">
                   <div class="tl-row-status-container">

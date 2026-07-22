@@ -231,6 +231,7 @@ export function CommandPalette() {
             type="text"
             value={q}
             placeholder="Search tasks, memories, triggers, actions…"
+            aria-label="Search tasks, memories, triggers, actions"
             onInput={(e) => setQ((e.target as HTMLInputElement).value)}
             onKeyDown={onKey}
             role="combobox"

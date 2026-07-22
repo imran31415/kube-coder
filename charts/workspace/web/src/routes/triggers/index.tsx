@@ -213,12 +213,13 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
     <form class="tf" onSubmit={onSubmit}>
       <div class="tf-kind-row">
         <span class="tf-label">Kind</span>
-        <div class="seg">
+        <div class="seg" role="group" aria-label="Trigger kind">
           {(['cron', 'webhook'] as TriggerKind[]).map((k) => (
             <button
               key={k}
               type="button"
               class={`seg-item ${kind === k ? 'seg-item-active' : ''}`}
+              aria-pressed={kind === k}
               onClick={() => setKind(k)}
             >
               {k}

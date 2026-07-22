@@ -159,34 +159,34 @@
 
 /* Waiting for input styling */
 .tl-row-waiting {
-  border-color: var(--warning-border, color-mix(in srgb, #fbbf24 30%, var(--border)));
-  background: var(--warning-soft, color-mix(in srgb, #fbbf24 8%, var(--surface)));
+  border-color: var(--warning-border, color-mix(in srgb, var(--warn) 30%, var(--border)));
+  background: var(--warning-soft, color-mix(in srgb, var(--warn) 8%, var(--surface)));
   animation: tl-waiting-pulse 2s ease-in-out infinite;
 }
 .tl-row-waiting:hover {
-  background: var(--warning-soft-hover, color-mix(in srgb, #fbbf24 12%, var(--surface-2)));
-  border-color: var(--warning-border-hover, color-mix(in srgb, #fbbf24 40%, var(--border-2)));
+  background: var(--warning-soft-hover, color-mix(in srgb, var(--warn) 12%, var(--surface-2)));
+  border-color: var(--warning-border-hover, color-mix(in srgb, var(--warn) 40%, var(--border-2)));
 }
 .tl-row-waiting.tl-row-active {
-  border-color: var(--warning, #fbbf24);
-  background: var(--warning-soft, color-mix(in srgb, #fbbf24 12%, var(--surface)));
+  border-color: var(--warning, var(--warn));
+  background: var(--warning-soft, color-mix(in srgb, var(--warn) 12%, var(--surface)));
 }
 
 /* Stale escalation — a waiting task that's been idle past the stale
    threshold (~20m). Overrides the amber with a stronger red "needs you" cue
    and a more urgent pulse. */
 .tl-row-stale {
-  border-color: color-mix(in srgb, #ef4444 45%, var(--border));
-  background: color-mix(in srgb, #ef4444 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
   animation: tl-stale-pulse 1.4s ease-in-out infinite;
 }
 .tl-row-stale:hover {
-  background: color-mix(in srgb, #ef4444 15%, var(--surface-2));
-  border-color: color-mix(in srgb, #ef4444 60%, var(--border-2));
+  background: color-mix(in srgb, var(--danger) 15%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--border-2));
 }
 .tl-row-stale.tl-row-active {
-  border-color: #ef4444;
-  background: color-mix(in srgb, #ef4444 14%, var(--surface));
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
 }
 
 .tl-row-status-container {
@@ -203,8 +203,8 @@
 .tl-row-prompt {
   padding: 8px 12px;
   margin-top: 4px;
-  background: var(--warning-soft, color-mix(in srgb, #fbbf24 6%, var(--surface-2)));
-  border: 1px solid var(--warning-border, color-mix(in srgb, #fbbf24 20%, var(--border)));
+  background: var(--warning-soft, color-mix(in srgb, var(--warn) 6%, var(--surface-2)));
+  border: 1px solid var(--warning-border, color-mix(in srgb, var(--warn) 20%, var(--border)));
   border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1.4;
@@ -212,7 +212,7 @@
 
 .tl-row-prompt-label {
   font-weight: 600;
-  color: var(--warning-text, #d97706);
+  color: var(--warning-text);
   margin-right: 6px;
 }
 
@@ -224,28 +224,28 @@
 
 /* Stale variant of the prompt strip — red-tinted to match .tl-row-stale. */
 .tl-row-prompt-stale {
-  background: color-mix(in srgb, #ef4444 8%, var(--surface-2));
-  border-color: color-mix(in srgb, #ef4444 30%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
 }
 .tl-row-prompt-stale .tl-row-prompt-label {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 @keyframes tl-stale-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, #ef4444 45%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, #ef4444 12%, transparent);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 12%, transparent);
   }
 }
 
 @keyframes tl-waiting-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, #fbbf24 30%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 30%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 4px color-mix(in srgb, #fbbf24 10%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 10%, transparent);
   }
 }
 

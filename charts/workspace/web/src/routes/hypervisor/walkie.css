@@ -347,6 +347,12 @@
   opacity: 0;
   pointer-events: none;
 }
+/* The real checkbox is visually hidden — surface keyboard focus on the
+   visible track so the switch has a focus indicator (WCAG 2.4.7, #392). */
+.wt-switch input:focus-visible + .wt-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .wt-switch-track {
   width: 38px;
   height: 22px;

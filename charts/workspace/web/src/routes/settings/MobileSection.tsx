@@ -81,9 +81,9 @@ export function MobileSection() {
       </p>
 
       <div class="settings-row">
-        <div class="settings-row-label">Workspace host</div>
+        <label class="settings-row-label" for="mobile-host">Workspace host</label>
         <div class="settings-row-control settings-copy-row">
-          <Input fullWidth readOnly value={host} />
+          <Input id="mobile-host" fullWidth readOnly value={host} />
           <Button onClick={() => copy(host, 'Host')}>
             <Icon name="link" size={14} /> Copy
           </Button>
@@ -91,9 +91,9 @@ export function MobileSection() {
       </div>
 
       <div class="settings-row">
-        <div class="settings-row-label">API token</div>
+        <label class="settings-row-label" for="mobile-token">API token</label>
         <div class="settings-row-control settings-copy-row">
-          <Input fullWidth readOnly value={tokenField} />
+          <Input id="mobile-token" fullWidth readOnly value={tokenField} />
           <Button onClick={() => setRevealed((v) => !v)} disabled={!token}>
             {revealed ? 'Hide' : 'Reveal'}
           </Button>

@@ -37,7 +37,7 @@ function MeterRow({ label, percent, hint }: { label: string; percent: number; hi
         <span class="meter-row-label">{label}</span>
         <span class={`meter-row-pct meter-row-pct-${t} mono`}>{Math.round(percent)}%</span>
       </div>
-      <div class={`meter-track meter-track-${t}`} role="progressbar" aria-valuenow={Math.round(percent)} aria-valuemin={0} aria-valuemax={100}>
+      <div class={`meter-track meter-track-${t}`} role="progressbar" aria-label={label} aria-valuenow={Math.round(percent)} aria-valuemin={0} aria-valuemax={100}>
         <div class={`meter-fill meter-fill-${t}`} style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
       </div>
       <div class="meter-row-hint muted mono">{hint}</div>

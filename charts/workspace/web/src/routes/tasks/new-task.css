@@ -56,3 +56,14 @@
   line-height: 1.5;
 }
 .ntf-note strong { color: var(--accent); font-weight: 600; }
+
+.ntf-error {
+  margin: 0;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: var(--radius);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.5;
+}

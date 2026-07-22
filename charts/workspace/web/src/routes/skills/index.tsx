@@ -127,6 +127,7 @@ export function SkillsRoute() {
       </div>
 
       <BottomSheet
+        ariaLabel="Skill details"
         open={isMobile && sheetOpen.value === 'skill-detail'}
         onClose={() => {
           sheetOpen.value = null;
@@ -167,9 +168,10 @@ function SkillsToolbar() {
         onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
         aria-label="Filter skills"
       />
-      <div class="skl-facet-row" role="tablist" aria-label="System facets">
+      <div class="skl-facet-row" role="group" aria-label="System facets">
         <button
           class={`skl-facet ${skillsSystemFacet.value == null ? 'skl-facet-active' : ''}`}
+          aria-pressed={skillsSystemFacet.value == null}
           onClick={() => (skillsSystemFacet.value = null)}
         >
           All systems
@@ -178,6 +180,7 @@ function SkillsToolbar() {
           <button
             key={s}
             class={`skl-facet ${skillsSystemFacet.value === s ? 'skl-facet-active' : ''}`}
+            aria-pressed={skillsSystemFacet.value === s}
             onClick={() => (skillsSystemFacet.value = skillsSystemFacet.value === s ? null : s)}
           >
             {s}
@@ -190,6 +193,7 @@ function SkillsToolbar() {
           <button
             key={`scope-${s}`}
             class={`skl-facet ${skillsScopeFacet.value === s ? 'skl-facet-active' : ''}`}
+            aria-pressed={skillsScopeFacet.value === s}
             onClick={() => (skillsScopeFacet.value = skillsScopeFacet.value === s ? null : s)}
           >
             {s}
@@ -210,7 +214,7 @@ function SkillsList({ list, onRowClick }: { list: SkillRecord[]; onRowClick: (s:
           selectedSkill.value?.fingerprint === s.fingerprint;
         return (
           <li key={`${s.name}:${s.fingerprint}`}>
-            <button class={`skl-row ${active ? 'skl-row-active' : ''}`} onClick={() => onRowClick(s)}>
+            <button class={`skl-row ${active ? 'skl-row-active' : ''}`} aria-current={active ? 'true' : undefined} onClick={() => onRowClick(s)}>
               <div class="skl-row-head">
                 <span class="skl-row-name mono">/{s.name}</span>
                 <Pill tone="neutral" mono>{s.scope}</Pill>

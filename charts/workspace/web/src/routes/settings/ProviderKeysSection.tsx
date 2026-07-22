@@ -190,6 +190,7 @@ export function ProviderKeysSection() {
               <Input
                 fullWidth
                 type="password"
+                aria-label={`${prov.label} API key`}
                 value={drafts[prov.var] ?? ''}
                 placeholder={status?.set ? 'Replace key…' : 'Paste key…'}
                 onInput={(e) => setDrafts((d) => ({ ...d, [prov.var]: (e.target as HTMLInputElement).value }))}
