@@ -47,6 +47,10 @@ import type {
   PreviewControlResult,
   PreviewSendResult,
   PreviewState,
+  GatewayProviderSpec,
+  GatewayCredentialsView,
+  GatewayLink,
+  GatewayPairingCode,
   SkillRecord,
   TaskDetail,
   TaskSummary,
@@ -1008,6 +1012,60 @@ export async function deleteMcpServer(name: string): Promise<McpSyncResults> {
     { method: 'DELETE' },
   );
   return r.sync;
+}
+
+// ---- Messaging gateway config (issues #328/#329/#330) ----------------------
+// Same endpoints the web dashboard uses; the provider catalog drives the
+// Settings card so a new provider needs zero mobile changes.
+const EMPTY_CREDENTIALS: GatewayCredentialsView = { configured: false, provider_id: null, fields: {} };
+
+export async function getGatewayProviders(): Promise<GatewayProviderSpec[]> {
+  if (getConfig().mock) return [];
+  const r = await request<{ providers: GatewayProviderSpec[]; available: boolean }>('/api/gateway/providers');
+  return r.providers || [];
+}
+
+export async function getGatewayCredentials(): Promise<GatewayCredentialsView> {
+  if (getConfig().mock) return EMPTY_CREDENTIALS;
+  const r = await request<{ credentials: GatewayCredentialsView }>('/api/gateway/credentials');
+  return r.credentials;
+}
+
+export async function putGatewayCredentials(body: {
+  provider_id: string;
+  creds: Record<string, string>;
+  sender_number?: string;
+}): Promise<GatewayCredentialsView> {
+  if (getConfig().mock) return EMPTY_CREDENTIALS;
+  const r = await request<{ ok: boolean; credentials: GatewayCredentialsView }>('/api/gateway/credentials', {
+    method: 'PUT',
+    body,
+  });
+  return r.credentials;
+}
+
+export async function deleteGatewayCredentials(): Promise<void> {
+  if (getConfig().mock) return;
+  await request('/api/gateway/credentials', { method: 'DELETE' });
+}
+
+export async function testGatewayConnection(): Promise<{ ok: boolean; detail: string }> {
+  if (getConfig().mock) return { ok: false, detail: 'demo mode' };
+  return request<{ ok: boolean; detail: string }>('/api/gateway/test', { method: 'POST', body: {} });
+}
+
+export async function createGatewayLink(workspace = 'workspace'): Promise<GatewayPairingCode> {
+  return request<GatewayPairingCode>('/api/gateway/link', { method: 'POST', body: { workspace } });
+}
+
+export async function listGatewayLinks(): Promise<GatewayLink[]> {
+  if (getConfig().mock) return [];
+  const r = await request<{ links: GatewayLink[]; available: boolean }>('/api/gateway/links');
+  return r.links || [];
+}
+
+export async function deleteGatewayLink(id: string): Promise<void> {
+  await request(`/api/gateway/link/${id}`, { method: 'DELETE' });
 }
 
 // ---- Assistants ------------------------------------------------------------

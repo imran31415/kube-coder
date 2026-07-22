@@ -7,6 +7,7 @@ import { ControllerConnectModal } from '../components/ControllerConnectModal';
 import { GitIdentityCard } from '../components/GitIdentityCard';
 import { McpServersCard } from '../components/McpServersCard';
 import { ProviderKeysCard } from '../components/ProviderKeysCard';
+import { MessagingCard } from '../components/MessagingCard';
 import { UpdatesCard } from '../components/UpdatesCard';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
 import { useConfig } from '../store/useConfig';
@@ -81,6 +82,8 @@ export default function SettingsScreen() {
         {!cfg.mock ? <ProviderKeysCard readOnly={isDemo} /> : null}
 
         {!cfg.mock ? <McpServersCard readOnly={isDemo} /> : null}
+
+        {!cfg.mock ? <MessagingCard readOnly={isDemo} /> : null}
 
         {/* Identity + self-serve updates. Shown read-only on the public demo and
             in the mock build (where they render canned data), interactive on a
