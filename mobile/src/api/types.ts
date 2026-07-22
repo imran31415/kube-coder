@@ -298,3 +298,60 @@ export interface PreviewControlResult {
   linked?: boolean;
   simulate_out_of_window?: boolean;
 }
+
+// ---- Messaging gateway config (issues #328/#329/#330) ----------------------
+// Data-driven provider catalog + redacted per-workspace credential store, shared
+// with the web dashboard (charts/workspace/web/src/api/gateway.ts).
+export interface GatewayCredentialField {
+  key: string;
+  label: string;
+  secret: boolean;
+  placeholder: string;
+  help_url: string;
+  required: boolean;
+}
+
+export interface GatewayProviderSpec {
+  id: string;
+  display_name: string;
+  credential_fields: GatewayCredentialField[];
+  sender_field: GatewayCredentialField;
+  capabilities: { proactive: boolean; max_text_len: number; [k: string]: unknown };
+}
+
+export interface GatewayCredentialFieldState {
+  set: boolean;
+  hint?: string; // secret fields only, e.g. "…9999"; never the value
+  value?: string; // non-secret fields only
+}
+
+export interface GatewayCredentialsView {
+  configured: boolean;
+  provider_id: string | null;
+  sender_field?: string;
+  fields: Record<string, GatewayCredentialFieldState>;
+}
+
+export interface GatewayLinkBinding {
+  workspace: string;
+  workspace_host: string;
+  is_default: boolean;
+  has_thread: boolean;
+  token_set: boolean;
+  bound_at: number;
+}
+
+export interface GatewayLink {
+  id: string;
+  channel: string;
+  created_at: number;
+  updated_at: number;
+  bindings: GatewayLinkBinding[];
+}
+
+export interface GatewayPairingCode {
+  code: string;
+  expires_in: number;
+  whatsapp_number: string;
+  workspace: string;
+}

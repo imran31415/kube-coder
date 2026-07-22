@@ -355,3 +355,16 @@
 @media (prefers-reduced-motion: reduce) {
   .ws-restarting-spinner { animation-duration: 2.4s; }
 }
+
+/* Messaging / WhatsApp section (issue #330) — linked-number rows. */
+.settings-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-3, 12px);
+  padding: 10px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.settings-link-ws { font-weight: 600; font-size: 14px; }

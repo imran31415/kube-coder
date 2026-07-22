@@ -166,6 +166,7 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
 
 export const apiGet = <T>(path: string, query?: Options['query']) => api<T>(path, { method: 'GET', query });
 export const apiPost = <T>(path: string, body?: unknown) => api<T>(path, { method: 'POST', body });
+export const apiPut = <T>(path: string, body?: unknown) => api<T>(path, { method: 'PUT', body });
 export const apiDelete = <T>(path: string) => api<T>(path, { method: 'DELETE' });
 
 /**
