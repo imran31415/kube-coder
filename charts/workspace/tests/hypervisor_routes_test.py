@@ -192,6 +192,75 @@ class SetModelHandlerTest(HypervisorRouteTestBase):
         self.assertEqual(self.last()[1], 404)
 
 
+class WatcherRoutesTest(HypervisorRouteTestBase):
+    """The cross-turn watcher endpoints (issue #402): POST/GET
+    /api/hypervisor/threads/{id}/watchers and DELETE .../watchers/{wid}. Thin
+    wrappers over hypervisor_session.WATCHERS — these tests pin the HTTP
+    contract (status codes, validation mapping) against the real manager and
+    a real thread in a temp HYPERVISOR_DIR."""
+
+    def _post(self, h, tid, body):
+        h.read_json_body.return_value = body
+        server.BrowserHandler.handle_hypervisor_create_watcher(h, tid)
+
+    def test_create_returns_201_and_persists(self):
+        s = self._mk()
+        h = self._handler()
+        self._post(h, s.id, {'kind': 'task', 'target': 'task-1',
+                             'note': 'the build', 'interval': 30})
+        obj, status = self.last()
+        self.assertEqual(status, 201)
+        w = obj['watcher']
+        self.assertEqual((w['kind'], w['target'], w['state']),
+                         ('task', 'task-1', 'armed'))
+        self.assertEqual(hs.WATCHERS.list(s.id)[0]['id'], w['id'])
+
+    def test_create_maps_validation_to_400(self):
+        s = self._mk()
+        h = self._handler()
+        self._post(h, s.id, {'kind': 'webhook', 'target': 'x'})
+        obj, status = self.last()
+        self.assertEqual(status, 400)
+        self.assertIn('kind', obj['error'])
+
+    def test_create_missing_thread_is_404_and_unauth_is_401(self):
+        h = self._handler()
+        self._post(h, 'no-such-id', {'kind': 'task', 'target': 't'})
+        self.assertEqual(self.last()[1], 404)
+        s = self._mk()
+        h = self._handler(authed=False)
+        self._post(h, s.id, {'kind': 'task', 'target': 't'})
+        self.assertEqual(self.last()[1], 401)
+        self.assertEqual(hs.WATCHERS.list(s.id), [])
+
+    def test_list_returns_watchers(self):
+        s = self._mk()
+        w = hs.WATCHERS.arm(s.id, kind='command', target='true')
+        h = self._handler()
+        server.BrowserHandler.handle_hypervisor_list_watchers(h, s.id)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertEqual([x['id'] for x in obj['watchers']], [w['id']])
+
+    def test_cancel_is_reported_and_idempotent(self):
+        s = self._mk()
+        w = hs.WATCHERS.arm(s.id, kind='file', target='/tmp/x')
+        h = self._handler()
+        server.BrowserHandler.handle_hypervisor_cancel_watcher(h, s.id, w['id'])
+        self.assertEqual(self.last(), ({'ok': True, 'cancelled': True}, 200))
+        self.assertEqual(hs.WATCHERS.list(s.id)[0]['state'], 'cancelled')
+        server.BrowserHandler.handle_hypervisor_cancel_watcher(h, s.id, w['id'])
+        self.assertEqual(self.last(), ({'ok': True, 'cancelled': False}, 200))
+
+    def test_delete_thread_cancels_its_watchers(self):
+        s = self._mk()
+        hs.WATCHERS.arm(s.id, kind='task', target='task-9')
+        h = self._handler()
+        server.BrowserHandler.handle_hypervisor_delete_thread(h, s.id)
+        self.assertEqual(self.last()[1], 200)
+        self.assertEqual(hs.WATCHERS.list(s.id)[0]['state'], 'cancelled')
+
+
 class HypervisorReadonlyGateTest(unittest.TestCase):
     """DELETE /api/hypervisor/threads/{id} and POST .../restore are both
     registered in do_DELETE / do_POST AFTER the shared `_readonly_block()`

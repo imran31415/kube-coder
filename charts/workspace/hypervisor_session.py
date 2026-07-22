@@ -282,9 +282,10 @@ def _lost_watcher_note(lost: List[str]) -> str:
         'die when the turn ends. Any "no completion record / may have been '
         'stopped" task notification about them means exactly that; the user '
         f'did not stop anything. Lost: {listing}. If you were waiting on a '
-        'condition, re-check it directly now. To wait across turns, use the '
-        'dashboard create_task tool (tmux-backed, survives turns) or write '
-        'state to a file and re-check it next turn.'
+        'condition, re-check it directly now. To wait across turns, arm a '
+        'runner-owned watcher with the dashboard `watch` tool (it polls after '
+        'your turn ends and posts the outcome into this chat), or use '
+        'create_task (tmux-backed, survives turns).'
     )
 
 
@@ -1340,6 +1341,8 @@ class HypervisorSession:
         # Preserve the thread's original activity ordering across a
         # delete→restore round-trip: don't let _write_meta bump updated_at.
         self._write_meta(m, touch=False)
+        # A deleted thread must not keep polling or inject notifications (#402).
+        WATCHERS.cancel_thread(self.id)
 
     def revive(self) -> bool:
         """Clear ``deleted_at`` so a soft-deleted thread reappears in the
@@ -1607,6 +1610,10 @@ class HypervisorSession:
         runner thread's finally clause records the "stopped" marker and resets
         status to idle.
         """
+        # Stopping the thread also disarms its cross-turn watchers (#402): the
+        # user is halting the work, so its pending "tell me when X" polls must
+        # not keep running and inject follow-up turns later.
+        WATCHERS.cancel_thread(self.id)
         with _RUNLOCK:
             proc = _PROCS.get(self.id)
             running = bool(_RUNNING.get(self.id))
@@ -1740,6 +1747,10 @@ class HypervisorSession:
             # set one — the adapter's default env drops it so oauth is used.
             env.update(_provider_key_overlay())
             env['HOME'] = WORKSPACE_HOME
+            # The thread id rides the CLI's env (inherited by its stdio MCP
+            # servers), so the dashboard MCP's `watch` tool can arm a cross-turn
+            # watcher on THIS thread without any explicit id plumbing (#402).
+            env['KC_HYPERVISOR_THREAD_ID'] = self.id
             proc = subprocess.Popen(
                 spec['argv'],
                 cwd=spec.get('cwd') or WORKSPACE_HOME,
@@ -1831,3 +1842,356 @@ class HypervisorSession:
             # any registered observer (the Conversation Gateway's outbound
             # delivery, issue #306). Best-effort; never perturbs the runner.
             _notify_turn_complete(self.id)
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Cross-turn watchers (issue #402) — the runner-owned watch primitive
+#
+# The #378/#384 work made watcher loss *honest* (arm-time warning + truthful
+# turn-boundary notice) but left the capability gap: a per-turn `claude -p`
+# process cannot wait for anything past its own turn. This section closes it.
+# The SERVER process is long-lived, so it owns the poll loop: an in-turn agent
+# arms a watcher (via the dashboard MCP `watch` tool → POST
+# /api/hypervisor/threads/{id}/watchers), the WatcherManager evaluates the
+# condition on its own schedule, and when it fires (or times out) it injects a
+# follow-up user turn into the thread — the same send() path the Conversation
+# Gateway uses for inbound messages — so the agent gets a GENUINE notification
+# on a real next turn, with no manual re-polling and no ghost notifications.
+#
+# Watcher kinds:
+#   task    — a Claude Task API task id reaching a terminal/attention status
+#             (completed | error | killed | waiting-for-input). The most common
+#             real-world wait ("tell me when the build task finishes").
+#   command — a shell predicate run by the runner; fires when it exits 0.
+#   file    — a path appearing, disappearing, or its mtime changing.
+#
+# Persistence: one watchers.json per thread dir, scanned every tick — so
+# watchers survive turn boundaries by construction (they never lived in the
+# turn process) AND runner restarts (state is re-read from disk; no in-memory
+# registry to lose). Thread stop()/delete() cancels its watchers.
+# ───────────────────────────────────────────────────────────────────────────
+WATCH_TICK = float(os.environ.get('KC_HYPERVISOR_WATCH_TICK', '5'))
+WATCH_KINDS = ('task', 'command', 'file')
+WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL, WATCH_DEFAULT_INTERVAL = 5.0, 600.0, 20.0
+WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT, WATCH_DEFAULT_TIMEOUT = 10.0, 86400.0, 3600.0
+# Guard rail: a runaway agent can't accumulate unbounded poll loops per thread.
+WATCH_MAX_PER_THREAD = int(os.environ.get('KC_HYPERVISOR_WATCH_MAX', '8'))
+# Ceiling for one `command`-kind predicate run, so a hung predicate can't stall
+# the tick loop for long.
+WATCH_COMMAND_TIMEOUT = 10.0
+# Task statuses that complete a `task` watcher. waiting-for-input is included
+# deliberately: interactive (Build-tab) tasks keep their tmux REPL alive after
+# finishing the work, so quiescence → waiting-for-input IS their "done / needs
+# you" signal; only headless tasks ever reach completed.
+WATCH_TASK_FIRE_STATUSES = frozenset(
+    {'completed', 'error', 'killed', 'waiting-for-input'})
+_WATCH_ACTIVE_STATES = ('armed', 'fired', 'timeout')
+
+
+def _clamp(value: Any, lo: float, hi: float, default: float) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+class WatcherManager:
+    """Owns every thread's cross-turn watchers: arm/list/cancel, the periodic
+    evaluation tick, and outcome delivery back into the thread.
+
+    Deterministic core: tick(now) is synchronous and side-effect-complete, so
+    tests drive it directly with a fake clock — start() merely wraps it in a
+    daemon-thread loop and hooks turn completion for prompt delivery."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._loop_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        # Injected by server.py at startup (this module can't import server).
+        # Returns a task's status string, or None when the task doesn't exist.
+        self._task_status: Optional[Callable[[str], Optional[str]]] = None
+        # Delivery seam — tests replace this to observe/steer injection.
+        self._deliver: Callable[[str, str], Optional[bool]] = self._default_deliver
+
+    # ── wiring ─────────────────────────────────────────────────────────────
+    def set_task_status_provider(self, fn: Callable[[str], Optional[str]]) -> None:
+        self._task_status = fn
+
+    def start(self) -> None:
+        """Start the background tick loop (idempotent) and register for
+        turn-complete events so a fired watcher is delivered the moment its
+        thread goes idle instead of waiting for the next tick."""
+        with self._lock:
+            if self._loop_thread is not None:
+                return
+            self._loop_thread = threading.Thread(
+                target=self._loop, name='hypervisor-watchers', daemon=True)
+            self._loop_thread.start()
+        register_turn_observer(self._on_turn_complete)
+
+    def _loop(self) -> None:
+        while not self._stop_event.wait(WATCH_TICK):
+            try:
+                self.tick()
+            except Exception as e:  # the loop must survive anything
+                _log(f'watcher tick failed: {type(e).__name__}: {e}')
+
+    def _on_turn_complete(self, thread_id: str) -> None:
+        # Runs on the runner thread — do the (possibly send()-spawning) work on
+        # a throwaway thread so the observer returns promptly.
+        threading.Thread(target=self._tick_thread_safe, args=(thread_id,),
+                         daemon=True).start()
+
+    def _tick_thread_safe(self, thread_id: str) -> None:
+        try:
+            with self._lock:
+                self._tick_thread(thread_id, _now())
+        except Exception as e:
+            _log(f'watcher delivery for {thread_id} failed: '
+                 f'{type(e).__name__}: {e}')
+
+    # ── persistence ────────────────────────────────────────────────────────
+    @staticmethod
+    def _path(thread_id: str) -> str:
+        return os.path.join(HYPERVISOR_DIR, thread_id, 'watchers.json')
+
+    def _load(self, thread_id: str) -> List[Dict[str, Any]]:
+        try:
+            with open(self._path(thread_id)) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return []
+        return data if isinstance(data, list) else []
+
+    def _save(self, thread_id: str, items: List[Dict[str, Any]]) -> None:
+        path = self._path(thread_id)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(items, f, indent=2)
+        os.replace(tmp, path)
+
+    # ── public API (arm / list / cancel) ───────────────────────────────────
+    def arm(self, thread_id: str, kind: str, target: str, note: str = '',
+            interval: Any = None, timeout: Any = None) -> Dict[str, Any]:
+        """Arm a watcher on a thread. Raises ValueError on bad input (the
+        HTTP layer maps that to a 400). Returns the persisted watcher."""
+        kind = (kind or '').strip()
+        target = (target or '').strip()
+        if kind not in WATCH_KINDS:
+            raise ValueError(f'kind must be one of {", ".join(WATCH_KINDS)}')
+        if not target:
+            raise ValueError('target is required')
+        session = HypervisorSession.get(thread_id)
+        meta = session.read_meta() if session else None
+        if meta is None or meta.get('deleted_at') is not None:
+            raise ValueError('thread not found')
+        now = _now()
+        w: Dict[str, Any] = {
+            'id': f'w{int(now)}-{uuid.uuid4().hex[:6]}',
+            'kind': kind,
+            'target': target,
+            'note': (note or '').strip()[:300],
+            'interval': _clamp(interval, WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL,
+                               WATCH_DEFAULT_INTERVAL),
+            'timeout': _clamp(timeout, WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT,
+                              WATCH_DEFAULT_TIMEOUT),
+            'created_at': now,
+            'last_check_at': 0.0,
+            'state': 'armed',
+            'outcome': '',
+        }
+        w['deadline'] = now + w['timeout']
+        if kind == 'file':
+            # Baseline snapshot so "change" is relative to arm time.
+            w['baseline_exists'] = os.path.exists(target)
+            if w['baseline_exists']:
+                try:
+                    w['baseline_mtime'] = os.path.getmtime(target)
+                except OSError:
+                    w['baseline_exists'] = False
+        with self._lock:
+            items = self._load(thread_id)
+            active = sum(1 for x in items if x.get('state') in _WATCH_ACTIVE_STATES)
+            if active >= WATCH_MAX_PER_THREAD:
+                raise ValueError(
+                    f'watcher limit reached ({WATCH_MAX_PER_THREAD} active per '
+                    'thread); cancel one first')
+            items.append(w)
+            self._save(thread_id, items)
+        return w
+
+    def list(self, thread_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            return self._load(thread_id)
+
+    def cancel(self, thread_id: str, watcher_id: str) -> bool:
+        """Cancel one watcher (armed or fired-but-undelivered). Returns whether
+        anything changed."""
+        with self._lock:
+            items = self._load(thread_id)
+            hit = False
+            for w in items:
+                if w.get('id') == watcher_id and \
+                        w.get('state') in _WATCH_ACTIVE_STATES:
+                    w['state'] = 'cancelled'
+                    w['cancelled_at'] = _now()
+                    hit = True
+            if hit:
+                self._save(thread_id, items)
+            return hit
+
+    def cancel_thread(self, thread_id: str) -> int:
+        """Cancel every active watcher of a thread (stop / delete). Never
+        raises — called from paths that must not fail. Returns the count."""
+        try:
+            with self._lock:
+                items = self._load(thread_id)
+                n = 0
+                for w in items:
+                    if w.get('state') in _WATCH_ACTIVE_STATES:
+                        w['state'] = 'cancelled'
+                        w['cancelled_at'] = _now()
+                        n += 1
+                if n:
+                    self._save(thread_id, items)
+                return n
+        except Exception as e:
+            _log(f'watcher cancel_thread {thread_id} failed: '
+                 f'{type(e).__name__}: {e}')
+            return 0
+
+    # ── evaluation tick ────────────────────────────────────────────────────
+    def tick(self, now: Optional[float] = None) -> None:
+        """One evaluation pass over every thread's watchers: check due armed
+        watchers, expire past-deadline ones, deliver fired/timeout outcomes to
+        idle threads. Synchronous and deterministic (given `now`)."""
+        now = _now() if now is None else now
+        try:
+            thread_ids = os.listdir(HYPERVISOR_DIR)
+        except OSError:
+            return
+        for tid in thread_ids:
+            try:
+                with self._lock:
+                    self._tick_thread(tid, now)
+            except Exception as e:  # one broken thread must not stall the rest
+                _log(f'watcher tick for {tid} failed: {type(e).__name__}: {e}')
+
+    def _tick_thread(self, thread_id: str, now: float) -> None:
+        """Evaluate + deliver one thread's watchers. Caller holds _lock."""
+        items = self._load(thread_id)
+        if not items:
+            return
+        changed = False
+        for w in items:
+            if w.get('state') != 'armed':
+                continue
+            if now >= w.get('deadline', 0):
+                # Explicit timeout outcome, distinguishable from a fire.
+                w['state'] = 'timeout'
+                w['fired_at'] = now
+                w['outcome'] = (f'timed out after {int(w.get("timeout", 0))}s '
+                                'without the condition firing')
+                changed = True
+                continue
+            if now - w.get('last_check_at', 0) < w.get('interval', WATCH_DEFAULT_INTERVAL):
+                continue
+            w['last_check_at'] = now
+            changed = True
+            fired, outcome = self._evaluate(w)
+            if fired:
+                w['state'] = 'fired'
+                w['fired_at'] = now
+                w['outcome'] = outcome
+        for w in items:
+            if w.get('state') not in ('fired', 'timeout'):
+                continue
+            delivered = self._deliver(thread_id, self._notification_text(w))
+            if delivered is True:
+                w['state'] = 'delivered'
+                w['delivered_at'] = now
+                changed = True
+            elif delivered is None:  # thread gone/deleted — drop, don't retry
+                w['state'] = 'cancelled'
+                w['cancelled_at'] = now
+                changed = True
+            # False → thread busy; keep state and retry on a later tick / on
+            # the turn-complete hook.
+        if changed:
+            self._save(thread_id, items)
+
+    def _evaluate(self, w: Dict[str, Any]) -> tuple:
+        """(fired, outcome) for one armed watcher. Exceptions bubble to the
+        per-thread guard in tick() — a transient error skips the pass rather
+        than mis-firing."""
+        kind, target = w.get('kind'), w.get('target', '')
+        if kind == 'task':
+            if self._task_status is None:
+                return False, ''  # provider not wired (shouldn't happen in-pod)
+            status = self._task_status(target)
+            if status is None:
+                return True, f'task {target} no longer exists'
+            if status in WATCH_TASK_FIRE_STATUSES:
+                return True, f'task {target} reached status "{status}"'
+            return False, ''
+        if kind == 'command':
+            try:
+                rc = subprocess.run(
+                    ['bash', '-lc', target], capture_output=True,
+                    timeout=WATCH_COMMAND_TIMEOUT,
+                ).returncode
+            except (subprocess.TimeoutExpired, OSError):
+                return False, ''
+            return (rc == 0, 'command exited 0' if rc == 0 else '')
+        if kind == 'file':
+            exists = os.path.exists(target)
+            if not w.get('baseline_exists'):
+                return (exists, f'path {target} now exists' if exists else '')
+            if not exists:
+                return True, f'path {target} was removed'
+            try:
+                mtime = os.path.getmtime(target)
+            except OSError:
+                return True, f'path {target} was removed'
+            if mtime != w.get('baseline_mtime'):
+                return True, f'path {target} was modified'
+            return False, ''
+        return False, ''
+
+    @staticmethod
+    def _notification_text(w: Dict[str, Any]) -> str:
+        head = ('[Hypervisor watcher timeout]' if w.get('state') == 'timeout'
+                else '[Hypervisor watcher fired]')
+        note = w.get('note') or ''
+        note_part = f' You armed it for: {note}.' if note else ''
+        return (f'{head} Your {w.get("kind")} watcher {w.get("id")} on '
+                f'"{w.get("target")}" — {w.get("outcome")}.{note_part} This is '
+                'an automated cross-turn notification from the workspace '
+                'runner, not the user. Check the result and report the outcome '
+                '(and continue any follow-up you promised).')
+
+    # ── delivery ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _default_deliver(thread_id: str, text: str) -> Optional[bool]:
+        """Inject the outcome as a follow-up turn. True = delivered; False =
+        thread busy, retry later; None = thread gone/deleted, drop.
+
+        Busy-ness is keyed off the live in-process _RUNNING registry, not
+        meta['status'] — a crash mid-turn leaves a stale 'running' in
+        thread.json, and delivery must not defer forever on it."""
+        session = HypervisorSession.get(thread_id)
+        meta = session.read_meta() if session else None
+        if meta is None or meta.get('deleted_at') is not None:
+            return None
+        with _RUNLOCK:
+            if _RUNNING.get(thread_id):
+                return False
+        session.send(text)
+        return True
+
+
+# Module singleton — the one poll-loop owner. server.py wires the task-status
+# provider and calls start() at boot; HypervisorSession.stop()/delete() cancel
+# through it.
+WATCHERS = WatcherManager()

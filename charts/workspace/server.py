@@ -50,13 +50,14 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
 try:
     from hypervisor_session import (
         HypervisorSession, build_activity as hv_build_activity,
-        hypervisor_health as hv_health,
+        hypervisor_health as hv_health, WATCHERS as hv_watchers,
     )
     _HYPERVISOR_AVAILABLE = True
 except Exception as _hv_import_err:  # broken install shouldn't crash the server
     HypervisorSession = None  # type: ignore
     hv_build_activity = None  # type: ignore
     hv_health = None  # type: ignore
+    hv_watchers = None  # type: ignore
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
 
@@ -166,14 +167,19 @@ HYPERVISOR_PREAMBLE = (
     "it; when you create or reference a doc (a plan, README, report), show_file it. "
     "Prefer these tools for any question about, or action on, the workspace. "
     "Answer from tool results, not memory. Be concise and conversational. "
-    "IMPORTANT: background watchers do not survive your turn — each of your "
-    "turns runs in a fresh headless CLI process, so a Bash run_in_background "
-    "command or a Monitor dies when your turn ends, and a later 'no completion "
-    "record / may have been stopped' notification means exactly that (not a "
-    "user action). To wait on something across turns, use create_task "
-    "(tmux-backed, survives turns) or write state to a file and re-check it "
-    "on your next turn; only use run_in_background for work you will collect "
-    "within the same turn. "
+    "IMPORTANT: background watchers armed inside your turn (Bash "
+    "run_in_background, Monitor) do not survive it — each of your turns runs "
+    "in a fresh headless CLI process, and a later 'no completion record / may "
+    "have been stopped' notification means exactly that (not a user action). "
+    "To wait on something across turns, arm a runner-owned watcher with the "
+    "dashboard `watch` tool: kind 'task' with a task_id (fires when the task "
+    "completes, errors, is killed, or goes waiting-for-input), kind 'command' "
+    "with a shell predicate (fires when it exits 0), or kind 'file' with a "
+    "path (fires when it appears/changes). The workspace runner polls it after "
+    "your turn ends and posts the outcome into this chat as a new message — "
+    "so after arming one, just end your turn; do not poll. Use list_watchers / "
+    "cancel_watcher to inspect or disarm. Only use run_in_background for work "
+    "you will collect within the same turn. "
     "If the user wants to connect their own GitHub account (push to their "
     "repos, use their identity), first check get_github_status; if they are "
     "not on a personal login, point them to Settings → GitHub & SSH and its "
@@ -4854,6 +4860,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if m:
             self.handle_hypervisor_get_activity(m.group(1))
             return
+        # /api/hypervisor/threads/{id}/watchers — cross-turn watchers (#402).
+        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/watchers$', claude_path)
+        if m:
+            self.handle_hypervisor_list_watchers(m.group(1))
+            return
         m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', claude_path)
         if m:
             self.handle_hypervisor_get_thread(m.group(1))
@@ -5286,6 +5297,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if m:
                 self._claude_task_id = m.group(1)
                 self.handle_claude_delete_task()
+                return
+            # /api/hypervisor/threads/{id}/watchers/{wid} — cancel one
+            # cross-turn watcher (#402). Must precede the plain threads/{id}
+            # delete route.
+            m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/watchers/'
+                         r'([A-Za-z0-9_-]+)$', path)
+            if m:
+                self.handle_hypervisor_cancel_watcher(m.group(1), m.group(2))
                 return
             m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', path)
             if m:
@@ -6076,6 +6095,66 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Idle threads are a safe no-op — report 'idle' rather than erroring so
         # the client can fire-and-forget without racing the turn's completion.
         self.send_json({'ok': True, 'stopped': stopped})
+
+    # ── Cross-turn watchers (issue #402) ──────────────────────────────────
+    # The runner-owned watch primitive: an in-turn agent arms a watcher here
+    # (via the dashboard MCP `watch` tool); hypervisor_session.WATCHERS polls
+    # the condition after the turn ends and injects the outcome back into the
+    # thread as a follow-up turn. These endpoints are thin wrappers over it.
+    def handle_hypervisor_list_watchers(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        if hv_watchers is None:
+            self.send_json({'error': 'Hypervisor unavailable'}, 503)
+            return
+        self.send_json({'watchers': hv_watchers.list(thread_id)})
+
+    def handle_hypervisor_create_watcher(self, thread_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        if hv_watchers is None:
+            self.send_json({'error': 'Hypervisor unavailable'}, 503)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        try:
+            watcher = hv_watchers.arm(
+                thread_id,
+                kind=data.get('kind') or '',
+                target=data.get('target') or '',
+                note=data.get('note') or '',
+                interval=data.get('interval'),
+                timeout=data.get('timeout'))
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+            return
+        self.send_json({'watcher': watcher}, 201)
+
+    def handle_hypervisor_cancel_watcher(self, thread_id, watcher_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        if hv_watchers is None:
+            self.send_json({'error': 'Hypervisor unavailable'}, 503)
+            return
+        cancelled = hv_watchers.cancel(thread_id, watcher_id)
+        # Cancelling an already-finished/unknown watcher is a reported no-op,
+        # mirroring stop()'s fire-and-forget shape.
+        self.send_json({'ok': True, 'cancelled': cancelled})
 
     def handle_hypervisor_delete_thread(self, thread_id):
         if not self.check_claude_auth():
@@ -9366,6 +9445,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 if m:
                     self.handle_hypervisor_restore_thread(m.group(1))
                     return
+                # /api/hypervisor/threads/{id}/watchers — arm a cross-turn
+                # watcher (#402).
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/watchers$', path)
+                if m:
+                    self.handle_hypervisor_create_watcher(m.group(1))
+                    return
                 # /api/hypervisor/threads/{id}/rename — set a custom chat title
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/rename$', path)
                 if m:
@@ -10263,6 +10348,35 @@ if __name__ == "__main__":
                 print('[gateway] turn-complete observer installed')
         except Exception as e:
             print(f'[gateway] startup init failed: {e}', file=sys.stderr)
+
+    # Cross-turn watchers (issue #402): the server process owns the poll loop,
+    # so a watcher armed inside a Hypervisor turn survives the turn (and, via
+    # per-thread watchers.json, a server restart). Wire the task-status
+    # provider here — hypervisor_session can't import server.
+    if _HYPERVISOR_AVAILABLE and hv_watchers is not None:
+        def _hv_watch_task_status(task_id):
+            # Task ids are [A-Za-z0-9_-]; refuse anything else so a watcher
+            # target can never traverse out of TASKS_DIR.
+            if not re.fullmatch(r'[A-Za-z0-9_-]+', task_id or ''):
+                return None
+            task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
+            meta_path = os.path.join(task_dir, 'task.json')
+            if not os.path.isfile(meta_path):
+                return None
+            with open(meta_path) as f:
+                meta = json.load(f)
+            # Same reconcile the task endpoints run: flips a finished tmux
+            # session to completed and derives waiting-for-input, so the
+            # watcher sees fresh status even when nobody is polling the API.
+            ClaudeTaskManager._reconcile_status(meta, task_dir)
+            return meta.get('status', 'unknown')
+
+        try:
+            hv_watchers.set_task_status_provider(_hv_watch_task_status)
+            hv_watchers.start()
+            print('[hypervisor] cross-turn watcher loop started')
+        except Exception as e:
+            print(f'[hypervisor] watcher start failed: {e}', file=sys.stderr)
 
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless
