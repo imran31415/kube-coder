@@ -129,6 +129,7 @@ export function PromptDialog({
             type="text"
             value={value}
             placeholder={placeholder}
+            aria-label={title}
             onInput={(e) => setValue((e.target as HTMLInputElement).value)}
           />
           <div class="cd-actions">

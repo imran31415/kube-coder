@@ -829,8 +829,8 @@
 .td-bar-dot:disabled { cursor: default; }
 .td-bar-dot:hover:not(:disabled) { transform: scale(1.15); }
 .td-bar-dot-ready {
-  background: #4ade80;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #4ade80 18%, transparent);
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
 }
 .td-bar-dot-preparing {
   background: var(--warn);

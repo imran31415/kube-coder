@@ -38,7 +38,7 @@ export function WorkspaceContext() {
   const overflow = live.length - shown.length;
 
   return (
-    <div class="hv-context" role="status">
+    <div class="hv-context">
       <span class="hv-context-label">
         <Icon name="hypervisor" size={13} />
         Workspace

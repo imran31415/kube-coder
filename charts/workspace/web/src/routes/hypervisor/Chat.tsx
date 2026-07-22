@@ -812,7 +812,7 @@ export function Chat() {
             </div>
           </div>
         ) : (
-          <div class="hv-transcript-flow">
+          <div class="hv-transcript-flow" role="log" aria-label="Chat transcript" aria-busy={thinking}>
             {transcriptSource.value === 'session_log' && (
               <div class="hv-source-chip" title="Rendered from Claude Code's own JSONL session log — the complete, structured record of this thread.">
                 <Icon name="check" size={11} /> Structured transcript · session log
@@ -843,7 +843,7 @@ export function Chat() {
                       <span class="hv-turn-name">Kube-Coder</span>
                       <span class="hv-turn-via">via {cli}</span>
                       {thinking && i === turns.length - 1 && (
-                        <span class="hv-typing" aria-label="working">
+                        <span class="hv-typing" role="img" aria-label="Working">
                           <i />
                           <i />
                           <i />
@@ -882,7 +882,7 @@ export function Chat() {
                   <div class="hv-turn-head">
                     <span class="hv-turn-name">Kube-Coder</span>
                     <span class="hv-turn-via">via {cli}</span>
-                    <span class="hv-typing" aria-label="working">
+                    <span class="hv-typing" role="img" aria-label="Working">
                       <i />
                       <i />
                       <i />
@@ -896,7 +896,7 @@ export function Chat() {
         )}
       </div>
 
-      {chatError.value && <div class="hv-banner hv-banner-error">{chatError.value}</div>}
+      {chatError.value && <div class="hv-banner hv-banner-error" role="alert">{chatError.value}</div>}
 
       {attachError && (
         <div class="hv-banner hv-banner-error" role="alert">
@@ -947,6 +947,7 @@ export function Chat() {
                 class="hv-attachment-x"
                 onClick={() => removeAttachment(a.id)}
                 title="Remove"
+                aria-label={`Remove ${a.name}`}
               >
                 <Icon name="close" size={10} />
               </button>
@@ -1034,6 +1035,7 @@ export function Chat() {
         <textarea
           ref={taRef}
           class="hv-composer-input"
+          aria-label="Message Kube-Coder"
           value={draft}
           placeholder={
             readOnly

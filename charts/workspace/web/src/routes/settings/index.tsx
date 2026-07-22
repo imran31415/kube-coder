@@ -35,11 +35,12 @@ export function SettingsRoute() {
         <div class="settings-row">
           <div class="settings-row-label">Theme</div>
           <div class="settings-row-control">
-            <div class="seg">
+            <div class="seg" role="group" aria-label="Theme">
               {THEMES.map((t) => (
                 <button
                   key={t.id}
                   class={`seg-item ${theme.value === t.id ? 'seg-item-active' : ''}`}
+                  aria-pressed={theme.value === t.id}
                   onClick={() => (theme.value = t.id)}
                 >
                   {t.id === 'dark' && <Icon name="moon" size={14} />}

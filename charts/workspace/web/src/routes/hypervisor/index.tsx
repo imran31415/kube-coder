@@ -380,6 +380,7 @@ export function HypervisorRoute() {
                   <span class="hv-thread-body">
                     <span class="hv-thread-title">{t.title || 'New chat'}</span>
                     <span class="hv-thread-agent">{t.assistant}</span>
+                    <span class="sr-only">{t.status}</span>
                   </span>
                 </button>
                 <button

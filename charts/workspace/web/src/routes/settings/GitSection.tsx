@@ -112,11 +112,12 @@ export function GitSection() {
       <div class="settings-row">
         <div class="settings-row-label">Auth mode</div>
         <div class="settings-row-control settings-row-control-stack">
-          <div class="seg">
+          <div class="seg" role="group" aria-label="GitHub auth mode">
             {MODES.map((m) => (
               <button
                 key={m.id}
                 class={`seg-item ${mode === m.id ? 'seg-item-active' : ''}`}
+                aria-pressed={mode === m.id}
                 disabled={modeBusy || (m.id === 'app' && !appAvailable)}
                 onClick={() => void onSetMode(m.id)}
               >
@@ -148,15 +149,15 @@ export function GitSection() {
 
       <form onSubmit={onSaveConfig}>
         <div class="settings-row">
-          <div class="settings-row-label">git user.name</div>
+          <label class="settings-row-label" for="git-user-name">git user.name</label>
           <div class="settings-row-control">
-            <Input fullWidth value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} placeholder="Imran Hassanali" />
+            <Input id="git-user-name" fullWidth value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} placeholder="Imran Hassanali" />
           </div>
         </div>
         <div class="settings-row">
-          <div class="settings-row-label">git user.email</div>
+          <label class="settings-row-label" for="git-user-email">git user.email</label>
           <div class="settings-row-control">
-            <Input fullWidth value={email} onInput={(e) => setEmail((e.target as HTMLInputElement).value)} placeholder="you@example.com" type="email" />
+            <Input id="git-user-email" fullWidth value={email} onInput={(e) => setEmail((e.target as HTMLInputElement).value)} placeholder="you@example.com" type="email" />
           </div>
         </div>
         <div class="settings-row">

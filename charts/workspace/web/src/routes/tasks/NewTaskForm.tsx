@@ -24,6 +24,7 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
   const [assistants, setAssistants] = useState<AssistantOption[]>([]);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
@@ -37,34 +38,42 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   async function onSubmit(e: Event) {
     e.preventDefault();
     setBusy(true);
+    setError(null);
     // Empty prompt — the assistant boots into an interactive REPL; the
     // user's first message is whatever they type in the terminal.
-    const task = await createTask({
-      prompt: '',
-      workdir,
-      assistant: assistant || undefined,
-      disable_memory_injection: false,
-    });
-    setBusy(false);
-    if (task && task.task_id) {
-      // If the server accepted no name, leave as-is; otherwise rename in the
-      // background (best-effort — failure is OK, the random name still shows).
-      if (name && name !== task.name) {
-        void renameTask(task.task_id, name).catch(() => undefined);
-      }
-      // Drop the user straight into the new build's terminal:
-      //   - if they're on a different route, navigate to /tasks first
-      //   - on mobile, open the task-detail BottomSheet (the master/detail
-      //     pane that auto-renders on desktop doesn't exist on phones)
-      //   - select the task so TaskDetail mounts on the Terminal tab
-      //     (running tasks default to Terminal per TaskDetail's useEffect)
-      if (!currentPath.value.startsWith('/tasks')) {
-        navigate('/tasks');
-      }
-      selectTask(task.task_id);
-      if (isMobile) sheetOpen.value = 'task-detail';
-      onClose();
+    // createTask catches API errors internally and returns null.
+    let task = null;
+    try {
+      task = await createTask({
+        prompt: '',
+        workdir,
+        assistant: assistant || undefined,
+        disable_memory_injection: false,
+      });
+    } finally {
+      setBusy(false);
     }
+    if (!task || !task.task_id) {
+      setError('Could not start the build — check the workspace server and try again.');
+      return;
+    }
+    // If the server accepted no name, leave as-is; otherwise rename in the
+    // background (best-effort — failure is OK, the random name still shows).
+    if (name && name !== task.name) {
+      void renameTask(task.task_id, name).catch(() => undefined);
+    }
+    // Drop the user straight into the new build's terminal:
+    //   - if they're on a different route, navigate to /tasks first
+    //   - on mobile, open the task-detail BottomSheet (the master/detail
+    //     pane that auto-renders on desktop doesn't exist on phones)
+    //   - select the task so TaskDetail mounts on the Terminal tab
+    //     (running tasks default to Terminal per TaskDetail's useEffect)
+    if (!currentPath.value.startsWith('/tasks')) {
+      navigate('/tasks');
+    }
+    selectTask(task.task_id);
+    if (isMobile) sheetOpen.value = 'task-detail';
+    onClose();
   }
 
   function reroll() {
@@ -146,6 +155,12 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         You'll be dropped straight into a live <strong>{assistant || 'claude'}</strong> terminal —
         type your first prompt there.
       </p>
+
+      {error && (
+        <p class="ntf-error" role="alert">
+          {error}
+        </p>
+      )}
 
       <div class="ntf-actions">
         <Button variant="ghost" onClick={onClose} type="button">Cancel</Button>

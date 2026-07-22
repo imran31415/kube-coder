@@ -718,6 +718,12 @@
   border-radius: var(--radius-sm);
 }
 .dt-editor-radio input { position: absolute; opacity: 0; pointer-events: none; }
+/* The real radio is visually hidden — surface keyboard focus on the visible
+   pill so the segmented control has a focus indicator (WCAG 2.4.7, #392). */
+.dt-editor-radio:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .dt-editor-radio.is-active {
   background: var(--surface);
   color: var(--text);
@@ -861,25 +867,20 @@
   white-space: nowrap;
   line-height: 1.1;
 }
+/* Status tags use the theme tokens (not hardcoded hexes) so they stay
+   readable in the light themes too — including system-light, which the old
+   [data-theme="light"]-only overrides never reached (#392). */
 .dt-bulletin-tag-running {
-  background: color-mix(in srgb, #4ade80 18%, var(--surface-2));
-  color: #4ade80;
+  background: color-mix(in srgb, var(--success) 18%, var(--surface-2));
+  color: var(--success);
 }
 .dt-bulletin-tag-waiting {
   background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
   color: var(--warn);
 }
 .dt-bulletin-tag-stale {
-  background: color-mix(in srgb, #ef4444 20%, var(--surface-2));
-  color: #ef4444;
-}
-:root[data-theme="light"] .dt-bulletin-tag-running {
-  background: color-mix(in srgb, #047857 14%, var(--surface-2));
-  color: #047857;
-}
-:root[data-theme="light"] .dt-bulletin-tag-waiting {
-  background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
-  color: var(--warn);
+  background: color-mix(in srgb, var(--danger) 20%, var(--surface-2));
+  color: var(--danger);
 }
 /* Recent-chat rows carry an accent-tinted tag; a running chat pulses the
    same dot the build rows use. */
@@ -889,12 +890,12 @@
 }
 .dt-bulletin-tag-chat svg { flex: 0 0 auto; }
 .dt-bulletin-tag-chat-running {
-  background: color-mix(in srgb, #4ade80 18%, var(--surface-2));
-  color: #4ade80;
+  background: color-mix(in srgb, var(--success) 18%, var(--surface-2));
+  color: var(--success);
 }
 .dt-bulletin-tag-chat-error {
-  background: color-mix(in srgb, #ef4444 20%, var(--surface-2));
-  color: #ef4444;
+  background: color-mix(in srgb, var(--danger) 20%, var(--surface-2));
+  color: var(--danger);
 }
 
 .dt-bulletin-title-text {
@@ -933,16 +934,16 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success);
   margin-right: 6px;
   vertical-align: 1px;
-  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent);
   animation: dt-pulse 1.6s ease-out infinite;
 }
 @keyframes dt-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55); }
-  70%  { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dt-bulletin-running { animation: none; }

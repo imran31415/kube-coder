@@ -23,7 +23,9 @@
   --border-2:    #424248;
   --text:        #ededee;
   --text-muted:  #aeaeb2;
-  --text-subtle: #82828a;
+  /* Lightened from #82828a so subtle text keeps ≥4.5:1 contrast even on the
+     highest raised surface (--surface-3) — WCAG 1.4.3 (#392). */
+  --text-subtle: #98989f;
 
   /* Accent: soft off-white (not pure #fff so it doesn't feel clinical on
      the soft charcoal bg). Primary CTA fills inherit this; accent-soft is
@@ -37,6 +39,9 @@
   --warn:    #fbbf24;
   --danger:  #f87171;
   --info:    #60a5fa;
+  /* Text-safe warn tone (used by tasks.css waiting/prompt strips). Resolves
+     per theme via --warn, so it stays readable in light and dark. */
+  --warning-text: var(--warn);
 
   /* Flatter / more "materialistic" than the prior 4/6/10 — corners barely
      round at all so panels read as flat sheets rather than chips. */
@@ -93,7 +98,8 @@
     --border-2:    #b8b8bc;
     --text:        #1c1c1f;
     --text-muted:  #56565a;
-    --text-subtle: #79797f;
+    /* Darkened from #79797f to keep ≥4.5:1 on --surface-3 (#392). */
+    --text-subtle: #68686f;
 
     --accent:        #1c1c1f;
     --accent-strong: #000000;
@@ -121,7 +127,7 @@
   --border-2:    #424248;
   --text:        #ededee;
   --text-muted:  #aeaeb2;
-  --text-subtle: #82828a;
+  --text-subtle: #98989f;
 
   --accent:        #ededee;
   --accent-strong: #ffffff;
@@ -148,7 +154,8 @@
   --border-2:    #a1a1aa;
   --text:        #09090b;
   --text-muted:  #52525b;
-  --text-subtle: #71717a;
+  /* Darkened from #71717a to keep ≥4.5:1 on --surface-3 (#392). */
+  --text-subtle: #68686f;
 
   --accent:        #09090b;
   --accent-strong: #000000;

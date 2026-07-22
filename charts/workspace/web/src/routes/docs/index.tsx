@@ -58,7 +58,7 @@ export function DocsRoute() {
               <DocsSidebar currentId={cur?.id ?? null} />
             </aside>
           )}
-          <section class="docs-article-wrap" aria-live="polite">
+          <section class="docs-article-wrap">
             {isMobile && (
               <details class="docs-mobile-toc">
                 <summary>Browse all pages</summary>

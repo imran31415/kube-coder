@@ -184,6 +184,7 @@ export function MemoryRoute() {
       </div>
 
       <BottomSheet
+        ariaLabel="Memory details"
         open={isMobile && sheetOpen.value === 'memory-detail'}
         onClose={() => {
           sheetOpen.value = null;
@@ -302,9 +303,10 @@ function MemoryToolbar() {
         onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
         aria-label="Filter memories"
       />
-      <div class="mem-namespace-row" role="tablist" aria-label="Namespace facets">
+      <div class="mem-namespace-row" role="group" aria-label="Namespace facets">
         <button
           class={`mem-ns ${memoryNamespaceFacet.value == null ? 'mem-ns-active' : ''}`}
+          aria-pressed={memoryNamespaceFacet.value == null}
           onClick={() => (memoryNamespaceFacet.value = null)}
         >
           All
@@ -313,6 +315,7 @@ function MemoryToolbar() {
           <button
             key={n}
             class={`mem-ns ${memoryNamespaceFacet.value === n ? 'mem-ns-active' : ''}`}
+            aria-pressed={memoryNamespaceFacet.value === n}
             onClick={() => (memoryNamespaceFacet.value = memoryNamespaceFacet.value === n ? null : n)}
           >
             {n}
@@ -331,7 +334,7 @@ function MemoryList({ list, onRowClick }: { list: MemoryRecord[]; onRowClick: (m
         const importance = Math.round(m.importance * 100);
         return (
           <li key={m.id}>
-            <button class={`mem-row ${active ? 'mem-row-active' : ''}`} onClick={() => onRowClick(m)}>
+            <button class={`mem-row ${active ? 'mem-row-active' : ''}`} aria-current={active ? 'true' : undefined} onClick={() => onRowClick(m)}>
               <div class="mem-row-head">
                 <span class="mem-row-ns mono">{m.namespace}.{m.key}</span>
                 <Pill tone="neutral" mono>{m.kind}</Pill>

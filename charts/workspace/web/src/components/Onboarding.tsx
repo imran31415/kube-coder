@@ -170,6 +170,7 @@ export function Onboarding() {
           <textarea
             class="ob-textarea"
             rows={4}
+            aria-label="Starter prompt for your first task"
             value={prompt}
             onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
           />

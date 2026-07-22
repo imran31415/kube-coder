@@ -274,7 +274,11 @@
 .hv-thread:hover .hv-thread-del,
 .hv-thread-active .hv-thread-del,
 .hv-thread:hover .hv-thread-rename,
-.hv-thread-active .hv-thread-rename {
+.hv-thread-active .hv-thread-rename,
+/* Keyboard parity with the hover reveal — otherwise Tab lands on an
+   invisible button (WCAG 2.4.7, #392). */
+.hv-thread:focus-within .hv-thread-del,
+.hv-thread:focus-within .hv-thread-rename {
   opacity: 1;
 }
 .hv-thread-del:hover {

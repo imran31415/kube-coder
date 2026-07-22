@@ -3,7 +3,9 @@ import './Toast.css';
 
 export function ToastRack() {
   const items = toasts.value;
-  if (items.length === 0) return null;
+  // The rack always renders (even empty) so the live region exists before any
+  // toast lands — regions inserted together with their content are often not
+  // announced by screen readers.
   return (
     <div class="toast-rack" role="status" aria-live="polite">
       {items.map((t) => (
@@ -11,7 +13,7 @@ export function ToastRack() {
           key={t.id}
           class={`toast toast-${t.kind}`}
           onClick={() => dismissToast(t.id)}
-          aria-label="Dismiss toast"
+          title="Dismiss"
         >
           {t.message}
         </button>
