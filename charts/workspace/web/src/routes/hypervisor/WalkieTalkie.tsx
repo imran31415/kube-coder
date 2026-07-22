@@ -14,6 +14,8 @@ import {
   sttSupported,
   speakReplies,
   setSpeakReplies,
+  handsFree,
+  setHandsFree,
   stripForSpeech,
   speakText,
   stopSpeaking,
@@ -23,8 +25,12 @@ import {
   transition,
   levelFromTimeDomain,
   smoothLevel,
+  createEndpointer,
+  ENDPOINT_OPTS,
   orbCopy,
   orbMood,
+  type Endpointer,
+  type EndpointMode,
   type VoicePhase,
   type VoiceSignal,
 } from './walkieVoice';
@@ -44,6 +50,15 @@ import './walkie.css';
  * an output color while TTS speaks. Typing is the collapsed fallback, and the
  * utility controls (simulate out-of-window, reset, channel readout) live in a
  * settings popover. Transport is untouched: SSE + a 2s safety poll.
+ *
+ * Hands-free (issue #406, opt-in via the settings popover): the same
+ * AnalyserNode tap stays open across turns (echoCancellation requested, a
+ * MIC OPEN chip shows while it's live) and feeds the pure endpointer from
+ * walkieVoice.ts — pausing while listening auto-stops the capture (which then
+ * auto-sends), and sustained speech while idle/thinking/speaking grabs the
+ * floor without a tap (barge-in during TTS is gated on the browser actually
+ * granting echo cancellation, so playback can't barge in on itself). The tap
+ * is released when the tab hides, the route unmounts, or the mode turns off.
  */
 
 interface AudioTap {
@@ -72,10 +87,18 @@ export function WalkieTalkie() {
   // Real-level tap unavailable (no getUserMedia / AudioContext, or it failed)
   // → the rings run a smooth simulated pulse instead so nothing looks broken.
   const [simPulse, setSimPulse] = useState(false);
+  // The level tap is live (drives the MIC OPEN chip while it's open outside a
+  // capture — an always-on mic must be visible, never implied).
+  const [micOpen, setMicOpen] = useState(false);
 
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const finalRef = useRef('');
   const tapRef = useRef<AudioTap | null>(null);
+  // Hands-free VAD: the endpointer for the current phase-derived mode, and
+  // whether the open stream actually got echo cancellation (gates barge-in).
+  const epRef = useRef<Endpointer | null>(null);
+  const epModeRef = useRef<EndpointMode | null>(null);
+  const aecRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const speechTimer = useRef<number | null>(null);
@@ -84,6 +107,7 @@ export function WalkieTalkie() {
   const narratedSeq = useRef<number | null>(null);
 
   const speakOn = speakReplies.value;
+  const handsFreeOn = handsFree.value;
 
   function dispatch(sig: VoiceSignal): VoicePhase {
     const next = transition(phaseRef.current, sig);
@@ -189,23 +213,27 @@ export function WalkieTalkie() {
     }, 250);
   }
 
-  // ── mic level → visualizer (real amplitude, CSS-var driven) ───────────────
-  async function startLevels() {
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (reduced) return; // CSS swaps motion for opacity — no level loop needed
+  // ── mic level → visualizer + hands-free VAD (one shared tap) ──────────────
+
+  /** Open the shared mic tap (visualizer levels + endpointer). Idempotent. */
+  async function openTap(): Promise<boolean> {
+    if (tapRef.current) return true;
     const AC =
       (window as unknown as { AudioContext?: typeof AudioContext }).AudioContext;
-    if (!navigator.mediaDevices?.getUserMedia || !AC) {
-      setSimPulse(true);
-      return;
-    }
+    if (!navigator.mediaDevices?.getUserMedia || !AC) return false;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (phaseRef.current !== 'listening') {
-        // Capture already ended while the permission prompt was up.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        // AEC matters for hands-free: it strips (some of) our own TTS from
+        // the mic signal so barge-in doesn't trigger on the agent's voice.
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      if (tapRef.current) {
+        // Raced a concurrent open — keep the first tap.
         stream.getTracks().forEach((t) => t.stop());
-        return;
+        return true;
       }
+      aecRef.current =
+        stream.getAudioTracks()[0]?.getSettings?.().echoCancellation === true;
       const ctx = new AC();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
@@ -214,17 +242,23 @@ export function WalkieTalkie() {
       let level = 0;
       const tick = () => {
         analyser.getByteTimeDomainData(buf);
-        level = smoothLevel(level, levelFromTimeDomain(buf));
+        const raw = levelFromTimeDomain(buf);
+        level = smoothLevel(level, raw);
         stageRef.current?.style.setProperty('--wt-level', level.toFixed(3));
+        // Feed the endpointer the raw level — the visualizer's slow release
+        // would otherwise stretch every pause past the hangover.
+        feedEndpointer(raw, performance.now());
         if (tapRef.current) tapRef.current.raf = requestAnimationFrame(tick);
       };
       tapRef.current = { stream, ctx, raf: requestAnimationFrame(tick) };
+      setMicOpen(true);
+      return true;
     } catch {
-      setSimPulse(true); // mic-for-levels denied or busy — pulse instead
+      return false; // mic denied or busy
     }
   }
 
-  function stopLevels() {
+  function closeTap() {
     const tap = tapRef.current;
     tapRef.current = null;
     if (tap) {
@@ -232,12 +266,88 @@ export function WalkieTalkie() {
       tap.stream.getTracks().forEach((t) => t.stop());
       void tap.ctx.close().catch(() => undefined);
     }
-    setSimPulse(false);
+    epRef.current = null;
+    epModeRef.current = null;
+    setMicOpen(false);
     stageRef.current?.style.setProperty('--wt-level', '0');
   }
 
+  async function startLevels() {
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    // Under reduced motion the tap is only worth opening when hands-free
+    // needs it for VAD — CSS swaps the ring motion for opacity either way.
+    if (reduced && !handsFree.value) return;
+    if (!(await openTap())) {
+      setSimPulse(true); // no tap — pulse the rings so nothing looks broken
+      return;
+    }
+    if (!handsFree.value && phaseRef.current !== 'listening') {
+      // Capture already ended while the permission prompt was up.
+      closeTap();
+    }
+  }
+
+  function stopLevels() {
+    setSimPulse(false);
+    // Hands-free keeps the tap open between captures — it powers the
+    // endpointer (wake/barge-in) and the MIC OPEN chip.
+    if (handsFree.value && document.visibilityState !== 'hidden') return;
+    closeTap();
+  }
+
+  /**
+   * Route a level sample into the endpointer for the current phase and map
+   * its events onto the phase machine. The pure logic lives in walkieVoice.ts;
+   * this picks the mode — endpointing while capturing, wake while idle or
+   * thinking, raised-threshold barge-in while TTS plays (and only when echo
+   * cancellation was actually granted, so playback can't barge in on itself).
+   */
+  function feedEndpointer(level: number, now: number) {
+    if (!handsFree.value) {
+      epRef.current = null;
+      epModeRef.current = null;
+      return;
+    }
+    const p = phaseRef.current;
+    const mode: EndpointMode | null =
+      p === 'listening'
+        ? 'listen'
+        : p === 'speaking'
+          ? aecRef.current
+            ? 'barge'
+            : null
+          : p === 'idle' || p === 'thinking'
+            ? 'wake'
+            : null; // transcribing | sending — nothing to listen for
+    if (mode === null) {
+      epRef.current = null;
+      epModeRef.current = null;
+      return;
+    }
+    if (!epRef.current || epModeRef.current !== mode) {
+      epRef.current = createEndpointer(ENDPOINT_OPTS[mode]);
+      epModeRef.current = mode;
+    }
+    const ev = epRef.current.feed(level, now);
+    if (!ev) return;
+    if (mode === 'listen') {
+      if (ev === 'speech-end') {
+        // Auto end-of-speech: same path as tap-to-stop — onend assembles the
+        // transcript and auto-sends (or dispatches 'empty').
+        dispatch('voice-end');
+        try {
+          recRef.current?.stop();
+        } catch {
+          /* already stopped */
+        }
+      }
+    } else if (ev === 'speech-start') {
+      startListening('voice-start'); // wake / barge-in: speaking takes the floor
+    }
+  }
+
   // ── push-to-talk ──────────────────────────────────────────────────────────
-  function startListening() {
+  function startListening(signal: 'press' | 'voice-start' = 'press') {
     const Ctor = recognitionCtor();
     if (!Ctor) return;
     stopSpeaking(); // barge-in: pressing the orb always wins
@@ -289,12 +399,35 @@ export function WalkieTalkie() {
     setVoiceHint('');
     try {
       rec.start();
-      dispatch('press');
+      dispatch(signal);
       void startLevels();
     } catch {
       recRef.current = null;
     }
   }
+
+  // Hands-free lifecycle: hold the tap open across turns while the mode is
+  // on and the tab is visible; release it on hide or when the mode turns off.
+  // (PTT captures manage the tap per-capture via startLevels/stopLevels.)
+  useEffect(() => {
+    if (!handsFreeOn) {
+      if (phaseRef.current !== 'listening') closeTap();
+      return;
+    }
+    const open = () =>
+      void openTap().then((ok) => {
+        // No tap → no VAD: hands-free degrades to plain PTT, and the orb's
+        // mic-denied copy explains why.
+        if (!ok) setMicDenied(true);
+      });
+    open();
+    const onVis = () => {
+      if (document.hidden) closeTap();
+      else open();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [handsFreeOn]);
 
   function onOrbPress() {
     const p = phaseRef.current;
@@ -362,7 +495,8 @@ export function WalkieTalkie() {
     await refresh();
   }
 
-  // Kill the mic, level tap and queued speech when the page unmounts.
+  // Kill the mic, level tap and queued speech when the page unmounts —
+  // closeTap unconditionally, so hands-free never outlives the route.
   useEffect(
     () => () => {
       try {
@@ -371,7 +505,7 @@ export function WalkieTalkie() {
         /* noop */
       }
       stopSpeaking();
-      stopLevels();
+      closeTap();
       if (speechTimer.current) clearInterval(speechTimer.current);
     },
     [],
@@ -410,6 +544,9 @@ export function WalkieTalkie() {
     linked,
     stt: sttSupported(),
     micDenied,
+    handsFree: handsFreeOn,
+    // Only promise voice wake-up when the open mic can actually deliver it.
+    voiceWake: handsFreeOn && micOpen && (phase !== 'speaking' || aecRef.current),
   });
   const mood = orbMood(phase);
 
@@ -438,9 +575,18 @@ export function WalkieTalkie() {
     <div class="wt" data-mood={mood} data-phase={phase}>
       {/* ── top strip: channel status + settings popover ── */}
       <div class="wt-top">
-        <div class="wt-chip" role="status" aria-live="polite">
-          <span class={`wt-led wt-led-${signal}`} aria-hidden="true" />
-          <span class="wt-chip-label">{signalLabel}</span>
+        <div class="wt-chips">
+          <div class="wt-chip" role="status" aria-live="polite">
+            <span class={`wt-led wt-led-${signal}`} aria-hidden="true" />
+            <span class="wt-chip-label">{signalLabel}</span>
+          </div>
+          {/* An open mic outside a capture must be visible, not implied. */}
+          {micOpen && phase !== 'listening' && (
+            <div class="wt-chip wt-chip-mic" role="status">
+              <span class="wt-led wt-led-mic" aria-hidden="true" />
+              <span class="wt-chip-label">MIC OPEN</span>
+            </div>
+          )}
         </div>
         <div class="wt-menu-wrap">
           <button
@@ -470,6 +616,20 @@ export function WalkieTalkie() {
                   </span>
                 </div>
               </div>
+              <label class="wt-switch">
+                <input
+                  type="checkbox"
+                  checked={handsFreeOn}
+                  onChange={() => setHandsFree(!handsFreeOn)}
+                />
+                <span class="wt-switch-track" aria-hidden="true">
+                  <span class="wt-switch-thumb" />
+                </span>
+                <span class="wt-switch-label">
+                  Hands-free
+                  <span class="wt-switch-hint">open mic: auto-send on pause, speak to interrupt</span>
+                </span>
+              </label>
               <label class="wt-switch">
                 <input
                   type="checkbox"

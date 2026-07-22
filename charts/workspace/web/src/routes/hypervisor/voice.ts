@@ -74,6 +74,32 @@ export function setSpeakReplies(on: boolean): void {
   if (!on) stopSpeaking();
 }
 
+// ── hands-free preference (issue #406) ───────────────────────────────────────
+
+export const HANDS_FREE_KEY = 'kc.hv.handsfree';
+
+function readHandsFreePref(): boolean {
+  try {
+    return localStorage.getItem(HANDS_FREE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Hands-free walkie mode: open mic + VAD endpointing (auto-send on pause,
+ *  speak to interrupt). Device-local like speakReplies — an always-open mic
+ *  must be an explicit, persistent opt-in. */
+export const handsFree = signal<boolean>(readHandsFreePref());
+
+export function setHandsFree(on: boolean): void {
+  handsFree.value = on;
+  try {
+    localStorage.setItem(HANDS_FREE_KEY, on ? '1' : '0');
+  } catch {
+    /* private mode — the toggle still works for this page */
+  }
+}
+
 // ── speechSynthesis (TTS) ────────────────────────────────────────────────────
 
 export function ttsSupported(): boolean {
