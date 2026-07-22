@@ -52,7 +52,7 @@ OAUTH_OUT="$USER_DIR/secrets/oauth2.yaml"
 # GitHub release. Each release builds a matching immutable devlaptop-v<X.Y.Z>
 # image; new workspaces pin it so they run the released code. Override
 # IMAGE_TAG in the environment to pin a workspace to a different build.
-IMAGE_TAG="${IMAGE_TAG:-v1.38.0}"
+IMAGE_TAG="${IMAGE_TAG:-v1.39.0}"
 
 mkdir -p "$USER_DIR/secrets"
 
