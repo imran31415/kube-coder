@@ -941,5 +941,285 @@ class TranscriptSourceTest(unittest.TestCase):
                           'ts': tx['events'][-1]['ts']})
 
 
+class WatcherTestBase(unittest.TestCase):
+    """Shared temp-dir plumbing for the cross-turn watcher tests (issue #402).
+
+    Uses a FRESH WatcherManager per test (not the module singleton) so state
+    never leaks between tests, a fake clock driven through tick(now), and a
+    recording deliver seam in place of the real send() (which would spawn a
+    CLI subprocess)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_dir = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+        self.mgr = hs.WatcherManager()
+        self.delivered = []  # (thread_id, text) accepted by the fake deliver
+        self.mgr._deliver = self._record_deliver
+        self.session = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title='watched')
+        self.now = 1_000_000.0
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig_dir
+
+    def _record_deliver(self, thread_id, text):
+        self.delivered.append((thread_id, text))
+        return True
+
+    def _arm(self, **kw):
+        kw.setdefault('kind', 'task')
+        kw.setdefault('target', 'task-abc')
+        return self.mgr.arm(self.session.id, **kw)
+
+    def _states(self):
+        return [w['state'] for w in self.mgr.list(self.session.id)]
+
+
+class WatcherArmTest(WatcherTestBase):
+    def test_arm_persists_to_watchers_json(self):
+        w = self._arm(note='waiting for the build')
+        path = os.path.join(self.tmp, self.session.id, 'watchers.json')
+        self.assertTrue(os.path.isfile(path))
+        with open(path) as f:
+            on_disk = json.load(f)
+        self.assertEqual(on_disk[0]['id'], w['id'])
+        self.assertEqual(on_disk[0]['state'], 'armed')
+        self.assertEqual(on_disk[0]['note'], 'waiting for the build')
+
+    def test_arm_clamps_interval_and_timeout(self):
+        w = self._arm(interval=1, timeout=10 ** 9)
+        self.assertEqual(w['interval'], hs.WATCH_MIN_INTERVAL)
+        self.assertEqual(w['timeout'], hs.WATCH_MAX_TIMEOUT)
+        # Garbage falls back to the defaults rather than erroring.
+        w2 = self._arm(interval='soon', timeout=None)
+        self.assertEqual(w2['interval'], hs.WATCH_DEFAULT_INTERVAL)
+        self.assertEqual(w2['timeout'], hs.WATCH_DEFAULT_TIMEOUT)
+
+    def test_arm_rejects_bad_kind_and_empty_target(self):
+        with self.assertRaises(ValueError):
+            self._arm(kind='webhook')
+        with self.assertRaises(ValueError):
+            self._arm(target='  ')
+
+    def test_arm_rejects_missing_and_deleted_thread(self):
+        with self.assertRaises(ValueError):
+            self.mgr.arm('no-such-thread', kind='task', target='t')
+        self.session.delete()
+        with self.assertRaises(ValueError):
+            self._arm()
+
+    def test_arm_enforces_per_thread_cap(self):
+        for _ in range(hs.WATCH_MAX_PER_THREAD):
+            self._arm()
+        with self.assertRaises(ValueError):
+            self._arm()
+        # Cancelling frees a slot.
+        first = self.mgr.list(self.session.id)[0]
+        self.assertTrue(self.mgr.cancel(self.session.id, first['id']))
+        self._arm()
+
+
+class WatcherFireTest(WatcherTestBase):
+    """The headline path: arm → turn ends → condition fires → a genuine
+    follow-up event is injected into the thread."""
+
+    def test_task_watcher_fires_on_terminal_status(self):
+        statuses = {'task-abc': 'running'}
+        self.mgr.set_task_status_provider(lambda tid: statuses.get(tid))
+        w = self._arm(note='the docs build')
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])
+        self.assertEqual(self.delivered, [])
+        statuses['task-abc'] = 'completed'
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['delivered'])
+        tid, text = self.delivered[0]
+        self.assertEqual(tid, self.session.id)
+        self.assertIn('[Hypervisor watcher fired]', text)
+        self.assertIn('task-abc', text)
+        self.assertIn('"completed"', text)
+        self.assertIn('the docs build', text)
+
+    def test_task_watcher_fires_on_waiting_for_input(self):
+        # Interactive (Build-tab) tasks never reach 'completed' while their
+        # REPL is open — waiting-for-input IS their done/needs-you signal.
+        self.mgr.set_task_status_provider(lambda tid: 'waiting-for-input')
+        self._arm()
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered'])
+
+    def test_task_watcher_fires_when_task_vanishes(self):
+        self.mgr.set_task_status_provider(lambda tid: None)
+        self._arm()
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertIn('no longer exists', self.delivered[0][1])
+
+    def test_provider_error_skips_the_pass_without_misfiring(self):
+        def boom(tid):
+            raise RuntimeError('transient')
+        self.mgr.set_task_status_provider(boom)
+        self._arm()
+        self.mgr.tick(now=self.now)  # must not raise
+        self.assertEqual(self._states(), ['armed'])
+
+    def test_interval_gates_reevaluation(self):
+        calls = []
+        self.mgr.set_task_status_provider(lambda tid: calls.append(tid) or 'running')
+        w = self._arm()
+        self.mgr.tick(now=self.now)
+        self.mgr.tick(now=self.now + 1)  # within the interval — no re-check
+        self.assertEqual(len(calls), 1)
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(len(calls), 2)
+
+    def test_command_watcher_fires_on_exit_zero(self):
+        marker = os.path.join(self.tmp, 'done-marker')
+        w = self._arm(kind='command', target=f'test -f {marker}')
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])
+        open(marker, 'w').close()
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertIn('command exited 0', self.delivered[0][1])
+
+    def test_file_watcher_fires_on_creation_and_mtime_change(self):
+        target = os.path.join(self.tmp, 'result.txt')
+        w = self._arm(kind='file', target=target)
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])
+        open(target, 'w').close()
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertIn('now exists', self.delivered[0][1])
+        # A pre-existing file watches for change instead.
+        w2 = self._arm(kind='file', target=target)
+        self.mgr.tick(now=self.now + 100)
+        self.assertIn('armed', self._states())
+        os.utime(target, (1, 1))
+        self.mgr.tick(now=self.now + 100 + w2['interval'])
+        self.assertNotIn('armed', self._states())
+        self.assertIn('was modified', self.delivered[-1][1])
+
+
+class WatcherTimeoutTest(WatcherTestBase):
+    def test_timeout_is_an_explicit_distinguishable_event(self):
+        self.mgr.set_task_status_provider(lambda tid: 'running')
+        w = self._arm(timeout=60)
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])
+        self.mgr.tick(now=w['deadline'] + 1)
+        self.assertEqual(self._states(), ['delivered'])
+        text = self.delivered[0][1]
+        self.assertIn('[Hypervisor watcher timeout]', text)
+        self.assertNotIn('[Hypervisor watcher fired]', text)
+        self.assertIn('timed out after 60s', text)
+
+
+class WatcherDeliveryTest(WatcherTestBase):
+    def test_delivery_defers_while_thread_running_then_lands(self):
+        self.mgr.set_task_status_provider(lambda tid: 'completed')
+        self._arm()
+        busy = {'busy': True}
+        self.mgr._deliver = lambda tid, text: (
+            False if busy['busy'] else self._record_deliver(tid, text))
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['fired'])  # held, not lost
+        busy['busy'] = False
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertEqual(len(self.delivered), 1)
+
+    def test_delivery_drop_cancels_when_thread_gone(self):
+        self.mgr.set_task_status_provider(lambda tid: 'completed')
+        self._arm()
+        self.mgr._deliver = lambda tid, text: None
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['cancelled'])
+
+    def test_default_deliver_injects_user_event_when_idle(self):
+        # End-to-end injection minus the CLI spawn: send() is stubbed to the
+        # append it would perform before spawning the runner.
+        self.mgr.set_task_status_provider(lambda tid: 'completed')
+        self.mgr._deliver = hs.WatcherManager._default_deliver
+        self._arm()
+        with mock.patch.object(
+                hs.HypervisorSession, 'send',
+                lambda s, text: s._append(
+                    [{'role': 'user', 'type': 'message', 'text': text}])):
+            self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered'])
+        events = self.session.read_events()
+        self.assertEqual(events[-1]['role'], 'user')
+        self.assertIn('[Hypervisor watcher fired]', events[-1]['text'])
+
+    def test_default_deliver_defers_on_live_turn_and_ignores_stale_meta(self):
+        self.mgr.set_task_status_provider(lambda tid: 'completed')
+        self.mgr._deliver = hs.WatcherManager._default_deliver
+        self._arm()
+        sent = []
+        with mock.patch.object(hs.HypervisorSession, 'send',
+                               lambda s, text: sent.append(text)):
+            # A live in-process turn defers delivery…
+            with hs._RUNLOCK:
+                hs._RUNNING[self.session.id] = True
+            try:
+                self.mgr.tick(now=self.now)
+                self.assertEqual(self._states(), ['fired'])
+            finally:
+                with hs._RUNLOCK:
+                    hs._RUNNING.pop(self.session.id, None)
+            # …but a stale meta status 'running' (crashed turn) does NOT:
+            # busy-ness keys off the live registry, not thread.json.
+            m = self.session.read_meta()
+            m['status'] = 'running'
+            self.session._write_meta(m)
+            self.mgr.tick(now=self.now + 1)
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertEqual(len(sent), 1)
+
+    def test_default_deliver_drops_for_deleted_thread(self):
+        self.assertIsNone(
+            hs.WatcherManager._default_deliver('no-such-thread', 'x'))
+
+
+class WatcherCancelTest(WatcherTestBase):
+    def test_thread_stop_cancels_watchers(self):
+        # stop() must disarm even when idle (its running-turn kill is a no-op).
+        with mock.patch.object(hs, 'WATCHERS', self.mgr):
+            self._arm()
+            self.session.stop()
+        self.assertEqual(self._states(), ['cancelled'])
+        self.mgr.tick(now=self.now + 10 ** 6)
+        self.assertEqual(self.delivered, [])  # cancelled never delivers
+
+    def test_thread_delete_cancels_watchers(self):
+        with mock.patch.object(hs, 'WATCHERS', self.mgr):
+            self._arm()
+            self.session.delete()
+        self.assertEqual(self._states(), ['cancelled'])
+
+    def test_cancel_unknown_id_is_false(self):
+        self.assertFalse(self.mgr.cancel(self.session.id, 'w-nope'))
+
+
+class WatcherRestartTest(WatcherTestBase):
+    def test_watchers_survive_a_manager_restart(self):
+        # Armed with one manager, fired by a brand-new one — state lives in
+        # watchers.json, so a server restart resumes the poll by construction.
+        self.mgr.set_task_status_provider(lambda tid: 'running')
+        self._arm()
+        fresh = hs.WatcherManager()
+        fresh.set_task_status_provider(lambda tid: 'completed')
+        delivered = []
+        fresh._deliver = lambda tid, text: delivered.append((tid, text)) or True
+        fresh.tick(now=self.now + 60)
+        self.assertEqual([w['state'] for w in fresh.list(self.session.id)],
+                         ['delivered'])
+        self.assertIn('[Hypervisor watcher fired]', delivered[0][1])
+
+
 if __name__ == '__main__':
     unittest.main()

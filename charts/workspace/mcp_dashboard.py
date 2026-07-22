@@ -325,6 +325,58 @@ def _t_add_memory(a):
     return _call('POST', '/api/memory', body=body)
 
 
+def _hv_thread_id() -> str:
+    """The Hypervisor thread this agent is running in. hypervisor_session's
+    runner exports it on the CLI env, which the CLI's stdio MCP servers (us)
+    inherit — so `watch` needs no explicit id plumbing. Empty outside a
+    Hypervisor turn (e.g. the Build tab's full-config sessions)."""
+    return (os.environ.get('KC_HYPERVISOR_THREAD_ID') or '').strip()
+
+
+_NO_THREAD_MSG = (
+    'Cross-turn watchers only work inside a Hypervisor chat turn (no '
+    'KC_HYPERVISOR_THREAD_ID in the environment). In this session, wait '
+    'in-process or poll the target yourself.'
+)
+
+
+def _t_watch(a):
+    tid = _hv_thread_id()
+    if not tid:
+        return _err(_NO_THREAD_MSG)
+    kind = (a.get('kind') or '').strip()
+    target = (a.get('target') or '').strip()
+    if not kind or not target:
+        return _err('kind and target are required')
+    body = {'kind': kind, 'target': target}
+    for k in ('note', 'interval', 'timeout'):
+        if a.get(k) is not None:
+            body[k] = a[k]
+    return _call('POST',
+                 f'/api/hypervisor/threads/{urllib.parse.quote(tid)}/watchers',
+                 body=body)
+
+
+def _t_list_watchers(a):
+    tid = _hv_thread_id()
+    if not tid:
+        return _err(_NO_THREAD_MSG)
+    return _call('GET',
+                 f'/api/hypervisor/threads/{urllib.parse.quote(tid)}/watchers')
+
+
+def _t_cancel_watcher(a):
+    tid = _hv_thread_id()
+    if not tid:
+        return _err(_NO_THREAD_MSG)
+    wid = (a.get('watcher_id') or '').strip()
+    if not wid:
+        return _err('watcher_id is required')
+    return _call('DELETE',
+                 f'/api/hypervisor/threads/{urllib.parse.quote(tid)}/watchers/'
+                 f'{urllib.parse.quote(wid)}')
+
+
 def _t_pin_app(a):
     port = a.get('port')
     if port is None:
@@ -546,6 +598,49 @@ TOOLS: Dict[str, Any] = {
                      'description': 'semantic|episodic|procedural|preference.'},
             'tags': {'type': 'string', 'description': 'Optional comma tags.'},
         }, required=['namespace', 'key', 'value'], kind='write'),
+    'watch': _tool(
+        'watch',
+        'Arm a CROSS-TURN watcher owned by the workspace runner: it keeps '
+        'polling after your turn ends and posts the outcome into this chat as '
+        'a new message (so you get a real notification — no re-polling, and '
+        'unlike Bash run_in_background it survives the turn boundary). Kinds: '
+        "'task' — target is a task_id (from create_task); fires when the task "
+        "completes, errors, is killed, or goes waiting-for-input. 'command' — "
+        "target is a shell command; fires when it exits 0. 'file' — target is "
+        'an absolute path; fires when it appears, is removed, or its mtime '
+        'changes. On timeout you get an explicit timeout message instead. '
+        'After arming, just end your turn.',
+        _t_watch,
+        properties={
+            'kind': {'type': 'string',
+                     'description': "'task' | 'command' | 'file'."},
+            'target': {'type': 'string',
+                       'description': 'Task id, shell predicate, or absolute '
+                                      'path (per kind).'},
+            'note': {'type': 'string',
+                     'description': 'Optional: why you are waiting — echoed '
+                                    'back in the notification.'},
+            'interval': {'type': 'number',
+                         'description': 'Poll interval seconds (default 20, '
+                                        'min 5).'},
+            'timeout': {'type': 'number',
+                        'description': 'Give-up seconds (default 3600, max '
+                                       '86400); a timeout is reported as its '
+                                       'own message.'},
+        }, required=['kind', 'target'], kind='write'),
+    'list_watchers': _tool(
+        'list_watchers',
+        'List this chat thread\'s cross-turn watchers and their states '
+        '(armed, fired, delivered, timeout, cancelled).',
+        _t_list_watchers),
+    'cancel_watcher': _tool(
+        'cancel_watcher',
+        'Cancel one of this chat thread\'s cross-turn watchers by id (from '
+        'watch/list_watchers).',
+        _t_cancel_watcher,
+        properties={'watcher_id': {'type': 'string',
+                                   'description': 'The watcher id.'}},
+        required=['watcher_id'], kind='write'),
     'pin_app': _tool(
         'pin_app',
         'Pin a local port to the Applications page so it is easy to open.',
