@@ -42,6 +42,8 @@ export type IconName =
   | 'info'
   | 'hypervisor'
   | 'walkie'
+  | 'mic'
+  | 'speaker'
   | 'desktop';
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -206,6 +208,20 @@ const PATHS: Record<IconName, JSX.Element> = {
   unlink: (
     <>
       <path d="M8 12l-1 1a3 3 0 0 1-4-4l2-2M12 8l1-1a3 3 0 0 1 4 4l-1 1M14 3v2M17 6h-2M3 17l2-2" />
+    </>
+  ),
+  // Microphone — capsule + stand — the voice-input (push-to-talk) mark.
+  mic: (
+    <>
+      <rect x="7.5" y="2.5" width="5" height="9" rx="2.5" />
+      <path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" />
+    </>
+  ),
+  // Loudspeaker + sound wave — the speak-replies (TTS) mark.
+  speaker: (
+    <>
+      <path d="M11 4L6.8 7.5H4a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h2.8L11 16V4z" />
+      <path d="M13.5 8a3.2 3.2 0 0 1 0 4M15.5 6a6 6 0 0 1 0 8" />
     </>
   ),
   download: (

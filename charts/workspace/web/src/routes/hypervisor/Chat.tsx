@@ -33,6 +33,16 @@ import {
   uploadTaskFile,
   ATTACH_ACCEPT,
 } from '../tasks/imageAttach';
+import {
+  recognitionCtor,
+  sttSupported,
+  speakReplies,
+  speakableText,
+  sentenceChunks,
+  speakText,
+  stopSpeaking,
+  type SpeechRecognitionLike,
+} from './voice';
 
 /** A user-attached file being uploaded to the workspace so the agent can read
  *  it — same mechanism as the Build tab: upload, then the file's absolute path
@@ -424,6 +434,91 @@ export function Chat() {
     [],
   );
 
+  // ── Voice input (issue #396, tier 0) ───────────────────────────────────────
+  // Push-to-talk via the browser's SpeechRecognition: tap to record, tap again
+  // to stop. Final transcripts accumulate into the draft (interims show live),
+  // so the user can review/edit before the existing send path fires — voice is
+  // an input method, not a separate pipeline.
+  const [listening, setListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recRef = useRef<SpeechRecognitionLike | null>(null);
+  // Draft text present when recording started, and finalized speech so far —
+  // each result event re-renders draft as base + finals + current interim.
+  const micBaseRef = useRef('');
+  const micFinalRef = useRef('');
+
+  function stopMic() {
+    try {
+      recRef.current?.stop();
+    } catch {
+      /* already stopped */
+    }
+  }
+
+  function toggleMic() {
+    if (listening) {
+      stopMic();
+      return;
+    }
+    const Ctor = recognitionCtor();
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.lang = navigator.language || 'en-US';
+    rec.interimResults = true;
+    rec.continuous = true;
+    micBaseRef.current = draft.trim();
+    micFinalRef.current = '';
+    rec.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        const piece = r[0]?.transcript ?? '';
+        if (r.isFinal) micFinalRef.current = `${micFinalRef.current} ${piece}`.trim();
+        else interim += piece;
+      }
+      setDraft(
+        [micBaseRef.current, micFinalRef.current, interim.trim()].filter(Boolean).join(' '),
+      );
+    };
+    rec.onerror = (e) => {
+      // 'no-speech' (silence timeout) and 'aborted' are routine, not failures.
+      if (e.error && e.error !== 'no-speech' && e.error !== 'aborted') {
+        setVoiceError(
+          e.error === 'not-allowed' || e.error === 'service-not-allowed'
+            ? 'Microphone access was denied. Voice input needs mic permission and an HTTPS page.'
+            : `Voice input failed: ${e.error}`,
+        );
+      }
+    };
+    // The engine also ends itself (silence timeout, tab switch) — reflect that.
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+      taRef.current?.focus();
+    };
+    recRef.current = rec;
+    setVoiceError(null);
+    try {
+      rec.start();
+      setListening(true);
+    } catch {
+      recRef.current = null;
+    }
+  }
+
+  // Kill the mic and any queued speech when the chat unmounts.
+  useEffect(
+    () => () => {
+      try {
+        recRef.current?.abort();
+      } catch {
+        /* noop */
+      }
+      stopSpeaking();
+    },
+    [],
+  );
+
   async function copyMessage(key: string, text: string) {
     if (!text) return;
     try {
@@ -556,6 +651,7 @@ export function Chat() {
 
   function submit(text?: string) {
     if (blocked) return;
+    stopMic(); // sending finalizes dictation — don't keep transcribing into the next draft
     pinnedRef.current = true; // sending your own message re-pins to the bottom
     const value = (text ?? draft).trim();
     // Append each uploaded image's absolute path on its own line — Claude Code
@@ -586,6 +682,38 @@ export function Chat() {
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
+
+  // ── Spoken replies (issue #396, tier 0) ────────────────────────────────────
+  // When the topbar "speak replies" toggle is on, read the agent's prose aloud
+  // via speechSynthesis. Text is enqueued at sentence boundaries as it streams
+  // in, so playback starts before the turn completes; the remainder flushes
+  // when the turn goes idle. Tracking is per-turn: a turn first seen while NOT
+  // live (history loading on thread open, or the toggle just flipped on) is
+  // marked already-spoken so we never narrate the past.
+  const speakOn = speakReplies.value;
+  const live = working || busy;
+  const spokenRef = useRef({ key: '', chars: 0 });
+  useEffect(() => {
+    if (!speakOn) return;
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== 'agent') return;
+    const key = `${active ?? ''}#${turns.length - 1}`;
+    const full = speakableText(last.blocks);
+    if (spokenRef.current.key !== key) {
+      spokenRef.current = { key, chars: live ? 0 : full.length };
+    }
+    if (full.length <= spokenRef.current.chars) return;
+    const fresh = full.slice(spokenRef.current.chars);
+    if (live) {
+      const { complete } = sentenceChunks(fresh);
+      if (!complete) return;
+      speakText(complete);
+      spokenRef.current.chars += complete.length;
+    } else {
+      speakText(fresh);
+      spokenRef.current.chars = full.length;
+    }
+  }, [turns, speakOn, live, active]);
 
   // ── Slash-command / skill picker (issue #302) ──────────────────────────────
   // The agent a message will actually run under: the active thread's fixed
@@ -784,6 +912,20 @@ export function Chat() {
         </div>
       )}
 
+      {voiceError && (
+        <div class="hv-banner hv-banner-error" role="alert">
+          {voiceError}
+          <button
+            type="button"
+            class="hv-banner-x"
+            onClick={() => setVoiceError(null)}
+            aria-label="Dismiss"
+          >
+            <Icon name="close" size={11} />
+          </button>
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div class="hv-attachments">
           {attachments.map((a) => (
@@ -876,6 +1018,19 @@ export function Chat() {
             <span class="hv-slash-glyph">/</span>
           </button>
         )}
+        {sttSupported() && !readOnly && (
+          <button
+            type="button"
+            class={`hv-attach-btn hv-mic-btn ${listening ? 'is-listening' : ''}`}
+            onClick={toggleMic}
+            disabled={blocked}
+            title={listening ? 'Stop recording' : 'Dictate a message (push to talk)'}
+            aria-label={listening ? 'Stop recording' : 'Dictate a message'}
+            aria-pressed={listening}
+          >
+            <Icon name="mic" size={16} />
+          </button>
+        )}
         <textarea
           ref={taRef}
           class="hv-composer-input"
@@ -885,7 +1040,9 @@ export function Chat() {
               ? 'Read-only workspace — you can still ask about state'
               : working
                 ? 'Kube-Coder is working… press Stop to interrupt'
-                : 'Message Kube-Coder…  (paste, attach, or / for commands)'
+                : listening
+                  ? 'Listening… tap the mic again to stop'
+                  : 'Message Kube-Coder…  (paste, attach, or / for commands)'
           }
           onInput={(e) => onDraftInput((e.target as HTMLTextAreaElement).value)}
           onKeyDown={onKeyDown}

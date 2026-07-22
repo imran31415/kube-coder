@@ -104,6 +104,29 @@ next to `server.py` at `/tmp/browser/` via `browser-configmap.yaml`.
   (markdown prose + expandable tool-activity chips). No screen scraping.
 - `api/hypervisor.ts`, `store/hypervisor.ts`: canonical event types + polling.
 
+### Voice (issue #396, tier 0 — browser-only)
+
+`routes/hypervisor/voice.ts` adds an opt-in voice layer with zero backend
+involvement:
+
+- **Push-to-talk input** — a mic button in the composer uses the browser's
+  `SpeechRecognition` (Web Speech API): tap to record, tap again to stop.
+  Final transcripts land in the draft (interims render live), so dictation
+  feeds the *existing* send path and can be edited before sending.
+- **Spoken replies** — a speaker toggle in the topbar reads agent prose aloud
+  via `speechSynthesis`, enqueued at sentence boundaries so playback starts
+  before the turn completes. Code blocks, tool chips and embeds stay silent;
+  the preference persists per browser (`localStorage`, like the sidebar width).
+
+Both controls are feature-detected and simply don't render where the APIs are
+missing (e.g. `SpeechRecognition` on Firefox). **Mic capture requires a secure
+context**: the dashboard's HTTPS ingress qualifies, but a plain-HTTP
+port-forward (`kubectl port-forward` + `http://localhost:…` works only because
+localhost is a secure context; any other plain-HTTP host does not) will hide or
+break voice input. Provider-backed STT/TTS (Whisper / ElevenLabs via the
+per-workspace credential store, #329/#388) is the tier-1 follow-up and can slot
+behind the same UI.
+
 ## Config (`values.yaml`)
 
 ```yaml
