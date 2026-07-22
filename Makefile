@@ -48,7 +48,7 @@ IMAGE_NAME := devlaptop
 # The release version. Tags the image `make build` / `make push` / `make release`
 # produce ($(IMAGE) below), and the tag `make ship USER=<x>` repins a user onto.
 # Bumped automatically by scripts/release.sh.
-VERSION := v1.40.0
+VERSION := v1.40.1
 PLATFORM := linux/amd64
 # Control-plane namespace: the shared base-infrastructure + workspace-controller
 # releases live here. Per-#103 individual workspaces live in their OWN ws-<user>
