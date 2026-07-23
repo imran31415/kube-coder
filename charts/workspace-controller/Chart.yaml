@@ -3,4 +3,4 @@ name: workspace-controller
 description: Admin console to list and start/stop workspaces in a namespace
 type: application
 version: 0.1.0
-appVersion: "1.41.0"
+appVersion: "1.41.1"
