@@ -218,6 +218,19 @@ spec:
         # only set on the read-only demo deploy.
         - name: DEMO_SHOW_ALL
           value: {{ .Values.demoShowAll | default false | quote }}
+        # Public-demo confidentiality (finding 3). In AUTH_MODE=none server.py
+        # already refuses hidden (dot) path segments for direct file reads so
+        # dotfile credentials (.claude-tasks/.api-token, .config, .ssh, .git)
+        # aren't publicly downloadable. PUBLIC_FILE_ROOT further confines public
+        # reads to a subdir of /home/dev; PUBLIC_DEMO_ACK acknowledges that
+        # readable PVC files are public (silences the loud startup warning).
+        # Operators MUST serve a public demo from a fresh, sanitized PVC.
+        {{- if (.Values.publicDemo).fileRoot }}
+        - name: PUBLIC_FILE_ROOT
+          value: {{ (.Values.publicDemo).fileRoot | quote }}
+        {{- end }}
+        - name: PUBLIC_DEMO_ACK
+          value: {{ (.Values.publicDemo).acknowledged | default false | quote }}
         # kube-coder environment marker — always set so anything running in
         # the workspace (dev servers, build scripts, the user's own app) can
         # detect it's inside a kube-coder pod. KUBE_CODER is visible to every

@@ -38,7 +38,14 @@ image:
 #   auth.type:
 #     "basic"  — http basic auth from .ingress.auth.secretName
 #     "oauth2" — oauth2-proxy in front of every /oauth/* path
-#     "none"   — bare TLS; anyone can hit it (use only with readOnly: true)
+#     "none"   — bare TLS; anyone can hit it (use only with readOnly: true).
+#                CONFIDENTIALITY WARNING: read-only stops WRITES, not READS.
+#                In this mode every readable file on the PVC is downloadable by
+#                anonymous visitors. server.py refuses hidden (dot) path segments
+#                (.claude-tasks/.api-token, .config, .ssh, .git, …) for direct
+#                file reads, but you MUST still serve a public demo from a FRESH,
+#                sanitized PVC — NEVER reuse a private workspace's PVC. See the
+#                `publicDemo` block below for PUBLIC_FILE_ROOT / acknowledgement.
 ingress:
   className: nginx
   # Max request body nginx accepts on the authed dashboard ingresses (main
@@ -117,7 +124,27 @@ oauth2:
 #   - the docker-in-docker sidecar is dropped
 # Hard-coupled to ingress.auth.type=none so we never accidentally expose a
 # mutable workspace without auth — server.py refuses to start in that combo.
+#
+# CONFIDENTIALITY (finding 3): read-only protects INTEGRITY, not confidentiality.
+# With auth.type=none the request layer is UNAUTHENTICATED, so every readable
+# file on this workspace's PVC is effectively public — even though writes 403.
+# server.py refuses hidden (dot) path segments for direct file download/preview/
+# view (so .claude-tasks/.api-token, .config, .ssh, .git are not leaked), but a
+# public demo MUST be served from a NEWLY CREATED, sanitized PVC. NEVER reuse a
+# private workspace's PVC for a public demo. See the `publicDemo` block.
 readOnly: false
+
+# Public-demo confidentiality controls (only meaningful with auth.type=none +
+# readOnly:true — the unauthenticated public demo). Both are optional.
+publicDemo:
+  # Confine public (unauthenticated) file reads to this subdir of /home/dev,
+  # e.g. "demo". Empty (default) => reads are allowed anywhere under /home/dev
+  # except hidden (dot) path segments, which are always refused in none-mode.
+  fileRoot: ""
+  # Set true to acknowledge that readable PVC files are public in this mode and
+  # that you are serving from a fresh, sanitized PVC. Silences the loud startup
+  # warning server.py prints when public mode is active without acknowledgement.
+  acknowledged: false
 
 # Public-demo hint: when true, the read-only SPA shows ALL persistent
 # memories on the Memory tab (including auto-imported `claude.*` notes)

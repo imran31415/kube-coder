@@ -48,6 +48,9 @@ class _Base(unittest.TestCase):
     """Boots a real ThreadingHTTPServer with HOME_DEV pinned to a tempdir."""
 
     READONLY = False
+    # None => leave server.AUTH_MODE untouched; a string patches it for the suite
+    # (so the AUTH_MODE=none public-demo gate can be exercised in isolation).
+    AUTH_MODE = None
 
     @classmethod
     def setUpClass(cls):
@@ -61,6 +64,18 @@ class _Base(unittest.TestCase):
         os.makedirs(os.path.join(cls.tmpdir, 'emptydir'))
         with open(os.path.join(cls.tmpdir, 'binary.bin'), 'wb') as f:
             f.write(b'\x00\x01\x02\x03BINARY')
+        # Hidden (dot) credential-style files/dirs the public demo must not leak.
+        os.makedirs(os.path.join(cls.tmpdir, '.claude-tasks'))
+        with open(os.path.join(cls.tmpdir, '.claude-tasks', '.api-token'), 'w') as f:
+            f.write('secret-token\n')
+        os.makedirs(os.path.join(cls.tmpdir, '.config', 'gh'))
+        with open(os.path.join(cls.tmpdir, '.config', 'gh', 'hosts.yml'), 'w') as f:
+            f.write('github.com:\n  oauth_token: gho_secret\n')
+        os.makedirs(os.path.join(cls.tmpdir, '.ssh'))
+        with open(os.path.join(cls.tmpdir, '.ssh', 'id_ed25519'), 'w') as f:
+            f.write('PRIVATE KEY\n')
+        with open(os.path.join(cls.tmpdir, '.env'), 'w') as f:
+            f.write('API_KEY=sk-secret\n')
 
         cls._home_save = server.BrowserHandler.HOME_DEV
         server.BrowserHandler.HOME_DEV = cls.tmpdir
@@ -68,6 +83,9 @@ class _Base(unittest.TestCase):
         server.BrowserHandler.check_claude_auth = lambda self: True
         cls._ro_save = server.READONLY_MODE
         server.READONLY_MODE = cls.READONLY
+        cls._authmode_save = server.AUTH_MODE
+        if cls.AUTH_MODE is not None:
+            server.AUTH_MODE = cls.AUTH_MODE
 
         cls.port = _free_port()
         cls.httpd = http.server.ThreadingHTTPServer(('127.0.0.1', cls.port), server.BrowserHandler)
@@ -81,6 +99,7 @@ class _Base(unittest.TestCase):
         server.BrowserHandler.HOME_DEV = cls._home_save
         server.BrowserHandler.check_claude_auth = cls._auth_save
         server.READONLY_MODE = cls._ro_save
+        server.AUTH_MODE = cls._authmode_save
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def _url(self, path):
@@ -371,6 +390,202 @@ class FilesApiReadonlyTests(_Base):
             self.assertEqual(status, 200)
         finally:
             os.remove(pdf)
+
+
+class FilesApiPublicDemoTests(_Base):
+    """Finding 3: AUTH_MODE=none + READONLY_MODE=true is the UNAUTHENTICATED
+    public demo. Reads stay available, but hidden (dot) path segments —
+    credential/config files that directory listings already hide — must NOT be
+    downloadable/previewable/viewable. Traversal + non-hidden reads unchanged."""
+
+    READONLY = True
+    AUTH_MODE = 'none'
+
+    def test_public_cannot_download_api_token(self):
+        q = urllib.parse.quote('.claude-tasks/.api-token', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/download?path={q}')
+        self.assertEqual(status, 404)
+
+    def test_public_cannot_download_gh_hosts(self):
+        q = urllib.parse.quote('.config/gh/hosts.yml', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/download?path={q}')
+        self.assertEqual(status, 404)
+
+    def test_public_cannot_download_ssh_key(self):
+        q = urllib.parse.quote('.ssh/id_ed25519', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/download?path={q}')
+        self.assertEqual(status, 404)
+
+    def test_public_cannot_download_dotfile_at_root(self):
+        status, _body, _ = self._req('GET', '/api/files/download?path=.env')
+        self.assertEqual(status, 404)
+
+    def test_public_cannot_preview_hidden(self):
+        q = urllib.parse.quote('.claude-tasks/.api-token', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/preview?path={q}')
+        self.assertEqual(status, 404)
+
+    def test_public_cannot_raw_hidden(self):
+        # even a media file under a hidden dir is refused
+        img = os.path.join(self.tmpdir, '.config', 'pic.png')
+        with open(img, 'wb') as f:
+            f.write(b'\x89PNG\r\n')
+        q = urllib.parse.quote('.config/pic.png', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/raw?path={q}')
+        self.assertEqual(status, 404)
+
+    def test_public_cannot_view_hidden(self):
+        pdf = os.path.join(self.tmpdir, '.config', 'secret.pdf')
+        with open(pdf, 'wb') as f:
+            f.write(b'%PDF-1.4\n')
+        q = urllib.parse.quote('.config/secret.pdf', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/view?path={q}')
+        self.assertEqual(status, 404)
+
+    def test_public_can_download_normal_file(self):
+        # Public demo fixtures / non-hidden files stay downloadable.
+        status, body, _ = self._req('GET', '/api/files/download?path=hello.txt')
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'hello world\n')
+
+    def test_public_can_download_nested_normal_file(self):
+        status, body, _ = self._req('GET', '/api/files/download?path=sub/nested.txt')
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'nested\n')
+
+    def test_public_can_preview_normal_file(self):
+        status, body, _ = self._req('GET', '/api/files/preview?path=hello.txt')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['kind'], 'text')
+
+    def test_public_traversal_still_rejected(self):
+        q = urllib.parse.quote('../../etc/passwd', safe='')
+        status, _body, _ = self._req('GET', f'/api/files/download?path={q}')
+        self.assertEqual(status, 400)
+
+    def test_public_symlink_escape_still_rejected(self):
+        outside = os.path.realpath(tempfile.mkdtemp(prefix='kc-outside-'))
+        try:
+            with open(os.path.join(outside, 'secret'), 'w') as f:
+                f.write('x')
+            link = os.path.join(self.tmpdir, 'escape')
+            os.symlink(outside, link)
+            q = urllib.parse.quote('escape/secret', safe='')
+            status, _body, _ = self._req('GET', f'/api/files/download?path={q}')
+            self.assertEqual(status, 400)
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+            link = os.path.join(self.tmpdir, 'escape')
+            if os.path.islink(link):
+                os.remove(link)
+
+
+class FilesApiAuthedHiddenAccessTests(_Base):
+    """The none-mode public gate must NOT touch authenticated modes: an
+    oauth2/basic user keeps full access to their own dotfiles."""
+
+    READONLY = False
+    AUTH_MODE = 'oauth2'
+
+    def test_authed_can_download_hidden(self):
+        q = urllib.parse.quote('.claude-tasks/.api-token', safe='')
+        status, body, _ = self._req('GET', f'/api/files/download?path={q}')
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'secret-token\n')
+
+    def test_authed_can_preview_hidden(self):
+        q = urllib.parse.quote('.env', safe='')
+        status, body, _ = self._req('GET', f'/api/files/preview?path={q}')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['kind'], 'text')
+
+
+class FilesApiPublicRootTests(_Base):
+    """Optional PUBLIC_FILE_ROOT opt-in confines public reads to a subdir."""
+
+    READONLY = True
+    AUTH_MODE = 'none'
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.makedirs(os.path.join(cls.tmpdir, 'demo'))
+        with open(os.path.join(cls.tmpdir, 'demo', 'sample.txt'), 'w') as f:
+            f.write('sample\n')
+        cls._pfr_save = server.PUBLIC_FILE_ROOT
+        server.PUBLIC_FILE_ROOT = 'demo'
+
+    @classmethod
+    def tearDownClass(cls):
+        server.PUBLIC_FILE_ROOT = cls._pfr_save
+        super().tearDownClass()
+
+    def test_inside_root_allowed(self):
+        status, body, _ = self._req('GET', '/api/files/download?path=demo/sample.txt')
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'sample\n')
+
+    def test_outside_root_rejected(self):
+        status, _body, _ = self._req('GET', '/api/files/download?path=hello.txt')
+        self.assertEqual(status, 404)
+
+
+class PublicDemoPredicateTests(unittest.TestCase):
+    """Unit-test the startup-warning predicate + hidden-segment helper without
+    booting a server or capturing stdout."""
+
+    def setUp(self):
+        self._ro = server.READONLY_MODE
+        self._am = server.AUTH_MODE
+        self._ack = server.PUBLIC_DEMO_ACK
+        self._pfr = server.PUBLIC_FILE_ROOT
+
+    def tearDown(self):
+        server.READONLY_MODE = self._ro
+        server.AUTH_MODE = self._am
+        server.PUBLIC_DEMO_ACK = self._ack
+        server.PUBLIC_FILE_ROOT = self._pfr
+
+    def test_warning_fires_in_unacked_public_mode(self):
+        server.AUTH_MODE = 'none'
+        server.READONLY_MODE = True
+        server.PUBLIC_DEMO_ACK = False
+        server.PUBLIC_FILE_ROOT = ''
+        self.assertTrue(server._public_mode_active())
+        self.assertTrue(server._public_demo_needs_ack())
+
+    def test_ack_silences_warning(self):
+        server.AUTH_MODE = 'none'
+        server.READONLY_MODE = True
+        server.PUBLIC_DEMO_ACK = True
+        server.PUBLIC_FILE_ROOT = ''
+        self.assertFalse(server._public_demo_needs_ack())
+
+    def test_public_file_root_silences_warning(self):
+        server.AUTH_MODE = 'none'
+        server.READONLY_MODE = True
+        server.PUBLIC_DEMO_ACK = False
+        server.PUBLIC_FILE_ROOT = 'demo'
+        self.assertFalse(server._public_demo_needs_ack())
+
+    def test_authed_mode_is_not_public(self):
+        server.AUTH_MODE = 'oauth2'
+        server.READONLY_MODE = True
+        self.assertFalse(server._public_mode_active())
+        self.assertFalse(server._public_demo_needs_ack())
+
+    def test_hidden_segment_helper(self):
+        save = server.BrowserHandler.HOME_DEV
+        server.BrowserHandler.HOME_DEV = '/home/dev'
+        try:
+            H = server.BrowserHandler
+            self.assertTrue(H._path_has_hidden_segment('/home/dev/.ssh/id_ed25519'))
+            self.assertTrue(H._path_has_hidden_segment('/home/dev/.claude-tasks/.api-token'))
+            self.assertTrue(H._path_has_hidden_segment('/home/dev/a/.git/config'))
+            self.assertFalse(H._path_has_hidden_segment('/home/dev/sub/nested.txt'))
+            self.assertFalse(H._path_has_hidden_segment('/home/dev'))
+        finally:
+            server.BrowserHandler.HOME_DEV = save
 
 
 if __name__ == '__main__':
