@@ -129,6 +129,11 @@ spec:
           value: {{ .Values.provision.chart.repo | quote }}
         - name: CHART_REF
           value: {{ .Values.provision.chart.ref | quote }}
+        # Fail closed on a mutable/floating chart ref unless explicitly opted in
+        # (finding 7). The provisioner Job clones CHART_REF and runs its make
+        # deploy under the cluster-privileged provisioner SA, so it must be pinned.
+        - name: ALLOW_MUTABLE_CHART_REF
+          value: {{ if hasKey .Values.provision.chart "allowMutableRef" }}{{ .Values.provision.chart.allowMutableRef | quote }}{{ else }}"false"{{ end }}
         - name: PROVISIONER_SERVICE_ACCOUNT
           value: {{ .Values.provision.serviceAccount | quote }}
         - name: PROVISIONER_PULL_SECRET

@@ -1469,6 +1469,23 @@ GITOPS_TOKEN = os.environ.get('GITOPS_TOKEN', '').strip()
 # Repo + ref the provisioner Job pulls the workspace Helm chart from.
 CHART_REPO = os.environ.get('CHART_REPO', 'https://github.com/imran31415/kube-coder.git').strip()
 CHART_REF = os.environ.get('CHART_REF', 'main').strip()
+# Supply-chain hardening (security review July 2026, finding 7). The provisioner
+# Job git-clones CHART_REPO at CHART_REF and runs its `make deploy` under the
+# cluster-privileged `workspace-provisioner` ServiceAccount. A *mutable* ref (a
+# branch like `main`, `latest`/`HEAD`, or a short SHA) means the exact code that
+# executes with cluster-wide permissions can change out from under the operator
+# between provisions — so a compromise of the chart repo's default branch would
+# become cluster compromise during provisioning. We therefore require an
+# *immutable* ref: a full 40-hex commit SHA (64-hex for SHA-256 repos) or a
+# signed release tag `vX.Y.Z`. Provisioning is opt-in and rarely run, so we fail
+# closed by default; an operator who genuinely needs to track a branch sets
+# provision.chart.allowMutableRef (env ALLOW_MUTABLE_CHART_REF), mirroring the
+# allowSharedToken migration flag from #414. Every decision is logged for
+# provenance.
+ALLOW_MUTABLE_CHART_REF = os.environ.get('ALLOW_MUTABLE_CHART_REF', '').strip().lower() in (
+    '1', 'true', 'yes', 'on')
+_CHART_REF_SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
+_CHART_REF_TAG_RE = re.compile(r'^v\d+\.\d+\.\d+$')
 # Image the provisioner Job runs (needs git+make+kubectl; installs helm on the
 # fly if absent). Defaults to the controller's own image.
 PROVISIONER_IMAGE = os.environ.get('PROVISIONER_IMAGE', '').strip()
@@ -1505,6 +1522,40 @@ class GithubError(RuntimeError):
 
 class ProvisionError(RuntimeError):
     pass
+
+
+def classify_chart_ref(ref):
+    """Classify a chart git ref for the privileged provisioner Job:
+    'commit-sha' (full 40/64-hex SHA), 'release-tag' (vX.Y.Z), or 'mutable'
+    (a branch like main, latest/HEAD, a short SHA — anything not pinned)."""
+    r = (ref or '').strip()
+    if _CHART_REF_SHA_RE.match(r):
+        return 'commit-sha'
+    if _CHART_REF_TAG_RE.match(r):
+        return 'release-tag'
+    return 'mutable'
+
+
+def chart_ref_is_immutable(ref):
+    """True when ref is a full commit SHA or a vX.Y.Z release tag."""
+    return classify_chart_ref(ref) != 'mutable'
+
+
+def validate_chart_ref(ref):
+    """Enforce an immutable chart ref for the cluster-privileged provisioner Job
+    (finding 7). Returns the ref classification for provenance logging. Raises
+    ProvisionError (fail-closed) when the ref is mutable and the
+    ALLOW_MUTABLE_CHART_REF escape hatch is not set."""
+    kind = classify_chart_ref(ref)
+    if kind == 'mutable' and not ALLOW_MUTABLE_CHART_REF:
+        raise ProvisionError(
+            f'refusing to provision from mutable chart ref {(ref or "").strip()!r}: the '
+            f'provisioner Job git-clones this ref and runs its `make deploy` under the '
+            f'cluster-privileged provisioner ServiceAccount, so it must be pinned to an '
+            f'immutable reference — a full 40-hex commit SHA or a vX.Y.Z release tag. '
+            f'Set provision.chart.ref to a pinned ref, or set '
+            f'provision.chart.allowMutableRef=true (env ALLOW_MUTABLE_CHART_REF) to override.')
+    return kind
 
 
 def _github_api(method, path, token=None, body=None):
@@ -1802,17 +1853,33 @@ def _git(args):
 # cannot smuggle an attacker-controlled workload in under the provisioner
 # identity. Endgame: move the provisioner to a separate namespace behind a
 # constrained broker that stamps Jobs from an immutable template (see PR notes).
-PROVISION_JOB_SCRIPT = r"""
+# Pinned helm release + its published SHA-256 (from
+# https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum). The
+# runtime download is verified against this digest before it is unpacked or
+# executed — a tampered/MITM'd helm tarball fails closed with `exit 1` rather
+# than running under the cluster-privileged provisioner SA (finding 7). Bump both
+# lines together when moving helm versions.
+PROVISION_HELM_VERSION = 'v3.14.4'
+PROVISION_HELM_SHA256 = 'a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259'
+
+PROVISION_JOB_SCRIPT = (r"""
 set -euo pipefail
 export HOME=/tmp
 mkdir -p /tmp/bin
 export PATH="/tmp/bin:$PATH"
+HELM_VERSION="__HELM_VERSION__"
+HELM_SHA256="__HELM_SHA256__"
 if ! command -v helm >/dev/null 2>&1; then
-  echo "helm not found — installing to /tmp/bin"
-  curl -fsSL https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz | tar -xz -C /tmp
+  echo "helm not found — installing ${HELM_VERSION} to /tmp/bin (sha256-verified)"
+  curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tgz
+  echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c - \
+    || { echo "FATAL: helm ${HELM_VERSION} checksum verification failed — refusing to run" >&2; exit 1; }
+  tar -xzf /tmp/helm.tgz -C /tmp
   install -m 0755 /tmp/linux-amd64/helm /tmp/bin/helm
 fi
 git clone --depth 1 -b "$CHART_REF" "$CHART_REPO" /tmp/kc
+# Provenance: record the exact commit the privileged deploy actually runs from.
+echo "provisioner: chart ref ${CHART_REF} resolved to commit $(git -C /tmp/kc rev-parse HEAD)"
 git clone --depth 1 -b "$GITOPS_BRANCH" "https://x-access-token:${GITOPS_TOKEN}@${GITOPS_REPO}" /tmp/cfg
 mkdir -p /tmp/kc/users-private
 cp -r "/tmp/cfg/users-private/${SLUG}" "/tmp/kc/users-private/${SLUG}"
@@ -1822,9 +1889,18 @@ cd /tmp/kc
 # creates+labels the namespace and replicates regcred (see REGCRED_SRC_NAMESPACE).
 make deploy USER="${SLUG}" NAMESPACE="${WS_NAMESPACE}" REGCRED_SRC_NAMESPACE="${NAMESPACE}"
 """
+                        .replace('__HELM_VERSION__', PROVISION_HELM_VERSION)
+                        .replace('__HELM_SHA256__', PROVISION_HELM_SHA256))
 
 
 def build_job_manifest(slug):
+    # Fail closed on a mutable/floating chart ref before we ever build a Job that
+    # would git-clone it and run its make deploy under the provisioner SA
+    # (finding 7). Also log the ref + its classification for provenance.
+    ref_kind = validate_chart_ref(CHART_REF)
+    sys.stderr.write(
+        f'[controller] provisioning {slug}: chart repo={CHART_REPO} ref={CHART_REF} '
+        f'({ref_kind}) allowMutableRef={ALLOW_MUTABLE_CHART_REF}\n')
     name = f'provision-{slug}-{int(time.time())}'[:63]
     image = PROVISIONER_IMAGE or f'{os.environ.get("CONTROLLER_IMAGE", "")}' or ''
     env = [
