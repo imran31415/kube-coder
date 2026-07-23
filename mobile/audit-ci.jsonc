@@ -1,0 +1,35 @@
+{
+  // Blocking SCA gate for the Expo / React Native mobile app (npm lockfile).
+  // Fails CI on high/critical advisories. See docs/SUPPLY_CHAIN.md.
+  //
+  // Runtime vs. development dependencies:
+  //   - PRODUCTION deps (expo, react-native, @react-navigation/*, expo-* — the
+  //     code actually bundled onto the device by EAS/Expo) currently carry NO
+  //     high/critical advisory, so none are allowlisted here. A new high/critical
+  //     in a shipped dependency MUST fail this job.
+  //   - The two allowlisted advisories below are both in test/build-time
+  //     devDependencies (vitest UI + its bundled vite). They never ship in the
+  //     Expo bundle installed on a device and are not reachable as a network
+  //     service in the app — they only matter when a developer runs `vitest`
+  //     locally with the UI server enabled. Fixing them requires the vitest v4
+  //     major (a semver-major bump that would rewrite the test config); tracked
+  //     for that upgrade rather than blocking CI in the meantime. These are the
+  //     same advisories the two web SPAs allowlist for the same reason.
+  //
+  // brace-expansion (GHSA-3jxr-9vmj-r5cp, high) and the uuid moderate are NOT
+  // allowlisted: brace-expansion is patched via npm `overrides` in package.json
+  // (both major lines patch-bumped), and uuid is a moderate build-tool-only
+  // advisory that sits below this high+ gate. Keep the allowlist minimal so a
+  // genuinely new high/critical still fails the job.
+  //
+  // Each exception documents owner + reason + review date. Prune an entry once
+  // its dependency is bumped past the patched version.
+  "high": true,
+  "allowlist": [
+    // owner: security@kube-coder | review: 2026-10-01 | dev-only (vitest test UI)
+    "GHSA-5xrq-8626-4rwp", // vitest  <=3.2.5  UI server arbitrary file read/exec — needs vitest v4
+    // owner: security@kube-coder | review: 2026-10-01 | dev-only (vite via vitest)
+    "GHSA-fx2h-pf6j-xcff"  // vite    <=6.4.2  server.fs.deny bypass (Windows) — cleared by vitest v4
+  ],
+  "report-type": "summary"
+}
