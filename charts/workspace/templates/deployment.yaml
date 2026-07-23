@@ -23,7 +23,8 @@ spec:
         kube-coder.dev/component: workspace
         {{- end }}
       annotations:
-        checksum/browser-config: {{ include (print $.Template.BasePath "/browser-configmap.yaml") . | sha256sum }}
+        # server.py + the Python backend now ship in the image (#430), so an
+        # image-tag change rolls the pod — no browser-config checksum needed.
         checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
         checksum/terminal-entry: {{ include (print $.Template.BasePath "/terminal-entry-configmap.yaml") . | sha256sum }}
         checksum/workspace-entrypoint: {{ include (print $.Template.BasePath "/workspace-entrypoint-configmap.yaml") . | sha256sum }}
@@ -278,8 +279,6 @@ spec:
         volumeMounts:
         - name: home
           mountPath: /home/dev
-        - name: browser-config
-          mountPath: /browser-config
         - name: browser-html
           mountPath: /browser-html
         - name: claude-config
@@ -402,10 +401,6 @@ spec:
       - name: home
         persistentVolumeClaim:
           claimName: ws-{{ .Values.user.name }}-home
-      - name: browser-config
-        configMap:
-          name: browser-config-{{ .Values.user.name }}
-          defaultMode: 0755
       - name: browser-html
         configMap:
           name: browser-html-{{ .Values.user.name }}

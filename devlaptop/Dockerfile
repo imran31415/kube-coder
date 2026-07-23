@@ -330,6 +330,21 @@ OUTER
 # migration and at / once Phase 6 cuts over.
 COPY --from=dashboard-builder /web/dist /opt/dashboard-dist
 
+# ── Workspace Python backend (server.py + memory/skills/adapters/gateway) ──
+# Baked into the image at /opt/browser-src. This used to be embedded in the
+# browser-config ConfigMap via {{ .Files.Get }}, but the sources (~1 MB) outgrew
+# BOTH the 1 MiB ConfigMap object limit AND the 1 MiB Helm-release-Secret limit,
+# which silently blocked every workspace `helm upgrade` (issue #430). start.sh
+# seeds /tmp/browser + /home/dev/.claude-memory from here at boot. Consequence:
+# backend changes now ship via an image rebuild (a release), not a config-only
+# helm upgrade — every release already rebuilds the image, so this is fine.
+COPY charts/workspace/*.py /opt/browser-src/
+COPY charts/workspace/memory /opt/browser-src/memory
+COPY charts/workspace/skills /opt/browser-src/skills
+COPY charts/workspace/adapters /opt/browser-src/adapters
+RUN find /opt/browser-src -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null; \
+    find /opt/browser-src -name '*.pyc' -delete 2>/dev/null; true
+
 # Non-root dev user
 RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 # Also give ubuntu user (created by code-server) passwordless sudo

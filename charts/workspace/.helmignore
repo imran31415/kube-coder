@@ -25,6 +25,27 @@ web/vitest.config.ts
 web/index.html
 web/README.md
 
+# Workspace Python backend — baked into the image (devlaptop/Dockerfile ->
+# /opt/browser-src) and seeded by start.sh; NOT rendered into a ConfigMap
+# anymore (#430). The chart doesn't reference these at render time, and bundling
+# them into the chart tarball blew the 1 MiB Helm-release-Secret limit.
+server.py
+hypervisor_session.py
+gateway.py
+harness.py
+harness_test.py
+mcp_agent_orchestrator.py
+mcp_dashboard.py
+mcp_memory.py
+mcp_registry.py
+memory_inject_hook.py
+playwright_reaper.py
+seed_claude_config.py
+seed_demo.py
+memory/
+skills/
+adapters/
+
 # Python bytecode caches
 __pycache__/
 *.pyc
