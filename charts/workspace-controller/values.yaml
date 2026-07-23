@@ -64,7 +64,15 @@ controller:
     # Secret in the namespace with key `self-serve-token`, then name it here AND
     # in the workspace chart's `update.selfServeSecretName`. Empty (default) =>
     # self-serve off; admins still update any workspace from this dashboard.
+    # The Secret's token is the MASTER: workspaces receive only a per-workspace
+    # HMAC derivation of it (seeded by scripts/ensure-workspace-namespace.sh),
+    # so a token lifted from one workspace cannot act on another.
     selfServeSecretName: ""
+    # Migration only: also accept the raw master token from workspaces that
+    # were seeded before per-workspace derivation existed (each such request
+    # is logged). Set false once every workspace namespace has been re-seeded
+    # (re-run ensure-workspace-namespace.sh / `make deploy USER=<u>`).
+    allowSharedToken: true
 
   # The controller buffers Prometheus range-query results in memory (capacity
   # history + per-workspace insights over hours) across concurrent request

@@ -97,6 +97,12 @@ spec:
             secretKeyRef:
               name: {{ .Values.controller.update.selfServeSecretName }}
               key: self-serve-token
+        # Whether workspaces still holding the pre-derivation shared master
+        # token are accepted (migration mode; each such request is logged).
+        # Flip controller.update.allowSharedToken to false once every
+        # workspace namespace carries its derived per-workspace token.
+        - name: SELF_SERVE_ALLOW_SHARED_TOKEN
+          value: {{ if hasKey .Values.controller.update "allowSharedToken" }}{{ .Values.controller.update.allowSharedToken | quote }}{{ else }}"true"{{ end }}
         {{- end }}
         {{- if .Values.controller.adminToken.enabled }}
         # Persistent admin API token for non-browser clients (the Expo mobile
