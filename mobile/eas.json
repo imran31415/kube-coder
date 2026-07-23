@@ -4,15 +4,22 @@
     "appVersionSource": "remote"
   },
   "build": {
+    // Cleartext HTTP transport (iOS ATS + Android usesCleartextTraffic) and the
+    // runtime loopback-HTTP allowance are gated on EXPO_PUBLIC_ALLOW_CLEARTEXT.
+    // It is set ONLY for development/preview so a self-hosted or local
+    // (minikube / kubectl port-forward) HTTP workspace stays reachable there;
+    // production omits it, shipping an HTTPS-only build (Finding 6).
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "ios": { "simulator": true }
+      "ios": { "simulator": true },
+      "env": { "EXPO_PUBLIC_ALLOW_CLEARTEXT": "1" }
     },
     "preview": {
       "distribution": "internal",
       "ios": { "simulator": true },
-      "android": { "buildType": "apk" }
+      "android": { "buildType": "apk" },
+      "env": { "EXPO_PUBLIC_ALLOW_CLEARTEXT": "1" }
     },
     "production": {
       "autoIncrement": true,

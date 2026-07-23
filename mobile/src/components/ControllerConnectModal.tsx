@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { pingController } from '../api/controller';
+import { validateHost } from '../util/urlPolicy';
 import { getConfig, saveControllerConnection } from '../store/config';
 import { colors, font, radius, space } from '../theme';
 import { Button, Label } from './ui';
@@ -28,8 +29,11 @@ export function ControllerConnectModal({ visible, onClose }: { visible: boolean;
 
   async function connect() {
     setError(null);
-    if (!/^https?:\/\//.test(host.trim())) {
-      setError('Host must start with http:// or https://');
+    // The admin token authorizes administrative workspace operations — it must
+    // never go over cleartext HTTP. Require https:// before persisting/probing.
+    const policy = validateHost(host, 'controller');
+    if (!policy.ok) {
+      setError(policy.reason ?? 'Insecure host');
       return;
     }
     if (!token.trim()) {
@@ -39,7 +43,7 @@ export function ControllerConnectModal({ visible, onClose }: { visible: boolean;
     setBusy(true);
     // Save first so the client can read controllerHost/Token, then probe.
     const prev = { host: getConfig().controllerHost, token: getConfig().controllerToken };
-    await saveControllerConnection(host, token);
+    await saveControllerConnection(policy.url ?? host, token);
     try {
       await pingController();
       setHost('');
