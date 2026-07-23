@@ -1,5 +1,5 @@
 .route-desktop {
-  padding: var(--size-5) var(--size-5) var(--size-6);
+  padding: var(--size-5) var(--size-5) 0;
   /* Layered wallpaper: a soft accent glow bleeding down from the top
      (adds depth + a premium tint) over a faint dot-grid texture. Both
      are very low contrast so they read as atmosphere, not decoration.
@@ -15,6 +15,10 @@
   background-repeat: no-repeat, repeat;
   background-attachment: fixed, scroll;
   min-height: 100%;
+  /* Flex column so the dock can pin to the bottom: the page content grows,
+     the dock rides `margin-top: auto` + `position: sticky`. */
+  display: flex;
+  flex-direction: column;
 }
 :root[data-theme="light"] .route-desktop {
   background-image:
@@ -35,80 +39,32 @@
 }
 
 /* ────────────────────────────────────────────────────────────────
-   Identity header — the clean masthead at the top of the page. Gradient
-   monogram + an "AI Workspace" eyebrow over the operator's GitHub handle.
-   ──────────────────────────────────────────────────────────────── */
-.dt-hero {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: var(--size-2);
-  animation: dt-composer-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-.dt-hero-avatar {
-  flex: 0 0 auto;
-  width: 46px;
-  height: 46px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 14px;
-  color: #fff;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 55%, #a855f7) 100%);
-  box-shadow:
-    0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
-}
-.dt-hero-avatar span { transform: translateY(-0.5px); }
-.dt-hero-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-.dt-hero-eyebrow {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-subtle);
-}
-.dt-hero-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 21px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dt-hero-badge {
-  display: inline-flex;
-  align-items: center;
-  color: var(--text-subtle);
-}
-.dt-hero-badge svg { display: block; }
-
-/* ────────────────────────────────────────────────────────────────
-   Page column + labeled sections. Everything lives in one constrained,
-   left-anchored column so the composer, shortcuts, and activity feed
-   share a single vertical rhythm and left edge — the "designed
-   workspace" feel. Each section is announced by a small uppercase label
-   with a hairline rule running to the column edge.
+   Page column. The composer is the hero: a centered ~720px column with
+   generous top breathing room, the greeting right above it, and the
+   Mission Control strip below. The dock lives outside this column.
    ──────────────────────────────────────────────────────────────── */
 .dt-page {
-  max-width: 860px;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding-top: clamp(var(--size-5), 9vh, 96px);
   display: flex;
   flex-direction: column;
-  gap: var(--size-7);
+  gap: var(--size-6);
 }
+
+/* Short greeting — replaces the old hero card. One calm line. */
+.dt-greeting {
+  margin: 0;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: var(--text);
+  animation: dt-composer-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.dt-greeting-name { color: var(--text-muted); font-weight: 550; }
 
 .dt-section {
   display: flex;
@@ -157,35 +113,11 @@
   color: var(--text-subtle);
   white-space: nowrap;
 }
-/* Small inline "+ New" action that sits in a section header's meta slot. */
-.dt-section-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
-}
-.dt-section-action:hover {
-  color: var(--text);
-  border-color: var(--border-2);
-  background: var(--surface-2);
-}
-.dt-section-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ────────────────────────────────────────────────────────────────
-   Hero prompt composer — the top-of-Desktop "start a build" box. The
-   first thing on a fresh workspace, so it carries real visual weight:
-   a soft accent-tinted card, a growing input, and a prominent circular
-   send button. Left-aligned to the same 22px badge column as the grid
-   + bulletin so everything shares one vertical rhythm on wide screens.
+   Centered composer — the ChatGPT/Claude "new chat" shape. A single
+   rounded container: growing textarea on top, then a quiet control row
+   inside the bottom edge (workdir + mode pills left, hint + send right).
    ──────────────────────────────────────────────────────────────── */
 .dt-composer {
   width: 100%;
@@ -196,18 +128,18 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dt-composer { animation: none; }
+  .dt-composer, .dt-greeting { animation: none; }
 }
 
 .dt-composer-box {
   display: flex;
   flex-direction: column;
   gap: var(--size-2);
-  padding: 12px 12px 10px;
+  padding: 14px 14px 10px;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) + 4px);
+  border-radius: 18px;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent) 0%, transparent 60%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, transparent) 0%, transparent 60%),
     color-mix(in srgb, var(--surface) 94%, transparent);
   box-shadow: 0 6px 22px color-mix(in srgb, var(--bg) 0%, rgba(0, 0, 0, 0.16));
   backdrop-filter: blur(6px);
@@ -226,31 +158,11 @@
 }
 .dt-composer-box.is-busy { opacity: 0.85; }
 
-.dt-composer-main {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-
-/* Leading glyph — quiet accent tint, sits at the input's baseline. */
-.dt-composer-spark {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  margin-top: 3px;
-  border-radius: 9px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
 .dt-composer-input {
-  flex: 1;
+  width: 100%;
   min-width: 0;
-  margin-top: 2px;
   border: 0;
+  padding: 2px 2px 0;
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -264,14 +176,92 @@
 .dt-composer-input:focus { outline: none; }
 .dt-composer-input:disabled { color: var(--text-muted); }
 
+/* Control row inside the composer's bottom edge. */
+.dt-composer-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  min-width: 0;
+}
+
+/* Quiet pills for workdir + mode — like the model/tool pickers in the
+   big chat apps: hairline, small, muted until hovered. */
+.dt-composer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 0;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
+}
+.dt-composer-pill:hover { color: var(--text); border-color: var(--border-2); background: var(--surface-2); }
+.dt-composer-pill svg { flex: 0 0 auto; color: var(--text-subtle); }
+.dt-composer-pill:focus-visible,
+.dt-composer-pill:has(select:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.dt-composer-pill:disabled { opacity: 0.5; cursor: default; }
+
+.dt-composer-workdir { max-width: 45%; }
+.dt-composer-workdir select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 0;
+  cursor: pointer;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+.dt-composer-workdir select:focus { outline: none; }
+.dt-composer-workdir-static {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Keyboard hint — only surfaces while the composer is focused, so the
+   resting state stays clean. Pushed against the send button. */
+.dt-composer-hint {
+  margin-left: auto;
+  color: var(--text-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+.dt-composer-box:focus-within .dt-composer-hint { opacity: 1; }
+.dt-composer-hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
 /* Circular accent send button — the clear primary action. */
 .dt-composer-send {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border: 0;
   border-radius: 50%;
   background: var(--accent);
@@ -287,8 +277,6 @@
   cursor: not-allowed;
 }
 .dt-composer-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* Nudge the play glyph optically-centered inside the circle. */
-.dt-composer-send svg { margin-left: 1px; }
 
 .dt-composer-spinner {
   width: 15px;
@@ -301,344 +289,329 @@
 @keyframes dt-composer-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .dt-composer-spinner { animation: none; } }
 
-/* Footer — workdir chip on the left, keyboard hint on the right. */
-.dt-composer-foot {
+/* Suggestion chips beneath the composer — common ways to start. */
+.dt-composer-chips {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   flex-wrap: wrap;
-  gap: 4px var(--size-2);
-  padding-left: 38px; /* align under the input, past the leading glyph */
+  gap: var(--size-2);
+  margin-top: var(--size-3);
 }
-.dt-composer-workdir {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-muted);
-  font-size: 11.5px;
-  max-width: 60%;
-}
-.dt-composer-workdir svg { flex: 0 0 auto; color: var(--text-subtle); }
-.dt-composer-workdir select {
-  border: 0;
-  background: transparent;
+.dt-composer-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
   color: var(--text-muted);
   font: inherit;
-  font-size: 11.5px;
-  padding: 2px 2px;
-  border-radius: var(--radius-sm);
+  font-size: 12px;
+  padding: 4px 12px;
   cursor: pointer;
-  max-width: 100%;
-  text-overflow: ellipsis;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
 }
-.dt-composer-workdir select:hover { color: var(--text); }
-.dt-composer-workdir select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.dt-composer-workdir-static {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.dt-composer-chip:hover { color: var(--text); border-color: var(--border-2); background: var(--surface-2); }
+.dt-composer-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dt-composer-chip:disabled { opacity: 0.5; cursor: default; }
 
-/* "Start a build instead" / "Start a chat instead" toggle — a quiet inline
-   link so the alternate entry point is discoverable without competing with
-   the primary send action. */
-.dt-composer-mode {
+/* ────────────────────────────────────────────────────────────────
+   Mission Control strip — pulse row + compact live cards (#433).
+   Replaces the old Activity bulletin.
+   ──────────────────────────────────────────────────────────────── */
+.dt-mc-viewall {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   border: 0;
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   padding: 2px 4px;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  white-space: nowrap;
 }
-.dt-composer-mode svg { flex: 0 0 auto; color: var(--text-subtle); }
-.dt-composer-mode:hover { color: var(--text); }
-.dt-composer-mode:hover svg { color: var(--accent); }
-.dt-composer-mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.dt-composer-mode:disabled { opacity: 0.5; cursor: default; }
+.dt-mc-viewall:hover { color: var(--text); }
+.dt-mc-viewall:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.dt-composer-hint {
-  color: var(--text-subtle);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.dt-composer-hint kbd {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 1px 4px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: var(--surface-2);
-  color: var(--text-muted);
-}
-
-/* Icon grid — wider gaps, no cards. Each cell is a floating icon with
-   the label beneath, like a real desktop. The icon badge carries the
-   visual weight; the rest is clean negative space. Desktop spacing
-   loosened (size-5/4) to give the icons more room to breathe; mobile
-   keeps the tighter grid (see the @media block at the bottom). */
-.dt-grid {
-  display: grid;
-  /* Fixed-width columns (not 1fr) so columns don't stretch to fill the
-     viewport — that stretch made the visual icon shift right of the
-     bulletin's left edge on wide screens. With fixed columns + start
-     justification, the leftmost cell sits at the same x as the bulletin
-     below. */
-  grid-template-columns: repeat(auto-fill, 124px);
-  justify-content: start;
-  /* Big row gap so when icons wrap to a new row they don't crowd the
-     row above — the prior --size-6 (32px) made Settings stack tightly
-     under Claude. --size-7 (48px) gives proper desktop-icon breathing. */
-  gap: var(--size-7) var(--size-4);
-  /* A touch of top padding so the first row's floating hover chrome
-     doesn't kiss the section rule. Section header owns the outer gap. */
-  padding-top: var(--size-1);
-}
-
-.dt-cell {
-  position: relative;
-  width: 100%;
-  max-width: 108px;
+.dt-mc-pulse {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  /* Stagger entrance — small fade-rise on first mount. nth-child up to
-     a reasonable bound; later cells fall back to the longest delay so
-     a very long grid stays animated without crawling forever. */
-  animation: dt-cell-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-@keyframes dt-cell-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.dt-cell:nth-child(1)  { animation-delay: 0ms; }
-.dt-cell:nth-child(2)  { animation-delay: 50ms; }
-.dt-cell:nth-child(3)  { animation-delay: 100ms; }
-.dt-cell:nth-child(4)  { animation-delay: 150ms; }
-.dt-cell:nth-child(5)  { animation-delay: 200ms; }
-.dt-cell:nth-child(6)  { animation-delay: 250ms; }
-.dt-cell:nth-child(7)  { animation-delay: 300ms; }
-.dt-cell:nth-child(8)  { animation-delay: 350ms; }
-.dt-cell:nth-child(n+9){ animation-delay: 400ms; }
-@media (prefers-reduced-motion: reduce) {
-  .dt-cell { animation: none; }
-}
-
-/* "Add a new icon" cell — dashed outline, same footprint as a real
-   icon, sits at the end of the grid. Subtle replacement for the
-   prior route-header primary button. */
-.dt-cell-add {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  gap: 6px;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-.dt-cell-icon-add {
-  width: 64px;
-  height: 64px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px dashed var(--border-2);
-  border-radius: 16px;
-  color: var(--text-subtle);
-  transition: border-color var(--motion-fast), color var(--motion-fast), background var(--motion-fast);
-}
-.dt-cell-add:hover .dt-cell-icon-add {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-.dt-cell-add:focus-visible .dt-cell-icon-add {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-
-/* The launch surface is the visible icon affordance — no card, just
-   the rounded square badge for the glyph + the label below. Active
-   state is a press-down + faint ring like a real OS icon. */
-.dt-cell-launch {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: center;
-  cursor: pointer;
-}
-
-.dt-cell-icon {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 36px;
-  line-height: 1;
-  user-select: none;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  transition: transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
-              background var(--motion-fast),
-              border-color var(--motion-fast),
-              box-shadow var(--motion-fast);
-  /* Subtle top-edge "light catch" — a thin highlight that mimics the
-     way light hits the top of a tactile button. Reads as polish, not
-     decoration; barely visible at rest. */
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--text) 4%, transparent) 0%,
-    transparent 28%
-  );
-}
-.dt-cell-launch:hover .dt-cell-icon {
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--text) 8%, transparent) 0%,
-    transparent 32%
-  );
-}
-.dt-cell-launch:hover .dt-cell-icon {
-  transform: translateY(-2px);
-  background: var(--surface-2);
-  border-color: var(--border-2);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--bg) 0%, rgba(0,0,0,0.18));
-}
-:root[data-theme="light"] .dt-cell-launch:hover .dt-cell-icon {
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
-}
-.dt-cell-launch:active .dt-cell-icon { transform: translateY(0); }
-.dt-cell-launch:focus-visible .dt-cell-icon {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-
-.dt-cell-label {
+  gap: var(--size-4);
+  flex-wrap: wrap;
   font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0;
+  color: var(--text-subtle);
+  margin-bottom: var(--size-3);
+}
+.dt-mc-pulse b {
   color: var(--text);
-  line-height: 1.25;
-  text-align: center;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-  max-width: 108px;
-  padding: 0 2px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dt-mc-pulse .dt-mc-pulse-warn,
+.dt-mc-pulse .dt-mc-pulse-warn b { color: var(--warn); }
+.dt-mc-pulse .dt-mc-pulse-live b { color: var(--success); }
+
+.dt-mc-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--size-2);
 }
 
-/* Subtitle (prompt / url / command preview) — only shown on hover so
-   the resting state stays clean like a real desktop icon. */
-.dt-cell-sub {
-  position: absolute;
-  bottom: -22px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 10.5px;
-  line-height: 1.3;
-  color: var(--text-subtle);
-  background: var(--surface);
+.dt-mc-card {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text) 3%, transparent) 0%, transparent 24%),
+    color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  white-space: nowrap;
-  max-width: 220px;
+  border-radius: var(--radius);
+  padding: 9px 11px;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color var(--motion-fast);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.dt-mc-card:hover { border-color: var(--border-2); }
+.dt-mc-card-waiting { border-left: 2px solid var(--warn); }
+.dt-mc-card-done { opacity: 0.75; }
+
+.dt-mc-top {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  margin-bottom: 4px;
+}
+.dt-mc-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  flex: none;
+}
+.dt-mc-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.dt-mc-state-running { color: var(--success); }
+.dt-mc-state-running .dt-mc-dot {
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent);
+  animation: dt-pulse 1.6s ease-out infinite;
+}
+.dt-mc-state-waiting { color: var(--warn); }
+.dt-mc-state-review { color: var(--success); }
+.dt-mc-state-done { color: var(--text-subtle); }
+@keyframes dt-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-mc-state-running .dt-mc-dot { animation: none; }
+}
+
+.dt-mc-kind {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-subtle);
+  flex: none;
+}
+.dt-mc-time {
+  margin-left: auto;
+  font-size: 10.5px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.dt-mc-title {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-mc-headline {
+  font-size: 11.5px;
+  line-height: 1.35;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inline waiting prompt — reuses the board's quick-reply buttons
+   (.mission-reply) inside a compact amber-edged well. */
+.dt-mc-prompt {
+  margin-top: 7px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--warn);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  cursor: default;
+}
+.dt-mc-q {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Bottom dock — compact macOS-style launcher. Sticky to the bottom of
+   the scrollport, centered, glassy panel with a hairline border. Labels
+   + hotkeys live in a hover/focus tooltip; edit chrome in a context
+   menu. Horizontal scroll on overflow.
+   ──────────────────────────────────────────────────────────────── */
+.dt-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  margin-top: auto;
+  display: flex;
+  justify-content: center;
+  padding: var(--size-5) 0 var(--size-3);
+  /* Soft fade behind the dock so cards scrolling beneath don't collide
+     with it visually. */
+  background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--bg) 82%, transparent) 45%);
+  pointer-events: none; /* the inner panel re-enables — keeps the fade from eating clicks */
+}
+.dt-dock-inner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text) 3%, transparent) 0%, transparent 30%),
+    color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--bg) 0%, rgba(0, 0, 0, 0.2));
+  scrollbar-width: none;
+}
+.dt-dock-inner::-webkit-scrollbar { display: none; }
+:root[data-theme="light"] .dt-dock-inner { box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1); }
+
+.dt-dock-item { position: relative; flex: 0 0 auto; }
+
+.dt-dock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
+              background var(--motion-fast),
+              border-color var(--motion-fast);
+}
+.dt-dock-btn:hover {
+  transform: translateY(-3px);
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.dt-dock-btn:active { transform: translateY(0); }
+.dt-dock-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dt-dock-emoji { font-size: 24px; line-height: 1; user-select: none; }
+
+/* A hairline breathing gap before the trailing "+". */
+.dt-dock-item-add {
+  margin-left: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.dt-dock-btn-add { color: var(--text-subtle); }
+.dt-dock-btn-add:hover { color: var(--accent); }
+
+/* Tooltip above the icon: label + hotkey chip. Pure CSS, shown on
+   hover/keyboard focus. */
+.dt-dock-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--motion-fast);
   z-index: 5;
 }
-.dt-cell:hover .dt-cell-sub,
-.dt-cell:focus-within .dt-cell-sub {
-  opacity: 1;
-}
-
-/* Hotkey badge — sits over the icon's bottom-right corner like a
-   macOS dock badge. Monospace, very small. */
-.dt-cell-hotkey {
-  position: absolute;
-  top: 50px;
-  left: calc(50% + 14px);
+:root[data-theme="light"] .dt-dock-tip { box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1); }
+.dt-dock-item:hover .dt-dock-tip,
+.dt-dock-item:focus-within .dt-dock-tip { opacity: 1; }
+.dt-dock-tip-key {
   font-size: 9.5px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-muted);
   background: var(--surface-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 1px 4px;
-  pointer-events: none;
-  z-index: 4;
+  padding: 0 4px;
 }
 
-/* Action chrome (move/edit/delete) — floats over the icon badge's
-   top edge on hover. Real desktops don't have inline edit chrome,
-   so we keep ours invisible at rest and only show on hover/focus. */
-.dt-cell-actions {
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
+/* Right-click context menu (edit / move / delete). */
+.dt-dock-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-2);
   border-radius: var(--radius);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
-  opacity: 0;
-  transition: opacity var(--motion-fast);
-  z-index: 6;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  animation: dt-menu-in 100ms ease-out;
 }
-:root[data-theme="light"] .dt-cell-actions { box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
-.dt-cell:hover .dt-cell-actions,
-.dt-cell:focus-within .dt-cell-actions {
-  opacity: 1;
+:root[data-theme="light"] .dt-dock-menu { box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); }
+@keyframes dt-menu-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
 }
-
-.dt-icon-btn {
-  display: inline-flex;
+.dt-dock-menu button {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  background: transparent;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
   border: 0;
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background var(--motion-fast), color var(--motion-fast);
-}
-.dt-icon-btn:hover:not(:disabled) {
-  background: var(--surface-2);
+  background: transparent;
   color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
 }
-.dt-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.dt-icon-btn-danger:hover:not(:disabled) {
-  background: var(--danger);
-  color: #ffffff;
+.dt-dock-menu button svg { color: var(--text-subtle); }
+.dt-dock-menu button:hover:not(:disabled) { background: var(--surface-2); }
+.dt-dock-menu button:disabled { opacity: 0.4; cursor: default; }
+.dt-dock-menu .dt-dock-menu-danger { color: var(--danger); }
+.dt-dock-menu .dt-dock-menu-danger svg { color: var(--danger); }
+.dt-dock-menu .dt-dock-menu-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* Editor form */
@@ -740,285 +713,23 @@
   margin-top: var(--size-2);
 }
 
-/* ────────────────────────────────────────────────────────────────
-   Bulletin widget — "Recent activity" feed above the icon grid.
-   Mixed feed of recent builds + memories with a tag pill + snippet.
-   Reads as a quiet card; no shadow, hairline border, tight density.
-   ──────────────────────────────────────────────────────────────── */
-
-/* Activity feed — a quiet bordered card holding the live-build rows. The
-   section header (label + rule) sits above it; the card itself is just
-   the list, full column width, so it reads as a real activity panel. */
-.dt-bulletin {
-  width: 100%;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--text) 3%, transparent) 0%, transparent 24%),
-    color-mix(in srgb, var(--surface) 92%, transparent);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-.dt-bulletin-hint { font-size: 11px; }
-
-.dt-bulletin-empty { padding: 10px 12px; font-size: 11.5px; }
-
-/* Skeleton state — three faux rows with shimmering bars. Mirrors the
-   real row layout (tag pill + title + snippet) so the swap to real
-   data doesn't reflow the widget. */
-.dt-bulletin-row-skel { cursor: default; opacity: 0.85; }
-.dt-bulletin-row-skel:hover { background: transparent; }
-.dt-skel {
-  display: block;
-  height: 10px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(
-    90deg,
-    var(--surface-2) 0%,
-    var(--surface-3) 50%,
-    var(--surface-2) 100%
-  );
-  background-size: 200% 100%;
-  animation: dt-skel-shimmer 1.4s linear infinite;
-}
-.dt-skel-tag     { grid-area: tag;     height: 16px; width: 52px; }
-.dt-skel-title   { grid-area: title;   height: 12px; width: 60%; }
-.dt-skel-snippet { grid-area: snippet; height: 10px; width: 90%; }
-@keyframes dt-skel-shimmer {
-  from { background-position: 200% 0; }
-  to   { background-position: -200% 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dt-skel { animation: none; }
-}
-
-/* Sub-group label inside the Activity card ("Live builds" / "Recent chats").
-   Small uppercase eyebrow; the second group gets breathing room above it. */
-.dt-bulletin-group {
-  margin: 0 0 6px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.dt-bulletin-list + .dt-bulletin-group { margin-top: 14px; }
-
-.dt-bulletin-list { list-style: none; margin: 0; padding: 0; }
-.dt-bulletin-list > li + li {
-  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-}
-
-/* Flex layout (was grid) — the grid version's `tag title time / tag
-   snippet snippet` template was rendering the title hard against the
-   tag pill in some browsers even with explicit gap, producing the
-   clipping you saw. Flex with a wrapping inner column is simpler and
-   does the right thing every time. */
-.dt-bulletin-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 7px 12px;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--motion-fast), opacity var(--motion-fast);
-}
-.dt-bulletin-row-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1;
-  min-width: 0;
-}
-.dt-bulletin-row:hover { background: var(--surface-2); opacity: 1; }
-.dt-bulletin-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  opacity: 1;
-}
-/* Attention gradient — first two rows full opacity, then progressive
-   fade so the user's eye stays on the icons + the freshest item. */
-.dt-bulletin-list > li:nth-child(1) .dt-bulletin-row { opacity: 1; }
-.dt-bulletin-list > li:nth-child(2) .dt-bulletin-row { opacity: 0.92; }
-.dt-bulletin-list > li:nth-child(3) .dt-bulletin-row { opacity: 0.6; }
-.dt-bulletin-list > li:nth-child(4) .dt-bulletin-row { opacity: 0.4; }
-.dt-bulletin-row { transition: background var(--motion-fast), opacity var(--motion-fast); }
-
-.dt-bulletin-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-3);
-  color: var(--text-muted);
-  width: max-content;
-  white-space: nowrap;
-  line-height: 1.1;
-}
-/* Status tags use the theme tokens (not hardcoded hexes) so they stay
-   readable in the light themes too — including system-light, which the old
-   [data-theme="light"]-only overrides never reached (#392). */
-.dt-bulletin-tag-running {
-  background: color-mix(in srgb, var(--success) 18%, var(--surface-2));
-  color: var(--success);
-}
-.dt-bulletin-tag-waiting {
-  background: color-mix(in srgb, var(--warn) 18%, var(--surface-2));
-  color: var(--warn);
-}
-.dt-bulletin-tag-stale {
-  background: color-mix(in srgb, var(--danger) 20%, var(--surface-2));
-  color: var(--danger);
-}
-/* Recent-chat rows carry an accent-tinted tag; a running chat pulses the
-   same dot the build rows use. */
-.dt-bulletin-tag-chat {
-  background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
-  color: var(--accent);
-}
-.dt-bulletin-tag-chat svg { flex: 0 0 auto; }
-.dt-bulletin-tag-chat-running {
-  background: color-mix(in srgb, var(--success) 18%, var(--surface-2));
-  color: var(--success);
-}
-.dt-bulletin-tag-chat-error {
-  background: color-mix(in srgb, var(--danger) 20%, var(--surface-2));
-  color: var(--danger);
-}
-
-.dt-bulletin-title-text {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dt-bulletin-snippet {
-  font-size: 11.5px;
-  line-height: 1.35;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dt-bulletin-time {
-  font-size: 10.5px;
-  color: var(--text-subtle);
-  flex-shrink: 0;
-  align-self: flex-start;
-  padding-top: 3px;
-}
-
-/* Subtle pulsing green dot for builds currently in `running` status —
-   sits inline before the title so the user can see at a glance which
-   builds are live. Phosphor-ish green, soft halo, slow 1.6s pulse so
-   it stays in the background. */
-.dt-bulletin-running {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  margin-right: 6px;
-  vertical-align: 1px;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent);
-  animation: dt-pulse 1.6s ease-out infinite;
-}
-@keyframes dt-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
-  70%  { box-shadow: 0 0 0 6px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dt-bulletin-running { animation: none; }
-}
-
-/* ────────────────────────────────────────────────────────────────
-   Click-empty-space → floating "Add icon?" prompt.
-   Replaces the prior dashed end-of-grid cell.
-   ──────────────────────────────────────────────────────────────── */
-.dt-add-prompt {
-  position: fixed;
-  z-index: 50;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.22);
-  font-size: 12.5px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transform-origin: top left;
-  animation: dt-add-prompt-in 120ms ease-out;
-}
-:root[data-theme="light"] .dt-add-prompt { box-shadow: 0 6px 18px rgba(15,23,42,0.10); }
-.dt-add-prompt:hover {
-  background: var(--surface-2);
-  border-color: var(--accent);
-}
-@keyframes dt-add-prompt-in {
-  from { opacity: 0; transform: scale(0.92); }
-  to { opacity: 1; transform: scale(1); }
-}
-
-/* Lucide-style icon inside the icon badge — strokes inherit the
-   muted text color so the line-icons read as quiet accents rather
-   than competing with the rest of the chrome. Emoji icons keep their
-   native rendering (they're already self-styled). */
-.dt-cell-icon-emoji {
-  font-size: 36px;
-  line-height: 1;
-  user-select: none;
-}
-.dt-cell-icon svg { color: var(--text-muted); }
-.dt-cell-launch:hover .dt-cell-icon svg { color: var(--text); }
+/* Lucide-style icons inside dock tiles inherit the muted text color so
+   they read as quiet accents; emoji keep their native rendering. */
+.dt-dock-glyph svg { color: inherit; display: block; }
 
 @media (max-width: 720px) {
-  .route-desktop { padding: var(--size-3); }
-  /* Tighter section rhythm on phones. */
-  .dt-page { gap: var(--size-6); }
-  .dt-section-head { margin-bottom: var(--size-3); }
+  .route-desktop { padding: var(--size-3) var(--size-3) 0; }
+  .dt-page { padding-top: var(--size-5); gap: var(--size-5); }
+  .dt-greeting { font-size: 21px; }
   .dt-composer-input { font-size: 15px; } /* keep ≥16px?—14/15 avoids iOS zoom w/ our meta */
-  .dt-composer-foot { padding-left: 0; }
   .dt-composer-hint { display: none; } /* no physical keyboard — hide the hint */
-  .dt-composer-workdir { max-width: 100%; }
-  /* Mobile: shrink icons ~30% (64 → 45). Stay LEFT-anchored so the grid
-     lines up under the section label — the sectioned layout reads as one
-     tidy column rather than a centered island. */
-  .dt-grid {
-    grid-template-columns: repeat(auto-fill, 86px);
-    gap: var(--size-5) var(--size-3);
-    justify-content: start;
-  }
-  .dt-cell { max-width: 86px; }
-  .dt-cell-label { font-size: 11px; max-width: 86px; }
-  .dt-cell-icon { width: 45px; height: 45px; border-radius: 12px; font-size: 24px; }
-  .dt-cell-icon-emoji { font-size: 24px; }
-  .dt-cell-icon svg { width: 21px; height: 21px; }
-  .dt-bulletin { max-width: 100%; }
-  /* Bulletin row layout adapts naturally — flex column wraps the body
-     content; tag stays on the left, time on the right. Smaller padding
-     so the widget feels tighter on phones. */
-  .dt-bulletin-row { padding: 7px 10px; gap: 10px; }
+  .dt-composer-send { margin-left: auto; } /* the hidden hint owned the auto margin */
+  .dt-composer-workdir { max-width: 55%; }
+  /* One card per row on phones. */
+  .dt-mc-cards { grid-template-columns: minmax(0, 1fr); }
+  /* Slightly tighter dock tiles on phones — and lifted above the fixed
+     BottomNav, which .app-main only compensates for with padding. */
+  .dt-dock { padding: var(--size-4) 0 var(--size-2); bottom: var(--bottomnav-total); }
+  .dt-dock-btn { width: 42px; height: 42px; }
+  .dt-dock-emoji { font-size: 22px; }
 }

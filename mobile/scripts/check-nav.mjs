@@ -91,18 +91,22 @@ async function openDrawerAndGo(page, item) {
   await sleep(900);
 }
 
-// ---------- Path A: cold start on Desktop → Activity row → TaskDetail → back.
-// The Tasks tab has never been visited, so this is the deep-link-as-first-
-// route case that used to strand the user on the detail screen.
+// ---------- Path A: cold start on Desktop → Mission strip row → Mission
+// Control → card → TaskDetail → back. The Tasks tab has never been visited,
+// so this is the deep-link-as-first-route case that used to strand the user
+// on the detail screen.
 {
   const page = await freshPage();
   await assertEscape(page, 'Desktop (home)', '01-desktop.png');
   await clickVisible(
-    page.getByText('Add a /healthz endpoint to server.py and a unit test for it'),
-    'activity row',
+    page.getByLabel('Open Mission Control — Auth middleware refactor'),
+    'mission strip row',
   );
   await sleep(1100);
-  const r = await assertEscape(page, 'TaskDetail via Desktop activity row', '02-detail-from-desktop.png');
+  await assertEscape(page, 'Mission Control via Desktop strip', '02-mission-from-desktop.png');
+  await clickVisible(page.getByText('Auth middleware refactor'), 'mission card');
+  await sleep(1100);
+  const r = await assertEscape(page, 'TaskDetail via Mission Control card', '02b-detail-from-mission.png');
   if (r.hasBack) {
     await clickVisible(page.getByLabel(/back/i), 'back button');
     await sleep(800);
@@ -116,9 +120,9 @@ async function openDrawerAndGo(page, item) {
 // ---------- Path B: cold start → Desktop build composer → TaskDetail
 {
   const page = await freshPage();
-  // The composer now defaults to chat mode (screenshots.mjs already accounts
-  // for this) — flip it to build mode before the build placeholder exists.
-  await clickVisible(page.getByText('Start a build instead', { exact: true }), 'switch to build mode');
+  // The composer defaults to chat mode (screenshots.mjs already accounts for
+  // this) — flip the mode pill to build before the build placeholder exists.
+  await clickVisible(page.getByLabel('Mode: chat — switch to build'), 'switch to build mode');
   await sleep(300);
   await page.getByPlaceholder('Describe a build to run…').fill('nav check: escape from detail');
   await clickVisible(page.getByLabel('Start build'), 'start build');
