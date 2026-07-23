@@ -6,6 +6,7 @@ import './Rail.css';
 const ICONS: Record<string, IconName> = {
   '/tasks': 'tasks',
   '/desktop': 'desktop',
+  '/mission': 'mission',
   '/hypervisor': 'hypervisor',
   '/walkie': 'walkie',
   '/memory': 'memory',

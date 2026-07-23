@@ -55,6 +55,12 @@ export function MoreSheet() {
     // the "secondary" set the More sheet absorbs. Triggers moved here
     // when BottomNav switched its third slot to Desktop.
     {
+      label: 'Mission Control',
+      icon: 'mission',
+      onSelect: () => { navigate('/mission'); sheetOpen.value = null; },
+      hint: 'Every agent — builds, chats, sub-agents — on one board',
+    },
+    {
       label: 'Walkie-Talkie',
       icon: 'walkie',
       onSelect: () => { navigate('/walkie'); sheetOpen.value = null; },

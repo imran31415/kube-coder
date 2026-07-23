@@ -76,6 +76,7 @@ export const ROUTES: RouteDef[] = [
   // to ROUTES[0], so this order also controls what the user sees on a
   // bare visit to the dashboard.
   { path: '/desktop', title: 'Desktop' },
+  { path: '/mission', title: 'Mission Control' },
   { path: '/hypervisor', title: 'Hypervisor' },
   { path: '/walkie', title: 'Walkie-Talkie' },
   { path: '/tasks', title: 'Build' },

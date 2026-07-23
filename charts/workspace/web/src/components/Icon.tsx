@@ -44,7 +44,8 @@ export type IconName =
   | 'walkie'
   | 'mic'
   | 'speaker'
-  | 'desktop';
+  | 'desktop'
+  | 'mission';
 
 const PATHS: Record<IconName, JSX.Element> = {
   tasks: (
@@ -269,6 +270,14 @@ const PATHS: Record<IconName, JSX.Element> = {
   pencil: (
     <>
       <path d="M4 16l1-3 8-8 2 2-8 8-3 1z" />
+    </>
+  ),
+  // Kanban board — one outline split into four quadrants — the Mission
+  // Control mark. Distinct from apps' four separate rounded squares.
+  mission: (
+    <>
+      <rect x="3" y="3" width="14" height="14" rx="1.5" />
+      <path d="M10 3v14M3 10h7M10 8h7" />
     </>
   ),
   // Circled "i" — a lightweight help/info affordance.

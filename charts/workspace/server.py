@@ -5179,7 +5179,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             path in ('/', '/dashboard', '/dashboard/', '/browser', '/browser/', '/next', '/next/')
             or path.startswith('/next/')
             or any(path == r or path.startswith(r + '/')
-                   for r in ('/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop', '/hypervisor', '/walkie'))
+                   for r in ('/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop', '/hypervisor', '/walkie', '/mission'))
         )
         if is_html or is_spa_route:
             self.send_header('Cache-Control', 'no-cache, must-revalidate')
@@ -5212,7 +5212,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # client-side routing handles deep links. The legacy dashboard.html
         # has been removed; if /opt/dashboard-dist is missing we return 503
         # rather than fall back to anything stale.
-        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop', '/hypervisor', '/walkie'}
+        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop', '/hypervisor', '/walkie', '/mission'}
         first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
         if normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
             rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
