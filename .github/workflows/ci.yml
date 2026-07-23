@@ -141,6 +141,35 @@ jobs:
       - name: Vitest
         run: yarn --cwd charts/workspace-controller/web test
 
+  # The Expo / React Native app has its own npm lockfile and a vitest suite
+  # (added in #417). Without this job neither its type-check nor its tests ran
+  # in CI (the SCA gate above only audits its dependency tree). npm, not yarn.
+  mobile-tests:
+    name: Mobile App Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install mobile deps
+        run: npm ci
+        working-directory: mobile
+
+      - name: Type-check
+        run: npm run typecheck
+        working-directory: mobile
+
+      - name: Vitest
+        run: npm run test
+        working-directory: mobile
+
   docker-build:
     name: Docker Build Smoke Test
     runs-on: ubuntu-latest
@@ -252,6 +281,19 @@ jobs:
             (cd "${dir}" && npx --yes audit-ci@^7 --config audit-ci.jsonc)
             echo "::endgroup::"
           done
+
+      - name: SCA Scanning (Mobile dependencies)
+        # Expo / React Native app npm lockfile via audit-ci (blocking). Same
+        # high+ gate and per-package allowlist policy as the SPAs, but npm (not
+        # yarn), so it gets its own step. `npm ci --ignore-scripts` gives audit
+        # a resolved tree without running any dependency lifecycle scripts
+        # during a security-only install. See mobile/audit-ci.jsonc.
+        if: success() || failure()
+        run: |
+          set -euo pipefail
+          echo "::group::audit-ci mobile"
+          (cd mobile && npm ci --ignore-scripts && npx --yes audit-ci@^7 --config audit-ci.jsonc)
+          echo "::endgroup::"
 
       - name: SCA Scanning (Python dependencies)
         # pip-audit (PyPA, OSV-backed, no account required) over the pinned
