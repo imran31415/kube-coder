@@ -23,6 +23,7 @@ import {
   mockHealth,
   mockMemory,
   mockMetrics,
+  mockMissionQueue,
   mockPreviewControl,
   mockPreviewSend,
   mockPreviewState,
@@ -44,6 +45,9 @@ import type {
   LaunchResult,
   MemoryRecord,
   Metrics,
+  MissionCard,
+  MissionPulse,
+  MissionQueue,
   PreviewControlAction,
   PreviewControlResult,
   PreviewSendResult,
@@ -447,6 +451,30 @@ export async function killTask(id: string): Promise<void> {
     return;
   }
   await request(`/api/claude/tasks/${id}`, { method: 'DELETE' });
+}
+
+// ---- Mission Control (issue #425) ------------------------------------------
+
+const EMPTY_MISSION_PULSE: MissionPulse = {
+  running: 0,
+  waiting: 0,
+  review: 0,
+  done_today: 0,
+  oldest_wait_s: 0,
+  generated_at: 0,
+};
+
+/** The unified agent queue (builds + chats + sub-agents), pre-sorted by
+ *  priority server-side (waiting first). Polled like every other screen. */
+export async function getMissionQueue(): Promise<MissionQueue> {
+  if (getConfig().mock) {
+    await delay(120);
+    return mockMissionQueue();
+  }
+  const d = await request<{ cards?: MissionCard[]; pulse?: MissionPulse }>(
+    '/api/missioncontrol/queue',
+  );
+  return { cards: d.cards ?? [], pulse: d.pulse ?? EMPTY_MISSION_PULSE };
 }
 
 // ---- Memory ----------------------------------------------------------------

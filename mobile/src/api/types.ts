@@ -135,6 +135,71 @@ export interface AppEntry {
   addr: string;
 }
 
+// ---- Mission Control (issue #425) ------------------------------------------
+// One unified queue of agent work — builds, hypervisor chats and sub-agents —
+// mirroring GET /api/missioncontrol/queue. Cards arrive pre-sorted by priority
+// (waiting first); timestamps are unix seconds.
+
+export type MissionCardKind = 'build' | 'chat' | 'subagent';
+export type MissionCardState = 'running' | 'waiting' | 'review' | 'done';
+
+export interface MissionWaitingOption {
+  index: number | string;
+  label: string;
+}
+
+/** The question the agent is blocked on, when state === 'waiting'. */
+export interface MissionWaitingPrompt {
+  kind: 'choice' | 'yesno';
+  question: string | null;
+  options: MissionWaitingOption[];
+}
+
+export interface MissionCardChild {
+  id: string;
+  title: string;
+  state: string;
+}
+
+export interface MissionCard {
+  /** Namespaced id, e.g. "build:<id>" | "chat:<id>" | "subagent:<id>". */
+  id: string;
+  /** Raw id inside the kind's own namespace (task id / thread id). */
+  ref_id: string;
+  kind: MissionCardKind;
+  state: MissionCardState;
+  title: string;
+  headline: string;
+  assistant: string | null;
+  model: string;
+  workdir: string;
+  repo: string;
+  branch: string;
+  created_at: number | null;
+  updated_at: number | null;
+  finished_at: number | null;
+  waiting_since: number | null;
+  waiting_prompt: MissionWaitingPrompt | null;
+  outcome: { ok: boolean; detail: string } | null;
+  parent_id: string | null;
+  children: MissionCardChild[];
+}
+
+/** Headline numbers for the summary row under the screen header. */
+export interface MissionPulse {
+  running: number;
+  waiting: number;
+  review: number;
+  done_today: number;
+  oldest_wait_s: number;
+  generated_at: number;
+}
+
+export interface MissionQueue {
+  cards: MissionCard[];
+  pulse: MissionPulse;
+}
+
 // ── Controller (admin plane) ────────────────────────────────────────────────
 // Mirrors the workspace-controller's /api/workspaces and /api/capacity/summary.
 
