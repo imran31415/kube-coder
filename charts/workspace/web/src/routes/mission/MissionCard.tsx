@@ -28,11 +28,12 @@ function rel(seconds: number): string {
 function timeLabel(card: Card): string {
   const now = Date.now() / 1000;
   if (card.state === 'running') {
-    return card.created_at ? `▶ ${rel(now - card.created_at)}` : '';
+    // U+FE0E forces text presentation so the glyphs never render as emoji.
+    return card.created_at ? `▶︎ ${rel(now - card.created_at)}` : '';
   }
   if (card.state === 'waiting') {
     const since = card.waiting_since ?? card.updated_at;
-    return since ? `⏸ ${rel(now - since)}` : '';
+    return since ? `${rel(now - since)} waiting` : '';
   }
   const at = card.finished_at ?? card.updated_at;
   return at ? `${rel(now - at)} ago` : '';
@@ -95,47 +96,49 @@ export function MissionCard({ card }: { card: Card }) {
 
   return (
     <article
-      class={`mc-card mc-card-${card.state} ${card.state === 'waiting' ? 'mc-card-attn' : ''}`}
+      class={`mission-card mission-card-${card.state} ${card.state === 'waiting' ? 'mission-card-attn' : ''}`}
       onClick={open}
       data-card-id={card.id}
     >
-      <div class="mc-card-row">
-        <span class="mc-kind">{KIND_LABEL[card.kind]}</span>
+      <div class="mission-card-row">
+        <span class="mission-kind">{KIND_LABEL[card.kind]}</span>
         {(card.assistant || card.model) && (
-          <span class="mc-agent">
+          <span class="mission-agent">
             {card.assistant}
             {card.assistant && card.model ? ' · ' : ''}
             {card.model}
           </span>
         )}
-        <span class="mc-time">{timeLabel(card)}</span>
+        <span class={`mission-time ${card.state === 'waiting' ? 'mission-time-warn' : ''}`}>
+          {timeLabel(card)}
+        </span>
       </div>
 
       {card.outcome && (
-        <div class={`mc-outcome ${card.outcome.ok ? 'mc-outcome-ok' : 'mc-outcome-bad'}`}>
+        <div class={`mission-outcome ${card.outcome.ok ? 'mission-outcome-ok' : 'mission-outcome-bad'}`}>
           {card.outcome.ok ? '✓' : '✕'} {card.outcome.detail}
         </div>
       )}
 
-      <div class="mc-card-title">{card.title}</div>
-      {card.headline && <div class="mc-card-headline muted">{card.headline}</div>}
+      <div class="mission-card-title">{card.title}</div>
+      {card.headline && <div class="mission-card-headline muted">{card.headline}</div>}
 
       {(card.repo || card.branch) && (
-        <div class="mc-card-meta">
+        <div class="mission-card-meta">
           {card.repo && <span>{card.repo}</span>}
-          {card.branch && <span class="mc-branch">⎇ {card.branch}</span>}
+          {card.branch && <span class="mission-branch">⎇ {card.branch}</span>}
         </div>
       )}
 
       {card.children.length > 0 && (
-        <div class="mc-lineage">
+        <div class="mission-lineage">
           └ {card.children.length} sub-agent{card.children.length === 1 ? '' : 's'}:{' '}
           {card.children.map((child, i) => (
             <span key={child.id}>
               {i > 0 && ' · '}
               <button
                 type="button"
-                class="mc-lineage-link"
+                class="mission-lineage-link"
                 onClick={(e) => {
                   e.stopPropagation();
                   navigate(cardHref(child.id));
@@ -148,11 +151,11 @@ export function MissionCard({ card }: { card: Card }) {
         </div>
       )}
       {card.parent_id && (
-        <div class="mc-lineage">
+        <div class="mission-lineage">
           ↳ spawned by{' '}
           <button
             type="button"
-            class="mc-lineage-link"
+            class="mission-lineage-link"
             onClick={(e) => {
               e.stopPropagation();
               navigate(cardHref(card.parent_id as string));
@@ -164,17 +167,18 @@ export function MissionCard({ card }: { card: Card }) {
       )}
 
       {card.state === 'waiting' && card.waiting_prompt && (
-        <div class="mc-prompt" onClick={(e) => e.stopPropagation()}>
+        <div class="mission-prompt" onClick={(e) => e.stopPropagation()}>
+          <div class="mission-prompt-label">needs your input</div>
           {card.waiting_prompt.question && (
-            <div class="mc-prompt-q">{card.waiting_prompt.question}</div>
+            <div class="mission-prompt-q">{card.waiting_prompt.question}</div>
           )}
           <MutatorOnly>
-            <div class="mc-prompt-replies">
+            <div class="mission-prompt-replies">
               {card.waiting_prompt.options.map((o) => (
                 <button
                   key={String(o.index)}
                   type="button"
-                  class="mc-reply"
+                  class="mission-reply"
                   disabled={busy}
                   onClick={() => void onChoose(o)}
                 >
@@ -186,16 +190,16 @@ export function MissionCard({ card }: { card: Card }) {
         </div>
       )}
 
-      <div class="mc-card-foot" onClick={(e) => e.stopPropagation()}>
-        <button type="button" class="mc-foot-btn mc-foot-primary" onClick={open}>
+      <div class="mission-card-foot" onClick={(e) => e.stopPropagation()}>
+        <button type="button" class="mission-foot-btn mission-foot-primary" onClick={open}>
           Open
         </button>
-        <div class="mc-foot-right">
+        <div class="mission-foot-right">
           {live && isTask && (
             <MutatorOnly>
               <button
                 type="button"
-                class="mc-foot-btn mc-foot-danger"
+                class="mission-foot-btn mission-foot-danger"
                 disabled={busy}
                 onClick={() => setConfirmKill(true)}
               >
@@ -207,7 +211,7 @@ export function MissionCard({ card }: { card: Card }) {
             <MutatorOnly>
               <button
                 type="button"
-                class="mc-foot-btn mc-foot-danger"
+                class="mission-foot-btn mission-foot-danger"
                 disabled={busy}
                 onClick={() => void onStopChat()}
               >

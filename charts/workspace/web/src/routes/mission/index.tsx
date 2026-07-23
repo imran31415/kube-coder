@@ -84,13 +84,13 @@ export function MissionRoute() {
         ]}
       />
 
-      <div class="mc-toolbar">
-        <div class="mc-chips" role="group" aria-label="Filter by kind">
+      <div class="mission-toolbar">
+        <div class="mission-chips" role="group" aria-label="Filter by kind">
           {KIND_CHIPS.map((c) => (
             <button
               key={c.value}
               type="button"
-              class={`mc-chip ${missionKindFilter.value === c.value ? 'mc-chip-on' : ''}`}
+              class={`mission-chip ${missionKindFilter.value === c.value ? 'mission-chip-on' : ''}`}
               aria-pressed={missionKindFilter.value === c.value}
               onClick={() => (missionKindFilter.value = c.value)}
             >
@@ -99,7 +99,7 @@ export function MissionRoute() {
           ))}
         </div>
         <Input
-          class="mc-filter"
+          class="mission-filter"
           placeholder="Filter by repo, branch, headline…"
           value={missionFilter.value}
           onInput={(e) => (missionFilter.value = (e.target as HTMLInputElement).value)}
@@ -108,21 +108,21 @@ export function MissionRoute() {
       </div>
 
       {pulse && (
-        <div class="mc-pulse">
+        <div class="mission-pulse">
           <span><b>{pulse.running}</b> running</span>
-          <span class={pulse.waiting > 0 ? 'mc-pulse-warn' : ''}>
+          <span class={pulse.waiting > 0 ? 'mission-pulse-warn' : ''}>
             <b>{pulse.waiting}</b> waiting on you
           </span>
           <span><b>{pulse.review}</b> needs review</span>
           <span><b>{pulse.done_today}</b> done today</span>
           {pulse.oldest_wait_s > 0 && (
-            <span>oldest wait <b class="mc-pulse-warn">{waitLabel(pulse.oldest_wait_s)}</b></span>
+            <span>oldest wait <b class="mission-pulse-warn">{waitLabel(pulse.oldest_wait_s)}</b></span>
           )}
         </div>
       )}
 
       {missionError.value && (
-        <div class="mc-error" role="alert">{missionError.value}</div>
+        <div class="mission-error" role="alert">{missionError.value}</div>
       )}
 
       {!hasAny ? (
@@ -134,20 +134,20 @@ export function MissionRoute() {
       ) : cards.length === 0 && filtering ? (
         <EmptyState title="No matches" description="Try clearing the filters." />
       ) : (
-        <div class="mc-board">
+        <div class="mission-board">
           {COLUMNS.map((col) => {
             const colCards = cards.filter((c) => c.state === col.state);
             return (
-              <section class="mc-col" key={col.state} aria-label={col.label}>
-                <div class="mc-col-h">
-                  <span class={`mc-col-dot mc-col-dot-${col.state}`} aria-hidden="true" />
-                  {col.label} <span class="mc-col-count">{colCards.length}</span>
+              <section class="mission-col" key={col.state} aria-label={col.label}>
+                <div class="mission-col-h">
+                  <span class={`mission-col-dot mission-col-dot-${col.state}`} aria-hidden="true" />
+                  {col.label} <span class="mission-col-count">{colCards.length}</span>
                 </div>
-                <div class="mc-col-cards">
+                <div class="mission-col-cards">
                   {colCards.map((c) => (
                     <MissionCard key={c.id} card={c} />
                   ))}
-                  {colCards.length === 0 && <div class="mc-col-empty muted">Empty</div>}
+                  {colCards.length === 0 && <div class="mission-col-empty muted">Empty</div>}
                 </div>
               </section>
             );
