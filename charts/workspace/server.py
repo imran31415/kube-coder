@@ -139,6 +139,18 @@ AUTH_MODE = os.environ.get('AUTH_MODE', 'basic').lower()
 # hint surfaced through /api/mode; it does NOT relax any gate. Only meaningful
 # alongside READONLY_MODE=true (the demo deploy); inert otherwise.
 DEMO_SHOW_ALL = os.environ.get('DEMO_SHOW_ALL', 'false').lower() == 'true'
+# Public-demo confidentiality controls (see finding 3 of the July 2026 review).
+# AUTH_MODE=none serves an UNAUTHENTICATED workspace; READONLY_MODE blocks
+# writes but NOT reads, so every readable file on the PVC — including dotfile
+# credentials (.claude-tasks/.api-token, .config, .ssh, .git, task transcripts)
+# — is otherwise publicly downloadable. Two operator opt-ins:
+#   * PUBLIC_FILE_ROOT — confine public file reads to this subdir of /home/dev.
+#   * PUBLIC_DEMO_ACK   — the operator has acknowledged that readable PVC files
+#                         are public (silences the loud startup warning).
+# Independent of either, none-mode always refuses hidden (dot) path segments
+# for direct file download/preview/view (matching how listings hide dotfiles).
+PUBLIC_FILE_ROOT = os.environ.get('PUBLIC_FILE_ROOT', '').strip()
+PUBLIC_DEMO_ACK = os.environ.get('PUBLIC_DEMO_ACK', 'false').lower() == 'true'
 # Hypervisor — the workspace-aware chat tab. A clean chat UI layered over the
 # user's existing CLI agents (claude/ante/opencode/…) plus the dashboard MCP
 # tools. Threads are hypervisor-flavoured tasks (source="hypervisor") reusing
@@ -324,6 +336,19 @@ ALLOW_INTERNAL_HOOKS = os.environ.get('ALLOW_INTERNAL_HOOKS', 'false').lower() =
 CONTROLLER_SELF_SERVE_URL = os.environ.get('CONTROLLER_SELF_SERVE_URL', '').strip().rstrip('/')
 CONTROLLER_SELF_SERVE_TOKEN = os.environ.get('CONTROLLER_SELF_SERVE_TOKEN', '').strip()
 
+def _public_mode_active():
+    """True when this is the unauthenticated public demo: AUTH_MODE=none, which
+    _check_safety_invariants requires to be gated by READONLY_MODE."""
+    return AUTH_MODE == 'none' and READONLY_MODE
+
+
+def _public_demo_needs_ack():
+    """True when public mode is active but the operator has NOT acknowledged that
+    readable PVC files become public (no PUBLIC_DEMO_ACK and no PUBLIC_FILE_ROOT).
+    Drives the loud startup warning below."""
+    return _public_mode_active() and not (PUBLIC_DEMO_ACK or PUBLIC_FILE_ROOT)
+
+
 def _check_safety_invariants():
     if AUTH_MODE == 'none' and not READONLY_MODE:
         print(
@@ -336,6 +361,21 @@ def _check_safety_invariants():
         print('[server.py] READONLY_MODE active — mutating endpoints will 403.', file=sys.stderr)
     if AUTH_MODE == 'none':
         print('[server.py] AUTH_MODE=none — check_claude_auth short-circuits to True.', file=sys.stderr)
+    if PUBLIC_FILE_ROOT:
+        print(f'[server.py] PUBLIC_FILE_ROOT={PUBLIC_FILE_ROOT!r} — public file reads '
+              'are confined to this subdir of /home/dev.', file=sys.stderr)
+    if _public_demo_needs_ack():
+        print(
+            '[server.py] WARNING: public-demo mode (AUTH_MODE=none + READONLY_MODE=true) '
+            'is active. READONLY_MODE blocks writes but NOT reads: every readable file on '
+            'this PVC — including dotfile credentials like .claude-tasks/.api-token, '
+            '.config, .ssh, .git — is otherwise reachable by UNAUTHENTICATED visitors. '
+            'Hidden (dot) path segments are now refused for public download/preview/view, '
+            'but you MUST still serve this demo from a FRESH, sanitized PVC and NEVER '
+            'reuse a private workspace PVC. Set PUBLIC_DEMO_ACK=true (or PUBLIC_FILE_ROOT='
+            '<subdir>) once you have done so to acknowledge and silence this warning.',
+            file=sys.stderr,
+        )
     if DEMO_SHOW_ALL:
         print('[server.py] DEMO_SHOW_ALL=true — SPA renders mutation UI (still 403-gated).', file=sys.stderr)
 _check_safety_invariants()
@@ -7893,6 +7933,48 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             raise ValueError('path escapes /home/dev')
         return abs_path
 
+    @classmethod
+    def _path_has_hidden_segment(cls, abs_path: str) -> bool:
+        """True if any path segment of abs_path *below* HOME_DEV starts with a
+        dot (e.g. .claude-tasks, .config, .ssh, .git). HOME_DEV itself is never
+        counted — only the portion a request can address."""
+        try:
+            rel = os.path.relpath(abs_path, cls.HOME_DEV)
+        except ValueError:
+            return True  # different drive / unrelatable → treat as hidden
+        if rel in ('', '.'):
+            return False
+        return any(seg.startswith('.') for seg in rel.split(os.sep)
+                   if seg not in ('', '.', '..'))
+
+    def _reject_public_read(self, target: str) -> bool:
+        """Public-demo confidentiality gate for direct file reads. In
+        AUTH_MODE=none (the unauthenticated public demo) refuse to serve a file
+        whose resolved path contains a hidden (dot) segment, and — when the
+        operator set PUBLIC_FILE_ROOT — anything outside that subdir. This closes
+        finding 3: READONLY_MODE protects integrity, not confidentiality, so the
+        credential/config dotfiles that directory listings already hide must not
+        be reachable via a direct download/preview/view/raw request. Authed modes
+        (oauth2/basic) are untouched, so a logged-in user keeps full access to
+        their own dotfiles. Returns True — and sends a 404, matching a
+        nonexistent file so existence isn't confirmed — when the read must be
+        refused; the caller then stops. Traversal/symlink-escape protection is
+        handled earlier by _resolve_under_home_dev and stays intact."""
+        if AUTH_MODE != 'none':
+            return False
+        if PUBLIC_FILE_ROOT:
+            try:
+                root = self._resolve_under_home_dev(PUBLIC_FILE_ROOT)
+            except ValueError:
+                root = self.HOME_DEV
+            if target != root and not target.startswith(root + os.sep):
+                self.send_json({'error': 'not a file'}, 404)
+                return True
+        if self._path_has_hidden_segment(target):
+            self.send_json({'error': 'not a file'}, 404)
+            return True
+        return False
+
     @staticmethod
     def _safe_filename(name: str) -> bool:
         if not name or name in ('.', '..'):
@@ -7970,6 +8052,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         if not os.path.isfile(target):
             self.send_json({'error': 'not a file'}, 404)
+            return
+        if self._reject_public_read(target):
             return
         ctype = mimetypes.guess_type(target)[0] or ''
         if not (ctype.startswith('image/') or ctype.startswith('video/')):
@@ -8151,6 +8235,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not os.path.isfile(target):
             self.send_json({'error': 'not a file'}, 404)
             return
+        if self._reject_public_read(target):
+            return
         name = os.path.basename(target)
         # RFC 6266: ASCII fallback (with quotes/backslashes/control chars
         # stripped) plus a UTF-8 filename* so non-ASCII names survive.
@@ -8199,6 +8285,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         if not os.path.isfile(target):
             self.send_json({'error': 'not a file'}, 404)
+            return
+        if self._reject_public_read(target):
             return
         rel_out = os.path.relpath(target, self.HOME_DEV)
         try:
@@ -8275,6 +8363,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         if not os.path.isfile(target):
             self.send_json({'error': 'not a file'}, 404)
+            return
+        if self._reject_public_read(target):
             return
         ctype = mimetypes.guess_type(target)[0] or ''
         if ctype not in self.VIEW_INLINE_MIME:

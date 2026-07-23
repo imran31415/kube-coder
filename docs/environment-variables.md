@@ -13,6 +13,8 @@ This document describes all environment variables used by kube-coder components.
 | `TRUSTED_PROXY` | `true` | When `true`, trust `X-Forwarded-*` and `Remote-User` headers from the proxy. **Security:** Set to `false` if your ingress doesn't strip these headers. |
 | `ALLOW_INTERNAL_HOOKS` | `false` | When `true`, allow webhooks and cron jobs to fire tasks on the same workspace (single-user/trusted deployments only). |
 | `DEMO_SHOW_ALL` | `false` | When `true`, show all UI elements in demo mode regardless of actual configuration. |
+| `PUBLIC_FILE_ROOT` | `` (empty) | Only meaningful with `AUTH_MODE=none`. Confines unauthenticated file reads (download/preview/view) to this subdirectory of `/home/dev`. Empty => reads allowed anywhere under `/home/dev` except hidden (dot) path segments, which are always refused in `none` mode. |
+| `PUBLIC_DEMO_ACK` | `false` | Only meaningful with `AUTH_MODE=none` + `READONLY_MODE=true`. Acknowledges that readable PVC files are public in this mode (and that you are serving from a fresh, sanitized PVC), silencing the loud startup warning. **Read-only stops writes, not reads:** a public demo must use a newly created, sanitized PVC — never reuse a private workspace's PVC. |
 | `MAX_REQUEST_BODY_BYTES` | `1048576` (1MB) | Maximum allowed request body size in bytes. |
 | `STREAM_MAX_SECONDS` | `1800` (30 min) | Maximum duration for SSE stream connections. |
 | `WORKSPACE_USER` | `unknown` | Username of the workspace owner (used for display purposes). |
