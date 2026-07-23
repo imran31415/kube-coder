@@ -1,0 +1,325 @@
+/* Mission Control — kanban board unifying builds, chats and sub-agents
+   (issue #425). Board layout: 4 columns with hairline separators on
+   desktop; stacked swimlanes in priority order on mobile. */
+
+/* The board wants width — opt out of the centered route container
+   (same escape hatch tasks/hypervisor use). */
+.route.route-mission {
+  max-width: none;
+}
+
+/* ---- toolbar (kind chips + text filter) ---- */
+.mission-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--size-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--size-3);
+}
+.mission-chips {
+  display: flex;
+  gap: var(--size-2);
+  flex-wrap: wrap;
+}
+.mission-chip {
+  border: 1px solid var(--border-2);
+  background: transparent;
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.mission-chip:hover { color: var(--text); }
+.mission-chip-on {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.mission-filter {
+  margin-left: auto;
+  min-width: 230px;
+}
+@media (max-width: 720px) {
+  .mission-filter { margin-left: 0; min-width: 0; width: 100%; }
+}
+
+/* ---- pulse strip ---- */
+.mission-pulse {
+  display: flex;
+  gap: var(--size-5);
+  flex-wrap: wrap;
+  padding: var(--size-2) var(--size-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-subtle);
+  margin-bottom: var(--size-4);
+}
+.mission-pulse b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mission-pulse .mission-pulse-warn,
+.mission-pulse .mission-pulse-warn b { color: var(--warn); }
+
+.mission-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin-bottom: var(--size-3);
+}
+
+/* ---- board / columns ---- */
+.mission-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(250px, 1fr));
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  overflow-x: auto;
+}
+.mission-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Hairline separators between columns. */
+.mission-col + .mission-col { border-left: 1px solid var(--border); }
+
+.mission-col-h {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  padding: var(--size-3) var(--size-3) var(--size-2);
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.mission-col-count {
+  color: var(--text-subtle);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.mission-col-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.mission-col-dot-running { background: var(--info); }
+.mission-col-dot-waiting { background: var(--warn); }
+.mission-col-dot-review { background: var(--success); }
+.mission-col-dot-done { background: var(--text-subtle); }
+
+.mission-col-cards {
+  padding: var(--size-1) var(--size-2) var(--size-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2);
+}
+.mission-col-empty {
+  font-size: 12px;
+  padding: var(--size-2) var(--size-2);
+}
+
+/* Mobile: columns collapse to stacked swimlanes; DOM order already puts
+   Waiting on you first. Same 720px breakpoint as app.css. */
+@media (max-width: 720px) {
+  .mission-board {
+    display: flex;
+    flex-direction: column;
+    overflow-x: visible;
+  }
+  .mission-col + .mission-col {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* ---- card ---- */
+.mission-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 11px 12px 6px;
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  text-align: left;
+}
+.mission-card:hover { border-color: var(--border-2); }
+/* Amber edge marks cards that need a human. */
+.mission-card-attn { border-left: 2px solid var(--warn); }
+.mission-card-done { opacity: 0.85; }
+.mission-card-done .mission-card-title,
+.mission-card-done .mission-card-headline { color: var(--text-muted); }
+
+.mission-card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  margin-bottom: 6px;
+}
+.mission-kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  flex: none;
+}
+.mission-agent {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mission-time {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.mission-time-warn { color: var(--warn); font-weight: 600; }
+
+.mission-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  margin-bottom: 3px;
+  overflow-wrap: anywhere;
+}
+.mission-card-headline {
+  font-size: 12.5px;
+  margin-bottom: var(--size-2);
+  overflow-wrap: anywhere;
+}
+.mission-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-subtle);
+  margin-bottom: var(--size-2);
+}
+.mission-branch { overflow-wrap: anywhere; }
+
+.mission-lineage {
+  font-size: 11px;
+  color: var(--text-subtle);
+  margin-bottom: var(--size-2);
+}
+.mission-lineage-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--info);
+  cursor: pointer;
+}
+.mission-lineage-link:hover { text-decoration: underline; }
+
+.mission-outcome {
+  font-size: 11.5px;
+  margin-bottom: 2px;
+}
+.mission-outcome-ok { color: var(--success); }
+.mission-outcome-bad { color: var(--danger); }
+
+/* ---- waiting prompt + quick replies ---- */
+.mission-prompt {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--warn);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: var(--size-2);
+  cursor: default;
+}
+.mission-prompt-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin-bottom: 3px;
+}
+.mission-prompt-q {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.mission-prompt-replies {
+  display: flex;
+  gap: var(--size-2);
+  flex-wrap: wrap;
+  margin-top: 7px;
+}
+.mission-reply {
+  border: 1px solid var(--border-2);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+.mission-reply:hover { background: var(--accent-soft); }
+.mission-reply:disabled { opacity: 0.6; cursor: default; }
+/* The first option is nearly always the affirmative — make it primary. */
+.mission-prompt-replies .mission-reply:first-child {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+/* ---- footer actions ---- */
+.mission-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+  margin: 6px -12px 0;
+  padding: 6px 12px 4px;
+  cursor: default;
+}
+.mission-foot-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.mission-foot-btn:hover { background: var(--accent-soft); color: var(--text); }
+.mission-foot-btn:disabled { opacity: 0.6; cursor: default; }
+.mission-foot-primary { color: var(--text); font-weight: 600; }
+.mission-foot-danger { color: var(--danger); }
+.mission-foot-danger:hover { color: var(--danger); }
+.mission-foot-right { margin-left: auto; display: flex; gap: 4px; }
