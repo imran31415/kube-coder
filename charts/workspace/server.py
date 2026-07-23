@@ -53,6 +53,7 @@ try:
     from hypervisor_session import (
         HypervisorSession, build_activity as hv_build_activity,
         hypervisor_health as hv_health, WATCHERS as hv_watchers,
+        HYPERVISOR_DIR,
     )
     _HYPERVISOR_AVAILABLE = True
 except Exception as _hv_import_err:  # broken install shouldn't crash the server
@@ -60,6 +61,7 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
     hv_build_activity = None  # type: ignore
     hv_health = None  # type: ignore
     hv_watchers = None  # type: ignore
+    HYPERVISOR_DIR = ''  # type: ignore
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
 
@@ -4859,6 +4861,308 @@ class AppsManager:
         return True, ''
 
 
+# ── Mission Control (issue #425) ─────────────────────────────────────────────
+# Normalizes builds (~/.claude-tasks tasks), hypervisor chats and orchestrator
+# sub-agents into one card list grouped by what needs the human:
+#
+#   running  — agent actively working
+#   waiting  — blocked on the user (waiting-for-input, quick-reply prompt)
+#   review   — finished successfully in the last MC_RECENT_SECONDS, awaiting
+#              a human look (evidence/PR detection is a later phase of #425)
+#   done     — failed/killed terminals from the recent window, plus idle
+#              (parked, resumable) chats. Terminals older than the window are
+#              excluded — the board is a working set, not an archive.
+
+# How far back terminal work stays on the board.
+MC_RECENT_SECONDS = int(os.environ.get('KC_MISSIONCONTROL_RECENT_S', 48 * 3600))
+# Bytes tailed from output.log / events.jsonl for headline derivation.
+_MC_TAIL_BYTES = 6144
+_MC_HEADLINE_MAX = 140
+
+
+def _mc_tail(path, max_bytes=_MC_TAIL_BYTES):
+    """Last max_bytes of a file as text ('' on any error)."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return f.read().decode('utf-8', errors='replace')
+    except OSError:
+        return ''
+
+
+def _mc_clip(text, limit=_MC_HEADLINE_MAX):
+    text = ' '.join((text or '').split())
+    if len(text) > limit:
+        return text[:limit - 1].rstrip() + '…'
+    return text
+
+
+def _mc_headline_from_log(task_dir, fallback=''):
+    """Derived one-liner: the last meaningful output line of a task.
+
+    Phase-1 headlines are honest rather than clever — the latest thing the
+    agent printed, ANSI-stripped, box-drawing and status-bar chrome skipped.
+    (Classifier-written headlines are a later phase of #425.)
+    """
+    text = strip_ansi(_mc_tail(os.path.join(task_dir, 'output.log')))
+    for line in reversed(text.splitlines()):
+        s = _normalize_prompt_line(line)
+        # Skip prompt-menu options and pure chrome; keep real content.
+        if not s or _PROMPT_OPTION_RE.match(s):
+            continue
+        if len(s) < 4:
+            continue
+        return _mc_clip(s)
+    return _mc_clip(fallback)
+
+
+def _mc_headline_from_events(events_path, fallback=''):
+    """Latest human-meaningful event of a hypervisor thread."""
+    best = ''
+    for line in _mc_tail(events_path).splitlines():
+        try:
+            e = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        etype = e.get('type')
+        if etype == 'message' and e.get('role') == 'assistant':
+            best = e.get('text') or best
+        elif etype == 'tool_call':
+            tool = e.get('tool') or e.get('name') or 'tool'
+            best = f'Using {tool}'
+        elif etype == 'error':
+            best = e.get('text') or best
+    return _mc_clip(best or fallback)
+
+
+def _mc_git_branch(workdir):
+    """Current branch of workdir, '' when unknown. Pure file reads (no git
+    subprocess — this runs per card on a list endpoint). Follows one level of
+    `gitdir:` indirection so linked worktrees resolve too."""
+    if not workdir:
+        return ''
+    try:
+        git_path = os.path.join(workdir, '.git')
+        if os.path.isfile(git_path):  # linked worktree: .git is a pointer file
+            with open(git_path) as f:
+                first = f.readline().strip()
+            if not first.startswith('gitdir:'):
+                return ''
+            head_path = os.path.join(first.split(':', 1)[1].strip(), 'HEAD')
+        else:
+            head_path = os.path.join(git_path, 'HEAD')
+        with open(head_path) as f:
+            head = f.read().strip()
+        if head.startswith('ref: '):
+            return head.rsplit('/', 1)[-1]
+        return head[:12]  # detached
+    except OSError:
+        return ''
+
+
+def _mc_task_card(meta, task_dir, now):
+    """One queue card from a task's meta (already status-reconciled), or None
+    when the task is outside the board's working set."""
+    status = meta.get('status', 'unknown')
+    finished_at = meta.get('finished_at') or meta.get('killed_at')
+    if status == 'running':
+        state = 'running'
+    elif status == 'waiting-for-input':
+        state = 'waiting'
+    elif status in ('completed', 'error', 'killed'):
+        if not finished_at or (now - finished_at) > MC_RECENT_SECONDS:
+            return None
+        state = 'review' if status == 'completed' else 'done'
+    else:
+        return None
+
+    task_id = meta.get('task_id') or os.path.basename(task_dir)
+    kind = 'subagent' if meta.get('parent_task_id') else 'build'
+    prompt = meta.get('prompt', '')
+    workdir = meta.get('workdir') or ''
+
+    card = {
+        'id': f'{kind}:{task_id}',
+        'ref_id': task_id,
+        'kind': kind,
+        'state': state,
+        'title': meta.get('name') or _mc_clip(prompt, 60) or task_id,
+        'headline': _mc_headline_from_log(task_dir, fallback=prompt),
+        'assistant': meta.get('assistant'),
+        'model': '',
+        'workdir': workdir,
+        'repo': os.path.basename(workdir.rstrip('/')) if workdir else '',
+        'branch': _mc_git_branch(workdir),
+        'created_at': meta.get('created_at'),
+        'updated_at': meta.get('last_activity_at') or meta.get('created_at'),
+        'finished_at': finished_at,
+        'waiting_since': meta.get('last_activity_at') if state == 'waiting' else None,
+        'waiting_prompt': None,
+        'outcome': None,
+        'parent_id': (f"build:{meta['parent_task_id']}"
+                      if meta.get('parent_task_id') else None),
+        'children': [],  # filled by the assembler from sub_task_ids
+        '_sub_task_ids': meta.get('sub_task_ids', []),
+    }
+
+    if state == 'waiting':
+        # Mirror get_task's pending_prompt so quick-reply buttons render on
+        # the board itself (#204/#276). One tmux capture per *waiting* task
+        # only — bounded, and only these rows need it.
+        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
+        try:
+            result = subprocess.run(
+                ['tmux', 'capture-pane', '-J', '-t', session_name,
+                 '-p', '-S', '-50'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                card['waiting_prompt'] = parse_screen_prompt(result.stdout)
+                if card['waiting_prompt'] and not card['headline']:
+                    card['headline'] = _mc_clip(
+                        card['waiting_prompt'].get('question') or '')
+        except (OSError, subprocess.SubprocessError):
+            pass
+    elif state in ('review', 'done'):
+        if status == 'completed':
+            card['outcome'] = {'ok': True, 'detail': 'completed'}
+        elif status == 'killed':
+            card['outcome'] = {'ok': False, 'detail': 'killed'}
+        else:
+            exit_code = meta.get('exit_code')
+            detail = ('error' if exit_code in (None, '')
+                      else f'error · exit {exit_code}')
+            card['outcome'] = {'ok': False, 'detail': detail}
+    return card
+
+
+def _mc_thread_card(summary, now):
+    """One queue card from a hypervisor thread summary, or None when the
+    thread is outside the working set (deleted, or idle beyond the window)."""
+    if summary.get('deleted_at'):
+        return None
+    status = summary.get('status')
+    updated_at = summary.get('updated_at') or summary.get('created_at') or 0
+    if status == 'running':
+        state = 'running'
+    elif status == 'error':
+        if (now - updated_at) > MC_RECENT_SECONDS:
+            return None
+        state = 'done'
+    else:  # idle → parked, resumable
+        if (now - updated_at) > MC_RECENT_SECONDS:
+            return None
+        state = 'done'
+
+    thread_id = summary.get('id')
+    thread_dir = os.path.join(HYPERVISOR_DIR, thread_id) \
+        if _HYPERVISOR_AVAILABLE else ''
+    card = {
+        'id': f'chat:{thread_id}',
+        'ref_id': thread_id,
+        'kind': 'chat',
+        'state': state,
+        'title': summary.get('title') or 'New chat',
+        'headline': _mc_headline_from_events(
+            os.path.join(thread_dir, 'events.jsonl'),
+            fallback=summary.get('title') or '') if thread_dir else '',
+        'assistant': summary.get('assistant'),
+        'model': summary.get('model') or '',
+        'workdir': '',
+        'repo': '',
+        'branch': '',
+        'created_at': summary.get('created_at'),
+        'updated_at': updated_at,
+        'finished_at': None,
+        'waiting_since': None,
+        'waiting_prompt': None,
+        'outcome': None,
+        'parent_id': None,
+        'children': [],
+        '_sub_task_ids': [],
+    }
+    if state == 'done':
+        card['outcome'] = ({'ok': False, 'detail': 'error'}
+                           if status == 'error'
+                           else {'ok': True, 'detail': 'idle — resumable'})
+    return card
+
+
+def missioncontrol_queue():
+    """Assemble the normalized queue: cards + pulse. Pure read — safe to poll."""
+    now = time.time()
+    cards = []
+
+    # Builds + sub-agents (sub-agents are ordinary tasks with parent_task_id).
+    ClaudeTaskManager.ensure_tasks_dir()
+    try:
+        entries = sorted(os.listdir(ClaudeTaskManager.TASKS_DIR), reverse=True)
+    except OSError:
+        entries = []
+    for entry in entries:
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, entry)
+        meta_path = os.path.join(task_dir, 'task.json')
+        if not os.path.isfile(meta_path):
+            continue
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            ClaudeTaskManager._reconcile_status(meta, task_dir)
+            card = _mc_task_card(meta, task_dir, now)
+            if card:
+                cards.append(card)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    # Hypervisor chats.
+    if _HYPERVISOR_AVAILABLE:
+        try:
+            for summary in HypervisorSession.list():
+                card = _mc_thread_card(summary, now)
+                if card:
+                    cards.append(card)
+        except Exception as e:
+            print(f'[missioncontrol] thread listing failed: {e}',
+                  file=sys.stderr)
+
+    # Lineage: resolve children shallowly from sub_task_ids.
+    by_ref = {c['ref_id']: c for c in cards if c['kind'] != 'chat'}
+    for card in cards:
+        for child_id in card.pop('_sub_task_ids'):
+            child = by_ref.get(child_id)
+            if child:
+                card['children'].append({
+                    'id': child['id'],
+                    'title': child['title'],
+                    'state': child['state'],
+                })
+
+    # Urgency first (waiting → running → review → done), newest within a group.
+    order = {'waiting': 0, 'running': 1, 'review': 2, 'done': 3}
+    cards.sort(key=lambda c: (order.get(c['state'], 9), -(c['updated_at'] or 0)))
+
+    waiting = [c for c in cards if c['state'] == 'waiting']
+    oldest_wait_s = 0
+    if waiting:
+        stamps = [c['waiting_since'] or c['updated_at'] or now for c in waiting]
+        oldest_wait_s = int(max(0, now - min(stamps)))
+    day_ago = now - 24 * 3600
+    pulse = {
+        'running': sum(1 for c in cards if c['state'] == 'running'),
+        'waiting': len(waiting),
+        'review': sum(1 for c in cards if c['state'] == 'review'),
+        'done_today': sum(
+            1 for c in cards
+            if c['state'] in ('review', 'done')
+            and (c['finished_at'] or c['updated_at'] or 0) >= day_ago),
+        'oldest_wait_s': oldest_wait_s,
+        'generated_at': now,
+    }
+    return {'cards': cards, 'pulse': pulse}
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -4997,6 +5301,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         if claude_path == '/api/claude/tasks':
             self.handle_claude_list_tasks()
+            return
+        elif claude_path == '/api/missioncontrol/queue':
+            self.handle_missioncontrol_queue()
             return
         elif claude_path == '/api/claude/auth/token':
             self.handle_claude_get_token()
@@ -5570,6 +5877,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 parent = parent_val
         tasks = ClaudeTaskManager.list_tasks(parent=parent)
         self.send_json({'tasks': tasks})
+
+    def handle_missioncontrol_queue(self):
+        """Mission Control board (#425): builds + chats + sub-agents as one
+        normalized card queue, grouped by what needs the human. Read-only."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json(missioncontrol_queue())
 
     def handle_workspace_dirs(self):
         """List candidate working directories under /home/dev for the
