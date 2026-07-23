@@ -1785,8 +1785,23 @@ def _git(args):
 
 # The Job clones the chart repo + the private config repo, assembles the
 # users-private dir the Makefile expects, ensures helm is on PATH, then runs the
-# same `make deploy` an operator would. Everything privileged lives here, not in
-# the controller.
+# same `make deploy` an operator would. The controller itself holds no
+# cluster-wide write verbs — only namespaced `create jobs` (see
+# serviceaccount.yaml). But state the real blast radius honestly: because the
+# Job it creates selects the `workspace-provisioner` ServiceAccount, and in
+# Kubernetes a principal that can create a workload AND choose another SA in the
+# same namespace inherits that SA's identity, a controller compromise (RCE,
+# k8s-token theft, or any flaw giving arbitrary Job-manifest control) bridges
+# straight to the provisioner's cluster-wide ClusterRole. This is emphatically
+# NOT limited to "can start Jobs". Defense-in-depth that keeps it acceptable:
+# provisioning is opt-in and off by default; the controller can only launch a
+# Job in its own namespace; and a ValidatingAdmissionPolicy
+# (templates/provisioner-vap.yaml) pins the shape of any Job that runs as the
+# provisioner SA (exact SA, approved image, single expected container, no
+# privileged securityContext / hostPath / hostNetwork), so a tampered manifest
+# cannot smuggle an attacker-controlled workload in under the provisioner
+# identity. Endgame: move the provisioner to a separate namespace behind a
+# constrained broker that stamps Jobs from an immutable template (see PR notes).
 PROVISION_JOB_SCRIPT = r"""
 set -euo pipefail
 export HOME=/tmp

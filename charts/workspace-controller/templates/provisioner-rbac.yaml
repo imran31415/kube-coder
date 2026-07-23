@@ -1,22 +1,33 @@
 {{- if .Values.provision.enabled }}
 # The privileged half of provisioning. A dedicated ServiceAccount the
-# short-lived provisioner Job runs as — it holds every create/update/delete the
+# short-lived provisioner Job runs as — it holds every create/update the
 # `workspace` chart needs to `helm upgrade --install` a new workspace. The
 # always-on, internet-facing controller pod NEVER gets these verbs; it only
-# `create`s a Job (see serviceaccount.yaml) that assumes this identity, so the
-# blast radius of a controller compromise stays "can start Jobs", not "can
-# rewrite every tenant's Deployment + read every Secret".
+# `create`s a Job (see serviceaccount.yaml) that RUNS AS this identity.
+#
+# BLAST RADIUS — stated honestly (security review July 2026, finding 4). A
+# principal that can create a Job and select this ServiceAccount in the same
+# namespace effectively INHERITS this ClusterRole: Kubernetes hands the Job's
+# pod a token for the SA it names. So a controller compromise (RCE, k8s-token
+# theft, or any flaw giving arbitrary Job-manifest control) does NOT stay "can
+# start Jobs" — it bridges to every verb below, cluster-wide. Do not understate
+# this. The defense-in-depth that keeps it acceptable, short of the full
+# separate-namespace-broker rearchitecture (recommended follow-up):
+#   * it belongs to a short-lived Job, not the always-on controller;
+#   * the controller can only *launch* that Job (namespaced `create jobs`),
+#     never assume its verbs directly;
+#   * provisioning is opt-in (provision.enabled) and off by default;
+#   * a ValidatingAdmissionPolicy (provisioner-vap.yaml) pins the shape of any
+#     Job that runs as this SA — exact SA name, approved image, single expected
+#     container, and no privileged/hostPath/hostNetwork/added-capability escape —
+#     so a tampered manifest cannot run an attacker's workload as this identity.
 #
 # Cluster-scoped under per-workspace namespaces (#103): standing up a new
 # tenant now means CREATING its `ws-<user>` Namespace and stamping the workspace
 # objects (Deployment, Secrets, quota, RBAC, the regcred image-pull Secret)
 # into it. Namespace creation is inherently cluster-scoped, and RBAC cannot
 # scope `create` to a namespace that does not exist yet — so this identity is a
-# ClusterRole/ClusterRoleBinding. The mitigations that keep this acceptable:
-#   * it belongs to a short-lived Job, not the always-on controller;
-#   * the controller can only *launch* that Job (namespaced `create jobs`),
-#     never assume its verbs directly;
-#   * provisioning is opt-in (provision.enabled) and off by default.
+# ClusterRole/ClusterRoleBinding.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -32,11 +43,17 @@ metadata:
   labels:
     {{- include "wc.labels" . | nindent 4 }}
 rules:
-# Create + label the per-workspace Namespace itself. `delete` supports the
-# migration/decommission runbook (tearing a tenant's namespace back down).
+# Create + label the per-workspace Namespace itself. Deliberately NO `delete`
+# (security review July 2026, finding 4): normal provisioning only creates and
+# labels the namespace (`make deploy` → ensure-workspace-namespace.sh + helm
+# upgrade), never deletes it. Namespace teardown is a separate manual
+# decommission runbook (`make undeploy` / migrate-user-namespace.sh) an operator
+# runs with their own admin kubeconfig — it is not on the provisioner Job's
+# path, so this SA does not need (and must not carry) cluster-wide namespace
+# deletion.
 - apiGroups: [""]
   resources: ["namespaces"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
 # The workspace Deployment + its oauth2-proxy Deployment, plus scale subresource
 # (helm's --wait reads rollout status).
 - apiGroups: ["apps"]

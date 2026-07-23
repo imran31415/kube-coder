@@ -1,0 +1,198 @@
+suite: provisioner ValidatingAdmissionPolicy (security review July 2026, finding 4)
+templates:
+  - templates/provisioner-vap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: renders nothing unless provisioning is enabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders nothing when provisioning is on but the admission-policy toggle is off
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # With provisioning + the toggle on: doc 0 the VAP, doc 1 the binding.
+  - it: renders the VAP + binding when provisioning and the toggle are enabled
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: is a ValidatingAdmissionPolicy that matches Jobs on create/update
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: apiVersion
+          value: admissionregistration.k8s.io/v1
+      - equal:
+          path: kind
+          value: ValidatingAdmissionPolicy
+      - equal:
+          path: metadata.name
+          value: workspace-provisioner-job-guard
+      - equal:
+          path: spec.matchConstraints.resourceRules[0].apiGroups[0]
+          value: batch
+      - equal:
+          path: spec.matchConstraints.resourceRules[0].resources[0]
+          value: jobs
+      - contains:
+          path: spec.matchConstraints.resourceRules[0].operations
+          content: CREATE
+      - contains:
+          path: spec.matchConstraints.resourceRules[0].operations
+          content: UPDATE
+
+  - it: only evaluates Jobs that run as the pinned provisioner ServiceAccount
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.matchConditions[0].expression
+          pattern: 'serviceAccountName == "workspace-provisioner"'
+
+  - it: pins the approved image repository
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[2].expression
+          pattern: "startsWith\\('test-registry/coder'\\)"
+
+  - it: uses provision.image as the approved repository when set
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.image: "example.io/prov@sha256:abc"
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[2].expression
+          pattern: "startsWith\\('example.io/prov@sha256:abc'\\)"
+
+  - it: forbids privileged securityContext / escalation / UID 0
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[3].expression
+          pattern: "privileged"
+      - matchRegex:
+          path: spec.validations[3].expression
+          pattern: "allowPrivilegeEscalation"
+      - matchRegex:
+          path: spec.validations[3].expression
+          pattern: "runAsUser"
+
+  - it: forbids added capabilities
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[4].expression
+          pattern: "capabilities.add"
+
+  - it: forbids hostPath volumes
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[5].expression
+          pattern: "hostPath"
+
+  - it: forbids host namespace sharing
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[6].expression
+          pattern: "hostNetwork"
+      - matchRegex:
+          path: spec.validations[6].expression
+          pattern: "hostPID"
+      - matchRegex:
+          path: spec.validations[6].expression
+          pattern: "hostIPC"
+
+  - it: forbids extra/init/ephemeral containers
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[0].expression
+          pattern: "size\\(variables.containers\\) == 1"
+      - matchRegex:
+          path: spec.validations[1].expression
+          pattern: "initContainers"
+      - matchRegex:
+          path: spec.validations[1].expression
+          pattern: "ephemeralContainers"
+
+  - it: binds the policy in Deny mode scoped to the control-plane namespace
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: kind
+          value: ValidatingAdmissionPolicyBinding
+      - equal:
+          path: spec.policyName
+          value: workspace-provisioner-job-guard
+      - contains:
+          path: spec.validationActions
+          content: Deny
+      - equal:
+          path: spec.matchResources.namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: test

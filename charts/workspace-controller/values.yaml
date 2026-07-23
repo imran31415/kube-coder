@@ -170,6 +170,23 @@ provision:
   # ServiceAccount the privileged Job runs as (created by provisioner-rbac.yaml).
   serviceAccount: workspace-provisioner
 
+  # Defense-in-depth (security review July 2026, finding 4). A controller
+  # compromise that can craft a Job selecting `serviceAccount` above inherits
+  # that SA's cluster-wide ClusterRole. This ValidatingAdmissionPolicy pins the
+  # shape of any Job that runs as the provisioner SA — exact SA name, approved
+  # image repository, exactly one expected container (no extra/init/ephemeral
+  # containers), and no privileged securityContext / added capabilities /
+  # hostPath volumes / hostNetwork|hostPID|hostIPC — so a tampered manifest
+  # cannot smuggle an attacker-controlled workload in under that identity.
+  #
+  # Requires Kubernetes >= 1.30 (admissionregistration.k8s.io/v1
+  # ValidatingAdmissionPolicy went GA in 1.30 and its feature gate + API must be
+  # enabled on the apiserver). Only renders when provision.enabled is also true.
+  # Set to false if your cluster predates 1.30 or does not serve the API — the
+  # rest of provisioning still works, just without this admission guardrail.
+  admissionPolicy:
+    enabled: true
+
   # Image the Job runs. Empty => the controller image (has kubectl/git/make/curl;
   # installs helm on the fly). Override only if you bake a dedicated tool image.
   image: ""

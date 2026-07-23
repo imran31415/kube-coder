@@ -25,7 +25,7 @@ tests:
       - notExists:
           path: metadata.namespace
 
-  - it: grants namespace create/delete for standing up + tearing down tenants
+  - it: grants namespace create/label for standing up tenants but NOT delete
     set:
       provision.enabled: true
     documentIndex: 1
@@ -33,7 +33,16 @@ tests:
       - equal:
           path: kind
           value: ClusterRole
+      # Finding 4 tightening: normal provisioning only creates+labels the
+      # namespace; teardown is a manual admin runbook, so no cluster-wide
+      # namespace `delete` here.
       - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["namespaces"]
+            verbs: ["get", "list", "watch", "create", "update", "patch"]
+      - notContains:
           path: rules
           content:
             apiGroups: [""]

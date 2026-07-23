@@ -377,6 +377,35 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertIn('ttlSecondsAfterFinished', job['spec'])
         self.assertEqual(job['spec']['template']['spec']['restartPolicy'], 'Never')
 
+    def test_job_manifest_conforms_to_admission_policy_invariants(self):
+        """The real provisioner Job must satisfy every invariant the
+        ValidatingAdmissionPolicy (templates/provisioner-vap.yaml) enforces on
+        provisioner-SA Jobs — otherwise deploying the VAP would reject the
+        controller's own legitimate Job (finding 4). Keep code + policy in sync."""
+        controller.PROVISIONER_IMAGE = 'test-registry/coder:tag'
+        controller.PROVISIONER_SA = 'workspace-provisioner'
+        controller.NAMESPACE = 'coder'
+        pod = controller.build_job_manifest('octo')['spec']['template']['spec']
+        # Exactly one container named 'provision'; no init/ephemeral containers.
+        self.assertEqual(len(pod['containers']), 1)
+        self.assertEqual(pod['containers'][0]['name'], 'provision')
+        self.assertNotIn('initContainers', pod)
+        self.assertNotIn('ephemeralContainers', pod)
+        # Approved image repository.
+        self.assertTrue(pod['containers'][0]['image'].startswith('test-registry/coder'))
+        # No privileged securityContext, no host namespaces, no hostPath volumes.
+        for c in pod['containers']:
+            sc = c.get('securityContext', {})
+            self.assertFalse(sc.get('privileged'))
+            self.assertFalse(sc.get('allowPrivilegeEscalation'))
+            self.assertNotEqual(sc.get('runAsUser'), 0)
+            self.assertFalse(sc.get('capabilities', {}).get('add'))
+        self.assertFalse(pod.get('hostNetwork'))
+        self.assertFalse(pod.get('hostPID'))
+        self.assertFalse(pod.get('hostIPC'))
+        for v in pod.get('volumes', []):
+            self.assertNotIn('hostPath', v)
+
 
 class ResourceLimitTest(unittest.TestCase):
     """Validation + strategic-merge patch construction for in-place limit edits."""
