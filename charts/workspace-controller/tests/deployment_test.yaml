@@ -160,6 +160,25 @@ tests:
               secretKeyRef:
                 name: kc-self-serve
                 key: self-serve-token
+      # Migration default: pre-derivation workspaces holding the shared
+      # master are still accepted (and logged) until the operator flips it.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SELF_SERVE_ALLOW_SHARED_TOKEN
+            value: "true"
+
+  - it: should enforce per-workspace tokens when allowSharedToken is false
+    template: templates/deployment.yaml
+    set:
+      controller.update.selfServeSecretName: kc-self-serve
+      controller.update.allowSharedToken: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SELF_SERVE_ALLOW_SHARED_TOKEN
+            value: "false"
 
   - it: should mount the controller code + SPA from ConfigMaps
     template: templates/deployment.yaml

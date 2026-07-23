@@ -1015,5 +1015,77 @@ def _dep(name):
     }
 
 
+class SelfServeTokenBindingTest(unittest.TestCase):
+    """Finding 2 (July 2026 security review): the self-serve token must be
+    bound to one workspace. A token read out of Alice's workspace pod may
+    drive /api/self/workspaces/alice/* only — presenting it while naming bob
+    in the path must be rejected. The legacy shared master is accepted only
+    while SELF_SERVE_ALLOW_SHARED_TOKEN is on (migration mode)."""
+
+    MASTER = 'master-secret-for-tests'
+
+    class _Req:
+        def __init__(self, token, path='/api/self/workspaces/alice/update'):
+            self.headers = {} if token is None else {'X-KC-Service-Token': token}
+            self.path = path
+
+    def setUp(self):
+        self._saved = (controller.SELF_SERVE_TOKEN,
+                       controller.SELF_SERVE_ALLOW_SHARED_TOKEN)
+        controller.SELF_SERVE_TOKEN = self.MASTER
+        controller.SELF_SERVE_ALLOW_SHARED_TOKEN = True
+
+    def tearDown(self):
+        (controller.SELF_SERVE_TOKEN,
+         controller.SELF_SERVE_ALLOW_SHARED_TOKEN) = self._saved
+
+    def check(self, token, user):
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()):
+            return controller.Handler.check_service_token(self._Req(token), user)
+
+    def test_derivation_is_stable_hex_and_per_user(self):
+        alice = controller.self_serve_token_for('alice')
+        self.assertEqual(alice, controller.self_serve_token_for('alice'))
+        self.assertEqual(len(alice), 64)
+        int(alice, 16)  # raises if not hex
+        self.assertNotEqual(alice, controller.self_serve_token_for('bob'))
+        self.assertNotEqual(alice, self.MASTER)
+
+    def test_derived_token_authorizes_its_own_workspace(self):
+        self.assertTrue(self.check(controller.self_serve_token_for('alice'), 'alice'))
+        # Strict mode changes nothing for correctly-bound tokens.
+        controller.SELF_SERVE_ALLOW_SHARED_TOKEN = False
+        self.assertTrue(self.check(controller.self_serve_token_for('alice'), 'alice'))
+
+    def test_derived_token_cannot_name_another_workspace(self):
+        # The core of finding 2 — Alice's credential naming bob must fail,
+        # legacy migration mode or not.
+        alice_tok = controller.self_serve_token_for('alice')
+        self.assertFalse(self.check(alice_tok, 'bob'))
+        controller.SELF_SERVE_ALLOW_SHARED_TOKEN = False
+        self.assertFalse(self.check(alice_tok, 'bob'))
+
+    def test_shared_master_only_accepted_in_migration_mode(self):
+        self.assertTrue(self.check(self.MASTER, 'alice'))
+        controller.SELF_SERVE_ALLOW_SHARED_TOKEN = False
+        self.assertFalse(self.check(self.MASTER, 'alice'))
+
+    def test_missing_empty_or_wrong_token_rejected(self):
+        self.assertFalse(self.check(None, 'alice'))
+        self.assertFalse(self.check('', 'alice'))
+        self.assertFalse(self.check('not-a-token', 'alice'))
+
+    def test_disabled_when_master_unset(self):
+        derived = controller.self_serve_token_for('alice')
+        controller.SELF_SERVE_TOKEN = ''
+        self.assertFalse(self.check(derived, 'alice'))
+        self.assertFalse(self.check('', 'alice'))
+
+    def test_no_user_rejected(self):
+        self.assertFalse(self.check(self.MASTER, ''))
+        self.assertFalse(self.check(self.MASTER, None))
+
+
 if __name__ == '__main__':
     unittest.main()

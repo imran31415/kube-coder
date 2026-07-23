@@ -498,12 +498,26 @@ IMAGE_TAG_PREFIX = os.environ.get('IMAGE_TAG_PREFIX', 'devlaptop-')
 # Fallback image repository if a Deployment somehow carries a tagless image.
 DEFAULT_IMAGE_REPO = os.environ.get(
     'WORKSPACE_IMAGE_REPO', 'registry.digitalocean.com/resourceloop/coder').strip()
-# Shared secret that lets a workspace's own backend (server.py) broker a
-# self-service version update for ITS OWN workspace without an admin. The
-# workspace calls the in-cluster controller Service directly (bypassing the
-# oauth2 admin gate) and presents this token; we then authorize the action on
-# the user it names. Empty => self-serve disabled (admin-only).
+# Master secret behind the self-serve endpoints that let a workspace's own
+# backend (server.py) broker a version update/restart for ITS OWN workspace
+# without an admin. The workspace calls the in-cluster controller Service
+# directly (bypassing the oauth2 admin gate) and presents a token; we then
+# authorize the action on the workspace that token is BOUND to. Empty =>
+# self-serve disabled (admin-only).
+#
+# The master itself never leaves the controller: each workspace namespace is
+# seeded with only the per-workspace derivation self_serve_token_for(user)
+# (see scripts/ensure-workspace-namespace.sh), so a token read out of one
+# workspace authorizes actions on that workspace alone — it cannot name a
+# different user in the path (security review July 2026, finding 2).
 SELF_SERVE_TOKEN = os.environ.get('SELF_SERVE_TOKEN', '').strip()
+# Migration escape hatch: pre-derivation deployments projected the master
+# verbatim into every workspace, so by default we still accept it (with a
+# loud per-request log). Set to "false" once every workspace namespace has
+# been re-seeded with its derived token (re-run ensure-workspace-namespace.sh
+# / `make deploy USER=<u>`) to enforce per-workspace binding strictly.
+SELF_SERVE_ALLOW_SHARED_TOKEN = (
+    os.environ.get('SELF_SERVE_ALLOW_SHARED_TOKEN', 'true').strip().lower() != 'false')
 # The self-serve endpoints listen on a SEPARATE port from the admin API. This
 # is a security boundary, not a convenience: the admin API on PORT trusts the
 # oauth2-proxy's X-Forwarded-User header, so its NetworkPolicy pins ingress to
@@ -520,6 +534,20 @@ _SELF_SERVE_GET_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/version$
 _SELF_SERVE_POST_RE = re.compile(r'^/api/self/workspaces/[a-z0-9-]{1,41}/(update|restart)$')
 
 _SEMVER_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)$')
+
+
+def self_serve_token_for(user):
+    """The per-workspace self-serve token for `user`.
+
+    HMAC-SHA256 keyed by the master SELF_SERVE_TOKEN over a purpose-prefixed
+    slug, hex-encoded. Stateless: the controller recomputes it for the user
+    named in the request path, so a token only ever validates for the one
+    workspace it was derived for. The same derivation lives in
+    scripts/ensure-workspace-namespace.sh (which seeds workspace namespaces)
+    — keep the two in sync.
+    """
+    return hmac.new(SELF_SERVE_TOKEN.encode(),
+                    f'kc-self-serve/{user}'.encode(), hashlib.sha256).hexdigest()
 
 
 def parse_version(s):
@@ -1978,18 +2006,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         return False
 
-    def check_service_token(self):
-        """True if the request carries the shared self-serve token.
+    def check_service_token(self, user):
+        """True if the request carries the self-serve token BOUND to `user`.
 
         This is the auth for the in-cluster `/api/self/*` endpoints a
         workspace's own backend brokers to (bypassing the oauth2 admin gate via
-        the controller's internal Service). Constant-time compare; disabled
-        cleanly when SELF_SERVE_TOKEN is unset.
+        the controller's internal Service). The path names the target
+        workspace, so the token must be the per-workspace derivation for that
+        same user — a token lifted from workspace A never authorizes an action
+        on workspace B (finding 2). Constant-time compares; disabled cleanly
+        when SELF_SERVE_TOKEN is unset.
+
+        Legacy: while SELF_SERVE_ALLOW_SHARED_TOKEN is true (the default,
+        for migration) the raw master is still accepted, logged per request
+        so operators can see exactly which workspaces still need re-seeding.
         """
-        if not SELF_SERVE_TOKEN:
+        if not SELF_SERVE_TOKEN or not user:
             return False
         tok = self.headers.get('X-KC-Service-Token', '')
-        return bool(tok) and hmac.compare_digest(tok, SELF_SERVE_TOKEN)
+        if not tok:
+            return False
+        if hmac.compare_digest(tok, self_serve_token_for(user)):
+            sys.stderr.write(
+                f'[controller] self-serve auth user={user} mode=per-workspace '
+                f'path={self.path}\n')
+            return True
+        if SELF_SERVE_ALLOW_SHARED_TOKEN and hmac.compare_digest(tok, SELF_SERVE_TOKEN):
+            sys.stderr.write(
+                f'[controller] self-serve auth user={user} mode=SHARED-LEGACY '
+                f'path={self.path} — this workspace still holds the master '
+                f'token; re-seed its namespace (ensure-workspace-namespace.sh) '
+                f'and set SELF_SERVE_ALLOW_SHARED_TOKEN=false\n')
+            return True
+        sys.stderr.write(
+            f'[controller] self-serve auth REJECTED user={user} path={self.path}\n')
+        return False
 
     def _norm_path(self):
         """Strip query + the SPA's /oauth prefix; return the upstream path."""
@@ -2050,10 +2101,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # workspace, gated by the shared service token instead of admin.
         sv = re.match(r'^/api/self/workspaces/([a-z0-9-]{1,41})/version$', path)
         if sv:
-            if not self.check_service_token():
+            user = sv.group(1)
+            if not self.check_service_token(user):
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
-            user = sv.group(1)
             try:
                 self.send_json(workspace_version_info(user))
             except ValueError as exc:
@@ -2251,13 +2302,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         um = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/update$', path)
         sm = re.match(r'^/api/self/workspaces/([a-z0-9-]{1,41})/update$', path)
         if um or sm:
+            user = (um or sm).group(1)
             if um and not self.check_admin():
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
-            if sm and not self.check_service_token():
+            if sm and not self.check_service_token(user):
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
-            user = (um or sm).group(1)
             try:
                 body = self.read_json_body()
                 result = set_workspace_image(user, body.get('version'))
@@ -2279,13 +2330,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         rr = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/restart$', path)
         sr = re.match(r'^/api/self/workspaces/([a-z0-9-]{1,41})/restart$', path)
         if rr or sr:
+            user = (rr or sr).group(1)
             if rr and not self.check_admin():
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
-            if sr and not self.check_service_token():
+            if sr and not self.check_service_token(user):
                 self.send_json({'error': 'unauthorized'}, 401)
                 return
-            user = (rr or sr).group(1)
             try:
                 self.read_json_body()  # drain body if any; we don't need it
                 result = restart_workspace(user)
@@ -2372,8 +2423,14 @@ def main():
         self_httpd.restricted = True
         t = threading.Thread(target=self_httpd.serve_forever, daemon=True)
         t.start()
-        print(f'[controller] self-serve listening on 0.0.0.0:{SELF_SERVE_PORT} (token-gated)',
-              file=sys.stderr)
+        print(f'[controller] self-serve listening on 0.0.0.0:{SELF_SERVE_PORT} '
+              f'(per-workspace tokens)', file=sys.stderr)
+        if SELF_SERVE_ALLOW_SHARED_TOKEN:
+            print('[controller] WARNING: SELF_SERVE_ALLOW_SHARED_TOKEN is on — the '
+                  'legacy shared master token is still accepted for ANY workspace. '
+                  'Re-seed each workspace namespace with its derived token '
+                  '(ensure-workspace-namespace.sh), then set it to "false".',
+                  file=sys.stderr)
     else:
         print('[controller] self-serve disabled (SELF_SERVE_TOKEN unset)', file=sys.stderr)
 
