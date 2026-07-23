@@ -32,7 +32,8 @@
     "@types/react": "~19.2.2",
     "playwright": "^1.58.2",
     "serve-handler": "^6.1.7",
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "vitest": "^2.1.9"
   },
   "scripts": {
     "start": "expo start",
@@ -40,6 +41,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "export:web": "EXPO_PUBLIC_MOCK=1 expo export --platform web",
     "screenshots": "npm run export:web && node scripts/screenshots.mjs",
     "check:nav": "npm run export:web && node scripts/check-nav.mjs",

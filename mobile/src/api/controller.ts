@@ -11,6 +11,7 @@
  */
 import { getConfig } from '../store/config';
 import { mockCapacity, mockWorkspaces } from '../mock/mockData';
+import { validateHost } from '../util/urlPolicy';
 import { ApiError } from './client';
 import type {
   ControllerCapacity,
@@ -27,6 +28,11 @@ async function requestController<T>(
 ): Promise<T> {
   const { controllerHost, controllerToken } = getConfig();
   if (!controllerHost || !controllerToken) throw new ApiError('Controller not configured', 0);
+  // Hard invariant: the admin token must never travel over cleartext HTTP.
+  // validateHost('controller', …) rejects every http:// host (loopback or not),
+  // so a downgraded/misconfigured host never receives the admin credential.
+  const policy = validateHost(controllerHost, 'controller');
+  if (!policy.ok) throw new ApiError(policy.reason ?? 'Insecure controller host', 0);
   const url = `${controllerHost.replace(/\/+$/, '')}${path}`;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
@@ -40,6 +46,9 @@ async function requestController<T>(
         ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      // Same strict redirect stance as the workspace client: never let RN's
+      // opaque auto-follow move the admin token to another/cleartext origin.
+      redirect: 'manual',
       signal: abort.signal,
     });
   } catch (e) {
@@ -47,6 +56,12 @@ async function requestController<T>(
     throw new ApiError(aborted ? 'Request timed out' : `Network error: ${(e as Error).message}`, 0);
   } finally {
     clearTimeout(timer);
+  }
+  if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+    throw new ApiError(
+      'Refusing to follow a redirect on an authenticated controller request (possible downgrade or cross-origin hop).',
+      res.status || 0,
+    );
   }
   const ctype = res.headers.get('Content-Type') || '';
   const parsed: unknown = ctype.includes('application/json')

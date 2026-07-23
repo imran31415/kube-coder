@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button, Label } from '../components/ui';
 import { ping } from '../api/client';
+import { validateHost } from '../util/urlPolicy';
 import { DEMO_HOST, getConfig, saveConnection } from '../store/config';
 import { colors, font, gradients, radius, space } from '../theme';
 
@@ -24,8 +25,11 @@ export default function OnboardingScreen() {
 
   async function connect() {
     setError(null);
-    if (!/^https?:\/\//.test(host.trim())) {
-      setError('Host must start with http:// or https://');
+    // Enforce the transport policy BEFORE persisting or sending the token:
+    // workspace hosts must be https:// (http:// only for localhost, dev builds).
+    const policy = validateHost(host, 'workspace');
+    if (!policy.ok) {
+      setError(policy.reason ?? 'Insecure host');
       return;
     }
     if (!token.trim()) {
@@ -33,8 +37,9 @@ export default function OnboardingScreen() {
       return;
     }
     setBusy(true);
-    // Persist first so the client can read host+token, then validate.
-    await saveConnection(host, token);
+    // Persist the normalized (validated) URL so the client can read host+token,
+    // then validate connectivity.
+    await saveConnection(policy.url ?? host, token);
     try {
       await ping();
       // success — App re-renders into the tab navigator via config subscription

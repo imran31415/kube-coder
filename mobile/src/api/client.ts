@@ -14,6 +14,7 @@
  * same fallback the dashboard SPA uses when the event stream is unavailable.
  */
 import { getConfig } from '../store/config';
+import { validateHost } from '../util/urlPolicy';
 import {
   mockApps,
   mockDesktop,
@@ -91,6 +92,11 @@ const REQUEST_TIMEOUT_MS = 15000;
 async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   const { host, token } = getConfig();
   if (!host || !token) throw new ApiError('Not configured', 0);
+  // Defense in depth: never attach the Bearer token to a host the transport
+  // policy rejects (non-loopback cleartext, etc.), even if a stale/forced host
+  // slipped past onboarding validation.
+  const policy = validateHost(host, 'workspace');
+  if (!policy.ok) throw new ApiError(policy.reason ?? 'Insecure host', 0);
   const url = buildUrl(host, path, opts.query);
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
@@ -104,6 +110,12 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
         ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      // RN fetch auto-follows redirects and hides the intermediate Location, so
+      // we can't inspect a hop to strip the token or block a downgrade. Take the
+      // strict route on credentialed calls: refuse to follow ANY redirect. These
+      // JSON endpoints answer 200 directly; a 3xx here is unexpected and would
+      // risk moving the token to another (or cleartext) origin.
+      redirect: 'manual',
       signal: abort.signal,
     });
   } catch (e) {
@@ -111,6 +123,12 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
     throw new ApiError(aborted ? 'Request timed out' : `Network error: ${(e as Error).message}`, 0);
   } finally {
     clearTimeout(timer);
+  }
+  if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+    throw new ApiError(
+      'Refusing to follow a redirect on an authenticated request (possible downgrade or cross-origin hop).',
+      res.status || 0,
+    );
   }
   const ctype = res.headers.get('Content-Type') || '';
   const parsed: unknown = ctype.includes('application/json')
@@ -380,6 +398,8 @@ export async function uploadTaskImage(
   }
   const { host, token } = getConfig();
   if (!host || !token) throw new ApiError('Not configured', 0);
+  const policy = validateHost(host, 'workspace');
+  if (!policy.ok) throw new ApiError(policy.reason ?? 'Insecure host', 0);
 
   const filename = `pasted-${Date.now().toString(36)}-${(_imgSeq++).toString(36)}.${ext}`;
   const destPath = `.claude-tasks/${taskId}/attachments`;
@@ -693,6 +713,8 @@ export async function transcribeAudio(uri: string, mimeType = 'audio/m4a'): Prom
   }
   const { host, token } = getConfig();
   if (!host || !token) throw new ApiError('Not configured', 0);
+  const policy = validateHost(host, 'workspace');
+  if (!policy.ok) throw new ApiError(policy.reason ?? 'Insecure host', 0);
   const fileResp = await fetch(uri);
   const blob = await fileResp.blob();
   const url = buildUrl(host, '/api/hypervisor/transcribe');
