@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control — kube-coder mock</title>
+<style>
+/* ============ tokens (mirrors charts/workspace/web/src/styles/tokens.css) ============ */
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#18181a; --surface:#1f1f22; --surface-2:#26262a; --surface-3:#2f2f34;
+  --border:#2c2c30; --border-2:#424248;
+  --text:#ededee; --text-muted:#aeaeb2; --text-subtle:#98989f;
+  --accent:#ededee; --accent-strong:#fff; --accent-soft:rgba(237,237,238,.08); --on-accent:#18181a;
+  --success:#34d399; --warn:#fbbf24; --danger:#f87171; --info:#60a5fa;
+  --radius-sm:2px; --radius:3px; --radius-lg:5px; --radius-pill:999px;
+  --shadow-1:0 1px 2px rgba(0,0,0,.35); --shadow-2:0 8px 24px rgba(0,0,0,.45);
+  --font-sans:'Geist','Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'Geist Mono','JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --topbar-h:48px; --rail-w:220px;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:#ffffff; --surface:#ffffff; --surface-2:#fafafa; --surface-3:#f4f4f5;
+  --border:#e4e4e7; --border-2:#a1a1aa;
+  --text:#09090b; --text-muted:#52525b; --text-subtle:#68686f;
+  --accent:#09090b; --accent-strong:#000; --accent-soft:rgba(9,9,11,.05); --on-accent:#fff;
+  --success:#047857; --warn:#b45309; --danger:#b91c1c; --info:#1d4ed8;
+  --shadow-1:0 1px 2px rgba(15,23,42,.06); --shadow-2:0 8px 24px rgba(15,23,42,.08);
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { height:100%; }
+body { background:var(--bg); color:var(--text); font:14px/1.45 var(--font-sans); overflow:hidden; }
+
+/* ============ topbar ============ */
+.topbar { height:var(--topbar-h); display:flex; align-items:center; gap:12px; padding:0 16px;
+  border-bottom:1px solid var(--border); background:var(--surface); }
+.brand { font-weight:650; letter-spacing:-.01em; font-size:14px; }
+.brand span { color:var(--text-subtle); font-weight:400; }
+.topbar .spacer { flex:1; }
+.health { display:flex; align-items:center; gap:6px; color:var(--text-subtle); font-size:12px; }
+.dot { width:7px; height:7px; border-radius:50%; background:var(--success); display:inline-block; }
+.kbd { font:11px var(--font-mono); border:1px solid var(--border-2); border-radius:var(--radius);
+  padding:1px 5px; color:var(--text-subtle); }
+
+/* ============ layout ============ */
+.shell { display:flex; height:calc(100vh - var(--topbar-h)); }
+.rail { width:var(--rail-w); border-right:1px solid var(--border); background:var(--surface);
+  padding:10px 8px; flex:none; display:flex; flex-direction:column; gap:1px; }
+.rail a { display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:var(--radius);
+  color:var(--text-muted); text-decoration:none; font-size:13.5px; }
+.rail a.active { background:var(--accent-soft); color:var(--text); font-weight:550; }
+.rail a .n { margin-left:auto; font-size:11px; color:var(--text-subtle); background:var(--surface-3);
+  border-radius:var(--radius-pill); padding:0 7px; line-height:18px; }
+.rail a.active .n { background:var(--accent); color:var(--on-accent); font-weight:600; }
+.rail .sep { height:1px; background:var(--border); margin:8px 6px; }
+.rail .ico { width:16px; text-align:center; opacity:.75; font-size:13px; }
+
+.main { flex:1; display:flex; min-width:0; }
+.board-wrap { flex:1; min-width:0; display:flex; flex-direction:column; }
+
+/* ============ board header ============ */
+.bhead { padding:14px 20px 0; }
+.bhead h1 { font-size:17px; font-weight:650; letter-spacing:-.01em; }
+.bhead .sub { color:var(--text-subtle); font-size:12.5px; margin-top:2px; }
+.controls { display:flex; align-items:center; gap:8px; margin:12px 0; flex-wrap:wrap; }
+.seg { display:inline-flex; border:1px solid var(--border-2); border-radius:var(--radius); overflow:hidden; }
+.seg button { border:0; background:transparent; color:var(--text-muted); font:12.5px var(--font-sans);
+  padding:5px 12px; cursor:pointer; }
+.seg button.on { background:var(--accent); color:var(--on-accent); font-weight:600; }
+.chip { border:1px solid var(--border-2); background:transparent; border-radius:var(--radius-pill);
+  color:var(--text-muted); font-size:12px; padding:4px 11px; cursor:pointer; }
+.chip.on { border-color:var(--accent); color:var(--text); background:var(--accent-soft); }
+.search { margin-left:auto; display:flex; align-items:center; gap:8px; border:1px solid var(--border-2);
+  border-radius:var(--radius); padding:5px 10px; color:var(--text-subtle); font-size:12.5px; min-width:230px; }
+.newbtn { background:var(--accent); color:var(--on-accent); border:0; border-radius:var(--radius);
+  font:600 12.5px var(--font-sans); padding:6px 14px; cursor:pointer; }
+
+/* pulse strip */
+.pulse { display:flex; gap:22px; padding:9px 20px; border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border); background:var(--surface); font-size:12px; color:var(--text-subtle); }
+.pulse b { color:var(--text); font-weight:600; }
+.pulse .warn b { color:var(--warn); }
+.pulse .attn { color:var(--warn); }
+
+/* ============ board ============ */
+.board { flex:1; display:grid; grid-template-columns:repeat(4,minmax(250px,1fr)); gap:0;
+  overflow:auto; background:var(--bg); }
+.col { border-right:1px solid var(--border); min-width:0; display:flex; flex-direction:column; }
+.col:last-child { border-right:0; }
+.col-h { position:sticky; top:0; background:var(--bg); padding:12px 14px 8px; display:flex;
+  align-items:center; gap:8px; font-size:12px; font-weight:650; letter-spacing:.04em;
+  text-transform:uppercase; color:var(--text-muted); z-index:2; }
+.col-h .cnt { color:var(--text-subtle); font-weight:500; }
+.col-h .sdot { width:8px; height:8px; border-radius:50%; }
+.s-run { background:var(--info); } .s-wait { background:var(--warn); }
+.s-rev { background:var(--success); } .s-done { background:var(--text-subtle); }
+.cards { padding:4px 10px 20px; display:flex; flex-direction:column; gap:8px; }
+
+/* ============ card ============ */
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+  padding:11px 12px 9px; box-shadow:var(--shadow-1); cursor:pointer; }
+.card.sel { border-color:var(--border-2); outline:1px solid var(--border-2); }
+.card.attn { border-left:2px solid var(--warn); }
+.crow { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+.kind { font:600 10px var(--font-mono); letter-spacing:.06em; padding:2px 6px;
+  border-radius:var(--radius-sm); background:var(--surface-3); color:var(--text-muted); }
+.agent { font:11px var(--font-mono); color:var(--text-subtle); display:flex; align-items:center; gap:5px; }
+.agent .adot { width:6px; height:6px; border-radius:2px; }
+.a-claude { background:#d97757; } .a-codex { background:#74aa9c; }
+.a-opencode { background:#a78bfa; } .a-ante { background:#f0abfc; }
+.ctime { margin-left:auto; font-size:11px; color:var(--text-subtle); font-variant-numeric:tabular-nums; }
+.ctitle { font-size:13.5px; font-weight:600; letter-spacing:-.005em; margin-bottom:3px; }
+.chead { font-size:12.5px; color:var(--text-muted); margin-bottom:8px; }
+.cmeta { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:11px; color:var(--text-subtle);
+  font-family:var(--font-mono); margin-bottom:8px; }
+.cmeta .br::before { content:"⎇ "; }
+.lineage { font-size:11px; color:var(--text-subtle); margin-bottom:8px; padding-left:2px; }
+.lineage a { color:var(--info); text-decoration:none; }
+.prompt { border:1px solid var(--border); border-left:2px solid var(--warn); background:var(--surface-2);
+  border-radius:var(--radius); padding:7px 9px; font-size:12px; color:var(--text); margin-bottom:8px; }
+.prompt .q { color:var(--text-muted); font-family:var(--font-mono); font-size:11.5px; }
+.qr { display:flex; gap:6px; margin-top:7px; }
+.qr button { border:1px solid var(--border-2); background:var(--surface); color:var(--text);
+  border-radius:var(--radius); font:600 11.5px var(--font-sans); padding:3px 10px; cursor:pointer; }
+.qr button.yes { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+.evi { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+.evi span { font-size:11px; border:1px solid var(--border); border-radius:var(--radius-pill);
+  padding:2px 8px; color:var(--text-muted); }
+.evi .ok::before { content:"✓ "; color:var(--success); }
+.evi .bad::before { content:"✕ "; color:var(--danger); }
+.cfoot { display:flex; align-items:center; gap:4px; border-top:1px solid var(--border);
+  margin:0 -12px; padding:6px 12px 0; }
+.cfoot button { border:0; background:transparent; color:var(--text-subtle); font:12px var(--font-sans);
+  padding:3px 8px; border-radius:var(--radius); cursor:pointer; }
+.cfoot button:hover { background:var(--accent-soft); color:var(--text); }
+.cfoot .danger { color:var(--danger); }
+.cfoot .primary { color:var(--text); font-weight:600; }
+.cfoot .right { margin-left:auto; display:flex; }
+.done .ctitle, .done .chead { color:var(--text-muted); }
+.done { opacity:.85; }
+.outcome { font-size:11.5px; margin-bottom:2px; }
+.outcome.ok { color:var(--success); } .outcome.bad { color:var(--danger); }
+
+/* ============ drawer ============ */
+.drawer { width:390px; flex:none; border-left:1px solid var(--border); background:var(--surface);
+  display:flex; flex-direction:column; }
+.dhead { padding:14px 16px 10px; border-bottom:1px solid var(--border); }
+.dhead .crow { margin-bottom:8px; }
+.dhead h2 { font-size:14.5px; font-weight:650; margin-bottom:3px; }
+.dhead .chead { margin-bottom:0; }
+.dtabs { display:flex; gap:2px; padding:0 12px; border-bottom:1px solid var(--border); }
+.dtabs button { border:0; background:transparent; color:var(--text-subtle); font:12.5px var(--font-sans);
+  padding:9px 10px; cursor:pointer; border-bottom:2px solid transparent; }
+.dtabs button.on { color:var(--text); font-weight:600; border-bottom-color:var(--accent); }
+.tl { flex:1; overflow:auto; padding:12px 16px; }
+.ev { display:flex; gap:10px; padding:7px 0; font-size:12.5px; border-bottom:1px solid var(--border); }
+.ev:last-child { border-bottom:0; }
+.ev .t { flex:none; width:44px; color:var(--text-subtle); font:11px var(--font-mono); padding-top:2px; }
+.ev .ic { flex:none; width:16px; text-align:center; }
+.ev .b { min-width:0; color:var(--text-muted); }
+.ev .b b { color:var(--text); font-weight:600; }
+.ev .b code { font:11.5px var(--font-mono); background:var(--surface-3); border-radius:var(--radius-sm); padding:1px 5px; }
+.ev.live .b { color:var(--text); }
+.livebar { display:flex; align-items:center; gap:8px; padding:8px 16px; font-size:12px;
+  color:var(--info); border-top:1px solid var(--border); background:var(--surface-2); }
+.livebar .spin { width:8px; height:8px; border-radius:50%; background:var(--info);
+  animation:pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity:.25; } }
+.composer { border-top:1px solid var(--border); padding:10px 12px; display:flex; gap:8px; }
+.composer input { flex:1; background:var(--surface-2); border:1px solid var(--border-2);
+  border-radius:var(--radius); color:var(--text); font:13px var(--font-sans); padding:8px 10px; }
+.composer input::placeholder { color:var(--text-subtle); }
+.composer button { background:var(--accent); color:var(--on-accent); border:0; border-radius:var(--radius);
+  font:600 12.5px var(--font-sans); padding:0 14px; cursor:pointer; }
+
+/* ============ mobile ============ */
+@media (max-width:760px) {
+  .rail, .drawer { display:none; }
+  .board { display:flex; flex-direction:column; overflow:auto; }
+  .col { border-right:0; border-bottom:1px solid var(--border); }
+  .search { display:none; }
+  .bhead { padding:12px 14px 0; }
+  .pulse { padding:9px 14px; gap:14px; flex-wrap:wrap; }
+  .cards { padding:4px 12px 14px; }
+  body { overflow:auto; }
+  .shell { height:auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">kube-coder <span>/ workspace-imran</span></div>
+  <div class="spacer"></div>
+  <div class="health"><span class="dot"></span> pod healthy</div>
+  <div class="health">cpu 41% · mem 2.1Gi</div>
+  <span class="kbd">⌘K</span>
+</div>
+
+<div class="shell">
+  <nav class="rail">
+    <a href="#"><span class="ico">◧</span> Desktop</a>
+    <a href="#" class="active"><span class="ico">⌘</span> Mission Control <span class="n">7</span></a>
+    <a href="#"><span class="ico">▣</span> Hypervisor</a>
+    <a href="#"><span class="ico">◉</span> Walkie-Talkie</a>
+    <a href="#"><span class="ico">⚒</span> Build</a>
+    <div class="sep"></div>
+    <a href="#"><span class="ico">◈</span> Memory</a>
+    <a href="#"><span class="ico">✦</span> Skills</a>
+    <a href="#"><span class="ico">▤</span> Apps</a>
+    <a href="#"><span class="ico">↯</span> Triggers</a>
+    <a href="#"><span class="ico">▥</span> Files</a>
+    <a href="#"><span class="ico">✎</span> Docs</a>
+    <div class="sep"></div>
+    <a href="#"><span class="ico">⚙</span> Settings</a>
+  </nav>
+
+  <div class="main">
+    <div class="board-wrap">
+      <div class="bhead">
+        <h1>Mission Control</h1>
+        <div class="sub">Every agent across builds, chats and sub-agents — one queue.</div>
+        <div class="controls">
+          <div class="seg">
+            <button class="on">This workspace</button>
+            <button>Fleet (4 pods)</button>
+          </div>
+          <button class="chip on">All kinds</button>
+          <button class="chip">Builds</button>
+          <button class="chip">Chats</button>
+          <button class="chip">Sub-agents</button>
+          <button class="chip">claude</button>
+          <button class="chip">codex</button>
+          <div class="search">⌕ Filter by repo, branch, headline…</div>
+          <button class="newbtn">+ New task</button>
+        </div>
+      </div>
+
+      <div class="pulse">
+        <span><b>3</b> running</span>
+        <span class="warn"><b>2</b> waiting on you</span>
+        <span><b>1</b> needs review</span>
+        <span>oldest wait <b class="attn">14m</b></span>
+        <span>events <b>26/min</b></span>
+        <span style="margin-left:auto">last fleet sync 6s ago</span>
+      </div>
+
+      <div class="board">
+        <!-- RUNNING -->
+        <section class="col">
+          <div class="col-h"><span class="sdot s-run"></span> Running <span class="cnt">3</span></div>
+          <div class="cards">
+
+            <article class="card sel">
+              <div class="crow">
+                <span class="kind">BUILD</span>
+                <span class="agent"><span class="adot a-claude"></span>claude · fable-5</span>
+                <span class="ctime">▶ 32m</span>
+              </div>
+              <div class="ctitle">Trigger run-history &amp; audit log (#91)</div>
+              <div class="chead">Wiring per-trigger history into server.py — writing the ring-buffer store, 8 files touched.</div>
+              <div class="cmeta"><span>kube-coder</span><span class="br">issue-91-trigger-history</span></div>
+              <div class="lineage">└ 2 sub-agents: <a href="#">test-writer ▶</a> · <a href="#">docs ✓</a></div>
+              <div class="cfoot">
+                <button class="primary">Reply</button><button>Watch</button><button>Transcript</button>
+                <div class="right"><button class="danger">Kill</button></div>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="crow">
+                <span class="kind">SUB-AGENT</span>
+                <span class="agent"><span class="adot a-codex"></span>codex</span>
+                <span class="ctime">▶ 9m</span>
+              </div>
+              <div class="ctitle">test-writer</div>
+              <div class="chead">Adding vitest coverage for webhook signature verification — 3 specs green, 1 flaky.</div>
+              <div class="cmeta"><span>kube-coder</span><span class="br">issue-91-trigger-history</span></div>
+              <div class="lineage">↳ spawned by <a href="#">Trigger run-history (#91)</a></div>
+              <div class="cfoot">
+                <button class="primary">Reply</button><button>Output</button>
+                <div class="right"><button class="danger">Kill</button></div>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="crow">
+                <span class="kind">CHAT</span>
+                <span class="agent"><span class="adot a-claude"></span>claude · opus-4.8</span>
+                <span class="ctime">▶ 2h 04m</span>
+              </div>
+              <div class="ctitle">Landing page copy refresh</div>
+              <div class="chead">Iterating on pricing section wording in /home/dev/hosted — waiting on a slow Vite build.</div>
+              <div class="cmeta"><span>kubecoder-hosted</span><span class="br">main</span></div>
+              <div class="cfoot">
+                <button class="primary">Open chat</button><button>Watch</button>
+                <div class="right"><button class="danger">Kill</button></div>
+              </div>
+            </article>
+
+          </div>
+        </section>
+
+        <!-- WAITING -->
+        <section class="col">
+          <div class="col-h"><span class="sdot s-wait"></span> Waiting on you <span class="cnt">2</span></div>
+          <div class="cards">
+
+            <article class="card attn">
+              <div class="crow">
+                <span class="kind">BUILD</span>
+                <span class="agent"><span class="adot a-claude"></span>claude</span>
+                <span class="ctime">⏸ 14m</span>
+              </div>
+              <div class="ctitle">Memory GC defaults (#359)</div>
+              <div class="prompt">
+                <div class="q">permission · Bash</div>
+                Run <code style="font-family:var(--font-mono)">sqlite3 memory.db "DELETE FROM tombstones…"</code> to purge 412 soft-deleted rows?
+                <div class="qr"><button class="yes">Yes</button><button>Yes, don't ask again</button><button>No</button></div>
+              </div>
+              <div class="cmeta"><span>kube-coder</span><span class="br">issue-359-memory-gc</span></div>
+              <div class="cfoot">
+                <button class="primary">Open</button><button>Transcript</button>
+                <div class="right"><button class="danger">Kill</button></div>
+              </div>
+            </article>
+
+            <article class="card attn">
+              <div class="crow">
+                <span class="kind">CHAT</span>
+                <span class="agent"><span class="adot a-opencode"></span>opencode</span>
+                <span class="ctime">⏸ 4m</span>
+              </div>
+              <div class="ctitle">Mobile triggers screen</div>
+              <div class="prompt">
+                <div class="q">question</div>
+                Should the mobile Triggers list reuse the web card layout or the native list style used by Tasks?
+                <div class="qr"><button class="yes">Web cards</button><button>Native list</button></div>
+              </div>
+              <div class="cmeta"><span>kube-coder</span><span class="br">issue-250-mobile-parity</span></div>
+              <div class="cfoot">
+                <button class="primary">Open</button><button>Transcript</button>
+                <div class="right"><button class="danger">Kill</button></div>
+              </div>
+            </article>
+
+          </div>
+        </section>
+
+        <!-- NEEDS REVIEW -->
+        <section class="col">
+          <div class="col-h"><span class="sdot s-rev"></span> Needs review <span class="cnt">1</span></div>
+          <div class="cards">
+
+            <article class="card">
+              <div class="crow">
+                <span class="kind">BUILD</span>
+                <span class="agent"><span class="adot a-claude"></span>claude</span>
+                <span class="ctime">✓ 26m ago</span>
+              </div>
+              <div class="ctitle">Sidebar reorganization (#267)</div>
+              <div class="chead">Grouped rail into Work / Knowledge / System sections; PR opened with screenshots.</div>
+              <div class="evi">
+                <span class="ok">tsc</span><span class="ok">vitest 214</span><span class="ok">helm lint</span>
+                <span class="ok">screenshots ×4</span><span class="bad">e2e (1 flaky)</span>
+              </div>
+              <div class="cmeta"><span>kube-coder</span><span class="br">issue-267-sidebar → PR #413</span></div>
+              <div class="cfoot">
+                <button class="primary">Open PR</button><button>Diff</button><button>Evidence</button>
+                <div class="right"><button>Request changes</button></div>
+              </div>
+            </article>
+
+          </div>
+        </section>
+
+        <!-- DONE -->
+        <section class="col">
+          <div class="col-h"><span class="sdot s-done"></span> Done · today <span class="cnt">4</span></div>
+          <div class="cards">
+
+            <article class="card done">
+              <div class="crow">
+                <span class="kind">BUILD</span>
+                <span class="agent"><span class="adot a-claude"></span>claude</span>
+                <span class="ctime">1h ago</span>
+              </div>
+              <div class="outcome ok">✓ merged · PR #411</div>
+              <div class="ctitle">Walkie: long content reachable + stop controls</div>
+              <div class="cfoot"><button>Transcript</button><button>PR</button><div class="right"><button>Archive</button></div></div>
+            </article>
+
+            <article class="card done">
+              <div class="crow">
+                <span class="kind">SUB-AGENT</span>
+                <span class="agent"><span class="adot a-ante"></span>ante</span>
+                <span class="ctime">2h ago</span>
+              </div>
+              <div class="outcome ok">✓ completed</div>
+              <div class="ctitle">docs — trigger API reference</div>
+              <div class="cfoot"><button>Output</button><div class="right"><button>Archive</button></div></article>
+
+            <article class="card done">
+              <div class="crow">
+                <span class="kind">BUILD</span>
+                <span class="agent"><span class="adot a-codex"></span>codex</span>
+                <span class="ctime">4h ago</span>
+              </div>
+              <div class="outcome bad">✕ error · exit 1 — npm install ENOSPC</div>
+              <div class="ctitle">Bump controller SPA deps</div>
+              <div class="cfoot"><button class="primary">Retry</button><button>Log</button><div class="right"><button>Archive</button></div></div>
+            </article>
+
+            <article class="card done">
+              <div class="crow">
+                <span class="kind">CHAT</span>
+                <span class="agent"><span class="adot a-claude"></span>claude</span>
+                <span class="ctime">5h ago</span>
+              </div>
+              <div class="outcome ok">✓ idle 3h — auto-parked</div>
+              <div class="ctitle">Debug DinD TLS handshake</div>
+              <div class="cfoot"><button>Resume</button><button>Transcript</button><div class="right"><button>Archive</button></div></div>
+            </article>
+
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ============ detail drawer (selected card) ============ -->
+    <aside class="drawer">
+      <div class="dhead">
+        <div class="crow">
+          <span class="kind">BUILD</span>
+          <span class="agent"><span class="adot a-claude"></span>claude · fable-5</span>
+          <span class="ctime">▶ running 32m</span>
+        </div>
+        <h2>Trigger run-history &amp; audit log (#91)</h2>
+        <div class="chead">Wiring per-trigger history into server.py — writing the ring-buffer store, 8 files touched.</div>
+      </div>
+      <div class="dtabs">
+        <button class="on">Timeline</button>
+        <button>Transcript</button>
+        <button>Sub-agents (2)</button>
+        <button>Files (8)</button>
+        <button>Info</button>
+      </div>
+      <div class="tl">
+        <div class="ev"><span class="t">18:02</span><span class="ic">⚑</span><div class="b"><b>Task started</b> from issue #91 via /kc-issue — worktree <code>issue-91-trigger-history</code></div></div>
+        <div class="ev"><span class="t">18:04</span><span class="ic">✎</span><div class="b">Read <code>server.py</code>, <code>mcp_dashboard.py</code> — mapped trigger storage layout</div></div>
+        <div class="ev"><span class="t">18:09</span><span class="ic">↳</span><div class="b"><b>Spawned sub-agent</b> <code>docs</code> (ante) — API reference for run-history endpoints</div></div>
+        <div class="ev"><span class="t">18:14</span><span class="ic">✎</span><div class="b">Edited <code>server.py</code> — added <code>/api/webhooks/{id}/runs</code> + ring buffer (200 entries)</div></div>
+        <div class="ev"><span class="t">18:17</span><span class="ic">↳</span><div class="b"><b>Spawned sub-agent</b> <code>test-writer</code> (codex) — vitest + pytest coverage</div></div>
+        <div class="ev"><span class="t">18:21</span><span class="ic">✓</span><div class="b">Sub-agent <code>docs</code> <b>completed</b> — 1 file, docs/triggers.md</div></div>
+        <div class="ev"><span class="t">18:26</span><span class="ic">⚒</span><div class="b">Ran <code>python -m pytest tests/test_server.py -k trigger</code> — 11 passed</div></div>
+        <div class="ev live"><span class="t">18:33</span><span class="ic">…</span><div class="b"><b>Editing</b> <code>web/src/routes/triggers/RunHistory.tsx</code> — rendering the runs table</div></div>
+      </div>
+      <div class="livebar"><span class="spin"></span> streaming · 3 tool calls/min · 41k tokens this turn</div>
+      <div class="composer">
+        <input placeholder="Send a follow-up to this agent…">
+        <button>Send</button>
+      </div>
+    </aside>
+  </div>
+</div>
+
+</body>
+</html>
