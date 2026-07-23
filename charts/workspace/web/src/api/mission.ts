@@ -76,3 +76,27 @@ export interface MissionQueue {
 /** Cards arrive pre-sorted: waiting → running → review → done, newest first
  *  within each group. Pure read — safe to poll. */
 export const getMissionQueue = () => apiGet<MissionQueue>('/api/missioncontrol/queue');
+
+/** One normalized activity-timeline entry in the card detail drawer. Chats
+ *  derive theirs from the hypervisor activity classifier (#298); tasks from
+ *  their metadata (start, sub-agent spawns, waiting, terminal transition). */
+export interface MissionTimelineEntry {
+  at: number | null;
+  kind: 'start' | 'tool' | 'subagent' | 'waiting' | 'status' | 'error' | 'end';
+  text: string;
+  detail: string;
+  /** Namespaced card id to cross-link (spawned sub-agent / sub-build). */
+  link: string | null;
+  status: 'ok' | 'error' | 'pending' | 'muted' | string;
+}
+
+export interface MissionDetail {
+  card: MissionCard;
+  timeline: MissionTimelineEntry[];
+  /** Bounded ANSI-stripped tail of the task's output.log; '' for chats. */
+  output_tail: string;
+}
+
+/** Drawer payload for one board card. 404s once a card ages off the board. */
+export const getMissionCardDetail = (id: string) =>
+  apiGet<MissionDetail>(`/api/missioncontrol/cards/${id}`);

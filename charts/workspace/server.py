@@ -5163,6 +5163,175 @@ def missioncontrol_queue():
     return {'cards': cards, 'pulse': pulse}
 
 
+# Detail drawer (#425 phase 3): the tail is a window, not a transcript.
+_MC_DETAIL_TAIL_LINES = 80
+_MC_DETAIL_TIMELINE_MAX = 100
+
+
+def _mc_primary_arg(tool_input):
+    """Best-effort "primary argument" of a tool call for a timeline detail
+    line — mirrors routes/hypervisor/activity.ts primaryArg so web and API
+    consumers describe a call the same way."""
+    if tool_input is None:
+        return ''
+    if isinstance(tool_input, str):
+        return tool_input
+    if not isinstance(tool_input, dict):
+        return str(tool_input)
+    for key in ('command', 'prompt', 'query', 'path', 'file_path', 'name',
+                'message', 'namespace', 'url', 'port'):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+    return ''
+
+
+# Raw task status → board state, matching _mc_task_card's mapping so the
+# drawer's lineage chips read the same as the queue's.
+_MC_STATUS_STATE = {'running': 'running', 'waiting-for-input': 'waiting',
+                    'completed': 'review', 'error': 'done', 'killed': 'done'}
+
+
+def _mc_entry(at, kind, text, detail='', link=None, status='ok'):
+    """One normalized timeline entry — the drawer's unit of history."""
+    return {'at': at, 'kind': kind, 'text': _mc_clip(text, 140),
+            'detail': _mc_clip(detail, 140), 'link': link, 'status': status}
+
+
+def _mc_task_timeline(meta, card, children):
+    """Coarse activity timeline for a task card, derived from what the task
+    metadata records (no transcript parsing): start, sub-agent spawns,
+    waiting-on-input, and the terminal transition."""
+    entries = [_mc_entry(meta.get('created_at'), 'start', 'Started',
+                         detail=meta.get('prompt', ''))]
+    for child_id, child in children:
+        entries.append(_mc_entry(
+            child.get('created_at'), 'subagent',
+            f"Spawned sub-agent — {child.get('name') or child_id}",
+            detail=child.get('prompt', ''),
+            link=f'subagent:{child_id}'))
+    if card['state'] == 'waiting':
+        prompt = card.get('waiting_prompt') or {}
+        entries.append(_mc_entry(
+            card.get('waiting_since'), 'waiting', 'Waiting on your input',
+            detail=prompt.get('question') or '', status='pending'))
+    outcome = card.get('outcome')
+    if outcome and card.get('finished_at'):
+        entries.append(_mc_entry(
+            card['finished_at'], 'end', outcome['detail'],
+            status='ok' if outcome['ok'] else 'error'))
+    entries.sort(key=lambda e: e['at'] or 0)
+    return entries
+
+
+def _mc_chat_timeline(session, summary):
+    """Chat card timeline: the hypervisor activity classifier's view (#298),
+    re-normalized to the same entry shape task timelines use."""
+    entries = [_mc_entry(summary.get('created_at'), 'start', 'Started',
+                         detail=summary.get('title') or '')]
+    if hv_build_activity is None:
+        return entries
+    for e in hv_build_activity(session.read_events())['timeline']:
+        kind = e.get('kind')
+        if kind == 'tool':
+            is_sub = e.get('category') == 'subagent'
+            if is_sub:
+                text = (f"Sub-agent · {e['subagent_type']}"
+                        if e.get('subagent_type') else 'Sub-agent')
+                detail = e.get('description') or ''
+            else:
+                text = f"Using {e.get('label') or e.get('tool') or 'tool'}"
+                detail = _mc_primary_arg(e.get('input'))
+            # A sub-build carries the created task id — cross-link the cards.
+            link = (f"build:{e['task_id']}"
+                    if e.get('category') == 'build' and e.get('task_id')
+                    else None)
+            entries.append(_mc_entry(
+                e.get('ts'), 'subagent' if is_sub else 'tool', text,
+                detail=detail, link=link, status=e.get('status') or 'ok'))
+        elif kind == 'error':
+            entries.append(_mc_entry(e.get('ts'), 'error',
+                                     e.get('text') or 'Error',
+                                     status='error'))
+        elif kind == 'status':
+            entries.append(_mc_entry(e.get('ts'), 'status',
+                                     str(e.get('status') or 'status'),
+                                     status='muted'))
+    if len(entries) > _MC_DETAIL_TIMELINE_MAX:
+        entries = entries[:1] + entries[-(_MC_DETAIL_TIMELINE_MAX - 1):]
+    return entries
+
+
+def missioncontrol_card_detail(card_id):
+    """Drawer payload for one board card (#425 phase 3): the card itself plus
+    a normalized activity timeline and, for tasks, a bounded ANSI-stripped
+    output tail. Returns None when the card is not on the board (unknown id,
+    deleted thread, or a task aged out of the working set). Pure read."""
+    kind, _, ref_id = card_id.partition(':')
+    now = time.time()
+
+    if kind in ('build', 'subagent'):
+        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, ref_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            ClaudeTaskManager._reconcile_status(meta, task_dir)
+        except (OSError, json.JSONDecodeError):
+            return None
+        card = _mc_task_card(meta, task_dir, now)
+        if card is None:
+            return None
+        card.pop('_sub_task_ids', None)
+        # Resolve children once, shared by the card's lineage line and the
+        # timeline's spawn entries (the queue assembler does this globally;
+        # here the scope is just this card's sub_task_ids).
+        children = []
+        for child_id in meta.get('sub_task_ids', []):
+            child_path = os.path.join(
+                ClaudeTaskManager.TASKS_DIR, child_id, 'task.json')
+            try:
+                with open(child_path) as f:
+                    child = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            children.append((child_id, child))
+            card['children'].append({
+                'id': f'subagent:{child_id}',
+                'title': child.get('name') or child_id,
+                'state': _MC_STATUS_STATE.get(
+                    child.get('status'), child.get('status', 'unknown')),
+            })
+        tail = strip_ansi(_mc_tail(os.path.join(task_dir, 'output.log')))
+        tail = '\n'.join(tail.splitlines()[-_MC_DETAIL_TAIL_LINES:])
+        return {
+            'card': card,
+            'timeline': _mc_task_timeline(meta, card, children),
+            'output_tail': tail,
+        }
+
+    if kind == 'chat':
+        if not _HYPERVISOR_AVAILABLE:
+            return None
+        session = HypervisorSession.get(ref_id)
+        if session is None:
+            return None
+        summary = session.summary()
+        card = _mc_thread_card(summary, now)
+        if card is None:
+            return None
+        card.pop('_sub_task_ids', None)
+        return {
+            'card': card,
+            'timeline': _mc_chat_timeline(session, summary),
+            'output_tail': '',
+        }
+
+    return None
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -5298,6 +5467,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         # Reverse-proxy to a locally-listening web app.
         if self._dispatch_app_proxy(claude_path, 'GET'):
+            return
+        # /api/missioncontrol/cards/{kind}:{id} — drawer detail (#425 ph. 3).
+        m = re.match(
+            r'^/api/missioncontrol/cards/'
+            r'((?:build|chat|subagent):[A-Za-z0-9_-]+)$', claude_path)
+        if m:
+            self.handle_missioncontrol_card(m.group(1))
             return
         if claude_path == '/api/claude/tasks':
             self.handle_claude_list_tasks()
@@ -5885,6 +6061,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         self.send_json(missioncontrol_queue())
+
+    def handle_missioncontrol_card(self, card_id):
+        """Drawer detail for one Mission Control card (#425 phase 3): the
+        card, a normalized activity timeline, and an output tail. Read-only."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        detail = missioncontrol_card_detail(card_id)
+        if detail is None:
+            self.send_json({'error': 'Card not found'}, 404)
+            return
+        self.send_json(detail)
 
     def handle_workspace_dirs(self):
         """List candidate working directories under /home/dev for the
