@@ -1,0 +1,110 @@
+{{- if and .Values.provision.enabled .Values.provision.admissionPolicy.enabled }}
+{{- $sa := .Values.provision.serviceAccount }}
+{{- /* Approved provisioner image. If provision.image pins a full ref, require
+       that exact prefix; otherwise require the controller image repository the
+       controller reuses as the default Job image (build_job_manifest in
+       controller.py sets CONTROLLER_IMAGE = repository:tag). */ -}}
+{{- $allowedImage := .Values.provision.image | default .Values.controller.image.repository }}
+# ValidatingAdmissionPolicy — constrain Jobs that run as the workspace-provisioner
+# ServiceAccount (security review July 2026, finding 4).
+#
+# The internet-facing controller can `create jobs` in this namespace and the Job
+# it creates selects the provisioner SA, which holds a broad cluster-wide
+# ClusterRole. A principal that can create a workload and choose another SA in
+# the same namespace inherits that SA's identity — so controller compromise
+# would otherwise bridge to full provisioner privileges via an arbitrary Job
+# manifest. This policy pins the shape of any Job that runs as the provisioner
+# SA to exactly what the legitimate provisioner Job looks like
+# (controller.py build_job_manifest), so a tampered manifest cannot run an
+# attacker-controlled workload under that identity.
+#
+# Requires Kubernetes >= 1.30 (admissionregistration.k8s.io/v1 GA). Guarded
+# behind provision.admissionPolicy.enabled for clusters that cannot serve it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: workspace-provisioner-job-guard
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["batch"]
+      apiVersions: ["v1"]
+      operations:  ["CREATE", "UPDATE"]
+      resources:   ["jobs"]
+  # Only evaluate Jobs that actually run as the provisioner SA. Any other Job
+  # (default SA, other workloads) is out of scope and passes untouched.
+  matchConditions:
+  - name: runs-as-provisioner-sa
+    expression: >-
+      has(object.spec.template.spec.serviceAccountName) &&
+      object.spec.template.spec.serviceAccountName == {{ $sa | quote }}
+  variables:
+  - name: podSpec
+    expression: "object.spec.template.spec"
+  - name: containers
+    expression: "has(variables.podSpec.containers) ? variables.podSpec.containers : []"
+  - name: initContainers
+    expression: "has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : []"
+  - name: ephemeralContainers
+    expression: "has(variables.podSpec.ephemeralContainers) ? variables.podSpec.ephemeralContainers : []"
+  - name: volumes
+    expression: "has(variables.podSpec.volumes) ? variables.podSpec.volumes : []"
+  validations:
+  # Exactly one container, named 'provision' (matches build_job_manifest); no
+  # init or ephemeral containers can ride along.
+  - expression: "size(variables.containers) == 1 && variables.containers[0].name == 'provision'"
+    message: "provisioner Job must have exactly one container named 'provision'"
+  - expression: "size(variables.initContainers) == 0 && size(variables.ephemeralContainers) == 0"
+    message: "provisioner Job must not declare init or ephemeral containers"
+  # Approved image repository only — no attacker-controlled image can run as the
+  # provisioner SA.
+  - expression: >-
+      variables.containers.all(c, c.image.startsWith('{{ $allowedImage }}'))
+    message: "provisioner Job container image must come from the approved repository {{ $allowedImage }}"
+  # No privileged escalation via securityContext.
+  - expression: >-
+      variables.containers.all(c,
+        !has(c.securityContext) ||
+        (
+          !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
+          !(has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation) &&
+          (!has(c.securityContext.runAsUser) || c.securityContext.runAsUser != 0)
+        ))
+    message: "provisioner Job container must not be privileged, allow privilege escalation, or run as UID 0"
+  # No added Linux capabilities.
+  - expression: >-
+      variables.containers.all(c,
+        !has(c.securityContext) ||
+        !has(c.securityContext.capabilities) ||
+        !has(c.securityContext.capabilities.add) ||
+        size(c.securityContext.capabilities.add) == 0)
+    message: "provisioner Job container must not add Linux capabilities"
+  # No hostPath volumes (would let the Job read/write the node filesystem).
+  - expression: "variables.volumes.all(v, !has(v.hostPath))"
+    message: "provisioner Job must not mount hostPath volumes"
+  # No host namespace sharing.
+  - expression: >-
+      !(has(variables.podSpec.hostNetwork) && variables.podSpec.hostNetwork) &&
+      !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) &&
+      !(has(variables.podSpec.hostIPC) && variables.podSpec.hostIPC)
+    message: "provisioner Job must not use hostNetwork, hostPID, or hostIPC"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: workspace-provisioner-job-guard
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  policyName: workspace-provisioner-job-guard
+  validationActions: ["Deny"]
+  # Scope enforcement to the control-plane namespace where the provisioner Job
+  # actually runs (the only place the provisioner SA exists).
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.namespace }}
+{{- end }}

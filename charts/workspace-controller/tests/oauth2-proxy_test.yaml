@@ -22,6 +22,15 @@ tests:
           path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels.app
           value: workspace-controller-oauth2
 
+  - it: does not mount a ServiceAccount token (finding 4 — proxy never calls the k8s API)
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
   - it: should keep one proxy available via a PDB
     documentSelector:
       path: kind

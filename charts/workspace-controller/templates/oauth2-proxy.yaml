@@ -43,6 +43,12 @@ spec:
         labelSelector:
           matchLabels:
             app: workspace-controller-oauth2
+      # oauth2-proxy authenticates against GitHub and reverse-proxies to the
+      # controller — it never touches the Kubernetes API, so it has no reason to
+      # carry a mountable ServiceAccount token. Dropping it removes a credential
+      # an attacker could otherwise lift from a compromised proxy pod (security
+      # review July 2026, finding 4 — reduce standing tokens near the provisioner).
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:

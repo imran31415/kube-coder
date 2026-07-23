@@ -74,8 +74,10 @@ ingress ──▶ oauth2-proxy (reverse-proxy, --github-user gate) ──▶ con
   size. No `metrics.k8s.io` (this cluster has no metrics-server — metrics come
   from Prometheus over HTTP, needing no k8s RBAC). When `provision.enabled`, the
   controller additionally gets `batch/jobs` (get/list/watch/**create**) — and a
-  *separate* `workspace-provisioner` SA gets the broad create/update/delete the
-  Job needs, so that power never sits on the internet-facing controller pod.
+  *separate* `workspace-provisioner` SA gets the broad create/update the Job
+  needs, so that power never sits directly on the internet-facing controller pod.
+  See **[Provisioning privilege model](#provisioning-privilege-model)** for the
+  honest blast radius and the guardrails that constrain it.
 
 ## Prerequisites (one-time)
 
@@ -149,6 +151,47 @@ block to add to your controller values plus the remaining manual steps:
 | `provision.existingSecretName` | Use a Secret you manage instead of chart-rendering one |
 | `provision.serviceAccount` | SA the privileged Job runs as |
 | `provision.image` | Job image (empty = controller image; installs helm on the fly) |
+| `provision.admissionPolicy.enabled` | Ship the provisioner-Job ValidatingAdmissionPolicy (default on; needs k8s ≥ 1.30) |
+
+### Provisioning privilege model
+
+Stated honestly (security review July 2026, finding 4). Provisioning splits
+privilege deliberately: the always-on, internet-facing **controller** holds no
+cluster-wide write verbs — only namespaced `create jobs` in its own namespace.
+The broad cluster-wide ClusterRole (create/update on namespaces, deployments,
+services, PVCs, configmaps, secrets, serviceaccounts, roles, rolebindings,
+ingresses, networkpolicies, jobs) lives on a *separate* short-lived
+`workspace-provisioner` ServiceAccount that only the provisioner Job runs as.
+
+**The catch:** in Kubernetes, a principal that can create a workload *and* select
+another ServiceAccount in the same namespace effectively inherits that SA's
+identity — the kubelet mounts a token for whatever SA the Job names. So a
+controller compromise (RCE, k8s-token theft, or any flaw giving arbitrary
+Job-manifest control) does **not** stay "can start Jobs"; it bridges to the full
+provisioner ClusterRole. This is a conditional privilege-escalation path, not a
+standalone RCE, and it only exists when `provision.enabled=true` (off by default).
+
+Guardrails shipped here (defense-in-depth):
+
+- **`ValidatingAdmissionPolicy`** (`templates/provisioner-vap.yaml`, on by default
+  when provisioning is enabled) pins the shape of any Job that runs as the
+  provisioner SA: exact SA name, approved image repository, exactly one expected
+  container (no extra/init/ephemeral containers), and no privileged
+  securityContext / added capabilities / hostPath / hostNetwork|PID|IPC. A
+  tampered manifest therefore cannot run an attacker-controlled workload under the
+  provisioner identity. Requires k8s ≥ 1.30; disable via
+  `provision.admissionPolicy.enabled=false` on older clusters.
+- **No cluster-wide namespace `delete`** on the provisioner ClusterRole — normal
+  provisioning only creates+labels namespaces; teardown is a manual admin runbook.
+- **`automountServiceAccountToken: false`** on oauth2-proxy (it never calls the
+  k8s API), removing a standing token an attacker could otherwise lift.
+
+**Recommended endgame (not yet implemented):** move the privileged provisioner
+into a *separate* namespace fronted by a constrained broker service that builds
+Jobs from an immutable, in-cluster template — so the internet-facing controller
+never shares a namespace with the provisioner SA and cannot express a Job
+manifest at all. That is a multi-service refactor tracked as follow-up; the VAP
+above is the mergeable interim mitigation.
 
 ## Key values
 
