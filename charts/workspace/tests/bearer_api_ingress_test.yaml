@@ -1,0 +1,32 @@
+suite: Bearer-token API ingress path coverage (issue #428)
+templates:
+  - templates/ingress-claude-api.yaml
+values:
+  - test-values.yaml
+set:
+  ingress.auth.type: oauth2
+  oauth2.cookieSecret: dGVzdGNvb2tpZXNlY3JldDEyMzQ1Njc4OTAxMjM0NTY=
+  oauth2.clientId: test-client
+  oauth2.clientSecret: test-secret
+tests:
+  - it: routes the whole /api surface so new endpoints can never silently miss the mobile path
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /(api/.*|metrics|health)
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 6080
+
+  - it: keeps the /bearer-api marker rewrite that pins server-side Bearer-only auth (#161)
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+          value: /bearer-api/$1
+
+  - it: is absent outside oauth2 auth mode (basic ingress catch-all covers the API)
+    set:
+      ingress.auth.type: basic
+    asserts:
+      - hasDocuments:
+          count: 0
