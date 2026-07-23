@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import http.client
+import socket
+import ipaddress
 import fcntl
 
 # Persistent memory subsystem — shared with mcp_memory.py via the colocated
@@ -328,6 +330,101 @@ STREAM_MAX_SECONDS = int(os.environ.get('STREAM_MAX_SECONDS', '1800'))
 # us into a probe of the cloud metadata service or in-cluster services.
 # Set ALLOW_INTERNAL_HOOKS=true to opt back in (single-user trusted deploy).
 ALLOW_INTERNAL_HOOKS = os.environ.get('ALLOW_INTERNAL_HOOKS', 'false').lower() == 'true'
+# Defensive cap on the (unused) hook response body we read, so a hostile
+# endpoint can't stream us unbounded data at delivery time.
+HOOK_MAX_RESPONSE_BYTES = int(os.environ.get('KC_HOOK_MAX_RESPONSE_BYTES', str(64 * 1024)))
+
+
+class _HookSSRFError(Exception):
+    """Raised at completion-hook delivery time when the response_url resolves
+    to a non-public address, cannot be resolved, or uses an unsupported
+    scheme. Surfaced as an ordinary delivery error (retried/dead-lettered)
+    rather than silently followed to an internal target."""
+
+
+def _hook_public_ip(addr):
+    """Return an ipaddress object for `addr` iff it is a *public* address,
+    else None. Normalizes IPv4-mapped IPv6 (``::ffff:a.b.c.d``) to its IPv4
+    form before classification so a mapped internal address is still caught.
+    The reject set is loopback, RFC1918/private, link-local (covers cloud
+    metadata 169.254.169.254), multicast, unspecified and reserved."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_multicast or ip.is_unspecified or ip.is_reserved):
+        return None
+    return ip
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject *all* redirects for completion-hook delivery.
+
+    Following a 3xx would let an attacker-controlled endpoint that passes the
+    public-IP check bounce us to 127.0.0.1 / RFC1918 / 169.254.169.254 / an
+    in-cluster service (the redirect target is never re-validated). Returning
+    None here makes urllib raise the 3xx as an HTTPError instead of following
+    it, so it is surfaced as a delivery error rather than an SSRF."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that connects to a pre-validated, pinned IP while keeping
+    the original hostname for the HTTP Host header — so the address we checked
+    is the address we actually reach (no second, uncontrolled DNS lookup that
+    a rebinding server could answer differently)."""
+    def __init__(self, host, pinned_ip, **kw):
+        super().__init__(host, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """As _PinnedHTTPConnection, but TLS: connect to the pinned IP yet keep the
+    original hostname for SNI and certificate validation."""
+    def __init__(self, host, pinned_ip, **kw):
+        super().__init__(host, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address)
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pinned_ip):
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPConnection(host, self._pinned_ip, **kw), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ip, **kw):
+        super().__init__(**kw)
+        self._pinned_ip = pinned_ip
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _PinnedHTTPSConnection(host, self._pinned_ip, **kw), req)
+
+
 # Self-serve version updates are brokered to the workspace-controller, which
 # owns the kube access this pod lacks. The controller exposes a token-gated
 # self-serve listener reached over the in-cluster Service. Both are injected by
@@ -2356,26 +2453,25 @@ class ClaudeTaskManager:
         host = parsed.hostname or ''
         if not host:
             return False
-        # Resolve to *all* addresses; reject if any one is internal — DNS
-        # rebinding can return an internal IP on the second lookup, so the
-        # set-must-be-all-public check has to apply here. Unresolvable
-        # hostnames pass through — urlopen will fail safely at fire time
-        # and there's no SSRF target to actually hit.
-        import socket
+        # Resolve to *all* addresses; reject if any one is internal. This is a
+        # cheap pre-check at task-creation time; the authoritative check (and
+        # DNS pinning that closes the TOCTOU / rebinding window) happens at
+        # delivery time in _resolve_and_pin. Fail CLOSED: an unresolvable host
+        # is rejected rather than deferred to urlopen — deferring lets the name
+        # resolve to an internal target at fire time.
         try:
             infos = socket.getaddrinfo(host, None)
         except (socket.gaierror, UnicodeError):
-            return True
-        import ipaddress
+            return False
+        if not infos:
+            return False
         for info in infos:
             sockaddr = info[4]
             try:
-                ip = ipaddress.ip_address(sockaddr[0])
-            except (ValueError, IndexError):
+                addr = sockaddr[0]
+            except (IndexError, TypeError):
                 return False
-            if (ip.is_private or ip.is_loopback or ip.is_link_local
-                    or ip.is_multicast or ip.is_unspecified
-                    or ip.is_reserved):
+            if _hook_public_ip(addr) is None:
                 return False
         return True
 
@@ -2427,6 +2523,64 @@ class ClaudeTaskManager:
             pass
 
     @staticmethod
+    def _resolve_and_pin(host, port):
+        """Resolve `host` exactly ONCE and return a single validated IP string
+        to connect to. Every returned address (IPv4 and IPv6) must be public,
+        or we raise _HookSSRFError — so a rebinding server cannot pass one
+        address at check time and serve a different internal one at connect
+        time (there is no second lookup). Fails CLOSED on resolution failure.
+
+        When ALLOW_INTERNAL_HOOKS is set we still resolve-and-pin (single
+        lookup) but skip the public-only classification — the deliberate,
+        documented relaxation for single-user / trusted in-cluster deploys."""
+        try:
+            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        except (socket.gaierror, UnicodeError) as e:
+            raise _HookSSRFError(f'DNS resolution failed for {host!r}: {e}')
+        if not infos:
+            raise _HookSSRFError(f'no addresses for {host!r}')
+        chosen = None
+        for info in infos:
+            addr = info[4][0]
+            if not ALLOW_INTERNAL_HOOKS and _hook_public_ip(addr) is None:
+                raise _HookSSRFError(
+                    f'{host!r} resolves to non-public address {addr}')
+            if chosen is None:
+                chosen = addr
+        return chosen
+
+    @staticmethod
+    def _hook_urlopen(req, timeout=10):
+        """urlopen replacement for completion-hook delivery that pins the
+        connection to a validated IP and rejects redirects (see
+        _resolve_and_pin / _NoRedirectHandler). Keeps the original hostname
+        for Host header and TLS SNI. stdlib-only. Raises _HookSSRFError for an
+        unsafe/unresolvable/unsupported target; other errors propagate as
+        usual so _deliver_hook's retry/dead-letter logic is unchanged."""
+        parsed = urllib.parse.urlparse(req.full_url)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            raise _HookSSRFError(f'unsupported hook URL: {req.full_url!r}')
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        pinned = ClaudeTaskManager._resolve_and_pin(host, port)
+        if parsed.scheme == 'https':
+            pinned_handler = _PinnedHTTPSHandler(pinned)
+        else:
+            pinned_handler = _PinnedHTTPHandler(pinned)
+        # Empty ProxyHandler disables any ambient HTTP(S)_PROXY: a proxy would
+        # route around our pinned IP and reopen the SSRF hole.
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoRedirectHandler, pinned_handler)
+        resp = opener.open(req, timeout=timeout)
+        # Defensive: drain at most HOOK_MAX_RESPONSE_BYTES; the body is unused
+        # but we don't want a hostile endpoint streaming us unbounded data.
+        try:
+            resp.read(HOOK_MAX_RESPONSE_BYTES)
+        except Exception:
+            pass
+        return resp
+
+    @staticmethod
     def _deliver_hook(task_id, url, body, headers, max_attempts=None):
         """POST with bounded exponential-backoff retry; record delivery state.
 
@@ -2440,7 +2594,7 @@ class ClaudeTaskManager:
         for attempt in range(1, attempts + 1):
             try:
                 req = urllib.request.Request(url, data=body, headers=headers, method='POST')
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with ClaudeTaskManager._hook_urlopen(req, timeout=10) as resp:
                     status = getattr(resp, 'status', 200)
                 ClaudeTaskManager._record_hook_delivery(task_id, {
                     'state': 'delivered', 'attempts': attempt,
