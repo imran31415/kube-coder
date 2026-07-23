@@ -739,62 +739,25 @@ if [ -x "$LIBREFANG_TARGET/bin/librefang" ]; then
     || HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" start >/dev/null 2>&1 &
 fi
 
-# The memory subsystem ships its Python package as flat configmap keys
-# (configmap keys cannot contain "/"). Unpack them into a real `memory/`
-# tree next to server.py so `from memory.manager import ...` resolves.
-mkdir -p /tmp/browser/memory /home/dev/.claude-memory/backups
+# ── Workspace Python backend: seed from the image (issue #430) ─────────────
+# server.py + the memory/skills/adapters/gateway subsystems are baked into the
+# image at /opt/browser-src (they outgrew the 1 MiB ConfigMap). Copy the whole
+# tree into /tmp/browser so `import server`, `from memory.manager import ...`,
+# `from skills.providers... import ...`, `import gateway`, and
+# `from adapters.internal import ...` all resolve.
+mkdir -p /tmp/browser /home/dev/.claude-memory/backups
 chmod 700 /home/dev/.claude-memory
-# Materialize package files (rename flat keys → real layout).
-install -m 0644 /browser-config/memory__init__.py /tmp/browser/memory/__init__.py
-install -m 0644 /browser-config/memory_store.py    /tmp/browser/memory/store.py
-install -m 0644 /browser-config/memory_manager.py  /tmp/browser/memory/manager.py
-install -m 0644 /browser-config/memory_sync.py     /tmp/browser/memory/sync.py
-install -m 0644 /browser-config/memory_embeddings.py        /tmp/browser/memory/embeddings.py
-install -m 0644 /browser-config/memory_embeddings_worker.py /tmp/browser/memory/embeddings_worker.py
+cp -a /opt/browser-src/. /tmp/browser/
 
-# The skills subsystem (multi-harness SKILL.md surface, issue #187) ships
-# the same way: flat configmap keys reassembled into a real package tree.
-mkdir -p /tmp/browser/skills/providers
-install -m 0644 /browser-config/skills__init__.py            /tmp/browser/skills/__init__.py
-install -m 0644 /browser-config/skills_model.py              /tmp/browser/skills/model.py
-install -m 0644 /browser-config/skills_parser.py             /tmp/browser/skills/parser.py
-install -m 0644 /browser-config/skills_sync.py               /tmp/browser/skills/sync.py
-install -m 0644 /browser-config/skills_commands.py           /tmp/browser/skills/commands.py
-install -m 0644 /browser-config/skills_providers__init__.py  /tmp/browser/skills/providers/__init__.py
-install -m 0644 /browser-config/skills_providers_claude.py   /tmp/browser/skills/providers/claude.py
-install -m 0644 /browser-config/skills_providers_opencode.py /tmp/browser/skills/providers/opencode.py
-install -m 0644 /browser-config/skills_providers_ante.py     /tmp/browser/skills/providers/ante.py
-install -m 0644 /browser-config/skills_providers_antigravity.py /tmp/browser/skills/providers/antigravity.py
-
-# The Conversation Gateway (issue #306) — chat with the Hypervisor over a
-# channel (WhatsApp) plus the in-app Walkie-Talkie loopback preview — ships
-# gateway.py flat and the adapters/ package as flat keys (configmap keys
-# cannot contain "/"). Reassemble next to server.py so `import gateway` and
-# `from adapters.internal import ...` resolve; without this the gateway
-# subsystem self-disables (_GATEWAY_AVAILABLE=False) and every
-# /api/gateway/* call 503s.
-mkdir -p /tmp/browser/adapters
-install -m 0644 /browser-config/gateway.py           /tmp/browser/gateway.py
-install -m 0644 /browser-config/adapters__init__.py  /tmp/browser/adapters/__init__.py
-install -m 0644 /browser-config/adapters_whatsapp.py /tmp/browser/adapters/whatsapp.py
-install -m 0644 /browser-config/adapters_internal.py /tmp/browser/adapters/internal.py
-
-# Seed the per-user MCP server + user-prompt-submit hook next to the
-# SQLite file so claude config points at PVC-backed paths that survive
-# configmap rotations.
-install -m 0755 /browser-config/mcp_memory.py          /home/dev/.claude-memory/mcp_memory.py
-install -m 0755 /browser-config/memory_inject_hook.py  /home/dev/.claude-memory/memory_inject_hook.py
-# The MCP server imports the same memory.* package; expose it alongside.
+# The memory MCP server (mcp_memory.py) imports the same memory.* package; expose
+# it + the user-prompt-submit hook next to the PVC-backed SQLite db so claude
+# config points at stable paths across restarts.
+install -m 0755 /opt/browser-src/mcp_memory.py         /home/dev/.claude-memory/mcp_memory.py
+install -m 0755 /opt/browser-src/memory_inject_hook.py /home/dev/.claude-memory/memory_inject_hook.py
 rm -rf /home/dev/.claude-memory/memory
-mkdir -p /home/dev/.claude-memory/memory
-install -m 0644 /tmp/browser/memory/__init__.py /home/dev/.claude-memory/memory/__init__.py
-install -m 0644 /tmp/browser/memory/store.py    /home/dev/.claude-memory/memory/store.py
-install -m 0644 /tmp/browser/memory/manager.py  /home/dev/.claude-memory/memory/manager.py
-install -m 0644 /tmp/browser/memory/sync.py     /home/dev/.claude-memory/memory/sync.py
-install -m 0644 /tmp/browser/memory/embeddings.py        /home/dev/.claude-memory/memory/embeddings.py
-install -m 0644 /tmp/browser/memory/embeddings_worker.py /home/dev/.claude-memory/memory/embeddings_worker.py
-# Register the MCP server in the user's claude config (idempotent merge).
-python3 /browser-config/seed_claude_config.py || \
+cp -a /opt/browser-src/memory /home/dev/.claude-memory/memory
+# Register the memory MCP server in the user's claude config (idempotent merge).
+python3 /opt/browser-src/seed_claude_config.py || \
   log_stage "WARNING: seed_claude_config.py failed (memory MCP not registered)"
 
 # Seed Ante's config so a spawned/selected Ante agent gets the SAME stdio
@@ -886,24 +849,14 @@ fi
 # (/home/dev/.claude-tasks/mcp-servers.json) but most provider configs are
 # under the ephemeral $HOME (~/.claude.json, opencode.json) or regenerated
 # each boot, so the fan-out must re-run AFTER all the seeding blocks. Runs
-# from /browser-config (same delivery as seed_claude_config.py); best-effort —
+# from /opt/browser-src (same delivery as seed_claude_config.py); best-effort —
 # a failed provider never stalls boot.
 log_stage "syncing user MCP servers to provider configs"
-python3 /browser-config/mcp_registry.py --sync || \
+python3 /opt/browser-src/mcp_registry.py --sync || \
   log_stage "WARNING: mcp_registry.py sync failed (user MCP servers not re-applied)"
 
 log_stage "starting browser/Claude API server on :6080"
-mkdir -p /tmp/browser
-# Copy Python sources (these need a pod restart to take effect).
-# Skip the flat memory_* / memory__init__.py keys — reassembled above.
-for f in /browser-config/*; do
-  base=$(basename "$f")
-  case "$base" in
-    memory_*|memory__init__.py) continue ;;
-    skills_*|skills__init__.py) continue ;;
-  esac
-  cp "$f" /tmp/browser/
-done
+mkdir -p /tmp/browser  # server.py + subsystems already seeded from /opt/browser-src above
 # Symlink HTML/CSS/JS from the separate (non-checksummed) browser-html
 # ConfigMap so dashboard edits + helm-upgrade refresh without a pod
 # restart. The kubelet syncs the new ConfigMap to /browser-html

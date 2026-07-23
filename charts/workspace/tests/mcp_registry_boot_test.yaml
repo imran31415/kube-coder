@@ -2,27 +2,19 @@ suite: user MCP server registry boot wiring (#353)
 # User-added MCP servers live in one PVC registry and are fanned out to each
 # assistant's native config. Most of those configs sit under the ephemeral
 # $HOME or are regenerated at boot, so start.sh MUST re-run the fan-out AFTER
-# every default-seeding block — and the module itself must ship in the
-# browser ConfigMap for both the boot invocation and server.py's import.
+# every default-seeding block. The module itself now ships in the image at
+# /opt/browser-src (#430), not the browser ConfigMap.
 templates:
   - templates/workspace-entrypoint-configmap.yaml
-  - templates/browser-configmap.yaml
 values:
   - test-values.yaml
 tests:
-  - it: ships mcp_registry.py in the browser ConfigMap
-    template: templates/browser-configmap.yaml
-    asserts:
-      - matchRegex:
-          path: data["mcp_registry.py"]
-          pattern: "REGISTRY_FILE = '/home/dev/.claude-tasks/mcp-servers.json'"
-
   - it: re-applies user MCP servers in start.sh after the default seeding
     template: templates/workspace-entrypoint-configmap.yaml
     asserts:
       - matchRegex:
           path: data["start.sh"]
-          pattern: "python3 /browser-config/mcp_registry.py --sync"
+          pattern: "python3 /opt/browser-src/mcp_registry.py --sync"
       # The sync must run AFTER the Codex default seeding (the last of the
       # per-provider seeding blocks) so it layers on top of the defaults.
       - matchRegex:

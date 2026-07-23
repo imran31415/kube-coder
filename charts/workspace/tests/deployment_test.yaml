@@ -1,7 +1,6 @@
 suite: deployment tests
 templates:
   - templates/deployment.yaml
-  - templates/browser-configmap.yaml
   - templates/claude-configmap.yaml
   - templates/terminal-entry-configmap.yaml
   - templates/workspace-entrypoint-configmap.yaml
