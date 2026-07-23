@@ -15,7 +15,7 @@ const KIND_LABEL: Record<Card['kind'], string> = {
 };
 
 /** Short duration label like "42s" / "14m" / "2h" / "3d". */
-function rel(seconds: number): string {
+export function rel(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
@@ -40,22 +40,31 @@ function timeLabel(card: Card): string {
 }
 
 /** Route for a card (or a lineage reference by namespaced id). */
-function cardHref(id: string): string {
+export function cardHref(id: string): string {
   const [kind, ref] = id.split(/:(.*)/s);
   return kind === 'chat' ? `/hypervisor/${ref}` : `/tasks/${ref}`;
 }
 
 /**
- * One board card. The whole body is clickable (same as Open) — footer buttons
- * and quick-replies stop propagation so actions never double as navigation.
+ * One board card. The whole body is clickable — it opens the detail drawer
+ * when the board provides onSelect (falling back to full-session navigation),
+ * while the Open footer button always navigates. Footer buttons and
+ * quick-replies stop propagation so actions never double as selection.
  */
-export function MissionCard({ card }: { card: Card }) {
+export function MissionCard({
+  card,
+  onSelect,
+}: {
+  card: Card;
+  onSelect?: (id: string) => void;
+}) {
   const [confirmKill, setConfirmKill] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const live = card.state === 'running' || card.state === 'waiting';
   const isTask = card.kind !== 'chat';
   const open = () => navigate(cardHref(card.id));
+  const select = onSelect ? () => onSelect(card.id) : open;
 
   async function onKill() {
     setConfirmKill(false);
@@ -97,7 +106,7 @@ export function MissionCard({ card }: { card: Card }) {
   return (
     <article
       class={`mission-card mission-card-${card.state} ${card.state === 'waiting' ? 'mission-card-attn' : ''}`}
-      onClick={open}
+      onClick={select}
       data-card-id={card.id}
     >
       <div class="mission-card-row">

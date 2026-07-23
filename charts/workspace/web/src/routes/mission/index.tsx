@@ -1,4 +1,4 @@
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import {
   missionPulse,
   missionError,
@@ -16,6 +16,7 @@ import { Icon } from '../../components/Icon';
 import { Input } from '../../components/primitives/Input';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { MissionCard } from './MissionCard';
+import { MissionDrawer } from './MissionDrawer';
 import './mission.css';
 
 // Priority order: Waiting on you leads — it's the column that needs a human.
@@ -41,6 +42,9 @@ function waitLabel(s: number): string {
 }
 
 export function MissionRoute() {
+  // Namespaced id of the card open in the detail drawer (null = closed).
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   useEffect(() => {
     startMissionPolling(10000);
     return () => stopMissionPolling();
@@ -75,7 +79,7 @@ export function MissionRoute() {
           },
           {
             title: 'Needs review, then Done',
-            body: 'Completed builds park under Needs review; errors, kills and idle chats settle in Done. Open any card to see the full session.',
+            body: 'Completed builds park under Needs review; errors, kills and idle chats settle in Done. Click a card for its timeline, recent output and a follow-up composer; Open jumps to the full session.',
           },
           {
             title: 'Filter to focus',
@@ -145,7 +149,7 @@ export function MissionRoute() {
                 </div>
                 <div class="mission-col-cards">
                   {colCards.map((c) => (
-                    <MissionCard key={c.id} card={c} />
+                    <MissionCard key={c.id} card={c} onSelect={setSelectedId} />
                   ))}
                   {colCards.length === 0 && <div class="mission-col-empty muted">Empty</div>}
                 </div>
@@ -154,6 +158,8 @@ export function MissionRoute() {
           })}
         </div>
       )}
+
+      <MissionDrawer cardId={selectedId} onClose={() => setSelectedId(null)} />
     </div>
   );
 }

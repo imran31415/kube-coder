@@ -301,5 +301,115 @@ class MissionControlQueueTests(unittest.TestCase):
         self.assertEqual(body['cards'][0]['id'], 'build:t_run')
 
 
+class MissionControlCardDetailTests(MissionControlQueueTests):
+    """Drawer detail endpoint (#425 phase 3): per-card timeline + output tail.
+
+    Inherits the queue tests' fixture (temp TASKS_DIR / HYPERVISOR_DIR,
+    reconcile stubbed out) — the base class's own tests re-run here
+    harmlessly against the same fixture.
+    """
+
+    def _detail(self, card_id, pane_text=''):
+        with mock.patch.object(server, '_HYPERVISOR_AVAILABLE', False), \
+             mock.patch.object(server.subprocess, 'run',
+                               _fake_tmux(pane_text)):
+            return server.missioncontrol_card_detail(card_id)
+
+    # ── tasks ────────────────────────────────────────────────────────────
+
+    def test_build_detail_carries_timeline_children_and_tail(self):
+        finished = time.time() - 300
+        self._write_task('t_par', status='completed', finished_at=finished,
+                         sub_task_ids=['t_kid'],
+                         output='line one\nAll tests green\n')
+        self._write_task('t_kid', status='running', parent_task_id='t_par',
+                         created_at=time.time() - 400)
+        detail = self._detail('build:t_par')
+        card = detail['card']
+        self.assertEqual(card['id'], 'build:t_par')
+        self.assertNotIn('_sub_task_ids', card)
+        # Lineage chip uses board states, not raw task statuses.
+        self.assertEqual(card['children'], [
+            {'id': 'subagent:t_kid', 'title': 'task t_kid',
+             'state': 'running'}])
+        kinds = [e['kind'] for e in detail['timeline']]
+        self.assertEqual(kinds, ['start', 'subagent', 'end'])
+        start, spawn, end = detail['timeline']
+        self.assertEqual(start['detail'], 'prompt for t_par')
+        self.assertEqual(spawn['link'], 'subagent:t_kid')
+        self.assertEqual(end['text'], 'completed')
+        self.assertEqual(end['status'], 'ok')
+        self.assertIn('All tests green', detail['output_tail'])
+
+    def test_waiting_task_detail_surfaces_question_on_timeline(self):
+        self._write_task('t_wait', status='waiting-for-input')
+        detail = self._detail('build:t_wait', pane_text=PERMISSION_PANE)
+        waiting = [e for e in detail['timeline'] if e['kind'] == 'waiting']
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]['status'], 'pending')
+        self.assertEqual(waiting[0]['detail'], 'Do you want to proceed?')
+
+    def test_detail_unknown_or_aged_out_card_is_none(self):
+        self.assertIsNone(self._detail('build:nope'))
+        self.assertIsNone(self._detail('bogus:t_x'))
+        self._write_task('t_old', status='completed',
+                         finished_at=time.time() - server.MC_RECENT_SECONDS - 60)
+        self.assertIsNone(self._detail('build:t_old'))
+
+    # ── chats ────────────────────────────────────────────────────────────
+
+    def test_chat_detail_maps_activity_to_normalized_timeline(self):
+        events = [
+            {'seq': 1, 'ts': 100.0, 'type': 'tool_call', 'tool_id': 'a',
+             'tool': {'name': 'Bash', 'input': {'command': 'make test'}}},
+            {'seq': 2, 'ts': 101.5, 'type': 'tool_result',
+             'tool_use_id': 'a', 'text': 'ok'},
+            {'seq': 3, 'ts': 102.0, 'type': 'error', 'text': 'boom'},
+            {'seq': 4, 'ts': 103.0, 'type': 'status', 'status': 'idle'},
+        ]
+        session = mock.Mock()
+        session.summary.return_value = self._thread('h_act', status='running')
+        session.read_events.return_value = events
+        with mock.patch.object(server, '_HYPERVISOR_AVAILABLE', True), \
+             mock.patch.object(server.HypervisorSession, 'get',
+                               return_value=session):
+            detail = server.missioncontrol_card_detail('chat:h_act')
+        self.assertEqual(detail['card']['id'], 'chat:h_act')
+        self.assertEqual(detail['output_tail'], '')
+        kinds = [e['kind'] for e in detail['timeline']]
+        self.assertEqual(kinds, ['start', 'tool', 'error', 'status'])
+        tool = detail['timeline'][1]
+        self.assertEqual(tool['text'], 'Using Bash')
+        self.assertEqual(tool['detail'], 'make test')
+        self.assertEqual(tool['status'], 'ok')
+        self.assertEqual(detail['timeline'][2]['status'], 'error')
+
+    def test_chat_detail_missing_thread_is_none(self):
+        with mock.patch.object(server, '_HYPERVISOR_AVAILABLE', True), \
+             mock.patch.object(server.HypervisorSession, 'get',
+                               return_value=None):
+            self.assertIsNone(server.missioncontrol_card_detail('chat:gone'))
+
+    # ── HTTP handler contract ────────────────────────────────────────────
+
+    def test_card_handler_requires_auth(self):
+        h = self._handler(authed=False)
+        server.BrowserHandler.handle_missioncontrol_card(h, 'build:x')
+        self.assertEqual(self.responses, [({'error': 'Unauthorized'}, 401)])
+
+    def test_card_handler_404_and_200(self):
+        h = self._handler()
+        with mock.patch.object(server, '_HYPERVISOR_AVAILABLE', False), \
+             mock.patch.object(server.subprocess, 'run', _fake_tmux()):
+            server.BrowserHandler.handle_missioncontrol_card(h, 'build:nope')
+            self._write_task('t_live', status='running')
+            server.BrowserHandler.handle_missioncontrol_card(h, 'build:t_live')
+        self.assertEqual(self.responses[0], ({'error': 'Card not found'}, 404))
+        body, status = self.responses[1]
+        self.assertEqual(status, 200)
+        self.assertEqual(body['card']['id'], 'build:t_live')
+        self.assertEqual(body['timeline'][0]['kind'], 'start')
+
+
 if __name__ == '__main__':
     unittest.main()
