@@ -72,6 +72,14 @@ class CompletionHookTests(unittest.TestCase):
         self._orig_token_file = server.ClaudeTaskManager.TOKEN_FILE
         server.ClaudeTaskManager.TASKS_DIR = self.tmpdir
         server.ClaudeTaskManager.TOKEN_FILE = os.path.join(self.tmpdir, '.api-token')
+        # The SSRF validator now resolves the response_url and fails CLOSED on
+        # DNS failure, so make the test hostname resolve to a public address.
+        gai = mock.patch.object(
+            server.socket, 'getaddrinfo',
+            return_value=[(server.socket.AF_INET, server.socket.SOCK_STREAM,
+                           6, '', ('93.184.216.34', 0))])
+        gai.start()
+        self.addCleanup(gai.stop)
 
     def tearDown(self):
         server.ClaudeTaskManager.TASKS_DIR = self._orig_tasks_dir
@@ -81,7 +89,7 @@ class CompletionHookTests(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _wait_hook_fired(self, mock_urlopen, timeout=2.0):
-        """The hook fires from a daemon thread; spin until urlopen is called."""
+        """The hook fires from a daemon thread; spin until delivery is called."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             if mock_urlopen.called:
@@ -117,7 +125,7 @@ class CompletionHookTests(unittest.TestCase):
         self.assertNotIn('response_secret', task)
         self.assertNotIn('source', task)
 
-    @mock.patch('server.urllib.request.urlopen')
+    @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
     @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
     def test_delete_task_fires_hook_with_signature(self, _run, mock_urlopen):
         cm = mock.MagicMock()
@@ -148,7 +156,7 @@ class CompletionHookTests(unittest.TestCase):
         expected = hmac.new(b'supersecret', body, hashlib.sha256).hexdigest()
         self.assertEqual(sig_header, f'sha256={expected}')
 
-    @mock.patch('server.urllib.request.urlopen')
+    @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
     @mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive)
     def test_no_hook_fired_when_response_url_unset(self, _run, mock_urlopen):
         task = server.ClaudeTaskManager.create_task('do thing')  # no response_url
@@ -158,7 +166,7 @@ class CompletionHookTests(unittest.TestCase):
         self.assertFalse(mock_urlopen.called,
                          'hook fired despite response_url being unset')
 
-    @mock.patch('server.urllib.request.urlopen')
+    @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
     @mock.patch('server.subprocess.run')
     def test_reconcile_fires_hook_when_tmux_session_gone(self, mock_run, mock_urlopen):
         # Tmux is alive during create_task; goes away before reconcile.
@@ -181,7 +189,7 @@ class CompletionHookTests(unittest.TestCase):
         payload = json.loads(mock_urlopen.call_args.args[0].data)
         self.assertEqual(payload['status'], 'completed')
 
-    @mock.patch('server.urllib.request.urlopen')
+    @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
     @mock.patch('server.subprocess.run')
     def test_hook_idempotent_under_concurrent_reconcile(self, mock_run, mock_urlopen):
         """Repeated reconciles (which happen on every list/get/stream call)
@@ -1512,10 +1520,12 @@ class SSRFGuardTests(unittest.TestCase):
         for url in ('http://10.0.0.1/', 'http://192.168.1.1/', 'http://172.16.0.1/'):
             self.assertFalse(server.ClaudeTaskManager._is_safe_response_url(url), url)
 
-    def test_unresolvable_passes_through(self):
-        """Hosts that don't resolve fall through (urlopen will fail safely).
-        Tests rely on this so synthetic .test TLDs keep working."""
-        self.assertTrue(server.ClaudeTaskManager._is_safe_response_url(
+    def test_unresolvable_fails_closed(self):
+        """Hosts that don't resolve are REJECTED (fail closed). The old
+        behavior returned True and deferred the decision to urlopen, but the
+        name could resolve to an internal target at delivery time — so the
+        security decision must be made here, at check time."""
+        self.assertFalse(server.ClaudeTaskManager._is_safe_response_url(
             'http://does-not-exist.invalid/hook'))
 
     def test_allow_internal_hooks_opts_back_in(self):

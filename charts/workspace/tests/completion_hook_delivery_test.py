@@ -70,7 +70,7 @@ class DeliverHookTests(HookDeliveryTestCase):
         self._task('t1')
         cm = mock.MagicMock()
         cm.__enter__.return_value = mock.Mock(status=200)
-        with mock.patch('server.urllib.request.urlopen', return_value=cm):
+        with mock.patch.object(CTM, '_hook_urlopen', return_value=cm):
             CTM._deliver_hook('t1', 'http://h/x', b'{}', {})
         d = self._delivery()
         self.assertEqual(d['state'], 'delivered')
@@ -78,8 +78,8 @@ class DeliverHookTests(HookDeliveryTestCase):
 
     def test_retries_then_dead_letters(self):
         self._task('t1')
-        with mock.patch('server.urllib.request.urlopen',
-                        side_effect=urllib.error.URLError('conn refused')) as uo:
+        with mock.patch.object(CTM, '_hook_urlopen',
+                               side_effect=urllib.error.URLError('conn refused')) as uo:
             CTM._deliver_hook('t1', 'http://h/x', b'{}', {}, max_attempts=3)
         self.assertEqual(uo.call_count, 3)  # all attempts used
         d = self._delivery()
@@ -90,7 +90,7 @@ class DeliverHookTests(HookDeliveryTestCase):
     def test_permanent_4xx_not_retried(self):
         self._task('t1')
         err = urllib.error.HTTPError('http://h/x', 400, 'Bad Request', {}, None)
-        with mock.patch('server.urllib.request.urlopen', side_effect=err) as uo:
+        with mock.patch.object(CTM, '_hook_urlopen', side_effect=err) as uo:
             CTM._deliver_hook('t1', 'http://h/x', b'{}', {}, max_attempts=5)
         self.assertEqual(uo.call_count, 1)  # broke early — no wasted retries
         d = self._delivery()
@@ -100,7 +100,7 @@ class DeliverHookTests(HookDeliveryTestCase):
     def test_429_is_retried(self):
         self._task('t1')
         err = urllib.error.HTTPError('http://h/x', 429, 'Too Many', {}, None)
-        with mock.patch('server.urllib.request.urlopen', side_effect=err) as uo:
+        with mock.patch.object(CTM, '_hook_urlopen', side_effect=err) as uo:
             CTM._deliver_hook('t1', 'http://h/x', b'{}', {}, max_attempts=3)
         self.assertEqual(uo.call_count, 3)  # 429 is transient → retried
 
@@ -123,7 +123,8 @@ class RedeliverTests(HookDeliveryTestCase):
         cm.__enter__.return_value = mock.Mock(status=200)
         with mock.patch.object(server.threading, 'Thread', _SyncThread), \
              mock.patch.object(CTM, 'get_task_output', return_value=''), \
-             mock.patch('server.urllib.request.urlopen', return_value=cm):
+             mock.patch.object(CTM, '_is_safe_response_url', return_value=True), \
+             mock.patch.object(CTM, '_hook_urlopen', return_value=cm):
             ok, msg = CTM.redeliver_hook('t1')
         self.assertTrue(ok)
         self.assertEqual(self._delivery()['state'], 'delivered')
