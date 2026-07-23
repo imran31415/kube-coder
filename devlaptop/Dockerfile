@@ -39,6 +39,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x via NodeSource
+# SUPPLY-CHAIN (finding 7, deferred): the NodeSource setup script is piped to
+# bash. The major line (setup_20.x) is pinned but the script itself is a rolling
+# artifact with no publishable checksum. It installs an apt repo whose packages
+# are GPG-verified by apt. Follow-up: switch to the keyring+sources.list.d form
+# to drop the curl|bash entirely.
 # npm bundled with Node 20 (10.8.x) vendors old tar/minimatch/glob/cross-spawn
 # that Trivy flags (HIGH). Upgrade the global npm first so it ships patched
 # vendored deps (npm 11.x: tar>=7.5, minimatch>=10.2, glob>=13, cross-spawn
@@ -46,10 +51,15 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # update. See github.com/imran31415/kube-coder/issues/69.
 # renovate: datasource=npm depName=npm
 ARG NPM_VERSION=11.18.0
+# Pin Yarn (classic) explicitly instead of installing floating `latest` — a
+# supply-chain hardening from the July 2026 review (finding 7). npm verifies the
+# package integrity/signature against the registry on install.
+# renovate: datasource=npm depName=yarn
+ARG YARN_VERSION=1.22.22
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g npm@${NPM_VERSION} \
-    && npm install -g yarn \
+    && npm install -g yarn@${YARN_VERSION} \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI and Docker Compose
@@ -64,15 +74,31 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
 # renovate: datasource=github-releases depName=docker/compose
 ARG COMPOSE_VERSION=v5.3.1
+# Checksum-verified against the vendor-published .sha256 before it is made
+# executable (supply-chain hardening, July 2026 review, finding 7).
 RUN ARCH=$(dpkg --print-architecture) \
     && if [ "$ARCH" = "amd64" ]; then COMPOSE_ARCH="x86_64"; elif [ "$ARCH" = "arm64" ]; then COMPOSE_ARCH="aarch64"; else COMPOSE_ARCH="$ARCH"; fi \
-    && curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/bin/docker-compose \
+    && curl -fSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/bin/docker-compose \
+    && curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}.sha256" -o /tmp/compose.sha256 \
+    && echo "$(cut -d' ' -f1 /tmp/compose.sha256)  /usr/local/bin/docker-compose" | sha256sum -c - \
+    && rm -f /tmp/compose.sha256 \
     && chmod +x /usr/local/bin/docker-compose
 
-# Install kubectl
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" \
+# Install kubectl — pinned version + checksum-verified (supply-chain hardening,
+# July 2026 review, finding 7). Replaces the previous floating `stable.txt`
+# fetch, which pulled whatever the mutable "stable" pointer happened to name at
+# build time. The published per-arch kubectl.sha256 is fetched from the same
+# release path and verified before install, so a corrupted/tampered binary fails
+# the build (`sha256sum -c` exits non-zero). Bump KUBECTL_VERSION to update.
+# renovate: datasource=github-releases depName=kubernetes/kubernetes
+ARG KUBECTL_VERSION=v1.31.4
+RUN ARCH=$(dpkg --print-architecture) \
+  && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
+  && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
+  && echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c - \
   && chmod +x kubectl \
-  && mv kubectl /usr/local/bin/
+  && mv kubectl /usr/local/bin/ \
+  && rm -f kubectl.sha256
 
 # code-server (VS Code in the browser, MIT-licensed)
 # https://github.com/coder/code-server
@@ -82,6 +108,10 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 # tar) track the upstream VS Code build code-server vendors and only move when
 # code-server rebases onto a newer VS Code — so bumping code-server is the lever.
 # renovate: datasource=github-releases depName=coder/code-server
+# SUPPLY-CHAIN (finding 7, deferred): version-pinned, but the release does not
+# publish a per-asset .sha256 (the .deb 404s for it), so no download→verify step
+# is added here. apt does verify the .deb's internal structure. Follow-up: pin a
+# hardcoded sha256 per arch if reproducibility beyond the version pin is needed.
 ARG CODE_SERVER_VERSION=4.128.0
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_${ARCH}.deb" -o /tmp/cs.deb \
@@ -124,6 +154,11 @@ RUN npm install -g @openai/codex@${CODEX_VERSION}
 # restarts (the pod blocks runtime sudo). The official installer (curl|bash,
 # --dir to place the binary) is the only distribution channel, same mechanism
 # as Ante/LibreFang. https://antigravity.google
+# SUPPLY-CHAIN (finding 7, deferred): vendor ships only a curl|bash installer
+# that resolves "latest" with no publishable per-artifact checksum or version
+# pin, so we cannot download→verify→execute here. `test -x` confirms a binary
+# landed but not its integrity. Follow-up: pin once the vendor exposes a
+# versioned URL + checksum, mirroring the Ante manifest-pinned pattern below.
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt/antigravity \
     && test -x /opt/antigravity/agy \
     && ln -sfn /home/dev/.antigravity/bin/agy /usr/local/bin/agy
@@ -164,6 +199,10 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- "https://download.ante.r
 # static musl build, fall back to glibc. The installer pulls this exact
 # tarball (librefang/librefang releases); we just skip its WAF-gated front
 # door. Bump LIBREFANG_VERSION (a release tag) + rebuild to update.
+# SUPPLY-CHAIN (finding 7, deferred): release tag is pinned but the tarball is
+# unpacked without a checksum. The release does not ship a stable per-asset
+# digest we can fetch arch-agnostically; hardcoding one per arch would need a
+# manual update each bump. Follow-up: verify a pinned sha256 per arch.
 # renovate: datasource=github-releases depName=librefang/librefang
 ARG LIBREFANG_VERSION=v2026.7.11
 RUN ARCH=$(dpkg --print-architecture) \
@@ -188,6 +227,9 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Pinned to a known-good version so transient 502s from GitHub's release CDN
 # don't break the build (we hit them repeatedly while bumping to v1.7.1).
 # To bump: update TTYD_VERSION, rebuild image.
+# SUPPLY-CHAIN (finding 7, deferred): version-pinned but the raw binary is
+# installed without checksum verification (tsl0922/ttyd publishes SHA256SUMS
+# only for some releases). Follow-up: verify against a pinned sha256 per arch.
 # renovate: datasource=github-releases depName=tsl0922/ttyd
 ARG TTYD_VERSION=1.7.7
 RUN apt-get update && apt-get install -y wget \
@@ -210,6 +252,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
 # sqlite-vec loadable extension — enables vector search inside SQLite for the
 # persistent-memory subsystem (Phase 2 activates this). Shipped as a single
 # .so so the dashboard + MCP memory server can `conn.load_extension('vec0')`.
+# SUPPLY-CHAIN (finding 7, deferred): version-pinned but streamed straight to
+# tar without a checksum. Follow-up: download to a temp file, verify a pinned
+# per-arch sha256, then extract (as done for helm in the provisioner path).
 # renovate: datasource=github-releases depName=asg017/sqlite-vec
 ARG SQLITE_VEC_VERSION=0.1.9
 RUN ARCH=$(dpkg --print-architecture) \

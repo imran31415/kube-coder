@@ -7,6 +7,7 @@ Run from charts/workspace-controller:
     python3 -m unittest discover -s tests -p '*_test.py' -v
 """
 import base64
+import io
 import json
 import os
 import sys
@@ -363,6 +364,9 @@ class ProvisionPureLogicTest(unittest.TestCase):
         controller.PROVISIONER_IMAGE = 'example/img:1'
         controller.PROVISIONER_SA = 'workspace-provisioner'
         controller.NAMESPACE = 'coder'
+        # Provisioning now requires an immutable pinned chart ref (finding 7).
+        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
+        controller.CHART_REF = 'v1.40.1'
         job = controller.build_job_manifest('octo')
         self.assertEqual(job['kind'], 'Job')
         self.assertEqual(job['spec']['template']['spec']['serviceAccountName'], 'workspace-provisioner')
@@ -385,6 +389,8 @@ class ProvisionPureLogicTest(unittest.TestCase):
         controller.PROVISIONER_IMAGE = 'test-registry/coder:tag'
         controller.PROVISIONER_SA = 'workspace-provisioner'
         controller.NAMESPACE = 'coder'
+        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
+        controller.CHART_REF = 'v1.40.1'   # immutable pinned ref (finding 7)
         pod = controller.build_job_manifest('octo')['spec']['template']['spec']
         # Exactly one container named 'provision'; no init/ephemeral containers.
         self.assertEqual(len(pod['containers']), 1)
@@ -405,6 +411,119 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertFalse(pod.get('hostIPC'))
         for v in pod.get('volumes', []):
             self.assertNotIn('hostPath', v)
+
+
+class ChartRefSupplyChainTest(unittest.TestCase):
+    """Finding 7: the provisioner Job clones CHART_REF and runs its make deploy
+    under the cluster-privileged provisioner SA, so the ref must be immutable.
+    Mutable/floating refs are rejected fail-closed unless the operator opts in
+    via ALLOW_MUTABLE_CHART_REF, and every provision logs the ref it used."""
+
+    def setUp(self):
+        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
+        self.addCleanup(setattr, controller, 'ALLOW_MUTABLE_CHART_REF',
+                        controller.ALLOW_MUTABLE_CHART_REF)
+        self.addCleanup(setattr, controller, 'PROVISIONER_IMAGE',
+                        controller.PROVISIONER_IMAGE)
+        self.addCleanup(setattr, controller, 'PROVISIONER_SA', controller.PROVISIONER_SA)
+        self.addCleanup(setattr, controller, 'NAMESPACE', controller.NAMESPACE)
+        controller.PROVISIONER_IMAGE = 'example/img:1'
+        controller.PROVISIONER_SA = 'workspace-provisioner'
+        controller.NAMESPACE = 'coder'
+        controller.ALLOW_MUTABLE_CHART_REF = False
+
+    def test_classify_chart_ref(self):
+        self.assertEqual(controller.classify_chart_ref('a' * 40), 'commit-sha')
+        self.assertEqual(controller.classify_chart_ref('b' * 64), 'commit-sha')
+        self.assertEqual(controller.classify_chart_ref('v1.40.1'), 'release-tag')
+        for mut in ('main', 'latest', 'HEAD', 'feature/x', 'develop', 'abc1234'):
+            self.assertEqual(controller.classify_chart_ref(mut), 'mutable', mut)
+
+    def test_rejects_mutable_refs_by_default(self):
+        for mut in ('main', 'latest', 'HEAD', 'feature/x'):
+            controller.CHART_REF = mut
+            with self.assertRaises(controller.ProvisionError):
+                controller.validate_chart_ref(mut)
+            # create_provision_job -> build_job_manifest must fail closed too.
+            with self.assertRaises(controller.ProvisionError):
+                controller.build_job_manifest('octo')
+
+    def test_error_message_names_the_escape_hatch(self):
+        with self.assertRaises(controller.ProvisionError) as ctx:
+            controller.validate_chart_ref('main')
+        msg = str(ctx.exception)
+        self.assertIn('allowMutableRef', msg)
+        self.assertIn('immutable', msg)
+
+    def test_accepts_immutable_sha_and_release_tag(self):
+        for ref in ('a' * 40, 'c' * 64, 'v1.40.1'):
+            controller.CHART_REF = ref
+            self.assertTrue(controller.chart_ref_is_immutable(ref))
+            job = controller.build_job_manifest('octo')   # must not raise
+            env = {e['name']: e.get('value')
+                   for e in job['spec']['template']['spec']['containers'][0]['env']}
+            self.assertEqual(env['CHART_REF'], ref)
+
+    def test_escape_hatch_permits_mutable_ref(self):
+        controller.ALLOW_MUTABLE_CHART_REF = True
+        controller.CHART_REF = 'main'
+        self.assertEqual(controller.validate_chart_ref('main'), 'mutable')
+        job = controller.build_job_manifest('octo')       # must not raise
+        env = {e['name']: e.get('value')
+               for e in job['spec']['template']['spec']['containers'][0]['env']}
+        self.assertEqual(env['CHART_REF'], 'main')
+
+    def test_resolved_ref_is_logged(self):
+        controller.CHART_REF = 'v1.40.1'
+        buf = io.StringIO()
+        orig = sys.stderr
+        sys.stderr = buf
+        try:
+            controller.build_job_manifest('octo')
+        finally:
+            sys.stderr = orig
+        out = buf.getvalue()
+        self.assertIn('v1.40.1', out)
+        self.assertIn('release-tag', out)
+        self.assertIn('octo', out)
+
+    def test_escape_hatch_decision_is_logged(self):
+        controller.ALLOW_MUTABLE_CHART_REF = True
+        controller.CHART_REF = 'main'
+        buf = io.StringIO()
+        orig = sys.stderr
+        sys.stderr = buf
+        try:
+            controller.build_job_manifest('octo')
+        finally:
+            sys.stderr = orig
+        out = buf.getvalue()
+        self.assertIn('allowMutableRef=True', out)
+        self.assertIn('(mutable)', out)
+
+
+class ProvisionHelmChecksumTest(unittest.TestCase):
+    """Finding 7: the runtime helm download must be pinned + sha256-verified
+    before it is unpacked/executed under the privileged provisioner SA."""
+
+    def test_script_pins_helm_version_and_verifies_checksum(self):
+        script = controller.PROVISION_JOB_SCRIPT
+        self.assertEqual(controller.PROVISION_HELM_VERSION, 'v3.14.4')
+        # 64-hex sha256 pinned as a constant and threaded into the script.
+        self.assertRegex(controller.PROVISION_HELM_SHA256, r'^[0-9a-f]{64}$')
+        self.assertIn(controller.PROVISION_HELM_VERSION, script)
+        self.assertIn(controller.PROVISION_HELM_SHA256, script)
+        # Verification happens (sha256sum -c) and fails closed (exit 1) BEFORE
+        # the tarball is unpacked/installed — never a bare `curl | tar` pipe.
+        self.assertIn('sha256sum -c', script)
+        self.assertIn('exit 1', script)
+        self.assertNotIn('| tar -xz', script)
+        # No unfilled template placeholders leaked into the shipped script.
+        self.assertNotIn('__HELM', script)
+
+    def test_script_logs_resolved_commit(self):
+        # Provenance inside the Job: the exact commit the privileged deploy runs.
+        self.assertIn('rev-parse HEAD', controller.PROVISION_JOB_SCRIPT)
 
 
 class ResourceLimitTest(unittest.TestCase):

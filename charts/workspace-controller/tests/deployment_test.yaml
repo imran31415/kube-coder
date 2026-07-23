@@ -180,6 +180,48 @@ tests:
             name: SELF_SERVE_ALLOW_SHARED_TOKEN
             value: "false"
 
+  - it: should not wire provisioning chart env when provisioning is off
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALLOW_MUTABLE_CHART_REF
+            value: "false"
+
+  - it: should default provisioning to fail-closed on a mutable chart ref
+    template: templates/deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      # Secure default: mutable refs rejected unless explicitly opted in (finding 7).
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALLOW_MUTABLE_CHART_REF
+            value: "false"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CHART_REF
+            value: main
+
+  - it: should thread the allowMutableRef escape hatch when enabled
+    template: templates/deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+      provision.chart.allowMutableRef: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALLOW_MUTABLE_CHART_REF
+            value: "true"
+
   - it: should mount the controller code + SPA from ConfigMaps
     template: templates/deployment.yaml
     asserts:

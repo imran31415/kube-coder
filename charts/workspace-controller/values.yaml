@@ -153,9 +153,25 @@ provision:
 
   # Repo + ref the provisioner Job pulls the workspace Helm chart from. Point
   # these at YOUR fork if you've customised the workspace chart.
+  #
+  # Supply-chain hardening (security review July 2026, finding 7): the Job
+  # git-clones this ref and runs its `make deploy` under the cluster-privileged
+  # provisioner ServiceAccount, so `ref` MUST be an immutable reference — a full
+  # 40-hex commit SHA or a signed release tag `vX.Y.Z`. A mutable/floating ref
+  # (a branch like `main`, `latest`, `HEAD`, a short SHA) is rejected fail-closed
+  # so the exact code that runs with cluster-wide permissions cannot change out
+  # from under you. BEHAVIOR CHANGE: the historical default `main` now fails
+  # provisioning with a clear error — pin `ref` to a release tag/commit SHA, or
+  # set `allowMutableRef: true` below to opt back into tracking a branch.
   chart:
     repo: https://github.com/imran31415/kube-coder.git
     ref: main
+    # Escape hatch (mirrors controller.update.allowSharedToken from #414). Leave
+    # false to require an immutable pinned ref (secure default). Set true ONLY if
+    # you intentionally track a mutable branch and accept that the privileged
+    # provisioner runs whatever that branch points at — each provision logs the
+    # ref it used either way.
+    allowMutableRef: false
 
   # Runtime credential. Put this in users-private/_controller/secrets/provision.yaml
   # (gitignored) — the chart renders it into a Secret, the same way oauth2
