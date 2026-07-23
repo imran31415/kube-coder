@@ -34,6 +34,7 @@ export type IconName =
   | 'unlink'
   | 'download'
   | 'upload'
+  | 'arrow-up'
   | 'copy'
   | 'apps'
   | 'image'
@@ -239,6 +240,11 @@ const PATHS: Record<IconName, JSX.Element> = {
   upload: (
     <>
       <path d="M10 13V4M6 8l4-4 4 4M4 16h12" />
+    </>
+  ),
+  'arrow-up': (
+    <>
+      <path d="M10 16V4M5 9l5-5 5 5" />
     </>
   ),
   desktop: (

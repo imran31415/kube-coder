@@ -103,11 +103,11 @@ async function shots(page, device, outDir) {
   };
 
   // Boots on the Desktop home (the "AI workspace" launcher shared with the web
-  // dashboard). The composer now defaults to chat mode ("Ask your workspace
-  // anything…") with a toggle to build mode ("Describe a build to run…"); accept
-  // either so the wait doesn't depend on which default the app ships.
+  // dashboard). The composer defaults to chat mode ("Ask anything or start a
+  // build…") with a pill toggle to build mode ("Describe a build to run…");
+  // accept either so the wait doesn't depend on which default the app ships.
   await waitVisible(
-    page.getByPlaceholder(/Ask your workspace anything|Describe a build to run/),
+    page.getByPlaceholder(/Ask anything or start a build|Describe a build to run/),
     'Desktop home',
   );
   await sleep(600);

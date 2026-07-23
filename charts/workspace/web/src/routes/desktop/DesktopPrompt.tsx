@@ -4,23 +4,25 @@ import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { Icon } from '../../components/Icon';
 
 /**
- * Hero prompt composer pinned to the top of the Desktop route — the first
- * thing a user sees on a fresh workspace. Type an idea, press Enter, and a
- * Hypervisor chat starts immediately: the prompt seeds a new chat thread and
- * we jump straight into it. A quiet "Start a build instead" toggle flips the
- * composer to the classic build path (hand the prompt to the assistant and
- * open the new build's terminal) for users who want that directly.
- *
- * Kept deliberately minimal — one growing input, a send button, and a quiet
- * footer with a working-directory chip + keyboard hint. Enter submits,
- * Shift+Enter inserts a newline. Hidden entirely in read-only mode (visitors
- * can't start chats or builds); the parent gates on serverMode before
- * rendering us.
+ * Centered "new chat" composer — the hero of the Desktop route (#433). One
+ * calm rounded container in the ChatGPT/Claude shape: an auto-growing
+ * textarea on top, and a quiet control row inside the box's bottom edge
+ * holding the workdir picker and the chat/build mode as small pills, with
+ * the send button at the right. Enter submits, Shift+Enter inserts a
+ * newline; the keyboard hint only appears while the composer is focused.
+ * Hidden entirely in read-only mode (the parent gates on serverMode).
  */
 const DEFAULT_WORKDIR = '/home/dev';
 const MAX_TEXTAREA_PX = 180;
 
 type Mode = 'chat' | 'build';
+
+/** Suggestion chips under the composer — common ways to start. */
+const SUGGESTIONS: { label: string; prompt: string }[] = [
+  { label: 'Fix a bug', prompt: 'Fix this bug: ' },
+  { label: 'Clone a repo', prompt: 'Clone the repo ' },
+  { label: 'New app', prompt: 'Scaffold a new app that ' },
+];
 
 export function DesktopPrompt() {
   const [prompt, setPrompt] = useState('');
@@ -73,6 +75,11 @@ export function DesktopPrompt() {
     }
   }
 
+  function applySuggestion(text: string) {
+    setPrompt(text);
+    taRef.current?.focus();
+  }
+
   const canSend = prompt.trim().length > 0 && !busy;
   const isChat = mode === 'chat';
 
@@ -89,39 +96,24 @@ export function DesktopPrompt() {
           void submit();
         }}
       >
-        <div class="dt-composer-main">
-          <span class="dt-composer-spark" aria-hidden="true">
-            <Icon name={isChat ? 'chat' : 'play'} size={18} />
-          </span>
-          <textarea
-            ref={taRef}
-            class="dt-composer-input"
-            value={prompt}
-            rows={1}
-            placeholder={
-              isChat
-                ? 'Ask your workspace anything…  e.g. “what’s running and how do I deploy?”'
-                : 'Describe a build to run…  e.g. “add a dark-mode toggle to the settings page”'
-            }
-            disabled={busy}
-            aria-label={isChat ? 'Chat message' : 'Build prompt'}
-            onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
-            onKeyDown={onKeyDown}
-          />
-          <button
-            type="submit"
-            class="dt-composer-send"
-            disabled={!canSend}
-            aria-label={isChat ? 'Start chat' : 'Start build'}
-            title={isChat ? 'Start chat (Enter)' : 'Start build (Enter)'}
-          >
-            {busy ? <span class="dt-composer-spinner" /> : <Icon name="play" size={16} />}
-          </button>
-        </div>
-
-        <div class="dt-composer-foot">
+        <textarea
+          ref={taRef}
+          class="dt-composer-input"
+          value={prompt}
+          rows={1}
+          placeholder={
+            isChat
+              ? 'Ask anything or start a build…'
+              : 'Describe a build to run…  e.g. “add a dark-mode toggle to the settings page”'
+          }
+          disabled={busy}
+          aria-label={isChat ? 'Chat message' : 'Build prompt'}
+          onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
+          onKeyDown={onKeyDown}
+        />
+        <div class="dt-composer-controls">
           <label
-            class="dt-composer-workdir"
+            class="dt-composer-pill dt-composer-workdir"
             title={isChat ? 'Working directory for the chat' : 'Working directory for the build'}
           >
             <Icon name="files" size={12} />
@@ -143,20 +135,45 @@ export function DesktopPrompt() {
           </label>
           <button
             type="button"
-            class="dt-composer-mode"
+            class="dt-composer-pill dt-composer-mode"
             disabled={busy}
+            aria-label={isChat ? 'Mode: chat — switch to build' : 'Mode: build — switch to chat'}
             onClick={() => setMode((m) => (m === 'chat' ? 'build' : 'chat'))}
             title={isChat ? 'Switch to starting a build' : 'Switch to starting a chat'}
           >
-            <Icon name={isChat ? 'play' : 'chat'} size={12} />
-            {isChat ? 'Start a build instead' : 'Start a chat instead'}
+            <Icon name={isChat ? 'chat' : 'play'} size={12} />
+            {isChat ? 'Chat' : 'Build'}
+            <Icon name="chevron-down" size={10} />
           </button>
           <span class="dt-composer-hint">
             <kbd>Enter</kbd> to {isChat ? 'send' : 'start'} · <kbd>Shift</kbd>+<kbd>Enter</kbd> for
             newline
           </span>
+          <button
+            type="submit"
+            class="dt-composer-send"
+            disabled={!canSend}
+            aria-label={isChat ? 'Start chat' : 'Start build'}
+            title={isChat ? 'Start chat (Enter)' : 'Start build (Enter)'}
+          >
+            {busy ? <span class="dt-composer-spinner" /> : <Icon name="arrow-up" size={16} />}
+          </button>
         </div>
       </form>
+
+      <div class="dt-composer-chips" aria-label="Suggestions">
+        {SUGGESTIONS.map((s) => (
+          <button
+            key={s.label}
+            type="button"
+            class="dt-composer-chip"
+            disabled={busy}
+            onClick={() => applySuggestion(s.prompt)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
     </section>
   );
 }

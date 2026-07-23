@@ -1,12 +1,13 @@
-/** Desktop: the workspace home. A clean identity masthead, a one-tap composer
- *  that starts a Hypervisor chat by default (with a "start a build instead"
- *  toggle), the customizable launcher grid (shared with the web dashboard's
- *  Desktop tab via /api/desktop), and an activity feed of live builds + recent
- *  chats. Tap an icon to launch; long-press to edit/move/delete; + to add. */
+/** Desktop: the workspace home (#433). A short greeting over a centered
+ *  composer (starts a Hypervisor chat by default, with a build-mode pill),
+ *  a live Mission Control strip fed by /api/missioncontrol/queue, and a
+ *  compact bottom dock of launcher icons (shared with the web dashboard via
+ *  /api/desktop). Tap a dock icon to launch; long-press to edit/move/delete;
+ *  + to add. */
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +15,7 @@ import {
   Linking,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -25,18 +27,17 @@ import {
   createTask,
   dashboardUrl,
   deleteDesktopItem,
+  getMissionQueue,
   githubDisplayName,
   launchDesktopItem,
   listDesktop,
-  listTasks,
-  listThreads,
   reorderDesktop,
   updateDesktopItem,
 } from '../api/client';
 import { DesktopEditorSheet } from '../components/DesktopEditorSheet';
 import { getConfig } from '../store/config';
 import { EmptyState, ErrorBanner, Loading, MenuButton, StatusPill } from '../components/ui';
-import type { DesktopItem, DesktopItemDraft, HypervisorThread, TaskSummary } from '../api/types';
+import type { DesktopItem, DesktopItemDraft, MissionCard, MissionPulse } from '../api/types';
 import { colors, font, gradients, radius, shadow, space } from '../theme';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
@@ -64,9 +65,9 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
 function ItemIcon({ icon }: { icon: string }) {
   if (icon.startsWith('icon:')) {
     const name = ICON_MAP[icon.slice(5)] ?? 'apps-outline';
-    return <Ionicons name={name} size={26} color={colors.accent} />;
+    return <Ionicons name={name} size={22} color={colors.accent} />;
   }
-  return <Text style={styles.cellEmoji}>{icon}</Text>;
+  return <Text style={styles.dockEmoji}>{icon}</Text>;
 }
 
 function actionSubtitle(item: DesktopItem): string {
@@ -115,6 +116,8 @@ function inAppTarget(url: string): { tab: string; params?: object } | null {
       return { tab: 'Apps', params: { screen: 'AppList' } };
     case 'desktop':
       return { tab: 'Desktop' };
+    case 'mission':
+      return { tab: 'MissionControl' };
     case 'settings':
       return { tab: 'Settings' };
     default:
@@ -124,41 +127,25 @@ function inAppTarget(url: string): { tab: string; params?: object } | null {
 
 type Nav = { navigate: (tab: string, opts?: object) => void };
 
-/** Identity masthead: gradient monogram + "AI Workspace" over the operator's
- *  GitHub handle. Degrades to a neutral label until the name resolves. */
-function DesktopHero({ name }: { name: string | null }) {
-  const display = name ?? 'Workspace';
-  const initial = display.charAt(0).toUpperCase();
+/** Greeting masthead — one calm line instead of the old identity card. */
+function DesktopGreeting({ name }: { name: string | null }) {
   return (
     <View style={styles.hero}>
       <MenuButton />
-      <LinearGradient
-        colors={gradients.brand}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.heroAvatar}
-      >
-        <Text style={styles.heroGlyph}>{initial}</Text>
-      </LinearGradient>
-      <View style={{ flexShrink: 1 }}>
-        <Text style={styles.heroEyebrow}>AI Workspace</Text>
-        <View style={styles.heroNameRow}>
-          <Text style={styles.heroName} numberOfLines={1}>
-            {display}
-          </Text>
-          {name ? <Ionicons name="logo-github" size={15} color={colors.textFaint} /> : null}
-        </View>
+      <View style={{ flexShrink: 1, flex: 1 }}>
+        <Text style={styles.heroTitle}>
+          What are we building{name ? `, ${name}` : ''}?
+        </Text>
       </View>
     </View>
   );
 }
 
-/** One-tap composer. Starts a Hypervisor chat by default; a quiet toggle flips
- *  it to the classic build path. Owns its own prompt state so list re-renders
- *  (from polling) never steal focus or clear the text.
- *
- *  Chat mode hands off to the Hypervisor tab (which creates the thread and shows
- *  the live turn); build mode creates the task inline and opens it. */
+/** One-tap composer in the "new chat" shape: growing input on top, then a
+ *  control row inside the box (mode pill left, send right). Starts a
+ *  Hypervisor chat by default; the pill flips it to the classic build path.
+ *  Owns its own prompt state so list re-renders (from polling) never steal
+ *  focus or clear the text. */
 function Composer({
   onStartBuild,
   onStartChat,
@@ -196,23 +183,39 @@ function Composer({
 
   return (
     <View style={styles.composer}>
-      <View style={styles.composerRow}>
-        <View style={styles.composerGlyph}>
+      <TextInput
+        value={prompt}
+        onChangeText={setPrompt}
+        placeholder={isChat ? 'Ask anything or start a build…' : 'Describe a build to run…'}
+        placeholderTextColor={colors.textFaint}
+        style={styles.composerInput}
+        multiline
+        editable={!busy}
+      />
+      <View style={styles.composerControls}>
+        <View style={styles.composerPill}>
+          <Ionicons name="folder-outline" size={12} color={colors.textFaint} />
+          <Text style={styles.composerPillText}>/home/dev</Text>
+        </View>
+        <Pressable
+          onPress={() => setMode((m) => (m === 'chat' ? 'build' : 'chat'))}
+          disabled={busy}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={isChat ? 'Mode: chat — switch to build' : 'Mode: build — switch to chat'}
+          style={({ pressed }) => [styles.composerPill, pressed && { opacity: 0.6 }]}
+        >
           <Ionicons
             name={isChat ? 'chatbubbles-outline' : 'construct-outline'}
-            size={17}
+            size={12}
             color={colors.accent}
           />
-        </View>
-        <TextInput
-          value={prompt}
-          onChangeText={setPrompt}
-          placeholder={isChat ? 'Ask your workspace anything…' : 'Describe a build to run…'}
-          placeholderTextColor={colors.textFaint}
-          style={styles.composerInput}
-          multiline
-          editable={!busy}
-        />
+          <Text style={[styles.composerPillText, { color: colors.accent }]}>
+            {isChat ? 'Chat' : 'Build'}
+          </Text>
+          <Ionicons name="chevron-down" size={10} color={colors.textFaint} />
+        </Pressable>
+        <View style={{ flex: 1 }} />
         <Pressable
           onPress={submit}
           disabled={!canSend}
@@ -230,7 +233,7 @@ function Composer({
               {busy ? (
                 <ActivityIndicator color={colors.accentText} size="small" />
               ) : (
-                <Ionicons name="arrow-up" size={18} color={colors.accentText} />
+                <Ionicons name="arrow-up" size={17} color={colors.accentText} />
               )}
             </LinearGradient>
           ) : (
@@ -238,33 +241,10 @@ function Composer({
               {busy ? (
                 <ActivityIndicator color={colors.textFaint} size="small" />
               ) : (
-                <Ionicons name="arrow-up" size={18} color={colors.textFaint} />
+                <Ionicons name="arrow-up" size={17} color={colors.textFaint} />
               )}
             </View>
           )}
-        </Pressable>
-      </View>
-      <View style={styles.composerFoot}>
-        <Text style={styles.composerHint}>
-          {isChat
-            ? 'Starts a chat in /home/dev'
-            : 'Starts a build in /home/dev and opens it live'}
-        </Text>
-        <Pressable
-          onPress={() => setMode((m) => (m === 'chat' ? 'build' : 'chat'))}
-          disabled={busy}
-          hitSlop={8}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.composerToggle, pressed && { opacity: 0.6 }]}
-        >
-          <Ionicons
-            name={isChat ? 'construct-outline' : 'chatbubbles-outline'}
-            size={12}
-            color={colors.accent}
-          />
-          <Text style={styles.composerToggleText}>
-            {isChat ? 'Start a build instead' : 'Start a chat instead'}
-          </Text>
         </Pressable>
       </View>
     </View>
@@ -281,12 +261,89 @@ function SectionLabel({ title, action }: { title: string; action?: React.ReactNo
   );
 }
 
+/** State-appropriate age for a mission card, mirroring the web strip. */
+function missionTime(card: MissionCard): string {
+  if (card.state === 'waiting') {
+    // relativeTime says "14m ago"; a waiting card reads better as "14m waiting".
+    const since = card.waiting_since ?? card.updated_at;
+    return since ? relativeTime(since).replace(' ago', ' waiting') : '';
+  }
+  if (card.state === 'running') return relativeTime(card.created_at ?? undefined);
+  return relativeTime(card.finished_at ?? card.updated_at ?? undefined);
+}
+
+/** Condensed Mission Control strip: pulse row + the top few cards (the queue
+ *  arrives pre-sorted waiting → running → done). Tapping anything lands on
+ *  the Mission Control tab, where quick replies and kill live. */
+function MissionStrip({
+  cards,
+  pulse,
+  onOpen,
+}: {
+  cards: MissionCard[];
+  pulse: MissionPulse | null;
+  onOpen: () => void;
+}) {
+  if (cards.length === 0) return null;
+  const waiting = pulse?.waiting ?? 0;
+  return (
+    <View style={styles.mission}>
+      <SectionLabel
+        title="Mission Control"
+        action={
+          <Pressable onPress={onOpen} hitSlop={8} accessibilityRole="button">
+            <Text style={styles.missionViewAll}>View all →</Text>
+          </Pressable>
+        }
+      />
+      {pulse ? (
+        <Text style={styles.missionPulse}>
+          <Text style={styles.missionPulseNum}>{pulse.running}</Text> running
+          <Text style={styles.missionPulseDot}> · </Text>
+          <Text style={[styles.missionPulseNum, waiting > 0 && { color: colors.warning }]}>
+            {waiting}
+          </Text>
+          <Text style={waiting > 0 ? { color: colors.warning } : undefined}> waiting on you</Text>
+          <Text style={styles.missionPulseDot}> · </Text>
+          <Text style={styles.missionPulseNum}>{pulse.done_today}</Text> done today
+        </Text>
+      ) : null}
+      {cards.map((c) => (
+        <Pressable
+          key={c.id}
+          onPress={onOpen}
+          accessibilityRole="button"
+          accessibilityLabel={`Open Mission Control — ${c.title}`}
+          style={({ pressed }) => [
+            styles.missionRow,
+            c.state === 'waiting' && styles.missionRowWaiting,
+            pressed && { opacity: 0.7 },
+          ]}
+        >
+          <StatusPill status={c.state === 'review' ? 'done' : c.state} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.missionTitle} numberOfLines={1}>
+              {c.title}
+            </Text>
+            {c.headline ? (
+              <Text style={styles.missionHeadline} numberOfLines={1}>
+                {c.headline}
+              </Text>
+            ) : null}
+          </View>
+          <Text style={styles.missionTime}>{missionTime(c)}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 export default function DesktopScreen() {
   // Cross-tab navigation (launched tasks open in the Tasks stack).
   const nav = useNavigation<Nav>();
   const [items, setItems] = useState<DesktopItem[] | null>(null);
-  const [live, setLive] = useState<TaskSummary[]>([]);
-  const [chats, setChats] = useState<HypervisorThread[]>([]);
+  const [mission, setMission] = useState<MissionCard[]>([]);
+  const [pulse, setPulse] = useState<MissionPulse | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -302,29 +359,20 @@ export default function DesktopScreen() {
       setError((e as Error).message);
       setItems((prev) => prev ?? []);
     }
-    // Live builds for the Activity feed — best-effort, never blocks the grid.
+    // Mission Control strip — best-effort, never blocks the dock. The queue is
+    // pre-sorted waiting → running → done, so the top slice is the priority cut.
     try {
-      const tasks = await listTasks();
-      setLive(
-        tasks
-          .filter((t) => t.status === 'running' || t.status === 'waiting' || t.waiting_for_input)
-          .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
-          .slice(0, 3),
-      );
-    } catch {
-      /* keep last-good */
-    }
-    // Recent chats — also best-effort. listThreads() is newest-first already.
-    try {
-      const threads = await listThreads();
-      setChats(threads.slice(0, 3));
+      const q = await getMissionQueue();
+      setMission(q.cards.slice(0, 3));
+      setPulse(q.pulse);
     } catch {
       /* keep last-good */
     }
   }, []);
 
-  // The desktop is shared with the web dashboard — pick up edits made there.
-  usePolling(load, 15000);
+  // The desktop is shared with the web dashboard — pick up edits made there;
+  // 10s keeps the mission strip fresh too.
+  usePolling(load, 10000);
   // Identity is stable; fetch once.
   React.useEffect(() => {
     let ok = true;
@@ -344,14 +392,10 @@ export default function DesktopScreen() {
     nav.navigate('Tasks', { screen: 'TaskDetail', params: { id }, initial: false });
   }
 
-  // Chat composer + Activity chat rows hand off to the Hypervisor tab: an
-  // initialMessage seeds a brand-new chat, an openThreadId reopens an existing
-  // one. HypervisorScreen consumes the param once and clears it.
+  // Chat composer hands off to the Hypervisor tab: an initialMessage seeds a
+  // brand-new chat. HypervisorScreen consumes the param once and clears it.
   function startChat(message: string) {
     nav.navigate('Hypervisor', { initialMessage: message });
-  }
-  function openChat(id: string) {
-    nav.navigate('Hypervisor', { openThreadId: id });
   }
 
   async function launch(item: DesktopItem) {
@@ -394,10 +438,10 @@ export default function DesktopScreen() {
     Alert.alert(item.label, actionSubtitle(item), [
       { text: 'Edit', onPress: () => { setEditing(item); setEditorOpen(true); } },
       ...(idx > 0
-        ? [{ text: 'Move up', onPress: () => void move(item.id, -1) }]
+        ? [{ text: 'Move left', onPress: () => void move(item.id, -1) }]
         : []),
       ...(idx >= 0 && idx < items.length - 1
-        ? [{ text: 'Move down', onPress: () => void move(item.id, 1) }]
+        ? [{ text: 'Move right', onPress: () => void move(item.id, 1) }]
         : []),
       {
         text: 'Delete',
@@ -448,140 +492,85 @@ export default function DesktopScreen() {
     }
   }
 
-  const newBtn = (
-    <Pressable
-      onPress={() => { setEditing(null); setEditorOpen(true); }}
-      hitSlop={8}
-      accessibilityRole="button"
-      accessibilityLabel="New icon"
-      style={({ pressed }) => [styles.newPill, pressed && { opacity: 0.7 }]}
-    >
-      <Ionicons name="add" size={15} color={colors.textMuted} />
-      <Text style={styles.newPillText}>New</Text>
-    </Pressable>
-  );
-
-  // Header (masthead + composer + Shortcuts label) is passed as an ELEMENT so
-  // it reconciles across polls instead of remounting — the composer keeps its
-  // text + focus. Memoized on the values it actually reads.
-  const header = useMemo(
-    () => (
-      <View>
-        <DesktopHero name={name} />
-        <SectionLabel title="Start a chat" />
-        <Composer onStartBuild={openTask} onStartChat={startChat} />
-        {error && items && items.length > 0 ? <ErrorBanner message={error} /> : null}
-        {items && items.length > 0 ? <SectionLabel title="Shortcuts" action={newBtn} /> : null}
-      </View>
-    ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [name, error, items?.length],
-  );
-
-  const footer =
-    live.length > 0 || chats.length > 0 ? (
-      <View style={styles.activity}>
-        <SectionLabel title="Activity" />
-        {live.length > 0 && (
-          <>
-            <Text style={styles.activityGroup}>LIVE BUILDS</Text>
-            {live.map((t) => (
-              <Pressable
-                key={t.id}
-                onPress={() => openTask(t.id)}
-                style={({ pressed }) => [styles.activityRow, pressed && { opacity: 0.7 }]}
-              >
-                <StatusPill status={t.status} />
-                <Text style={styles.activityTitle} numberOfLines={1}>
-                  {t.prompt || t.id}
-                </Text>
-                <Text style={styles.activityTime}>{relativeTime(t.created_at)}</Text>
-              </Pressable>
-            ))}
-          </>
-        )}
-        {chats.length > 0 && (
-          <>
-            <Text style={[styles.activityGroup, live.length > 0 && { marginTop: space.md }]}>
-              RECENT CHATS
-            </Text>
-            {chats.map((c) => (
-              <Pressable
-                key={c.id}
-                onPress={() => openChat(c.id)}
-                style={({ pressed }) => [styles.activityRow, pressed && { opacity: 0.7 }]}
-              >
-                <View style={styles.activityChatIcon}>
-                  <Ionicons name="chatbubbles-outline" size={15} color={colors.accent} />
-                </View>
-                <Text style={styles.activityTitle} numberOfLines={1}>
-                  {c.title || 'New chat'}
-                </Text>
-                <Text style={styles.activityTime}>
-                  {relativeTime(c.updated_at ?? c.created_at ?? undefined)}
-                </Text>
-              </Pressable>
-            ))}
-          </>
-        )}
-      </View>
-    ) : null;
-
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       {items === null ? (
         <Loading label="Loading workspace…" />
       ) : (
-        <FlatList
-          data={items}
-          key="grid-3"
-          numColumns={3}
-          keyExtractor={(i) => i.id}
-          ListHeaderComponent={header}
-          ListFooterComponent={footer}
-          contentContainerStyle={styles.grid}
-          columnWrapperStyle={styles.gridRow}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
-          }
-          ListEmptyComponent={
-            error ? (
-              <EmptyState icon="cloud-offline-outline" title="Couldn't load the desktop" subtitle={error} />
-            ) : (
+        <>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
+            }
+          >
+            <DesktopGreeting name={name} />
+            {error ? <ErrorBanner message={error} /> : null}
+            <Composer onStartBuild={openTask} onStartChat={startChat} />
+            <MissionStrip
+              cards={mission}
+              pulse={pulse}
+              onOpen={() => nav.navigate('MissionControl')}
+            />
+            {items.length === 0 && !error ? (
               <EmptyState
                 icon="grid-outline"
                 title="No shortcuts yet"
-                subtitle="Pin a build prompt, a URL, or a shell command for one-tap launch. Tap + to create your first icon."
+                subtitle="Pin a build prompt, a URL, or a shell command for one-tap launch. Tap + in the dock below to create your first icon."
               />
-            )
-          }
-          renderItem={({ item }) => (
-            <Pressable
-              style={({ pressed }) => [styles.cell, pressed && styles.cellPressed]}
-              onPress={() => void launch(item)}
-              onLongPress={() => itemMenu(item)}
-              delayLongPress={350}
-              accessibilityRole="button"
-              accessibilityLabel={`Launch ${item.label}`}
-              accessibilityHint="Long press for edit, move and delete"
-            >
-              <View style={styles.cellIcon}>
-                {launching === item.id ? (
-                  <Ionicons name="hourglass-outline" size={26} color={colors.textMuted} />
-                ) : (
-                  <ItemIcon icon={item.icon} />
-                )}
-              </View>
-              <Text style={styles.cellLabel} numberOfLines={1}>
-                {item.label}
-              </Text>
-              <Text style={styles.cellSub} numberOfLines={1}>
-                {actionSubtitle(item)}
-              </Text>
-            </Pressable>
-          )}
-        />
+            ) : null}
+          </ScrollView>
+
+          {/* Bottom dock — compact icons, label beneath, + at the end.
+              Long-press keeps the edit/move/delete sheet. */}
+          <View style={styles.dock}>
+            <FlatList
+              horizontal
+              data={items}
+              keyExtractor={(i) => i.id}
+              contentContainerStyle={styles.dockRow}
+              showsHorizontalScrollIndicator={false}
+              renderItem={({ item }) => (
+                <Pressable
+                  style={({ pressed }) => [styles.dockItem, pressed && styles.dockItemPressed]}
+                  onPress={() => void launch(item)}
+                  onLongPress={() => itemMenu(item)}
+                  delayLongPress={350}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Launch ${item.label}`}
+                  accessibilityHint="Long press for edit, move and delete"
+                >
+                  <View style={styles.dockIcon}>
+                    {launching === item.id ? (
+                      <Ionicons name="hourglass-outline" size={22} color={colors.textMuted} />
+                    ) : (
+                      <ItemIcon icon={item.icon} />
+                    )}
+                  </View>
+                  <Text style={styles.dockLabel} numberOfLines={1}>
+                    {item.label}
+                  </Text>
+                </Pressable>
+              )}
+              ListFooterComponent={
+                <Pressable
+                  onPress={() => { setEditing(null); setEditorOpen(true); }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add icon"
+                  style={({ pressed }) => [styles.dockItem, pressed && styles.dockItemPressed]}
+                >
+                  <View style={[styles.dockIcon, styles.dockIconAdd]}>
+                    <Ionicons name="add" size={22} color={colors.textMuted} />
+                  </View>
+                  <Text style={styles.dockLabel} numberOfLines={1}>
+                    Add
+                  </Text>
+                </Pressable>
+              }
+            />
+          </View>
+        </>
       )}
 
       <DesktopEditorSheet
@@ -596,8 +585,9 @@ export default function DesktopScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
+  scroll: { paddingBottom: space.xl },
 
-  // Masthead
+  // Greeting masthead
   hero: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -606,31 +596,18 @@ const styles = StyleSheet.create({
     paddingTop: space.md,
     paddingBottom: space.lg,
   },
-  heroAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...shadow.card,
+  heroTitle: {
+    color: colors.text,
+    fontSize: font.size.xl,
+    fontWeight: '800',
+    letterSpacing: -0.4,
   },
-  heroGlyph: { color: colors.accentText, fontSize: 20, fontWeight: '800' },
-  heroEyebrow: {
-    color: colors.textFaint,
-    fontSize: 10.5,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  heroNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  heroName: { color: colors.text, fontSize: font.size.xl, fontWeight: '800', letterSpacing: -0.4 },
 
   // Section labels
   sectionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: space.lg,
     marginBottom: space.sm,
   },
   sectionLabel: {
@@ -640,20 +617,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
-  newPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  newPillText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
 
-  // Composer
+  // Composer — "new chat" shape: input on top, pills + send inside the box.
   composer: {
     marginHorizontal: space.lg,
     marginBottom: space.xl,
@@ -662,89 +627,42 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: space.md,
-    paddingVertical: space.md,
+    paddingTop: space.sm,
+    paddingBottom: space.sm,
     gap: space.sm,
     ...shadow.card,
-  },
-  composerRow: { flexDirection: 'row', alignItems: 'flex-end', gap: space.sm },
-  composerGlyph: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    backgroundColor: colors.accent + '1f',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 2,
   },
   composerInput: {
-    flex: 1,
     color: colors.text,
     fontSize: font.size.md,
-    minHeight: 34,
+    minHeight: 44,
     maxHeight: 130,
-    paddingTop: 7,
+    paddingTop: 8,
     paddingBottom: 4,
+    paddingHorizontal: 2,
   },
-  composerSend: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  composerSendOff: { backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: colors.border },
-  composerFoot: {
+  composerControls: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  composerPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingLeft: 40,
-    gap: space.sm,
-  },
-  composerHint: { color: colors.textFaint, fontSize: font.size.xs, flexShrink: 1 },
-  composerToggle: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  composerToggleText: { color: colors.accent, fontSize: font.size.xs, fontWeight: '600' },
-
-  // Grid
-  grid: { paddingBottom: space.xl, gap: space.md },
-  gridRow: { gap: space.md, paddingHorizontal: space.lg },
-  cell: {
-    flex: 1,
-    maxWidth: '31.5%',
-    backgroundColor: colors.card,
-    borderRadius: radius.lg,
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingVertical: space.lg,
-    paddingHorizontal: space.sm,
-    alignItems: 'center',
-    gap: 6,
-    ...shadow.card,
   },
-  cellPressed: { opacity: 0.7, transform: [{ scale: 0.97 }] },
-  cellIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: radius.md,
-    backgroundColor: colors.accent + '14',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cellEmoji: { fontSize: 26 },
-  cellLabel: { color: colors.text, fontSize: font.size.sm, fontWeight: '700' },
-  cellSub: { color: colors.textFaint, fontSize: font.size.xs, maxWidth: '95%' },
+  composerPillText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+  composerSend: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  composerSendOff: { backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: colors.border },
 
-  // Activity
-  activity: { marginTop: space.lg, paddingHorizontal: space.lg },
-  activityGroup: {
-    color: colors.textFaint,
-    fontSize: 10.5,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    marginBottom: space.sm,
-  },
-  activityChatIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
-    backgroundColor: colors.accent + '1f',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  activityRow: {
+  // Mission Control strip
+  mission: { paddingHorizontal: space.lg, marginBottom: space.lg },
+  missionViewAll: { color: colors.accent, fontSize: font.size.xs, fontWeight: '600' },
+  missionPulse: { color: colors.textMuted, fontSize: font.size.sm, marginBottom: space.md },
+  missionPulseNum: { color: colors.text, fontWeight: '700' },
+  missionPulseDot: { color: colors.textFaint },
+  missionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
@@ -756,6 +674,40 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  activityTitle: { flex: 1, color: colors.text, fontSize: font.size.sm, fontWeight: '600' },
-  activityTime: { color: colors.textFaint, fontSize: font.size.xs },
+  missionRowWaiting: { borderLeftWidth: 2, borderLeftColor: colors.warning },
+  missionTitle: { color: colors.text, fontSize: font.size.sm, fontWeight: '600' },
+  missionHeadline: { color: colors.textFaint, fontSize: font.size.xs, marginTop: 1 },
+  missionTime: { color: colors.textFaint, fontSize: font.size.xs },
+
+  // Bottom dock
+  dock: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.bgElevated,
+    paddingVertical: space.sm,
+  },
+  dockRow: {
+    paddingHorizontal: space.md,
+    gap: space.sm,
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
+  dockItem: { alignItems: 'center', width: 62, gap: 3 },
+  dockItemPressed: { opacity: 0.7, transform: [{ scale: 0.95 }] },
+  dockIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    backgroundColor: colors.accent + '14',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dockIconAdd: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: colors.border,
+  },
+  dockEmoji: { fontSize: 22 },
+  dockLabel: { color: colors.textMuted, fontSize: 10.5, fontWeight: '600', maxWidth: 60 },
 });
