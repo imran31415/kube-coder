@@ -63,13 +63,21 @@ spec:
             port:
               number: 8080
       {{- end }}
-{{- if ne .Values.ingress.auth.type "none" }}
+{{- if eq .Values.ingress.auth.type "basic" }}
 # /browser, /terminal, /vnc-direct, /websockify expose ttyd + VNC directly
-# (websocket → keystrokes → shell). With auth.type=none those ingresses
-# would hand any visitor an interactive terminal in the pod, regardless
-# of server.py's READONLY_MODE gate. Skip them entirely in public mode —
-# the dashboard SPA hides the corresponding entry points (see Topbar.tsx
-# and MoreSheet) so users won't see broken iframes.
+# (websocket → keystrokes → shell), so these raw ingresses may only exist
+# where an auth annotation actually protects them — i.e. basic mode.
+#   - auth.type=none (public): skipped entirely; any visitor would get an
+#     interactive terminal regardless of server.py's READONLY_MODE gate.
+#   - auth.type=oauth2: skipped entirely; only the /oauth/* routes in
+#     ingress-oauth2.yaml carry the auth-url/auth-signin annotations, so
+#     rendering raw routes here would expose an UNAUTHENTICATED shell +
+#     VNC next to the authenticated ones (the workspace NetworkPolicy
+#     admits the ingress controller, so it happily proxies them).
+# The dashboard SPA derives its base path from the deployment's auth mode
+# (see web/src/api/client.ts authPrefix), so oauth2 users are routed to
+# /oauth/terminal etc. and never hit these paths; public mode hides the
+# entry points (Topbar.tsx / MoreSheet) so users won't see broken iframes.
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -213,7 +221,15 @@ metadata:
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
-    # WebSocket connections - no auth required (protected by session)
+    # websockify fronts x11vnc (-nopw): without ingress auth this WebSocket
+    # hands out full VNC control of the desktop. Browsers replay cached
+    # Basic credentials on same-origin WS upgrades, so noVNC keeps working
+    # once the user has authenticated.
+    {{- if eq .Values.ingress.auth.type "basic" }}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: {{ required "ingress.auth.secretName is required when ingress.auth.type=basic (an empty value here disables basic auth and exposes the workspace publicly)" .Values.ingress.auth.secretName }}
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+    {{- end }}
     nginx.ingress.kubernetes.io/proxy-set-headers: "ingress-nginx/websocket-headers"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"

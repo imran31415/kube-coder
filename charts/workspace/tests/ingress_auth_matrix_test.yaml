@@ -1,0 +1,156 @@
+suite: auth-route matrix — raw vs /oauth/* terminal, VNC and websockify ingresses
+# The raw /terminal, /vnc-direct, /websockify and /browser routes proxy
+# straight to ttyd (writable) and x11vnc (-nopw). They must only render when
+# an auth annotation actually protects them (basic mode). In oauth2 mode only
+# the /oauth/* routes — which carry auth-url/auth-signin — may exist;
+# rendering the raw routes there exposed an unauthenticated shell + VNC on
+# the same host (security review July 2026, finding 1).
+templates:
+  - templates/ingress.yaml
+  - templates/ingress-oauth2.yaml
+values:
+  - test-values.yaml
+tests:
+  # ---- basic mode (test-values default) ----
+  - it: basic mode renders the raw direct-service ingresses
+    template: templates/ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 5
+  - it: basic mode raw terminal ingress requires basic auth
+    template: templates/ingress.yaml
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-terminal
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+          value: basic
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-secret"]
+          value: test-auth
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /terminal
+  - it: basic mode raw VNC ingress requires basic auth
+    template: templates/ingress.yaml
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-vnc
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+          value: basic
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-secret"]
+          value: test-auth
+  - it: basic mode websockify ingress requires basic auth (fronts x11vnc -nopw)
+    template: templates/ingress.yaml
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-websocket
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+          value: basic
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-secret"]
+          value: test-auth
+  - it: basic mode raw browser ingress requires basic auth
+    template: templates/ingress.yaml
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-browser
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+          value: basic
+  - it: basic mode renders no oauth2 ingresses
+    template: templates/ingress-oauth2.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # ---- oauth2 mode ----
+  - it: oauth2 mode does NOT render the raw terminal/VNC/websockify ingresses
+    template: templates/ingress.yaml
+    set:
+      ingress.auth.type: oauth2
+    asserts:
+      - hasDocuments:
+          count: 1
+  - it: oauth2 mode main ingress serves only the dashboard root
+    template: templates/ingress.yaml
+    set:
+      ingress.auth.type: oauth2
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: ws-testuser
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /
+      - lengthEqual:
+          path: spec.rules[0].http.paths
+          count: 1
+  - it: oauth2 terminal route is authenticated via oauth2-proxy
+    template: templates/ingress-oauth2.yaml
+    set:
+      ingress.auth.type: oauth2
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-oauth2-terminal
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+          value: "https://$host/oauth2/auth"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-signin"]
+          value: "https://$host/oauth2/start?rd=$escaped_request_uri"
+  - it: oauth2 VNC route is authenticated via oauth2-proxy
+    template: templates/ingress-oauth2.yaml
+    set:
+      ingress.auth.type: oauth2
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-oauth2-vnc
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+          value: "https://$host/oauth2/auth"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-signin"]
+          value: "https://$host/oauth2/start?rd=$escaped_request_uri"
+  - it: oauth2 websockify route is authenticated via oauth2-proxy
+    template: templates/ingress-oauth2.yaml
+    set:
+      ingress.auth.type: oauth2
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-oauth2-websocket
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+          value: "https://$host/oauth2/auth"
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-signin"]
+          value: "https://$host/oauth2/start?rd=$escaped_request_uri"
+
+  # ---- public mode (auth.type=none) ----
+  - it: public mode does NOT render the raw terminal/VNC/websockify ingresses
+    template: templates/ingress.yaml
+    set:
+      ingress.auth.type: none
+      readOnly: true
+    asserts:
+      - hasDocuments:
+          count: 1
+  - it: public mode renders no oauth2 ingresses
+    template: templates/ingress-oauth2.yaml
+    set:
+      ingress.auth.type: none
+      readOnly: true
+    asserts:
+      - hasDocuments:
+          count: 0
