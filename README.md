@@ -58,8 +58,15 @@ python3 harness/bench.py --lang python --backend claude --workers 6
 ---
 
 ## See it
+<img width="1508" height="910" alt="image" src="https://github.com/user-attachments/assets/50f9d317-37cf-4ce8-89de-40f62fca2a1e" />
 
 <table>
+   <tr>
+    <td width="50%" valign="top">
+      <img width="100%" alt="Mission Control" src="https://github.com/user-attachments/assets/50f9d317-37cf-4ce8-89de-40f62fca2a1e" />
+      <br/><sub><b>Mission Control</b> — Manage multiple projects/tasks/AIs in one unified view</sub>
+    </td>
+  </tr>
   <tr>
     <td width="50%" valign="top">
       <img width="100%" alt="Fullstack Python app in split-pane with terminal" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
