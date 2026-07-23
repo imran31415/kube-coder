@@ -58,7 +58,6 @@ python3 harness/bench.py --lang python --backend claude --workers 6
 ---
 
 ## See it
-<img width="1508" height="910" alt="image" src="https://github.com/user-attachments/assets/50f9d317-37cf-4ce8-89de-40f62fca2a1e" />
 
 <table>
    <tr>
