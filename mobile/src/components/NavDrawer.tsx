@@ -10,24 +10,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { closeDrawer, navigateTo, useActiveTab, useDrawerOpen } from '../store/nav';
 import { hasController } from '../store/config';
 import { useConfig } from '../store/useConfig';
+import { NAV_GROUPS } from '../navGroups';
 import { colors, font, gradients, radius, space } from '../theme';
-
-type Item = { name: string; label: string; icon: keyof typeof Ionicons.glyphMap; controller?: boolean };
-
-const ITEMS: Item[] = [
-  { name: 'Desktop', label: 'Desktop', icon: 'grid-outline' },
-  { name: 'Hypervisor', label: 'Hypervisor', icon: 'chatbubbles-outline' },
-  { name: 'MissionControl', label: 'Mission Control', icon: 'file-tray-full-outline' },
-  { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },
-  { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
-  { name: 'Apps', label: 'Apps', icon: 'globe-outline' },
-  { name: 'Memory', label: 'Memory', icon: 'bookmark-outline' },
-  { name: 'Files', label: 'Files', icon: 'folder-outline' },
-  { name: 'Skills', label: 'Skills', icon: 'sparkles-outline' },
-  { name: 'Metrics', label: 'Metrics', icon: 'stats-chart-outline' },
-  { name: 'Controller', label: 'Controller', icon: 'server-outline', controller: true },
-  { name: 'Settings', label: 'Settings', icon: 'settings-outline' },
-];
 
 const WIDTH = Math.min(320, Math.round(Dimensions.get('window').width * 0.82));
 
@@ -53,7 +37,12 @@ export function NavDrawer() {
 
   if (!mounted) return null;
 
-  const items = ITEMS.filter((i) => !i.controller || hasController(cfg));
+  // Same categorized IA as the web dashboard (#267); a group whose items are
+  // all filtered out (Controller unconfigured) drops entirely.
+  const groups = NAV_GROUPS.map((g) => ({
+    ...g,
+    items: g.items.filter((i) => !i.controller || hasController(cfg)),
+  })).filter((g) => g.items.length > 0);
   const host = (cfg.controllerHost || cfg.host || '').replace(/^https?:\/\//, '');
 
   const translateX = slide.interpolate({ inputRange: [0, 1], outputRange: [-WIDTH, 0] });
@@ -82,25 +71,31 @@ export function NavDrawer() {
           </View>
 
           <View style={styles.items}>
-            {items.map((it) => {
-              const on = it.name === active;
-              return (
-                <Pressable
-                  key={it.name}
-                  onPress={() => navigateTo(it.name)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on }}
-                  style={({ pressed }) => [styles.item, on && styles.itemActive, pressed && styles.itemPressed]}
-                >
-                  <Ionicons
-                    name={on ? (it.icon.replace('-outline', '') as keyof typeof Ionicons.glyphMap) : it.icon}
-                    size={20}
-                    color={on ? colors.accent : colors.textMuted}
-                  />
-                  <Text style={[styles.itemLabel, on && styles.itemLabelActive]}>{it.label}</Text>
-                </Pressable>
-              );
-            })}
+            {groups.map((g, gi) => (
+              <View key={g.title ?? 'tail'} style={[styles.group, gi > 0 && styles.groupGap]}>
+                {g.title ? (
+                  <Text style={styles.groupTitle}>{g.title}</Text>
+                ) : (
+                  <View style={styles.groupDivider} />
+                )}
+                {g.items.map((it) => {
+                  const on = it.name === active;
+                  const icon = (on ? it.icon.replace('-outline', '') : it.icon) as keyof typeof Ionicons.glyphMap;
+                  return (
+                    <Pressable
+                      key={it.name}
+                      onPress={() => navigateTo(it.name)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: on }}
+                      style={({ pressed }) => [styles.item, on && styles.itemActive, pressed && styles.itemPressed]}
+                    >
+                      <Ionicons name={icon} size={20} color={on ? colors.accent : colors.textMuted} />
+                      <Text style={[styles.itemLabel, on && styles.itemLabelActive]}>{it.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ))}
           </View>
 
           <Text style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>kube-coder mobile</Text>
@@ -137,7 +132,19 @@ const styles = StyleSheet.create({
   brandName: { color: colors.text, fontSize: font.size.lg, fontWeight: '700', letterSpacing: -0.2 },
   brandHost: { color: colors.textFaint, fontSize: font.size.xs, marginTop: 1 },
 
-  items: { marginTop: space.md, gap: 2, flex: 1 },
+  items: { marginTop: space.md, flex: 1 },
+  group: { gap: 2 },
+  groupGap: { marginTop: space.md },
+  groupTitle: {
+    color: colors.textFaint,
+    fontSize: font.size.xs,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    paddingHorizontal: space.md,
+    paddingBottom: space.xs,
+  },
+  groupDivider: { height: 1, backgroundColor: colors.border, marginBottom: space.sm, marginHorizontal: space.sm },
   item: {
     flexDirection: 'row',
     alignItems: 'center',
