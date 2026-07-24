@@ -1,33 +1,40 @@
 /* Secondary nav (issue #439): General · Account · Providers · Integrations ·
-   Workspace. Real anchors (routeHref) so cmd-click opens a tab; scrolls
-   horizontally on narrow viewports instead of wrapping. */
+   Workspace. An underlined tab bar — reads as navigation (unlike pills, which
+   read as badges) with an unambiguous accent marker on the active group. Real
+   anchors (routeHref) so cmd-click opens a tab; scrolls horizontally on
+   narrow viewports instead of wrapping. */
 .settings-nav {
   display: flex;
-  gap: 6px;
+  gap: var(--size-1);
   max-width: 720px;
   margin: 0 auto var(--size-5);
+  border-bottom: 1px solid var(--border);
   overflow-x: auto;
   scrollbar-width: none;
 }
 .settings-nav::-webkit-scrollbar { display: none; }
-.settings-nav-pill {
+.settings-nav-tab {
   flex: 0 0 auto;
-  padding: 6px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px 9px;
   font-size: 13px;
+  white-space: nowrap;
   color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
   text-decoration: none;
-  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* the active underline sits on the bar's baseline rule */
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: color var(--motion-fast), background var(--motion-fast), border-color var(--motion-fast);
 }
-.settings-nav-pill:hover { color: var(--text); border-color: var(--border-2); }
-.settings-nav-pill-active {
+.settings-nav-tab:hover { color: var(--text); background: var(--surface-2); }
+.settings-nav-tab-active {
   color: var(--text);
   font-weight: 600;
-  background: var(--surface);
-  border-color: var(--border-2);
+  border-bottom-color: var(--accent);
 }
+.settings-nav-tab-active:hover { background: transparent; }
 
 /* Category cards on the General landing page — a table of contents into the
    grouped sub-pages (drill-in list on mobile). */

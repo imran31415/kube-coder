@@ -39,7 +39,7 @@ function renderAt(path: string) {
 }
 
 function activePill(): string | null {
-  const el = document.querySelector('.settings-nav-pill-active');
+  const el = document.querySelector('.settings-nav-tab-active');
   return el ? el.textContent : null;
 }
 

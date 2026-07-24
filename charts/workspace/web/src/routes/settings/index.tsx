@@ -93,9 +93,9 @@ function SettingsNav({ active }: { active: string }) {
   // group's pill visible so the user can tell where they are.
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    const pill = navRef.current?.querySelector('.settings-nav-pill-active');
-    if (pill && typeof pill.scrollIntoView === 'function') {
-      pill.scrollIntoView({ block: 'nearest', inline: 'center' });
+    const tab = navRef.current?.querySelector('.settings-nav-tab-active');
+    if (tab && typeof tab.scrollIntoView === 'function') {
+      tab.scrollIntoView({ block: 'nearest', inline: 'center' });
     }
   }, [active]);
 
@@ -104,7 +104,7 @@ function SettingsNav({ active }: { active: string }) {
       {SETTINGS_GROUPS.map((g) => (
         <a
           key={g.slug}
-          class={`settings-nav-pill ${active === g.slug ? 'settings-nav-pill-active' : ''}`}
+          class={`settings-nav-tab ${active === g.slug ? 'settings-nav-tab-active' : ''}`}
           href={routeHref(settingsPath(g.slug))}
           aria-current={active === g.slug ? 'page' : undefined}
           onClick={(e) => {
@@ -113,6 +113,7 @@ function SettingsNav({ active }: { active: string }) {
             navigate(settingsPath(g.slug));
           }}
         >
+          <Icon name={g.icon} size={14} />
           {g.title}
         </a>
       ))}
