@@ -1,3 +1,70 @@
+/* Secondary nav (issue #439): General · Account · Providers · Integrations ·
+   Workspace. Real anchors (routeHref) so cmd-click opens a tab; scrolls
+   horizontally on narrow viewports instead of wrapping. */
+.settings-nav {
+  display: flex;
+  gap: 6px;
+  max-width: 720px;
+  margin: 0 auto var(--size-5);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.settings-nav::-webkit-scrollbar { display: none; }
+.settings-nav-pill {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  text-decoration: none;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.settings-nav-pill:hover { color: var(--text); border-color: var(--border-2); }
+.settings-nav-pill-active {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--surface);
+  border-color: var(--border-2);
+}
+
+/* Category cards on the General landing page — a table of contents into the
+   grouped sub-pages (drill-in list on mobile). */
+.settings-cats { display: flex; flex-direction: column; gap: var(--size-2); }
+.settings-cat {
+  display: flex;
+  align-items: center;
+  gap: var(--size-3);
+  padding: var(--size-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.settings-cat:hover { border-color: var(--border-2); background: var(--surface); }
+.settings-cat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+.settings-cat-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.settings-cat-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.settings-cat-blurb { font-size: 12px; }
+
+/* Anchor wrappers around section components (deep links like
+   /settings/providers#mcp) — layout-neutral. */
+.settings-anchor { scroll-margin-top: var(--size-4); }
+
 .route-settings .settings-section {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
