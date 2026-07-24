@@ -59,13 +59,20 @@ python3 harness/bench.py --lang python --backend claude --workers 6
 
 ## See it
 
+Three screenshots that capture the whole idea — a workspace home you drive from one composer, every agent in one queue, and a chat that operates the pod for you:
+
+<img width="100%" alt="Desktop home — start-a-build composer with the Mission Control strip" src="docs/screenshots/desktop-home-mission-strip.png" />
+<p align="center"><sub><b>Desktop home</b> — ask anything or start a build in one line; the Mission Control strip keeps running, waiting, and finished agents one glance away</sub></p>
+
+<img width="100%" alt="Mission Control — every agent across builds, chats and sub-agents in one board" src="docs/screenshots/mission-control-board.png" />
+<p align="center"><sub><b>Mission Control</b> — every agent across builds, chats, and sub-agents in one queue: waiting on you, running, needs review, done</sub></p>
+
+<img width="100%" alt="Hypervisor chat rendering a screenshot it captured inline" src="docs/screenshots/hypervisor-inline-media.png" />
+<p align="center"><sub><b>Hypervisor</b> — chat with the workspace and it acts; here it captured a screenshot and rendered it right in the thread</sub></p>
+
+### More surfaces
+
 <table>
-   <tr>
-    <td width="50%" valign="top">
-      <img width="100%" alt="Mission Control" src="https://github.com/user-attachments/assets/50f9d317-37cf-4ce8-89de-40f62fca2a1e" />
-      <br/><sub><b>Mission Control</b> — Manage multiple projects/tasks/AIs in one unified view</sub>
-    </td>
-  </tr>
   <tr>
     <td width="50%" valign="top">
       <img width="100%" alt="Fullstack Python app in split-pane with terminal" src="https://github.com/user-attachments/assets/c48d004e-a97b-4107-8035-dcf36c1d9186" />
@@ -165,11 +172,12 @@ Every workspace exposes the same set of surfaces, all behind a single GitHub OAu
 
 ### The dashboard
 
-<img width="100%" alt="Desktop home tab with a start-a-build composer, shortcuts, and recent activity" src="docs/screenshots/desktop-prompt-composer.png" />
+<img width="100%" alt="Desktop home tab (light theme) with the centered composer and Mission Control strip" src="docs/screenshots/desktop-redesign-light.png" />
 
 The dashboard at `/` is a single Preact app:
 
-- **Desktop** — your workspace home: a top-of-page composer to start a build in one line, pinned shortcuts, and recent activity.
+- **Desktop** — your workspace home: a centered ask-anything / start-a-build composer, a Mission Control strip of recent agents, and a dock of pinned shortcuts.
+- **Mission Control** — every agent across builds, chats, and sub-agents on one board: waiting on you, running, and done.
 - **Build** — live + past agent sessions on the left, a detail pane on the right with **Terminal**, **Preview** (split ttyd ┃ noVNC), **Send message** (chat mirror of the tmux pane, with image paste), **Info**, and **Subagents** tabs.
 - **Memory** — persistent, SQLite-backed memory with history + relations, mirrored over MCP.
 - **Triggers** — webhooks + cron jobs that spawn builds on a schedule or an inbound POST.
