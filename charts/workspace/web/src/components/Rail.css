@@ -46,8 +46,10 @@
 }
 .rail-group-label:hover { background: var(--surface-2); color: var(--text); }
 .rail-group-title { flex: 1; min-width: 0; }
-/* Header of a group whose *label* is a landing link (Mission Control). */
-.rail-group-link-active { color: var(--accent); }
+/* Header of a group whose *label* is a landing link (Mission Control):
+   the link is a full .rail-item (icon + label + hover/active states) so it
+   reads as clickable like every other nav entry; only the chevron differs. */
+.rail-group-header > .rail-item { flex: 1; min-width: 0; }
 .rail-group-chev {
   display: inline-flex;
   align-items: center;
@@ -65,6 +67,7 @@
 .rail-group-chev:hover { background: var(--surface-2); color: var(--text); }
 /* Collapsed group holding the active route — keep orientation visible. */
 .rail-group-header-active .rail-group-label,
+.rail-group-header-active .rail-item,
 .rail-group-header-active .rail-group-chev { color: var(--accent); }
 
 .rail-group-items { display: flex; flex-direction: column; gap: 2px; }
