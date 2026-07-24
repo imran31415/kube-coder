@@ -1,5 +1,3 @@
-<img width="1512" height="952" alt="image" src="https://github.com/user-attachments/assets/204a08a2-f898-47ba-8ee8-8f8125cee958" />
-
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm](https://img.shields.io/badge/Helm-3.0%2B-blue?logo=helm)](https://helm.sh)
