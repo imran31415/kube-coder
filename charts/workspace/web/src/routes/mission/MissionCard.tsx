@@ -45,6 +45,38 @@ export function cardHref(id: string): string {
   return kind === 'chat' ? `/hypervisor/${ref}` : `/tasks/${ref}`;
 }
 
+/** Evidence chip row on a Done card (and in the drawer): test tallies and
+ *  tsc results as ✓/✕ pills, PR links as neutral pills. Renders nothing when
+ *  the card carries no evidence. */
+export function EvidenceChips({ evidence }: { evidence: Card['evidence'] }) {
+  if (evidence.length === 0) return null;
+  return (
+    <div class="mission-evidence">
+      {evidence.map((ev) =>
+        ev.link ? (
+          <a
+            key={ev.label}
+            class="mission-chip mission-chip-link"
+            href={ev.link}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {ev.label} ↗
+          </a>
+        ) : (
+          <span
+            key={ev.label}
+            class={`mission-chip ${ev.ok ? 'mission-chip-ok' : 'mission-chip-bad'}`}
+          >
+            {ev.ok ? '✓' : '✕'} {ev.label}
+          </span>
+        ),
+      )}
+    </div>
+  );
+}
+
 /**
  * One board card. The whole body is clickable — it opens the detail drawer
  * when the board provides onSelect (falling back to full-session navigation),
@@ -128,6 +160,8 @@ export function MissionCard({
           {card.outcome.ok ? '✓' : '✕'} {card.outcome.detail}
         </div>
       )}
+
+      <EvidenceChips evidence={card.evidence} />
 
       <div class="mission-card-title">{card.title}</div>
       {card.headline && <div class="mission-card-headline muted">{card.headline}</div>}

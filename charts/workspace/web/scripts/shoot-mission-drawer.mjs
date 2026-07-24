@@ -30,10 +30,10 @@ const BUILD = {
   assistant: 'claude', model: '', workdir: '/home/dev/kube-coder',
   repo: 'kube-coder', branch: 'issue-91-trigger-history',
   created_at: now - 1920, updated_at: now - 12, finished_at: null,
-  waiting_since: null, waiting_prompt: null, outcome: null, parent_id: null,
+  waiting_since: null, waiting_prompt: null, outcome: null, evidence: [], parent_id: null,
   children: [
     { id: 'subagent:t_testwriter', title: 'test-writer', state: 'running' },
-    { id: 'subagent:t_docs', title: 'docs', state: 'review' },
+    { id: 'subagent:t_docs', title: 'docs', state: 'done' },
   ],
 };
 
@@ -45,11 +45,11 @@ const OTHERS = [
     assistant: 'codex', model: '', workdir: '/home/dev/kube-coder',
     repo: 'kube-coder', branch: 'issue-91-trigger-history',
     created_at: now - 560, updated_at: now - 30, finished_at: null,
-    waiting_since: null, waiting_prompt: null, outcome: null,
+    waiting_since: null, waiting_prompt: null, outcome: null, evidence: [],
     parent_id: 'build:t_trigger91', children: [],
   },
   {
-    id: 'subagent:t_docs', ref_id: 't_docs', kind: 'subagent', state: 'review',
+    id: 'subagent:t_docs', ref_id: 't_docs', kind: 'subagent', state: 'done',
     title: 'docs',
     headline: 'Wrote docs/triggers.md covering the run-history endpoints',
     assistant: 'ante', model: '', workdir: '/home/dev/kube-coder',
@@ -57,13 +57,17 @@ const OTHERS = [
     created_at: now - 1100, updated_at: now - 700, finished_at: now - 700,
     waiting_since: null, waiting_prompt: null,
     outcome: { ok: true, detail: 'completed' },
+    evidence: [
+      { label: 'vitest 214', ok: true, link: null },
+      { label: 'PR #431', ok: null, link: 'https://github.com/imran31415/kube-coder/pull/431' },
+    ],
     parent_id: 'build:t_trigger91', children: [],
   },
 ];
 
 const QUEUE = {
   cards: [BUILD, ...OTHERS],
-  pulse: { running: 2, waiting: 0, review: 1, done_today: 1, oldest_wait_s: 0, generated_at: now },
+  pulse: { running: 2, waiting: 0, done_today: 1, oldest_wait_s: 0, generated_at: now },
 };
 
 const DETAIL = {

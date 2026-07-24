@@ -14,7 +14,7 @@ function card(over: Partial<MissionCard>): MissionCard {
     repo: 'kube-coder', branch: 'kc/issue-425',
     created_at: now - 60, updated_at: now, finished_at: null,
     waiting_since: null, waiting_prompt: null, outcome: null,
-    parent_id: null, children: [],
+    evidence: [], parent_id: null, children: [],
     ...over,
   };
 }

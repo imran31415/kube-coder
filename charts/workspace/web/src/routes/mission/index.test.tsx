@@ -22,7 +22,7 @@ function card(over: Partial<MissionCard>): MissionCard {
     repo: 'kube-coder', branch: 'main',
     created_at: now - 60, updated_at: now, finished_at: null,
     waiting_since: null, waiting_prompt: null, outcome: null,
-    parent_id: null, children: [],
+    evidence: [], parent_id: null, children: [],
     ...over,
   };
 }
@@ -45,6 +45,11 @@ const sample: MissionCard[] = [
   card({
     id: 'build:v1', ref_id: 'v1', state: 'done', title: 'Sidebar reorganization',
     finished_at: now - 1560, outcome: { ok: true, detail: 'completed' },
+    evidence: [
+      { label: 'vitest 214', ok: true, link: null },
+      { label: 'tsc 2 errors', ok: false, link: null },
+      { label: 'PR #431', ok: null, link: 'https://github.com/o/r/pull/431' },
+    ],
   }),
   card({
     id: 'chat:d1', ref_id: 'd1', kind: 'chat', state: 'done', title: 'Debug DinD TLS',
@@ -90,6 +95,14 @@ describe('MissionRoute', () => {
     expect(screen.getByText('Trigger history')).toBeInTheDocument();
     expect(screen.getByText('Sidebar reorganization')).toBeInTheDocument();
     expect(screen.getByText('Debug DinD TLS')).toBeInTheDocument();
+  });
+
+  it('renders evidence chips on the done card', () => {
+    render(<MissionRoute />);
+    expect(screen.getByText('✓ vitest 214')).toBeInTheDocument();
+    expect(screen.getByText('✕ tsc 2 errors')).toBeInTheDocument();
+    const pr = screen.getByRole('link', { name: 'PR #431 ↗' });
+    expect(pr).toHaveAttribute('href', 'https://github.com/o/r/pull/431');
   });
 
   it('shows quick-reply buttons on the waiting card', () => {

@@ -156,6 +156,46 @@ class MissionControlQueueTests(unittest.TestCase):
         self.assertEqual(kill['state'], 'done')
         self.assertFalse(kill['outcome']['ok'])
 
+    # ── evidence chips (#425) ────────────────────────────────────────────
+
+    def test_done_card_carries_test_and_pr_evidence(self):
+        self._write_task('t_ev', status='completed',
+                         finished_at=time.time() - 300, output=(
+                             ' Tests  449 passed (449)\n'
+                             'Ran 1265 tests in 16.087s\n'
+                             'OK\n'
+                             'https://github.com/o/r/pull/431\n'))
+        card = self._card(self._queue(), 'build:t_ev')
+        self.assertEqual(card['evidence'], [
+            {'label': 'vitest 449', 'ok': True, 'link': None},
+            {'label': 'unittest 1265', 'ok': True, 'link': None},
+            {'label': 'PR #431', 'ok': None,
+             'link': 'https://github.com/o/r/pull/431'},
+        ])
+
+    def test_failed_evidence_and_last_tally_wins(self):
+        self._write_task('t_evbad', status='error', exit_code=1,
+                         finished_at=time.time() - 300, output=(
+                             ' Tests  3 failed | 446 passed (449)\n'
+                             ' Tests  449 passed (449)\n'      # re-run green
+                             'Ran 10 tests in 0.5s\n'
+                             'FAILED (failures=2, errors=1)\n'
+                             'src/a.ts(3,1): error TS2345: nope\n'))
+        card = self._card(self._queue(), 'build:t_evbad')
+        self.assertEqual(card['evidence'], [
+            {'label': 'vitest 449', 'ok': True, 'link': None},
+            {'label': 'unittest 3 failed · 7 passed', 'ok': False,
+             'link': None},
+            {'label': 'tsc 1 error', 'ok': False, 'link': None},
+        ])
+
+    def test_running_and_chat_cards_have_empty_evidence(self):
+        self._write_task('t_run', status='running',
+                         output='Tests  12 passed (12)\n')
+        result = self._queue(threads=[self._thread('th1')])
+        self.assertEqual(self._card(result, 'build:t_run')['evidence'], [])
+        self.assertEqual(self._card(result, 'chat:th1')['evidence'], [])
+
     def test_old_terminal_tasks_fall_off_the_board(self):
         self._write_task('t_old', status='completed',
                          finished_at=time.time() - server.MC_RECENT_SECONDS - 60)
