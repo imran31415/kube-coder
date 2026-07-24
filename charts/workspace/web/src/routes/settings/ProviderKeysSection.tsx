@@ -17,6 +17,7 @@ import { Input } from '../../components/primitives/Input';
 import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { ClaudeConnect } from '../../components/ClaudeConnect';
 import { pushToast } from '../../store/ui';
 
 const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
@@ -166,6 +167,14 @@ export function ProviderKeysSection() {
                 {st?.overridden_by_key && (
                   <div class="settings-sub-note settings-radio-hint muted">
                     A saved Anthropic API key is overriding this subscription.
+                  </div>
+                )}
+                {s.id === 'claude' && st && (!st.logged_in || st.expired) && (
+                  <div class="settings-sub-note">
+                    <ClaudeConnect
+                      reconnect={!!st.logged_in && !!st.expired}
+                      onConnected={() => void refreshSubs()}
+                    />
                   </div>
                 )}
               </div>

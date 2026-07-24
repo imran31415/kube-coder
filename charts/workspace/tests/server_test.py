@@ -1079,6 +1079,149 @@ class SubscriptionStatusManagerTests(unittest.TestCase):
         self.assertEqual(run.call_args[0][0], ['codex', 'logout'])
 
 
+class ClaudeWebLoginManagerTests(unittest.TestCase):
+    """Tests for ClaudeWebLoginManager: pane parsing/classification (pure),
+    code validation before anything reaches tmux, and poll-state cleanup.
+    Real tmux/claude are never invoked — subprocess.run is patched."""
+
+    M = None  # set in setUpClass so patch targets resolve after import
+
+    @classmethod
+    def setUpClass(cls):
+        cls.M = server.ClaudeWebLoginManager
+
+    # Realistic pane text: the CLI prints the URL after "visit:" and then
+    # blocks on the paste prompt. capture-pane -J has already joined wraps.
+    PANE_AWAITING = (
+        'Opening browser to sign in…\n'
+        'If the browser didn\'t open, visit: '
+        'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a'
+        '&response_type=code&scope=user%3Ainference&code_challenge=abc'
+        '&code_challenge_method=S256&state=xyz\n'
+        'Paste code here if prompted > '
+    )
+
+    def test_parse_login_url_extracts_full_url(self):
+        url = self.M.parse_login_url(self.PANE_AWAITING)
+        self.assertIsNotNone(url)
+        self.assertTrue(url.startswith('https://claude.com/cai/oauth/authorize?'))
+        # Must capture through to the end of the query string, not stop early.
+        self.assertIn('state=xyz', url)
+
+    def test_parse_login_url_none_without_url(self):
+        self.assertIsNone(self.M.parse_login_url('Opening browser to sign in…'))
+        self.assertIsNone(self.M.parse_login_url(''))
+        self.assertIsNone(self.M.parse_login_url(None))
+
+    def test_classify_states(self):
+        self.assertEqual(self.M.classify('Opening browser…'), ('pending', None))
+        self.assertEqual(self.M.classify(self.PANE_AWAITING), ('awaiting_code', None))
+        self.assertEqual(self.M.classify(self.PANE_AWAITING + '\n__KC_CLAUDE_EXIT__:0'),
+                         ('success', None))
+        state, err = self.M.classify(
+            self.PANE_AWAITING +
+            'Login failed: Request failed with status code 400\n'
+            '__KC_CLAUDE_EXIT__:1\n')
+        self.assertEqual(state, 'failed')
+        self.assertIn('400', err)
+
+    def test_classify_failed_without_detail_gets_generic_error(self):
+        state, err = self.M.classify('__KC_CLAUDE_EXIT__:1\n')
+        self.assertEqual(state, 'failed')
+        self.assertTrue(err)
+
+    def test_submit_code_rejects_malformed_before_tmux(self):
+        # Shell metacharacters, spaces, over-length — none may reach tmux.
+        with mock.patch('server.subprocess.run') as run:
+            for bad in ('', None, 'a b', 'code;rm -rf /', 'x' * 600, 'short',
+                        'código#state'):
+                ok, err = self.M.submit_code(bad)
+                self.assertFalse(ok, f'accepted {bad!r}')
+                self.assertTrue(err)
+            run.assert_not_called()
+
+    def test_submit_code_sends_literally_then_enter(self):
+        code = 'AbC123_def-456#StAtE789'
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            if argv[:2] == ['tmux', 'capture-pane']:
+                return mock.Mock(returncode=0, stdout=self.PANE_AWAITING, stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('server.subprocess.run', side_effect=fake_run):
+            ok, err = self.M.submit_code(code)
+        self.assertTrue(ok, err)
+        send_calls = [c for c in calls if c[1] == 'send-keys']
+        self.assertEqual(len(send_calls), 2)
+        # -l = literal: the code must never be interpreted as tmux key names.
+        self.assertIn('-l', send_calls[0])
+        self.assertIn(code, send_calls[0])
+        self.assertIn('Enter', send_calls[1])
+
+    def test_submit_code_requires_awaiting_prompt(self):
+        def fake_run(argv, **kw):
+            if argv[:2] == ['tmux', 'capture-pane']:
+                return mock.Mock(returncode=0, stdout='Opening browser…', stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('server.subprocess.run', side_effect=fake_run):
+            ok, err = self.M.submit_code('AbC123_def-456#state')
+        self.assertFalse(ok)
+        self.assertIn('Start over', err)
+
+    def test_start_requires_claude_cli(self):
+        with mock.patch('server.shutil.which', return_value=None), \
+                mock.patch('server.subprocess.run', side_effect=_fake_tmux_alive):
+            with self.assertRaises(RuntimeError):
+                self.M.start(timeout=0.1)
+
+    def test_poll_success_cleans_up_and_returns_subscriptions(self):
+        killed = []
+
+        def fake_run(argv, **kw):
+            if argv[1] == 'kill-session':
+                killed.append(argv)
+            if argv[:2] == ['tmux', 'capture-pane']:
+                return mock.Mock(returncode=0,
+                                 stdout='__KC_CLAUDE_EXIT__:0\n', stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('server.subprocess.run', side_effect=fake_run):
+            r = self.M.poll()
+        self.assertTrue(r['connected'])
+        self.assertFalse(r['in_progress'])
+        self.assertIn('subscriptions', r)
+        self.assertTrue(killed, 'session must be torn down after success')
+        # No token material in the poll payload.
+        self.assertNotIn('accessToken', json.dumps(r))
+
+    def test_poll_reports_failure_when_session_gone(self):
+        def fake_run(argv, **kw):
+            if argv[1] == 'has-session':
+                return mock.Mock(returncode=1, stdout='', stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('server.subprocess.run', side_effect=fake_run):
+            r = self.M.poll()
+        self.assertFalse(r['connected'])
+        self.assertFalse(r['in_progress'])
+        self.assertTrue(r['error'])
+
+    def test_poll_in_progress_while_awaiting_code(self):
+        def fake_run(argv, **kw):
+            if argv[:2] == ['tmux', 'capture-pane']:
+                return mock.Mock(returncode=0, stdout=self.PANE_AWAITING, stderr='')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('server.subprocess.run', side_effect=fake_run):
+            r = self.M.poll()
+        self.assertFalse(r['connected'])
+        self.assertTrue(r['in_progress'])
+        self.assertEqual(r['state'], 'awaiting_code')
+
+
 class CronManagerTests(unittest.TestCase):
     """Tests for CronManager: config CRUD, schedule validation, fire_token
     minting, kubectl apply manifest construction (without actually calling out
