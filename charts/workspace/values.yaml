@@ -324,6 +324,36 @@ hypervisor:
   # Working directory for hypervisor chat sessions.
   workdir: "/home/dev"
 
+# Conversation Gateway — chat with this workspace's agent over WhatsApp
+# (issue #325). OFF by default: with `enabled: false` the /api/gateway/*
+# config surface is inert AND templates/ingress-gateway.yaml (the public,
+# OAuth-bypassing webhook path) is not rendered at all.
+#
+# NO CREDENTIALS LIVE HERE. Each user brings their own provider account and
+# enters the credentials from the dashboard Settings page at runtime; they are
+# stored per-workspace on the PVC (0600) and never appear in the chart, a
+# ConfigMap, or an API response. See docs/ and issue #329.
+#
+# The in-app Walkie-Talkie loopback preview (/api/gateway/internal/*) is a
+# separate, always-available surface and is NOT affected by this flag.
+gateway:
+  enabled: false
+  # DEV/SANDBOX ONLY. Accepts inbound webhooks whose provider signature is
+  # missing or invalid. Production must leave this false — the chart refuses
+  # to render when it is combined with TLS (see templates/deployment.yaml).
+  allowUnsigned: false
+  # Optional, non-secret: the WhatsApp number shown in the Settings link
+  # helper. Purely cosmetic; the real sender comes from the user's credentials.
+  whatsappNumber: ""
+  limits:
+    # Per-workspace throttles on the authenticated config endpoints.
+    linkPerHour: 10         # POST /api/gateway/link (pairing codes)
+    testPerHour: 20         # POST /api/gateway/test (makes an outbound call)
+    # Edge caps on the public webhook ingress, mirroring ingress.publicLimits
+    # on the other internet-reachable surface.
+    webhookRps: 5
+    webhookConnections: 10
+
 # Optional alternate assistants. Claude Code is always available (above);
 # OpenCode (https://opencode.ai) becomes a *per-task* choice in the
 # dashboard whenever either of the blocks below is configured. Both blocks

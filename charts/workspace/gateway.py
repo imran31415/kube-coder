@@ -434,24 +434,118 @@ class TemplateRegistry:
         },
     }
 
+    # Providers that enforce real template registration on the user's own app.
+    # For these, the built-in DEFAULTS above are NOT proof of approval: a BYO
+    # user's Meta app has never seen `kc_task_complete`, so sending it would be
+    # rejected at the provider. Only an on-disk record (written by approve())
+    # counts. Twilio has no such registry, so it keeps the built-in behavior.
+    ENFORCING_PROVIDERS = frozenset({'meta'})
+
+    # A template name becomes a FILENAME on the PVC, so it is constrained at the
+    # boundary rather than trusted. Today every caller passes a literal, but
+    # approve()/list_templates() exist to be driven by user input (#332), and a
+    # name like '../../.ssh/authorized_keys' must never resolve to a path.
+    _NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_]{0,63}$')
+
     def __init__(self, base_dir: str = GATEWAY_DIR):
         self.dir = os.path.join(base_dir, 'templates')
 
-    def get(self, name: str) -> Optional[Dict[str, Any]]:
-        path = os.path.join(self.dir, f'{name}.json')
+    @classmethod
+    def _safe_name(cls, name: str) -> Optional[str]:
+        """The template name if it's a plain identifier, else None. Rejects path
+        separators, traversal, and anything that isn't [a-z0-9_]."""
+        name = (name or '').strip()
+        return name if cls._NAME_RE.match(name) else None
+
+    def _stored(self, name: str) -> Optional[Dict[str, Any]]:
+        """The per-workspace record for a template, or None if only a built-in
+        default exists. This is what distinguishes 'the user really registered
+        and approved this on their own provider app' from 'we ship a default'."""
+        safe = self._safe_name(name)
+        if safe is None:
+            return None
+        path = os.path.join(self.dir, f'{safe}.json')
         try:
             with open(path) as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
-            return dict(self.DEFAULTS.get(name)) if name in self.DEFAULTS else None
+            return None
 
-    def select(self, name: str) -> Optional[Dict[str, Any]]:
+    def get(self, name: str) -> Optional[Dict[str, Any]]:
+        stored = self._stored(name)
+        if stored is not None:
+            return stored
+        return dict(self.DEFAULTS.get(name)) if name in self.DEFAULTS else None
+
+    def select(self, name: str,
+               provider_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Return the template ONLY if it's approved — otherwise the caller must
-        not attempt an out-of-window send (WhatsApp would reject it)."""
+        not attempt an out-of-window send (WhatsApp would reject it).
+
+        For a provider that enforces template registration (Meta Cloud API), a
+        built-in default is not enough: the user must have registered the
+        template on their own app and recorded it via approve(). When they
+        haven't, this returns None and the caller degrades gracefully (the
+        out-of-window notification is simply skipped — issue #331)."""
         tpl = self.get(name)
-        if tpl and tpl.get('status') == 'approved':
-            return tpl
-        return None
+        if not tpl or tpl.get('status') != 'approved':
+            return None
+        if (provider_id or '').strip().lower() in self.ENFORCING_PROVIDERS \
+                and self._stored(name) is None:
+            return None
+        return tpl
+
+    def approve(self, name: str, provider_name: str = '',
+                language: str = 'en', body: str = '') -> Dict[str, Any]:
+        """Record that the user registered + got approval for this template on
+        their own provider app. Persists to the PVC so select() will hand it out
+        for an enforcing provider.
+
+        Raises ValueError on a name that isn't a plain identifier — this writes a
+        file, so the name is validated before it ever reaches a path."""
+        safe = self._safe_name(name)
+        if safe is None:
+            raise ValueError(f'invalid template name: {name!r}')
+        base = self.get(safe) or {'name': safe}
+        rec = dict(base)
+        rec.update({
+            'name': safe,
+            'provider_name': provider_name or base.get('provider_name', safe),
+            'language': language or base.get('language', 'en'),
+            'body': body or base.get('body', ''),
+            'status': 'approved',
+        })
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
+        tmp = os.path.join(self.dir, f'{safe}.json.tmp')
+        with open(tmp, 'w') as f:
+            json.dump(rec, f, indent=2)
+        os.replace(tmp, os.path.join(self.dir, f'{safe}.json'))
+        return rec
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        """Every known logical template with its effective status + whether the
+        approval is user-recorded (vs a shipped default)."""
+        names = set(self.DEFAULTS)
+        try:
+            for n in os.listdir(self.dir):
+                if not n.endswith('.json'):
+                    continue
+                safe = self._safe_name(n[:-5])
+                if safe:  # ignore anything that isn't a plain template name
+                    names.add(safe)
+        except OSError:
+            pass
+        out: List[Dict[str, Any]] = []
+        for n in sorted(names):
+            tpl = self.get(n) or {}
+            out.append({
+                'name': n,
+                'provider_name': tpl.get('provider_name', ''),
+                'language': tpl.get('language', 'en'),
+                'status': tpl.get('status', 'pending'),
+                'user_registered': self._stored(n) is not None,
+            })
+        return out
 
     def render_body(self, name: str, **args: Any) -> str:
         tpl = self.get(name) or {}
@@ -982,7 +1076,12 @@ class ConversationGateway:
             self._send(adapter, identity, chunk, quick_replies=quick)
 
     def _deliver_template(self, adapter, identity, thread_id, since) -> None:
-        tpl = self.templates.select('task_complete')
+        # The provider id comes from the live adapter (issue #328 gives every
+        # provider a `.name`). Meta enforces template registration on the user's
+        # own app, so an unregistered template resolves to None here and the
+        # notification is skipped rather than rejected by the provider (#331).
+        provider_id = getattr(getattr(adapter, 'provider', None), 'name', None)
+        tpl = self.templates.select('task_complete', provider_id=provider_id)
         if not tpl:
             return  # not approved → cannot send out-of-window (WhatsApp rejects)
         key = f'{thread_id}:{since}:template'
@@ -1025,9 +1124,16 @@ class ConversationGateway:
             seq=self.sequencer.next(identity),
         )
         try:
-            return adapter.outbound(msg)
+            result = adapter.outbound(msg)
         except Exception as e:
+            print(f'[gateway] outbound send raised: {e}', flush=True)
             return DeliveryResult(ok=False, error=str(e))
+        # A provider that returns ok=False (e.g. Twilio rejected the send) is
+        # otherwise silent — the caller discards the result — so surface it here.
+        # The error is a provider status/message, never secret material.
+        if not result.ok:
+            print(f'[gateway] outbound send failed: {result.error}', flush=True)
+        return result
 
 
 # ───────────────────────────────────────────────────────────────────────────

@@ -421,6 +421,105 @@ class TemplateRegistryTest(unittest.TestCase):
     def test_unknown_template_is_none(self):
         self.assertIsNone(self.tr.select('does_not_exist'))
 
+    # --- provider-aware approval (issue #331) ---------------------------------
+    # Meta enforces template registration on the USER's own app, so a shipped
+    # default is not proof of approval for a BYO deployment.
+
+    def test_meta_rejects_a_shipped_default(self):
+        self.assertIsNone(self.tr.select('task_complete', provider_id='meta'))
+
+    def test_meta_accepts_after_user_approval(self):
+        self.tr.approve('task_complete', provider_name='kc_task_complete')
+        tpl = self.tr.select('task_complete', provider_id='meta')
+        self.assertIsNotNone(tpl)
+        self.assertEqual(tpl['status'], 'approved')
+
+    def test_non_enforcing_providers_keep_default_behavior(self):
+        # Twilio has no template registry; the loopback preview passes None.
+        self.assertIsNotNone(self.tr.select('task_complete', provider_id='twilio'))
+        self.assertIsNotNone(self.tr.select('task_complete'))
+
+    def test_approve_is_case_insensitive_on_provider(self):
+        self.assertIsNone(self.tr.select('task_complete', provider_id='META'))
+
+    def test_list_templates_reports_user_registration(self):
+        before = {t['name']: t for t in self.tr.list_templates()}
+        self.assertFalse(before['task_complete']['user_registered'])
+        self.tr.approve('task_complete', provider_name='kc_task_complete')
+        after = {t['name']: t for t in self.tr.list_templates()}
+        self.assertTrue(after['task_complete']['user_registered'])
+
+    # --- the name becomes a filename, so it is constrained at the boundary ----
+
+    def test_approve_rejects_a_traversing_name(self):
+        outside = os.path.join(self.tmp, 'escaped.json')
+        for bad in ('../escaped', '../../etc/passwd', 'a/b', 'a\\b',
+                    '.', '..', '', 'Caps', 'has space', 'x' * 65):
+            with self.assertRaises(ValueError, msg=bad):
+                self.tr.approve(bad, provider_name='x')
+        self.assertFalse(os.path.exists(outside))
+
+    def test_select_never_reads_outside_the_template_dir(self):
+        # A traversing name resolves to no stored record rather than to a file
+        # elsewhere on the PVC, so it can't be laundered into an "approved" one.
+        with open(os.path.join(self.tmp, 'escaped.json'), 'w') as f:
+            f.write('{"name": "escaped", "status": "approved", "body": "x"}')
+        self.assertIsNone(self.tr._stored('../escaped'))
+        self.assertIsNone(self.tr.select('../escaped', provider_id='meta'))
+
+    def test_list_templates_ignores_junk_filenames(self):
+        os.makedirs(self.tr.dir, mode=0o700, exist_ok=True)
+        with open(os.path.join(self.tr.dir, 'Not Valid.json'), 'w') as f:
+            f.write('{}')
+        self.assertNotIn('Not Valid',
+                         [t['name'] for t in self.tr.list_templates()])
+
+
+class TemplateDeliveryDegradationTest(unittest.TestCase):
+    """An unapproved template must degrade to 'send nothing' rather than a
+    provider rejection (issue #331)."""
+
+    def test_meta_out_of_window_sends_nothing_when_unapproved(self):
+        tmp = tempfile.mkdtemp()
+        core = gw.ConversationGateway(
+            registry=gw.IdentityRegistry(base_dir=tmp),
+            client_factory=lambda b: None,
+            token_verifier=lambda t: True)
+        core.templates = gw.TemplateRegistry(base_dir=tmp)
+
+        sent = []
+
+        class _MetaishAdapter(gw.EchoAdapter):
+            # .provider.name is how the core learns the provider (issue #328).
+            provider = type('P', (), {'name': 'meta'})()
+
+            def outbound(self, msg):
+                sent.append(msg)
+                return gw.DeliveryResult(ok=True)
+
+        core._deliver_template(_MetaishAdapter(), 'whatsapp:+1', 'thread', 0)
+        self.assertEqual(sent, [], 'unapproved Meta template must not be sent')
+
+    def test_twilio_still_delivers(self):
+        tmp = tempfile.mkdtemp()
+        core = gw.ConversationGateway(
+            registry=gw.IdentityRegistry(base_dir=tmp),
+            client_factory=lambda b: None,
+            token_verifier=lambda t: True)
+        core.templates = gw.TemplateRegistry(base_dir=tmp)
+
+        sent = []
+
+        class _TwilioishAdapter(gw.EchoAdapter):
+            provider = type('P', (), {'name': 'twilio'})()
+
+            def outbound(self, msg):
+                sent.append(msg)
+                return gw.DeliveryResult(ok=True)
+
+        core._deliver_template(_TwilioishAdapter(), 'whatsapp:+1', 'thread', 0)
+        self.assertEqual(len(sent), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

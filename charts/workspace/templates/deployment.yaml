@@ -200,6 +200,42 @@ spec:
           value: {{ (.Values.hypervisor).defaultAssistant | default "claude" | quote }}
         - name: HYPERVISOR_WORKDIR
           value: {{ (.Values.hypervisor).workdir | default "/home/dev" | quote }}
+        {{- if (.Values.gateway).enabled }}
+        {{- if (.Values.gateway).allowUnsigned }}
+        {{- /*
+          allowUnsigned disables provider-signature verification, so ANYONE who
+          can reach the webhook can drive this workspace's agent. Refuse to
+          render it on a deployment that looks real. Two independent signals,
+          because TLS alone misses a cluster that terminates TLS upstream:
+            * ingress.tls.enabled — the chart is serving HTTPS itself
+            * ingress.auth.type=oauth2 — a multi-user deploy, and the ONLY mode
+              in which ingress-gateway.yaml publishes the webhook at all
+        */}}
+        {{- if .Values.ingress.tls.enabled }}
+        {{- fail "gateway.allowUnsigned=true is dev/sandbox only and must never be combined with TLS (production). Unset it, or disable TLS for a local dev deploy." }}
+        {{- end }}
+        {{- if eq .Values.ingress.auth.type "oauth2" }}
+        {{- fail "gateway.allowUnsigned=true is dev/sandbox only and must never be combined with ingress.auth.type=oauth2 — that mode publishes the webhook publicly, so an unsigned webhook would let anyone drive this workspace's agent." }}
+        {{- end }}
+        {{- end }}
+        # Conversation Gateway (issue #325). Only NON-SECRET config is injected
+        # here — provider credentials are supplied by the user at runtime and
+        # stored per-workspace on the PVC (issue #329), never via the chart.
+        - name: KC_GATEWAY_ENABLED
+          value: "true"
+        - name: KC_WHATSAPP_NUMBER
+          value: {{ (.Values.gateway).whatsappNumber | default "" | quote }}
+        - name: KC_GATEWAY_LINK_PER_HOUR
+          value: {{ ((.Values.gateway).limits).linkPerHour | default 10 | quote }}
+        - name: KC_GATEWAY_TEST_PER_HOUR
+          value: {{ ((.Values.gateway).limits).testPerHour | default 20 | quote }}
+        {{- if (.Values.gateway).allowUnsigned }}
+        # DEV ONLY — accepts unsigned/invalid-signature webhooks. The guard
+        # above prevents this from ever rendering alongside TLS.
+        - name: KC_ALLOW_UNSIGNED_WEBHOOKS
+          value: "true"
+        {{- end }}
+        {{- end }}
         {{- if .Values.update.selfServeSecretName }}
         # Self-serve version updates: the workspace backend brokers to the
         # controller's token-gated self-serve listener over the in-cluster
