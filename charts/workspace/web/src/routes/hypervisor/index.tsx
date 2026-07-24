@@ -31,6 +31,7 @@ import {
 import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
+import { restoreTarget } from '../../store/lastSession';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
@@ -117,9 +118,27 @@ export function HypervisorRoute() {
   }
 
   useEffect(() => {
-    void initHypervisor();
+    // On a bare /hypervisor entry (tab click, returning to the app), reopen
+    // the chat the user last had open — or the newest one — once the thread
+    // list is in. Mount-only, so the sidebar's "New" button and mobile back
+    // (in-route navigations to the bare path) still mean "new chat" and are
+    // never fought; a deep link (/hypervisor/<id>) always wins.
+    const enteredBare = !pathSuffix(currentPath.value).split('/')[0];
+    let cancelled = false;
+    void initHypervisor().then(() => {
+      if (cancelled || !enteredBare) return;
+      // Re-check the world after the async load: the user may have navigated
+      // away, opened a chat, or started composing a new thread meanwhile.
+      if (!currentPath.value.startsWith('/hypervisor')) return;
+      if (pathSuffix(currentPath.value).split('/')[0] || activeThreadId.value) return;
+      const id = restoreTarget('hypervisor', threads.value.map((t) => t.id));
+      if (id) navigate(`/hypervisor/${encodeURIComponent(id)}`, true);
+    });
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
-    return () => closeThread();
+    return () => {
+      cancelled = true;
+      closeThread();
+    };
   }, []);
 
   // URL-driven thread selection: `/hypervisor/<id>` opens that thread, a bare
