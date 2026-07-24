@@ -20,6 +20,7 @@ import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { pushToast } from '../../store/ui';
+import { navigate, routeHref } from '../../store/router';
 
 function fmtCountdown(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -261,7 +262,16 @@ export function MessagingSection() {
       <p class="settings-row-hint muted">
         Connect your own WhatsApp provider to chat with this workspace's agent over WhatsApp. Enter
         your provider credentials, paste the webhook URL into the provider console, then link your
-        number. Credentials are stored securely on your workspace disk and never shared.
+        number. Credentials are stored securely on your workspace disk and never shared.{' '}
+        <a
+          href={routeHref('/docs/whatsapp-gateway')}
+          onClick={(e) => {
+            e.preventDefault();
+            navigate('/docs/whatsapp-gateway');
+          }}
+        >
+          Provider setup guide ↗
+        </a>
       </p>
 
       {!available ? (

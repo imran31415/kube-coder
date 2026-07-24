@@ -214,6 +214,20 @@ All three live under **Triggers**, and what-fired-what is tracked in the memory 
 
 ---
 
+## Chat over WhatsApp
+
+Drive your workspace agent from WhatsApp. The gateway is **opt-in** and
+**bring-your-own-credentials** — connect your own Twilio (or Meta) app from
+**Settings → Messaging / WhatsApp**, paste the webhook URL into the provider
+console, tap **Link WhatsApp**, and text the pairing code once. After that you
+just chat: messages drive a Hypervisor turn and replies come back to your phone,
+with keyword commands (`new chat`, `stop`, `unlink`, `workspaces`, `@ws`) and a
+fail-closed signature check on every inbound. The same card is in the mobile app.
+
+Full guide: [`docs/whatsapp-gateway.md`](docs/whatsapp-gateway.md).
+
+---
+
 ## Pluggable AI assistants
 
 Every session — and every orchestrator sub-agent — picks its assistant at create-time, so you can mix them freely in one workspace. Keys live in `users-private/<name>/secrets/assistant.yaml` (gitignored); the public defaults are empty, so it ships Claude-only out of the box, and users can add their own provider keys self-service from **Settings**.

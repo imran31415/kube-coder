@@ -67,6 +67,12 @@ describe('MessagingSection', () => {
     expect(screen.getByText('WhatsApp sender number')).toBeTruthy();
   });
 
+  it('links to the provider setup guide in the docs', async () => {
+    render(<MessagingSection />);
+    const link = (await screen.findByText('Provider setup guide ↗')) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toContain('/docs/whatsapp-gateway');
+  });
+
   it('switching to Meta renders exactly Meta\'s declared fields', async () => {
     render(<MessagingSection />);
     fireEvent.click(await screen.findByText('Meta (WhatsApp Cloud API)'));
