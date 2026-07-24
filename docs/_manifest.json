@@ -34,6 +34,13 @@
       ]
     },
     {
+      "id": "messaging",
+      "title": "Messaging",
+      "pages": [
+        { "id": "whatsapp-gateway", "title": "WhatsApp gateway", "file": "whatsapp-gateway.md", "summary": "Chat with your workspace agent over WhatsApp: enable the gateway, connect Twilio, link your phone, keyword commands, and the security posture." }
+      ]
+    },
+    {
       "id": "workspace",
       "title": "Workspace",
       "pages": [

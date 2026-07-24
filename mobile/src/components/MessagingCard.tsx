@@ -174,6 +174,7 @@ export function MessagingCard({ readOnly }: { readOnly?: boolean }) {
   }
 
   const webhookUrl = cfg.host ? `${cfg.host.replace(/\/$/, '')}/api/gateway/whatsapp/webhook` : '';
+  const docsUrl = cfg.host ? `${cfg.host.replace(/\/$/, '')}/docs/whatsapp-gateway` : '';
   const verifyToken = spec?.credential_fields.some((f) => f.key === 'verify_token')
     ? cred?.fields['verify_token']?.value || ''
     : '';
@@ -195,6 +196,11 @@ export function MessagingCard({ readOnly }: { readOnly?: boolean }) {
         Connect your own WhatsApp provider to chat with this workspace over WhatsApp. Credentials are
         stored securely on your workspace disk.
       </Text>
+      {docsUrl ? (
+        <Pressable onPress={() => void Linking.openURL(docsUrl).catch(() => {})} hitSlop={6}>
+          <Text style={styles.guideLink}>Provider setup guide ↗</Text>
+        </Pressable>
+      ) : null}
 
       {/* Provider chooser */}
       {providers ? (
@@ -469,6 +475,7 @@ const styles = StyleSheet.create({
   codeBox: { alignItems: 'center', gap: 4, padding: space.md, backgroundColor: colors.card, borderRadius: radius.md },
   codeText: { color: colors.text, fontSize: font.size.xl, fontWeight: '800', letterSpacing: 4, fontFamily: font.mono },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  guideLink: { color: colors.accent, fontSize: font.size.sm, fontWeight: '600' },
   backdrop: { flex: 1, backgroundColor: '#000a', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: colors.bgElevated,
