@@ -320,7 +320,7 @@ function MissionStrip({
             pressed && { opacity: 0.7 },
           ]}
         >
-          <StatusPill status={c.state === 'review' ? 'done' : c.state} />
+          <StatusPill status={c.state} />
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={styles.missionTitle} numberOfLines={1}>
               {c.title}

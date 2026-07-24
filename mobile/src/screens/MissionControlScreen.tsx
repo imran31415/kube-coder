@@ -1,7 +1,7 @@
 /**
  * Mission Control (issue #425) — every agent across builds, hypervisor chats
  * and sub-agents in one prioritized queue, grouped into stacked swimlanes:
- * Waiting on you / Running / Needs review / Done. Fed by
+ * Waiting on you / Running / Done. Fed by
  * GET /api/missioncontrol/queue (cards arrive pre-sorted, waiting first).
  *
  * Poll-render perf (#373): the cards array only changes state identity when
@@ -24,12 +24,11 @@ import { usePolling } from '../util/usePolling';
 // navigator has no shared param list — each target validates its own params.
 type Nav = { navigate: (tab: string, opts?: object) => void };
 
-const SECTION_ORDER: MissionCardState[] = ['waiting', 'running', 'review', 'done'];
+const SECTION_ORDER: MissionCardState[] = ['waiting', 'running', 'done'];
 
 const SECTION_TITLES: Record<MissionCardState, string> = {
   waiting: 'Waiting on you',
   running: 'Running',
-  review: 'Needs review',
   done: 'Done',
 };
 
@@ -53,20 +52,6 @@ function durationLabel(seconds: number): string {
 /** "build:a1b2c3" → "build a1b2c3" for the lineage line. */
 function lineageLabel(id: string): string {
   return id.replace(':', ' ');
-}
-
-/** The state pill: canonical states ride the shared StatusPill; `review` has
- *  no slot in statusColor's set, so it renders the same pill shape done-style
- *  (green) but labeled REVIEW — raw server strings never hit the UI. */
-function StatePill({ state }: { state: MissionCardState }) {
-  if (state !== 'review') return <StatusPill status={state} />;
-  const c = colors.success;
-  return (
-    <View style={[styles.reviewPill, { borderColor: c + '59' }]}>
-      <View style={[styles.reviewDot, { backgroundColor: c }]} />
-      <Text style={[styles.reviewPillText, { color: c }]}>review</Text>
-    </View>
-  );
 }
 
 /** One agent card. Memo'd so the 4s poll never re-renders settled rows. */
@@ -103,7 +88,7 @@ const MissionCardRow = React.memo(function MissionCardRow({
       </View>
 
       <View style={styles.titleRow}>
-        <StatePill state={card.state} />
+        <StatusPill status={card.state} />
         <Text style={styles.title} numberOfLines={2}>
           {card.title}
         </Text>
@@ -134,7 +119,7 @@ const MissionCardRow = React.memo(function MissionCardRow({
         </Text>
       ) : null}
 
-      {card.outcome && (card.state === 'review' || card.state === 'done') ? (
+      {card.outcome && card.state === 'done' ? (
         <Text
           style={[styles.outcome, { color: card.outcome.ok ? colors.success : colors.danger }]}
           numberOfLines={2}
@@ -305,8 +290,6 @@ export default function MissionControlScreen() {
               {waiting}
             </Text>
             <Text style={waiting > 0 ? { color: colors.warning } : undefined}> waiting on you</Text>
-            <Text style={styles.pulseDot}> · </Text>
-            <Text style={styles.pulseNum}>{pulse.review}</Text> review
           </Text>
           <Text style={styles.pulseSub}>
             {pulse.done_today} done today
@@ -348,7 +331,7 @@ export default function MissionControlScreen() {
             item.type === 'header' ? (
               <View style={styles.sectionHeader}>
                 <View
-                  style={[styles.sectionDot, { backgroundColor: statusColor(item.state === 'review' ? 'done' : item.state) }]}
+                  style={[styles.sectionDot, { backgroundColor: statusColor(item.state) }]}
                 />
                 <Text style={styles.sectionTitle}>{SECTION_TITLES[item.state]}</Text>
                 <Text style={styles.sectionCount}>{item.count}</Text>
@@ -427,23 +410,4 @@ const styles = StyleSheet.create({
   replyText: { color: colors.accent, fontSize: font.size.sm, fontWeight: '600' },
   actions: { flexDirection: 'row', justifyContent: 'flex-end' },
   kill: { color: colors.danger, fontSize: font.size.sm, fontWeight: '700' },
-  // Mirrors ui.tsx StatusPill's shape — needed because 'review' isn't in the
-  // canonical status set (done-style colour, its own label).
-  reviewPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    backgroundColor: colors.surface2,
-  },
-  reviewDot: { width: 7, height: 7, borderRadius: 4, marginRight: 6 },
-  reviewPillText: {
-    fontSize: font.size.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
 });

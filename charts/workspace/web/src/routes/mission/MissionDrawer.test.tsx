@@ -115,7 +115,7 @@ describe('MissionDrawer', () => {
   });
 
   it('hides the composer for a finished build', async () => {
-    const done = card({ state: 'review', finished_at: now - 100, outcome: { ok: true, detail: 'completed' } });
+    const done = card({ state: 'done', finished_at: now - 100, outcome: { ok: true, detail: 'completed' } });
     stubFetch(detail({ card: done }));
     render(<MissionDrawer cardId="build:t1" onClose={() => {}} />);
     await waitFor(() => {

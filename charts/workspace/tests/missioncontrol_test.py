@@ -136,11 +136,11 @@ class MissionControlQueueTests(unittest.TestCase):
         self.assertEqual(len(card['waiting_prompt']['options']), 3)
         self.assertIsNotNone(card['waiting_since'])
 
-    def test_completed_build_goes_to_review_with_ok_outcome(self):
+    def test_completed_build_goes_to_done_with_ok_outcome(self):
         self._write_task('t_ok', status='completed',
                          finished_at=time.time() - 300)
         card = self._card(self._queue(), 'build:t_ok')
-        self.assertEqual(card['state'], 'review')
+        self.assertEqual(card['state'], 'done')
         self.assertEqual(card['outcome'], {'ok': True, 'detail': 'completed'})
 
     def test_error_and_killed_go_to_done_with_bad_outcome(self):
@@ -232,12 +232,12 @@ class MissionControlQueueTests(unittest.TestCase):
         states = [c['state'] for c in result['cards']]
         self.assertEqual(states, sorted(
             states, key=lambda s: {'waiting': 0, 'running': 1,
-                                   'review': 2, 'done': 3}[s]))
+                                   'done': 2}[s]))
         self.assertEqual(result['cards'][0]['id'], 'build:t_b')
         pulse = result['pulse']
         self.assertEqual(pulse['running'], 2)   # build + chat
         self.assertEqual(pulse['waiting'], 1)
-        self.assertEqual(pulse['review'], 1)
+        self.assertNotIn('review', pulse)
         self.assertEqual(pulse['done_today'], 1)
         self.assertGreaterEqual(pulse['oldest_wait_s'], 499)
 

@@ -23,7 +23,6 @@ import './mission.css';
 const COLUMNS: { state: MissionState; label: string }[] = [
   { state: 'waiting', label: 'Waiting on you' },
   { state: 'running', label: 'Running' },
-  { state: 'review', label: 'Needs review' },
   { state: 'done', label: 'Done' },
 ];
 
@@ -78,8 +77,8 @@ export function MissionRoute() {
             body: 'Builds, hypervisor chats and spawned sub-agents currently executing, each with a one-line headline of what it is doing right now.',
           },
           {
-            title: 'Needs review, then Done',
-            body: 'Completed builds park under Needs review; errors, kills and idle chats settle in Done. Click a card for its timeline, recent output and a follow-up composer; Open jumps to the full session.',
+            title: 'Done is the recent history',
+            body: 'Finished builds — completed, failed or killed — and idle chats settle in Done for the last 48 hours. Click a card for its timeline, recent output and a follow-up composer; Open jumps to the full session.',
           },
           {
             title: 'Filter to focus',
@@ -117,7 +116,6 @@ export function MissionRoute() {
           <span class={pulse.waiting > 0 ? 'mission-pulse-warn' : ''}>
             <b>{pulse.waiting}</b> waiting on you
           </span>
-          <span><b>{pulse.review}</b> needs review</span>
           <span><b>{pulse.done_today}</b> done today</span>
           {pulse.oldest_wait_s > 0 && (
             <span>oldest wait <b class="mission-pulse-warn">{waitLabel(pulse.oldest_wait_s)}</b></span>
