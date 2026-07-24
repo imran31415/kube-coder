@@ -65,14 +65,17 @@ function RailGroup({ group, active }: { group: NavGroup; active: string }) {
       {group.landing ? (
         // Landing groups (Mission Control): the label navigates, the
         // chevron toggles — two separate buttons for two separate actions.
+        // The link renders as a regular rail item (icon + label) so it
+        // reads as clickable, not as a section heading.
         <div class={`rail-group-header ${headerTint}`}>
           <button
             type="button"
-            class={`rail-group-label rail-group-link ${active === group.landing ? 'rail-group-link-active' : ''}`}
+            class={`rail-item rail-group-link ${active === group.landing ? 'rail-item-active' : ''}`}
             onClick={() => navigate(group.landing!)}
             aria-current={active === group.landing ? 'page' : undefined}
           >
-            {group.title}
+            <Icon name={ICONS[group.landing] ?? 'inbox'} size={16} />
+            <span class="rail-item-label">{group.title}</span>
           </button>
           <button
             type="button"
