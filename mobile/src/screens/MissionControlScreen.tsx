@@ -10,7 +10,7 @@
  */
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Linking, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getMissionQueue, killTask, sendMessage } from '../api/client';
 import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StatusPill } from '../components/ui';
@@ -126,6 +126,32 @@ const MissionCardRow = React.memo(function MissionCardRow({
         >
           {card.outcome.ok ? '✓' : '✗'} {card.outcome.detail}
         </Text>
+      ) : null}
+
+      {card.evidence.length > 0 ? (
+        <View style={styles.evidence}>
+          {card.evidence.map((ev) =>
+            ev.link ? (
+              <Pressable
+                key={ev.label}
+                onPress={() => void Linking.openURL(ev.link as string)}
+                accessibilityRole="link"
+                accessibilityLabel={ev.label}
+                style={styles.chip}
+              >
+                <Text style={[styles.chipText, { color: colors.accent }]}>{ev.label} ↗</Text>
+              </Pressable>
+            ) : (
+              <View key={ev.label} style={styles.chip}>
+                <Text
+                  style={[styles.chipText, { color: ev.ok ? colors.success : colors.danger }]}
+                >
+                  {ev.ok ? '✓' : '✗'} {ev.label}
+                </Text>
+              </View>
+            ),
+          )}
+        </View>
       ) : null}
 
       {card.state === 'waiting' && card.waiting_prompt ? (
@@ -387,6 +413,16 @@ const styles = StyleSheet.create({
   repoLine: { color: colors.textFaint, fontSize: font.size.xs, fontFamily: font.mono },
   lineage: { color: colors.textFaint, fontSize: font.size.xs },
   outcome: { fontSize: font.size.sm, lineHeight: 19 },
+  evidence: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
+  chip: {
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface2,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+  },
+  chipText: { fontSize: font.size.xs, fontWeight: '600' },
   prompt: {
     marginTop: space.xs,
     padding: space.md,

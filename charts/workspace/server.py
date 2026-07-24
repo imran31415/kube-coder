@@ -4898,14 +4898,13 @@ def _mc_clip(text, limit=_MC_HEADLINE_MAX):
     return text
 
 
-def _mc_headline_from_log(task_dir, fallback=''):
+def _mc_headline_from_text(text, fallback=''):
     """Derived one-liner: the last meaningful output line of a task.
 
-    Phase-1 headlines are honest rather than clever — the latest thing the
-    agent printed, ANSI-stripped, box-drawing and status-bar chrome skipped.
-    (Classifier-written headlines are a later phase of #425.)
+    Headlines are honest rather than clever — the latest thing the agent
+    printed, ANSI-stripped, box-drawing and status-bar chrome skipped.
+    Deterministic by design (no LLM pass).
     """
-    text = strip_ansi(_mc_tail(os.path.join(task_dir, 'output.log')))
     for line in reversed(text.splitlines()):
         s = _normalize_prompt_line(line)
         # Skip prompt-menu options and pure chrome; keep real content.
@@ -4915,6 +4914,85 @@ def _mc_headline_from_log(task_dir, fallback=''):
             continue
         return _mc_clip(s)
     return _mc_clip(fallback)
+
+
+# --- Evidence chips (#425) --------------------------------------------------
+# Deterministic parse of a finished task's output tail into chips like
+# "vitest 449", "tsc 2 errors", "PR #431" — so a Done card carries proof of
+# what happened without opening the session. Each chip is {label, ok, link}:
+# ok True/False colours ✓/✕, ok None is neutral (a link, e.g. a PR). Scanning
+# is line-ordered and last-occurrence-wins per signal, so a red run that was
+# re-run green reports green. No LLM — regex over the same bounded tail the
+# headline reads.
+
+_MC_EV_VITEST_RE = re.compile(
+    r'\bTests\s+(?:(\d+) failed \| )?(\d+) passed\b')
+_MC_EV_JEST_RE = re.compile(          # jest and helm-unittest share this shape
+    r'\bTests:\s+(?:(\d+) failed, )?(\d+) passed, \d+ total\b')
+_MC_EV_PYTEST_RE = re.compile(
+    r'\b(?:(\d+) failed, )?(\d+) passed\b[^\n]*\bin [\d.]+s')
+_MC_EV_UNITTEST_RAN_RE = re.compile(r'^Ran (\d+) tests? in\b')
+_MC_EV_UNITTEST_VERDICT_RE = re.compile(r'^(OK\b|FAILED\b)')
+_MC_EV_TSC_RE = re.compile(r'\berror TS\d+:')
+_MC_EV_PR_RE = re.compile(r'https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)')
+
+# Fixed chip order; families are keyed so the latest tally per runner wins.
+_MC_EV_TEST_FAMILIES = ('vitest', 'jest', 'pytest', 'unittest')
+
+
+def _mc_test_chip(family, failed, passed):
+    failed = int(failed or 0)
+    if failed:
+        return {'label': f'{family} {failed} failed · {passed} passed',
+                'ok': False, 'link': None}
+    return {'label': f'{family} {passed}', 'ok': True, 'link': None}
+
+
+def _mc_evidence_from_log(text):
+    """Chips from a finished task's ANSI-stripped output tail."""
+    tests = {}          # family → chip (last tally wins)
+    tsc_errors = 0
+    prs = {}            # number → url (dict keeps first url, dedupes mentions)
+    unittest_ran = None  # count from "Ran N tests", awaiting OK/FAILED verdict
+    for line in text.splitlines():
+        line = line.strip()
+        if unittest_ran is not None:
+            m = _MC_EV_UNITTEST_VERDICT_RE.match(line)
+            if m:
+                if m.group(1) == 'OK':
+                    failed = 0
+                else:  # "FAILED (failures=2, errors=1)" — sum what it names
+                    failed = sum(int(n) for n in re.findall(
+                        r'(?:failures|errors)=(\d+)', line)) or unittest_ran
+                tests['unittest'] = _mc_test_chip(
+                    'unittest', failed, max(unittest_ran - failed, 0))
+                unittest_ran = None
+        m = _MC_EV_UNITTEST_RAN_RE.match(line)
+        if m:
+            unittest_ran = int(m.group(1))
+        m = _MC_EV_VITEST_RE.search(line)
+        if m:
+            tests['vitest'] = _mc_test_chip('vitest', m.group(1), m.group(2))
+        m = _MC_EV_JEST_RE.search(line)
+        if m:
+            tests['jest'] = _mc_test_chip('jest', m.group(1), m.group(2))
+        elif _MC_EV_PYTEST_RE.search(line):
+            m = _MC_EV_PYTEST_RE.search(line)
+            tests['pytest'] = _mc_test_chip('pytest', m.group(1), m.group(2))
+        if _MC_EV_TSC_RE.search(line):
+            tsc_errors += 1
+        for m in _MC_EV_PR_RE.finditer(line):
+            prs.setdefault(m.group(1), m.group(0))
+    chips = [tests[f] for f in _MC_EV_TEST_FAMILIES if f in tests]
+    if tsc_errors:
+        s = 's' if tsc_errors > 1 else ''
+        chips.append({'label': f'tsc {tsc_errors} error{s}',
+                      'ok': False, 'link': None})
+    # Newest PR mention last in the log is usually the one that matters; cap
+    # at 2 so a chatty log can't flood the card.
+    for num, url in list(prs.items())[-2:]:
+        chips.append({'label': f'PR #{num}', 'ok': None, 'link': url})
+    return chips
 
 
 def _mc_headline_from_events(events_path, fallback=''):
@@ -4981,6 +5059,9 @@ def _mc_task_card(meta, task_dir, now):
     kind = 'subagent' if meta.get('parent_task_id') else 'build'
     prompt = meta.get('prompt', '')
     workdir = meta.get('workdir') or ''
+    # One bounded tail read feeds both the headline and (for finished tasks)
+    # the evidence chips.
+    log_text = strip_ansi(_mc_tail(os.path.join(task_dir, 'output.log')))
 
     card = {
         'id': f'{kind}:{task_id}',
@@ -4988,7 +5069,7 @@ def _mc_task_card(meta, task_dir, now):
         'kind': kind,
         'state': state,
         'title': meta.get('name') or _mc_clip(prompt, 60) or task_id,
-        'headline': _mc_headline_from_log(task_dir, fallback=prompt),
+        'headline': _mc_headline_from_text(log_text, fallback=prompt),
         'assistant': meta.get('assistant'),
         'model': '',
         'workdir': workdir,
@@ -5000,6 +5081,7 @@ def _mc_task_card(meta, task_dir, now):
         'waiting_since': meta.get('last_activity_at') if state == 'waiting' else None,
         'waiting_prompt': None,
         'outcome': None,
+        'evidence': _mc_evidence_from_log(log_text) if state == 'done' else [],
         'parent_id': (f"build:{meta['parent_task_id']}"
                       if meta.get('parent_task_id') else None),
         'children': [],  # filled by the assembler from sub_task_ids
@@ -5078,6 +5160,7 @@ def _mc_thread_card(summary, now):
         'waiting_since': None,
         'waiting_prompt': None,
         'outcome': None,
+        'evidence': [],  # chips are log-derived; chats have no output.log
         'parent_id': None,
         'children': [],
         '_sub_task_ids': [],

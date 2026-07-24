@@ -27,6 +27,14 @@ export interface MissionOutcome {
   detail: string;
 }
 
+/** One evidence chip parsed from a finished task's output tail — a test
+ *  tally, tsc errors, or a PR link. `ok` null renders neutral (a link). */
+export interface MissionEvidence {
+  label: string;
+  ok: boolean | null;
+  link: string | null;
+}
+
 /** Shallow reference to a spawned sub-agent, for the card's lineage line. */
 export interface MissionChildRef {
   id: string;
@@ -55,6 +63,8 @@ export interface MissionCard {
   waiting_since: number | null;
   waiting_prompt: MissionPrompt | null;
   outcome: MissionOutcome | null;
+  /** Chips on Done cards (empty for running/waiting cards and chats). */
+  evidence: MissionEvidence[];
   parent_id: string | null;
   children: MissionChildRef[];
 }

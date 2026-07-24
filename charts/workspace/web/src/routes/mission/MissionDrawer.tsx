@@ -12,7 +12,7 @@ import { pushToast } from '../../store/ui';
 import { Drawer } from '../../components/Drawer';
 import { Button } from '../../components/primitives/Button';
 import { MutatorOnly } from '../../components/MutatorOnly';
-import { rel, cardHref } from './MissionCard';
+import { rel, cardHref, EvidenceChips } from './MissionCard';
 
 // Live cards keep moving while the drawer is open — refresh on this cadence.
 const DETAIL_REFRESH_MS = 8000;
@@ -115,6 +115,7 @@ export function MissionDrawer({
             )}
           </div>
           {card.headline && <p class="mission-drawer-headline muted">{card.headline}</p>}
+          <EvidenceChips evidence={card.evidence} />
           {(card.repo || card.branch) && (
             <div class="mission-card-meta">
               {card.repo && <span>{card.repo}</span>}

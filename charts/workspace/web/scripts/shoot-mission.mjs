@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Focused screenshots of the Mission Control board (#425) — verifies the
- * four-column desktop grid, the waiting-card quick-reply block, lineage
+ * three-column desktop grid, evidence chips on Done cards, the waiting-card quick-reply block, lineage
  * lines, the pulse strip, and the mobile swimlane collapse. Mocks
  * /api/missioncontrol/queue with a fixture covering every card state.
  *
@@ -37,7 +37,7 @@ const CARDS = [
         { index: 3, label: 'No, and tell Claude what to do differently' },
       ],
     },
-    outcome: null, parent_id: null, children: [],
+    outcome: null, evidence: [], parent_id: null, children: [],
   },
   {
     id: 'build:t_trigger91', ref_id: 't_trigger91', kind: 'build', state: 'running',
@@ -46,10 +46,10 @@ const CARDS = [
     assistant: 'claude', model: '', workdir: '/home/dev/kube-coder',
     repo: 'kube-coder', branch: 'issue-91-trigger-history',
     created_at: now - 1920, updated_at: now - 12, finished_at: null,
-    waiting_since: null, waiting_prompt: null, outcome: null, parent_id: null,
+    waiting_since: null, waiting_prompt: null, outcome: null, evidence: [], parent_id: null,
     children: [
       { id: 'subagent:t_testwriter', title: 'test-writer', state: 'running' },
-      { id: 'subagent:t_docs', title: 'docs', state: 'review' },
+      { id: 'subagent:t_docs', title: 'docs', state: 'done' },
     ],
   },
   {
@@ -59,7 +59,7 @@ const CARDS = [
     assistant: 'codex', model: '', workdir: '/home/dev/kube-coder',
     repo: 'kube-coder', branch: 'issue-91-trigger-history',
     created_at: now - 560, updated_at: now - 30, finished_at: null,
-    waiting_since: null, waiting_prompt: null, outcome: null,
+    waiting_since: null, waiting_prompt: null, outcome: null, evidence: [],
     parent_id: 'build:t_trigger91', children: [],
   },
   {
@@ -68,28 +68,34 @@ const CARDS = [
     headline: 'Iterating on pricing section wording — waiting on a slow Vite build',
     assistant: 'claude', model: 'opus-4.8', workdir: '', repo: '', branch: '',
     created_at: now - 7400, updated_at: now - 95, finished_at: null,
-    waiting_since: null, waiting_prompt: null, outcome: null, parent_id: null,
+    waiting_since: null, waiting_prompt: null, outcome: null, evidence: [], parent_id: null,
     children: [],
   },
   {
-    id: 'build:t_sidebar', ref_id: 't_sidebar', kind: 'build', state: 'review',
+    id: 'build:t_sidebar', ref_id: 't_sidebar', kind: 'build', state: 'done',
     title: 'Sidebar reorganization (#267)',
     headline: 'Grouped rail into Work / Knowledge / System sections; PR opened',
     assistant: 'claude', model: '', workdir: '/home/dev/kube-coder',
     repo: 'kube-coder', branch: 'issue-267-sidebar',
     created_at: now - 9800, updated_at: now - 1560, finished_at: now - 1560,
     waiting_since: null, waiting_prompt: null,
-    outcome: { ok: true, detail: 'completed' }, parent_id: null, children: [],
+    outcome: { ok: true, detail: 'completed' },
+    evidence: [
+      { label: 'vitest 214', ok: true, link: null },
+      { label: 'unittest 1265', ok: true, link: null },
+      { label: 'PR #431', ok: null, link: 'https://github.com/imran31415/kube-coder/pull/431' },
+    ],
+    parent_id: null, children: [],
   },
   {
-    id: 'subagent:t_docs', ref_id: 't_docs', kind: 'subagent', state: 'review',
+    id: 'subagent:t_docs', ref_id: 't_docs', kind: 'subagent', state: 'done',
     title: 'docs',
     headline: 'Wrote docs/triggers.md covering the run-history endpoints',
     assistant: 'ante', model: '', workdir: '/home/dev/kube-coder',
     repo: 'kube-coder', branch: 'issue-91-trigger-history',
     created_at: now - 1100, updated_at: now - 700, finished_at: now - 700,
     waiting_since: null, waiting_prompt: null,
-    outcome: { ok: true, detail: 'completed' },
+    outcome: { ok: true, detail: 'completed' }, evidence: [],
     parent_id: 'build:t_trigger91', children: [],
   },
   {
@@ -100,7 +106,9 @@ const CARDS = [
     repo: 'kube-coder', branch: 'main',
     created_at: now - 16000, updated_at: now - 14200, finished_at: now - 14200,
     waiting_since: null, waiting_prompt: null,
-    outcome: { ok: false, detail: 'error · exit 1' }, parent_id: null, children: [],
+    outcome: { ok: false, detail: 'error · exit 1' },
+    evidence: [{ label: 'tsc 3 errors', ok: false, link: null }],
+    parent_id: null, children: [],
   },
   {
     id: 'chat:h_dind', ref_id: 'h_dind', kind: 'chat', state: 'done',
@@ -109,14 +117,14 @@ const CARDS = [
     assistant: 'claude', model: '', workdir: '', repo: '', branch: '',
     created_at: now - 30000, updated_at: now - 18500, finished_at: null,
     waiting_since: null, waiting_prompt: null,
-    outcome: { ok: true, detail: 'idle — resumable' }, parent_id: null,
+    outcome: { ok: true, detail: 'idle — resumable' }, evidence: [], parent_id: null,
     children: [],
   },
 ];
 const QUEUE = {
   cards: CARDS,
   pulse: {
-    running: 3, waiting: 1, review: 2, done_today: 4,
+    running: 3, waiting: 1, done_today: 4,
     oldest_wait_s: 840, generated_at: now,
   },
 };

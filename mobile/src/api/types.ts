@@ -161,6 +161,14 @@ export interface MissionCardChild {
   state: string;
 }
 
+/** One evidence chip parsed from a finished task's output tail — a test
+ *  tally, tsc errors, or a PR link. `ok` null renders neutral (a link). */
+export interface MissionEvidence {
+  label: string;
+  ok: boolean | null;
+  link: string | null;
+}
+
 export interface MissionCard {
   /** Namespaced id, e.g. "build:<id>" | "chat:<id>" | "subagent:<id>". */
   id: string;
@@ -181,6 +189,8 @@ export interface MissionCard {
   waiting_since: number | null;
   waiting_prompt: MissionWaitingPrompt | null;
   outcome: { ok: boolean; detail: string } | null;
+  /** Chips on Done cards (empty for running/waiting cards and chats). */
+  evidence: MissionEvidence[];
   parent_id: string | null;
   children: MissionCardChild[];
 }

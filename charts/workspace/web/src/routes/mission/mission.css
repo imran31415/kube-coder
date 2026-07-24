@@ -243,6 +243,30 @@
 .mission-outcome-ok { color: var(--success); }
 .mission-outcome-bad { color: var(--danger); }
 
+/* ---- evidence chips on Done cards (#425) ---- */
+.mission-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.mission-chip {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+.mission-chip-ok { color: var(--success); }
+.mission-chip-bad { color: var(--danger); }
+.mission-chip-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.mission-chip-link:hover { border-color: var(--accent); }
+
 /* ---- waiting prompt + quick replies ---- */
 .mission-prompt {
   border: 1px solid var(--border);
