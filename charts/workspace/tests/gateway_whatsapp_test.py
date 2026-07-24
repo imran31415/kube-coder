@@ -146,6 +146,26 @@ class TwilioOutboundTest(unittest.TestCase):
         self.assertEqual(payloads[0]['To'], 'whatsapp:+2')
         self.assertEqual(payloads[0]['From'], 'whatsapp:+1')
 
+    def test_bare_e164_sender_gets_whatsapp_prefix(self):
+        # The Settings UI accepts a plain +E164 sender; Twilio's WhatsApp API
+        # requires the `whatsapp:` channel prefix on BOTH ends or it rejects the
+        # send (21910). Normalize so a naturally-entered number still delivers.
+        prov = wa.TwilioProvider(auth_token='t', account_sid='AC',
+                                 from_number='+14155238886')
+        caps = gw.Capabilities(max_text_len=4096)
+        msg = gw.OutboundMessage(channel_identity='whatsapp:+2', text='hi')
+        payloads = prov.build_payloads(msg, caps)
+        self.assertEqual(payloads[0]['From'], 'whatsapp:+14155238886')
+        self.assertEqual(payloads[0]['To'], 'whatsapp:+2')
+
+    def test_already_prefixed_sender_is_untouched(self):
+        prov = wa.TwilioProvider(auth_token='t', account_sid='AC',
+                                 from_number='whatsapp:+14155238886')
+        caps = gw.Capabilities(max_text_len=4096)
+        msg = gw.OutboundMessage(channel_identity='whatsapp:+2', text='hi')
+        payloads = prov.build_payloads(msg, caps)
+        self.assertEqual(payloads[0]['From'], 'whatsapp:+14155238886')
+
     def test_choice_degrades_to_numbered_text(self):
         prov = wa.TwilioProvider(auth_token='t', account_sid='AC')
         caps = gw.Capabilities(buttons=True, max_buttons=3, max_text_len=4096)
@@ -177,6 +197,57 @@ class MetaSignatureTest(unittest.TestCase):
         raw = gw.RawRequest(raw_body=b'{"entry":[1]}',
                             headers={'X-Hub-Signature-256': sig})
         self.assertFalse(prov.verify(raw))
+
+
+class SignatureFailClosedTest(unittest.TestCase):
+    """Both providers must reject an unsigned/forged webhook when the dev
+    escape hatch is off — the posture every production render ships (#331)."""
+
+    def setUp(self):
+        self._saved = os.environ.pop('KC_ALLOW_UNSIGNED_WEBHOOKS', None)
+
+    def tearDown(self):
+        if self._saved is not None:
+            os.environ['KC_ALLOW_UNSIGNED_WEBHOOKS'] = self._saved
+        else:
+            os.environ.pop('KC_ALLOW_UNSIGNED_WEBHOOKS', None)
+
+    # -- Twilio --
+    def test_twilio_unsigned_rejected(self):
+        prov = wa.TwilioProvider(auth_token='tok', account_sid='AC1')
+        self.assertFalse(prov.verify(gw.RawRequest(url='u', headers={}, form={'Body': 'x'})))
+
+    def test_twilio_forged_rejected(self):
+        prov = wa.TwilioProvider(auth_token='tok', account_sid='AC1')
+        raw = gw.RawRequest(url='u', headers={'X-Twilio-Signature': 'forged'},
+                            form={'Body': 'x'})
+        self.assertFalse(prov.verify(raw))
+
+    # -- Meta (the missing-signature case was previously unpinned) --
+    def test_meta_unsigned_rejected(self):
+        prov = wa.MetaProvider(app_secret='s')
+        self.assertFalse(prov.verify(gw.RawRequest(raw_body=b'{}', headers={})))
+
+    def test_meta_forged_rejected(self):
+        prov = wa.MetaProvider(app_secret='s')
+        raw = gw.RawRequest(raw_body=b'{}',
+                            headers={'X-Hub-Signature-256': 'sha256=deadbeef'})
+        self.assertFalse(prov.verify(raw))
+
+    def test_meta_correct_signature_accepted(self):
+        secret, body = 'app-secret', b'{"entry":[]}'
+        sig = 'sha256=' + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        prov = wa.MetaProvider(app_secret=secret)
+        raw = gw.RawRequest(raw_body=body, headers={'X-Hub-Signature-256': sig})
+        self.assertTrue(prov.verify(raw))
+
+    def test_opt_in_allows_unsigned_for_dev(self):
+        os.environ['KC_ALLOW_UNSIGNED_WEBHOOKS'] = '1'
+        # Only when the provider has no secret configured at all (sandbox).
+        self.assertTrue(wa.TwilioProvider().verify(
+            gw.RawRequest(url='u', headers={}, form={})))
+        self.assertTrue(wa.MetaProvider().verify(
+            gw.RawRequest(raw_body=b'{}', headers={})))
 
 
 class MetaHandshakeTest(unittest.TestCase):

@@ -72,7 +72,7 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
 try:
     from gateway import (ConversationGateway, IdentityRegistry,
                         LocalHypervisorClient, RawRequest, GatewayPreview,
-                        INTERNAL_IDENTITY)
+                        RateLimiter, INTERNAL_IDENTITY)
     from adapters.whatsapp import (WhatsAppAdapter, build_provider as
                                    gw_build_provider, list_providers as
                                    gw_list_providers, get_provider_spec as
@@ -85,6 +85,7 @@ except Exception as _gw_import_err:  # broken install shouldn't crash the server
     LocalHypervisorClient = None  # type: ignore
     RawRequest = None  # type: ignore
     GatewayPreview = None  # type: ignore
+    RateLimiter = None  # type: ignore
     INTERNAL_IDENTITY = 'internal:local'  # type: ignore
     WhatsAppAdapter = None  # type: ignore
     gw_build_provider = None  # type: ignore
@@ -217,6 +218,53 @@ HYPERVISOR_PREAMBLE = (
 # minting a pairing code, so the user knows which WhatsApp number to message.
 # Purely informational; the number itself is configured on the provider side.
 GATEWAY_WHATSAPP_NUMBER = os.environ.get('KC_WHATSAPP_NUMBER', '')
+
+# Conversation Gateway master switch (issue #331). The chart sets this only when
+# `gateway.enabled` is true, so the external WhatsApp surface — the inbound
+# webhook, the credential/catalog/test config API, and the pairing-link CRUD —
+# is OPT-IN. Off by default so a workspace that never configured messaging
+# doesn't expose those routes at all.
+#
+# NOTE: this deliberately does NOT gate /api/gateway/internal/* — the in-app
+# Walkie-Talkie loopback preview is a separate, always-available feature that
+# shares the same gateway core.
+GATEWAY_ENABLED = os.environ.get('KC_GATEWAY_ENABLED', 'false').strip().lower() in (
+    '1', 'true', 'yes', 'on')
+
+# Per-workspace throttles for the authenticated gateway config endpoints
+# (issue #331). These sit behind the ingress, so every request arrives with the
+# ingress's address — a per-IP key would be meaningless. A single fixed key per
+# bucket is exactly the intended semantic: a per-workspace cap.
+#   * link  — minting pairing codes (each one is a live, bindable credential)
+#   * test  — POST /api/gateway/test makes an OUTBOUND network call per request,
+#             so it's the real abuse vector; credential writes share this bucket.
+def _gw_limiter(env_var, default):
+    if RateLimiter is None:
+        return None
+    try:
+        cap = int(os.environ.get(env_var, default))
+    except ValueError:
+        cap = int(default)
+    return RateLimiter(max_events=cap, window_seconds=3600.0)
+
+
+_GW_LINK_LIMITER = _gw_limiter('KC_GATEWAY_LINK_PER_HOUR', '10')
+_GW_TEST_LIMITER = _gw_limiter('KC_GATEWAY_TEST_PER_HOUR', '20')
+
+
+def _gateway_disabled(handler):
+    """True (and a 503 already sent on `handler`) when the messaging gateway is
+    switched off (issue #331). Guards the EXTERNAL WhatsApp surface only — never
+    /api/gateway/internal/*, the Walkie-Talkie preview, which is independent.
+
+    Deliberately a module-level function rather than a BrowserHandler method:
+    the route tests drive handlers against a mock.Mock(spec=BrowserHandler), and
+    a method here would be auto-stubbed by the mock (returning a truthy Mock) and
+    silently short-circuit every handler under test."""
+    if GATEWAY_ENABLED:
+        return False
+    handler.send_json({'error': 'messaging gateway is disabled'}, 503)
+    return True
 
 # Lazily-built singleton Conversation Gateway + one WhatsApp adapter instance.
 # Built on first use (and at startup) so the turn-complete observer is installed
@@ -7726,6 +7774,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def handle_gateway_whatsapp_webhook(self):
         """Inbound WhatsApp webhook. Provider-signature authed (in the adapter),
         idempotent on the provider message id, fast 200 so retries stop."""
+        if _gateway_disabled(self):
+            return
         gw = get_gateway()
         adapter = get_gateway_adapter()
         if gw is None or adapter is None:
@@ -7742,7 +7792,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         """Meta Cloud API GET verification handshake — echo hub.challenge on a
         verify-token match, else 403. No-op (403) for providers without a
         handshake (Twilio)."""
-        adapter = get_gateway_adapter()
+        adapter = get_gateway_adapter() if GATEWAY_ENABLED else None
         if adapter is None:
             self.send_response(503)
             self.end_headers()
@@ -7772,6 +7822,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         sends this code once over WhatsApp to bind their number."""
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if _gateway_disabled(self):
+            return
+        # Each code is a live, bindable credential for 600s — cap how many can
+        # be minted per hour so a compromised session can't spray them.
+        if _GW_LINK_LIMITER is not None and not _GW_LINK_LIMITER.allow('link'):
+            self.send_json({'error': 'too many pairing codes — try again later'}, 429)
             return
         gw = get_gateway()
         if gw is None:
@@ -7807,8 +7864,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        gw = get_gateway()
+        gw = get_gateway() if GATEWAY_ENABLED else None
         if gw is None:
+            # Soft shape (not a 503): the Settings UI renders its "messaging
+            # unavailable" state from this rather than surfacing an error toast.
             self.send_json({'links': [], 'available': False})
             return
         self.send_json({
@@ -7824,6 +7883,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         same over WhatsApp."""
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if _gateway_disabled(self):
             return
         gw = get_gateway()
         if gw is None:
@@ -7844,7 +7905,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        if gw_list_providers is None:
+        if gw_list_providers is None or not GATEWAY_ENABLED:
+            # Soft shape so the Settings section renders "not available"
+            # instead of erroring when messaging is switched off.
             self.send_json({'providers': [], 'available': False})
             return
         self.send_json({
@@ -7857,6 +7920,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth(allow_none_mode=False):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
+        if _gateway_disabled(self):
+            return
         self.send_json({'credentials': GatewayCredentialsManager.public_view()})
 
     def handle_gateway_credentials_put(self):
@@ -7865,6 +7930,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         secret back)."""
         if not self.check_claude_auth(allow_none_mode=False):
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if _gateway_disabled(self):
+            return
+        # Credential writes share the test bucket — both touch provider config.
+        if _GW_TEST_LIMITER is not None and not _GW_TEST_LIMITER.allow('test'):
+            self.send_json({'error': 'too many requests — try again later'}, 429)
             return
         try:
             data = self.read_json_body()
@@ -7891,6 +7962,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth(allow_none_mode=False):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
+        if _gateway_disabled(self):
+            return
         GatewayCredentialsManager.clear()
         rebuild_gateway_adapter()
         self.send_json({'ok': True})
@@ -7900,6 +7973,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         user. 400 when nothing is configured yet."""
         if not self.check_claude_auth(allow_none_mode=False):
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if _gateway_disabled(self):
+            return
+        # This is the one endpoint that makes an OUTBOUND network call per
+        # request, so it's the real abuse vector — throttle it.
+        if _GW_TEST_LIMITER is not None and not _GW_TEST_LIMITER.allow('test'):
+            self.send_json({'error': 'too many test requests — try again later'}, 429)
             return
         ok, detail = GatewayCredentialsManager.validate_stored()
         if not ok and detail == 'no credentials configured':

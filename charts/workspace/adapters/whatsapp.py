@@ -201,6 +201,20 @@ class TwilioProvider(_Provider):
         self.account_sid = account_sid
         self.from_number = from_number
 
+    @staticmethod
+    def _wa_addr(addr: str) -> str:
+        """Twilio's WhatsApp REST API requires BOTH `To` and `From` to carry the
+        `whatsapp:` channel prefix (e.g. `whatsapp:+14155238886`). A bare
+        `+E164` sender is a different channel (SMS), so mixing it with a
+        `whatsapp:` recipient makes Twilio reject the send (error 21910) — the
+        message never leaves. The Settings UI accepts a plain `+E164` sender as
+        valid, so normalize here: prefix any bare `+number` with `whatsapp:`,
+        and leave an already-prefixed address (or anything non-E164) untouched."""
+        addr = (addr or '').strip()
+        if addr.startswith('+'):
+            return f'whatsapp:{addr}'
+        return addr
+
     # -- signature -----------------------------------------------------------
     @staticmethod
     def signature(auth_token: str, url: str, params: Dict[str, str]) -> str:
@@ -264,7 +278,7 @@ class TwilioProvider(_Provider):
                        caps: Capabilities) -> List[Dict[str, str]]:
         """Twilio Messages form params, one per ≤4096 chunk. Interactive choices
         degrade to a numbered text list (sandbox can't create Content buttons)."""
-        to = msg.channel_identity
+        to = self._wa_addr(msg.channel_identity)
         body = msg.text or ''
         if msg.quick_replies:
             spec = render_choice(msg.quick_replies, caps)
@@ -280,7 +294,7 @@ class TwilioProvider(_Provider):
         for chunk in chunk_text(body, caps.max_text_len):
             params = {'To': to, 'Body': chunk}
             if self.from_number:
-                params['From'] = self.from_number
+                params['From'] = self._wa_addr(self.from_number)
             for m in msg.media:
                 if m.url:
                     params['MediaUrl'] = m.url

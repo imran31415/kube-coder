@@ -54,10 +54,15 @@ class GatewayRouteTestBase(unittest.TestCase):
         server._GATEWAY_ADAPTER = self.adapter
         server._GATEWAY_AVAILABLE = True
         server._HYPERVISOR_AVAILABLE = True
+        # The external gateway surface is opt-in (issue #331). These suites
+        # exercise the ENABLED path; GatewayDisabledTest covers the off path.
+        self._orig_enabled = server.GATEWAY_ENABLED
+        server.GATEWAY_ENABLED = True
 
     def tearDown(self):
         (server._GATEWAY, server._GATEWAY_ADAPTER,
          server._GATEWAY_AVAILABLE, server._HYPERVISOR_AVAILABLE) = self._orig
+        server.GATEWAY_ENABLED = self._orig_enabled
 
     def _handler(self, authed=True):
         h = mock.Mock(spec=server.BrowserHandler)
@@ -324,6 +329,219 @@ class GatewayCredentialsRouteTest(GatewayRouteTestBase):
         obj, status = self.last()
         self.assertEqual(status, 200)
         self.assertTrue(obj['ok'])
+
+
+class GatewayDisabledTest(GatewayRouteTestBase):
+    """The external WhatsApp surface is opt-in (issue #331). With
+    gateway.enabled off the webhook + config + link routes are inert — but the
+    Walkie-Talkie loopback preview, which shares the same gateway core, must
+    keep working."""
+
+    def setUp(self):
+        super().setUp()
+        server.GATEWAY_ENABLED = False   # base class turned it on
+
+    def test_webhook_is_503(self):
+        h = self._handler()
+        h._gateway_raw_request.return_value = gw.RawRequest(form={'from': 'echo:+1'})
+        server.BrowserHandler.handle_gateway_whatsapp_webhook(h)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_credentials_get_is_503(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_credentials_get(h)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_credentials_put_is_503(self):
+        h = self._handler()
+        h.read_json_body.return_value = {'provider_id': 'twilio', 'creds': {}}
+        server.BrowserHandler.handle_gateway_credentials_put(h)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_credentials_delete_is_503(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_credentials_delete(h)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_test_connection_is_503(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_test(h)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_link_create_is_503(self):
+        h = self._handler()
+        h.read_json_body.return_value = {}
+        server.BrowserHandler.handle_gateway_link_create(h)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_link_delete_is_503(self):
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_link_delete(h, 'a' * 64)
+        self.assertEqual(self.last()[1], 503)
+
+    def test_providers_and_links_report_unavailable_softly(self):
+        # Soft shape, not a 503 — the Settings UI renders "not available".
+        h = self._handler()
+        server.BrowserHandler.handle_gateway_providers(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        self.assertFalse(obj['available'])
+        self.assertEqual(obj['providers'], [])
+
+        h2 = self._handler()
+        server.BrowserHandler.handle_gateway_link_list(h2)
+        obj2, status2 = self.last()
+        self.assertEqual(status2, 200)
+        self.assertFalse(obj2['available'])
+
+    def test_walkie_talkie_preview_still_works(self):
+        """THE regression guard: /api/gateway/internal/* shares the gateway core
+        but is a separate, always-available feature. Disabling the WhatsApp
+        surface must not take it down."""
+        preview = gw.GatewayPreview()
+        loop = server.LoopbackAdapter(
+            preview.transcript, publish=lambda *a, **k: None,
+            identity=server.INTERNAL_IDENTITY)
+        self._orig_preview = (server._GATEWAY_PREVIEW, server._GATEWAY_LOOPBACK)
+        server._GATEWAY_PREVIEW = preview
+        server._GATEWAY_LOOPBACK = loop
+        try:
+            h = self._handler()
+            h.path = '/api/gateway/internal/transcript'
+            # _gw_preview_bundle / _gw_internal_status are handler methods, so
+            # the spec'd Mock stubs them — feed real values so the handler body
+            # actually runs instead of tripping over a Mock.
+            h._gw_preview_bundle.return_value = (self.gateway, preview, loop)
+            h._gw_internal_status.return_value = (None, False)
+            server.BrowserHandler.handle_gateway_internal_transcript(h)
+            obj, status = self.last()
+            self.assertEqual(status, 200)
+            self.assertTrue(obj['available'])
+        finally:
+            (server._GATEWAY_PREVIEW, server._GATEWAY_LOOPBACK) = self._orig_preview
+
+
+class GatewaySignatureFailClosedTest(GatewayRouteTestBase):
+    """Inbound webhook verification must fail closed (issue #331): an unsigned
+    or forged request is rejected with 403, with KC_ALLOW_UNSIGNED_WEBHOOKS
+    unset (as it is in every production render)."""
+
+    URL = 'https://ws.example.com/api/gateway/whatsapp/webhook'
+    TOKEN = 'twilio-auth-token'
+
+    def setUp(self):
+        super().setUp()
+        self._saved_unsigned = os.environ.pop('KC_ALLOW_UNSIGNED_WEBHOOKS', None)
+        # A real signature-verifying adapter, not the EchoAdapter.
+        server._GATEWAY_ADAPTER = wa.WhatsAppAdapter(
+            provider=wa.TwilioProvider(auth_token=self.TOKEN, account_sid='AC1'))
+
+    def tearDown(self):
+        if self._saved_unsigned is not None:
+            os.environ['KC_ALLOW_UNSIGNED_WEBHOOKS'] = self._saved_unsigned
+        super().tearDown()
+
+    def _post(self, headers):
+        h = self._handler()
+        h._gateway_raw_request.return_value = gw.RawRequest(
+            url=self.URL, headers=headers,
+            form={'From': 'whatsapp:+15550001111', 'Body': 'hi', 'MessageSid': 'SM1'})
+        server.BrowserHandler.handle_gateway_whatsapp_webhook(h)
+        return self.last()
+
+    def test_unsigned_is_403(self):
+        self.assertEqual(self._post({})[1], 403)
+
+    def test_forged_signature_is_403(self):
+        self.assertEqual(self._post({'X-Twilio-Signature': 'bogus'})[1], 403)
+
+    def test_correctly_signed_is_accepted(self):
+        form = {'From': 'whatsapp:+15550001111', 'Body': 'hi', 'MessageSid': 'SM1'}
+        sig = wa.TwilioProvider.signature(self.TOKEN, self.URL, form)
+        obj, status = self._post({'X-Twilio-Signature': sig})
+        # Not linked (no binding) but it got PAST verification — a 200, not 403.
+        self.assertEqual(status, 200)
+        self.assertEqual(obj['status'], 'not_linked')
+
+
+class GatewayRateLimitTest(GatewayRouteTestBase):
+    """The authed config endpoints are throttled per workspace (issue #331)."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp2 = tempfile.mkdtemp()
+        self._orig_creds = server.GatewayCredentialsManager.CREDS_FILE
+        server.GatewayCredentialsManager.CREDS_FILE = os.path.join(
+            self.tmp2, 'gateway-credentials.json')
+        self._orig_limiters = (server._GW_LINK_LIMITER, server._GW_TEST_LIMITER)
+        server._GW_LINK_LIMITER = gw.RateLimiter(max_events=2, window_seconds=3600.0)
+        server._GW_TEST_LIMITER = gw.RateLimiter(max_events=2, window_seconds=3600.0)
+
+    def tearDown(self):
+        server.GatewayCredentialsManager.CREDS_FILE = self._orig_creds
+        (server._GW_LINK_LIMITER, server._GW_TEST_LIMITER) = self._orig_limiters
+        super().tearDown()
+
+    def test_link_create_is_rate_limited(self):
+        statuses = []
+        for _ in range(3):
+            h = self._handler()
+            h.read_json_body.return_value = {'workspace': 'w'}
+            h.headers = {'Host': 'ws.example.com'}
+            h._current_bearer_token.return_value = 'tok'
+            server.BrowserHandler.handle_gateway_link_create(h)
+            statuses.append(self.last()[1])
+        self.assertEqual(statuses[:2], [201, 201])
+        self.assertEqual(statuses[2], 429)   # third exceeds max_events=2
+
+    def test_test_connection_is_rate_limited(self):
+        statuses = []
+        for _ in range(3):
+            h = self._handler()
+            server.BrowserHandler.handle_gateway_test(h)
+            statuses.append(self.last()[1])
+        # No creds stored → 400s, then the limiter kicks in on the third.
+        self.assertEqual(statuses[:2], [400, 400])
+        self.assertEqual(statuses[2], 429)
+
+
+class GatewaySecretLeakTest(GatewayRouteTestBase):
+    """A stored provider secret must never appear in ANY gateway response."""
+
+    SECRET = 'twilio-auth-secret-9999'
+
+    def setUp(self):
+        super().setUp()
+        self.tmp2 = tempfile.mkdtemp()
+        self._orig_creds = server.GatewayCredentialsManager.CREDS_FILE
+        server.GatewayCredentialsManager.CREDS_FILE = os.path.join(
+            self.tmp2, 'gateway-credentials.json')
+        server.GatewayCredentialsManager.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET},
+            sender_number='whatsapp:+1')
+
+    def tearDown(self):
+        server.GatewayCredentialsManager.CREDS_FILE = self._orig_creds
+        super().tearDown()
+
+    def test_no_endpoint_leaks_the_secret(self):
+        calls = [
+            server.BrowserHandler.handle_gateway_providers,
+            server.BrowserHandler.handle_gateway_credentials_get,
+            server.BrowserHandler.handle_gateway_link_list,
+        ]
+        for fn in calls:
+            h = self._handler()
+            fn(h)
+            self.assertNotIn(self.SECRET, repr(self.responses),
+                             f'{fn.__name__} leaked the stored secret')
+
+    def test_test_connection_detail_has_no_secret(self):
+        h = self._handler()
+        with mock.patch.object(wa.TwilioProvider, 'validate',
+                               return_value=(False, 'authentication failed')):
+            server.BrowserHandler.handle_gateway_test(h)
+        self.assertNotIn(self.SECRET, repr(self.last()))
 
 
 if __name__ == '__main__':

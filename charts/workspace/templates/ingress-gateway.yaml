@@ -1,4 +1,4 @@
-{{- if eq .Values.ingress.auth.type "oauth2" }}
+{{- if and (.Values.gateway).enabled (eq .Values.ingress.auth.type "oauth2") }}
 # Ingress for the Conversation Gateway inbound webhook (issue #306). Like
 # ingress-webhooks.yaml this bypasses the OAuth2 proxy because the messaging
 # provider (Twilio / Meta) can't carry an OAuth session — it authenticates via
@@ -29,6 +29,13 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     # 1 MiB cap mirrors the in-pod content-length check in the gateway handler.
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    # Edge throttles (issue #331). This path bypasses OAuth and is reachable by
+    # anyone on the internet — it is authenticated only by the provider
+    # signature verified in-pod. Cap it at the edge the same way
+    # ingress-public.yaml caps the unauthed demo surface, so a flood is dropped
+    # by nginx before it ever reaches the pod's verifier.
+    nginx.ingress.kubernetes.io/limit-rps: {{ ((.Values.gateway).limits).webhookRps | default 5 | quote }}
+    nginx.ingress.kubernetes.io/limit-connections: {{ ((.Values.gateway).limits).webhookConnections | default 10 | quote }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
