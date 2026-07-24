@@ -4867,11 +4867,10 @@ class AppsManager:
 #
 #   running  — agent actively working
 #   waiting  — blocked on the user (waiting-for-input, quick-reply prompt)
-#   review   — finished successfully in the last MC_RECENT_SECONDS, awaiting
-#              a human look (evidence/PR detection is a later phase of #425)
-#   done     — failed/killed terminals from the recent window, plus idle
-#              (parked, resumable) chats. Terminals older than the window are
-#              excluded — the board is a working set, not an archive.
+#   done     — all terminals (completed, failed, killed) from the recent
+#              window, plus idle (parked, resumable) chats. Terminals older
+#              than the window are excluded — the board is a working set,
+#              not an archive.
 
 # How far back terminal work stays on the board.
 MC_RECENT_SECONDS = int(os.environ.get('KC_MISSIONCONTROL_RECENT_S', 48 * 3600))
@@ -4974,7 +4973,7 @@ def _mc_task_card(meta, task_dir, now):
     elif status in ('completed', 'error', 'killed'):
         if not finished_at or (now - finished_at) > MC_RECENT_SECONDS:
             return None
-        state = 'review' if status == 'completed' else 'done'
+        state = 'done'
     else:
         return None
 
@@ -5025,7 +5024,7 @@ def _mc_task_card(meta, task_dir, now):
                         card['waiting_prompt'].get('question') or '')
         except (OSError, subprocess.SubprocessError):
             pass
-    elif state in ('review', 'done'):
+    elif state == 'done':
         if status == 'completed':
             card['outcome'] = {'ok': True, 'detail': 'completed'}
         elif status == 'killed':
@@ -5139,8 +5138,8 @@ def missioncontrol_queue():
                     'state': child['state'],
                 })
 
-    # Urgency first (waiting → running → review → done), newest within a group.
-    order = {'waiting': 0, 'running': 1, 'review': 2, 'done': 3}
+    # Urgency first (waiting → running → done), newest within a group.
+    order = {'waiting': 0, 'running': 1, 'done': 2}
     cards.sort(key=lambda c: (order.get(c['state'], 9), -(c['updated_at'] or 0)))
 
     waiting = [c for c in cards if c['state'] == 'waiting']
@@ -5152,10 +5151,9 @@ def missioncontrol_queue():
     pulse = {
         'running': sum(1 for c in cards if c['state'] == 'running'),
         'waiting': len(waiting),
-        'review': sum(1 for c in cards if c['state'] == 'review'),
         'done_today': sum(
             1 for c in cards
-            if c['state'] in ('review', 'done')
+            if c['state'] == 'done'
             and (c['finished_at'] or c['updated_at'] or 0) >= day_ago),
         'oldest_wait_s': oldest_wait_s,
         'generated_at': now,
@@ -5191,7 +5189,7 @@ def _mc_primary_arg(tool_input):
 # Raw task status → board state, matching _mc_task_card's mapping so the
 # drawer's lineage chips read the same as the queue's.
 _MC_STATUS_STATE = {'running': 'running', 'waiting-for-input': 'waiting',
-                    'completed': 'review', 'error': 'done', 'killed': 'done'}
+                    'completed': 'done', 'error': 'done', 'killed': 'done'}
 
 
 def _mc_entry(at, kind, text, detail='', link=None, status='ok'):

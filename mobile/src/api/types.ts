@@ -141,7 +141,7 @@ export interface AppEntry {
 // (waiting first); timestamps are unix seconds.
 
 export type MissionCardKind = 'build' | 'chat' | 'subagent';
-export type MissionCardState = 'running' | 'waiting' | 'review' | 'done';
+export type MissionCardState = 'running' | 'waiting' | 'done';
 
 export interface MissionWaitingOption {
   index: number | string;
@@ -189,7 +189,6 @@ export interface MissionCard {
 export interface MissionPulse {
   running: number;
   waiting: number;
-  review: number;
   done_today: number;
   oldest_wait_s: number;
   generated_at: number;

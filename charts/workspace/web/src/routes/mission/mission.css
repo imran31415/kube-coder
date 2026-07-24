@@ -120,7 +120,6 @@
 }
 .mission-col-dot-running { background: var(--info); }
 .mission-col-dot-waiting { background: var(--warn); }
-.mission-col-dot-review { background: var(--success); }
 .mission-col-dot-done { background: var(--text-subtle); }
 
 .mission-col-cards {

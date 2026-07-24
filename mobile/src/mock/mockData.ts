@@ -403,7 +403,7 @@ const mockMissionCards: MissionCard[] = [
     id: 'build:g7h8i9',
     ref_id: 'g7h8i9',
     kind: 'build',
-    state: 'review',
+    state: 'done',
     title: 'Webhook receiver integration tests',
     headline: '24 tests passing — branch pushed, PR ready for your review.',
     assistant: 'claude',
@@ -475,7 +475,6 @@ export function mockMissionQueue(): MissionQueue {
     pulse: {
       running: cards.filter((c) => c.state === 'running').length,
       waiting: cards.filter((c) => c.state === 'waiting').length,
-      review: cards.filter((c) => c.state === 'review').length,
       done_today: cards.filter((c) => c.state === 'done').length,
       oldest_wait_s: NOW - oldestWait,
       generated_at: NOW,

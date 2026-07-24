@@ -43,7 +43,7 @@ const sample: MissionCard[] = [
   }),
   card({ id: 'build:r1', ref_id: 'r1', state: 'running', title: 'Trigger history' }),
   card({
-    id: 'build:v1', ref_id: 'v1', state: 'review', title: 'Sidebar reorganization',
+    id: 'build:v1', ref_id: 'v1', state: 'done', title: 'Sidebar reorganization',
     finished_at: now - 1560, outcome: { ok: true, detail: 'completed' },
   }),
   card({
@@ -53,7 +53,7 @@ const sample: MissionCard[] = [
 ];
 
 const samplePulse: MissionPulse = {
-  running: 1, waiting: 1, review: 1, done_today: 2, oldest_wait_s: 840, generated_at: now,
+  running: 1, waiting: 1, done_today: 2, oldest_wait_s: 840, generated_at: now,
 };
 
 const realFetch = globalThis.fetch;
@@ -80,11 +80,11 @@ afterEach(() => {
 });
 
 describe('MissionRoute', () => {
-  it('renders all four columns in priority order with cards bucketed by state', () => {
+  it('renders all three columns in priority order with cards bucketed by state', () => {
     render(<MissionRoute />);
     const cols = screen.getAllByRole('region');
     expect(cols.map((c) => c.getAttribute('aria-label'))).toEqual([
-      'Waiting on you', 'Running', 'Needs review', 'Done',
+      'Waiting on you', 'Running', 'Done',
     ]);
     expect(screen.getByText('Memory GC defaults')).toBeInTheDocument();
     expect(screen.getByText('Trigger history')).toBeInTheDocument();
@@ -103,7 +103,6 @@ describe('MissionRoute', () => {
     render(<MissionRoute />);
     expect(screen.getByText('running')).toBeInTheDocument();
     expect(screen.getByText('waiting on you')).toBeInTheDocument();
-    expect(screen.getByText('needs review')).toBeInTheDocument();
     expect(screen.getByText('done today')).toBeInTheDocument();
     // oldest_wait_s=840 → "14m".
     expect(screen.getByText('14m')).toBeInTheDocument();

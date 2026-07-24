@@ -458,7 +458,6 @@ export async function killTask(id: string): Promise<void> {
 const EMPTY_MISSION_PULSE: MissionPulse = {
   running: 0,
   waiting: 0,
-  review: 0,
   done_today: 0,
   oldest_wait_s: 0,
   generated_at: 0,

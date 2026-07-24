@@ -31,7 +31,6 @@ const MAX_CARDS = 4;
 const STATE_LABEL: Record<MissionState, string> = {
   waiting: 'Waiting',
   running: 'Running',
-  review: 'Review',
   done: 'Done',
 };
 
@@ -128,7 +127,7 @@ export function DesktopMissionStrip() {
   }, []);
 
   const pulse = missionPulse.value;
-  // The queue arrives pre-sorted waiting → running → review → done, newest
+  // The queue arrives pre-sorted waiting → running → done, newest
   // first within each group — exactly the strip's priority order.
   const cards = missionCards.value.slice(0, MAX_CARDS);
 

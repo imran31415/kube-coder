@@ -44,7 +44,7 @@ const sample: MissionCard[] = [
 ];
 
 const samplePulse: MissionPulse = {
-  running: 2, waiting: 1, review: 0, done_today: 4, oldest_wait_s: 840, generated_at: now,
+  running: 2, waiting: 1, done_today: 4, oldest_wait_s: 840, generated_at: now,
 };
 
 const realFetch = globalThis.fetch;
