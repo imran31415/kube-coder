@@ -3658,6 +3658,149 @@ class SubscriptionStatusManager:
         return True, None
 
 
+class ClaudeWebLoginManager:
+    """Browser-less "Connect Claude account" flow for the Settings UI.
+
+    First-time users otherwise have to open a terminal, run `claude`, drive
+    the interactive OAuth flow, and paste the authorization code back into
+    tmux by hand. Instead we drive `claude auth login --claudeai` server-side
+    (same pattern as GitHubManager's web login, issue #303): spawn it in a
+    dedicated tmux session, scrape the OAuth URL for the dashboard to open in
+    the user's own browser, accept the pasted code over the API and feed it to
+    the CLI. The CLI stays authoritative over ~/.claude/.credentials.json —
+    we never read or write token material ourselves, and the OAuth code=true
+    paste flow means no localhost callback is needed inside the pod.
+    """
+
+    SESSION = 'kc-claude-web-login'
+    # The OAuth authorize URL the CLI prints ("If the browser didn't open,
+    # visit: …"). Bounded charset so pane noise can't extend the match.
+    _URL_RE = re.compile(r'(https://claude\.(?:com|ai)/[^\s\'"<>]*oauth/authorize[^\s\'"<>]*)')
+    _PROMPT_RE = re.compile(r'Paste code here', re.IGNORECASE)
+    _FAILED_RE = re.compile(r'Login failed:?\s*(.*)')
+    _EXIT_RE = re.compile(r'__KC_CLAUDE_EXIT__:(\d+)')
+    # Authorization codes are base64url-ish plus the '#' separator claude.ai
+    # uses between code and state. Also the safety gate before send-keys.
+    _CODE_RE = re.compile(r'^[A-Za-z0-9_#-]{8,512}$')
+
+    @staticmethod
+    def _tmux(*args):
+        return subprocess.run(['tmux', *args], capture_output=True, text=True)
+
+    @classmethod
+    def running(cls):
+        return cls._tmux('has-session', '-t', cls.SESSION).returncode == 0
+
+    @classmethod
+    def cancel(cls):
+        """Tear down the background login session (idempotent)."""
+        cls._tmux('kill-session', '-t', cls.SESSION)
+
+    @classmethod
+    def _capture_pane(cls):
+        # -J joins wrapped lines so the (long) OAuth URL comes back unbroken.
+        r = cls._tmux('capture-pane', '-p', '-J', '-t', cls.SESSION)
+        return r.stdout if r.returncode == 0 else ''
+
+    @classmethod
+    def parse_login_url(cls, pane):
+        """The OAuth sign-in URL once the CLI has printed it, else None.
+        Pure/text-only so it unit-tests without a real claude binary."""
+        m = cls._URL_RE.search(pane or '')
+        return m.group(1) if m else None
+
+    @classmethod
+    def classify(cls, pane):
+        """Classify the login session from its pane text. Returns
+        (state, error) where state is 'pending' | 'awaiting_code' |
+        'success' | 'failed'. Anchored on the exit-code sentinel printed
+        after the CLI exits; 'Login failed' supplies the error detail."""
+        pane = pane or ''
+        m = cls._EXIT_RE.search(pane)
+        if m:
+            if m.group(1) == '0':
+                return 'success', None
+            fail = cls._FAILED_RE.search(pane)
+            detail = (fail.group(1).strip() if fail and fail.group(1) else '')
+            return 'failed', detail or 'Claude sign-in did not complete.'
+        if cls._PROMPT_RE.search(pane):
+            return 'awaiting_code', None
+        return 'pending', None
+
+    @classmethod
+    def start(cls, timeout=25):
+        """Kick off `claude auth login --claudeai` in a background tmux session
+        and return the OAuth URL for the dashboard to open. env -u strips a
+        pod-level API key for THIS login only so the CLI can't refuse or bind
+        the login to console billing. Raises RuntimeError on timeout."""
+        cls.cancel()
+        if not shutil.which('claude'):
+            raise RuntimeError('claude CLI not available in this workspace')
+        inner = (
+            'env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN '
+            'claude auth login --claudeai; '
+            "printf '__KC_CLAUDE_EXIT__:%s\\n' \"$?\"; sleep 600"
+        )
+        # A wide pane keeps tmux from hard-truncating the URL line; -J on
+        # capture handles any residual soft wrapping.
+        started = cls._tmux('new-session', '-d', '-x', '400', '-y', '50',
+                            '-s', cls.SESSION, 'bash', '-lc', inner)
+        if started.returncode != 0:
+            raise RuntimeError(
+                (started.stderr or 'could not start login session').strip())
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            pane = cls._capture_pane()
+            url = cls.parse_login_url(pane)
+            if url:
+                return {'url': url, 'in_progress': True}
+            state, err = cls.classify(pane)
+            if state == 'failed':
+                cls.cancel()
+                raise RuntimeError(err or 'Claude sign-in could not start.')
+            time.sleep(0.5)
+        cls.cancel()
+        raise RuntimeError(
+            'Timed out waiting for the Claude sign-in URL. Check the '
+            "workspace's network access and try again.")
+
+    @classmethod
+    def submit_code(cls, code):
+        """Feed the pasted authorization code to the waiting CLI prompt.
+        Returns (ok, error). Never logged — the code is a one-time secret."""
+        code = (code or '').strip()
+        if not cls._CODE_RE.match(code):
+            return False, 'That does not look like a Claude authorization code.'
+        if not cls.running():
+            return False, 'No Claude sign-in in progress. Start over.'
+        state, _ = cls.classify(cls._capture_pane())
+        if state != 'awaiting_code':
+            return False, 'The sign-in is not waiting for a code. Start over.'
+        # -l sends the code literally (no key-name interpretation).
+        sent = cls._tmux('send-keys', '-t', cls.SESSION, '-l', code)
+        if sent.returncode != 0:
+            return False, 'Could not reach the sign-in session. Start over.'
+        cls._tmux('send-keys', '-t', cls.SESSION, 'Enter')
+        return True, None
+
+    @classmethod
+    def poll(cls):
+        """Report progress. On success, clean up and return the refreshed
+        subscription view so the UI can flip in one round-trip."""
+        running = cls.running()
+        pane = cls._capture_pane() if running else ''
+        state, err = cls.classify(pane)
+        if state == 'success':
+            cls.cancel()
+            return {'connected': True, 'in_progress': False,
+                    'subscriptions': SubscriptionStatusManager.public_view()}
+        if state == 'failed' or not running:
+            cls.cancel()
+            return {'connected': False, 'in_progress': False,
+                    'error': err or 'Claude sign-in did not complete. Please try again.'}
+        return {'connected': False, 'in_progress': True, 'state': state}
+
+
 class CronManager:
     """Scheduled triggers backed by Kubernetes CronJob objects.
 
@@ -7393,6 +7536,56 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({'ok': True})
 
+    # --- Browser-less "Connect Claude account" (dashboard Settings) ---
+    # Same gate as the other subscription endpoints: secrets-adjacent, so
+    # never reachable in the unauth public demo (allow_none_mode=False).
+
+    def _claude_login_gate(self):
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return False
+        return True
+
+    def handle_claude_login_start(self):
+        """Start the server-side `claude auth login` flow and return the OAuth
+        URL for the dashboard to open in the user's own browser."""
+        if not self._claude_login_gate():
+            return
+        try:
+            self.send_json(ClaudeWebLoginManager.start(), 200)
+        except RuntimeError as e:
+            self.send_json({'error': str(e)}, 502)
+
+    def handle_claude_login_code(self):
+        """Accept the authorization code the user pasted and feed it to the
+        waiting CLI. The code is a one-time secret — never logged or echoed."""
+        if not self._claude_login_gate():
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        ok, err = ClaudeWebLoginManager.submit_code(data.get('code'))
+        if not ok:
+            self.send_json({'error': err}, 400)
+            return
+        self.send_json({'ok': True})
+
+    def handle_claude_login_poll(self):
+        """Poll the in-flight login; on success the response carries
+        connected:true plus the refreshed subscription view."""
+        if not self._claude_login_gate():
+            return
+        self.send_json(ClaudeWebLoginManager.poll(), 200)
+
+    def handle_claude_login_cancel(self):
+        """Abort an in-flight login (user closed the dialog)."""
+        if not self._claude_login_gate():
+            return
+        ClaudeWebLoginManager.cancel()
+        self.send_json({'ok': True})
+
     def handle_webhook_receive(self):
         """Inbound receiver. Auth via HMAC of the raw body — NO bearer token.
         Triggers a Claude task and returns the task_id."""
@@ -10214,6 +10407,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Provider keys (dashboard Settings)
             elif path == "/api/provider-keys":
                 self.handle_provider_keys_set()
+            # Browser-less "Connect Claude account" (dashboard Settings)
+            elif path == "/api/subscriptions/claude/login/start":
+                self.handle_claude_login_start()
+            elif path == "/api/subscriptions/claude/login/code":
+                self.handle_claude_login_code()
+            elif path == "/api/subscriptions/claude/login/poll":
+                self.handle_claude_login_poll()
+            elif path == "/api/subscriptions/claude/login/cancel":
+                self.handle_claude_login_cancel()
             # User MCP servers (dashboard Settings, issue #353)
             elif path == "/api/mcp-servers":
                 self.handle_mcp_servers_set()

@@ -1,4 +1,4 @@
-import { apiGet, apiDelete } from './client';
+import { apiGet, apiPost, apiDelete } from './client';
 
 // Subscription-based CLI logins (Claude Max/Pro OAuth, Codex ChatGPT OAuth),
 // surfaced alongside the pasted API keys in Settings. Read-only status +
@@ -28,3 +28,35 @@ export const getSubscriptions = () =>
 
 export const logoutSubscription = (provider: SubscriptionProvider) =>
   apiDelete<{ ok: true }>(`/api/subscriptions/${provider}`);
+
+// Browser-less "Connect Claude account" flow. The server drives
+// `claude auth login` in a background session (ClaudeWebLoginManager);
+// the browser only ever sees the public OAuth URL and posts back the
+// one-time authorization code — no token material crosses the API.
+
+/** Sign-in URL to open in the user's own browser (paste-code OAuth flow). */
+export interface ClaudeConnectStart {
+  url: string;
+  in_progress: boolean;
+}
+
+/** Poll result: connected carries the refreshed subscription view. */
+export interface ClaudeConnectPoll {
+  connected: boolean;
+  in_progress: boolean;
+  state?: string;
+  error?: string;
+  subscriptions?: SubscriptionsView;
+}
+
+export const startClaudeConnect = () =>
+  apiPost<ClaudeConnectStart>('/api/subscriptions/claude/login/start');
+
+export const submitClaudeConnectCode = (code: string) =>
+  apiPost<{ ok: true }>('/api/subscriptions/claude/login/code', { code });
+
+export const pollClaudeConnect = () =>
+  apiPost<ClaudeConnectPoll>('/api/subscriptions/claude/login/poll');
+
+export const cancelClaudeConnect = () =>
+  apiPost<{ ok: true }>('/api/subscriptions/claude/login/cancel');

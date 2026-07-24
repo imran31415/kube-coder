@@ -1,5 +1,12 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { getSubscriptions, logoutSubscription } from './subscriptions';
+import {
+  getSubscriptions,
+  logoutSubscription,
+  startClaudeConnect,
+  submitClaudeConnectCode,
+  pollClaudeConnect,
+  cancelClaudeConnect,
+} from './subscriptions';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -44,5 +51,41 @@ describe('subscriptions api (#251)', () => {
     await logoutSubscription('codex');
     expect(calls[0].url).toContain('/api/subscriptions/codex');
     expect(calls[0].method).toBe('DELETE');
+  });
+});
+
+describe('claude connect api', () => {
+  it('startClaudeConnect POSTs and returns the sign-in URL', async () => {
+    const calls = capture({ url: 'https://claude.com/cai/oauth/authorize?code=true', in_progress: true });
+    const r = await startClaudeConnect();
+    expect(calls[0].url).toContain('/api/subscriptions/claude/login/start');
+    expect(calls[0].method).toBe('POST');
+    expect(r.url).toContain('oauth/authorize');
+  });
+
+  it('submitClaudeConnectCode POSTs the pasted code', async () => {
+    const calls = capture({ ok: true });
+    await submitClaudeConnectCode('abc123#state');
+    expect(calls[0].url).toContain('/api/subscriptions/claude/login/code');
+    expect(calls[0].method).toBe('POST');
+  });
+
+  it('pollClaudeConnect surfaces connected + refreshed subscriptions', async () => {
+    const calls = capture({
+      connected: true,
+      in_progress: false,
+      subscriptions: { claude: { logged_in: true, kind: 'subscription', plan: 'max' }, codex: { logged_in: false } },
+    });
+    const r = await pollClaudeConnect();
+    expect(calls[0].url).toContain('/api/subscriptions/claude/login/poll');
+    expect(r.connected).toBe(true);
+    expect(r.subscriptions?.claude.plan).toBe('max');
+  });
+
+  it('cancelClaudeConnect POSTs the cancel path', async () => {
+    const calls = capture({ ok: true });
+    await cancelClaudeConnect();
+    expect(calls[0].url).toContain('/api/subscriptions/claude/login/cancel');
+    expect(calls[0].method).toBe('POST');
   });
 });
