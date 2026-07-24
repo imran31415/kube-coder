@@ -110,7 +110,8 @@ export interface NavGroup {
  * the Rail, the mobile More sheet, and the command palette. ROUTES and
  * matchRoute() are untouched, so deep links and the default landing route
  * are unaffected by group order. /settings deliberately stays out: it's a
- * standalone item pinned at the rail bottom, not a category member.
+ * standalone item the Rail renders as its own trailing group, not a
+ * category member.
  */
 export const NAV_GROUPS: NavGroup[] = [
   {

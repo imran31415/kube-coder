@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 
 describe('Rail categories (#267)', () => {
-  it('renders the three group headers with items, and Settings pinned at the bottom', () => {
+  it('renders the three group headers with items, and Settings as a trailing group', () => {
     const { container } = render(<Rail />);
     expect(screen.getByText('Mission Control')).toBeInTheDocument();
     expect(screen.getByText('Workspace')).toBeInTheDocument();
@@ -22,10 +22,14 @@ describe('Rail categories (#267)', () => {
     expect(screen.getByText('Chat')).toBeInTheDocument();
     expect(screen.getByText('Builds')).toBeInTheDocument();
     expect(screen.queryByText('Hypervisor')).toBeNull();
-    // Settings is not a category member — it lives in the pinned bottom slab.
-    const bottom = container.querySelector('.rail-bottom');
-    expect(bottom?.textContent).toContain('Settings');
-    expect(bottom?.textContent).toContain('Collapse');
+    // Settings is not a category member — it flows as the last group inside
+    // .rail-items (#448: no pinned bottom slab that overflow can hide).
+    expect(container.querySelector('.rail-bottom')).toBeNull();
+    const groups = container.querySelectorAll('.rail-items > .rail-group');
+    const last = groups[groups.length - 1];
+    expect(last?.querySelector('.rail-divider')).toBeTruthy();
+    expect(last?.textContent).toContain('Settings');
+    expect(last?.textContent).toContain('Collapse');
   });
 
   it('clicking the Mission Control label navigates to /mission', () => {
@@ -73,8 +77,12 @@ describe('Rail categories (#267)', () => {
     // No group headers or text labels in icon-only mode.
     expect(screen.queryByText('Workspace')).toBeNull();
     expect(screen.queryByText('Knowledge')).toBeNull();
-    // Two dividers separate the three groups.
-    expect(container.querySelectorAll('.rail-divider')).toHaveLength(2);
+    // Two dividers separate the three groups, plus one leading the
+    // trailing Settings/Collapse group.
+    expect(container.querySelectorAll('.rail-divider')).toHaveLength(3);
+    // Settings + Collapse flow inside .rail-items, not a pinned slab.
+    expect(container.querySelector('.rail-bottom')).toBeNull();
+    expect(container.querySelector('.rail-items .rail-toggle')).toBeTruthy();
     // The Mission landing gets an icon slot (leads its group).
     expect(container.querySelector('.rail-item[title="Mission Control"]')).toBeTruthy();
     // Active route still marked for orientation.

@@ -142,19 +142,23 @@ export function Rail() {
               </div>
             ))
           : NAV_GROUPS.map((g) => <RailGroup key={g.id} group={g} active={active} />)}
-      </div>
-      <div class="rail-bottom">
-        <RailItem path="/settings" active={active} />
-        <button
-          type="button"
-          class="rail-toggle"
-          onClick={() => (railCollapsed.value = !collapsed)}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={14} />
-          {!collapsed && <span class="rail-toggle-label">Collapse</span>}
-        </button>
+        {/* Settings + Collapse flow with the nav as a final group (#448):
+            a bottom slab pinned via margin-top:auto gets pushed below the
+            fold once the rail overflows and starts scrolling. */}
+        <div class="rail-group">
+          <div class="rail-divider" role="separator" />
+          <RailItem path="/settings" active={active} />
+          <button
+            type="button"
+            class="rail-toggle"
+            onClick={() => (railCollapsed.value = !collapsed)}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={14} />
+            {!collapsed && <span class="rail-toggle-label">Collapse</span>}
+          </button>
+        </div>
       </div>
     </nav>
   );
