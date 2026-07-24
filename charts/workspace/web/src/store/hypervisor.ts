@@ -18,6 +18,7 @@ import {
 import type { HvEvent } from '../routes/hypervisor/transcript';
 import { listTasks, type TaskSummary } from '../api/tasks';
 import { navigate, currentPath } from './router';
+import { rememberLastSession, forgetLastSession } from './lastSession';
 
 /**
  * State for the Hypervisor chat tab. A thread is a structured agent session; the
@@ -200,6 +201,9 @@ async function pollActive(): Promise<void> {
 
 export async function openThread(id: string): Promise<void> {
   activeThreadId.value = id;
+  // Remember the last-open chat so a later bare /hypervisor visit (returning
+  // to the app, clicking the tab) can reopen it — see store/lastSession.ts.
+  rememberLastSession('hypervisor', id);
   events.value = [];
   activeStatus.value = '';
   transcriptSource.value = null;
@@ -328,6 +332,7 @@ export async function removeThread(id: string): Promise<void> {
     /* best effort */
   }
   if (activeThreadId.value === id) closeThread();
+  forgetLastSession('hypervisor', id);
   await refreshThreads();
   // Keep the trash view in sync only if it's been loaded at least once.
   if (deletedThreads.value.length > 0) await refreshDeletedThreads();

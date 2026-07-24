@@ -2,8 +2,9 @@ import { useEffect } from 'preact/hooks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { sheetOpen, drawerOpen, masterCollapsed, previewFullscreen } from '../../store/ui';
-import { selectTask, selectedTaskId } from '../../store/tasks';
+import { selectTask, selectedTaskId, refreshTasks, tasks } from '../../store/tasks';
 import { currentPath, navigate, pathSuffix } from '../../store/router';
+import { restoreTarget } from '../../store/lastSession';
 import { TaskList } from './TaskList';
 import { TaskDetail } from './TaskDetail';
 import { NewTaskForm } from './NewTaskForm';
@@ -14,6 +15,28 @@ import { useIsMobile } from '../../hooks/useMediaQuery';
 
 export function TasksRoute() {
   const isMobile = useIsMobile();
+
+  // On a bare /tasks entry (tab click, returning to the app), reopen the task
+  // the user last had open — or the newest one — once the list is in.
+  // Mount-only, so in-route navigations to the bare path (mobile back,
+  // closing the detail) still mean "deselect" and aren't bounced back in;
+  // a deep link (/tasks/<id>) always wins.
+  useEffect(() => {
+    if (pathSuffix(currentPath.value).split('/')[0]) return;
+    let cancelled = false;
+    void refreshTasks().then(() => {
+      if (cancelled) return;
+      // Re-check after the async load: the user may have navigated away or
+      // picked a task meanwhile.
+      if (!currentPath.value.startsWith('/tasks')) return;
+      if (pathSuffix(currentPath.value).split('/')[0] || selectedTaskId.value) return;
+      const id = restoreTarget('build', tasks.value.map((t) => t.task_id));
+      if (id) navigate(`/tasks/${encodeURIComponent(id)}`, true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // URL → selectedTaskId. `/tasks/abc` selects task abc; `/tasks` deselects.
   // This is what makes a page reload restore the previously-open task (and the

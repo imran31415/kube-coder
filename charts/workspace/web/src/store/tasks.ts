@@ -17,6 +17,7 @@ import {
 } from '../api/tasks';
 import { pushToast } from './ui';
 import { ApiError } from '../api/client';
+import { rememberLastSession } from './lastSession';
 
 export const tasks = signal<TaskSummary[]>([]);
 export const tasksLoading = signal(false);
@@ -117,8 +118,14 @@ export async function loadSelectedTask(id: string): Promise<void> {
 
 export function selectTask(id: string | null) {
   selectedTaskId.value = id;
-  if (id) void loadSelectedTask(id);
-  else selectedTask.value = null;
+  if (id) {
+    // Remember the last-open task so a later bare /tasks visit (returning to
+    // the app, clicking the Build tab) can reopen it — see store/lastSession.ts.
+    rememberLastSession('build', id);
+    void loadSelectedTask(id);
+  } else {
+    selectedTask.value = null;
+  }
 }
 
 export async function createTask(input: CreateTaskInput): Promise<TaskDetail | null> {
