@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { paletteOpen, theme, drawerOpen, type DrawerKey } from '../store/ui';
-import { navigate, ROUTES } from '../store/router';
+import { navigate, ROUTES, navGroupFor, navLabel } from '../store/router';
 import { tasks, selectTask } from '../store/tasks';
 import { sheetOpen } from '../store/ui';
 import { memories, selectMemory, loadSelected } from '../store/memory';
@@ -24,13 +24,17 @@ export interface PaletteEntry {
 }
 
 function staticActions(): PaletteEntry[] {
+  // Jump-to entries grouped by the same categories as the rail (#267);
+  // Settings has no category and stays under a plain Navigation group.
+  // `match` keeps both the canonical title and the display label so e.g.
+  // "hypervisor" still finds the entry labeled "Chat".
   const routes: PaletteEntry[] = ROUTES.map((r) => ({
     id: `route:${r.path}`,
-    group: 'Navigation',
-    label: `Go to ${r.title}`,
+    group: navGroupFor(r.path)?.title ?? 'Navigation',
+    label: `Go to ${navLabel(r.path)}`,
     hint: r.path,
     icon: (r.path.slice(1) as IconName),
-    match: `go ${r.title} ${r.path}`.toLowerCase(),
+    match: `go ${r.title} ${navLabel(r.path)} ${r.path}`.toLowerCase(),
     onSelect: () => navigate(r.path),
   }));
   const actions: PaletteEntry[] = [

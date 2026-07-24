@@ -53,6 +53,6 @@ describe('App shell', () => {
     // Signal-triggered re-render is async; wait for the dialog to appear.
     const dialog = await screen.findByRole('dialog', { name: 'Command palette' });
     expect(within(dialog).getByPlaceholderText('Search tasks, memories, triggers, actions…')).toBeInTheDocument();
-    expect(within(dialog).getByText('Go to Build')).toBeInTheDocument();
+    expect(within(dialog).getByText('Go to Builds')).toBeInTheDocument();
   });
 });

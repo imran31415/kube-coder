@@ -89,6 +89,70 @@ export const ROUTES: RouteDef[] = [
   { path: '/settings', title: 'Settings' },
 ];
 
+export interface NavItem {
+  path: string;
+  /** Display-label override (e.g. /hypervisor shows as "Chat" per #346);
+   *  defaults to the route's ROUTES title. */
+  label?: string;
+}
+
+export interface NavGroup {
+  id: 'mission' | 'workspace' | 'knowledge';
+  title: string;
+  /** Route the group header itself navigates to (Mission Control → the
+   *  /mission board). Groups without a landing page just toggle. */
+  landing?: string;
+  items: NavItem[];
+}
+
+/**
+ * Categorized navigation (#267) — purely presentational grouping shared by
+ * the Rail, the mobile More sheet, and the command palette. ROUTES and
+ * matchRoute() are untouched, so deep links and the default landing route
+ * are unaffected by group order. /settings deliberately stays out: it's a
+ * standalone item pinned at the rail bottom, not a category member.
+ */
+export const NAV_GROUPS: NavGroup[] = [
+  {
+    id: 'mission',
+    title: 'Mission Control',
+    landing: '/mission',
+    items: [
+      { path: '/hypervisor', label: 'Chat' },
+      { path: '/tasks', label: 'Builds' },
+      { path: '/walkie' },
+      // Triggers fire builds — agent ops, not workspace plumbing.
+      { path: '/triggers' },
+    ],
+  },
+  {
+    id: 'workspace',
+    title: 'Workspace',
+    items: [{ path: '/desktop' }, { path: '/apps' }, { path: '/files' }],
+  },
+  {
+    id: 'knowledge',
+    title: 'Knowledge',
+    items: [{ path: '/memory' }, { path: '/skills' }, { path: '/docs' }],
+  },
+];
+
+/** The nav group containing `path` (as landing or item), if any. */
+export function navGroupFor(path: string): NavGroup | undefined {
+  return NAV_GROUPS.find(
+    (g) => g.landing === path || g.items.some((i) => i.path === path),
+  );
+}
+
+/** Display label for a route in nav surfaces — item override or ROUTES title. */
+export function navLabel(path: string): string {
+  for (const g of NAV_GROUPS) {
+    const item = g.items.find((i) => i.path === path);
+    if (item?.label) return item.label;
+  }
+  return ROUTES.find((r) => r.path === path)?.title ?? path;
+}
+
 export function matchRoute(path: string): RouteDef {
   // `/tasks/abc` still matches /tasks (detail handled within the route module).
   if (path === '/' || path === '') return ROUTES[0];

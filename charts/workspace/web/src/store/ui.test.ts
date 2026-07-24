@@ -6,6 +6,9 @@ import {
   pushToast,
   dismissToast,
   applyDocumentAttrs,
+  collapsedRailGroups,
+  toggleRailGroup,
+  expandRailGroup,
 } from './ui';
 
 beforeEach(() => {
@@ -14,6 +17,7 @@ beforeEach(() => {
   density.value = 'comfortable';
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-density');
+  collapsedRailGroups.value = [];
   localStorage.clear();
 });
 
@@ -47,6 +51,29 @@ describe('applyDocumentAttrs()', () => {
 
     applyDocumentAttrs('light', 'comfortable');
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+});
+
+describe('collapsedRailGroups (#267)', () => {
+  it('toggleRailGroup collapses then re-expands a group', () => {
+    expect(collapsedRailGroups.value).toEqual([]);
+    toggleRailGroup('knowledge');
+    expect(collapsedRailGroups.value).toEqual(['knowledge']);
+    toggleRailGroup('knowledge');
+    expect(collapsedRailGroups.value).toEqual([]);
+  });
+
+  it('expandRailGroup only removes — never collapses', () => {
+    toggleRailGroup('workspace');
+    expandRailGroup('workspace');
+    expect(collapsedRailGroups.value).toEqual([]);
+    expandRailGroup('workspace');
+    expect(collapsedRailGroups.value).toEqual([]);
+  });
+
+  it('persists under its own versioned key', () => {
+    toggleRailGroup('mission');
+    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v1')!)).toEqual(['mission']);
   });
 });
 

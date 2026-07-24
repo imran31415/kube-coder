@@ -48,6 +48,47 @@ export const density = signal<Density>(initial.density);
 
 /** Collapses the left navigation rail to an icon-only strip on desktop. */
 export const railCollapsed = signal<boolean>(initial.railCollapsed);
+
+// Per-group disclosure state for the categorized rail (#267). Stored under
+// its own versioned key (not kube-coder.ui) so the group schema can evolve
+// without migrating the main prefs blob. Holds *collapsed* group ids —
+// default is every group expanded.
+const RAIL_GROUPS_KEY = 'kc.rail.groups.v1';
+
+function loadCollapsedGroups(): string[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(RAIL_GROUPS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Ids of rail nav groups the user has collapsed. */
+export const collapsedRailGroups = signal<string[]>(loadCollapsedGroups());
+
+export function toggleRailGroup(id: string) {
+  const cur = collapsedRailGroups.value;
+  collapsedRailGroups.value = cur.includes(id) ? cur.filter((g) => g !== id) : [...cur, id];
+}
+
+/** Expand (only) — used to auto-reveal the group containing the active route. */
+export function expandRailGroup(id: string) {
+  const cur = collapsedRailGroups.value;
+  if (cur.includes(id)) collapsedRailGroups.value = cur.filter((g) => g !== id);
+}
+
+if (typeof localStorage !== 'undefined') {
+  effect(() => {
+    try {
+      localStorage.setItem(RAIL_GROUPS_KEY, JSON.stringify(collapsedRailGroups.value));
+    } catch {
+      // localStorage may be unavailable; skip persistence.
+    }
+  });
+}
 /** Hides the master task list so the detail pane takes the full width. */
 export const masterCollapsed = signal<boolean>(initial.masterCollapsed);
 /** Transient — Preview tab full-screen mode. Not persisted; resets on reload. */
