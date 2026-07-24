@@ -1,5 +1,15 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { currentPath, navigate, normalize, matchRoute, routeHref } from './router';
+import {
+  currentPath,
+  navigate,
+  normalize,
+  matchRoute,
+  routeHref,
+  ROUTES,
+  NAV_GROUPS,
+  navGroupFor,
+  navLabel,
+} from './router';
 
 beforeEach(() => {
   window.history.replaceState({}, '', '/');
@@ -49,6 +59,33 @@ describe('routeHref()', () => {
   it('carries the /oauth ingress prefix so new-tab links stay authed', () => {
     window.history.replaceState({}, '', '/oauth/hypervisor');
     expect(routeHref('/apps/3000')).toBe('/oauth/apps/3000');
+  });
+});
+
+describe('NAV_GROUPS (#267)', () => {
+  it('covers every route except /settings exactly once (landing or item)', () => {
+    const grouped = NAV_GROUPS.flatMap((g) => [
+      ...(g.landing ? [g.landing] : []),
+      ...g.items.map((i) => i.path),
+    ]);
+    const expected = ROUTES.map((r) => r.path).filter((p) => p !== '/settings');
+    expect([...grouped].sort()).toEqual([...expected].sort());
+    expect(new Set(grouped).size).toBe(grouped.length);
+  });
+
+  it('navGroupFor resolves items and landings, and misses /settings', () => {
+    expect(navGroupFor('/mission')?.id).toBe('mission');
+    expect(navGroupFor('/triggers')?.id).toBe('mission');
+    expect(navGroupFor('/desktop')?.id).toBe('workspace');
+    expect(navGroupFor('/docs')?.id).toBe('knowledge');
+    expect(navGroupFor('/settings')).toBeUndefined();
+  });
+
+  it('navLabel applies display overrides and falls back to ROUTES titles', () => {
+    expect(navLabel('/hypervisor')).toBe('Chat');
+    expect(navLabel('/tasks')).toBe('Builds');
+    expect(navLabel('/memory')).toBe('Memory');
+    expect(navLabel('/settings')).toBe('Settings');
   });
 });
 
