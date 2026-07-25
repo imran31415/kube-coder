@@ -289,6 +289,65 @@ class GatewayCredentialsRouteTest(GatewayRouteTestBase):
         server.BrowserHandler.handle_gateway_credentials_put(h)
         self.assertEqual(self.last()[1], 400)
 
+    # -- sender normalization at save time (issue #458) --
+    def test_put_malformed_sender_is_400_and_not_stored(self):
+        # The real incident: '(478) 347-7453' saved fine, Test-connection stayed
+        # green, and every outbound send 400'd. Now the save itself fails
+        # loudly with a human-readable reason, and nothing is written.
+        h = self._handler()
+        h.read_json_body.return_value = {
+            'provider_id': 'twilio',
+            'creds': {'account_sid': 'AC1', 'auth_token': 'tok'},
+            'sender_number': '(478) 347-7453'}
+        server.BrowserHandler.handle_gateway_credentials_put(h)
+        obj, status = self.last()
+        self.assertEqual(status, 400)
+        self.assertIn('sender', obj['error'].lower())
+        self.assertIsNone(server.GatewayCredentialsManager.get_raw())
+
+    def test_put_formatted_sender_is_normalized_to_wa_e164(self):
+        h = self._handler()
+        h.read_json_body.return_value = {
+            'provider_id': 'twilio',
+            'creds': {'account_sid': 'AC1', 'auth_token': 'tok'},
+            'sender_number': '+1 (478) 347-7453'}
+        server.BrowserHandler.handle_gateway_credentials_put(h)
+        obj, status = self.last()
+        self.assertEqual(status, 200)
+        raw = server.GatewayCredentialsManager.get_raw()
+        self.assertEqual(raw['creds']['from_number'], 'whatsapp:+14783477453')
+        # The hot-swapped adapter carries the normalized sender.
+        self.assertEqual(server._GATEWAY_ADAPTER.provider.from_number,
+                         'whatsapp:+14783477453')
+
+    def test_set_normalizes_bare_e164_sender(self):
+        ok, err = server.GatewayCredentialsManager.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': 'tok'},
+            sender_number='+14155238886')
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        raw = server.GatewayCredentialsManager.get_raw()
+        self.assertEqual(raw['creds']['from_number'], 'whatsapp:+14155238886')
+
+    def test_set_rejects_sender_without_country_code(self):
+        ok, err = server.GatewayCredentialsManager.set(
+            'twilio', {'account_sid': 'AC1', 'auth_token': 'tok'},
+            sender_number='4783477453')
+        self.assertFalse(ok)
+        self.assertIn('WhatsApp sender number', err)
+        self.assertIsNone(server.GatewayCredentialsManager.get_raw())
+
+    def test_set_meta_phone_number_id_is_not_normalized(self):
+        # Meta's sender is an opaque id (no '+', not dialable) — it must save
+        # untouched; only fields declaring format='wa_sender' are normalized.
+        ok, err = server.GatewayCredentialsManager.set(
+            'meta', {'access_token': 't', 'app_secret': 's',
+                     'verify_token': 'v'},
+            sender_number='1234567890')
+        self.assertTrue(ok, err)
+        raw = server.GatewayCredentialsManager.get_raw()
+        self.assertEqual(raw['creds']['phone_number_id'], '1234567890')
+
     def test_get_after_put_hides_secret(self):
         server.GatewayCredentialsManager.set(
             'twilio', {'account_sid': 'AC1', 'auth_token': 'super-secret-9999'})

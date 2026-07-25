@@ -14,7 +14,7 @@ const TWILIO: ProviderSpec = {
     { key: 'account_sid', label: 'Account SID', secret: false, placeholder: 'AC…', help_url: '', required: true },
     { key: 'auth_token', label: 'Auth Token', secret: true, placeholder: '', help_url: '', required: true },
   ],
-  sender_field: { key: 'from_number', label: 'WhatsApp sender number', secret: false, placeholder: 'whatsapp:+1', help_url: '', required: true },
+  sender_field: { key: 'from_number', label: 'WhatsApp sender number', secret: false, placeholder: 'whatsapp:+1', help_url: '', required: true, format: 'wa_sender' },
   capabilities: { proactive: false, max_text_len: 4096 },
 };
 const META: ProviderSpec = {
@@ -47,7 +47,7 @@ vi.mock('../../api/gateway', () => ({
   deleteLink: (id: string) => { delLinkSpy(id); return Promise.resolve({ ok: true }); },
 }));
 
-import { MessagingSection } from './MessagingSection';
+import { MessagingSection, waSenderProblem } from './MessagingSection';
 
 describe('MessagingSection', () => {
   beforeEach(() => {
@@ -160,5 +160,57 @@ describe('MessagingSection', () => {
     });
     fireEvent.click(confirm);
     await waitFor(() => expect(delCredSpy).toHaveBeenCalled());
+  });
+
+  // ── sender linting (issue #458): a malformed sender used to save silently
+  // and then 400 every outbound send — the form now flags it inline ──
+  it('flags a malformed sender inline as the user types', async () => {
+    render(<MessagingSection />);
+    const sender = (await screen.findByPlaceholderText('whatsapp:+1')) as HTMLInputElement;
+    fireEvent.input(sender, { target: { value: '(478) 347-7453' } });
+    expect(await screen.findByText(/country code/)).toBeTruthy();
+    // Fixing the value clears the warning.
+    fireEvent.input(sender, { target: { value: 'whatsapp:+14155238886' } });
+    await waitFor(() => expect(screen.queryByText(/country code/)).toBeNull());
+  });
+
+  it('flags a bad sender stored before validation existed', async () => {
+    credView = {
+      configured: true,
+      provider_id: 'twilio',
+      sender_field: 'from_number',
+      fields: { from_number: { set: true, value: '(478) 347-7453' } },
+    };
+    render(<MessagingSection />);
+    // Drafts seed from the stored value, so the warning shows without typing.
+    expect(await screen.findByText(/country code/)).toBeTruthy();
+  });
+
+  it("does not lint Meta's opaque phone_number_id", async () => {
+    render(<MessagingSection />);
+    fireEvent.click(await screen.findByText('Meta (WhatsApp Cloud API)'));
+    const pnid = (await screen.findByPlaceholderText('123')) as HTMLInputElement;
+    fireEvent.input(pnid, { target: { value: '1234567890' } });
+    await waitFor(() => expect(screen.queryByText(/country code/)).toBeNull());
+  });
+});
+
+describe('waSenderProblem (mirror of the server normalizer)', () => {
+  it('accepts blank, canonical, bare-E164 and formatted values', () => {
+    expect(waSenderProblem('')).toBeNull();
+    expect(waSenderProblem('whatsapp:+14155238886')).toBeNull();
+    expect(waSenderProblem('+14155238886')).toBeNull();
+    expect(waSenderProblem('+1 (415) 523-8886')).toBeNull();
+  });
+
+  it('rejects a number without a country code (the #458 incident value)', () => {
+    expect(waSenderProblem('(478) 347-7453')).toMatch(/country code/);
+    expect(waSenderProblem('4783477453')).toMatch(/country code/);
+  });
+
+  it('rejects non-E.164 values even with a plus', () => {
+    expect(waSenderProblem('+1234')).toMatch(/E\.164/);
+    expect(waSenderProblem('+0123456789')).toMatch(/E\.164/);
+    expect(waSenderProblem('+1-800-FLOWERS')).toMatch(/E\.164/);
   });
 });

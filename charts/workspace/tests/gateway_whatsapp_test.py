@@ -566,5 +566,172 @@ class ProviderFromEnvTest(unittest.TestCase):
         self.assertEqual(prov.phone_number_id, 'PN9')
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Sender normalization (issue #458)
+# ───────────────────────────────────────────────────────────────────────────
+class NormalizeWaSenderTest(unittest.TestCase):
+    """A malformed sender used to save fine and then 400 every outbound send
+    (the real `(478) 347-7453` incident, issue #458). normalize_wa_sender is
+    the single source of truth: coerce fixable formatting to whatsapp:+E164,
+    reject the unfixable with a human-readable reason."""
+
+    def test_display_formatting_is_stripped(self):
+        norm, err = wa.normalize_wa_sender('+1 (478) 347-7453')
+        self.assertIsNone(err)
+        self.assertEqual(norm, 'whatsapp:+14783477453')
+
+    def test_bare_e164_gets_prefixed(self):
+        self.assertEqual(wa.normalize_wa_sender('+14155238886'),
+                         ('whatsapp:+14155238886', None))
+
+    def test_canonical_value_is_unchanged(self):
+        self.assertEqual(wa.normalize_wa_sender('whatsapp:+14155238886'),
+                         ('whatsapp:+14155238886', None))
+
+    def test_prefix_is_case_insensitive_and_formatting_inside_ok(self):
+        self.assertEqual(wa.normalize_wa_sender('WhatsApp:+1 415-523-8886'),
+                         ('whatsapp:+14155238886', None))
+
+    def test_number_without_country_code_is_rejected(self):
+        # The incident value: no '+', so the country code is unknowable —
+        # reject loudly instead of storing a sender that 400s every send.
+        norm, err = wa.normalize_wa_sender('(478) 347-7453')
+        self.assertIsNone(norm)
+        self.assertIn('+', err)
+
+    def test_prefixed_but_malformed_is_rejected(self):
+        norm, err = wa.normalize_wa_sender('whatsapp:(478) 347-7453')
+        self.assertIsNone(norm)
+        self.assertTrue(err)
+
+    def test_not_a_number_is_rejected(self):
+        for bad in ('+1-800-FLOWERS', 'sandbox', '+0123456789', '+1234',
+                    '+' + '9' * 20):
+            norm, err = wa.normalize_wa_sender(bad)
+            self.assertIsNone(norm, bad)
+            self.assertTrue(err, bad)
+
+    def test_blank_is_absent_not_invalid(self):
+        self.assertEqual(wa.normalize_wa_sender(''), ('', None))
+        self.assertEqual(wa.normalize_wa_sender('   '), ('', None))
+        self.assertEqual(wa.normalize_wa_sender(None), ('', None))
+
+    def test_registry_exposes_normalizer_by_format(self):
+        self.assertIs(wa.get_field_normalizer('wa_sender'), wa.normalize_wa_sender)
+        self.assertIsNone(wa.get_field_normalizer(''))
+        self.assertIsNone(wa.get_field_normalizer('nope'))
+
+    def test_twilio_sender_declares_format_meta_does_not(self):
+        # Meta's phone_number_id is an opaque id, NOT a dialable number — it
+        # must never be forced through E.164 normalization.
+        self.assertEqual(wa.get_provider_spec('twilio').sender_field.format,
+                         'wa_sender')
+        self.assertEqual(wa.get_provider_spec('meta').sender_field.format, '')
+        # Serialized so the Settings form can mirror the check inline.
+        d = wa.get_provider_spec('twilio').to_dict()
+        self.assertEqual(d['sender_field']['format'], 'wa_sender')
+
+
+class WaAddrNormalizationTest(unittest.TestCase):
+    """_wa_addr routes through normalize_wa_sender so a formatted-but-fixable
+    sender stored before save-time validation existed still delivers."""
+
+    def test_formatted_sender_is_cleaned_in_payload(self):
+        prov = wa.TwilioProvider(auth_token='t', account_sid='AC',
+                                 from_number='+1 (415) 523-8886')
+        caps = gw.Capabilities(max_text_len=4096)
+        msg = gw.OutboundMessage(channel_identity='whatsapp:+15550001111', text='hi')
+        payloads = prov.build_payloads(msg, caps)
+        self.assertEqual(payloads[0]['From'], 'whatsapp:+14155238886')
+
+    def test_unfixable_value_falls_back_to_legacy_behavior(self):
+        # Not silently dropped — Twilio still rejects it, but validate() and the
+        # save path now catch this class of value before it gets here.
+        self.assertEqual(wa.TwilioProvider._wa_addr('(478) 347-7453'),
+                         '(478) 347-7453')
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(wa.TwilioProvider._wa_addr(''), '')
+
+
+class TwilioValidateSenderTest(unittest.TestCase):
+    """Test-connection must fail on an implausible sender (issue #458): the
+    account probe alone stayed green while every send 400'd."""
+
+    def test_invalid_sender_fails_without_network(self):
+        prov = wa.TwilioProvider(auth_token='t', account_sid='AC1',
+                                 from_number='(478) 347-7453')
+        with mock.patch('urllib.request.urlopen') as m:
+            ok, detail = prov.validate()
+        self.assertFalse(ok)
+        self.assertIn('sender number', detail)
+        m.assert_not_called()
+
+    def test_valid_sender_proceeds_to_account_probe(self):
+        prov = wa.TwilioProvider(auth_token='t', account_sid='AC1',
+                                 from_number='whatsapp:+14155238886')
+        resp = mock.MagicMock()
+        resp.__enter__.return_value = mock.Mock(status=200)
+        with mock.patch('urllib.request.urlopen', return_value=resp) as m:
+            ok, detail = prov.validate()
+        self.assertTrue(ok)
+        m.assert_called_once()
+
+    def test_empty_sender_still_validates_creds_only(self):
+        # Env-managed deploys may configure the sender elsewhere — an absent
+        # sender is not an invalid one.
+        prov = wa.TwilioProvider(auth_token='t', account_sid='AC1')
+        resp = mock.MagicMock()
+        resp.__enter__.return_value = mock.Mock(status=200)
+        with mock.patch('urllib.request.urlopen', return_value=resp):
+            ok, _detail = prov.validate()
+        self.assertTrue(ok)
+
+
+class ProviderErrorHintTest(unittest.TestCase):
+    """Outbound failures must be self-diagnosable from the runner log (issue
+    #458): surface the provider's numeric error code + short message, never
+    just 'HTTP Error 400'."""
+
+    @staticmethod
+    def _http_error(code, body):
+        import io
+        return urllib.error.HTTPError(
+            'https://api.twilio.com/x', code, 'Bad Request', {},
+            io.BytesIO(body))
+
+    def test_twilio_error_code_surfaces(self):
+        e = self._http_error(400, json.dumps({
+            'code': 21910, 'message': "Invalid 'From' and 'To' pair",
+            'status': 400}).encode())
+        with mock.patch('urllib.request.urlopen', side_effect=e):
+            result = wa._do_send(mock.Mock(), id_key='sid')
+        self.assertFalse(result.ok)
+        self.assertIn('21910', result.error)
+        self.assertIn('HTTP 400', result.error)
+        self.assertEqual(result.status, 400)
+
+    def test_meta_nested_error_code_surfaces(self):
+        e = self._http_error(400, json.dumps({
+            'error': {'code': 131030, 'message': 'Recipient not in allowed list'},
+        }).encode())
+        with mock.patch('urllib.request.urlopen', side_effect=e):
+            result = wa._do_send(mock.Mock(), id_key='messages')
+        self.assertIn('131030', result.error)
+
+    def test_unparseable_body_still_reports_status(self):
+        e = self._http_error(500, b'<html>oops</html>')
+        with mock.patch('urllib.request.urlopen', side_effect=e):
+            result = wa._do_send(mock.Mock(), id_key='sid')
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, 'HTTP 500')
+
+    def test_non_http_error_keeps_legacy_shape(self):
+        with mock.patch('urllib.request.urlopen', side_effect=OSError('boom')):
+            result = wa._do_send(mock.Mock(), id_key='sid')
+        self.assertFalse(result.ok)
+        self.assertIn('OSError', result.error)
+
+
 if __name__ == '__main__':
     unittest.main()

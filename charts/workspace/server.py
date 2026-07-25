@@ -77,7 +77,9 @@ try:
     from adapters.whatsapp import (WhatsAppAdapter, build_provider as
                                    gw_build_provider, list_providers as
                                    gw_list_providers, get_provider_spec as
-                                   gw_get_provider_spec)
+                                   gw_get_provider_spec,
+                                   get_field_normalizer as
+                                   gw_get_field_normalizer)
     from adapters.internal import LoopbackAdapter
     _GATEWAY_AVAILABLE = True
 except Exception as _gw_import_err:  # broken install shouldn't crash the server
@@ -92,6 +94,7 @@ except Exception as _gw_import_err:  # broken install shouldn't crash the server
     gw_build_provider = None  # type: ignore
     gw_list_providers = None  # type: ignore
     gw_get_provider_spec = None  # type: ignore
+    gw_get_field_normalizer = None  # type: ignore
     LoopbackAdapter = None  # type: ignore
     _GATEWAY_AVAILABLE = False
     print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
@@ -3535,9 +3538,13 @@ class GatewayCredentialsManager:
     def set(cls, provider_id, creds, sender_number=None):
         """Persist provider + creds. Validates the provider against the registry,
         keeps only fields the spec declares (allowlist), folds sender_number into
-        its spec field, and preserves an existing secret when the incoming value
-        is blank AND the provider is unchanged (so the form needn't re-enter a
-        masked secret). Switching providers starts fresh. Returns (ok, err)."""
+        its spec field, normalizes fields whose spec declares a `format` (the
+        Twilio sender coerces to `whatsapp:+E164` or the save is REJECTED —
+        issue #458: a malformed sender used to save fine, keep Test-connection
+        green, then 400 every outbound send), and preserves an existing secret
+        when the incoming value is blank AND the provider is unchanged (so the
+        form needn't re-enter a masked secret). Switching providers starts
+        fresh. Returns (ok, err); on err nothing is written."""
         provider_id = (provider_id or '').strip().lower()
         spec = cls._spec(provider_id)
         if spec is None:
@@ -3546,6 +3553,12 @@ class GatewayCredentialsManager:
         if sender_number is not None:
             incoming[spec.sender_field.key] = sender_number
         allowed = set(spec.field_keys())
+        normalizers = {}
+        if gw_get_field_normalizer is not None:
+            for f in list(spec.credential_fields) + [spec.sender_field]:
+                fn = gw_get_field_normalizer(getattr(f, 'format', ''))
+                if fn is not None:
+                    normalizers[f.key] = (f.label, fn)
         prev = cls._read()
         same_provider = prev.get('provider_id') == provider_id
         prev_creds = prev.get('creds') if isinstance(prev.get('creds'), dict) else {}
@@ -3553,7 +3566,13 @@ class GatewayCredentialsManager:
         for key in allowed:
             val = incoming.get(key)
             if isinstance(val, str) and val.strip():
-                out[key] = val.strip()
+                val = val.strip()
+                if key in normalizers:
+                    label, fn = normalizers[key]
+                    val, norm_err = fn(val)
+                    if norm_err:
+                        return False, f'{label} {norm_err}'
+                out[key] = val
             elif same_provider and isinstance(prev_creds.get(key), str) and prev_creds[key]:
                 # Blank/absent on update → keep the previously-stored value.
                 out[key] = prev_creds[key]

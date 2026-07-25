@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -111,6 +112,12 @@ class CredentialField:
     placeholder: str = ''
     help_url: str = ''
     required: bool = True
+    # Declarative value format (issue #458). '' means free-form; 'wa_sender'
+    # means a dialable WhatsApp sender that the store normalizes/validates to
+    # `whatsapp:+E164` at save time (see normalize_wa_sender) and the Settings
+    # form lints inline. Serialized so the UI stays data-driven — Meta's opaque
+    # phone_number_id simply doesn't declare it.
+    format: str = ''
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -120,6 +127,7 @@ class CredentialField:
             'placeholder': self.placeholder,
             'help_url': self.help_url,
             'required': self.required,
+            'format': self.format,
         }
 
 
@@ -155,6 +163,53 @@ _WA_CAPS = dict(buttons=True, max_buttons=3, max_list_rows=10, media=True,
                 typing_indicator=True, max_text_len=WHATSAPP_MAX_TEXT)
 TWILIO_CAPS = Capabilities(proactive=False, **_WA_CAPS)
 META_CAPS = Capabilities(proactive=True, **_WA_CAPS)
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Sender normalization (issue #458)
+# ───────────────────────────────────────────────────────────────────────────
+# E.164: '+', a non-zero leading digit, 7–14 more digits (≤15 total).
+_E164_RE = re.compile(r'^\+[1-9]\d{6,14}$')
+# Display formatting people paste from consoles/contacts: spaces, ().-
+_SENDER_JUNK_RE = re.compile(r'[\s().\-]')
+
+
+def normalize_wa_sender(value: str) -> 'Tuple[Optional[str], Optional[str]]':
+    """Coerce a user-entered WhatsApp sender to canonical `whatsapp:+E164`.
+
+    Accepts an optional `whatsapp:` prefix and display formatting — spaces,
+    parentheses, dots, hyphens — so `+1 (415) 523-8886` becomes
+    `whatsapp:+14155238886`. Returns (normalized, None) on success and
+    (None, reason) when the value can't be a WhatsApp sender: a number without
+    `+<country code>` (e.g. `(478) 347-7453`) is ambiguous, not fixable, and
+    would 400 on every Twilio send (issue #458), so it's rejected with a
+    human-readable reason instead of stored. Blank normalizes to ('', None) —
+    the store treats blank as absent, not invalid."""
+    raw = (value or '').strip()
+    if not raw:
+        return '', None
+    body = raw[len('whatsapp:'):] if raw.lower().startswith('whatsapp:') else raw
+    body = _SENDER_JUNK_RE.sub('', body)
+    if not body.startswith('+'):
+        return None, ('must include a country code starting with "+" — '
+                      'e.g. whatsapp:+14155238886')
+    if not _E164_RE.match(body):
+        return None, ('is not a valid E.164 number — expected '
+                      'whatsapp:+<country code><number>, e.g. whatsapp:+14155238886')
+    return f'whatsapp:{body}', None
+
+
+_FIELD_NORMALIZERS: 'Dict[str, Callable[[str], Tuple[Optional[str], Optional[str]]]]' = {
+    'wa_sender': normalize_wa_sender,
+}
+
+
+def get_field_normalizer(fmt: str):
+    """The (value) -> (normalized, error) normalizer for a CredentialField
+    `format`, or None for free-form fields. The credential store applies this
+    at save time so malformed senders fail loudly instead of 400-ing every
+    outbound send."""
+    return _FIELD_NORMALIZERS.get((fmt or '').strip())
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -207,9 +262,14 @@ class TwilioProvider(_Provider):
         `whatsapp:` channel prefix (e.g. `whatsapp:+14155238886`). A bare
         `+E164` sender is a different channel (SMS), so mixing it with a
         `whatsapp:` recipient makes Twilio reject the send (error 21910) — the
-        message never leaves. The Settings UI accepts a plain `+E164` sender as
-        valid, so normalize here: prefix any bare `+number` with `whatsapp:`,
-        and leave an already-prefixed address (or anything non-E164) untouched."""
+        message never leaves. Route through normalize_wa_sender so display
+        formatting (`+1 (415) 523-8886`) is stripped and the prefix added; a
+        value the normalizer rejects (e.g. env-configured, predating save-time
+        validation — issue #458) falls back to the legacy prefix-only behavior
+        rather than being silently dropped."""
+        norm, err = normalize_wa_sender(addr)
+        if norm and err is None:
+            return norm
         addr = (addr or '').strip()
         if addr.startswith('+'):
             return f'whatsapp:{addr}'
@@ -318,9 +378,17 @@ class TwilioProvider(_Provider):
 
     def validate(self) -> 'Tuple[bool, str]':
         """Authenticated GET of the Account resource — proves the SID+token pair
-        without sending anything. 200 → ok; 401 → bad creds."""
+        without sending anything. 200 → ok; 401 → bad creds. Also rejects an
+        implausible configured sender (issue #458): the account probe alone
+        stayed green while every send 400'd on a malformed From, so a green
+        check must ALSO mean the sender can carry a send. Checked before the
+        network call — it's local and fails fast."""
         if not (self.account_sid and self.auth_token):
             return False, 'credentials not configured'
+        if self.from_number:
+            _norm, err = normalize_wa_sender(self.from_number)
+            if err:
+                return False, f'sender number {err}'
         url = (f'https://api.twilio.com/2010-04-01/Accounts/'
                f'{self.account_sid}.json')
         auth = base64.b64encode(
@@ -529,8 +597,38 @@ def _do_send(req: urllib.request.Request, *, id_key: str) -> DeliveryResult:
         elif isinstance(data.get('messages'), list) and data['messages']:
             pid = data['messages'][0].get('id', '')
         return DeliveryResult(ok=True, provider_msg_id=pid, status=status)
-    except Exception as e:  # network / HTTP error — surface, never crash
+    except urllib.error.HTTPError as e:
+        # A bare "HTTP Error 400" made send failures undiagnosable without the
+        # raw creds file (issue #458) — surface the provider's numeric error
+        # code + short message (e.g. Twilio 21910/63007). Both providers put
+        # these in a JSON error body; neither field carries secret material.
+        hint = _provider_error_hint(e)
+        detail = f'HTTP {e.code}' + (f' — {hint}' if hint else '')
+        return DeliveryResult(ok=False, error=detail, status=e.code)
+    except Exception as e:  # network error — surface, never crash
         return DeliveryResult(ok=False, error=f'{type(e).__name__}: {e}')
+
+
+def _provider_error_hint(e: 'urllib.error.HTTPError') -> str:
+    """A short, secret-free hint from a provider error response: the numeric
+    error code ('provider error 21910') plus a truncated message. Twilio puts
+    {code, message} at the top level; Meta nests them under {'error': {...}}.
+    Returns '' when the body isn't parseable — never raises."""
+    try:
+        data = json.loads(e.read(8192).decode('utf-8', 'replace'))
+    except Exception:
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    err = data.get('error') if isinstance(data.get('error'), dict) else data
+    parts = []
+    code = err.get('code')
+    if isinstance(code, (int, str)) and str(code).strip():
+        parts.append(f'provider error {code}')
+    msg = err.get('message')
+    if isinstance(msg, str) and msg.strip():
+        parts.append(_truncate(msg.strip(), 160))
+    return ': '.join(parts)
 
 
 def _do_validate(req: urllib.request.Request) -> 'Tuple[bool, str]':
@@ -638,111 +736,7 @@ TWILIO_SPEC = ProviderSpec(
     ],
     sender_field=CredentialField(
         key='from_number', label='WhatsApp sender number', secret=False,
-        placeholder='whatsapp:+14155238886',
-        help_url='https://www.twilio.com/docs/whatsapp'),
-    capabilities=TWILIO_CAPS,
-)
-
-
-def _twilio_factory(creds: Dict[str, str]) -> _Provider:
-    return TwilioProvider(
-        auth_token=creds.get('auth_token', ''),
-        account_sid=creds.get('account_sid', ''),
-        from_number=creds.get('from_number', ''))
-
-
-# -- Meta ---------------------------------------------------------------------
-META_SPEC = ProviderSpec(
-    id='meta',
-    display_name='Meta (WhatsApp Cloud API)',
-    credential_fields=[
-        CredentialField(
-            key='access_token', label='Access Token', secret=True,
-            help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
-        CredentialField(
-            key='app_secret', label='App Secret', secret=True,
-            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
-        CredentialField(
-            key='verify_token', label='Webhook Verify Token', secret=False,
-            placeholder='a token you choose',
-            help_url='https://developers.facebook.com/docs/graph-api/webhooks/getting-started'),
-    ],
-    # Meta's sending identity is the opaque Phone Number ID (the WABA sender),
-    # not a dialable number — so it lives here, not among the numbered fields.
-    sender_field=CredentialField(
-        key='phone_number_id', label='Phone Number ID', secret=False,
-        placeholder='1234567890',
-        help_url='https://developers.facebook.com/docs/whatsapp/cloud-api/get-started'),
-    capabilities=META_CAPS,
-)
-
-
-def _meta_factory(creds: Dict[str, str]) -> _Provider:
-    return MetaProvider(
-        app_secret=creds.get('app_secret', ''),
-        verify_token=creds.get('verify_token', ''),
-        phone_number_id=creds.get('phone_number_id', ''),
-        access_token=creds.get('access_token', ''))
-
-
-register_provider(TWILIO_SPEC, _twilio_factory)
-register_provider(META_SPEC, _meta_factory)
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# Provider registry (issue #328)
-# ───────────────────────────────────────────────────────────────────────────
-# provider_id → (spec, factory). The factory maps a flat creds dict (keyed by
-# the spec's CredentialField.key values) onto the provider's kwargs constructor.
-DEFAULT_PROVIDER_ID = 'twilio'
-_ProviderFactory = Callable[[Dict[str, str]], _Provider]
-_REGISTRY: 'Dict[str, Tuple[ProviderSpec, _ProviderFactory]]' = {}
-
-
-def register_provider(spec: ProviderSpec, factory: _ProviderFactory) -> None:
-    """Register a provider so build_provider/list_providers can see it. Called
-    at import time; adding a provider is a new adapter class + one call here."""
-    _REGISTRY[spec.id] = (spec, factory)
-
-
-def list_providers() -> List[ProviderSpec]:
-    """All registered provider specs, in registration order (data for the UI)."""
-    return [spec for spec, _factory in _REGISTRY.values()]
-
-
-def get_provider_spec(provider_id: str) -> Optional[ProviderSpec]:
-    entry = _REGISTRY.get((provider_id or '').strip().lower())
-    return entry[0] if entry else None
-
-
-def build_provider(provider_id: str,
-                   creds: Optional[Dict[str, str]] = None) -> _Provider:
-    """Construct a provider from its id + a flat creds dict. Raises ValueError
-    on an unknown id so API callers (stage 2) fail loudly; env callers normalize
-    the id first so they never hit that path."""
-    entry = _REGISTRY.get((provider_id or '').strip().lower())
-    if entry is None:
-        raise ValueError(f'unknown provider: {provider_id!r}')
-    _spec, factory = entry
-    return factory(creds or {})
-
-
-# -- Twilio -------------------------------------------------------------------
-TWILIO_SPEC = ProviderSpec(
-    id='twilio',
-    display_name='Twilio',
-    credential_fields=[
-        CredentialField(
-            key='account_sid', label='Account SID', secret=False,
-            placeholder='ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-            help_url='https://www.twilio.com/console'),
-        CredentialField(
-            key='auth_token', label='Auth Token', secret=True,
-            help_url='https://www.twilio.com/console'),
-    ],
-    sender_field=CredentialField(
-        key='from_number', label='WhatsApp sender number', secret=False,
-        placeholder='whatsapp:+14155238886',
+        placeholder='whatsapp:+14155238886', format='wa_sender',
         help_url='https://www.twilio.com/docs/whatsapp'),
     capabilities=TWILIO_CAPS,
 )

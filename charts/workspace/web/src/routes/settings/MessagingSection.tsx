@@ -37,6 +37,25 @@ async function copy(text: string, label: string) {
   }
 }
 
+/** Client-side mirror of the server's `wa_sender` normalization (issue #458):
+ *  strip an optional `whatsapp:` prefix and display formatting, then require
+ *  +E.164. Returns a human-readable problem, or null when the value is fine
+ *  (blank is fine — the store treats it as absent). The server re-checks on
+ *  save; this exists so a doomed sender is flagged before the user hits Save
+ *  and so a bad value stored before validation existed is visibly flagged. */
+export function waSenderProblem(raw: string): string | null {
+  const v = (raw || '').trim();
+  if (!v) return null;
+  const body = v.replace(/^whatsapp:/i, '').replace(/[\s().-]/g, '');
+  if (!body.startsWith('+')) {
+    return 'Must include a country code starting with "+" — e.g. whatsapp:+14155238886.';
+  }
+  if (!/^\+[1-9]\d{6,14}$/.test(body)) {
+    return 'Not a valid E.164 number — expected whatsapp:+<country code><number>.';
+  }
+  return null;
+}
+
 /** The dialable WhatsApp number for a wa.me deep link, or null when the sender
  *  isn't a real number (Meta's phone_number_id is an opaque id, not dialable). */
 function dialableSender(view: CredentialsView | null): string | null {
@@ -225,6 +244,9 @@ export function MessagingSection() {
 
   function fieldRow(f: CredentialField) {
     const state = cred?.provider_id === spec?.id ? cred?.fields[f.key] : undefined;
+    // Non-secret drafts are seeded from the stored value, so this also flags a
+    // bad sender saved before validation existed — not just fresh typing.
+    const problem = f.format === 'wa_sender' ? waSenderProblem(drafts[f.key] ?? '') : null;
     return (
       <div class="settings-row" key={f.key}>
         <div class="settings-row-label">
@@ -241,16 +263,23 @@ export function MessagingSection() {
           ) : null}
         </div>
         <div class="settings-row-control" style={{ gap: 'var(--size-2)' }}>
-          <Input
-            fullWidth
-            type={f.secret ? 'password' : 'text'}
-            value={drafts[f.key] ?? ''}
-            placeholder={f.secret ? (state?.set ? 'Replace…' : f.placeholder || 'Paste…') : f.placeholder}
-            onInput={(e) => {
-              const v = (e.target as HTMLInputElement).value;
-              setDrafts((d) => ({ ...d, [f.key]: v }));
-            }}
-          />
+          <div style={{ flex: 1 }}>
+            <Input
+              fullWidth
+              type={f.secret ? 'password' : 'text'}
+              value={drafts[f.key] ?? ''}
+              placeholder={f.secret ? (state?.set ? 'Replace…' : f.placeholder || 'Paste…') : f.placeholder}
+              onInput={(e) => {
+                const v = (e.target as HTMLInputElement).value;
+                setDrafts((d) => ({ ...d, [f.key]: v }));
+              }}
+            />
+            {problem ? (
+              <div class="settings-radio-hint" style={{ color: 'var(--danger)' }}>
+                {problem}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     );
