@@ -57,8 +57,15 @@ number with Twilio instead; the credentials below are identical.)
    | **Auth Token** | from the Console (secret — stored redacted) |
    | **WhatsApp sender number** | `whatsapp:+14155238886` (your sandbox number) |
 
-   Click **Save**, then **Test connection** — it makes a real Twilio API call and
-   should report `connection ok`.
+   The sender must be the **provider's** WhatsApp number in `+E164` form — not
+   your own phone. Save normalizes display formatting (`+1 (415) 523-8886` →
+   `whatsapp:+14155238886`) and **rejects** a value without a `+<country code>`
+   (e.g. `(478) 347-7453`) — a sender like that would otherwise save silently
+   and then fail every outbound send with a Twilio `400`.
+
+   Click **Save**, then **Test connection** — it makes a real Twilio API call,
+   checks the sender is a plausible `whatsapp:+E164` address, and should report
+   `connection ok`.
 6. **Point Twilio at your webhook** — copy the webhook URL shown in the Settings
    card (the **Copy** button next to it):
 

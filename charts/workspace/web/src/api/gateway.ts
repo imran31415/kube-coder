@@ -19,6 +19,10 @@ export interface CredentialField {
   placeholder: string;
   help_url: string;
   required: boolean;
+  /** Declared value format — 'wa_sender' marks a dialable WhatsApp sender the
+   *  server normalizes/validates to whatsapp:+E164 at save time (issue #458);
+   *  the form mirrors that check inline. Absent/'' = free-form. */
+  format?: string;
 }
 
 export interface ProviderCapabilities {

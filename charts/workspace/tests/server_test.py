@@ -928,7 +928,7 @@ class GatewayCredentialsManagerTests(unittest.TestCase):
 
     def test_public_view_never_leaks_secret(self):
         self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET},
-                   sender_number='whatsapp:+1')
+                   sender_number='whatsapp:+14155238886')
         view = self.M.public_view()
         self.assertTrue(view['configured'])
         # Secret field: set + hint, NEVER a value.
@@ -937,7 +937,8 @@ class GatewayCredentialsManagerTests(unittest.TestCase):
         self.assertNotIn('value', view['fields']['auth_token'])
         # Non-secret identifiers may surface their value.
         self.assertEqual(view['fields']['account_sid']['value'], 'AC1')
-        self.assertEqual(view['fields']['from_number']['value'], 'whatsapp:+1')
+        self.assertEqual(view['fields']['from_number']['value'],
+                         'whatsapp:+14155238886')
         # The raw secret must not appear anywhere in the serialized view.
         self.assertNotIn(self.SECRET, json.dumps(view))
         self.assertNotIn('auth-secret', json.dumps(view))
@@ -959,14 +960,14 @@ class GatewayCredentialsManagerTests(unittest.TestCase):
 
     def test_blank_secret_preserved_on_update(self):
         self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET},
-                   sender_number='whatsapp:+1')
+                   sender_number='whatsapp:+15550001111')
         # Re-save with a blank token (form left the masked secret untouched) and
         # a new sender — the token must survive, the sender must update.
         self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': ''},
-                   sender_number='whatsapp:+2')
+                   sender_number='whatsapp:+15550002222')
         raw = self.M.get_raw()
         self.assertEqual(raw['creds']['auth_token'], self.SECRET)
-        self.assertEqual(raw['creds']['from_number'], 'whatsapp:+2')
+        self.assertEqual(raw['creds']['from_number'], 'whatsapp:+15550002222')
 
     def test_switching_provider_starts_fresh(self):
         self.M.set('twilio', {'account_sid': 'AC1', 'auth_token': self.SECRET})
