@@ -127,8 +127,11 @@ spec:
           value: {{ .Values.provision.gitops.branch | quote }}
         - name: CHART_REPO
           value: {{ .Values.provision.chart.repo | quote }}
+        # Empty ref auto-pins to this chart's own release tag (v<appVersion>) so
+        # a default install provisions from the matching immutable release
+        # instead of shipping a mutable ref the guard below rejects (#459).
         - name: CHART_REF
-          value: {{ .Values.provision.chart.ref | quote }}
+          value: {{ .Values.provision.chart.ref | default (printf "v%s" .Chart.AppVersion) | quote }}
         # Fail closed on a mutable/floating chart ref unless explicitly opted in
         # (finding 7). The provisioner Job clones CHART_REF and runs its make
         # deploy under the cluster-privileged provisioner SA, so it must be pinned.
