@@ -42,8 +42,11 @@
     "vitest": "2.1.9"
   },
   "_comment_esbuild": "Pin one esbuild: vite 6 needs 0.25.x but vitest 2.1.9 (bundled vite 5) pulls 0.21.5, and yarn hoisting mixes them -> 'Host version 0.21.5 does not match binary 0.25.12'. Remove once vitest is on v3.",
+  "_comment_brace_expansion": "GHSA-mh99-v99m-4gvg (uncatchable OOM) affects every brace-expansion <=5.0.7 with no backported fix, so all instances must reach 5.0.8. That requires minimatch >=10 (older majors expect the pre-5.x default-function export). Only test-exclude/glob (vitest coverage) consume minimatch here; both verified working on 10.2.5. Remove both pins once dependents require brace-expansion ^5.0.8 on their own.",
   "resolutions": {
-    "esbuild": "0.25.12"
+    "esbuild": "0.25.12",
+    "minimatch": "^10.2.5",
+    "brace-expansion": "^5.0.8"
   },
   "engines": {
     "node": ">=20"

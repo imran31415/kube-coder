@@ -16,11 +16,15 @@
   //     for that upgrade rather than blocking CI in the meantime. These are the
   //     same advisories the two web SPAs allowlist for the same reason.
   //
-  // brace-expansion (GHSA-3jxr-9vmj-r5cp, high) and the uuid moderate are NOT
-  // allowlisted: brace-expansion is patched via npm `overrides` in package.json
-  // (both major lines patch-bumped), and uuid is a moderate build-tool-only
-  // advisory that sits below this high+ gate. Keep the allowlist minimal so a
-  // genuinely new high/critical still fails the job.
+  // brace-expansion (GHSA-3jxr-9vmj-r5cp and GHSA-mh99-v99m-4gvg, both high)
+  // and the uuid moderate are NOT allowlisted: brace-expansion is forced to
+  // 5.0.8 via a blanket npm `override` in package.json (GHSA-mh99-v99m-4gvg
+  // affects every line <=5.0.7 with no backported fix, so 5.0.8 is the only
+  // clean version; serve-handler's minimatch@3 tolerates it because our
+  // rewrite patterns contain no braces, so expand() is never invoked), and
+  // uuid is a moderate build-tool-only advisory that sits below this high+
+  // gate. Keep the allowlist minimal so a genuinely new high/critical still
+  // fails the job.
   //
   // Each exception documents owner + reason + review date. Prune an entry once
   // its dependency is bumped past the patched version.
