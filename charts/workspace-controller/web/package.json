@@ -28,6 +28,11 @@
     "vite-plugin-singlefile": "2.0.3",
     "vitest": "2.1.9"
   },
+  "_comment_brace_expansion": "GHSA-mh99-v99m-4gvg (uncatchable OOM) affects every brace-expansion <=5.0.7 with no backported fix, so all instances must reach 5.0.8. That requires minimatch >=10 (older majors expect the pre-5.x default-function export). Only test-exclude/glob (vitest coverage) consume minimatch here; both verified working on 10.2.5. Remove both pins once dependents require brace-expansion ^5.0.8 on their own.",
+  "resolutions": {
+    "minimatch": "^10.2.5",
+    "brace-expansion": "^5.0.8"
+  },
   "engines": {
     "node": ">=20"
   }
