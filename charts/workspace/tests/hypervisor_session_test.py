@@ -207,6 +207,242 @@ class BgWatcherNoticeTest(unittest.TestCase):
         self.assertIn('...', desc)
 
 
+def _wf_result_text(run_dir, run_id='wf_ab12cd34-e56'):
+    return (f'Workflow launched in background. Task ID: w1a2b3c4d\n'
+            f'Summary: Deep research harness.\n'
+            f'Transcript dir: {run_dir}\n'
+            f'Script file: {run_dir}/script.js\n'
+            f'Run ID: {run_id}\n'
+            f'You will be notified when it completes.')
+
+
+def _write_journal(run_dir, started, results):
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, 'journal.jsonl'), 'w') as f:
+        for i in range(started):
+            f.write(json.dumps({'type': 'started', 'agentId': f'a{i}'}) + '\n')
+        for i in range(results):
+            f.write(json.dumps({'type': 'result', 'agentId': f'a{i}',
+                                'result': {}}) + '\n')
+
+
+class WorkflowLossTest(unittest.TestCase):
+    """Background Workflow runs die when the turn's CLI process does (#462):
+    launches are tracked from the turn's own event stream, an interrupted run
+    (journal shows agents started > results) is reported to the user in the
+    chat at finalize, and the next turn's system prompt tells the agent how to
+    resume the run instead of silently re-running it."""
+
+    def setUp(self):
+        self.a = hs.ClaudeAdapter()
+        self.ctx = {'workdir': '/home/dev', 'preamble': 'PRE',
+                    'claude_session_id': 'sess-abc'}
+        self.tmp = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.tmp, 'wf_ab12cd34-e56')
+
+    def _launch(self, run_id='wf_ab12cd34-e56'):
+        self.a.parse(self.ctx, json.dumps(
+            {'type': 'assistant', 'message': {'content': [
+                {'type': 'tool_use', 'id': 'tw1', 'name': 'Workflow',
+                 'input': {'name': 'deep-research', 'args': 'q'}}]}}))
+        self.a.parse(self.ctx, json.dumps(
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'tw1',
+                 'content': [{'type': 'text',
+                              'text': _wf_result_text(self.run_dir, run_id)}],
+                 'is_error': False}]}}))
+
+    def test_launch_is_tracked_with_run_details(self):
+        self._launch()
+        runs = self.ctx['_turn_workflows']
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]['run_id'], 'wf_ab12cd34-e56')
+        self.assertEqual(runs[0]['name'], 'deep-research')
+        self.assertEqual(runs[0]['transcript_dir'], self.run_dir)
+        self.assertEqual(runs[0]['script_path'], self.run_dir + '/script.js')
+
+    def test_failed_launch_is_not_tracked(self):
+        self.a.parse(self.ctx, json.dumps(
+            {'type': 'assistant', 'message': {'content': [
+                {'type': 'tool_use', 'id': 'tw1', 'name': 'Workflow',
+                 'input': {'script': 'export const meta = {}'}}]}}))
+        self.a.parse(self.ctx, json.dumps(
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'tw1',
+                 'content': [{'type': 'text', 'text': 'syntax error'}],
+                 'is_error': True}]}}))
+        self.assertNotIn('_turn_workflows', self.ctx)
+
+    def test_non_workflow_tools_are_not_tracked(self):
+        self.a.parse(self.ctx, json.dumps(
+            {'type': 'assistant', 'message': {'content': [
+                {'type': 'tool_use', 'id': 't1', 'name': 'Bash',
+                 'input': {'command': 'ls'}}]}}))
+        self.assertNotIn('_turn_wf_calls', self.ctx)
+
+    def test_finalize_flags_interrupted_run(self):
+        self._launch()
+        _write_journal(self.run_dir, started=22, results=20)
+        out = self.a.finalize(self.ctx, 0)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]['role'], 'system')
+        self.assertIn('wf_ab12cd34-e56', out[0]['text'])
+        self.assertIn('20 of 22', out[0]['text'])
+        self.assertIn('journal.jsonl', out[0]['text'])
+        lost = self.ctx['lost_workflows']
+        self.assertEqual(lost[0]['agents_started'], 22)
+        self.assertEqual(lost[0]['agents_done'], 20)
+        self.assertNotIn('_turn_workflows', self.ctx)
+        self.assertNotIn('_turn_wf_calls', self.ctx)
+
+    def test_finalize_ignores_completed_run(self):
+        self._launch()
+        _write_journal(self.run_dir, started=8, results=8)
+        out = self.a.finalize(self.ctx, 0)
+        self.assertEqual(out, [])
+        self.assertNotIn('lost_workflows', self.ctx)
+
+    def test_finalize_ignores_run_without_journal(self):
+        self._launch()  # run dir never created — nothing assertable from disk
+        self.assertEqual(self.a.finalize(self.ctx, 0), [])
+        self.assertNotIn('lost_workflows', self.ctx)
+
+    def test_finalize_keeps_rc_error_after_workflow_notice(self):
+        self._launch()
+        _write_journal(self.run_dir, started=3, results=1)
+        out = self.a.finalize(self.ctx, -9)
+        self.assertEqual([e['type'] for e in out], ['message', 'error'])
+
+    def test_build_resume_injects_resume_note_once(self):
+        self.ctx['lost_workflows'] = [
+            {'name': 'deep-research', 'run_id': 'wf_ab12cd34-e56',
+             'transcript_dir': self.run_dir,
+             'script_path': self.run_dir + '/script.js',
+             'agents_started': 22, 'agents_done': 20}]
+        spec = self.a.build(self.ctx, 'is that still going?', first=False)
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('wf_ab12cd34-e56', note)
+        self.assertIn('resumeFromRunId', note)
+        self.assertIn(self.run_dir + '/script.js', note)
+        self.assertNotIn('lost_workflows', self.ctx)
+        spec2 = self.a.build(self.ctx, 'thanks', first=False)
+        self.assertNotIn('--append-system-prompt', spec2['argv'])
+
+    def test_build_clears_stale_same_turn_tracking(self):
+        # A user-stopped turn skips finalize; its runs were deliberately
+        # killed and must not leak into the next turn's tracking.
+        self.ctx['_turn_wf_calls'] = {'tw1': 'deep-research'}
+        self.ctx['_turn_workflows'] = [{'run_id': 'wf_x'}]
+        spec = self.a.build(self.ctx, 'hello', first=False)
+        self.assertNotIn('_turn_wf_calls', self.ctx)
+        self.assertNotIn('_turn_workflows', self.ctx)
+        self.assertNotIn('--append-system-prompt', spec['argv'])
+
+    def test_journal_counts_reader(self):
+        _write_journal(self.run_dir, started=5, results=3)
+        self.assertEqual(hs._workflow_journal_counts(self.run_dir), (5, 3))
+        self.assertIsNone(hs._workflow_journal_counts(self.tmp + '/missing'))
+        self.assertIsNone(hs._workflow_journal_counts(None))
+
+
+class ReconcileStaleRunningTest(unittest.TestCase):
+    """A server death mid-turn leaves thread.json stuck at status 'running'
+    (the runner's finally never ran) — the chat shows the waiting spinner
+    forever (#462). Startup repair flips it to idle, posts an interruption
+    notice, and arms the agent-facing resume note for in-flight workflows."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+
+    def _stuck_thread(self, with_workflow=False, started=22, results=20):
+        s = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='PRE', title='research chat')
+        s._append([{'role': 'user', 'type': 'message', 'text': 'research X'}])
+        if with_workflow:
+            run_dir = os.path.join(self.tmp, 'runs', 'wf_ab12cd34-e56')
+            _write_journal(run_dir, started=started, results=results)
+            s._append([
+                {'role': 'assistant', 'type': 'tool_call', 'tool_id': 'tw1',
+                 'tool': {'name': 'Workflow', 'input': {'name': 'deep-research'}}},
+                {'role': 'system', 'type': 'tool_result', 'tool_use_id': 'tw1',
+                 'is_error': False, 'text': _wf_result_text(run_dir)},
+                {'role': 'assistant', 'type': 'message',
+                 'text': 'Running in the background — I will report back.'},
+            ])
+        meta = s.read_meta()
+        meta['status'] = 'running'
+        s._write_meta(meta)
+        return s
+
+    def test_repairs_stuck_thread_and_posts_notice(self):
+        s = self._stuck_thread()
+        repaired = hs.reconcile_stale_running_threads()
+        self.assertEqual(repaired, [s.id])
+        self.assertEqual(s.read_meta()['status'], 'idle')
+        last = s.read_events()[-1]
+        self.assertEqual(last['role'], 'system')
+        self.assertIn('interrupted', last['text'])
+
+    def test_flags_in_flight_workflow_with_resume_state(self):
+        s = self._stuck_thread(with_workflow=True)
+        hs.reconcile_stale_running_threads()
+        texts = [e['text'] for e in s.read_events()
+                 if e.get('role') == 'system' and e.get('type') == 'message']
+        self.assertTrue(any('wf_ab12cd34-e56' in t and '20 of 22' in t
+                            for t in texts))
+        meta = s.read_meta()
+        lost = meta['adapter']['lost_workflows']
+        self.assertEqual(lost[0]['run_id'], 'wf_ab12cd34-e56')
+        # No leaked turn-tracking keys in the persisted ctx.
+        self.assertNotIn('_turn_wf_calls', meta['adapter'])
+        self.assertNotIn('_turn_workflows', meta['adapter'])
+        # The next turn's build surfaces the resume note.
+        ctx = meta['adapter']
+        ctx['claude_session_id'] = 'sess-abc'
+        spec = hs.ClaudeAdapter().build(ctx, 'still going?', first=False)
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('resumeFromRunId', note)
+
+    def test_completed_workflow_is_not_flagged(self):
+        s = self._stuck_thread(with_workflow=True, started=8, results=8)
+        hs.reconcile_stale_running_threads()
+        meta = s.read_meta()
+        self.assertEqual(meta['status'], 'idle')
+        self.assertNotIn('lost_workflows', meta['adapter'])
+
+    def test_idle_threads_untouched(self):
+        s = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            preamble='', title='idle chat')
+        before = s.read_meta()
+        self.assertEqual(hs.reconcile_stale_running_threads(), [])
+        self.assertEqual(s.read_meta(), before)
+        self.assertEqual(s.read_events(), [])
+
+    def test_live_turn_is_not_repaired(self):
+        s = self._stuck_thread()
+        with hs._RUNLOCK:
+            hs._RUNNING[s.id] = True
+        try:
+            self.assertEqual(hs.reconcile_stale_running_threads(), [])
+            self.assertEqual(s.read_meta()['status'], 'running')
+        finally:
+            with hs._RUNLOCK:
+                hs._RUNNING.pop(s.id, None)
+
+    def test_repair_preserves_updated_at_ordering(self):
+        s = self._stuck_thread()
+        before = s.read_meta()['updated_at']
+        hs.reconcile_stale_running_threads()
+        self.assertEqual(s.read_meta()['updated_at'], before)
+
+
 class FallbackAdapterTest(unittest.TestCase):
     def test_strips_ansi_and_emits_message(self):
         a = hs.FallbackAdapter()

@@ -289,6 +289,158 @@ def _lost_watcher_note(lost: List[str]) -> str:
     )
 
 
+# In-flight background workflows (issue #462): the Workflow tool launches a
+# multi-agent run in the background of the turn, and the headless CLI stays
+# alive waiting for its completion notification — so when the CLI process dies
+# early (crash, OOM kill, server restart mid-turn) the run is killed mid-flight
+# with tokens already spent, and nothing tells the user or the next turn's
+# agent. Unlike Bash/Monitor watchers the loss IS salvageable: every run
+# persists a journal + script on disk and can be resumed with resumeFromRunId.
+# We track launches from the turn's own event stream (the Workflow tool_result
+# carries the run id, transcript dir and script path), decide "died mid-run"
+# from the journal (agents started > results recorded — the only interruption
+# state assertable from disk; a completed run leaves no terminal journal
+# record), and surface BOTH a user-visible chat notice and a next-turn system
+# prompt notice telling the agent how to resume instead of silently re-running.
+_WF_RESULT_FIELDS = (
+    ('run_id', re.compile(r'Run ID:\s*(wf_[A-Za-z0-9-]+)')),
+    ('transcript_dir', re.compile(r'Transcript dir:\s*(\S+)')),
+    ('script_path', re.compile(r'Script file:\s*(\S+)')),
+)
+
+
+def _track_workflow_calls(ctx: Dict[str, Any],
+                          events: List[Dict[str, Any]]) -> None:
+    """Remember this turn's Workflow tool_use ids (with the workflow's name,
+    when it was invoked by name) so the matching tool_result can be resolved
+    into an in-flight run record."""
+    for e in events:
+        if e.get('type') != 'tool_call':
+            continue
+        tool = e.get('tool') or {}
+        if tool.get('name') != 'Workflow' or not e.get('tool_id'):
+            continue
+        d = tool.get('input') if isinstance(tool.get('input'), dict) else {}
+        name = d.get('name') if isinstance(d.get('name'), str) else ''
+        ctx.setdefault('_turn_wf_calls', {})[e['tool_id']] = name
+
+
+def _resolve_workflow_results(ctx: Dict[str, Any],
+                              events: List[Dict[str, Any]]) -> None:
+    """Match tool_results to tracked Workflow calls; a successful launch (the
+    result text carries `Run ID: wf_…`) is recorded as one of this turn's
+    in-flight runs, with the on-disk paths needed for loss reporting."""
+    calls = ctx.get('_turn_wf_calls')
+    if not calls:
+        return
+    for e in events:
+        if e.get('type') != 'tool_result':
+            continue
+        use_id = e.get('tool_use_id')
+        if use_id not in calls:
+            continue
+        name = calls.pop(use_id)
+        if e.get('is_error'):
+            continue  # launch failed — nothing running to lose
+        run: Dict[str, Any] = {'name': name}
+        text = e.get('text') or ''
+        for key, rx in _WF_RESULT_FIELDS:
+            m = rx.search(text)
+            if m:
+                run[key] = m.group(1)
+        if run.get('run_id'):
+            ctx.setdefault('_turn_workflows', []).append(run)
+
+
+def _workflow_journal_counts(transcript_dir: Any) -> Optional[tuple]:
+    """(agents started, results recorded) from a run's journal.jsonl, or None
+    when the journal can't be read."""
+    if not transcript_dir or not isinstance(transcript_dir, str):
+        return None
+    started = results = 0
+    try:
+        with open(os.path.join(transcript_dir, 'journal.jsonl')) as f:
+            for line in f:
+                try:
+                    o = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = o.get('type') if isinstance(o, dict) else None
+                if t == 'started':
+                    started += 1
+                elif t == 'result':
+                    results += 1
+    except OSError:
+        return None
+    return started, results
+
+
+def _reap_turn_workflows(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Check this turn's launched workflow runs against their journals now
+    that the turn's CLI process is gone. Runs that died mid-agent are promoted
+    to ctx['lost_workflows'] (persisted; consumed by the next build()) and
+    returned so the caller can post user-visible notices. A run whose journal
+    shows every started agent finished is treated as complete — its completion
+    notification never surfaces in the event stream, so the journal is the
+    only signal that distinguishes it from an interrupted one."""
+    lost: List[Dict[str, Any]] = []
+    ctx.pop('_turn_wf_calls', None)
+    for run in ctx.pop('_turn_workflows', None) or []:
+        counts = _workflow_journal_counts(run.get('transcript_dir'))
+        if counts is None:
+            continue
+        started, results = counts
+        if started > results:
+            run['agents_started'], run['agents_done'] = started, results
+            lost.append(run)
+    if lost:
+        ctx['lost_workflows'] = (ctx.get('lost_workflows') or []) + lost
+    return lost
+
+
+def _interrupted_workflow_events(
+        runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """User-visible chat notices for workflow runs that died with the turn —
+    run id + journal path so the work is findable, and the resume hint that
+    makes the interruption salvageable instead of a silent full re-run."""
+    out = []
+    for r in runs:
+        label = f'"{r["name"]}" ' if r.get('name') else ''
+        journal = os.path.join(r.get('transcript_dir') or '?', 'journal.jsonl')
+        out.append({
+            'role': 'system', 'type': 'message',
+            'text': (f'⚠️ Background workflow {label}(run {r.get("run_id")}) '
+                     f'was interrupted — {r.get("agents_done", 0)} of '
+                     f'{r.get("agents_started", 0)} subagents had finished '
+                     f'when the turn\'s process died. Completed results are '
+                     f'preserved in {journal}. Ask me to resume the run to '
+                     f'salvage them instead of starting over.')})
+    return out
+
+
+def _lost_workflow_note(runs: List[Dict[str, Any]]) -> str:
+    """Next-turn system-prompt notice for the agent: which runs died, where
+    their state lives, and how to resume them."""
+    parts = []
+    for r in runs:
+        journal = os.path.join(r.get('transcript_dir') or '?', 'journal.jsonl')
+        parts.append(f'{r.get("name") or "workflow"} run {r.get("run_id")} '
+                     f'(script: {r.get("script_path") or "?"}, '
+                     f'journal: {journal})')
+    return (
+        '[Hypervisor turn-boundary notice] Background Workflow run(s) you '
+        'launched were killed when a previous turn\'s CLI process died before '
+        'they completed — no completion notification will ever arrive, and '
+        'you must NOT report them as finished. Lost: ' + '; '.join(parts) +
+        '. The user has already been shown an interruption notice in the '
+        'chat. Completed subagent results persist in each journal; to salvage '
+        'them instead of re-running from scratch, resume with '
+        'Workflow({scriptPath: "<script>", resumeFromRunId: "<run id>"}) — '
+        'completed agents return cached results (inspect journal.jsonl first; '
+        'cached results may themselves be empty).'
+    )
+
+
 class ClaudeAdapter(Adapter):
     """`claude -p --output-format stream-json` — full structured transport.
 
@@ -301,10 +453,12 @@ class ClaudeAdapter(Adapter):
     kind = 'claude'
 
     def build(self, ctx, text, first):
-        # A stopped turn skips finalize, so stale same-turn watcher tracking may
-        # linger; a fresh turn always starts with a clean arm list. (Watchers
-        # from a user stop were genuinely killpg'd — no notice owed for those.)
+        # A stopped turn skips finalize, so stale same-turn watcher/workflow
+        # tracking may linger; a fresh turn always starts with a clean list.
+        # (Work from a user stop was genuinely killpg'd — no notice owed.)
         ctx.pop('_turn_bg_watchers', None)
+        ctx.pop('_turn_wf_calls', None)
+        ctx.pop('_turn_workflows', None)
         argv = [
             'claude', '-p', text,
             '--output-format', 'stream-json',
@@ -331,6 +485,12 @@ class ClaudeAdapter(Adapter):
         lost = ctx.pop('lost_bg_watchers', None)
         if lost:
             sys_prompt.append(_lost_watcher_note(lost))
+        # Workflow runs killed by an earlier CLI/server death (#462): same
+        # one-shot system-prompt channel — the agent learns which runs died
+        # and how to resume them before it answers "is that still going?".
+        lost_wf = ctx.pop('lost_workflows', None)
+        if lost_wf:
+            sys_prompt.append(_lost_workflow_note(lost_wf))
         if sys_prompt:
             argv += ['--append-system-prompt', '\n\n'.join(sys_prompt)]
         # Per-thread model (#308): read fresh each turn so an in-chat switch
@@ -369,9 +529,12 @@ class ClaudeAdapter(Adapter):
             events = _claude_assistant_events(
                 (o.get('message', {}) or {}).get('content'))
             _track_bg_watchers(ctx, events)
+            _track_workflow_calls(ctx, events)
             return events
         if t == 'user':
-            return _claude_user_events((o.get('message', {}) or {}).get('content'))
+            events = _claude_user_events((o.get('message', {}) or {}).get('content'))
+            _resolve_workflow_results(ctx, events)
+            return events
         if t == 'result':
             if o.get('session_id'):
                 ctx['claude_session_id'] = o['session_id']
@@ -390,10 +553,15 @@ class ClaudeAdapter(Adapter):
         armed = ctx.pop('_turn_bg_watchers', None)
         if armed:
             ctx['lost_bg_watchers'] = (ctx.get('lost_bg_watchers') or []) + armed
+        # Workflow runs launched this turn whose journal shows agents still
+        # unfinished died with the process (#462) — tell the USER now (chat
+        # notice with run id + journal path) and the AGENT next turn
+        # (ctx['lost_workflows'] → build()'s system-prompt notice).
+        out = _interrupted_workflow_events(_reap_turn_workflows(ctx))
         if rc not in (0, None):
-            return [{'role': 'system', 'type': 'error',
-                     'text': f'claude exited with code {rc}'}]
-        return []
+            out.append({'role': 'system', 'type': 'error',
+                        'text': f'claude exited with code {rc}'})
+        return out
 
 
 class FallbackAdapter(Adapter):
@@ -1842,6 +2010,64 @@ class HypervisorSession:
             # any registered observer (the Conversation Gateway's outbound
             # delivery, issue #306). Best-effort; never perturbs the runner.
             _notify_turn_complete(self.id)
+
+
+def reconcile_stale_running_threads() -> List[str]:
+    """Repair threads left stuck in status 'running' by a server death
+    mid-turn (issue #462). Run once at server startup, BEFORE any new turn can
+    start — at that point no runner threads exist, so a meta status of
+    'running' is definitively stale: the turn's CLI process (and any
+    background Workflow run it was keeping alive) died with the old server,
+    but _run_turn's `finally` never ran, so nothing flipped the status back
+    and the chat shows the "waiting" spinner forever.
+
+    For each stale thread: scan the final turn's events for Workflow launches,
+    flag the runs whose journal shows agents started but not finished, append
+    user-visible interruption notices to the transcript, arm the next-turn
+    agent notice (ctx['lost_workflows'] → build()'s system prompt), and set
+    status back to 'idle'. Returns the repaired thread ids. Never raises — a
+    malformed thread is skipped, not fatal to startup."""
+    repaired: List[str] = []
+    try:
+        tids = os.listdir(HYPERVISOR_DIR)
+    except OSError:
+        return repaired
+    for tid in tids:
+        try:
+            s = HypervisorSession.get(tid)
+            meta = s.read_meta() if s else None
+            if not meta or meta.get('status') != 'running':
+                continue
+            with _RUNLOCK:
+                if _RUNNING.get(tid):
+                    continue  # genuinely live turn — not ours to touch
+            ctx = meta.setdefault('adapter', {})
+            # Workflow launches from the FINAL turn only (events after the
+            # last real user message): earlier turns' runs either completed or
+            # were already flagged at their own turn boundary. Completion
+            # notifications never appear in the capture, so a user-role
+            # message is always a genuine turn start.
+            events = s.read_events()
+            last_user = 0
+            for e in events:
+                if e.get('role') == 'user' and e.get('type') == 'message':
+                    last_user = max(last_user, e.get('seq', 0))
+            tail = [e for e in events if e.get('seq', 0) >= last_user]
+            _track_workflow_calls(ctx, tail)
+            _resolve_workflow_results(ctx, tail)
+            lost = _reap_turn_workflows(ctx)
+            s._append([{'role': 'system', 'type': 'message',
+                        'text': ('⚠️ This turn was interrupted — the '
+                                 'workspace server restarted while it was '
+                                 'still running.')}]
+                      + _interrupted_workflow_events(lost))
+            meta['status'] = 'idle'
+            # touch=False: repair must not reorder the chat list by activity.
+            s._write_meta(meta, touch=False)
+            repaired.append(tid)
+        except Exception as e:
+            _log(f'reconcile of thread {tid} failed: {type(e).__name__}: {e}')
+    return repaired
 
 
 # ───────────────────────────────────────────────────────────────────────────

@@ -55,6 +55,7 @@ try:
         HypervisorSession, build_activity as hv_build_activity,
         hypervisor_health as hv_health, WATCHERS as hv_watchers,
         HYPERVISOR_DIR,
+        reconcile_stale_running_threads as hv_reconcile_stale_running,
     )
     _HYPERVISOR_AVAILABLE = True
 except Exception as _hv_import_err:  # broken install shouldn't crash the server
@@ -62,6 +63,7 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
     hv_build_activity = None  # type: ignore
     hv_health = None  # type: ignore
     hv_watchers = None  # type: ignore
+    hv_reconcile_stale_running = None  # type: ignore
     HYPERVISOR_DIR = ''  # type: ignore
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
@@ -11556,6 +11558,22 @@ if __name__ == "__main__":
                 print('[gateway] turn-complete observer installed')
         except Exception as e:
             print(f'[gateway] startup init failed: {e}', file=sys.stderr)
+
+    # Stale-running repair (issue #462): a server death mid-turn kills the
+    # turn's CLI process (and any background Workflow run it was waiting on)
+    # without ever flipping the thread's status back — the chat would show the
+    # "waiting" spinner forever. Repair before any new turn can start: flip
+    # stale 'running' threads to idle and post an interruption notice (with
+    # run id + journal path + resume hint for any workflow that died mid-run).
+    if _HYPERVISOR_AVAILABLE and hv_reconcile_stale_running is not None:
+        try:
+            _repaired = hv_reconcile_stale_running()
+            if _repaired:
+                print(f'[hypervisor] repaired {len(_repaired)} thread(s) '
+                      f'stuck running after restart: {", ".join(_repaired)}')
+        except Exception as e:
+            print(f'[hypervisor] stale-running repair failed: {e}',
+                  file=sys.stderr)
 
     # Cross-turn watchers (issue #402): the server process owns the poll loop,
     # so a watcher armed inside a Hypervisor turn survives the turn (and, via
