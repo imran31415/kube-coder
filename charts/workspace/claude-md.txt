@@ -60,12 +60,15 @@ Access the browser visually through the workspace dashboard's VNC viewer.
 
 ## Monitoring APIs
 
-Local HTTP endpoints on port 6080:
+Local HTTP endpoints on port 6080. `/health` is open; `/metrics` and
+`/api/github/status` are auth-gated (bare curls return 401) — pass the
+Claude Task API token (see below):
 
 ```bash
-curl localhost:6080/health            # service health (VS Code, terminal, browser)
-curl localhost:6080/metrics           # CPU, memory, disk usage (JSON)
-curl localhost:6080/api/github/status # git config and GitHub auth status
+TOKEN=$(cat /home/dev/.claude-tasks/.api-token)
+curl localhost:6080/health            # service health (VS Code, terminal, browser) — no auth
+curl -H "Authorization: Bearer $TOKEN" localhost:6080/metrics           # CPU, memory, disk usage (JSON)
+curl -H "Authorization: Bearer $TOKEN" localhost:6080/api/github/status # git config and GitHub auth status
 ```
 
 ## Claude Task API
@@ -74,9 +77,10 @@ HTTP API on port 6080 for remotely running Claude Code tasks in persistent tmux 
 
 ### Get your API token
 
-From inside the pod:
+From inside the pod (absolute path — `~` is the ephemeral `/home/ubuntu`,
+which has no `.claude-tasks`):
 ```bash
-cat ~/.claude-tasks/.api-token
+cat /home/dev/.claude-tasks/.api-token
 ```
 
 Or via the browser (OAuth2 session):
@@ -115,11 +119,11 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" localhost:6080/api/claude/tasks
 curl -X POST localhost:6080/api/claude/auth/token/regenerate
 ```
 
-Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t claude-{task_id}` to watch live. Task state persists in `~/.claude-tasks/`.
+Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t claude-{task_id}` to watch live. Task state persists in `/home/dev/.claude-tasks/`.
 
 ## Key Constraints
 
-- **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl localhost:6080/metrics`.
+- **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl -H "Authorization: Bearer $(cat /home/dev/.claude-tasks/.api-token)" localhost:6080/metrics`.
 - **Ephemeral /tmp** — anything outside `/home/dev` is lost on pod restart.
 - **Package persistence** — `sudo apt-get install` works but packages are lost on restart. For persistent tools, install to `/home/dev/.local/bin` (absolute path, NOT `~/.local/bin`) — it is already on `PATH` in every shell; no `.bashrc` edit needed.
 - **Two home directories** — `$HOME` is `/home/ubuntu`, which is **ephemeral** (rebuilt from skel on every pod restart); the persistent volume is `/home/dev`. So `~`/`$HOME` paths (dotfiles, `~/.local/bin`, rc-file edits) do not survive restarts — use absolute `/home/dev/...` paths for anything that should persist. The boot script re-seeds `/home/ubuntu`'s rc files and credential symlinks each start. To verify PATH/rc behavior as a real terminal sees it, use a clean login shell: `env -i HOME=/home/ubuntu TERM=xterm bash -lc 'command -v mytool'` — checking from an inherited environment can pass while the user's terminal still fails.
