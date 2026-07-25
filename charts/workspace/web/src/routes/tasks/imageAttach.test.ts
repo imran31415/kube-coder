@@ -1,4 +1,11 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+
+vi.mock('../../api/files', () => ({
+  uploadFile: vi.fn(async () => ({ ok: true, path: 'x', absolute_path: '/home/dev/x/pasted.txt', size: 1 })),
+  uploadZip: vi.fn(async () => ({ ok: true, path: 'x', absolute_path: '/home/dev/x/extracted-dir', extracted: 3 })),
+}));
+
+import { uploadFile, uploadZip } from '../../api/files';
 import {
   extForImageMime,
   extForFile,
@@ -8,6 +15,7 @@ import {
   imagesFromClipboard,
   filesFromClipboard,
   readClipboard,
+  uploadTaskFile,
   ATTACH_ACCEPT,
 } from './imageAttach';
 
@@ -73,9 +81,14 @@ describe('isAllowedFile', () => {
     expect(isAllowedFile(file('novideoext', 'video/webm'))).toBe(false);
   });
 
+  it('accepts zip archives (extracted server-side, #356)', () => {
+    expect(isAllowedFile(file('archive.zip', 'application/zip'))).toBe(true);
+    expect(isAllowedFile(file('SNAPSHOT.ZIP'))).toBe(true);
+  });
+
   it('rejects unsupported binary types', () => {
-    expect(isAllowedFile(file('archive.zip', 'application/zip'))).toBe(false);
     expect(isAllowedFile(file('a.exe', 'application/octet-stream'))).toBe(false);
+    expect(isAllowedFile(file('installer.dmg'))).toBe(false);
     expect(isAllowedFile(file('noext'))).toBe(false);
     expect(isAllowedFile(null)).toBe(false);
     expect(isAllowedFile(undefined)).toBe(false);
@@ -111,6 +124,31 @@ describe('ATTACH_ACCEPT', () => {
     expect(ATTACH_ACCEPT).toContain('.pdf');
     expect(ATTACH_ACCEPT).toContain('.md');
     expect(ATTACH_ACCEPT).toContain('.tsx');
+    expect(ATTACH_ACCEPT).toContain('.zip');
+  });
+});
+
+describe('uploadTaskFile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('uploads regular files into the attachments dir with a stamped name', async () => {
+    const p = await uploadTaskFile('t1', file('notes.txt', 'text/plain'));
+    expect(p).toBe('/home/dev/x/pasted.txt');
+    expect(uploadZip).not.toHaveBeenCalled();
+    const [, dest, name] = vi.mocked(uploadFile).mock.calls[0];
+    expect(dest).toBe('.claude-tasks/t1/attachments');
+    expect(String(name)).toMatch(/^pasted-.+\.txt$/);
+  });
+
+  it('routes .zip through server-side extraction and returns the folder path', async () => {
+    const p = await uploadTaskFile('t1', file('my repo.zip', 'application/zip'));
+    expect(p).toBe('/home/dev/x/extracted-dir');
+    expect(uploadFile).not.toHaveBeenCalled();
+    const [, dest, name] = vi.mocked(uploadZip).mock.calls[0];
+    expect(String(dest)).toMatch(/^\.claude-tasks\/t1\/attachments\/my_repo-/);
+    expect(name).toBe('my_repo.zip');
   });
 });
 

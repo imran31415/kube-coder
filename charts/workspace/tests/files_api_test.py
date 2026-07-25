@@ -19,6 +19,7 @@ Run with:
 """
 
 import http.server
+import io
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -121,6 +123,36 @@ class _Base(unittest.TestCase):
                 return e.code, json.loads(raw), e
             except Exception:
                 return e.code, raw, e
+
+    def _upload(self, dest, filename, body, extract=None):
+        """POST raw bytes to /api/files/upload (issue #356 upload surface)."""
+        headers = {
+            'X-Dest-Path': urllib.parse.quote(dest),
+            'X-Filename': urllib.parse.quote(filename),
+            'Content-Type': 'application/octet-stream',
+        }
+        if extract:
+            headers['X-Extract'] = extract
+        r = urllib.request.Request(self._url('/api/files/upload'),
+                                   data=body, method='POST', headers=headers)
+        try:
+            with urllib.request.urlopen(r, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except Exception:
+                return e.code, raw
+
+    @staticmethod
+    def _zip_bytes(members):
+        buf = io.BytesIO()
+        # Deflate, so the zip-bomb test's zeros actually compress.
+        with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            for name, data in members:
+                zf.writestr(name, data)
+        return buf.getvalue()
 
 
 class FilesApiGuardUnitTests(unittest.TestCase):
@@ -355,6 +387,73 @@ class FilesApiTests(_Base):
         status, _body, _ = self._req('DELETE', f'/api/files?path={q}')
         self.assertEqual(status, 400)
 
+    # ── Upload + zip extraction (issue #356) ─────────────────────────────
+
+    def test_upload_writes_file(self):
+        status, body = self._upload('up', 'hello.bin', b'abc123')
+        self.assertEqual(status, 201)
+        self.assertEqual(body['size'], 6)
+        with open(os.path.join(self.tmpdir, 'up', 'hello.bin'), 'rb') as f:
+            self.assertEqual(f.read(), b'abc123')
+
+    def test_zip_upload_extracts_tree(self):
+        data = self._zip_bytes([('proj/a.txt', 'A'), ('proj/sub/', ''), ('proj/sub/b.txt', 'B')])
+        status, out = self._upload('unpacked', 'proj.zip', data, extract='zip')
+        self.assertEqual(status, 201)
+        self.assertEqual(out['extracted'], 2)
+        self.assertEqual(out['path'], 'unpacked')
+        with open(os.path.join(self.tmpdir, 'unpacked', 'proj', 'sub', 'b.txt')) as f:
+            self.assertEqual(f.read(), 'B')
+        # Only the unpacked tree remains — the staged archive is deleted.
+        self.assertEqual(os.listdir(os.path.join(self.tmpdir, 'unpacked')), ['proj'])
+
+    def test_zip_slip_rejected_before_any_write(self):
+        evil = self._zip_bytes([('ok.txt', 'fine'), ('../evil.txt', 'x')])
+        status, out = self._upload('slipdir', 'evil.zip', evil, extract='1')
+        self.assertEqual(status, 400)
+        self.assertIn('unsafe path', out['error'])
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'evil.txt')))
+        # All-or-nothing: names are vetted BEFORE extraction, so the safe
+        # member wasn't written either, and the staged archive is gone.
+        self.assertEqual(os.listdir(os.path.join(self.tmpdir, 'slipdir')), [])
+
+    def test_extract_requires_zip_filename(self):
+        status, out = self._upload('up', 'notzip.txt', b'abc', extract='zip')
+        self.assertEqual(status, 400)
+        self.assertIn('.zip', out['error'])
+
+    def test_bad_zip_bytes_rejected(self):
+        status, out = self._upload('up', 'garbage.zip', b'this is not a zip', extract='zip')
+        self.assertEqual(status, 400)
+        self.assertIn('not a valid zip', out['error'])
+
+    def test_zip_bomb_rejected_by_uncompressed_size(self):
+        # 300 KB of zeros deflates to a few hundred bytes, so the request body
+        # passes the Content-Length cap — only the expansion check catches it.
+        data = self._zip_bytes([('zeros.bin', b'\0' * 300_000)])
+        save = server.BrowserHandler.MAX_UPLOAD_BYTES
+        server.BrowserHandler.MAX_UPLOAD_BYTES = 100_000
+        try:
+            status, out = self._upload('up', 'bomb.zip', data, extract='zip')
+        finally:
+            server.BrowserHandler.MAX_UPLOAD_BYTES = save
+        self.assertEqual(status, 400)
+        self.assertIn('expands to', out['error'])
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'up', 'zeros.bin')))
+
+    def test_zip_symlink_members_skipped(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            info = zipfile.ZipInfo('link')
+            info.external_attr = 0o120777 << 16  # symlink mode bits
+            zf.writestr(info, '/etc/passwd')
+            zf.writestr('real.txt', 'ok')
+        status, out = self._upload('symdir', 'sym.zip', buf.getvalue(), extract='zip')
+        self.assertEqual(status, 201)
+        self.assertEqual(out['extracted'], 1)
+        self.assertFalse(os.path.lexists(os.path.join(self.tmpdir, 'symdir', 'link')))
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, 'symdir', 'real.txt')))
+
 
 class FilesApiReadonlyTests(_Base):
     READONLY = True
@@ -370,6 +469,16 @@ class FilesApiReadonlyTests(_Base):
                                     {'from': 'hello.txt', 'to': 'x.txt'})
         self.assertEqual(status, 403)
         self.assertEqual(body.get('code'), 'readonly')
+
+    def test_upload_blocked(self):
+        status, _body = self._upload('up', 'a.txt', b'x')
+        self.assertEqual(status, 403)
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'up', 'a.txt')))
+
+    def test_zip_extract_blocked(self):
+        status, _body = self._upload('up', 'a.zip', self._zip_bytes([('a.txt', 'x')]),
+                                     extract='zip')
+        self.assertEqual(status, 403)
 
     def test_download_allowed_in_readonly(self):
         # Reads stay available in the public demo.
