@@ -189,8 +189,10 @@ tests:
             name: ALLOW_MUTABLE_CHART_REF
             value: "false"
 
-  - it: should default provisioning to fail-closed on a mutable chart ref
+  - it: should auto-pin the default chart ref to the chart's own release tag
     template: templates/deployment.yaml
+    chart:
+      appVersion: 9.9.9
     set:
       provision.enabled: true
       provision.workspaceDomain: dev.example.com
@@ -202,11 +204,28 @@ tests:
           content:
             name: ALLOW_MUTABLE_CHART_REF
             value: "false"
+      # Empty provision.chart.ref defaults to v<appVersion> — an immutable
+      # release tag the fail-closed guard accepts, so a default install can
+      # actually provision (#459).
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: CHART_REF
-            value: main
+            value: v9.9.9
+
+  - it: should pass an explicitly pinned chart ref through unchanged
+    template: templates/deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+      provision.chart.ref: 1234567890abcdef1234567890abcdef12345678
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CHART_REF
+            value: 1234567890abcdef1234567890abcdef12345678
 
   - it: should thread the allowMutableRef escape hatch when enabled
     template: templates/deployment.yaml

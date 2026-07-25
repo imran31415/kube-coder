@@ -146,7 +146,7 @@ block to add to your controller values plus the remaining manual steps:
 | `provision.workspaceDomain` | `<login>.<domain>` host for new workspaces |
 | `provision.githubOrg` | Org to create the GitHub Apps under (empty = admin's account) |
 | `provision.gitops.repo` / `.branch` | Private repo (host/path, no scheme) the config is pushed to |
-| `provision.chart.repo` / `.ref` | Where the Job pulls the `workspace` chart from (your fork if customised) |
+| `provision.chart.repo` / `.ref` | Where the Job pulls the `workspace` chart from (your fork if customised). `ref` must be immutable — a `vX.Y.Z` release tag or full 40-hex commit SHA; empty (the default) auto-pins to this chart's own `v<appVersion>` release tag. Mutable refs (`main`, …) are rejected fail-closed unless `provision.chart.allowMutableRef=true` (dev-only escape hatch) |
 | `provision.gitToken` / `.stateSecret` | Runtime creds — set via the gitignored secrets overlay |
 | `provision.existingSecretName` | Use a Secret you manage instead of chart-rendering one |
 | `provision.serviceAccount` | SA the privileged Job runs as |

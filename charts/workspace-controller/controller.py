@@ -1466,9 +1466,12 @@ GITOPS_BRANCH = os.environ.get('GITOPS_BRANCH', 'main').strip()
 # Token (GitHub App installation token or PAT) with push access to GITOPS_REPO
 # and read on the GitHub API. Injected from a Secret; empty => provisioning off.
 GITOPS_TOKEN = os.environ.get('GITOPS_TOKEN', '').strip()
-# Repo + ref the provisioner Job pulls the workspace Helm chart from.
+# Repo + ref the provisioner Job pulls the workspace Helm chart from. The chart
+# always sets CHART_REF when provisioning is enabled (defaulting an empty
+# provision.chart.ref to the chart's own v<appVersion> release tag, #459); an
+# empty fallback here classifies as mutable, so a missing env still fails closed.
 CHART_REPO = os.environ.get('CHART_REPO', 'https://github.com/imran31415/kube-coder.git').strip()
-CHART_REF = os.environ.get('CHART_REF', 'main').strip()
+CHART_REF = os.environ.get('CHART_REF', '').strip()
 # Supply-chain hardening (security review July 2026, finding 7). The provisioner
 # Job git-clones CHART_REPO at CHART_REF and runs its `make deploy` under the
 # cluster-privileged `workspace-provisioner` ServiceAccount. A *mutable* ref (a
