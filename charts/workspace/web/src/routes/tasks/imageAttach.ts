@@ -1,4 +1,4 @@
-import { uploadFile } from '../../api/files';
+import { uploadFile, uploadZip } from '../../api/files';
 
 /**
  * Image-paste support for the Send-message composer (issue #179).
@@ -59,6 +59,9 @@ const ALLOWED_EXTS = new Set<string>([
   'c', 'h', 'cpp', 'cc', 'hpp', 'cxx', 'cs', 'rb', 'php', 'swift', 'scala', 'sh',
   'bash', 'zsh', 'sql', 'css', 'scss', 'sass', 'less', 'r', 'lua', 'pl', 'dart',
   'vue', 'svelte', 'proto', 'gradle', 'tf',
+  // archives — uploaded with server-side extraction (issue #356): the agent
+  // gets the unpacked folder's path, not the (unreadable) zip bytes.
+  'zip',
 ]);
 
 /** The extensions above joined for an <input accept> attribute, plus image/*
@@ -182,8 +185,16 @@ let _seq = 0;
 export async function uploadTaskFile(taskId: string, file: File): Promise<string> {
   const ext = extForFile(file);
   const stamp = `${Date.now().toString(36)}-${(_seq++).toString(36)}`;
-  const name = `pasted-${stamp}.${ext}`;
   const destPath = `.claude-tasks/${taskId}/attachments`;
+  // Zips are extracted server-side into their own subfolder (issue #356) —
+  // Claude can't read archive bytes, but it can explore the unpacked tree, so
+  // the path injected into the prompt is the FOLDER, not the .zip.
+  if (ext === 'zip') {
+    const base = (file.name || 'archive').replace(/\.zip$/i, '').replace(/[^\w.-]+/g, '_') || 'archive';
+    const res = await uploadZip(file, `${destPath}/${base}-${stamp}`, `${base}.zip`);
+    return res.absolute_path;
+  }
+  const name = `pasted-${stamp}.${ext}`;
   const res = await uploadFile(file, destPath, name);
   return res.absolute_path;
 }

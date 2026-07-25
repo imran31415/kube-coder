@@ -75,6 +75,29 @@ export interface UploadResult {
   size: number;
 }
 
+async function postUpload(
+  file: File | Blob,
+  destPath: string,
+  name: string,
+  extract: boolean,
+): Promise<Response> {
+  // apiRaw handles the Blob body and still propagates the Bearer token +
+  // oauth2-proxy session-expired redirect. The previous raw fetch() here
+  // silently failed on expired sessions (no /oauth2/start bounce).
+  //
+  // X-Filename must be ISO-8859-1 per the HTTP header spec — browsers
+  // throw TypeError at fetch() time on any Unicode codepoint (smart
+  // quotes, emoji, accented letters, CJK). URL-encode at send time;
+  // server unquotes via urllib.parse.unquote before use.
+  const headers: Record<string, string> = {
+    'X-Dest-Path': encodeURIComponent(destPath),
+    'X-Filename': encodeURIComponent(name),
+    'Content-Type': file.type || 'application/octet-stream',
+  };
+  if (extract) headers['X-Extract'] = 'zip';
+  return apiRaw('/api/files/upload', { method: 'POST', headers, body: file });
+}
+
 /**
  * Upload a file/blob into `destPath` (relative to /home/dev) and return the
  * server's saved-path result. Pass `filename` to override the stored name —
@@ -86,24 +109,77 @@ export async function uploadFile(
   filename?: string,
 ): Promise<UploadResult> {
   const name = filename ?? (file instanceof File ? file.name : 'upload.bin');
-  // apiRaw handles the Blob body and still propagates the Bearer token +
-  // oauth2-proxy session-expired redirect. The previous raw fetch() here
-  // silently failed on expired sessions (no /oauth2/start bounce).
-  //
-  // X-Filename must be ISO-8859-1 per the HTTP header spec — browsers
-  // throw TypeError at fetch() time on any Unicode codepoint (smart
-  // quotes, emoji, accented letters, CJK). URL-encode at send time;
-  // server unquotes via urllib.parse.unquote before use.
-  const res = await apiRaw('/api/files/upload', {
-    method: 'POST',
-    headers: {
-      'X-Dest-Path': encodeURIComponent(destPath),
-      'X-Filename': encodeURIComponent(name),
-      'Content-Type': file.type || 'application/octet-stream',
-    },
-    body: file,
-  });
+  const res = await postUpload(file, destPath, name, false);
   return (await res.json()) as UploadResult;
+}
+
+export interface ExtractResult {
+  ok: boolean;
+  /** Destination directory, relative to /home/dev. */
+  path: string;
+  /** Absolute destination directory the archive was unpacked into. */
+  absolute_path: string;
+  /** Number of files written. */
+  extracted: number;
+}
+
+/**
+ * Upload a .zip and have the server unpack it into `destPath` (relative to
+ * /home/dev). The archive itself is not kept — only the extracted tree.
+ */
+export async function uploadZip(file: File | Blob, destPath: string, filename?: string): Promise<ExtractResult> {
+  const name = filename ?? (file instanceof File ? file.name : 'upload.zip');
+  const res = await postUpload(file, destPath, name, true);
+  return (await res.json()) as ExtractResult;
+}
+
+export interface UploadBatchItem {
+  file: File;
+  /** Destination dir relative to /home/dev (may differ per item — folder
+   *  uploads preserve each file's relative subdirectory). */
+  destPath: string;
+  filename?: string;
+}
+
+export interface UploadBatchResult {
+  done: number;
+  failed: Array<{ name: string; error: string }>;
+}
+
+/**
+ * Upload many files with bounded parallelism (issue #356). One slow/huge file
+ * doesn't serialize the rest, and a hundred small ones don't open a hundred
+ * concurrent requests. Failures are collected per-file rather than aborting
+ * the batch; `onProgress(finished, total)` fires after every settle.
+ */
+export async function uploadBatch(
+  items: UploadBatchItem[],
+  onProgress?: (finished: number, total: number) => void,
+  concurrency = 4,
+): Promise<UploadBatchResult> {
+  const failed: UploadBatchResult['failed'] = [];
+  let done = 0;
+  let finished = 0;
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const item = items[next++];
+      try {
+        await uploadFile(item.file, item.destPath, item.filename);
+        done++;
+      } catch (err) {
+        failed.push({
+          name: item.filename ?? item.file.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      finished++;
+      onProgress?.(finished, items.length);
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
+  await Promise.all(workers);
+  return { done, failed };
 }
 
 export async function makeDirectory(path: string): Promise<void> {

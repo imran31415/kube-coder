@@ -2,7 +2,8 @@ import { useEffect, useState } from 'preact/hooks';
 import {
   listFiles,
   makeDirectory,
-  uploadFile,
+  uploadBatch,
+  uploadZip,
   previewFile,
   downloadFile,
   deleteFile,
@@ -106,20 +107,76 @@ export function FilesRoute() {
     }
   }
 
-  async function onUpload(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
+  // Combined progress for multi-file/folder uploads: null when idle.
+  const [uploadProg, setUploadProg] = useState<{ done: number; total: number } | null>(null);
+
+  /** Run a prepared batch (files or a whole folder) with bounded parallelism
+   *  and a single combined progress counter + summary toast (issue #356). */
+  async function runBatch(items: Array<{ file: File; destPath: string }>) {
+    if (!items.length) return;
     setBusy(true);
+    setUploadProg({ done: 0, total: items.length });
     try {
-      await uploadFile(file, path);
-      pushToast(`Uploaded ${file.name}`, { kind: 'success' });
+      const r = await uploadBatch(items, (done, total) => setUploadProg({ done, total }));
+      if (r.failed.length) {
+        pushToast(
+          `Uploaded ${r.done}/${items.length} — failed: ${r.failed.map((f) => f.name).join(', ')}`,
+          { kind: 'danger' },
+        );
+      } else {
+        pushToast(items.length === 1 ? `Uploaded ${items[0].file.name}` : `Uploaded ${r.done} files`, {
+          kind: 'success',
+        });
+      }
       await refresh(path);
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Upload failed', { kind: 'danger' });
     } finally {
       setBusy(false);
-      input.value = '';
+      setUploadProg(null);
+    }
+  }
+
+  async function onUpload(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+    await runBatch(files.map((file) => ({ file, destPath: path })));
+  }
+
+  /** Folder upload: each picked file carries webkitRelativePath
+   *  ("folder/sub/file.txt") — recreate that tree under the current dir. */
+  async function onUploadFolder(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+    await runBatch(
+      files.map((file) => {
+        const relPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        const dir = relPath.split('/').slice(0, -1).join('/');
+        return { file, destPath: [path, dir].filter(Boolean).join('/') };
+      }),
+    );
+  }
+
+  /** Zip upload: the server unpacks the archive into the current dir; the
+   *  .zip itself is not kept. */
+  async function onUploadZip(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+    if (!files.length) return;
+    setBusy(true);
+    try {
+      let extracted = 0;
+      for (const file of files) {
+        const r = await uploadZip(file, path);
+        extracted += r.extracted;
+      }
+      pushToast(`Extracted ${extracted} file${extracted === 1 ? '' : 's'}`, { kind: 'success' });
+      await refresh(path);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Extract failed', { kind: 'danger' });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -189,11 +246,30 @@ export function FilesRoute() {
         </div>
         <MutatorOnly>
           <div class="files-actions">
+            {uploadProg && (
+              <span class="files-upload-prog muted mono" role="status">
+                Uploading {uploadProg.done}/{uploadProg.total}…
+              </span>
+            )}
             <Button variant="ghost" onClick={() => setMkdirOpen(true)} disabled={busy}>
               <Icon name="plus" size={14} /> Folder
             </Button>
+            <label class="files-upload" title="Upload a .zip and extract it here (the archive itself is not kept)">
+              <input type="file" accept=".zip" multiple onChange={onUploadZip} hidden />
+              <span class="btn btn-ghost btn-md">
+                <Icon name="inbox" size={14} /> Unzip
+              </span>
+            </label>
+            <label class="files-upload" title="Upload a whole folder (subdirectories are preserved)">
+              {/* webkitdirectory isn't in the JSX typings but is universally
+                  supported for directory pickers (Chrome/Firefox/Safari). */}
+              <input type="file" onChange={onUploadFolder} hidden {...({ webkitdirectory: true } as Record<string, unknown>)} />
+              <span class="btn btn-secondary btn-md">
+                <Icon name="plus" size={14} /> Upload folder
+              </span>
+            </label>
             <label class="files-upload">
-              <input type="file" onChange={onUpload} hidden />
+              <input type="file" multiple onChange={onUpload} hidden />
               <span class="btn btn-secondary btn-md">
                 <Icon name="plus" size={14} /> Upload
               </span>

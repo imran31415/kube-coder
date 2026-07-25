@@ -24,6 +24,7 @@ import http.client
 import socket
 import ipaddress
 import fcntl
+import zipfile
 
 # Persistent memory subsystem — shared with mcp_memory.py via the colocated
 # `memory` package. Importable because the workspace-entrypoint copies the
@@ -9119,6 +9120,48 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
+    # Zip-extract guardrails (issue #356): a hostile archive must not be able
+    # to fill the disk via a compression bomb (total uncompressed size is
+    # checked against MAX_UPLOAD_BYTES BEFORE extracting) or exhaust inodes
+    # with millions of tiny members.
+    MAX_ZIP_MEMBERS = 10000
+
+    def _extract_zip_upload(self, zip_path: str, dest_dir: str) -> int:
+        """Extract an uploaded .zip into dest_dir. Returns the number of files
+        written. Raises ValueError for unsafe or oversized archives and
+        zipfile.BadZipFile for non-zip bytes.
+
+        Zip-slip: member names with an absolute path, a `..` segment, or a
+        backslash are rejected outright (the whole upload fails, rather than
+        silently skipping — a partial extract would be confusing). Symlink
+        members are skipped: zipfile.extract would write them as regular
+        files holding the target path, which is never what anyone wants."""
+        with zipfile.ZipFile(zip_path) as zf:
+            infos = zf.infolist()
+            if len(infos) > self.MAX_ZIP_MEMBERS:
+                raise ValueError(f'zip has too many entries (max {self.MAX_ZIP_MEMBERS})')
+            total = sum(i.file_size for i in infos)
+            if total > self.MAX_UPLOAD_BYTES:
+                raise ValueError(
+                    f'zip expands to {total} bytes (max {self.MAX_UPLOAD_BYTES})')
+            real_dest = os.path.realpath(dest_dir)
+            for info in infos:
+                name = info.filename
+                if name.startswith('/') or '\\' in name or '..' in name.split('/'):
+                    raise ValueError(f'unsafe path in zip: {name!r}')
+                # Belt-and-braces: the resolved target must stay under dest.
+                target = os.path.realpath(os.path.join(real_dest, name))
+                if target != real_dest and not target.startswith(real_dest + os.sep):
+                    raise ValueError(f'unsafe path in zip: {name!r}')
+            count = 0
+            for info in infos:
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    continue  # symlink member
+                zf.extract(info, real_dest)
+                if not info.is_dir():
+                    count += 1
+            return count
+
     def handle_file_upload(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -9130,8 +9173,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # validation runs on the actual intended path.
         rel_dir = urllib.parse.unquote((self.headers.get('X-Dest-Path') or '').strip())
         filename = urllib.parse.unquote((self.headers.get('X-Filename') or '').strip())
+        # X-Extract: zip → body is a .zip archive; unpack it into X-Dest-Path
+        # instead of storing the archive itself (issue #356).
+        extract = (self.headers.get('X-Extract') or '').strip().lower() in ('1', 'true', 'zip')
         if not self._safe_filename(filename):
             self.send_json({'error': 'invalid X-Filename header'}, 400)
+            return
+        if extract and not filename.lower().endswith('.zip'):
+            self.send_json({'error': 'X-Extract requires a .zip filename'}, 400)
             return
         try:
             dest_dir = self._resolve_under_home_dev(rel_dir)
@@ -9155,10 +9204,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': f'mkdir failed: {e}'}, 500)
             return
         final_path = os.path.join(dest_dir, filename)
+        # Extract mode stages the archive next to the destination (same
+        # filesystem) and always removes it — only the unpacked tree remains.
+        write_path = final_path + '.uploading' if extract else final_path
         # Stream to disk in 64 KiB chunks so a 200 MiB upload doesn't have to
         # fully buffer in memory before we touch the filesystem.
         try:
-            with open(final_path, 'wb') as fh:
+            with open(write_path, 'wb') as fh:
                 remaining = content_length
                 while remaining > 0:
                     chunk = self.rfile.read(min(64 * 1024, remaining))
@@ -9168,6 +9220,33 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     remaining -= len(chunk)
         except OSError as e:
             self.send_json({'error': f'write failed: {e}'}, 500)
+            return
+        if extract:
+            try:
+                count = self._extract_zip_upload(write_path, dest_dir)
+            except zipfile.BadZipFile:
+                self.send_json({'error': 'not a valid zip archive'}, 400)
+                return
+            except ValueError as e:
+                self.send_json({'error': str(e)}, 400)
+                return
+            except OSError as e:
+                self.send_json({'error': f'extract failed: {e}'}, 500)
+                return
+            finally:
+                try:
+                    os.unlink(write_path)
+                except OSError:
+                    pass
+            rel_out = os.path.relpath(dest_dir, self.HOME_DEV)
+            if rel_out == '.':
+                rel_out = ''
+            self.send_json({
+                'ok': True,
+                'path': rel_out,
+                'absolute_path': dest_dir,
+                'extracted': count,
+            }, 201)
             return
         try:
             size = os.path.getsize(final_path)
