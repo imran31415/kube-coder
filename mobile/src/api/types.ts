@@ -282,7 +282,11 @@ export interface HypervisorAssistant {
   id: string;
   label: string;
   default?: boolean;
+  /** Fixed label the server shows for a single-model assistant. */
   model?: string;
+  /** Selectable in-chat models (#308/#361), default first. Empty ⇒ no picker
+   *  for this assistant (mirrors the web `assistantModels`). */
+  models?: string[];
 }
 
 export interface HypervisorConfig {
@@ -300,6 +304,9 @@ export interface HypervisorThread {
   id: string;
   title: string;
   assistant: string | null;
+  /** Model this thread runs on (#308), persisted server-side in the thread's
+   *  meta. Drives the mobile switcher's current value when the thread reopens. */
+  model?: string;
   status: string;
   created_at: number | null;
   updated_at: number | null;

@@ -44,6 +44,7 @@ import {
   restoreThread,
   renameThread,
   sendThreadMessage,
+  setThreadModel,
   stopThread,
   transcribeAudio,
   uploadTaskImage,
@@ -72,6 +73,14 @@ const SUGGESTIONS = [
   'Spin up a task to run the tests',
   'Remember that I deploy with `make ship`',
 ];
+
+/** Selectable in-chat models for an assistant id, from the loaded config
+ *  (default first). Empty ⇒ that assistant offers no model choice, so no picker
+ *  (mirrors the web `assistantModels`). */
+function modelsFor(config: HypervisorConfig | null, assistantId: string | null | undefined): string[] {
+  if (!assistantId) return [];
+  return config?.assistants?.find((a) => a.id === assistantId)?.models ?? [];
+}
 
 /** A picked image being uploaded so the agent can read it — its saved absolute
  *  path is appended to the outgoing message (same as the Build tab). */
@@ -110,6 +119,10 @@ export default function HypervisorScreen() {
   const [chatsOpen, setChatsOpen] = useState(false);
   // Assistant chosen for the NEXT new chat (existing threads keep their own).
   const [selectedAssistant, setSelectedAssistant] = useState<string | undefined>(undefined);
+  // Model chosen for the NEXT new chat (#308/#361, parity with web selectedModel).
+  // '' falls back to the effective assistant's default (first of its `models`).
+  // An open thread carries its own model instead (see chooseModel / thread.model).
+  const [selectedModel, setSelectedModel] = useState('');
   // Folder the NEXT new chat starts in (#370, parity with web #345/#368) —
   // seeded from config.workdir so the picker shows the real server default.
   // '' omits workdir on create, letting the server default apply. A thread
@@ -268,6 +281,9 @@ export default function HypervisorScreen() {
         setConfig(c);
         // Seed the new-chat assistant picker with the workspace default.
         setSelectedAssistant((prev) => prev ?? c.defaultAssistant);
+        // Seed the new-chat model to that assistant's default (first of its
+        // `models`) now that the per-assistant lists are loaded (#308).
+        setSelectedModel((prev) => prev || modelsFor(c, c.defaultAssistant)[0] || '');
         // Seed the folder picker with the server default (HYPERVISOR_WORKDIR).
         setSelectedWorkdir((prev) => prev || c.workdir || '');
       })
@@ -456,6 +472,33 @@ export default function HypervisorScreen() {
     setAttachments((a) => a.filter((x) => x.id !== id));
   }
 
+  // Pick the assistant for the next new chat, resetting the model to that
+  // assistant's default so the switcher never shows an off-list model (parity
+  // with the web setSelectedAssistant).
+  function chooseAssistant(id: string) {
+    setSelectedAssistant(id);
+    setSelectedModel(modelsFor(config, id)[0] ?? '');
+  }
+
+  // Switch the model (#308). With a thread open, updates it server-side (takes
+  // effect next turn) and optimistically patches the list so the switcher
+  // reflects it at once; with no thread open, just sets the new-chat default.
+  async function chooseModel(model: string) {
+    if (!activeId) {
+      setSelectedModel(model);
+      return;
+    }
+    const prev = threads;
+    setThreads((list) => list.map((t) => (t.id === activeId ? { ...t, model } : t)));
+    try {
+      await setThreadModel(activeId, model);
+      void refreshThreads();
+    } catch (e) {
+      setThreads(prev);
+      setError(e instanceof Error ? e.message : 'Failed to switch model');
+    }
+  }
+
   async function send(text?: string) {
     if (sending || attachments.some((a) => a.status === 'uploading')) return;
     const msg = (text ?? draft).trim();
@@ -483,6 +526,8 @@ export default function HypervisorScreen() {
           finalText,
           selectedAssistant || config?.defaultAssistant,
           selectedWorkdir.trim() || undefined,
+          // '' ⇒ omit so the server applies the assistant's default (#308).
+          selectedModel || undefined,
         );
         await refreshThreads();
         openThread(thread.id);
@@ -533,6 +578,14 @@ export default function HypervisorScreen() {
   const blocked = sending || working;
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
   const empty = !activeId && events.length === 0;
+  // Model switcher (#308): an open thread uses its own assistant + stored model;
+  // a not-yet-created chat uses the new-chat assistant + its default. The picker
+  // shows for both cases whenever the effective assistant offers a choice.
+  const effectiveAssistant = activeThread?.assistant || selectedAssistant || config?.defaultAssistant;
+  const models = modelsFor(config, effectiveAssistant);
+  const currentModel = activeId
+    ? activeThread?.model || models[0] || ''
+    : selectedModel || models[0] || '';
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -739,10 +792,43 @@ export default function HypervisorScreen() {
               return (
                 <Pressable
                   key={a.id}
-                  onPress={() => setSelectedAssistant(a.id)}
+                  onPress={() => chooseAssistant(a.id)}
                   style={[styles.asstChip, on && styles.asstChipOn]}
                 >
                   <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>{a.label || a.id}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        {/* Model picker (#308/#361) — parity with the web hv-model-select. Shown
+            whenever the effective assistant offers a model choice, for BOTH a
+            new chat (sets the new-thread default) and an open thread (live-
+            switches it; the change lands on the next turn). Disabled while a
+            turn is running, matching the web `disabled={status === 'running'}`. */}
+        {models.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.asstRow}
+            contentContainerStyle={styles.asstRowContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Ionicons name="cube-outline" size={14} color={colors.textFaint} />
+            {models.map((m) => {
+              const on = currentModel === m;
+              return (
+                <Pressable
+                  key={m}
+                  onPress={() => void chooseModel(m)}
+                  disabled={blocked}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Model ${m}`}
+                  accessibilityState={{ selected: on, disabled: blocked }}
+                  style={[styles.asstChip, on && styles.asstChipOn, blocked && styles.asstChipOff]}
+                >
+                  <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>{m}</Text>
                 </Pressable>
               );
             })}
@@ -1592,6 +1678,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   asstChipOn: { backgroundColor: colors.accent + '22', borderColor: colors.accent },
+  // Dimmed while a turn is running — the model can't switch mid-turn (web parity).
+  asstChipOff: { opacity: 0.4 },
   asstChipText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '500' },
   asstChipTextOn: { color: colors.accent, fontWeight: '700' },
   // Free-text folder fallback when /api/workspace/dirs returns nothing.
