@@ -181,6 +181,12 @@
   color: var(--text-muted);
   flex: none;
 }
+/* AI CTO threads (#467) get the accent wash so the strategic layer reads apart
+   from plain build/chat cards on the board. */
+.mission-kind-cto {
+  background: var(--accent-soft);
+  color: var(--text);
+}
 .mission-agent {
   font-family: var(--font-mono);
   font-size: 11px;

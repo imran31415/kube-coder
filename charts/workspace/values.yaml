@@ -324,6 +324,13 @@ hypervisor:
   # Working directory for hypervisor chat sessions.
   workdir: "/home/dev"
 
+# AI CTO (#468) — the /cto page: a project registry, a CTO-persona chat, and a
+# deterministic project brief. It rides the Hypervisor (no new runner), so it's
+# only usable when `hypervisor.enabled` is also true. Set `enabled: false` to
+# hide the nav item + CTO route and 404 the projects API without touching chat.
+cto:
+  enabled: true
+
 # Conversation Gateway — chat with this workspace's agent over WhatsApp
 # (issue #325). OFF by default: with `enabled: false` the /api/gateway/*
 # config surface is inert AND templates/ingress-gateway.yaml (the public,

@@ -62,4 +62,13 @@ describe('BriefPanel', () => {
     const link = screen.getByTitle('build the rail') as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe('/tasks/t1');
   });
+
+  it('renders a date on each decision-log entry (#467 timeline)', () => {
+    selectedProjectId.value = 'kc';
+    brief.value = sample;
+    const { container } = render(<BriefPanel />);
+    const dates = container.querySelectorAll('.cto-brief-decisions .cto-brief-date');
+    expect(dates.length).toBe(sample.decisions.length);
+    expect((dates[0].textContent ?? '').length).toBeGreaterThan(0);
+  });
 });

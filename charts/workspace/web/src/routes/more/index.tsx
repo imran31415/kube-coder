@@ -1,4 +1,4 @@
-import { navigate, NAV_GROUPS, navLabel } from '../../store/router';
+import { navigate, visibleNavGroups, navLabel } from '../../store/router';
 import { sheetOpen, theme } from '../../store/ui';
 import { Icon, type IconName } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
@@ -101,7 +101,7 @@ export function MoreSheet() {
   // have BottomNav slots) so the sheet doubles as a complete site map.
   const sections: MoreSection[] = [
     { title: 'Quick actions', entries: quickActions },
-    ...NAV_GROUPS.map((g) => ({
+    ...visibleNavGroups({ ctoEnabled: serverMode.value.ctoEnabled }).map((g) => ({
       title: g.title,
       entries: [
         ...(g.landing ? [routeEntry(g.landing, 'Overview')] : []),

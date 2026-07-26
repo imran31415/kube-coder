@@ -140,6 +140,21 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+/**
+ * NAV_GROUPS with capability-gated items removed. Currently only `/cto`, hidden
+ * when the AI CTO feature is disabled server-side (#467). Pure — callers pass
+ * the flags (from serverMode) so this module stays free of store imports.
+ */
+export function visibleNavGroups(caps: { ctoEnabled?: boolean }): NavGroup[] {
+  if (caps.ctoEnabled === false) {
+    return NAV_GROUPS.map((g) => ({
+      ...g,
+      items: g.items.filter((i) => i.path !== '/cto'),
+    }));
+  }
+  return NAV_GROUPS;
+}
+
 /** The nav group containing `path` (as landing or item), if any. */
 export function navGroupFor(path: string): NavGroup | undefined {
   return NAV_GROUPS.find(

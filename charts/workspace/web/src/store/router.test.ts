@@ -7,6 +7,7 @@ import {
   routeHref,
   ROUTES,
   NAV_GROUPS,
+  visibleNavGroups,
   navGroupFor,
   navLabel,
 } from './router';
@@ -71,6 +72,20 @@ describe('NAV_GROUPS (#267)', () => {
     const expected = ROUTES.map((r) => r.path).filter((p) => p !== '/settings');
     expect([...grouped].sort()).toEqual([...expected].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
+  });
+
+  it('visibleNavGroups hides /cto only when ctoEnabled is explicitly false (#467)', () => {
+    const paths = (gs: ReturnType<typeof visibleNavGroups>) =>
+      gs.flatMap((g) => g.items.map((i) => i.path));
+    // Default / undefined / true → /cto present.
+    expect(paths(visibleNavGroups({}))).toContain('/cto');
+    expect(paths(visibleNavGroups({ ctoEnabled: true }))).toContain('/cto');
+    // Explicit false → filtered out, everything else intact.
+    const hidden = visibleNavGroups({ ctoEnabled: false });
+    expect(paths(hidden)).not.toContain('/cto');
+    expect(paths(hidden)).toContain('/hypervisor');
+    // Pure: the module constant is not mutated.
+    expect(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))).toContain('/cto');
   });
 
   it('navGroupFor resolves items and landings, and misses /settings', () => {

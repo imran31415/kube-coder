@@ -200,6 +200,11 @@ spec:
           value: {{ (.Values.hypervisor).defaultAssistant | default "claude" | quote }}
         - name: HYPERVISOR_WORKDIR
           value: {{ (.Values.hypervisor).workdir | default "/home/dev" | quote }}
+        # AI CTO (#467) — the /cto page. `dig` (not `default`) so an explicit
+        # `cto.enabled: false` actually disables it: sprig's `default` treats
+        # boolean false as empty and would fall through to true.
+        - name: CTO_ENABLED
+          value: {{ dig "enabled" true (.Values.cto | default dict) | quote }}
         {{- if (.Values.gateway).enabled }}
         {{- if (.Values.gateway).allowUnsigned }}
         {{- /*
