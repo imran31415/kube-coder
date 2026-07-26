@@ -46,7 +46,8 @@ export type IconName =
   | 'mic'
   | 'speaker'
   | 'desktop'
-  | 'mission';
+  | 'mission'
+  | 'cto';
 
 const PATHS: Record<IconName, JSX.Element> = {
   tasks: (
@@ -284,6 +285,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <rect x="3" y="3" width="14" height="14" rx="1.5" />
       <path d="M10 3v14M3 10h7M10 8h7" />
+    </>
+  ),
+  // AI CTO — a compass rose: strategic direction / "which way to head next".
+  cto: (
+    <>
+      <circle cx="10" cy="10" r="7.5" />
+      <path d="M13 7l-1.8 4.2L7 13l1.8-4.2L13 7z" />
     </>
   ),
   // Circled "i" — a lightweight help/info affordance.

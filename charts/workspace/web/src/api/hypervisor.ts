@@ -53,8 +53,20 @@ export interface HypervisorThread {
   status: ThreadStatus;
   created_at: number | null;
   updated_at: number | null;
+  // Persona binding (#465): '' for a plain chat, 'cto' for an AI-CTO thread;
+  // project_id present only when bound. Lets the CTO page filter its list.
+  persona?: string;
+  project_id?: string;
   // Present (unix seconds) only on soft-deleted threads in the trash view.
   deleted_at?: number | null;
+}
+
+/** Filter for GET /api/hypervisor/threads (#465). No filter → all threads;
+ *  persona 'cto' → CTO threads (optionally scoped to one project); 'default' →
+ *  plain Hypervisor threads only. */
+export interface ThreadFilter {
+  persona?: 'cto' | 'default';
+  project?: string;
 }
 
 /** Where a thread's rendered transcript came from: `session_log` = parsed from
@@ -127,10 +139,11 @@ export interface ThreadActivity {
 export const getHypervisorConfig = () =>
   apiGet<HypervisorConfig>('/api/hypervisor/config');
 
-export const listThreads = () =>
-  apiGet<{ threads: HypervisorThread[] }>('/api/hypervisor/threads').then(
-    (r) => r.threads ?? [],
-  );
+export const listThreads = (filter?: ThreadFilter) =>
+  apiGet<{ threads: HypervisorThread[] }>('/api/hypervisor/threads', {
+    persona: filter?.persona,
+    project: filter?.project,
+  }).then((r) => r.threads ?? []);
 
 /** The "Recently deleted" trash view — soft-deleted threads only. */
 export const listDeletedThreads = () =>
@@ -143,6 +156,9 @@ export const createThread = (opts: {
   assistant?: string;
   workdir?: string;
   model?: string;
+  // AI CTO (#465): persona 'cto' + the bound project id.
+  persona?: string;
+  project_id?: string;
 }) =>
   apiPost<{ thread: HypervisorThread }>('/api/hypervisor/threads', opts).then(
     (r) => r.thread,

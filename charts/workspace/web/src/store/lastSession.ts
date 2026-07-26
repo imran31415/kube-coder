@@ -10,11 +10,12 @@
  * to the newest session when the remembered one is gone.
  */
 
-export type SessionKind = 'hypervisor' | 'build';
+export type SessionKind = 'hypervisor' | 'build' | 'cto';
 
 const KEYS: Record<SessionKind, string> = {
   hypervisor: 'kc.hv.lastThread',
   build: 'kc.tasks.lastTask',
+  cto: 'kc.cto.lastThread',
 };
 
 export function rememberLastSession(kind: SessionKind, id: string): void {

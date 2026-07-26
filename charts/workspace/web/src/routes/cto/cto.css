@@ -1,0 +1,411 @@
+/* AI CTO page (#466) — the "executive floor" of the same Editorial building:
+   monochrome, 1px hairlines, flat surfaces, hierarchy from type + space.
+   Motion uses only the shared tokens; transform/opacity only. */
+
+.route-cto {
+  position: relative;
+  display: grid;
+  /* Fallback only — desktop index.tsx sets the live template inline
+     (rail-px / 6px handle / chat-fr / brief-px). */
+  grid-template-columns: 248px 6px minmax(0, 1fr) 320px;
+  height: calc(100dvh - var(--topbar-total));
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+@supports not (height: 100dvh) {
+  .route-cto { height: calc(100vh - var(--topbar-total)); }
+}
+
+.cto-eyebrow {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  font-weight: 600;
+}
+
+/* ── Projects rail ───────────────────────────────────────────────────── */
+.cto-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+.cto-rail-head {
+  padding: var(--size-3) var(--size-3) var(--size-2);
+}
+.cto-rail-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--size-2) var(--size-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cto-rail-foot {
+  padding: var(--size-2) var(--size-3);
+  font-size: 11px;
+  color: var(--text-subtle);
+  border-top: 1px solid var(--border);
+}
+
+.cto-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.cto-card-wrap {
+  /* Staggered entrance — reads as "meeting your workspace" (no --stagger
+     token exists, so the delay is derived from the card index). */
+  animation: cto-card-in var(--motion-base) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+@keyframes cto-card-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cto-card-wrap { animation: none; }
+}
+.cto-card:hover { border-color: var(--border-2); }
+.cto-card-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.cto-card-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--size-2) var(--size-3);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text);
+}
+.cto-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+}
+.cto-card-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cto-card-sub {
+  font-size: 11px;
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cto-card-counts {
+  display: flex;
+  gap: var(--size-2);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.cto-count-waiting { color: var(--warn); }
+.cto-card-pulse { display: inline-flex; gap: 4px; }
+
+.cto-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--text-subtle);
+  flex: none;
+}
+.cto-dot-running { background: var(--success); }
+.cto-dot-waiting { background: var(--warn); }
+.cto-dot-error { background: var(--danger); }
+.cto-dot-completed { background: var(--text-subtle); }
+.cto-dot-idle { background: var(--text-subtle); }
+
+.cto-card-menu {
+  display: flex;
+  align-items: flex-start;
+  padding: 4px 4px 0 0;
+}
+.cto-card-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  color: var(--text-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+}
+.cto-card:hover .cto-card-menu-btn,
+.cto-card-menu-btn[aria-expanded='true'] { opacity: 1; }
+.cto-card-menu-btn:hover { color: var(--text); background: var(--surface-2); }
+
+.cto-card-workspace .cto-card-name { color: var(--text-muted); }
+
+/* Skeleton cards — hairline shimmer, spinners banned on this route (F4). */
+.cto-card-skeleton {
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--size-2) var(--size-3);
+  pointer-events: none;
+}
+.cto-skel {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  animation: cto-shimmer 1.8s ease-in-out infinite;
+}
+.cto-skel-name { width: 60%; height: 12px; }
+.cto-skel-sub { width: 40%; height: 9px; }
+@keyframes cto-shimmer {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.75; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cto-skel { animation: none; opacity: 0.5; }
+}
+
+/* ── Split handle (mirrors the Hypervisor's) ─────────────────────────── */
+.cto-split-handle {
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  touch-action: none;
+}
+.cto-split-handle::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 36px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+.cto-split-handle:hover::after,
+.cto-split-handle:focus-visible::after,
+.cto-split-dragging .cto-split-handle::after {
+  background: var(--accent);
+  opacity: 1;
+}
+.cto-split-dragging { user-select: none; }
+.cto-split-dragging iframe { pointer-events: none; }
+
+/* ── Main (chat) column ──────────────────────────────────────────────── */
+.cto-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.cto-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-3);
+  padding: var(--size-2) var(--size-4);
+  border-bottom: 1px solid var(--border);
+  min-height: var(--topbar-h);
+}
+.cto-topbar-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cto-masthead {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+.cto-brand {
+  font-size: 11px;
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cto-topbar-meta { display: flex; align-items: center; gap: var(--size-2); }
+.cto-brief-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.cto-brief-toggle:hover { color: var(--text); border-color: var(--border-2); }
+
+/* Delta strip — a prompt to ask, not a report. */
+.cto-delta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-3);
+  padding: 7px var(--size-4);
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+  animation: cto-fade-in var(--motion-base) both;
+}
+.cto-delta strong { color: var(--text); font-weight: 600; }
+.cto-delta-close {
+  display: inline-flex;
+  border: none;
+  background: none;
+  color: var(--text-subtle);
+  cursor: pointer;
+  padding: 2px;
+}
+.cto-delta-close:hover { color: var(--text); }
+@keyframes cto-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .cto-delta { animation: none; } }
+
+/* Deterministic welcome + starter chips (no LLM until tapped). */
+.cto-welcome {
+  padding: var(--size-4) var(--size-4) var(--size-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-3);
+}
+.cto-welcome-lead {
+  font-size: 15px;
+  color: var(--text);
+  max-width: 52ch;
+  line-height: 1.5;
+}
+.cto-chips { display: flex; flex-wrap: wrap; gap: var(--size-2); }
+.cto-chip {
+  font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  animation: cto-card-in var(--motion-base) both;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.cto-chips .cto-chip:nth-child(2) { animation-delay: 40ms; }
+.cto-chips .cto-chip:nth-child(3) { animation-delay: 80ms; }
+.cto-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.cto-chip:disabled { opacity: 0.5; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .cto-chip { animation: none; } }
+
+/* ── Brief panel ─────────────────────────────────────────────────────── */
+.cto-brief {
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  overflow-y: auto;
+  min-height: 0;
+  padding: var(--size-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4);
+}
+.cto-brief-top { display: flex; flex-direction: column; gap: 3px; }
+.cto-brief-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.cto-brief-repo { font-size: 11px; color: var(--text-subtle); font-family: var(--font-mono); }
+.cto-brief-section { display: flex; flex-direction: column; gap: 7px; }
+.cto-brief-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  font-weight: 600;
+}
+.cto-brief-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 15px;
+}
+.cto-brief-northstar { font-size: 13px; color: var(--text); line-height: 1.45; }
+.cto-brief-stats { display: flex; gap: var(--size-3); font-size: 12px; color: var(--text-muted); }
+.cto-stat strong { color: var(--text); font-size: 15px; margin-right: 3px; }
+.cto-stat-waiting strong { color: var(--warn); }
+.cto-brief-list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.cto-brief-item { font-size: 12.5px; line-height: 1.4; }
+.cto-brief-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.cto-brief-link:hover { color: var(--text); text-decoration: underline; }
+.cto-brief-decisions .cto-brief-link { color: var(--text); }
+.cto-brief-task { display: flex; align-items: center; gap: 7px; -webkit-line-clamp: 1; }
+.cto-brief-task-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cto-brief-gitrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.cto-brief-branch { color: var(--text); }
+.cto-brief-workdir {
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cto-brief-empty { color: var(--text-muted); display: flex; flex-direction: column; gap: 8px; }
+.cto-brief-empty-lead { font-size: 13px; font-weight: 600; color: var(--text); }
+.cto-brief-empty-sub { font-size: 12.5px; line-height: 1.5; }
+.cto-brief-skel { height: 44px; border-radius: var(--radius); }
+
+/* ── Mobile: rail becomes a horizontal strip; brief is a bottom sheet ─── */
+@media (max-width: 860px) {
+  .route-cto { display: flex; flex-direction: column; }
+  .cto-rail {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 132px;
+  }
+  .cto-rail-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .cto-card { min-width: 168px; }
+  .cto-rail-foot { display: none; }
+  .cto-main { flex: 1; min-height: 0; }
+  /* The desktop brief column is not rendered on mobile (BottomSheet instead). */
+}
