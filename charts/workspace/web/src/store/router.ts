@@ -78,6 +78,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/desktop', title: 'Desktop' },
   { path: '/mission', title: 'Mission Control' },
   { path: '/cto', title: 'AI CTO' },
+  { path: '/feed', title: 'Feed' },
   { path: '/hypervisor', title: 'Hypervisor' },
   { path: '/walkie', title: 'Walkie-Talkie' },
   { path: '/tasks', title: 'Build' },
@@ -121,6 +122,7 @@ export const NAV_GROUPS: NavGroup[] = [
     landing: '/mission',
     items: [
       { path: '/cto', label: 'AI CTO' },
+      { path: '/feed', label: 'Feed' },
       { path: '/hypervisor', label: 'Chat' },
       { path: '/tasks', label: 'Builds' },
       { path: '/walkie' },
@@ -147,9 +149,11 @@ export const NAV_GROUPS: NavGroup[] = [
  */
 export function visibleNavGroups(caps: { ctoEnabled?: boolean }): NavGroup[] {
   if (caps.ctoEnabled === false) {
+    // The Feed rides the AI CTO, so both hide together (#467/#470).
+    const hidden = new Set(['/cto', '/feed']);
     return NAV_GROUPS.map((g) => ({
       ...g,
-      items: g.items.filter((i) => i.path !== '/cto'),
+      items: g.items.filter((i) => !hidden.has(i.path)),
     }));
   }
   return NAV_GROUPS;
