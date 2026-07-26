@@ -288,6 +288,27 @@ def _t_update_project(a):
     return _ok(f'Updated project {pid} ({changed}).')
 
 
+def _t_post_update(a):
+    title = (a.get('title') or '').strip()
+    if not title:
+        return _err('title is required')
+    kind = (a.get('kind') or 'briefing').strip()
+    body = {
+        'kind': kind,
+        'title': title,
+        'body_md': a.get('body_md') or '',
+        'project_id': (a.get('project_id') or '').strip() or _project_id_env(),
+        'waiting': bool(a.get('waiting')),
+    }
+    if a.get('links') is not None:
+        body['links'] = a['links']
+    # Attribute the item to this thread so the feed can show its provenance.
+    tid = _hv_thread_id()
+    if tid:
+        body['source'] = f'agent:{tid}'
+    return _call('POST', '/api/feed', body=body)
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Tool handlers — render (Hypervisor rich content)
 #
@@ -603,6 +624,30 @@ TOOLS: Dict[str, Any] = {
                        'description': 'Object of properties to change, e.g. '
                                       '{"north_star": "...", "status": "paused"}.'},
         }, required=['fields'], kind='write'),
+    'post_update': _tool(
+        'post_update',
+        'Post a curated item to the Feed — the user\'s single stream of what '
+        'changed and what matters. Use for findings worth their attention '
+        '(a briefing/digest, a dependency advisory or release note you judged '
+        'relevant, a heads-up) — NOT routine chatter. System activity (tasks, '
+        'decisions, triggers) is already posted automatically, so don\'t '
+        'duplicate it. Defaults the project to this thread\'s bound project.',
+        _t_post_update,
+        properties={
+            'title': {'type': 'string', 'description': 'One-line headline.'},
+            'kind': {'type': 'string',
+                     'description': "'briefing' (default) or 'news'."},
+            'body_md': {'type': 'string',
+                        'description': 'Optional markdown detail.'},
+            'project_id': {'type': 'string',
+                           'description': 'Project id (default: bound project).'},
+            'links': {'type': 'array',
+                      'description': 'Optional [{label, ref|href}] — ref is a '
+                                     'typed deep-link (task:<id>, thread:<id>, '
+                                     'memory:<ns>/<key>), href an external URL.'},
+            'waiting': {'type': 'boolean',
+                        'description': 'Flag it as needing the user.'},
+        }, required=['title'], kind='write'),
 
     # ── render (Hypervisor rich content) ────────────────────────────────────
     'show_app_preview': _tool(
