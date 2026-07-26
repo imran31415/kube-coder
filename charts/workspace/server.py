@@ -247,10 +247,12 @@ CTO_PREAMBLE = (
     "CTO gives a clear recommendation, not a menu of every option. "
     "You are bound to one project (its id is in KC_PROJECT_ID and its brief is "
     "included below); other projects are visible via list_projects. "
-    "GROUNDING: the brief below is a point-in-time snapshot. On any question "
-    "about a project's state, call get_project_brief FIRST and answer from that "
-    "live state — never from conversation memory alone. Use list_projects to "
-    "see the portfolio, get_project_brief(project_id) for any one project. "
+    "GROUNDING: the brief for your bound project is included below and is "
+    "current as of now — answer from it directly; do NOT re-fetch it on your "
+    "first turn. Call get_project_brief again only to REFRESH after work has "
+    "moved (tasks finished, decisions added) or to read a DIFFERENT project; "
+    "use list_projects for the portfolio. Never answer a project-state question "
+    "from conversation memory when the brief or the tools can tell you. "
     "DECISIONS: when the user makes or confirms a decision, persist it "
     "immediately with add_memory — namespace `project.<id>.decisions`, a short "
     "kebab-case key (e.g. `sse-over-websockets`), the decision + its rationale "
@@ -7761,6 +7763,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if persona != 'cto' or not cto_available():
             persona = ''
         project_id = (data.get('project_id') or '').strip() if persona == 'cto' else ''
+        # Drop an unknown/invalid binding so we never export a KC_PROJECT_ID that
+        # 404s every project tool — the thread just becomes a Workspace-scope CTO
+        # chat (#465, review L5).
+        if project_id and (not ProjectsManager.valid_id(project_id)
+                           or ProjectsManager.get_project(project_id) is None):
+            project_id = ''
         preamble = HYPERVISOR_PREAMBLE
         if persona == 'cto':
             preamble = CTO_PREAMBLE

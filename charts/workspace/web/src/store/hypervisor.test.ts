@@ -44,6 +44,8 @@ import {
   sameTranscript,
   sendMessage,
   closeThread,
+  setChatContext,
+  chatPersona,
 } from './hypervisor';
 import type { HypervisorConfig } from '../api/hypervisor';
 import type { HvEvent } from '../routes/hypervisor/transcript';
@@ -223,5 +225,22 @@ describe('workdir picker (#345)', () => {
       expect.objectContaining({ workdir: undefined }),
     );
     closeThread();
+  });
+
+  it('a CTO thread omits workdir (server defaults it to the project) and binds the project (#469 review M2)', async () => {
+    stubNewThread();
+    selectedWorkdir.value = '/home/dev/somewhere'; // picker default must NOT win
+    setChatContext('cto', 'kube-coder');
+    await sendMessage('hello');
+    expect(createThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workdir: undefined,
+        persona: 'cto',
+        project_id: 'kube-coder',
+      }),
+    );
+    closeThread();
+    setChatContext('', null);
+    chatPersona.value = '';
   });
 });
