@@ -2903,6 +2903,630 @@ class WorkspaceManager:
         return results
 
 
+class ProjectsManager:
+    """First-class project registry backing the AI CTO (#464).
+
+    A project is a thin JSON record at /home/dev/.claude-projects/<id>.json
+    that BINDS existing primitives — task workdirs, memory namespaces, git
+    repos, triggers — under one identity. Nothing is duplicated: tasks,
+    memories, and triggers keep living in their own stores; the /brief
+    endpoint aggregates them on read. Same JSON-per-record, atomic-write
+    pattern as WebhookManager; the server stays fully deterministic — no LLM
+    here. The CTO chat that consumes this rides the hypervisor (#465).
+
+    Record shape:
+        {
+          "id": "kube-coder", "name": "kube-coder",
+          "workdirs": ["/home/dev/kube-coder"],
+          "repo": "imran31415/kube-coder",
+          "memory_namespace": "project.kube-coder",
+          "status": "active",              # active | paused | archived
+          "north_star": "one-line goal",
+          "last_seen_at": <epoch|null>,    # set when viewed in /cto (delta strip)
+          "created_at": <epoch>, "updated_at": <epoch>
+        }
+    """
+
+    PROJECTS_DIR = '/home/dev/.claude-projects'
+    # Lowercase slug, starts alphanumeric — used unescaped as a filename, so no
+    # dots (path-traversal) and no underscore (keeps _discover unambiguous).
+    _ID_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
+    STATUSES = ('active', 'paused', 'archived')
+    _MUTABLE_FIELDS = ('name', 'workdirs', 'repo', 'memory_namespace',
+                       'status', 'north_star', 'last_seen_at')
+
+    # Brief caps — keep the injected digest ~1-2k tokens (#464 note 2).
+    _BRIEF_GOALS = 8
+    _BRIEF_DECISIONS = 8
+    _BRIEF_TASKS = 8
+    _BRIEF_MEMORIES = 6
+    _BRIEF_MEMORY_SCAN = 2000   # bound the memory-list scan
+    _BRIEF_MARKDOWN_CAP = 6000  # hard char ceiling on the digest (~1.5k tokens)
+
+    # ── storage primitives (WebhookManager pattern) ──────────────────────
+
+    @staticmethod
+    def ensure_dir():
+        os.makedirs(ProjectsManager.PROJECTS_DIR, mode=0o700, exist_ok=True)
+
+    @staticmethod
+    def _config_path(project_id):
+        return os.path.join(ProjectsManager.PROJECTS_DIR, f'{project_id}.json')
+
+    @staticmethod
+    def valid_id(project_id):
+        return bool(project_id) and bool(ProjectsManager._ID_RE.match(project_id))
+
+    @staticmethod
+    def _slugify(text):
+        s = re.sub(r'[^a-z0-9-]+', '-', (text or '').strip().lower())
+        s = re.sub(r'-{2,}', '-', s).strip('-')
+        return s[:64]
+
+    @staticmethod
+    def _write(cfg):
+        ProjectsManager.ensure_dir()
+        path = ProjectsManager._config_path(cfg['id'])
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, path)
+
+    @staticmethod
+    def _load_all():
+        ProjectsManager.ensure_dir()
+        out = []
+        try:
+            entries = sorted(os.listdir(ProjectsManager.PROJECTS_DIR))
+        except OSError:
+            return out
+        for name in entries:
+            if not name.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(ProjectsManager.PROJECTS_DIR, name)) as f:
+                    out.append(json.load(f))
+            except (OSError, json.JSONDecodeError):
+                continue
+        return out
+
+    @staticmethod
+    def get_project(project_id):
+        if not ProjectsManager.valid_id(project_id):
+            return None
+        try:
+            with open(ProjectsManager._config_path(project_id)) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def delete(project_id):
+        if not ProjectsManager.valid_id(project_id):
+            return False
+        try:
+            os.remove(ProjectsManager._config_path(project_id))
+            return True
+        except OSError:
+            return False
+
+    # ── validation / mutation ────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize(cfg):
+        """Validate + normalize a record in place. Returns an error string or
+        None. workdirs are constrained to /home/dev so a project can never bind
+        (and later shell git against) an arbitrary path."""
+        wds = cfg.get('workdirs') or []
+        if not isinstance(wds, list):
+            return 'workdirs must be a list of absolute paths'
+        clean = []
+        for w in wds:
+            if not isinstance(w, str):
+                return 'workdirs must be strings'
+            w = os.path.normpath(w.strip())
+            if not w or w == '.':
+                continue
+            if not (w == '/home/dev' or w.startswith('/home/dev/')):
+                return 'workdirs must live under /home/dev'
+            if w not in clean:
+                clean.append(w)
+        cfg['workdirs'] = clean
+
+        status = cfg.get('status', 'active')
+        if status not in ProjectsManager.STATUSES:
+            return f'status must be one of {ProjectsManager.STATUSES}'
+        cfg['status'] = status
+
+        for k in ('name', 'repo', 'memory_namespace', 'north_star'):
+            v = cfg.get(k)
+            if v is None:
+                continue
+            if not isinstance(v, str):
+                return f'{k} must be a string'
+            cfg[k] = v.strip()
+
+        ls = cfg.get('last_seen_at')
+        if ls is not None and not isinstance(ls, (int, float)):
+            return 'last_seen_at must be a number'
+        return None
+
+    @staticmethod
+    def create(data):
+        """Create a new project. Returns (cfg, error_str)."""
+        project_id = (data.get('id') or '').strip() \
+            or ProjectsManager._slugify(data.get('name') or '')
+        if not ProjectsManager.valid_id(project_id):
+            return None, ('invalid id (1-64 chars, lowercase [a-z0-9-], '
+                          'must start alphanumeric)')
+        if ProjectsManager.get_project(project_id):
+            return None, f'project {project_id!r} already exists'
+        now = time.time()
+        cfg = {
+            'id': project_id,
+            'name': (data.get('name') or project_id),
+            'workdirs': data.get('workdirs') or [],
+            'repo': data.get('repo') or '',
+            'memory_namespace': data.get('memory_namespace') or f'project.{project_id}',
+            'status': data.get('status', 'active'),
+            'north_star': data.get('north_star') or '',
+            'last_seen_at': data.get('last_seen_at'),
+            'created_at': now,
+            'updated_at': now,
+        }
+        err = ProjectsManager._normalize(cfg)
+        if err:
+            return None, err
+        if not cfg['name']:
+            cfg['name'] = project_id
+        if not cfg['memory_namespace']:
+            cfg['memory_namespace'] = f'project.{project_id}'
+        # Auto-derive the repo slug from the first workdir's origin remote.
+        if not cfg['repo'] and cfg['workdirs']:
+            cfg['repo'] = ProjectsManager._git_remote(cfg['workdirs'][0])
+        ProjectsManager._write(cfg)
+        return cfg, None
+
+    @staticmethod
+    def update(project_id, fields):
+        """Partial-merge update of an existing project. Returns (cfg, err);
+        (None, 'not found') when the project doesn't exist."""
+        cfg = ProjectsManager.get_project(project_id)
+        if cfg is None:
+            return None, 'not found'
+        for k in ProjectsManager._MUTABLE_FIELDS:
+            if k in fields:
+                cfg[k] = fields[k]
+        err = ProjectsManager._normalize(cfg)
+        if err:
+            return None, err
+        cfg['id'] = project_id  # id is immutable
+        cfg.setdefault('created_at', time.time())
+        cfg['updated_at'] = time.time()
+        ProjectsManager._write(cfg)
+        return cfg, None
+
+    # ── git helpers (pure file reads — run on list endpoints) ────────────
+
+    @staticmethod
+    def _git_remote(workdir):
+        """owner/repo slug for a workdir's origin remote, '' when none. Reads
+        .git/config directly (no subprocess). Resolves a linked-worktree .git
+        pointer file to its common dir so worktrees find the shared config."""
+        if not workdir:
+            return ''
+        try:
+            git_path = os.path.join(workdir, '.git')
+            if os.path.isfile(git_path):
+                with open(git_path) as f:
+                    first = f.readline().strip()
+                if not first.startswith('gitdir:'):
+                    return ''
+                gitdir = first.split(':', 1)[1].strip()
+                commondir = os.path.join(gitdir, 'commondir')
+                if os.path.isfile(commondir):
+                    with open(commondir) as f:
+                        rel = f.read().strip()
+                    cfg_dir = os.path.normpath(os.path.join(gitdir, rel))
+                else:
+                    cfg_dir = gitdir
+                config_path = os.path.join(cfg_dir, 'config')
+            else:
+                config_path = os.path.join(git_path, 'config')
+            with open(config_path) as f:
+                cfg_text = f.read()
+        except OSError:
+            return ''
+        m = re.search(r'^\s*url\s*=\s*(\S+)', cfg_text, re.MULTILINE)
+        return ProjectsManager._parse_repo_slug(m.group(1)) if m else ''
+
+    @staticmethod
+    def _parse_repo_slug(url):
+        url = (url or '').strip()
+        if url.endswith('.git'):
+            url = url[:-4]
+        url = url.rstrip('/')
+        if '://' in url:
+            path = re.sub(r'^[a-zA-Z]+://[^/]+/', '', url)
+        elif ':' in url:  # scp-like: git@github.com:owner/repo
+            path = url.split(':', 1)[1]
+        else:
+            path = url
+        segs = [s for s in path.split('/') if s]
+        return '/'.join(segs[-2:]) if len(segs) >= 2 else ''
+
+    # ── task scan + workdir matching (shared by pulse + brief) ───────────
+
+    @staticmethod
+    def _scan_task_metas():
+        """Light scan of every task.json (raw fields only — no tmux reconcile,
+        so the rail stays cheap; the background TaskReconciler keeps status
+        ~10s fresh)."""
+        ClaudeTaskManager.ensure_tasks_dir()
+        metas = []
+        try:
+            entries = os.listdir(ClaudeTaskManager.TASKS_DIR)
+        except OSError:
+            return metas
+        for entry in entries:
+            meta_path = os.path.join(ClaudeTaskManager.TASKS_DIR, entry, 'task.json')
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path) as f:
+                    metas.append(json.load(f))
+            except (OSError, json.JSONDecodeError):
+                continue
+        return metas
+
+    @staticmethod
+    def _task_matches(workdir, project_workdirs):
+        """True when a task/trigger workdir is a project workdir or under one.
+        Prefix-based (v1) — worktree paths outside a registered workdir won't
+        attribute; a project_id on task.json is the clean later upgrade."""
+        if not workdir:
+            return False
+        wd = os.path.normpath(workdir)
+        for pw in project_workdirs or []:
+            pw = os.path.normpath(pw)
+            if wd == pw or wd.startswith(pw + os.sep):
+                return True
+        return False
+
+    @staticmethod
+    def _pulse_by_project(projects, metas=None):
+        """One-pass {id: {running, waiting, last_activity_at}} over all tasks,
+        so GET /api/projects never fans out N×/brief for the rail (F5)."""
+        if metas is None:
+            metas = ProjectsManager._scan_task_metas()
+        out = {p['id']: {'running': 0, 'waiting': 0, 'last_activity_at': None}
+               for p in projects}
+        for meta in metas:
+            wd = meta.get('workdir')
+            status = meta.get('status')
+            la = meta.get('last_activity_at') or meta.get('created_at')
+            for p in projects:
+                if not ProjectsManager._task_matches(wd, p.get('workdirs')):
+                    continue
+                pu = out[p['id']]
+                if status == 'running':
+                    pu['running'] += 1
+                elif status == 'waiting-for-input':
+                    pu['waiting'] += 1
+                if la and (pu['last_activity_at'] is None or la > pu['last_activity_at']):
+                    pu['last_activity_at'] = la
+        return out
+
+    @staticmethod
+    def list_projects():
+        """All projects with embedded lightweight pulse counts, most-recently-
+        active first."""
+        projects = ProjectsManager._load_all()
+        pulse = ProjectsManager._pulse_by_project(projects)
+        for p in projects:
+            p['pulse'] = pulse.get(
+                p['id'], {'running': 0, 'waiting': 0, 'last_activity_at': None})
+        projects.sort(
+            key=lambda p: (p['pulse'].get('last_activity_at') or 0,
+                           p.get('updated_at') or 0),
+            reverse=True)
+        return projects
+
+    # ── discovery / auto-provision (#464 UX addendum) ────────────────────
+
+    @staticmethod
+    def _workdir_project_id(workdir):
+        """Infer a project id from a task workdir: the dir name directly under
+        /home/dev, or the project segment of a .worktrees/<proj>/… path."""
+        wd = os.path.normpath(workdir or '')
+        home = '/home/dev'
+        if not wd.startswith(home + os.sep):
+            return ''
+        parts = wd[len(home) + 1:].split(os.sep)
+        if not parts or not parts[0]:
+            return ''
+        if parts[0] == '.worktrees' and len(parts) >= 2:
+            base = parts[1]
+        elif parts[0].startswith('.'):
+            return ''  # hidden tooling dir (.claude-tasks, .credentials, …)
+        else:
+            base = parts[0]
+        return ProjectsManager._slugify(base)
+
+    @staticmethod
+    def _discover_memory_namespaces():
+        """{project_id: namespace_root} for every project.<x>.* / claude.<x>.*
+        namespace seen in memory. project.* wins when both exist for one id."""
+        out = {}
+        if MemoryManager is None:
+            return out
+        try:
+            rows = MemoryManager.list(limit=ProjectsManager._BRIEF_MEMORY_SCAN)
+        except Exception:
+            return out
+        for r in rows:
+            ns = r.get('namespace') or ''
+            seg = ns.split('.')
+            if seg[0] not in ('project', 'claude') or len(seg) < 2 or not seg[1]:
+                continue
+            pid = ProjectsManager._slugify(seg[1])
+            if not ProjectsManager.valid_id(pid):
+                continue
+            root = f'{seg[0]}.{seg[1]}'
+            # Prefer a project.* root over a claude.* one for the same id.
+            if pid not in out or (out[pid].startswith('claude.')
+                                  and root.startswith('project.')):
+                out[pid] = root
+        return out
+
+    @staticmethod
+    def discover(auto_provision=True):
+        """Union candidate projects from workspace dirs, memory namespaces, and
+        task workdirs. When auto_provision, silently register every confident
+        candidate (git remote OR an associated task/memory namespace); bare
+        marker-file dirs stay 'low' confidence until touched. Returns
+        {candidates: [...], registered: [ids]}."""
+        existing_ids = {p['id'] for p in ProjectsManager._load_all()}
+        candidates = {}
+
+        def _ensure(pid, name):
+            c = candidates.get(pid)
+            if c is None:
+                c = {
+                    'id': pid, 'name': name or pid, 'workdirs': [], 'repo': '',
+                    'memory_namespace': f'project.{pid}', 'reasons': [],
+                    'has_git_remote': False, 'has_task': False, 'has_memory': False,
+                }
+                candidates[pid] = c
+            return c
+
+        # 1. Workspace project dirs
+        for d in WorkspaceManager.list_dirs():
+            if not d.get('is_project'):
+                continue
+            pid = ProjectsManager._slugify(d['label'])
+            if not ProjectsManager.valid_id(pid):
+                continue
+            c = _ensure(pid, d['label'])
+            if d['path'] not in c['workdirs']:
+                c['workdirs'].append(d['path'])
+            c['reasons'].append('workspace-dir')
+            if d.get('is_git_repo'):
+                remote = ProjectsManager._git_remote(d['path'])
+                if remote:
+                    c['repo'] = remote
+                    c['has_git_remote'] = True
+                    c['reasons'].append('git-remote')
+
+        # 2. Memory namespaces project.* / claude.*
+        for pid, ns in ProjectsManager._discover_memory_namespaces().items():
+            c = _ensure(pid, pid)
+            c['memory_namespace'] = ns
+            c['has_memory'] = True
+            c['reasons'].append('memory-namespace')
+
+        # 3. Task workdirs (attributes worktree tasks to their canonical root)
+        home = '/home/dev'
+        for meta in ProjectsManager._scan_task_metas():
+            pid = ProjectsManager._workdir_project_id(meta.get('workdir'))
+            if not pid or not ProjectsManager.valid_id(pid):
+                continue
+            c = _ensure(pid, pid)
+            c['has_task'] = True
+            c['reasons'].append('task-workdir')
+            canonical = os.path.join(home, pid)
+            if os.path.isdir(canonical) and canonical not in c['workdirs']:
+                c['workdirs'].append(canonical)
+
+        registered = []
+        for c in candidates.values():
+            c['confidence'] = 'high' if (
+                c['has_git_remote'] or c['has_task'] or c['has_memory']) else 'low'
+            c['registered'] = c['id'] in existing_ids
+            c['reasons'] = sorted(set(c['reasons']))
+            if auto_provision and c['confidence'] == 'high' and not c['registered']:
+                cfg, err = ProjectsManager.create({
+                    'id': c['id'], 'name': c['name'], 'workdirs': c['workdirs'],
+                    'repo': c['repo'], 'memory_namespace': c['memory_namespace'],
+                })
+                if cfg and not err:
+                    c['registered'] = True
+                    registered.append(c['id'])
+        return {
+            'candidates': sorted(candidates.values(), key=lambda x: x['id']),
+            'registered': registered,
+        }
+
+    # ── brief aggregation (the heart of the feature) ─────────────────────
+
+    @staticmethod
+    def _project_memories(namespace):
+        """Ranked (goals, decisions, others) memories under a namespace prefix.
+        secret-tagged entries are excluded. Each list is importance-then-recency
+        ranked; capping happens in brief()."""
+        goals, decisions, others = [], [], []
+        if MemoryManager is None or not namespace:
+            return goals, decisions, others
+        try:
+            rows = MemoryManager.list(limit=ProjectsManager._BRIEF_MEMORY_SCAN)
+        except Exception:
+            return goals, decisions, others
+        prefix = namespace + '.'
+        for r in rows:
+            rns = r.get('namespace') or ''
+            if not (rns == namespace or rns.startswith(prefix)):
+                continue
+            tags = r.get('tags_list') or []
+            if 'secret' in tags:
+                continue
+            item = {
+                'namespace': rns, 'key': r.get('key'), 'value': r.get('value'),
+                'tags': tags, 'importance': r.get('importance'),
+                'updated_at': r.get('updated_at'),
+            }
+            if 'decision' in tags:
+                decisions.append(item)
+            elif 'goal' in tags:
+                goals.append(item)
+            else:
+                others.append(item)
+
+        def _rank(xs):
+            return sorted(xs, key=lambda m: (m.get('importance') or 0,
+                                             m.get('updated_at') or 0), reverse=True)
+        return _rank(goals), _rank(decisions), _rank(others)
+
+    @staticmethod
+    def _project_triggers(workdirs):
+        out = []
+        try:
+            for wh in WebhookManager.list_webhooks():
+                if ProjectsManager._task_matches(wh.get('workdir'), workdirs):
+                    out.append({'kind': 'webhook', 'id': wh.get('id'),
+                                'workdir': wh.get('workdir')})
+        except Exception:
+            pass
+        try:
+            for cr in CronManager.list_crons():
+                if ProjectsManager._task_matches(cr.get('workdir'), workdirs):
+                    out.append({'kind': 'cron', 'id': cr.get('id'),
+                                'workdir': cr.get('workdir'),
+                                'schedule': cr.get('schedule')})
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def brief(project_id):
+        """Aggregate everything bound to a project. Returns structured JSON with
+        a compact `brief_markdown` digest (one formatter, two consumers — the
+        SPA panel and the later get_project_brief MCP tool). None if unknown."""
+        cfg = ProjectsManager.get_project(project_id)
+        if cfg is None:
+            return None
+        workdirs = cfg.get('workdirs') or []
+        namespace = cfg.get('memory_namespace') or f'project.{project_id}'
+
+        # Tasks (prefix-matched, recency-sorted)
+        proj_tasks = [m for m in ProjectsManager._scan_task_metas()
+                      if ProjectsManager._task_matches(m.get('workdir'), workdirs)]
+        proj_tasks.sort(
+            key=lambda m: (m.get('last_activity_at') or m.get('created_at') or 0),
+            reverse=True)
+        running = sum(1 for m in proj_tasks if m.get('status') == 'running')
+        waiting = sum(1 for m in proj_tasks if m.get('status') == 'waiting-for-input')
+        recent = [{
+            'task_id': m.get('task_id'),
+            'status': m.get('status'),
+            'prompt': (m.get('prompt') or '')[:120],
+            'workdir': m.get('workdir'),
+            'assistant': m.get('assistant'),
+            'last_activity_at': m.get('last_activity_at') or m.get('created_at'),
+        } for m in proj_tasks[:ProjectsManager._BRIEF_TASKS]]
+
+        goals_all, decisions_all, others_all = \
+            ProjectsManager._project_memories(namespace)
+        git = [{'workdir': wd, 'branch': _mc_git_branch(wd),
+                'exists': os.path.isdir(wd)} for wd in workdirs]
+
+        brief = {
+            'project': cfg,
+            'tasks': {'running': running, 'waiting': waiting,
+                      'total': len(proj_tasks), 'recent': recent},
+            'goals': goals_all[:ProjectsManager._BRIEF_GOALS],
+            'decisions': decisions_all[:ProjectsManager._BRIEF_DECISIONS],
+            'memories': others_all[:ProjectsManager._BRIEF_MEMORIES],
+            'git': git,
+            'triggers': ProjectsManager._project_triggers(workdirs),
+            'counts': {'goals': len(goals_all), 'decisions': len(decisions_all),
+                       'memories': len(others_all), 'tasks': len(proj_tasks)},
+        }
+        brief['brief_markdown'] = ProjectsManager._format_brief_markdown(brief)
+        return brief
+
+    @staticmethod
+    def _one_line(text, cap=110):
+        s = ' '.join((text or '').split())
+        return (s[:cap] + '…') if len(s) > cap else s
+
+    @staticmethod
+    def _format_brief_markdown(brief):
+        """Compact markdown digest, top-N per section with '+K more' notes and
+        a hard char ceiling — safe to inject into a preamble (#465)."""
+        p = brief['project']
+        c = brief['counts']
+        L = [f"# {p.get('name') or p.get('id')} — project brief"]
+        if p.get('north_star'):
+            L.append(f"**North star:** {ProjectsManager._one_line(p['north_star'], 160)}")
+        meta = f"**Status:** {p.get('status', 'active')}"
+        if p.get('repo'):
+            meta += f" · **Repo:** {p['repo']}"
+        L.append(meta)
+
+        t = brief['tasks']
+        L.append("")
+        L.append(f"## Tasks — {t['running']} running · {t['waiting']} waiting "
+                 f"· {t['total']} total")
+        for m in t['recent']:
+            L.append(f"- [{m['status']}] {ProjectsManager._one_line(m['prompt'])}")
+        if not t['recent']:
+            L.append("- (none)")
+
+        def _section(title, items, total):
+            L.append("")
+            L.append(f"## {title} ({total})")
+            for it in items:
+                L.append(f"- {ProjectsManager._one_line(it.get('value'), 160)}")
+            if not items:
+                L.append("- (none)")
+            elif total > len(items):
+                L.append(f"- _(+{total - len(items)} more — use memory tools)_")
+
+        _section('Goals', brief['goals'], c['goals'])
+        _section('Decisions', brief['decisions'], c['decisions'])
+        _section('Memories', brief['memories'], c['memories'])
+
+        if brief['git']:
+            L.append("")
+            L.append("## Git")
+            for g in brief['git']:
+                b = g['branch'] or ('missing' if not g['exists'] else '?')
+                L.append(f"- `{g['workdir']}` @ {b}")
+
+        if brief['triggers']:
+            L.append("")
+            L.append("## Triggers")
+            for tr in brief['triggers']:
+                L.append(f"- {tr['kind']}: {tr.get('id')}")
+
+        md = '\n'.join(L)
+        if len(md) > ProjectsManager._BRIEF_MARKDOWN_CAP:
+            md = md[:ProjectsManager._BRIEF_MARKDOWN_CAP].rstrip() + \
+                "\n\n_(brief truncated — use memory/task tools for full detail)_"
+        return md
+
+
 class _ReplayCache:
     """Bounded LRU+TTL set of (webhook_id, body_sha256) keys for replay
     protection. In-memory only — fine for a single-pod workspace; if we ever
@@ -5887,6 +6511,21 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_cron_get()
             return
 
+        # --- Project registry / AI CTO brief (#464) ---
+        if claude_path == '/api/projects':
+            self.handle_project_list()
+            return
+        m = re.match(r'^/api/projects/([a-z0-9-]+)/brief$', claude_path)
+        if m:
+            self._project_id = m.group(1)
+            self.handle_project_brief()
+            return
+        m = re.match(r'^/api/projects/([a-z0-9-]+)$', claude_path)
+        if m:
+            self._project_id = m.group(1)
+            self.handle_project_get()
+            return
+
         # --- Desktop launcher (dashboard) ---
         if claude_path == '/api/desktop':
             self.handle_desktop_list()
@@ -6315,6 +6954,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self._cron_id = m.group(1)
                 self.handle_cron_delete()
                 return
+            # Project registry / AI CTO (#464)
+            m = re.match(r'^/api/projects/([a-z0-9-]+)$', path)
+            if m:
+                self._project_id = m.group(1)
+                self.handle_project_delete()
+                return
             m = re.match(r'^/api/desktop/([a-z0-9]+)$', path)
             if m:
                 self.handle_desktop_delete(m.group(1))
@@ -6375,6 +7020,92 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         self.send_json({'dirs': WorkspaceManager.list_dirs()})
+
+    # --- Project registry / AI CTO brief (#464) ---
+
+    def handle_project_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'projects': ProjectsManager.list_projects()})
+
+    def handle_project_get(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        cfg = ProjectsManager.get_project(self._project_id)
+        if cfg is None:
+            self.send_json({'error': 'Project not found'}, 404)
+            return
+        self.send_json(cfg)
+
+    def handle_project_brief(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        brief = ProjectsManager.brief(self._project_id)
+        if brief is None:
+            self.send_json({'error': 'Project not found'}, 404)
+            return
+        self.send_json(brief)
+
+    def handle_project_create(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        cfg, err = ProjectsManager.create(data)
+        if err:
+            self.send_json({'error': err},
+                           409 if 'already exists' in err else 400)
+            return
+        EventBroker.publish('projects.changed', {'op': 'create', 'id': cfg['id']})
+        self.send_json(cfg, 201)
+
+    def handle_project_update(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        cfg, err = ProjectsManager.update(self._project_id, data)
+        if err:
+            self.send_json({'error': err},
+                           404 if err == 'not found' else 400)
+            return
+        EventBroker.publish('projects.changed', {'op': 'update', 'id': cfg['id']})
+        self.send_json(cfg)
+
+    def handle_project_delete(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not ProjectsManager.delete(self._project_id):
+            self.send_json({'error': 'Project not found'}, 404)
+            return
+        EventBroker.publish('projects.changed', {'op': 'delete', 'id': self._project_id})
+        self.send_json({'ok': True})
+
+    def handle_project_discover(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            data = {}
+        result = ProjectsManager.discover(
+            auto_provision=bool(data.get('auto_provision', True)))
+        for pid in result.get('registered', []):
+            EventBroker.publish('projects.changed', {'op': 'create', 'id': pid})
+        self.send_json(result)
 
     def handle_claude_get_task(self):
         if not self.check_claude_auth():
@@ -10335,6 +11066,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/gateway/credentials':
             self.handle_gateway_credentials_put()
             return
+        # Project registry / AI CTO (#464) — partial-merge update.
+        m = re.match(r'^/api/projects/([a-z0-9-]+)$', path)
+        if m:
+            self._project_id = m.group(1)
+            self.handle_project_update()
+            return
         self.send_response(501)
         self.end_headers()
 
@@ -10605,6 +11342,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Cron CRUD (dashboard)
             elif path == "/api/crons":
                 self.handle_cron_create()
+            # Project registry / AI CTO (#464)
+            elif path == "/api/projects":
+                self.handle_project_create()
+            elif path == "/api/projects/_discover":
+                self.handle_project_discover()
             # Desktop launcher (dashboard)
             elif path == "/api/desktop":
                 self.handle_desktop_create()
