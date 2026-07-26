@@ -1,5 +1,7 @@
+import { useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
 import { PopoverMenu, PopoverItem } from '../../components/PopoverMenu';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { projects, projectsLoading, archiveProject } from '../../store/projects';
 import type { Project } from '../../api/projects';
 
@@ -26,10 +28,12 @@ function ProjectCard({
   project,
   selected,
   onSelect,
+  onArchive,
 }: {
   project: Project;
   selected: boolean;
   onSelect: () => void;
+  onArchive: () => void;
 }) {
   const running = project.pulse?.running ?? 0;
   const waiting = project.pulse?.waiting ?? 0;
@@ -72,8 +76,9 @@ function ProjectCard({
         >
           {(close) => (
             <PopoverItem
+              danger
               onClick={() => {
-                void archiveProject(project.id);
+                onArchive();
                 close();
               }}
             >
@@ -99,6 +104,9 @@ function SkeletonCard() {
 export function ProjectRail({ selectedId, onSelect }: Props) {
   const list = projects.value.filter((p) => p.status !== 'archived');
   const loading = projectsLoading.value && projects.value.length === 0;
+  // Archive is confirmed (design review #2) — it's the only way to undo a wrong
+  // discovery guess, so a stray tap shouldn't silently drop a project.
+  const [pendingArchive, setPendingArchive] = useState<Project | null>(null);
 
   return (
     <nav class="cto-rail" aria-label="Projects">
@@ -116,7 +124,7 @@ export function ProjectRail({ selectedId, onSelect }: Props) {
                 <Icon name="desktop" size={13} /> Workspace
               </span>
             </span>
-            <span class="cto-card-sub">the whole /home/dev</span>
+            <span class="cto-card-sub">Everything in your workspace</span>
           </button>
         </div>
 
@@ -130,12 +138,31 @@ export function ProjectRail({ selectedId, onSelect }: Props) {
 
         {list.map((p, i) => (
           <div key={p.id} class="cto-card-wrap" style={{ '--i': i } as Record<string, number>}>
-            <ProjectCard project={p} selected={selectedId === p.id} onSelect={() => onSelect(p.id)} />
+            <ProjectCard
+              project={p}
+              selected={selectedId === p.id}
+              onSelect={() => onSelect(p.id)}
+              onArchive={() => setPendingArchive(p)}
+            />
           </div>
         ))}
       </div>
 
       <p class="cto-rail-foot">Starting something new? Just tell your CTO.</p>
+
+      <ConfirmDialog
+        open={pendingArchive !== null}
+        title={`Archive ${pendingArchive?.name ?? 'project'}?`}
+        body="It drops out of the rail. Your tasks, memories, and git are untouched — re-discovered projects can come back."
+        confirmLabel="Archive"
+        destructive
+        onConfirm={() => {
+          const p = pendingArchive;
+          setPendingArchive(null);
+          if (p) void archiveProject(p.id);
+        }}
+        onCancel={() => setPendingArchive(null)}
+      />
     </nav>
   );
 }

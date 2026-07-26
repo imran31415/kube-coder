@@ -16,6 +16,14 @@
 @supports not (height: 100dvh) {
   .route-cto { height: calc(100vh - var(--topbar-total)); }
 }
+/* Feature-disabled state (#467): a single centered EmptyState, not squished
+   into the first grid track (design review #3). */
+.route-cto-disabled {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--size-4);
+}
 
 .cto-eyebrow {
   font-size: 10px;
@@ -65,7 +73,9 @@
   /* Staggered entrance — reads as "meeting your workspace" (no --stagger
      token exists, so the delay is derived from the card index). */
   animation: cto-card-in var(--motion-base) both;
-  animation-delay: calc(var(--i, 0) * 60ms);
+  /* Cap the cascade so a workspace with many projects doesn't wait >1s for the
+     last card (design review #9). */
+  animation-delay: calc(min(var(--i, 0), 6) * 60ms);
 }
 @keyframes cto-card-in {
   from { opacity: 0; transform: translateY(8px); }
@@ -277,11 +287,16 @@
 .cto-delta strong { color: var(--text); font-weight: 600; }
 .cto-delta-close {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   border: none;
   background: none;
   color: var(--text-subtle);
   cursor: pointer;
-  padding: 2px;
+  border-radius: var(--radius-sm);
+  flex: none;
 }
 .cto-delta-close:hover { color: var(--text); }
 @keyframes cto-fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -401,6 +416,11 @@
 .cto-brief-empty { color: var(--text-muted); display: flex; flex-direction: column; gap: 8px; }
 .cto-brief-empty-lead { font-size: 13px; font-weight: 600; color: var(--text); }
 .cto-brief-empty-sub { font-size: 12.5px; line-height: 1.5; }
+.cto-brief-fresh {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
 .cto-brief-skel { height: 44px; border-radius: var(--radius); }
 
 /* ── Mobile: rail becomes a horizontal strip; brief is a bottom sheet ─── */
@@ -417,6 +437,9 @@
     overflow-y: hidden;
   }
   .cto-card { min-width: 168px; }
+  /* Touch has no hover, so the archive overflow must always be reachable
+     (design review #2). */
+  .cto-card-menu-btn { opacity: 1; }
   .cto-rail-foot { display: none; }
   .cto-main { flex: 1; min-height: 0; }
   /* The desktop brief column is not rendered on mobile (BottomSheet instead). */

@@ -3,7 +3,7 @@ import { Icon } from '../../components/Icon';
 import { Pill } from '../../components/primitives/Pill';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { BottomSheet } from '../../components/BottomSheet';
-import { useIsMobile } from '../../hooks/useMediaQuery';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { serverMode } from '../../store/server-mode';
 import { Chat } from '../hypervisor/Chat';
 import {
@@ -31,7 +31,14 @@ import {
 } from '../../store/projects';
 import { ProjectRail } from './ProjectRail';
 import { BriefPanel } from './BriefPanel';
-import { clampCtoRailW, initialCtoRailW, CTO_RAIL_W_KEY, CTO_RAIL_W_DEFAULT } from './railSplit';
+import {
+  clampCtoRailW,
+  initialCtoRailW,
+  CTO_RAIL_W_KEY,
+  CTO_RAIL_W_DEFAULT,
+  CTO_RAIL_W_MIN,
+  CTO_RAIL_W_MAX,
+} from './railSplit';
 import './cto.css';
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
@@ -50,10 +57,13 @@ function starterChips(projectName: string | null): string[] {
 }
 
 export function CtoRoute() {
-  const isMobile = useIsMobile();
+  // The 3-pane layout collapses to stacked (rail strip + chat + brief sheet)
+  // at 860px — the SAME threshold as cto.css, so the split handle + desktop
+  // brief aside never render in the cramped 721–860px band (design review #1).
+  const narrow = useMediaQuery('(max-width: 860px)');
   const disabled = serverMode.value.ctoEnabled === false;
   const [briefOpen, setBriefOpen] = useState(false);
-  const [deltaDismissed, setDeltaDismissed] = useState(false);
+  const [deltaDismissed, setDeltaDismissed] = useState<Set<string>>(new Set());
 
   // Draggable rail↔chat splitter (desktop), mirroring the hypervisor sidebar.
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -125,8 +135,13 @@ export function CtoRoute() {
       ? b.decisions.filter((d) => (d.updated_at ?? 0) > baseline).length
       : 0;
   const waiting = b?.tasks.waiting ?? 0;
+  // Dismissal is per-project (design review #4) so hiding A's strip never
+  // suppresses B's. The Workspace scope (selId null) has no baseline anyway.
   const showDelta =
-    !deltaDismissed && baseline != null && (waiting > 0 || newDecisions > 0);
+    !!selId &&
+    !deltaDismissed.has(selId) &&
+    baseline != null &&
+    (waiting > 0 || newDecisions > 0);
 
   function chip(text: string) {
     void sendMessage(text);
@@ -160,20 +175,22 @@ export function CtoRoute() {
       ref={rootRef}
       class={`route route-cto ${dragging ? 'cto-split-dragging' : ''}`}
       style={
-        !isMobile
+        !narrow
           ? { gridTemplateColumns: `${railW}px 6px minmax(0, 1fr) 320px` }
           : undefined
       }
     >
       <ProjectRail selectedId={selId} onSelect={(id) => void selectProject(id)} />
 
-      {!isMobile && (
+      {!narrow && (
         <div
           class="cto-split-handle"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize projects rail — drag or double-click to reset"
+          aria-label="Resize projects rail — drag, arrow keys, or double-click to reset"
           aria-valuenow={Math.round(railW)}
+          aria-valuemin={CTO_RAIL_W_MIN}
+          aria-valuemax={CTO_RAIL_W_MAX}
           tabIndex={0}
           title="Drag to resize · double-click to reset"
           onPointerDown={(e: PointerEvent) => {
@@ -223,7 +240,7 @@ export function CtoRoute() {
                 {status === 'running' ? 'thinking' : status || 'idle'}
               </Pill>
             )}
-            {isMobile && (
+            {narrow && (
               <button
                 type="button"
                 class="cto-brief-toggle"
@@ -249,7 +266,10 @@ export function CtoRoute() {
             <button
               type="button"
               class="cto-delta-close"
-              onClick={() => setDeltaDismissed(true)}
+              onClick={() =>
+                selId &&
+                setDeltaDismissed((prev) => new Set(prev).add(selId))
+              }
               aria-label="Dismiss"
             >
               <Icon name="close" size={12} />
@@ -283,9 +303,9 @@ export function CtoRoute() {
         <Chat hideEmptyState />
       </section>
 
-      {!isMobile && <BriefPanel />}
+      {!narrow && <BriefPanel />}
 
-      {isMobile && (
+      {narrow && (
         <BottomSheet open={briefOpen} onClose={() => setBriefOpen(false)} title="Project brief" initialSnap="full">
           <BriefPanel />
         </BottomSheet>
