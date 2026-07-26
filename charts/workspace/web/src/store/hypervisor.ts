@@ -264,7 +264,14 @@ export async function sendMessage(text: string): Promise<void> {
         message: trimmed,
         assistant: selectedAssistant.value || undefined,
         model: selectedModel.value || undefined,
-        workdir: selectedWorkdir.value || undefined,
+        // A CTO thread omits the workdir so the server defaults it to the bound
+        // project's first workdir; a plain chat sends the picker's folder. Sending
+        // the picker's /home/dev default would defeat the server's project
+        // default (its `not workdir` guard would never fire).
+        workdir:
+          chatPersona.value === 'cto'
+            ? undefined
+            : selectedWorkdir.value || undefined,
         // AI CTO (#465): bind new threads to the CTO persona + project when the
         // CTO page set that context; undefined (a plain chat) otherwise.
         persona: chatPersona.value || undefined,
@@ -359,7 +366,8 @@ export async function removeThread(id: string): Promise<void> {
     /* best effort */
   }
   if (activeThreadId.value === id) closeThread();
-  forgetLastSession('hypervisor', id);
+  // Forget the surface's own last-session key (openThread keyed it by persona).
+  forgetLastSession(chatPersona.value === 'cto' ? 'cto' : 'hypervisor', id);
   await refreshThreads();
   // Keep the trash view in sync only if it's been loaded at least once.
   if (deletedThreads.value.length > 0) await refreshDeletedThreads();

@@ -169,15 +169,24 @@ let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 const FALLBACK_REFRESH_MS = 45000;
 
 function onDashboardEvent(ev: DashboardEvent): void {
-  // Projects change on registry writes; their pulse changes when tasks move,
-  // so refresh on both project.changed and task.status.
-  if (ev.type !== 'projects.changed' && ev.type !== 'task.status') return;
+  // Map each event to only what it actually changes, so nothing over-fetches:
+  //   projects.changed → the registry list/pulse (NOT the brief — a last_seen
+  //                       stamp broadcasts this and shouldn't reload the brief).
+  //   task.status      → pulse counts (list) AND the brief's task section.
+  //   memory.changed   → the brief's goals/decisions/memories — this is what
+  //                       makes a CTO-recorded decision appear live (the core
+  //                       loop; previously dropped).
+  const t = ev.type;
+  const refreshesList = t === 'projects.changed' || t === 'task.status';
+  const refreshesBrief = t === 'task.status' || t === 'memory.changed';
+  if (!refreshesList && !refreshesBrief) return;
   if (eventRefreshTimer != null) return;
   eventRefreshTimer = setTimeout(() => {
     eventRefreshTimer = null;
-    void refreshProjects();
-    // Keep the open brief current too (its task counts move with task.status).
-    if (selectedProjectId.value) void loadBrief(selectedProjectId.value);
+    if (refreshesList) void refreshProjects();
+    if (refreshesBrief && selectedProjectId.value) {
+      void loadBrief(selectedProjectId.value);
+    }
   }, 250);
 }
 
@@ -219,6 +228,9 @@ export function stopProjectsPolling(): void {
     visibilityHandler = null;
   }
 }
+
+/** Exposed for tests — the SSE event→refresh mapping. */
+export const _onDashboardEventForTest = onDashboardEvent;
 
 /** Reset for tests. */
 export function _resetProjectsForTest(): void {

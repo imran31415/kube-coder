@@ -231,7 +231,26 @@ def _project_id_env() -> str:
 
 
 def _t_list_projects(a):
-    return _call('GET', '/api/projects')
+    # Trim to the fields the model actually reasons over (name/status/north
+    # star/repo + live pulse) instead of dumping every registry field — keeps
+    # the portfolio view token-cheap even with many projects.
+    status, payload = _api('GET', '/api/projects')
+    if status != 200 or not isinstance(payload, dict):
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        return _err(f'dashboard API GET /api/projects returned HTTP {status}: {detail}')
+    slim = []
+    for p in payload.get('projects', []):
+        pulse = p.get('pulse') or {}
+        slim.append({
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'status': p.get('status'),
+            'repo': p.get('repo') or None,
+            'north_star': p.get('north_star') or None,
+            'running': pulse.get('running', 0),
+            'waiting': pulse.get('waiting', 0),
+        })
+    return _ok(_pretty({'projects': slim}))
 
 
 def _t_get_project_brief(a):
@@ -258,7 +277,15 @@ def _t_update_project(a):
     fields = a.get('fields')
     if not isinstance(fields, dict) or not fields:
         return _err('fields (an object of project properties to update) is required')
-    return _call('PUT', f'/api/projects/{urllib.parse.quote(pid)}', body=fields)
+    status, payload = _api(
+        'PUT', f'/api/projects/{urllib.parse.quote(pid)}', body=fields)
+    if status != 200:
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        return _err(f'dashboard API PUT /api/projects/{pid} returned HTTP {status}: {detail}')
+    # A short confirmation, not the whole record — the model already knows what
+    # it set.
+    changed = ', '.join(sorted(fields)) if isinstance(fields, dict) else ''
+    return _ok(f'Updated project {pid} ({changed}).')
 
 
 # ───────────────────────────────────────────────────────────────────────────

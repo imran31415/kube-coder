@@ -174,6 +174,15 @@ class CreateThreadPersonaTest(unittest.TestCase):
         self.assertEqual(cap['project_id'], '')  # dropped for non-cto
         self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
 
+    def test_cto_drops_unknown_project_binding(self):
+        # persona cto but the project doesn't exist (get_project → None, #469
+        # review L5) → keep the CTO persona, drop the bogus binding.
+        cap, _ = self._run({'message': 'hi', 'persona': 'cto',
+                            'project_id': 'ghost'}, project=None)
+        self.assertEqual(cap['persona'], 'cto')
+        self.assertEqual(cap['project_id'], '')
+        self.assertIn('AI CTO', cap['preamble'])
+
     def test_cto_persona_downgraded_when_feature_disabled(self):
         # cto requested but the feature is off (#467) → plain Hypervisor thread.
         cap, _ = self._run({'message': 'hi', 'persona': 'cto', 'project_id': 'kc'},
@@ -266,6 +275,24 @@ class ProjectMcpToolsTest(unittest.TestCase):
             self.assertTrue(mcp._t_update_project({}).get('isError'))
             self.assertTrue(
                 mcp._t_update_project({'fields': 'nope'}).get('isError'))
+
+    def test_list_projects_trims_to_essential_fields(self):
+        full = {'projects': [{
+            'id': 'kc', 'name': 'kube-coder', 'status': 'active',
+            'repo': 'o/kc', 'memory_namespace': 'project.kc',
+            'workdirs': ['/home/dev/kc'], 'north_star': 'ship it',
+            'created_at': 1, 'updated_at': 2, 'last_seen_at': 3,
+            'pulse': {'running': 2, 'waiting': 1, 'last_activity_at': 2},
+        }]}
+        with mock.patch.object(mcp, '_api', return_value=(200, full)):
+            out = mcp._t_list_projects({})
+        text = out['content'][0]['text']
+        self.assertIn('kube-coder', text)
+        self.assertIn('ship it', text)
+        # Verbose registry fields are dropped to keep the portfolio token-cheap.
+        self.assertNotIn('memory_namespace', text)
+        self.assertNotIn('created_at', text)
+        self.assertIn('"running": 2', text)
 
     def test_update_project_puts_fields(self):
         seen = {}

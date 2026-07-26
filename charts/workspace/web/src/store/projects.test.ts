@@ -6,6 +6,7 @@ import {
   refreshProjects,
   selectProject,
   mostActive,
+  _onDashboardEventForTest as onEvent,
   _resetProjectsForTest,
 } from './projects';
 import type { Project, ProjectBrief } from '../api/projects';
@@ -90,6 +91,30 @@ describe('store/projects', () => {
     expect(selectedProjectId.value).toBeNull();
     expect(brief.value).toBeNull();
     expect(calls.some((c) => c.includes('/brief'))).toBe(false);
+  });
+
+  it('reloads the brief on memory.changed so a CTO decision appears live (#469 review M1)', async () => {
+    vi.useFakeTimers();
+    try {
+      const urls: string[] = [];
+      mockFetch((url) => {
+        urls.push(url);
+        return url.includes('/brief') ? briefFor('kc') : {};
+      });
+      selectedProjectId.value = 'kc';
+      // A memory.changed event (the CTO recorded a decision) must refresh the
+      // brief; a projects.changed (e.g. a last_seen stamp) must NOT.
+      onEvent({ type: 'memory.changed', data: {} });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(urls.some((u) => u.includes('/api/projects/kc/brief'))).toBe(true);
+
+      urls.length = 0;
+      onEvent({ type: 'projects.changed', data: {} });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(urls.some((u) => u.includes('/brief'))).toBe(false); // list only
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a late brief load does not clobber a newer selection', async () => {

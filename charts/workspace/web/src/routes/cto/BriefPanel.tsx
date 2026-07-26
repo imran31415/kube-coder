@@ -90,10 +90,10 @@ export function BriefPanel() {
 
   if (loading) {
     return (
-      <aside class="cto-brief" aria-label="Project brief">
-        <div class="cto-brief-skel cto-skel" />
-        <div class="cto-brief-skel cto-skel" />
-        <div class="cto-brief-skel cto-skel" />
+      <aside class="cto-brief" aria-label="Project brief" aria-busy="true">
+        <div class="cto-brief-skel cto-skel" aria-hidden="true" />
+        <div class="cto-brief-skel cto-skel" aria-hidden="true" />
+        <div class="cto-brief-skel cto-skel" aria-hidden="true" />
       </aside>
     );
   }
@@ -109,6 +109,14 @@ export function BriefPanel() {
   }
 
   const p = b.project;
+  // A freshly-discovered project with nothing captured yet — invite instead of
+  // showing a wall of zeros (design review #6).
+  const isFresh =
+    !p.north_star &&
+    b.goals.length === 0 &&
+    b.decisions.length === 0 &&
+    b.memories.length === 0 &&
+    b.tasks.total === 0;
   return (
     <aside class="cto-brief" aria-label="Project brief">
       <header class="cto-brief-top">
@@ -117,12 +125,20 @@ export function BriefPanel() {
         {p.repo && <span class="cto-brief-repo">{p.repo}</span>}
       </header>
 
+      {isFresh && (
+        <p class="cto-brief-fresh">
+          Nothing captured yet. Talk to your CTO to set a north star, capture
+          decisions, and break goals into tasks — they'll show up here.
+        </p>
+      )}
+
       {p.north_star && (
         <Section title="North star">
           <p class="cto-brief-northstar">{p.north_star}</p>
         </Section>
       )}
 
+      {!isFresh && (
       <Section title="Now">
         <div class="cto-brief-stats">
           <span class="cto-stat">
@@ -136,6 +152,7 @@ export function BriefPanel() {
           </span>
         </div>
       </Section>
+      )}
 
       {b.goals.length > 0 && (
         <Section title="Goals" count={b.counts.goals}>
