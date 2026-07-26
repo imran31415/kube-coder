@@ -28,6 +28,10 @@ import type {
   TaskDetail,
   TaskSummary,
   WorkdirOption,
+  Project,
+  ProjectBrief,
+  FeedItem,
+  HypervisorThread,
 } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -725,4 +729,82 @@ export function mockPreviewControl(action: PreviewControlAction, on?: boolean): 
   mockWalkieMessages = seedWalkieMessages();
   mockWalkieSimulate = false;
   return { ok: true };
+}
+
+// ---- AI CTO / Projects + Feed (#468) — demo fixtures -----------------------
+
+export const mockProjects: Project[] = [
+  {
+    id: 'kube-coder', name: 'kube-coder', workdirs: ['/home/dev/kube-coder'],
+    repo: 'imran31415/kube-coder', memory_namespace: 'project.kube-coder',
+    status: 'active', north_star: 'Ship the AI CTO to every workspace',
+    last_seen_at: NOW - 90000, created_at: NOW - 9e5, updated_at: NOW - 200,
+    pulse: { running: 2, waiting: 1, last_activity_at: NOW - 200 },
+  },
+  {
+    id: 'hosted', name: 'hosted', workdirs: ['/home/dev/hosted'],
+    repo: 'imran31415/kubecoder-hosted', memory_namespace: 'project.hosted',
+    status: 'active', north_star: 'KubeCoder.com landing + waitlist',
+    last_seen_at: NOW - 4e5, created_at: NOW - 8e5, updated_at: NOW - 6e4,
+    pulse: { running: 0, waiting: 0, last_activity_at: NOW - 6e4 },
+  },
+];
+
+export function mockProjectBrief(id: string): ProjectBrief {
+  const project = mockProjects.find((p) => p.id === id) ?? mockProjects[0];
+  return {
+    project,
+    tasks: {
+      running: 2, waiting: 1, total: 7,
+      recent: [
+        { task_id: 'a1b2c3', status: 'running', prompt: 'Build the mobile CTO screen', workdir: project.workdirs[0], assistant: 'claude', last_activity_at: NOW - 200 },
+        { task_id: 'd4e5f6', status: 'waiting', prompt: 'Confirm the feed schema', workdir: project.workdirs[0], assistant: 'codex', last_activity_at: NOW - 1800 },
+      ],
+    },
+    goals: [
+      { namespace: 'project.kube-coder.goals', key: 'ga', value: 'Reach GA with the CTO page + feed', tags: ['goal'], importance: 0.9, updated_at: NOW - 8000 },
+    ],
+    decisions: [
+      { namespace: 'project.kube-coder.decisions', key: 'sse', value: 'SSE over websockets — matches the rest of the stack', tags: ['decision'], importance: 0.8, updated_at: NOW - 40 },
+      { namespace: 'project.kube-coder.decisions', key: 'no-fork', value: 'Reuse the hypervisor chat via a store context, do not fork it', tags: ['decision'], importance: 0.8, updated_at: NOW - 120000 },
+    ],
+    memories: [],
+    git: [{ workdir: project.workdirs[0], branch: 'feat/471-mobile-cto-feed', exists: true }],
+    triggers: [],
+    counts: { goals: 1, decisions: 2, memories: 0, tasks: 7 },
+    brief_markdown: `# ${project.name} — project brief`,
+  };
+}
+
+export function mockCtoThreads(): HypervisorThread[] {
+  return [
+    { id: 'th-cto-1', title: 'What should I focus on?', assistant: 'claude', status: 'idle', created_at: NOW - 5000, updated_at: NOW - 300, persona: 'cto', project_id: 'kube-coder' },
+  ];
+}
+
+export function mockFeed(): FeedItem[] {
+  return [
+    {
+      id: 'fd_1', ts: NOW - 200, kind: 'briefing', title: 'Morning briefing — the release is the bottleneck',
+      body_md: 'Two PRs are green and waiting on review; the feed backend is the critical path.',
+      source: 'agent:th-cto-1', project_id: 'kube-coder',
+      links: [{ label: 'Open thread', ref: 'thread:th-cto-1' }], waiting: false, read: false,
+    },
+    {
+      id: 'fd_2', ts: NOW - 1800, kind: 'news', title: 'brace-expansion advisory affects minimatch < 10',
+      body_md: 'A dep-scout run flagged `GHSA-mh99-v99m-4gvg`. Your lockfile pins minimatch ^10 — **no action needed**.',
+      source: 'cron:dep-scout', project_id: 'kube-coder',
+      links: [{ label: 'Advisory', href: 'https://github.com/advisories/GHSA-mh99-v99m-4gvg' }], waiting: false, read: false,
+    },
+    {
+      id: 'fd_3', ts: NOW - 5400, kind: 'activity', title: 'Task waiting on you: confirm the feed schema',
+      body_md: '', source: 'system:task', project_id: 'kube-coder',
+      links: [{ label: 'Open task', ref: 'task:d4e5f6' }], waiting: true, read: true,
+    },
+    {
+      id: 'fd_4', ts: NOW - 90000, kind: 'decision', title: 'SSE over websockets — matches the rest of the stack',
+      body_md: '', source: 'system:memory', project_id: 'kube-coder',
+      links: [{ label: 'View decision', ref: 'memory:project.kube-coder.decisions/sse' }], waiting: false, read: true,
+    },
+  ];
 }
