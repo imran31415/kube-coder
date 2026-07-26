@@ -222,6 +222,45 @@ def _t_list_triggers(a):
     return _ok(_pretty({'webhooks': webhooks, 'crons': crons}))
 
 
+# ── AI CTO project tools (#465) ────────────────────────────────────────────
+
+def _project_id_env() -> str:
+    """The project this CTO thread is bound to, exported on the turn env by
+    hypervisor_session (#465). '' outside a CTO turn."""
+    return (os.environ.get('KC_PROJECT_ID') or '').strip()
+
+
+def _t_list_projects(a):
+    return _call('GET', '/api/projects')
+
+
+def _t_get_project_brief(a):
+    # Default to the bound project so the CTO can just ask "how are we doing"
+    # without repeating the id every turn.
+    pid = (a.get('project_id') or '').strip() or _project_id_env()
+    if not pid:
+        return _err('project_id is required (no bound project in this session)')
+    status, payload = _api('GET', f'/api/projects/{urllib.parse.quote(pid)}/brief')
+    if status != 200:
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        return _err(f'dashboard API GET brief returned HTTP {status}: {detail}')
+    # The markdown digest is the token-efficient view meant for the model; hand
+    # that back (falling back to the full JSON if it's somehow absent).
+    if isinstance(payload, dict) and payload.get('brief_markdown'):
+        return _ok(payload['brief_markdown'])
+    return _ok(_pretty(payload))
+
+
+def _t_update_project(a):
+    pid = (a.get('project_id') or '').strip() or _project_id_env()
+    if not pid:
+        return _err('project_id is required')
+    fields = a.get('fields')
+    if not isinstance(fields, dict) or not fields:
+        return _err('fields (an object of project properties to update) is required')
+    return _call('PUT', f'/api/projects/{urllib.parse.quote(pid)}', body=fields)
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Tool handlers — render (Hypervisor rich content)
 #
@@ -504,6 +543,39 @@ TOOLS: Dict[str, Any] = {
         'list_triggers',
         'List configured webhooks and cron schedules (the Triggers tab).',
         _t_list_triggers),
+
+    # ── AI CTO projects (#465) ──────────────────────────────────────────────
+    'list_projects': _tool(
+        'list_projects',
+        'List all registered projects with live pulse counts (running/waiting '
+        'tasks, last activity). Call this to see the whole portfolio or to find '
+        'a project id before get_project_brief.',
+        _t_list_projects),
+    'get_project_brief': _tool(
+        'get_project_brief',
+        'Get the live brief for a project — north star, goals, decision log, '
+        'recent tasks, git branches, triggers — as a compact markdown digest. '
+        'Call this FIRST on any question about a project\'s state; answer from '
+        'it, not from memory of the conversation. Defaults to the project this '
+        'CTO thread is bound to when project_id is omitted.',
+        _t_get_project_brief,
+        properties={'project_id': {
+            'type': 'string',
+            'description': 'Project id (default: this thread\'s bound project).'}}),
+    'update_project': _tool(
+        'update_project',
+        'Update a project\'s metadata — e.g. set its north_star, status '
+        '(active|paused|archived), name, or workdirs. Use when the user changes '
+        'a project\'s direction or you record a status change. Decisions and '
+        'goals are memories (use add_memory with tags decision/goal), NOT this.',
+        _t_update_project,
+        properties={
+            'project_id': {'type': 'string',
+                           'description': 'Project id (default: bound project).'},
+            'fields': {'type': 'object',
+                       'description': 'Object of properties to change, e.g. '
+                                      '{"north_star": "...", "status": "paused"}.'},
+        }, required=['fields'], kind='write'),
 
     # ── render (Hypervisor rich content) ────────────────────────────────────
     'show_app_preview': _tool(

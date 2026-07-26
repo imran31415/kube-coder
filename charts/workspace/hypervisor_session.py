@@ -1431,7 +1431,8 @@ class HypervisorSession:
     @classmethod
     def create(cls, assistant: str, workdir: str, cli_cmd: str,
                preamble: str = '', title: str = '',
-               model: str = '') -> 'HypervisorSession':
+               model: str = '', persona: str = '',
+               project_id: str = '') -> 'HypervisorSession':
         os.makedirs(HYPERVISOR_DIR, exist_ok=True)
         thread_id = f'{int(time.time())}-{uuid.uuid4().hex[:8]}'
         self = cls(thread_id)
@@ -1446,6 +1447,12 @@ class HypervisorSession:
             'status': 'idle',
             'created_at': _now(),
             'updated_at': _now(),
+            # Optional persona binding (AI CTO, #465). Absent/'' → a plain
+            # Hypervisor thread, behaving exactly as before. 'cto' threads carry
+            # a project_id whose brief was baked into the preamble at creation
+            # and whose id rides KC_PROJECT_ID on every turn.
+            'persona': persona or '',
+            'project_id': project_id or '',
             # adapter ctx — carries per-thread state (session ids, preamble,
             # and the selected model when the adapter honours one — #308).
             'adapter': {
@@ -1623,6 +1630,11 @@ class HypervisorSession:
             'status': self.status(),
             'created_at': m.get('created_at'),
             'updated_at': m.get('updated_at'),
+            # Persona binding (#465) — '' for a plain Hypervisor thread, 'cto'
+            # for an AI-CTO thread; project_id present only when bound. Surfaced
+            # so the thread list can filter CTO vs. Chat and badge them.
+            'persona': m.get('persona') or '',
+            'project_id': m.get('project_id') or '',
             # Present (unix seconds) only on soft-deleted threads — lets the UI
             # render/sort the "Recently deleted" section.
             'deleted_at': m.get('deleted_at'),
@@ -1919,6 +1931,12 @@ class HypervisorSession:
             # servers), so the dashboard MCP's `watch` tool can arm a cross-turn
             # watcher on THIS thread without any explicit id plumbing (#402).
             env['KC_HYPERVISOR_THREAD_ID'] = self.id
+            # CTO threads (#465) also export their bound project so the
+            # dashboard MCP's project tools (get_project_brief / update_project)
+            # know which project this turn is about without explicit plumbing.
+            project_id = meta.get('project_id')
+            if project_id:
+                env['KC_PROJECT_ID'] = project_id
             proc = subprocess.Popen(
                 spec['argv'],
                 cwd=spec.get('cwd') or WORKSPACE_HOME,
