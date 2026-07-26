@@ -77,6 +77,7 @@ export const ROUTES: RouteDef[] = [
   // bare visit to the dashboard.
   { path: '/desktop', title: 'Desktop' },
   { path: '/mission', title: 'Mission Control' },
+  { path: '/cto', title: 'AI CTO' },
   { path: '/hypervisor', title: 'Hypervisor' },
   { path: '/walkie', title: 'Walkie-Talkie' },
   { path: '/tasks', title: 'Build' },
@@ -119,6 +120,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Mission Control',
     landing: '/mission',
     items: [
+      { path: '/cto', label: 'AI CTO' },
       { path: '/hypervisor', label: 'Chat' },
       { path: '/tasks', label: 'Builds' },
       { path: '/walkie' },

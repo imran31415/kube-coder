@@ -33,6 +33,22 @@ export const configError = signal<string | null>(null);
 export const threads = signal<HypervisorThread[]>([]);
 export const threadsLoading = signal(false);
 
+/**
+ * Chat "surface" context (#466). Lets the AI CTO page reuse this store + the
+ * `<Chat/>` component without forking: when a route sets persona='cto' + a
+ * project, new threads are created bound to that persona/project and the thread
+ * list is filtered to it. The default ('' / null) is the plain Hypervisor tab —
+ * unchanged, and its list excludes CTO threads so the two surfaces don't mix.
+ * The CTO route sets this on mount and resets it on unmount.
+ */
+export const chatPersona = signal<string>('');
+export const chatProjectId = signal<string | null>(null);
+
+export function setChatContext(persona: string, projectId: string | null): void {
+  chatPersona.value = persona;
+  chatProjectId.value = projectId;
+}
+
 /** Soft-deleted threads, shown in the "Recently deleted" section so an
  *  accidental delete can be restored. Loaded lazily when the user expands it. */
 export const deletedThreads = signal<HypervisorThread[]>([]);
@@ -124,7 +140,13 @@ export async function initHypervisor(): Promise<void> {
 export async function refreshThreads(): Promise<void> {
   threadsLoading.value = true;
   try {
-    threads.value = await listThreads();
+    // Scope the list to the current surface: the CTO page sees only its
+    // persona (+ project); the plain Chat tab excludes CTO threads (#465/#466).
+    const filter =
+      chatPersona.value === 'cto'
+        ? { persona: 'cto' as const, project: chatProjectId.value ?? undefined }
+        : { persona: 'default' as const };
+    threads.value = await listThreads(filter);
   } catch {
     /* keep last-good list */
   } finally {
@@ -201,9 +223,10 @@ async function pollActive(): Promise<void> {
 
 export async function openThread(id: string): Promise<void> {
   activeThreadId.value = id;
-  // Remember the last-open chat so a later bare /hypervisor visit (returning
-  // to the app, clicking the tab) can reopen it — see store/lastSession.ts.
-  rememberLastSession('hypervisor', id);
+  // Remember the last-open chat so a later bare visit (returning to the app,
+  // clicking the tab) can reopen it — see store/lastSession.ts. Keyed by
+  // surface so the CTO page and the Chat tab restore independently (#466).
+  rememberLastSession(chatPersona.value === 'cto' ? 'cto' : 'hypervisor', id);
   events.value = [];
   activeStatus.value = '';
   transcriptSource.value = null;
@@ -242,12 +265,16 @@ export async function sendMessage(text: string): Promise<void> {
         assistant: selectedAssistant.value || undefined,
         model: selectedModel.value || undefined,
         workdir: selectedWorkdir.value || undefined,
+        // AI CTO (#465): bind new threads to the CTO persona + project when the
+        // CTO page set that context; undefined (a plain chat) otherwise.
+        persona: chatPersona.value || undefined,
+        project_id: chatProjectId.value || undefined,
       });
       await refreshThreads();
       await openThread(thread.id);
       // Reflect the new thread in the URL so a refresh reopens it. Guarded so
-      // we only touch history when actually on the Hypervisor route (sendMessage
-      // is only called from there today, but stay defensive).
+      // we only touch history when actually on the Hypervisor route — the CTO
+      // page keeps its thread in the store + localStorage, not the URL.
       if (currentPath.value.startsWith('/hypervisor')) {
         navigate(`/hypervisor/${encodeURIComponent(thread.id)}`, true);
       }

@@ -34,6 +34,7 @@ const EVENT_TYPES = [
   'memory.changed',
   'skills.changed',
   'gateway.preview',
+  'projects.changed',
 ];
 
 let es: EventSource | null = null;

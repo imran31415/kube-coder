@@ -404,7 +404,11 @@ function SlashMenu({
   );
 }
 
-export function Chat() {
+/** `hideEmptyState` suppresses the built-in new-chat hero + suggestion chips so
+ *  an embedding surface (the AI CTO page, #466) can render its own welcome +
+ *  starter chips above the composer without a duplicate hero. Default keeps the
+ *  Hypervisor tab unchanged. */
+export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = {}) {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Inline feedback when the user tries to attach something we can't send
@@ -785,7 +789,11 @@ export function Chat() {
       {active && <ActivityPanel threadId={active} running={working} />}
 
       <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
-        {empty ? (
+        {empty && hideEmptyState ? (
+          // Embedding surface (CTO page) renders its own welcome — show nothing
+          // here so the two heroes don't stack.
+          <div class="hv-welcome-host hv-welcome-blank" />
+        ) : empty ? (
           <div class="hv-welcome-host">
             <EmptyState
               icon={<Icon name="hypervisor" size={26} />}
