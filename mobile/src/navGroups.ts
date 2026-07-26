@@ -40,6 +40,8 @@ export const NAV_GROUPS: NavGroupDef[] = [
     title: 'Mission Control',
     items: [
       { name: 'MissionControl', label: 'Overview', icon: 'file-tray-full-outline' },
+      { name: 'Cto', label: 'AI CTO', icon: 'compass-outline' },
+      { name: 'Feed', label: 'Feed', icon: 'newspaper-outline' },
       { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' },
       { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
       { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },

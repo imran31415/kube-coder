@@ -24,6 +24,8 @@ import DesktopScreen from './src/screens/DesktopScreen';
 import HypervisorScreen from './src/screens/HypervisorScreen';
 import WalkieScreen from './src/screens/WalkieScreen';
 import MissionControlScreen from './src/screens/MissionControlScreen';
+import CtoScreen from './src/screens/CtoScreen';
+import FeedScreen from './src/screens/FeedScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
@@ -128,6 +130,8 @@ function MainTabs() {
         <Tab.Screen name="Hypervisor" component={HypervisorScreen} />
         <Tab.Screen name="Walkie" component={WalkieScreen} />
         <Tab.Screen name="MissionControl" component={MissionControlScreen} />
+        <Tab.Screen name="Cto" component={CtoScreen} />
+        <Tab.Screen name="Feed" component={FeedScreen} />
         <Tab.Screen name="Tasks" component={TasksStack} />
         <Tab.Screen name="Apps" component={AppsStack} />
         <Tab.Screen name="Memory" component={MemoryScreen} />

@@ -10,7 +10,9 @@ describe('NAV_GROUPS (#267)', () => {
       [
         'Apps',
         'Controller',
+        'Cto',
         'Desktop',
+        'Feed',
         'Files',
         'Hypervisor',
         'Memory',
@@ -39,6 +41,8 @@ describe('NAV_GROUPS (#267)', () => {
     expect(byName.Hypervisor).toBe('Chat');
     expect(byName.Tasks).toBe('Builds');
     expect(byName.MissionControl).toBe('Overview');
+    expect(byName.Cto).toBe('AI CTO');
+    expect(byName.Feed).toBe('Feed');
   });
 
   it('keeps drawer labels unique so Playwright label navigation stays unambiguous', () => {

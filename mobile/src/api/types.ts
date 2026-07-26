@@ -310,6 +310,10 @@ export interface HypervisorThread {
   status: string;
   created_at: number | null;
   updated_at: number | null;
+  // AI CTO (#465): 'cto' for a CTO thread, '' for a plain chat; project_id when
+  // bound. Lets the CTO screen filter its thread list.
+  persona?: string;
+  project_id?: string;
   // Present (unix seconds) only on soft-deleted threads in the trash view.
   deleted_at?: number | null;
 }
@@ -435,4 +439,86 @@ export interface GatewayPairingCode {
   expires_in: number;
   whatsapp_number: string;
   workspace: string;
+}
+
+// ---- AI CTO / Projects (#464-#467) -----------------------------------------
+// Mirrors charts/workspace/web/src/api/projects.ts. A project is a thin
+// registry record the server aggregates on read; the CTO chat rides the
+// hypervisor with persona=cto + project_id.
+
+export interface ProjectPulse {
+  running: number;
+  waiting: number;
+  last_activity_at: number | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  workdirs: string[];
+  repo: string;
+  memory_namespace: string;
+  status: 'active' | 'paused' | 'archived';
+  north_star: string;
+  last_seen_at: number | null;
+  created_at: number;
+  updated_at: number;
+  pulse?: ProjectPulse;
+}
+
+export interface BriefMemory {
+  namespace: string;
+  key: string;
+  value: string;
+  tags: string[];
+  importance: number | null;
+  updated_at: number | null;
+}
+
+export interface BriefTaskRef {
+  task_id: string;
+  status: string;
+  prompt: string;
+  workdir: string;
+  assistant?: string;
+  last_activity_at: number | null;
+}
+
+export interface ProjectBrief {
+  project: Project;
+  tasks: { running: number; waiting: number; total: number; recent: BriefTaskRef[] };
+  goals: BriefMemory[];
+  decisions: BriefMemory[];
+  memories: BriefMemory[];
+  git: { workdir: string; branch: string; exists: boolean }[];
+  triggers: { kind: string; id: string; workdir?: string; schedule?: string }[];
+  counts: { goals: number; decisions: number; memories: number; tasks: number };
+  brief_markdown: string;
+}
+
+// ---- Feed (#469/#470) ------------------------------------------------------
+// Mirrors charts/workspace/web/src/api/feed.ts. One reverse-chronological
+// stream of briefings, news, activity, and decisions.
+
+export type FeedKind = 'briefing' | 'news' | 'activity' | 'decision';
+
+export interface FeedLink {
+  label: string;
+  /** Typed internal ref: task:<id> | thread:<id> | memory:<ns>/<key>. */
+  ref?: string;
+  /** External URL. */
+  href?: string;
+}
+
+export interface FeedItem {
+  id: string;
+  ts: number;
+  kind: FeedKind;
+  title: string;
+  body_md: string;
+  source: string;
+  project_id: string;
+  links: FeedLink[];
+  waiting: boolean;
+  read: boolean;
 }

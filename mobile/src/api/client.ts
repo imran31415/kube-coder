@@ -31,6 +31,10 @@ import {
   mockTaskDetail,
   mockTasks,
   mockWorkdirs,
+  mockProjects,
+  mockProjectBrief,
+  mockCtoThreads,
+  mockFeed,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -60,6 +64,10 @@ import type {
   TaskDetail,
   TaskSummary,
   WorkdirOption,
+  Project,
+  ProjectBrief,
+  FeedItem,
+  FeedKind,
 } from './types';
 
 export class ApiError extends Error {
@@ -782,12 +790,17 @@ export async function transcribeAudio(uri: string, mimeType = 'audio/m4a'): Prom
   return parsed.text;
 }
 
-export async function listThreads(): Promise<HypervisorThread[]> {
+export async function listThreads(filter?: {
+  persona?: 'cto' | 'default';
+  project?: string;
+}): Promise<HypervisorThread[]> {
   if (getConfig().mock) {
     await delay(80);
-    return [];
+    return filter?.persona === 'cto' ? mockCtoThreads() : [];
   }
-  const d = await request<{ threads?: HypervisorThread[] }>('/api/hypervisor/threads');
+  const d = await request<{ threads?: HypervisorThread[] }>('/api/hypervisor/threads', {
+    query: { persona: filter?.persona, project: filter?.project },
+  });
   return d.threads ?? [];
 }
 
@@ -808,12 +821,16 @@ export async function createThread(
   assistant?: string,
   workdir?: string,
   model?: string,
+  // AI CTO (#465): bind a new thread to the CTO persona + a project. A CTO
+  // thread omits workdir so the server defaults it to the project's workdir.
+  persona?: string,
+  projectId?: string,
 ): Promise<HypervisorThread> {
   const d = await request<{ thread: HypervisorThread }>('/api/hypervisor/threads', {
     method: 'POST',
     // `model` is validated server-side by resolve_model(); omit when unset so
     // the assistant's default applies (parity with the web createThread).
-    body: { message, assistant, workdir, model },
+    body: { message, assistant, workdir, model, persona, project_id: projectId },
   });
   return d.thread;
 }
@@ -1207,4 +1224,60 @@ export async function getWorkspaceVersion(): Promise<WorkspaceVersion> {
 export async function updateWorkspace(): Promise<UpdateResult> {
   if (getConfig().mock) return { ok: true, rolled: false, toVersion: 'v0.42.0' };
   return request<UpdateResult>('/api/workspace/update', { method: 'POST', body: {} });
+}
+
+// ---- AI CTO / Projects (#464-#467) -----------------------------------------
+// The project registry the CTO screen's rail + brief render. The chat itself
+// rides the hypervisor thread API (createThread persona='cto', project id).
+
+export async function listProjects(): Promise<Project[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    return [...mockProjects];
+  }
+  const d = await request<{ projects?: Project[] }>('/api/projects');
+  return d.projects ?? [];
+}
+
+export async function getProjectBrief(id: string): Promise<ProjectBrief> {
+  if (getConfig().mock) {
+    await delay(100);
+    return mockProjectBrief(id);
+  }
+  return request<ProjectBrief>(`/api/projects/${encodeURIComponent(id)}/brief`);
+}
+
+// ---- Feed (#469/#470) ------------------------------------------------------
+
+export async function listFeed(opts: { kinds?: FeedKind[]; project?: string } = {}): Promise<FeedItem[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    let items = mockFeed();
+    if (opts.kinds && opts.kinds.length) items = items.filter((i) => opts.kinds!.includes(i.kind));
+    if (opts.project) items = items.filter((i) => i.project_id === opts.project);
+    return items;
+  }
+  const d = await request<{ items?: FeedItem[] }>('/api/feed', {
+    query: {
+      kinds: opts.kinds && opts.kinds.length ? opts.kinds.join(',') : undefined,
+      project: opts.project,
+    },
+  });
+  return d.items ?? [];
+}
+
+export async function feedUnreadCount(): Promise<number> {
+  if (getConfig().mock) return 2;
+  const d = await request<{ count?: number }>('/api/feed/unread_count');
+  return d.count ?? 0;
+}
+
+export async function markFeedRead(id: string): Promise<void> {
+  if (getConfig().mock) return;
+  await request(`/api/feed/${encodeURIComponent(id)}/read`, { method: 'POST' });
+}
+
+export async function dismissFeedItem(id: string): Promise<void> {
+  if (getConfig().mock) return;
+  await request(`/api/feed/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
 }
