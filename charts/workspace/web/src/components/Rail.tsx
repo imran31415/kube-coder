@@ -3,11 +3,12 @@ import {
   currentPath,
   navigate,
   matchRoute,
-  NAV_GROUPS,
+  visibleNavGroups,
   navGroupFor,
   navLabel,
   type NavGroup,
 } from '../store/router';
+import { serverMode } from '../store/server-mode';
 import {
   railCollapsed,
   previewFullscreen,
@@ -115,6 +116,8 @@ function RailGroup({ group, active }: { group: NavGroup; active: string }) {
 export function Rail() {
   const active = matchRoute(currentPath.value).path;
   const collapsed = railCollapsed.value;
+  // Hide capability-gated items (AI CTO when disabled server-side, #467).
+  const groups = visibleNavGroups({ ctoEnabled: serverMode.value.ctoEnabled });
 
   // Auto-expand the group containing the active route (never auto-collapse
   // others) so palette/bottom-nav jumps always land on a visible item.
@@ -136,7 +139,7 @@ export function Rail() {
           ? // Icon-only mode: groups flatten to icon runs separated by
             // hairline dividers; no disclosure. The Mission landing icon
             // leads its group.
-            NAV_GROUPS.map((g, idx) => (
+            groups.map((g, idx) => (
               <div class="rail-group" key={g.id}>
                 {idx > 0 && <div class="rail-divider" role="separator" />}
                 {g.landing && <RailItem path={g.landing} active={active} />}
@@ -145,7 +148,7 @@ export function Rail() {
                 ))}
               </div>
             ))
-          : NAV_GROUPS.map((g) => <RailGroup key={g.id} group={g} active={active} />)}
+          : groups.map((g) => <RailGroup key={g.id} group={g} active={active} />)}
         {/* Settings + Collapse flow with the nav as a final group (#448):
             a bottom slab pinned via margin-top:auto gets pushed below the
             fold once the rail overflows and starts scrolling. */}

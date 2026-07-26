@@ -369,6 +369,18 @@
 }
 .cto-brief-link:hover { color: var(--text); text-decoration: underline; }
 .cto-brief-decisions .cto-brief-link { color: var(--text); }
+.cto-brief-decisions .cto-brief-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.cto-brief-date {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
 .cto-brief-task { display: flex; align-items: center; gap: 7px; -webkit-line-clamp: 1; }
 .cto-brief-task-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cto-brief-gitrow {

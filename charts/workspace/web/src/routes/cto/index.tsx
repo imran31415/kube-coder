@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
 import { Pill } from '../../components/primitives/Pill';
+import { EmptyState } from '../../components/primitives/EmptyState';
 import { BottomSheet } from '../../components/BottomSheet';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { serverMode } from '../../store/server-mode';
 import { Chat } from '../hypervisor/Chat';
 import {
   activeThreadId,
@@ -49,6 +51,7 @@ function starterChips(projectName: string | null): string[] {
 
 export function CtoRoute() {
   const isMobile = useIsMobile();
+  const disabled = serverMode.value.ctoEnabled === false;
   const [briefOpen, setBriefOpen] = useState(false);
   const [deltaDismissed, setDeltaDismissed] = useState(false);
 
@@ -77,6 +80,7 @@ export function CtoRoute() {
   // registry (discovery auto-provisions), and poll. Reset everything on leave
   // so the plain Chat tab is never left in CTO mode.
   useEffect(() => {
+    if (disabled) return;
     setChatContext('cto', null);
     void initHypervisor();
     startProjectsPolling();
@@ -86,13 +90,14 @@ export function CtoRoute() {
       closeThread();
       stopProjectsPolling();
     };
-  }, []);
+  }, [disabled]);
 
   // React to the selected project: rebind the chat context, re-filter the
   // thread list to this project, and continue its latest thread (or a fresh
   // one). Runs on auto-select and on every rail click.
   const selId = selectedProjectId.value;
   useEffect(() => {
+    if (disabled) return;
     setChatContext('cto', selId);
     let cancelled = false;
     void refreshThreads().then(() => {
@@ -104,7 +109,7 @@ export function CtoRoute() {
     return () => {
       cancelled = true;
     };
-  }, [selId]);
+  }, [selId, disabled]);
 
   const active = activeThreadId.value;
   const status = activeStatus.value;
@@ -130,6 +135,25 @@ export function CtoRoute() {
   const chips = starterChips(projectName);
 
   const brandLine = 'Engineering judgment for your whole workspace';
+
+  // Deep-linked to /cto on a deployment where the feature is off (#467).
+  if (disabled) {
+    return (
+      <div class="route route-cto route-cto-disabled">
+        <EmptyState
+          icon={<Icon name="cto" size={26} />}
+          title="AI CTO is disabled"
+          description={
+            <>
+              Enable it in the workspace chart (<code>cto.enabled</code>). It
+              rides the Hypervisor, so <code>hypervisor.enabled</code> must be on
+              too.
+            </>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div

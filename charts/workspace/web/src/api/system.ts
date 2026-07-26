@@ -18,6 +18,10 @@ export interface ServerMode {
    *  demo deploy), MutatorOnly renders mutation controls disabled instead of
    *  hiding them, so visitors see the full UI. The server still 403s writes. */
   demoShowAll?: boolean;
+  /** AI CTO feature gate (#467). Undefined/true → the /cto nav item + route
+   *  are shown; false hides them (deployment set `cto.enabled: false`, or the
+   *  Hypervisor it rides is off). */
+  ctoEnabled?: boolean;
 }
 
 export const getMode = () => apiGet<ServerMode>('/api/mode');

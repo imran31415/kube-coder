@@ -113,7 +113,7 @@ class CreateThreadPersonaTest(unittest.TestCase):
             lambda o, s=200: self.responses.append((o, s))
         return h
 
-    def _run(self, body, brief=None, project=None):
+    def _run(self, body, brief=None, project=None, cto_enabled=True):
         captured = {}
         fake_session = mock.Mock()
         fake_session.summary.return_value = {'id': 'x'}
@@ -123,6 +123,7 @@ class CreateThreadPersonaTest(unittest.TestCase):
             return fake_session
 
         with mock.patch.object(server, 'HYPERVISOR_ENABLED', True), \
+             mock.patch.object(server, 'cto_available', return_value=cto_enabled), \
              mock.patch.object(server, '_HYPERVISOR_AVAILABLE', True), \
              mock.patch.object(server.ClaudeTaskManager, 'resolve_assistant',
                                return_value='claude'), \
@@ -171,6 +172,14 @@ class CreateThreadPersonaTest(unittest.TestCase):
                             'project_id': 'kc'})
         self.assertEqual(cap['persona'], '')
         self.assertEqual(cap['project_id'], '')  # dropped for non-cto
+        self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
+
+    def test_cto_persona_downgraded_when_feature_disabled(self):
+        # cto requested but the feature is off (#467) → plain Hypervisor thread.
+        cap, _ = self._run({'message': 'hi', 'persona': 'cto', 'project_id': 'kc'},
+                           cto_enabled=False)
+        self.assertEqual(cap['persona'], '')
+        self.assertEqual(cap['project_id'], '')
         self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
 
 

@@ -169,6 +169,18 @@ PUBLIC_DEMO_ACK = os.environ.get('PUBLIC_DEMO_ACK', 'false').lower() == 'true'
 HYPERVISOR_ENABLED = os.environ.get('HYPERVISOR_ENABLED', 'true').lower() == 'true'
 HYPERVISOR_DEFAULT_ASSISTANT = os.environ.get('HYPERVISOR_DEFAULT_ASSISTANT', 'claude')
 HYPERVISOR_WORKDIR = os.environ.get('HYPERVISOR_WORKDIR', '/home/dev')
+# AI CTO (#467) — the /cto page (project registry + CTO-persona chat + brief).
+# It rides the Hypervisor, so it's available only when BOTH this flag and the
+# Hypervisor are on. Off → the projects API 404s, the persona is ignored, and
+# the SPA hides the nav item (via the ctoEnabled config field). Default follows
+# hypervisor.enabled through the chart.
+CTO_ENABLED = os.environ.get('CTO_ENABLED', 'true').lower() == 'true'
+
+
+def cto_available():
+    """AI CTO is usable only when its flag is on AND the Hypervisor it rides is
+    available (#467). Resolved at call time so it tracks _HYPERVISOR_AVAILABLE."""
+    return CTO_ENABLED and HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE
 # Short context note pasted as the first message of a new chat, so the agent
 # knows its role + that it has the dashboard tools. Kept terse on purpose —
 # a big preamble front-loads noise and some CLIs handle it poorly.
@@ -6038,6 +6050,10 @@ def _mc_thread_card(summary, now):
         'id': f'chat:{thread_id}',
         'ref_id': thread_id,
         'kind': 'chat',
+        # AI CTO threads (#467) surface their persona + bound project so the
+        # board can badge them and route their card to /cto instead of /chat.
+        'persona': summary.get('persona') or '',
+        'project_id': summary.get('project_id') or '',
         'state': state,
         'title': summary.get('title') or 'New chat',
         'headline': _mc_headline_from_events(
@@ -6434,6 +6450,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 'authed': AUTH_MODE != 'none',
                 'authMode': AUTH_MODE,
                 'demoShowAll': DEMO_SHOW_ALL,
+                # AI CTO gate (#467) — boot-loaded so the SPA can hide the /cto
+                # nav item before the route mounts. Rides the Hypervisor.
+                'ctoEnabled': cto_available(),
             })
             return
         # /api/apps — Applications page list endpoint.
@@ -7080,15 +7099,28 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     # --- Project registry / AI CTO brief (#464) ---
 
+    def _require_cto(self):
+        """Gate the AI CTO API behind cto_available() (#467). Sends a 404 and
+        returns False when the feature is off, so a disabled deployment exposes
+        no projects surface."""
+        if cto_available():
+            return True
+        self.send_json({'error': 'AI CTO is disabled'}, 404)
+        return False
+
     def handle_project_list(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not self._require_cto():
             return
         self.send_json({'projects': ProjectsManager.list_projects()})
 
     def handle_project_get(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not self._require_cto():
             return
         cfg = ProjectsManager.get_project(self._project_id)
         if cfg is None:
@@ -7100,6 +7132,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
+        if not self._require_cto():
+            return
         brief = ProjectsManager.brief(self._project_id)
         if brief is None:
             self.send_json({'error': 'Project not found'}, 404)
@@ -7109,6 +7143,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def handle_project_create(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not self._require_cto():
             return
         try:
             data = self.read_json_body()
@@ -7127,6 +7163,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
+        if not self._require_cto():
+            return
         try:
             data = self.read_json_body()
         except (json.JSONDecodeError, ValueError):
@@ -7144,6 +7182,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
+        if not self._require_cto():
+            return
         if not ProjectsManager.delete(self._project_id):
             self.send_json({'error': 'Project not found'}, 404)
             return
@@ -7153,6 +7193,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def handle_project_discover(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not self._require_cto():
             return
         try:
             data = self.read_json_body()
@@ -7598,6 +7640,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({
             'enabled': HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE,
+            # AI CTO gate (#467) — the SPA hides the /cto nav item and the CTO
+            # route when this is false. Rides the Hypervisor, so it's never true
+            # when the Hypervisor is unavailable.
+            'ctoEnabled': cto_available(),
             'defaultAssistant': HYPERVISOR_DEFAULT_ASSISTANT,
             'workdir': HYPERVISOR_WORKDIR,
             'readOnly': READONLY_MODE,
@@ -7710,7 +7756,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # preamble path) and binds a project_id. Any other/absent persona is a
         # normal Hypervisor thread — zero change from before.
         persona = (data.get('persona') or '').strip().lower()
-        if persona != 'cto':
+        # A CTO persona is honored only when the feature is enabled (#467);
+        # otherwise the thread degrades to a plain Hypervisor chat.
+        if persona != 'cto' or not cto_available():
             persona = ''
         project_id = (data.get('project_id') or '').strip() if persona == 'cto' else ''
         preamble = HYPERVISOR_PREAMBLE

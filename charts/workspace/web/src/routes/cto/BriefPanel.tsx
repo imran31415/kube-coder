@@ -36,9 +36,24 @@ function memoryHref(m: BriefMemory): string {
   return `/memory?namespace=${encodeURIComponent(m.namespace)}`;
 }
 
-function MemoryRow({ m }: { m: BriefMemory }) {
+/** Short absolute date (e.g. "Jul 26") for the decision-log timeline (#467). */
+function shortDate(epochSeconds: number | null): string {
+  if (!epochSeconds) return '';
+  try {
+    return new Date(epochSeconds * 1000).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return '';
+  }
+}
+
+function MemoryRow({ m, withDate = false }: { m: BriefMemory; withDate?: boolean }) {
+  const date = withDate ? shortDate(m.updated_at) : '';
   return (
     <li class="cto-brief-item">
+      {date && <span class="cto-brief-date">{date}</span>}
       <a
         href={memoryHref(m)}
         class="cto-brief-link"
@@ -136,7 +151,7 @@ export function BriefPanel() {
         <Section title="Decision log" count={b.counts.decisions}>
           <ul class="cto-brief-list cto-brief-decisions">
             {b.decisions.map((d) => (
-              <MemoryRow key={`${d.namespace}/${d.key}`} m={d} />
+              <MemoryRow key={`${d.namespace}/${d.key}`} m={d} withDate />
             ))}
           </ul>
         </Section>

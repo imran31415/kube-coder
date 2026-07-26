@@ -48,6 +48,11 @@ export interface MissionCard {
   /** Raw id for task/thread API calls (kill, follow-up, navigation). */
   ref_id: string;
   kind: MissionKind;
+  /** Chat persona (#467): 'cto' for an AI-CTO thread, '' for a plain chat.
+   *  Drives the CTO badge and routes the card to /cto instead of /hypervisor. */
+  persona?: string;
+  /** The project an AI-CTO thread is bound to, when persona === 'cto'. */
+  project_id?: string;
   state: MissionState;
   title: string;
   /** Derived one-liner of the card's current activity. */

@@ -39,10 +39,13 @@ function timeLabel(card: Card): string {
   return at ? `${rel(now - at)} ago` : '';
 }
 
-/** Route for a card (or a lineage reference by namespaced id). */
-export function cardHref(id: string): string {
+/** Route for a card (or a lineage reference by namespaced id). An AI-CTO chat
+ *  (persona 'cto') opens the /cto page rather than the plain chat tab (#467);
+ *  lineage refs have no persona and fall through to the default. */
+export function cardHref(id: string, persona?: string): string {
   const [kind, ref] = id.split(/:(.*)/s);
-  return kind === 'chat' ? `/hypervisor/${ref}` : `/tasks/${ref}`;
+  if (kind === 'chat') return persona === 'cto' ? '/cto' : `/hypervisor/${ref}`;
+  return `/tasks/${ref}`;
 }
 
 /** Evidence chip row on a Done card (and in the drawer): test tallies and
@@ -95,7 +98,8 @@ export function MissionCard({
 
   const live = card.state === 'running' || card.state === 'waiting';
   const isTask = card.kind !== 'chat';
-  const open = () => navigate(cardHref(card.id));
+  const isCto = card.persona === 'cto';
+  const open = () => navigate(cardHref(card.id, card.persona));
   const select = onSelect ? () => onSelect(card.id) : open;
 
   async function onKill() {
@@ -142,7 +146,9 @@ export function MissionCard({
       data-card-id={card.id}
     >
       <div class="mission-card-row">
-        <span class="mission-kind">{KIND_LABEL[card.kind]}</span>
+        <span class={`mission-kind ${isCto ? 'mission-kind-cto' : ''}`}>
+          {isCto ? 'AI CTO' : KIND_LABEL[card.kind]}
+        </span>
         {(card.assistant || card.model) && (
           <span class="mission-agent">
             {card.assistant}
