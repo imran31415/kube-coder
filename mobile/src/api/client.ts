@@ -722,7 +722,14 @@ export async function getHypervisorConfig(): Promise<HypervisorConfig> {
       defaultAssistant: 'claude',
       workdir: '/home/dev',
       readOnly: false,
-      assistants: [{ id: 'claude', label: 'Claude Code', default: true }],
+      assistants: [
+        {
+          id: 'claude',
+          label: 'Claude Code',
+          default: true,
+          models: ['default', 'opus', 'sonnet', 'haiku', 'claude-fable-5'],
+        },
+      ],
       stt: true,
     };
   }
@@ -800,11 +807,25 @@ export async function createThread(
   message: string,
   assistant?: string,
   workdir?: string,
+  model?: string,
 ): Promise<HypervisorThread> {
   const d = await request<{ thread: HypervisorThread }>('/api/hypervisor/threads', {
     method: 'POST',
-    body: { message, assistant, workdir },
+    // `model` is validated server-side by resolve_model(); omit when unset so
+    // the assistant's default applies (parity with the web createThread).
+    body: { message, assistant, workdir, model },
   });
+  return d.thread;
+}
+
+/** Switch a live thread's model (#308). Takes effect on the next turn (the
+ *  server carries the session via --resume) and is persisted in the thread's
+ *  meta. Mirrors the web setThreadModel. */
+export async function setThreadModel(id: string, model: string): Promise<HypervisorThread> {
+  const d = await request<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/model`,
+    { method: 'POST', body: { model } },
+  );
   return d.thread;
 }
 
