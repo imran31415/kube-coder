@@ -220,6 +220,63 @@ HYPERVISOR_PREAMBLE = (
     "words), and never put anything after the block. The user can always type a "
     "different answer instead of clicking one.]\n\n"
 )
+
+# AI CTO persona (#465). A CTO thread is a normal HypervisorSession thread with
+# this preamble instead of HYPERVISOR_PREAMBLE plus the project's markdown brief
+# appended at creation (injected on turn 1 via the adapter's preamble path). It
+# inherits every Hypervisor capability — render tools, cross-turn watchers, the
+# ```choice fence, destructive-confirm — and adds three project tools
+# (list_projects, get_project_brief, update_project) on top of the usual set.
+CTO_PREAMBLE = (
+    "[System: You are the AI CTO for this kube-coder workspace — the user's "
+    "engineering leader, not a passive assistant. Your job is to hold the "
+    "strategic picture across their projects: prioritize, decompose goals into "
+    "work, unblock, and remember decisions. Be opinionated but concise; a good "
+    "CTO gives a clear recommendation, not a menu of every option. "
+    "You are bound to one project (its id is in KC_PROJECT_ID and its brief is "
+    "included below); other projects are visible via list_projects. "
+    "GROUNDING: the brief below is a point-in-time snapshot. On any question "
+    "about a project's state, call get_project_brief FIRST and answer from that "
+    "live state — never from conversation memory alone. Use list_projects to "
+    "see the portfolio, get_project_brief(project_id) for any one project. "
+    "DECISIONS: when the user makes or confirms a decision, persist it "
+    "immediately with add_memory — namespace `project.<id>.decisions`, a short "
+    "kebab-case key (e.g. `sse-over-websockets`), the decision + its rationale "
+    "as the value, and tags `decision`. Record goals the same way under "
+    "namespace `project.<id>.goals` with tags `goal`, and a north-star/status "
+    "change via update_project. This is what makes you cumulative across "
+    "threads: the next thread's brief includes every decision and goal "
+    "automatically. Persist the decision, THEN confirm it in chat. "
+    "DISPATCH: when work is needed, propose a short numbered breakdown and end "
+    "with a ```choice fence (e.g. Dispatch all / Let me pick / Adjust). Only "
+    "after the user picks, create each task with create_task (default its "
+    "workdir to one of the project's workdirs from the brief) and arm a `watch` "
+    "of kind 'task' on each so completions flow back into this chat. NEVER "
+    "dispatch a task without explicit confirmation. "
+    "You have the full dashboard toolset: read state (list_tasks, get_task, "
+    "get_task_output, search_memory, get_metrics), render inline (show_file a "
+    "plan/doc, show_media a screenshot, show_app_preview a running port), and "
+    "the memory tools. Destructive tools (kill_task, delete_memory) require "
+    "confirm=true — describe the action, get explicit approval in chat, then "
+    "call again with confirm=true. "
+    "Background watchers armed inside your turn (Bash run_in_background, "
+    "Monitor) do NOT survive it — each turn is a fresh headless CLI process. To "
+    "wait on something across turns, arm a runner-owned `watch` (kind 'task' / "
+    "'command' / 'file'); the runner polls it after your turn ends and posts "
+    "the outcome here as a new message — so after arming one, just end your "
+    "turn, do not poll. "
+    "When you need the user to choose between a few options, write your "
+    "explanation, then END the message with a fenced choice block the chat "
+    "renders as clickable buttons:\n"
+    "```choice\n"
+    "<optional one-line question>\n"
+    "- First option\n"
+    "- Second option\n"
+    "```\n"
+    "Use it only for genuine either/or decisions, keep each option short, and "
+    "never put anything after the block. The user can always type instead.]\n\n"
+)
+
 # Conversation Gateway (issue #306) — public host the gateway advertises when
 # minting a pairing code, so the user knows which WhatsApp number to message.
 # Purely informational; the number itself is configured on the provider side.
@@ -7616,6 +7673,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'threads': []})
             return
         threads = HypervisorSession.list(only_deleted=only_deleted)
+        # Persona/project filter (#465) so the Chat tab and the CTO page don't
+        # mix thread lists. No `persona` param → every thread (backward compat).
+        # `persona=cto` → only CTO threads; `persona=default`/`none` → only
+        # plain Hypervisor threads; `project=<id>` → additionally that project.
+        persona = (qs.get('persona') or [''])[0].strip().lower()
+        project = (qs.get('project') or [''])[0].strip()
+        if persona == 'cto':
+            threads = [t for t in threads if (t.get('persona') or '') == 'cto']
+        elif persona in ('default', 'none', 'hypervisor'):
+            threads = [t for t in threads if (t.get('persona') or '') != 'cto']
+        if project:
+            threads = [t for t in threads if (t.get('project_id') or '') == project]
         self.send_json({'threads': threads})
 
     def handle_hypervisor_create_thread(self):
@@ -7633,10 +7702,35 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         message = (data.get('message') or '').strip()
         assistant = ClaudeTaskManager.resolve_assistant(
             data.get('assistant') or HYPERVISOR_DEFAULT_ASSISTANT)
-        workdir = data.get('workdir') or HYPERVISOR_WORKDIR
         # Per-thread model choice (#308) — validated against the assistant's
         # allow-list; '' when the assistant offers no choice (adapter default).
         model = ClaudeTaskManager.resolve_model(assistant, data.get('model'))
+        # AI CTO persona (#465): a 'cto' thread swaps in CTO_PREAMBLE + the
+        # project's markdown brief (injected on turn 1 via the adapter's
+        # preamble path) and binds a project_id. Any other/absent persona is a
+        # normal Hypervisor thread — zero change from before.
+        persona = (data.get('persona') or '').strip().lower()
+        if persona != 'cto':
+            persona = ''
+        project_id = (data.get('project_id') or '').strip() if persona == 'cto' else ''
+        preamble = HYPERVISOR_PREAMBLE
+        if persona == 'cto':
+            preamble = CTO_PREAMBLE
+            brief = ProjectsManager.brief(project_id) if project_id else None
+            if brief and brief.get('brief_markdown'):
+                preamble = (
+                    CTO_PREAMBLE
+                    + f"[System: Project brief for `{project_id}` — a "
+                    "point-in-time snapshot; call get_project_brief for live "
+                    "state.]\n\n" + brief['brief_markdown'] + "\n\n")
+        # A CTO thread defaults its workdir to the project's first workdir (so
+        # relative paths + dispatched tasks land in the project) when the client
+        # didn't pin one; otherwise the usual hypervisor workdir.
+        workdir = data.get('workdir') or HYPERVISOR_WORKDIR
+        if persona == 'cto' and not data.get('workdir') and project_id:
+            proj = ProjectsManager.get_project(project_id)
+            if proj and proj.get('workdirs'):
+                workdir = proj['workdirs'][0]
         # cli_cmd is only consumed by the non-structured fallback adapter; the
         # Claude adapter builds its own argv. auto_approve keeps any fallback
         # CLI from blocking on an approval it can't answer.
@@ -7644,7 +7738,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         try:
             session = HypervisorSession.create(
                 assistant=assistant, workdir=workdir, cli_cmd=cli_cmd,
-                preamble=HYPERVISOR_PREAMBLE, title=message, model=model)
+                preamble=preamble, title=message, model=model,
+                persona=persona, project_id=project_id)
         except Exception as e:
             self.send_json({'error': f'failed to start chat: {e}'}, 500)
             return
