@@ -265,6 +265,11 @@ CTO_PREAMBLE = (
     "workdir to one of the project's workdirs from the brief) and arm a `watch` "
     "of kind 'task' on each so completions flow back into this chat. NEVER "
     "dispatch a task without explicit confirmation. "
+    "FEED: when you surface a finding that deserves the user's attention beyond "
+    "this thread — a briefing/digest, a relevant dependency advisory or release "
+    "note, a heads-up — post it to the Feed with post_update, don't just say it "
+    "in-thread. Routine task/decision/trigger activity is already posted "
+    "automatically; don't duplicate it. "
     "You have the full dashboard toolset: read state (list_tasks, get_task, "
     "get_task_output, search_memory, get_metrics), render inline (show_file a "
     "plan/doc, show_media a screenshot, show_app_preview a running port), and "
@@ -2843,6 +2848,8 @@ class ClaudeTaskManager:
                     'status': 'completed',
                     'finished_at': meta.get('finished_at'),
                 })
+                # Feed (#469): one coalesced activity item per task terminal.
+                FeedManager.emit_task_terminal(meta, meta.get('status') or 'completed')
             return
         
         # Session is alive — derive waiting-for-input from render *quiescence*
@@ -2903,6 +2910,8 @@ class ClaudeTaskManager:
                     EventBroker.publish('task.status', {
                         'task_id': meta.get('task_id'), 'status': 'waiting-for-input',
                     })
+                    # Feed (#469): flag it "waiting on you" (coalesced per task).
+                    FeedManager.emit_task_waiting(meta)
 
 
 def _shell_quote(s):
@@ -3594,6 +3603,321 @@ class ProjectsManager:
             md = md[:ProjectsManager._BRIEF_MARKDOWN_CAP].rstrip() + \
                 "\n\n_(brief truncated — use memory/task tools for full detail)_"
         return md
+
+
+class FeedManager:
+    """The Feed (#469): one reverse-chronological stream of what changed and
+    what matters — workspace activity, decisions, and agent-authored briefings.
+
+    Deterministic backbone: `emit_*` helpers are called from the points where
+    the server already knows a fact (a task went terminal / waiting, a decision
+    was recorded, a trigger fired). No classification or ranking in the server —
+    the *sifting* intelligence is agent-authored, posted via the `post_update`
+    MCP tool → POST /api/feed.
+
+    Storage: append-only JSONL at /home/dev/.claude-feed/items.jsonl (PVC),
+    rotated at a size cap. Read/dismiss state lives as sparse overlays in
+    state.json so the log stays append-only. Coalescing is by `dedupe_key`: an
+    emit whose key already has a live item re-appends under the SAME id, and
+    list() collapses by id keeping the last write — "update in place" over an
+    append-only log.
+    """
+
+    FEED_DIR = '/home/dev/.claude-feed'
+    ITEMS_PATH = FEED_DIR + '/items.jsonl'
+    STATE_PATH = FEED_DIR + '/state.json'
+    KINDS = ('briefing', 'news', 'activity', 'decision')
+    # Rotate when the log exceeds this, keeping the newest KEEP_ON_ROTATE items.
+    MAX_BYTES = 2 * 1024 * 1024
+    KEEP_ON_ROTATE = 500
+    _lock = threading.Lock()
+
+    @staticmethod
+    def ensure_dir():
+        os.makedirs(FeedManager.FEED_DIR, mode=0o700, exist_ok=True)
+
+    # ── storage ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_raw():
+        """All appended records in file order (may contain multiple versions of
+        one id). Malformed lines are skipped."""
+        out = []
+        try:
+            with open(FeedManager.ITEMS_PATH) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+        return out
+
+    @staticmethod
+    def _collapse(records):
+        """Collapse append-only records to the latest version per id, newest
+        first by ts."""
+        by_id = {}
+        for r in records:
+            rid = r.get('id')
+            if rid:
+                by_id[rid] = r  # later record wins
+        items = list(by_id.values())
+        items.sort(key=lambda i: (i.get('ts') or 0, i.get('id') or ''), reverse=True)
+        return items
+
+    @staticmethod
+    def _load_state():
+        try:
+            with open(FeedManager.STATE_PATH) as f:
+                s = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            s = {}
+        return {
+            'read': set(s.get('read') or []),
+            'dismissed': set(s.get('dismissed') or []),
+        }
+
+    @staticmethod
+    def _save_state(state):
+        FeedManager.ensure_dir()
+        tmp = FeedManager.STATE_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({
+                'read': sorted(state['read']),
+                'dismissed': sorted(state['dismissed']),
+            }, f)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, FeedManager.STATE_PATH)
+
+    @staticmethod
+    def _append(item):
+        FeedManager.ensure_dir()
+        with open(FeedManager.ITEMS_PATH, 'a') as f:
+            f.write(json.dumps(item) + '\n')
+        os.chmod(FeedManager.ITEMS_PATH, 0o600)
+        FeedManager._maybe_rotate()
+
+    @staticmethod
+    def _maybe_rotate():
+        """Compact the log when it grows past MAX_BYTES: collapse to the newest
+        KEEP_ON_ROTATE items and rewrite, then prune overlays for dropped ids so
+        state.json can't grow unbounded either."""
+        try:
+            if os.path.getsize(FeedManager.ITEMS_PATH) <= FeedManager.MAX_BYTES:
+                return
+        except OSError:
+            return
+        items = FeedManager._collapse(FeedManager._read_raw())[:FeedManager.KEEP_ON_ROTATE]
+        kept_ids = {i.get('id') for i in items}
+        tmp = FeedManager.ITEMS_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            for it in reversed(items):  # oldest-first on disk
+                f.write(json.dumps(it) + '\n')
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, FeedManager.ITEMS_PATH)
+        state = FeedManager._load_state()
+        state['read'] &= kept_ids
+        state['dismissed'] &= kept_ids
+        FeedManager._save_state(state)
+
+    # ── emit ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _new_id():
+        return f'fd_{int(time.time() * 1000)}_{secrets.token_hex(3)}'
+
+    @staticmethod
+    def emit(kind, title, *, body_md='', source='', project_id='',
+             links=None, waiting=False, dedupe_key=None):
+        """Create (or coalesce) a feed item and broadcast it. Returns the item,
+        or None when the kind is invalid. Never raises — a feed failure must not
+        break the fact it records."""
+        if kind not in FeedManager.KINDS:
+            return None
+        try:
+            with FeedManager._lock:
+                item_id = None
+                if dedupe_key:
+                    # Reuse a live (non-dismissed) item's id so it updates in
+                    # place rather than stacking duplicates.
+                    dismissed = FeedManager._load_state()['dismissed']
+                    for it in FeedManager._collapse(FeedManager._read_raw()):
+                        if it.get('dedupe_key') == dedupe_key \
+                                and it.get('id') not in dismissed:
+                            item_id = it['id']
+                            break
+                item = {
+                    'id': item_id or FeedManager._new_id(),
+                    'ts': time.time(),
+                    'kind': kind,
+                    'title': (title or '')[:200],
+                    'body_md': body_md or '',
+                    'source': source or '',
+                    'project_id': project_id or '',
+                    'links': links or [],
+                    'waiting': bool(waiting),
+                    'dedupe_key': dedupe_key or '',
+                }
+                FeedManager._append(item)
+        except Exception as e:  # pragma: no cover - defensive
+            print(f'[feed] emit failed: {e}', file=sys.stderr)
+            return None
+        try:
+            EventBroker.publish('feed.item', {'id': item['id'], 'kind': kind,
+                                              'project_id': item['project_id']})
+        except Exception:
+            pass
+        return item
+
+    # ── deterministic system emitters (called from known-fact sites) ─────
+
+    @staticmethod
+    def emit_task_terminal(meta, status):
+        """A task reached a terminal state. One coalesced item per task."""
+        tid = meta.get('task_id')
+        if not tid:
+            return None
+        prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
+        verb = {'completed': 'finished', 'error': 'failed', 'killed': 'was stopped'}.get(
+            status, status)
+        return FeedManager.emit(
+            'activity',
+            f'Task {verb}: {prompt[:80] or tid}',
+            source='system:task',
+            project_id=FeedManager._project_for_workdir(meta.get('workdir')),
+            links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
+            dedupe_key=f'task:{tid}:terminal',
+        )
+
+    @staticmethod
+    def emit_task_waiting(meta):
+        """A task flipped to waiting-for-input — flagged 'waiting on you'."""
+        tid = meta.get('task_id')
+        if not tid:
+            return None
+        prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
+        return FeedManager.emit(
+            'activity',
+            f'Task waiting on you: {prompt[:80] or tid}',
+            source='system:task',
+            project_id=FeedManager._project_for_workdir(meta.get('workdir')),
+            links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
+            waiting=True,
+            dedupe_key=f'task:{tid}:waiting',
+        )
+
+    @staticmethod
+    def emit_decision(namespace, key, value):
+        """A decision memory was recorded → a decision item."""
+        return FeedManager.emit(
+            'decision',
+            (value or key)[:120],
+            body_md=value or '',
+            source='system:memory',
+            project_id=FeedManager._project_for_namespace(namespace),
+            links=[{'label': 'View decision', 'ref': f'memory:{namespace}/{key}'}],
+            dedupe_key=f'decision:{namespace}/{key}',
+        )
+
+    @staticmethod
+    def emit_trigger(trigger_kind, trigger_id, workdir=''):
+        """A webhook/cron trigger fired → an activity item."""
+        return FeedManager.emit(
+            'activity',
+            f'{trigger_kind.capitalize()} trigger fired: {trigger_id}',
+            source='system:trigger',
+            project_id=FeedManager._project_for_workdir(workdir),
+            dedupe_key=None,  # each firing is its own event
+        )
+
+    @staticmethod
+    def _project_for_workdir(workdir):
+        """Best-effort project id whose workdir prefixes this one (reuses the
+        registry's matcher). '' when unattributed."""
+        if not workdir:
+            return ''
+        try:
+            for p in ProjectsManager._load_all():
+                if ProjectsManager._task_matches(workdir, p.get('workdirs')):
+                    return p['id']
+        except Exception:
+            pass
+        return ''
+
+    @staticmethod
+    def _project_for_namespace(namespace):
+        ns = namespace or ''
+        try:
+            for p in ProjectsManager._load_all():
+                pns = p.get('memory_namespace') or ''
+                if pns and (ns == pns or ns.startswith(pns + '.')):
+                    return p['id']
+        except Exception:
+            pass
+        return ''
+
+    # ── read API ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def list(since=None, project=None, kinds=None, unread_only=False, limit=50):
+        state = FeedManager._load_state()
+        items = FeedManager._collapse(FeedManager._read_raw())
+        kinds = set(kinds) if kinds else None
+        out = []
+        for it in items:
+            if it.get('id') in state['dismissed']:
+                continue
+            if project and (it.get('project_id') or '') != project:
+                continue
+            if kinds and it.get('kind') not in kinds:
+                continue
+            is_read = it.get('id') in state['read']
+            if unread_only and is_read:
+                continue
+            if since is not None and (it.get('ts') or 0) <= since:
+                continue
+            view = dict(it)
+            view.pop('dedupe_key', None)
+            view['read'] = is_read
+            out.append(view)
+        return out[:max(1, min(int(limit), 500))]
+
+    @staticmethod
+    def unread_count():
+        state = FeedManager._load_state()
+        n = 0
+        for it in FeedManager._collapse(FeedManager._read_raw()):
+            iid = it.get('id')
+            if iid in state['dismissed'] or iid in state['read']:
+                continue
+            n += 1
+        return n
+
+    @staticmethod
+    def _set_flag(item_id, flag):
+        with FeedManager._lock:
+            # Only flag ids that actually exist, so state.json can't accumulate
+            # entries for never-seen ids.
+            ids = {it.get('id') for it in FeedManager._collapse(FeedManager._read_raw())}
+            if item_id not in ids:
+                return False
+            state = FeedManager._load_state()
+            state[flag].add(item_id)
+            FeedManager._save_state(state)
+            return True
+
+    @staticmethod
+    def mark_read(item_id):
+        return FeedManager._set_flag(item_id, 'read')
+
+    @staticmethod
+    def dismiss(item_id):
+        return FeedManager._set_flag(item_id, 'dismissed')
 
 
 class _ReplayCache:
@@ -6602,6 +6926,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_project_get()
             return
 
+        # --- Feed (#469) ---
+        if claude_path == '/api/feed':
+            self.handle_feed_list()
+            return
+        if claude_path == '/api/feed/unread_count':
+            self.handle_feed_unread_count()
+            return
+
         # --- Desktop launcher (dashboard) ---
         if claude_path == '/api/desktop':
             self.handle_desktop_list()
@@ -7205,6 +7537,84 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         for pid in result.get('registered', []):
             EventBroker.publish('projects.changed', {'op': 'create', 'id': pid})
         self.send_json(result)
+
+    # --- Feed (#469) ---
+
+    def handle_feed_list(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            since = float(qs['since'][0]) if qs.get('since') else None
+        except (ValueError, IndexError):
+            since = None
+        project = (qs.get('project') or [''])[0] or None
+        kinds = [k for k in (qs.get('kinds') or [''])[0].split(',') if k] or None
+        unread_only = (qs.get('unread') or [''])[0] in ('1', 'true')
+        try:
+            limit = int((qs.get('limit') or ['50'])[0])
+        except ValueError:
+            limit = 50
+        self.send_json({'items': FeedManager.list(
+            since=since, project=project, kinds=kinds,
+            unread_only=unread_only, limit=limit)})
+
+    def handle_feed_unread_count(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json({'count': FeedManager.unread_count()})
+
+    def handle_feed_create(self):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        kind = (data.get('kind') or '').strip()
+        title = (data.get('title') or '').strip()
+        if not title:
+            self.send_json({'error': 'title is required'}, 400)
+            return
+        links = data.get('links')
+        if links is not None and not isinstance(links, list):
+            self.send_json({'error': 'links must be a list'}, 400)
+            return
+        item = FeedManager.emit(
+            kind, title,
+            body_md=(data.get('body_md') or ''),
+            source=(data.get('source') or 'agent'),
+            project_id=(data.get('project_id') or ''),
+            links=links or [],
+            waiting=bool(data.get('waiting')),
+            dedupe_key=(data.get('dedupe_key') or None),
+        )
+        if item is None:
+            self.send_json({'error': f'kind must be one of {FeedManager.KINDS}'}, 400)
+            return
+        self.send_json(item, 201)
+
+    def handle_feed_read(self, item_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not FeedManager.mark_read(item_id):
+            self.send_json({'error': 'Feed item not found'}, 404)
+            return
+        self.send_json({'ok': True})
+
+    def handle_feed_dismiss(self, item_id):
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not FeedManager.dismiss(item_id):
+            self.send_json({'error': 'Feed item not found'}, 404)
+            return
+        self.send_json({'ok': True})
 
     def handle_claude_get_task(self):
         if not self.check_claude_auth():
@@ -8618,6 +9028,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'trigger_id': cfg['id'],
             'task_id': task['task_id'],
         })
+        FeedManager.emit_trigger('webhook', cfg['id'], cfg.get('workdir') or '')
         self.send_json({
             'task_id': task['task_id'],
             'webhook_id': cfg['id'],
@@ -9149,6 +9560,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'trigger_id': cfg['id'],
             'task_id': task['task_id'],
         })
+        FeedManager.emit_trigger('cron', cfg['id'], cfg.get('workdir') or '')
         self.send_json({
             'task_id': task['task_id'],
             'cron_id': cfg['id'],
@@ -9377,6 +9789,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         EventBroker.publish('memory.changed', {
             'op': 'upsert', 'namespace': row['namespace'], 'key': row['key'],
         })
+        # Feed (#469): a recorded decision is feed-worthy. tags_list is on the
+        # row; fall back to splitting the raw tags string.
+        tags = row.get('tags_list')
+        if tags is None:
+            tags = [t.strip() for t in (row.get('tags') or '').split(',') if t.strip()]
+        if 'decision' in tags:
+            FeedManager.emit_decision(row['namespace'], row['key'], row.get('value') or '')
         self.send_json({'memory': row}, 200)
 
     def handle_memory_delete(self, namespace, key):
@@ -11490,6 +11909,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_project_create()
             elif path == "/api/projects/_discover":
                 self.handle_project_discover()
+            # Feed (#469)
+            elif path == "/api/feed":
+                self.handle_feed_create()
             # Desktop launcher (dashboard)
             elif path == "/api/desktop":
                 self.handle_desktop_create()
@@ -11519,6 +11941,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             elif path == "/api/files/rename":
                 self.handle_file_rename()
             else:
+                # Feed (#469): mark read / dismiss one item.
+                m = re.match(r'^/api/feed/(fd_[A-Za-z0-9_]+)/read$', path)
+                if m:
+                    self.handle_feed_read(m.group(1))
+                    return
+                m = re.match(r'^/api/feed/(fd_[A-Za-z0-9_]+)/dismiss$', path)
+                if m:
+                    self.handle_feed_dismiss(m.group(1))
+                    return
                 # /api/claude/tasks/{id}/message
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/message$', path)
                 if m:
