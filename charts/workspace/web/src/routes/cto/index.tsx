@@ -26,9 +26,11 @@ import {
   lastSeenBaseline,
   selectProject,
   initCto,
+  refreshProjects,
   startProjectsPolling,
   stopProjectsPolling,
 } from '../../store/projects';
+import { ctoHandoff } from '../../store/feed';
 import { ProjectRail } from './ProjectRail';
 import { BriefPanel } from './BriefPanel';
 import {
@@ -77,6 +79,9 @@ export function CtoRoute() {
   const [dragging, setDragging] = useState(false);
   const railWRef = useRef(railW);
   railWRef.current = railW;
+  // A "Discuss with CTO" handoff from the Feed (#470): its context prefix is
+  // queued here and sent once the target project's thread is ready.
+  const pendingHandoff = useRef<string | null>(null);
 
   function persistRailW(px: number) {
     try {
@@ -94,7 +99,16 @@ export function CtoRoute() {
     setChatContext('cto', null);
     void initHypervisor();
     startProjectsPolling();
-    void initCto();
+    // A Feed handoff overrides the usual most-active auto-select: jump straight
+    // to the item's project and queue its context prefix to send.
+    const handoff = ctoHandoff.value;
+    if (handoff) {
+      ctoHandoff.value = null;
+      pendingHandoff.current = handoff.text;
+      void refreshProjects().then(() => selectProject(handoff.projectId || null));
+    } else {
+      void initCto();
+    }
     return () => {
       setChatContext('', null);
       closeThread();
@@ -115,6 +129,13 @@ export function CtoRoute() {
       const list = threads.value;
       if (list.length) void openThread(list[0].id);
       else newChat();
+      // Deliver a queued Feed handoff into the now-ready thread (continues the
+      // latest, or seeds a new one) — the deterministic context prefix.
+      const text = pendingHandoff.current;
+      if (text) {
+        pendingHandoff.current = null;
+        void sendMessage(text);
+      }
     });
     return () => {
       cancelled = true;

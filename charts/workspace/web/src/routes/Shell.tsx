@@ -25,6 +25,7 @@ const TasksRoute = lazy<ComponentType>(() => import('./tasks/index').then((m) =>
 const DesktopRoute = lazy<ComponentType>(() => import('./desktop/index').then((m) => ({ default: m.DesktopRoute })));
 const MissionRoute = lazy<ComponentType>(() => import('./mission/index').then((m) => ({ default: m.MissionRoute })));
 const CtoRoute = lazy<ComponentType>(() => import('./cto/index').then((m) => ({ default: m.CtoRoute })));
+const FeedRoute = lazy<ComponentType>(() => import('./feed/index').then((m) => ({ default: m.FeedRoute })));
 const HypervisorRoute = lazy<ComponentType>(() => import('./hypervisor/index').then((m) => ({ default: m.HypervisorRoute })));
 const WalkieRoute = lazy<ComponentType>(() => import('./walkie/index').then((m) => ({ default: m.WalkieRoute })));
 const MemoryRoute = lazy<ComponentType>(() => import('./memory/index').then((m) => ({ default: m.MemoryRoute })));
@@ -40,6 +41,7 @@ const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/desktop': DesktopRoute,
   '/mission': MissionRoute,
   '/cto': CtoRoute,
+  '/feed': FeedRoute,
   '/hypervisor': HypervisorRoute,
   '/walkie': WalkieRoute,
   '/memory': MemoryRoute,

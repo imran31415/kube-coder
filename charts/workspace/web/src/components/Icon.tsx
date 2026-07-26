@@ -47,7 +47,9 @@ export type IconName =
   | 'speaker'
   | 'desktop'
   | 'mission'
-  | 'cto';
+  | 'cto'
+  | 'feed'
+  | 'chevron-up';
 
 const PATHS: Record<IconName, JSX.Element> = {
   tasks: (
@@ -159,6 +161,18 @@ const PATHS: Record<IconName, JSX.Element> = {
   'chevron-down': (
     <>
       <path d="M5 8l5 5 5-5" />
+    </>
+  ),
+  'chevron-up': (
+    <>
+      <path d="M5 12l5-5 5 5" />
+    </>
+  ),
+  // Feed — stacked lines with a leading dot (a curated stream).
+  feed: (
+    <>
+      <path d="M4 6h9M4 10h12M4 14h7" />
+      <circle cx="16.5" cy="6" r="1.3" />
     </>
   ),
   fullscreen: (

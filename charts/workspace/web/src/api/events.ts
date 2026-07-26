@@ -35,6 +35,7 @@ const EVENT_TYPES = [
   'skills.changed',
   'gateway.preview',
   'projects.changed',
+  'feed.item',
 ];
 
 let es: EventSource | null = null;

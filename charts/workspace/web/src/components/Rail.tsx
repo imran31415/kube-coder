@@ -24,6 +24,7 @@ const ICONS: Record<string, IconName> = {
   '/desktop': 'desktop',
   '/mission': 'mission',
   '/cto': 'cto',
+  '/feed': 'feed',
   '/hypervisor': 'hypervisor',
   '/walkie': 'walkie',
   '/memory': 'memory',
