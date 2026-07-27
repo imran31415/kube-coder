@@ -6,7 +6,7 @@
       "id": "overview",
       "title": "Overview",
       "pages": [
-        { "id": "getting-started", "title": "Getting started", "file": "in-app/getting-started.md", "summary": "What you see on first load, how to run your first task, where to go next." }
+        { "id": "getting-started", "title": "Getting started", "file": "in-app/getting-started.md", "summary": "The AI-CTO-first first win — onboard and connect Claude, land in the AI CTO, build from one sentence, watch the live preview — plus a tour of every surface (Mission Control, Workspace, Knowledge) and how to run a build yourself." }
       ]
     },
     {
