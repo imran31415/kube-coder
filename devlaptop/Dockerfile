@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.25@sha256:0adf442eae370b6087e08edc7c50b552d80ddf261576f4ebd6421006b2461f12
 # devlaptop/Dockerfile
 #
 # Multi-stage:
@@ -91,7 +91,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # release path and verified before install, so a corrupted/tampered binary fails
 # the build (`sha256sum -c` exits non-zero). Bump KUBECTL_VERSION to update.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.31.4
+ARG KUBECTL_VERSION=v1.36.3
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
   && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
@@ -122,7 +122,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.211
+ARG CLAUDE_CODE_VERSION=2.1.220
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -131,7 +131,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.3
+ARG OPENCODE_VERSION=1.18.7
 RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
@@ -141,7 +141,7 @@ RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.144.5
+ARG CODEX_VERSION=0.145.0
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 # Antigravity CLI (agy) — Google's terminal-native coding agent. Selected
@@ -204,7 +204,7 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- "https://download.ante.r
 # digest we can fetch arch-agnostically; hardcoding one per arch would need a
 # manual update each bump. Follow-up: verify a pinned sha256 per arch.
 # renovate: datasource=github-releases depName=librefang/librefang
-ARG LIBREFANG_VERSION=v2026.7.11
+ARG LIBREFANG_VERSION=v2026.7.21
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) LF_ARCH=x86_64 ;; \
