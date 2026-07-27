@@ -91,6 +91,18 @@ spec:
       !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) &&
       !(has(variables.podSpec.hostIPC) && variables.podSpec.hostIPC)
     message: "provisioner Job must not use hostNetwork, hostPID, or hostIPC"
+  {{- if .Values.provision.admissionPolicy.requireDigest }}
+  # Immutable by digest (supply-chain finding 7): reject tag-only refs so the
+  # provisioner always runs the exact, signed image bytes the chart pinned — a
+  # mutable tag (e.g. :latest) could be repointed after admission review. CEL
+  # cannot verify a cosign signature (no crypto/network), so signature checking
+  # is delegated to the opt-in policy in provisioner-image-policy.yaml; this rule
+  # enforces the digest half, which admission CAN see. Appended last so the other
+  # validations keep their fixed indices.
+  - expression: >-
+      variables.containers.all(c, c.image.contains('@sha256:'))
+    message: "provisioner Job container image must be pinned by digest (repo@sha256:...), not a mutable tag"
+  {{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

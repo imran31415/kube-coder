@@ -502,24 +502,38 @@ class ChartRefSupplyChainTest(unittest.TestCase):
         self.assertIn('(mutable)', out)
 
 
-class ProvisionHelmChecksumTest(unittest.TestCase):
-    """Finding 7: the runtime helm download must be pinned + sha256-verified
-    before it is unpacked/executed under the privileged provisioner SA."""
+class ProvisionNoRuntimeToolDownloadTest(unittest.TestCase):
+    """Finding 7: the privileged provisioner must NOT download tools at runtime.
+    helm/kubectl/git/make are baked into the dedicated, checksum-verified
+    provisioner image; the Job fails closed if any is missing rather than
+    reaching out to the internet under the cluster-privileged provisioner SA."""
 
-    def test_script_pins_helm_version_and_verifies_checksum(self):
+    def test_script_does_not_download_helm_at_runtime(self):
         script = controller.PROVISION_JOB_SCRIPT
-        self.assertEqual(controller.PROVISION_HELM_VERSION, 'v3.14.4')
-        # 64-hex sha256 pinned as a constant and threaded into the script.
-        self.assertRegex(controller.PROVISION_HELM_SHA256, r'^[0-9a-f]{64}$')
-        self.assertIn(controller.PROVISION_HELM_VERSION, script)
-        self.assertIn(controller.PROVISION_HELM_SHA256, script)
-        # Verification happens (sha256sum -c) and fails closed (exit 1) BEFORE
-        # the tarball is unpacked/installed — never a bare `curl | tar` pipe.
-        self.assertIn('sha256sum -c', script)
-        self.assertIn('exit 1', script)
-        self.assertNotIn('| tar -xz', script)
+        # The old runtime install is gone: no fetch from get.helm.sh, no tarball
+        # unpack/install of helm inside the privileged Job.
+        self.assertNotIn('get.helm.sh', script)
+        self.assertNotIn('helm.tgz', script)
+        self.assertNotIn('curl', script)
         # No unfilled template placeholders leaked into the shipped script.
         self.assertNotIn('__HELM', script)
+
+    def test_script_fails_closed_when_tools_missing(self):
+        script = controller.PROVISION_JOB_SCRIPT
+        # Presence check for every baked-in tool, failing closed (exit 1).
+        for tool in ('helm', 'kubectl', 'git', 'make'):
+            self.assertIn(tool, script)
+        self.assertIn('command -v', script)
+        self.assertIn('exit 1', script)
+        self.assertIn('refusing to download tools at runtime', script)
+
+    def test_expected_helm_version_still_declared(self):
+        # The version stays declared centrally (echoed for provenance) and must
+        # match provisioner/Dockerfile's HELM_VERSION ARG.
+        self.assertEqual(controller.PROVISION_HELM_VERSION, 'v3.14.4')
+        self.assertIn(controller.PROVISION_HELM_VERSION, controller.PROVISION_JOB_SCRIPT)
+        self.assertFalse(hasattr(controller, 'PROVISION_HELM_SHA256'),
+                         'runtime helm sha256 is obsolete once helm is baked into the image')
 
     def test_script_logs_resolved_commit(self):
         # Provenance inside the Job: the exact commit the privileged deploy runs.

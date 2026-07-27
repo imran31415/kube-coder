@@ -11,13 +11,38 @@ Tracks issue [#104](https://github.com/imran31415/kube-coder/issues/104).
 
 | Artifact | Where | Pin |
 |----------|-------|-----|
-| Base images (`node`, `ubuntu`) | `devlaptop/Dockerfile` `FROM` | tag + digest (Renovate `pinDigests`) |
+| Base images (`node`, `ubuntu`) | `devlaptop/Dockerfile`, `provisioner/Dockerfile` `FROM` | tag + digest (Renovate `pinDigests`) |
 | Kaniko builder image | `charts/*/values.yaml`, `controller.py` | `gcr.io/kaniko-project/executor:v1.24.0` (+digest) |
 | docker-compose | `devlaptop/Dockerfile` `COMPOSE_VERSION` | release tag (was `releases/latest`) |
-| code-server, ttyd, sqlite-vec, librefang | `devlaptop/Dockerfile` `*_VERSION` | release tags |
+| code-server, ttyd, sqlite-vec, librefang | `devlaptop/Dockerfile` `*_VERSION` | release tag **+ checksum-verified** (see below) |
+| helm, kubectl (provisioner) | `provisioner/Dockerfile` `HELM_VERSION`/`KUBECTL_VERSION` | version + published-checksum-verified |
 | npm, claude-code, opencode, codex | `devlaptop/Dockerfile` `*_VERSION` | npm versions |
 | GitHub Actions | `.github/workflows/*` | commit SHA (Renovate `pinGitHubActionDigests`) |
 | SPA / controller deps | `charts/**/package.json`, Python reqs | native npm / pip managers |
+
+## Artifact integrity verification (finding 7)
+
+Beyond version-pinning, every external binary/archive pulled into an image is
+**checksum- or signature-verified at build time and fails the build on
+mismatch** (download → verify → install; no `curl | bash`, no `curl | tar`):
+
+| Artifact | Image | Verification source |
+|----------|-------|---------------------|
+| Node.js / npm repo | `devlaptop` | NodeSource **GPG keyring** + `signed-by=` apt source (no `curl \| bash`) |
+| code-server `.deb` | `devlaptop` | per-arch `sha256` pinned as `CODE_SERVER_SHA256_{AMD64,ARM64}` (from the GitHub release API `digest`) |
+| ttyd | `devlaptop` | release `SHA256SUMS` |
+| sqlite-vec | `devlaptop` | release `checksums.txt` (reversed `<file> <hash>` layout) |
+| librefang | `devlaptop` | per-asset `.tar.gz.sha256` sidecar |
+| Ante | `devlaptop` | pinned release `manifest.json` `sha256` (download tarball direct, no installer pipe) |
+| docker-compose, kubectl | `devlaptop` | vendor-published `.sha256` |
+| helm, kubectl | `provisioner` | `get.helm.sh` `.sha256sum` / `dl.k8s.io` `.sha256` |
+
+**Accepted exception (one):** **Antigravity (`agy`)** is distributed *only* as a
+`curl | bash` installer that resolves `latest` server-side with no versioned URL
+and no published per-artifact checksum, so there is nothing to pin or verify. It
+is documented here and marked `# SUPPLY-CHAIN … ACCEPTED EXCEPTION` in the
+Dockerfile; it will be pinned the moment the vendor exposes a versioned URL +
+checksum.
 
 Each pinned `ARG *_VERSION` in the Dockerfile carries a `# renovate:` annotation
 naming its datasource, so Renovate's custom manager can resolve upgrades.
@@ -117,6 +142,40 @@ This is **additive** and needs **no secrets** (the built-in `GITHUB_TOKEN`
 pushes to GHCR; the OIDC `id-token` mints the certificate). The DigitalOcean
 deploy image still ships via `make push`; GHCR is the signed, publicly
 verifiable artifact.
+
+The same job now builds **two** images from one matrix: `devlaptop` and
+`provisioner` (below).
+
+## Privileged provisioner image (finding 7)
+
+The self-service provisioner Job (`charts/workspace-controller/controller.py`)
+runs `make deploy` under the cluster-privileged `workspace-provisioner`
+ServiceAccount. It used to reuse the fat workspace image **and install Helm at
+runtime** with a `curl` from `get.helm.sh` — a moving part on a privileged path.
+That is now closed:
+
+- **Dedicated minimal image** — [`provisioner/Dockerfile`](../provisioner/Dockerfile)
+  bakes `helm` + `kubectl` + `git` + `make` (each checksum-verified at build),
+  so provisioning performs **no runtime tool downloads** — only the approved
+  GitOps `git clone`s. The Job **fails closed** if a tool is missing instead of
+  fetching it.
+- **Signed + attested** — built, keyless-cosign **signed**, and SBOM/SLSA-
+  provenance **attested** by the release workflow, exactly like `devlaptop`.
+- **Pinned by digest** — set `provision.image` to a `repo@sha256:…` ref. The CEL
+  `ValidatingAdmissionPolicy` (`provisioner-vap.yaml`) **requires** the digest
+  form (`provision.admissionPolicy.requireDigest`, on by default) alongside the
+  existing shape/repository pinning.
+- **Signature verified at admission** *(opt-in)* — CEL cannot check a cosign
+  signature, so `provision.admissionPolicy.verifyImageSignature=true` renders a
+  signature-verifying policy (`provisioner-image-policy.yaml`) for either
+  **Kyverno** (`engine: kyverno`, default) or **Sigstore policy-controller**
+  (`engine: sigstore`). It is off by default because it requires that controller
+  installed in the cluster; the digest pin holds regardless. The trusted keyless
+  identity/issuer default to the release signer and are overridable
+  (`signatureIdentityRegexp` / `signatureOidcIssuer`) for forks.
+
+Result: the exact provisioner bytes are immutable (digest), provably built by
+this repo's CI (signature + provenance), and reconstructible from pinned inputs.
 
 ### Verifying a released image
 

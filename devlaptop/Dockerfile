@@ -39,11 +39,13 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x via NodeSource
-# SUPPLY-CHAIN (finding 7, deferred): the NodeSource setup script is piped to
-# bash. The major line (setup_20.x) is pinned but the script itself is a rolling
-# artifact with no publishable checksum. It installs an apt repo whose packages
-# are GPG-verified by apt. Follow-up: switch to the keyring+sources.list.d form
-# to drop the curl|bash entirely.
+# SUPPLY-CHAIN (finding 7, resolved): the previous `curl … setup_20.x | bash -`
+# piped a rolling, unchecksummable script straight into a root shell. Replaced
+# with the keyring + sources.list.d form the setup script itself installs: we
+# fetch NodeSource's long-lived GPG key to /usr/share/keyrings, register the
+# `signed-by=`-pinned apt source, and let apt install nodejs — so every package
+# is GPG-verified against that key and no code is piped to bash. Nothing here is
+# fetched-then-executed unverified anymore.
 # npm bundled with Node 20 (10.8.x) vendors old tar/minimatch/glob/cross-spawn
 # that Trivy flags (HIGH). Upgrade the global npm first so it ships patched
 # vendored deps (npm 11.x: tar>=7.5, minimatch>=10.2, glob>=13, cross-spawn
@@ -56,7 +58,11 @@ ARG NPM_VERSION=11.18.0
 # package integrity/signature against the registry on install.
 # renovate: datasource=npm depName=yarn
 ARG YARN_VERSION=1.22.22
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+      | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+      > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
     && apt-get install -y nodejs \
     && npm install -g npm@${NPM_VERSION} \
     && npm install -g yarn@${YARN_VERSION} \
@@ -108,13 +114,25 @@ RUN ARCH=$(dpkg --print-architecture) \
 # tar) track the upstream VS Code build code-server vendors and only move when
 # code-server rebases onto a newer VS Code — so bumping code-server is the lever.
 # renovate: datasource=github-releases depName=coder/code-server
-# SUPPLY-CHAIN (finding 7, deferred): version-pinned, but the release does not
-# publish a per-asset .sha256 (the .deb 404s for it), so no download→verify step
-# is added here. apt does verify the .deb's internal structure. Follow-up: pin a
-# hardcoded sha256 per arch if reproducibility beyond the version pin is needed.
+# SUPPLY-CHAIN (finding 7, resolved): the release ships no SHA256SUMS/.sha256
+# asset, but GitHub's release API exposes a per-asset sha256 `digest` for each
+# .deb. We pin that digest per arch below and `sha256sum -c` the download before
+# apt installs it, so a tampered/MITM'd .deb fails the build. Because the digests
+# are arch-specific, both must be bumped together with CODE_SERVER_VERSION — read
+# the new values from
+#   curl -fsSL https://api.github.com/repos/coder/code-server/releases/tags/v<VER> \
+#     | jq -r '.assets[] | select(.name|endswith(".deb")) | "\(.name) \(.digest)"'
 ARG CODE_SERVER_VERSION=4.128.0
+ARG CODE_SERVER_SHA256_AMD64=c0f6e3706c4285f06bb2350274576f289262e6a9962a70e3c31c6d3ea17a29d2
+ARG CODE_SERVER_SHA256_ARM64=b97107ee3ac7c2253a30221da12a562692a2765610457b647ecfcbc02a8ccc4f
 RUN ARCH=$(dpkg --print-architecture) \
+  && case "$ARCH" in \
+       amd64) CS_SHA256="$CODE_SERVER_SHA256_AMD64" ;; \
+       arm64) CS_SHA256="$CODE_SERVER_SHA256_ARM64" ;; \
+       *) echo "FATAL: no pinned code-server sha256 for arch $ARCH" >&2; exit 1 ;; \
+     esac \
   && curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_${ARCH}.deb" -o /tmp/cs.deb \
+  && echo "${CS_SHA256}  /tmp/cs.deb" | sha256sum -c - \
   && apt-get update && apt-get install -y /tmp/cs.deb && rm /tmp/cs.deb
 
 # Claude Code CLI (terminal assistant). Bring your own API key (or Bedrock/Vertex).
@@ -154,11 +172,14 @@ RUN npm install -g @openai/codex@${CODEX_VERSION}
 # restarts (the pod blocks runtime sudo). The official installer (curl|bash,
 # --dir to place the binary) is the only distribution channel, same mechanism
 # as Ante/LibreFang. https://antigravity.google
-# SUPPLY-CHAIN (finding 7, deferred): vendor ships only a curl|bash installer
-# that resolves "latest" with no publishable per-artifact checksum or version
-# pin, so we cannot download→verify→execute here. `test -x` confirms a binary
-# landed but not its integrity. Follow-up: pin once the vendor exposes a
-# versioned URL + checksum, mirroring the Ante manifest-pinned pattern below.
+# SUPPLY-CHAIN (finding 7, ACCEPTED EXCEPTION — the only one left): Antigravity
+# is distributed *solely* as a curl|bash installer that resolves "latest" server
+# side, with no versioned download URL and no publishable per-artifact checksum
+# or signature. There is therefore nothing to pin or verify — unlike every other
+# installer in this file, which is now checksum- or GPG-verified. `test -x` only
+# confirms a binary landed, not its integrity. Documented in docs/SUPPLY_CHAIN.md
+# as the sole remaining unverifiable artifact; pin the moment the vendor exposes
+# a versioned URL + checksum, mirroring the Ante manifest-pinned pattern below.
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt/antigravity \
     && test -x /opt/antigravity/agy \
     && ln -sfn /home/dev/.antigravity/bin/agy /usr/local/bin/agy
@@ -177,11 +198,32 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # docs/SUPPLY_CHAIN.md); check https://download.ante.run/channels/stable/manifest.json
 # for the current version.
 # https://docs.antigma.ai
+# SUPPLY-CHAIN (finding 7, resolved): the previous `curl … install.sh | bash`
+# piped the vendor installer into a root shell. Ante's pinned release manifest
+# already publishes a per-artifact sha256, so we drop the pipe entirely: fetch
+# the pinned manifest, read the tarball URL + sha256 for this arch, download the
+# tarball, `sha256sum -c` it (fail-closed on mismatch), then extract the `ante`
+# binary. Nothing is executed before it is verified. The manifest keys linux
+# builds as linux-x86_64 / linux-arm64.
 ARG ANTE_VERSION=v0.preview.60
-RUN curl -fsSL https://ante.run/install.sh | bash -s -- "https://download.ante.run/releases/${ANTE_VERSION}/manifest.json" \
-    && mkdir -p /opt/ante \
-    && install -m 0755 "$HOME/.ante/bin/ante" /opt/ante/ante \
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         amd64) ANTE_PLAT=linux-x86_64 ;; \
+         arm64) ANTE_PLAT=linux-arm64 ;; \
+         *) echo "FATAL: no ante build for arch $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://download.ante.run/releases/${ANTE_VERSION}/manifest.json" -o /tmp/ante-manifest.json \
+    && ANTE_URL=$(jq -er ".binaries.\"${ANTE_PLAT}\".url" /tmp/ante-manifest.json) \
+    && ANTE_SHA=$(jq -er ".binaries.\"${ANTE_PLAT}\".sha256" /tmp/ante-manifest.json) \
+    && curl -fsSL "$ANTE_URL" -o /tmp/ante.tar.gz \
+    && echo "${ANTE_SHA}  /tmp/ante.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/ante /tmp/ante-extract \
+    && tar -xzf /tmp/ante.tar.gz -C /tmp/ante-extract \
+    && ANTE_BIN=$(find /tmp/ante-extract -type f -name ante | head -n1) \
+    && test -n "$ANTE_BIN" \
+    && install -m 0755 "$ANTE_BIN" /opt/ante/ante \
     && test -x /opt/ante/ante \
+    && rm -rf /tmp/ante.tar.gz /tmp/ante-extract /tmp/ante-manifest.json \
     && ln -sfn /home/dev/.ante/bin/ante /usr/local/bin/ante
 
 # LibreFang CLI — open-source agent OS (https://librefang.ai); surfaces in
@@ -199,10 +241,12 @@ RUN curl -fsSL https://ante.run/install.sh | bash -s -- "https://download.ante.r
 # static musl build, fall back to glibc. The installer pulls this exact
 # tarball (librefang/librefang releases); we just skip its WAF-gated front
 # door. Bump LIBREFANG_VERSION (a release tag) + rebuild to update.
-# SUPPLY-CHAIN (finding 7, deferred): release tag is pinned but the tarball is
-# unpacked without a checksum. The release does not ship a stable per-asset
-# digest we can fetch arch-agnostically; hardcoding one per arch would need a
-# manual update each bump. Follow-up: verify a pinned sha256 per arch.
+# SUPPLY-CHAIN (finding 7, resolved): the release now ships a per-asset
+# `<tarball>.sha256` sidecar (and a cosign-signed SHA256SUMS) for every arch, so
+# we fetch the sidecar alongside the tarball and `sha256sum -c` before unpacking
+# — fail-closed on mismatch. We try the static musl build first (matching the old
+# behaviour) and fall back to glibc, verifying whichever one we actually pulled
+# against its own sidecar.
 # renovate: datasource=github-releases depName=librefang/librefang
 ARG LIBREFANG_VERSION=v2026.7.21
 RUN ARCH=$(dpkg --print-architecture) \
@@ -213,12 +257,19 @@ RUN ARCH=$(dpkg --print-architecture) \
        esac \
     && BASE="https://github.com/librefang/librefang/releases/download/${LIBREFANG_VERSION}" \
     && mkdir -p /opt/librefang \
-    && ( curl -fL --retry 5 --retry-delay 5 --retry-connrefused \
-           "${BASE}/librefang-${LF_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/librefang.tar.gz \
-         || curl -fL --retry 5 --retry-delay 5 --retry-connrefused \
-           "${BASE}/librefang-${LF_ARCH}-unknown-linux-gnu.tar.gz" -o /tmp/librefang.tar.gz ) \
+    && LF_OK= \
+    && for FLAVOR in musl gnu; do \
+         ASSET="librefang-${LF_ARCH}-unknown-linux-${FLAVOR}.tar.gz"; \
+         if curl -fL --retry 5 --retry-delay 5 --retry-connrefused "${BASE}/${ASSET}" -o /tmp/librefang.tar.gz \
+            && curl -fL --retry 5 --retry-delay 5 --retry-connrefused "${BASE}/${ASSET}.sha256" -o /tmp/librefang.sha256; then \
+              if echo "$(awk '{print $1}' /tmp/librefang.sha256)  /tmp/librefang.tar.gz" | sha256sum -c -; then \
+                LF_OK=1; break; \
+              fi; \
+         fi; \
+       done \
+    && [ -n "$LF_OK" ] \
     && tar -xzf /tmp/librefang.tar.gz -C /opt/librefang \
-    && rm /tmp/librefang.tar.gz \
+    && rm -f /tmp/librefang.tar.gz /tmp/librefang.sha256 \
     && chmod +x /opt/librefang/librefang* \
     && test -x /opt/librefang/librefang \
     && ln -sfn /home/dev/.librefang/bin/librefang /usr/local/bin/librefang
@@ -227,19 +278,27 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Pinned to a known-good version so transient 502s from GitHub's release CDN
 # don't break the build (we hit them repeatedly while bumping to v1.7.1).
 # To bump: update TTYD_VERSION, rebuild image.
-# SUPPLY-CHAIN (finding 7, deferred): version-pinned but the raw binary is
-# installed without checksum verification (tsl0922/ttyd publishes SHA256SUMS
-# only for some releases). Follow-up: verify against a pinned sha256 per arch.
+# SUPPLY-CHAIN (finding 7, resolved): the v1.7.7 release publishes a SHA256SUMS
+# asset covering every per-arch binary, so we download the binary to a temp file,
+# fetch SHA256SUMS, and `sha256sum -c` the matching `ttyd.<arch>` line before
+# installing it — fail-closed on mismatch. (SHA256SUMS uses the standard
+# `<hash>  ttyd.<arch>` format, so we verify from a cwd holding the renamed-back
+# file.)
 # renovate: datasource=github-releases depName=tsl0922/ttyd
 ARG TTYD_VERSION=1.7.7
 RUN apt-get update && apt-get install -y wget \
     && ARCH=$(dpkg --print-architecture) \
     && if [ "$ARCH" = "amd64" ]; then TTYD_ARCH="x86_64"; elif [ "$ARCH" = "arm64" ]; then TTYD_ARCH="aarch64"; else TTYD_ARCH="$ARCH"; fi \
+    && BASE="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}" \
     && wget --tries=5 --waitretry=10 --retry-connrefused \
        --retry-on-http-error=429,500,502,503,504 \
-       -O /usr/local/bin/ttyd \
-       "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${TTYD_ARCH}" \
-    && chmod +x /usr/local/bin/ttyd \
+       -O "/tmp/ttyd.${TTYD_ARCH}" "${BASE}/ttyd.${TTYD_ARCH}" \
+    && wget --tries=5 --waitretry=10 --retry-connrefused \
+       --retry-on-http-error=429,500,502,503,504 \
+       -O /tmp/ttyd.SHA256SUMS "${BASE}/SHA256SUMS" \
+    && (cd /tmp && grep " ttyd.${TTYD_ARCH}$" ttyd.SHA256SUMS | sha256sum -c -) \
+    && install -m 0755 "/tmp/ttyd.${TTYD_ARCH}" /usr/local/bin/ttyd \
+    && rm -f "/tmp/ttyd.${TTYD_ARCH}" /tmp/ttyd.SHA256SUMS \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
@@ -252,16 +311,26 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | g
 # sqlite-vec loadable extension — enables vector search inside SQLite for the
 # persistent-memory subsystem (Phase 2 activates this). Shipped as a single
 # .so so the dashboard + MCP memory server can `conn.load_extension('vec0')`.
-# SUPPLY-CHAIN (finding 7, deferred): version-pinned but streamed straight to
-# tar without a checksum. Follow-up: download to a temp file, verify a pinned
-# per-arch sha256, then extract (as done for helm in the provisioner path).
+# SUPPLY-CHAIN (finding 7, resolved): the release publishes a checksums.txt
+# covering every asset, so we stop streaming `curl | tar` and instead download
+# the tarball to a temp file, look up its sha256 in checksums.txt, `sha256sum -c`
+# it (fail-closed on mismatch), then extract. NB: sqlite-vec's checksums.txt uses
+# a *reversed* `<filename> <hash>` layout (not the standard `<hash>  <filename>`),
+# so we grep the asset line and take the second field.
 # renovate: datasource=github-releases depName=asg017/sqlite-vec
 ARG SQLITE_VEC_VERSION=0.1.9
 RUN ARCH=$(dpkg --print-architecture) \
  && case "$ARCH" in amd64) VEC_ARCH=x86_64 ;; arm64) VEC_ARCH=aarch64 ;; *) VEC_ARCH=$ARCH ;; esac \
  && mkdir -p /usr/local/lib/sqlite-vec \
- && curl -fsSL "https://github.com/asg017/sqlite-vec/releases/download/v${SQLITE_VEC_VERSION}/sqlite-vec-${SQLITE_VEC_VERSION}-loadable-linux-${VEC_ARCH}.tar.gz" \
-    | tar -xz -C /usr/local/lib/sqlite-vec/ \
+ && BASE="https://github.com/asg017/sqlite-vec/releases/download/v${SQLITE_VEC_VERSION}" \
+ && ASSET="sqlite-vec-${SQLITE_VEC_VERSION}-loadable-linux-${VEC_ARCH}.tar.gz" \
+ && curl -fsSL "${BASE}/${ASSET}" -o /tmp/sqlite-vec.tar.gz \
+ && curl -fsSL "${BASE}/checksums.txt" -o /tmp/sqlite-vec.checksums \
+ && EXPECTED=$(grep "^${ASSET} " /tmp/sqlite-vec.checksums | awk '{print $2}') \
+ && test -n "$EXPECTED" \
+ && echo "${EXPECTED}  /tmp/sqlite-vec.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/sqlite-vec.tar.gz -C /usr/local/lib/sqlite-vec/ \
+ && rm -f /tmp/sqlite-vec.tar.gz /tmp/sqlite-vec.checksums \
  && ln -sf /usr/local/lib/sqlite-vec/vec0.so /usr/local/lib/vec0.so
 
 # Python deps for memory-system embeddings (Voyage AI / OpenAI) and HTTP

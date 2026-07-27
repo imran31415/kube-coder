@@ -1,0 +1,88 @@
+{{- if and .Values.provision.enabled .Values.provision.admissionPolicy.enabled .Values.provision.admissionPolicy.verifyImageSignature }}
+{{- $ap := .Values.provision.admissionPolicy }}
+{{- /* Same "approved image" resolution as the CEL VAP: an explicit provision.image
+       pin, else the controller image repo the controller reuses as the Job image. */ -}}
+{{- $allowedImage := .Values.provision.image | default .Values.controller.image.repository }}
+# Provisioner image SIGNATURE verification (supply-chain review July 2026, finding
+# 7 — acceptance: "admission rejects an unsigned or unexpected provisioner image").
+#
+# The CEL ValidatingAdmissionPolicy (provisioner-vap.yaml) already pins the Job
+# shape + repository + digest, but CEL has no crypto/network and cannot verify a
+# cosign signature. This policy closes that gap by delegating signature checks to
+# a signature-verifying admission controller. It is OPT-IN
+# (provision.admissionPolicy.verifyImageSignature) because it REQUIRES that
+# controller to be installed — turning it on without one will hard-fail admission.
+#
+# Two engines are supported; pick with provision.admissionPolicy.engine:
+{{- if eq $ap.engine "kyverno" }}
+# --- engine: kyverno (Kyverno >= 1.11) ---------------------------------------
+# Verifies the keyless-cosign signature (Fulcio cert identity + OIDC issuer,
+# Rekor-logged) of any Pod that runs as the provisioner ServiceAccount and whose
+# image comes from the approved repo. Unsigned or wrong-identity images are
+# rejected; a matching signature is required. Kyverno also mutates the tag to the
+# resolved digest, complementing the VAP's digest requirement.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: workspace-provisioner-image-signature
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  validationFailureAction: Enforce
+  background: false
+  failurePolicy: Fail
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-provisioner-image-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - {{ .Values.namespace | quote }}
+      # Only gate Pods that actually run as the provisioner SA — every other
+      # workload in the namespace is out of scope and passes untouched.
+      preconditions:
+        all:
+          - key: {{ printf "{{ request.object.spec.serviceAccountName || '' }}" | quote }}
+            operator: Equals
+            value: {{ .Values.provision.serviceAccount | quote }}
+      verifyImages:
+        - imageReferences:
+            - {{ printf "%s*" $allowedImage | quote }}
+          mutateDigest: true
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: {{ $ap.signatureIdentityRegexp | quote }}
+                    issuer: {{ $ap.signatureOidcIssuer | quote }}
+                    rekor:
+                      url: https://rekor.sigstore.dev
+{{- else if eq $ap.engine "sigstore" }}
+# --- engine: sigstore (Sigstore policy-controller) ---------------------------
+# Native cosign policy: only images matching the approved repo AND carrying a
+# keyless signature from the configured identity/issuer are admitted. Scope it to
+# the provisioner by labelling the control-plane namespace for policy-controller
+# enforcement (see docs/SUPPLY_CHAIN.md).
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: workspace-provisioner-image-signature
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  images:
+    - glob: {{ printf "%s**" $allowedImage | quote }}
+  authorities:
+    - keyless:
+        url: https://fulcio.sigstore.dev
+        identities:
+          - issuer: {{ $ap.signatureOidcIssuer | quote }}
+            subjectRegExp: {{ $ap.signatureIdentityRegexp | quote }}
+{{- else }}
+{{- fail (printf "provision.admissionPolicy.engine must be 'kyverno' or 'sigstore', got %q" $ap.engine) }}
+{{- end }}
+{{- end }}

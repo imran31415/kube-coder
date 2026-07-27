@@ -1,0 +1,119 @@
+suite: provisioner image signature policy (supply-chain review July 2026, finding 7)
+templates:
+  - templates/provisioner-image-policy.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: renders nothing unless provisioning is enabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders nothing when signature verification is left off (the default)
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders a Kyverno ClusterPolicy when verification is enabled (default engine)
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.verifyImageSignature: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: apiVersion
+          value: kyverno.io/v1
+      - equal:
+          path: kind
+          value: ClusterPolicy
+      - equal:
+          path: metadata.name
+          value: workspace-provisioner-image-signature
+      - equal:
+          path: spec.validationFailureAction
+          value: Enforce
+      # Only Pods running as the provisioner SA are gated.
+      - equal:
+          path: spec.rules[0].preconditions.all[0].value
+          value: workspace-provisioner
+      # Keyless cosign identity + issuer come from the configured defaults.
+      - equal:
+          path: spec.rules[0].verifyImages[0].attestors[0].entries[0].keyless.subject
+          value: "^https://github.com/imran31415/kube-coder/"
+      - equal:
+          path: spec.rules[0].verifyImages[0].attestors[0].entries[0].keyless.issuer
+          value: "https://token.actions.githubusercontent.com"
+      - equal:
+          path: spec.rules[0].verifyImages[0].required
+          value: true
+
+  - it: scopes verification to the approved image repository
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.verifyImageSignature: true
+      provision.image: "ghcr.io/acme/provisioner@sha256:abc"
+    asserts:
+      - equal:
+          path: spec.rules[0].verifyImages[0].imageReferences[0]
+          value: "ghcr.io/acme/provisioner@sha256:abc*"
+
+  - it: renders a Sigstore ClusterImagePolicy when engine is sigstore
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.verifyImageSignature: true
+      provision.admissionPolicy.engine: sigstore
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: apiVersion
+          value: policy.sigstore.dev/v1beta1
+      - equal:
+          path: kind
+          value: ClusterImagePolicy
+      - equal:
+          path: spec.authorities[0].keyless.identities[0].issuer
+          value: "https://token.actions.githubusercontent.com"
+      - equal:
+          path: spec.authorities[0].keyless.identities[0].subjectRegExp
+          value: "^https://github.com/imran31415/kube-coder/"
+
+  - it: honours a custom keyless identity (e.g. a fork)
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.verifyImageSignature: true
+      provision.admissionPolicy.signatureIdentityRegexp: "^https://github.com/acme/fork/"
+    asserts:
+      - equal:
+          path: spec.rules[0].verifyImages[0].attestors[0].entries[0].keyless.subject
+          value: "^https://github.com/acme/fork/"
+
+  - it: fails the render on an unknown engine
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.verifyImageSignature: true
+      provision.admissionPolicy.engine: bogus
+    asserts:
+      - failedTemplate:
+          errorMessage: "provision.admissionPolicy.engine must be 'kyverno' or 'sigstore', got \"bogus\""
