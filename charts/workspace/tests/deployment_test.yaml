@@ -195,6 +195,25 @@ tests:
           any: true
           content:
             name: KC_FALLBACK_BASE_URL
+      # OpenCode Zen (#395) is off by default too.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: OPENCODE_API_KEY
+      # The workspace-default knob is only emitted when opted in — vanilla leaves
+      # it unset so every consumer keeps its historical default.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_DEFAULT_ASSISTANT
+      # Vanilla Hypervisor default still resolves to claude.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HYPERVISOR_DEFAULT_ASSISTANT
+            value: "claude"
 
   - it: injects OpenRouter env when openrouter.apiKey is set
     template: templates/deployment.yaml
@@ -229,6 +248,78 @@ tests:
               secretKeyRef:
                 name: coder-shared-assistant
                 key: openrouter-api-key
+
+  # ── Workspace default assistant + OpenCode Zen (issue #395) ────────────────
+
+  - it: emits KC_DEFAULT_ASSISTANT and inherits it for the Hypervisor when assistant.default is set
+    template: templates/deployment.yaml
+    set:
+      assistant.default: opencode-zen
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DEFAULT_ASSISTANT
+            value: "opencode-zen"
+      # hypervisor.defaultAssistant unset → the Hypervisor inherits the default.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HYPERVISOR_DEFAULT_ASSISTANT
+            value: "opencode-zen"
+
+  - it: hypervisor.defaultAssistant overrides the Hypervisor default only (back-compat)
+    template: templates/deployment.yaml
+    set:
+      assistant.default: opencode-zen
+      hypervisor.defaultAssistant: claude
+    asserts:
+      # New Build / task-create still defaults to the workspace default …
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DEFAULT_ASSISTANT
+            value: "opencode-zen"
+      # … while the Hypervisor honours its explicit override.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HYPERVISOR_DEFAULT_ASSISTANT
+            value: "claude"
+
+  - it: injects OpenCode Zen env when opencodeZen.apiKey is set
+    template: templates/deployment.yaml
+    set:
+      assistant.opencodeZen.apiKey: sk-zen-test
+      assistant.opencodeZen.model: deepseek-v4-flash-free
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENCODE_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: assistant-secrets-testuser
+                key: opencode-api-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_OPENCODE_ZEN_MODEL
+            value: "deepseek-v4-flash-free"
+
+  - it: injects OpenCode Zen env from the shared secret when sharedSecretName is set (no per-user key)
+    template: templates/deployment.yaml
+    set:
+      assistant.opencodeZen.sharedSecretName: platform-zen-key
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENCODE_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: platform-zen-key
+                key: opencode-api-key
 
   - it: should NOT wire self-serve updates by default
     template: templates/deployment.yaml
@@ -391,6 +482,23 @@ tests:
       - equal:
           path: stringData["deepseek-api-key"]
           value: "sk-ds-test"
+
+  - it: renders assistant-secret with the opencode Zen key when opencodeZen.apiKey is set (#395)
+    template: templates/assistant-secret.yaml
+    set:
+      assistant.opencodeZen.apiKey: sk-zen-test
+    asserts:
+      - equal:
+          path: stringData["opencode-api-key"]
+          value: "sk-zen-test"
+
+  - it: does NOT render assistant-secret for a Zen shared secret (external Secret, not per-user)
+    template: templates/assistant-secret.yaml
+    set:
+      assistant.opencodeZen.sharedSecretName: platform-zen-key
+    asserts:
+      - hasDocuments:
+          count: 0
 
   - it: should invoke the entrypoint script as the container command
     template: templates/deployment.yaml

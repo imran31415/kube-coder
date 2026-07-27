@@ -223,8 +223,8 @@ fi
 # itself needs no on-disk config — it reads ANTHROPIC_API_KEY from env
 # or OAuths interactively. The config is rewritten on every pod start
 # so Helm value changes flow through cleanly.
-if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ]; then
-  log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) deepseek=$([ -n "$DEEPSEEK_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
+if [ -n "$OPENROUTER_API_KEY" ] || [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$KC_FALLBACK_BASE_URL" ] || [ -n "$OPENCODE_API_KEY" ]; then
+  log_stage "writing OpenCode config (openrouter=$([ -n "$OPENROUTER_API_KEY" ] && echo on || echo off) deepseek=$([ -n "$DEEPSEEK_API_KEY" ] && echo on || echo off) zen=$([ -n "$OPENCODE_API_KEY" ] && echo on || echo off) fallback=$([ -n "$KC_FALLBACK_BASE_URL" ] && echo on || echo off))"
   mkdir -p $HOME/.config/opencode
   OPENROUTER_MODEL_DEFAULT="${KC_OPENROUTER_MODEL:-anthropic/claude-sonnet-4}"
   FALLBACK_MODEL_DEFAULT="${KC_FALLBACK_MODEL:-anthropic/claude-sonnet-4}"
@@ -263,6 +263,40 @@ if os.environ.get("KC_FALLBACK_BASE_URL"):
         # which makes the model say "there is no function to run X" and
         # hallucinate webfetch-style replies instead of using bash/edit.
         "models": {os.environ.get("KC_FALLBACK_MODEL", "anthropic/claude-sonnet-4"): {"tool_call": True}},
+    }
+# OpenCode Zen (issue #395) — OpenCode's hosted gateway of free coding models.
+# Unlike OpenRouter/DeepSeek it is NOT auto-discovered, so (like the fallback
+# above) we emit an explicit custom-provider stanza. The provider id
+# "opencode-zen" must match server.py's assistant_command / orchestrator, which
+# launch `opencode --model opencode-zen/<model>`. The gateway is OpenAI
+# chat/completions compatible, so @ai-sdk/openai-compatible is the right npm.
+if os.environ.get("OPENCODE_API_KEY"):
+    # Declare the whole free catalogue (default first) — the in-chat model
+    # switcher offers all of them, and OpenCode only advertises tools for
+    # models declared here with tool_call:true. Kept in sync with server.py's
+    # _OPENCODE_ZEN_FREE_MODELS. An operator override (KC_OPENCODE_ZEN_MODEL /
+    # comma-separated KC_OPENCODE_ZEN_MODELS) is folded in so a curated or
+    # paid Zen model still gets a declaration.
+    zen_ids = [
+        "deepseek-v4-flash-free", "big-pickle", "mimo-v2.5-free",
+        "laguna-s-2.1-free", "ling-3.0-flash-free", "north-mini-code-free",
+        "nemotron-3-ultra-free",
+    ]
+    for extra in [os.environ.get("KC_OPENCODE_ZEN_MODEL", "")] + \
+            os.environ.get("KC_OPENCODE_ZEN_MODELS", "").split(","):
+        extra = extra.strip()
+        if extra and extra not in zen_ids:
+            zen_ids.insert(0, extra)
+    provider["opencode-zen"] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "OpenCode Zen",
+        "options": {
+            "baseURL": os.environ.get("KC_OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1"),
+            "apiKey": "{env:OPENCODE_API_KEY}",
+        },
+        # tool_call: true for the same reason as the fallback provider above —
+        # without it OpenCode won't advertise tools to the Zen model.
+        "models": {m: {"tool_call": True} for m in zen_ids},
     }
 if provider:
     cfg["provider"] = provider

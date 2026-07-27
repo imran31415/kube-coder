@@ -27,6 +27,15 @@ This document describes all environment variables used by kube-coder components.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | - | **Required for Claude.** Anthropic API key for Claude Code access. |
+| `KC_DEFAULT_ASSISTANT` | `claude` | **Workspace-wide default assistant.** Governs both the Hypervisor chat and the New Build / task-create picker, and sub-agent spawning. Empty/unset → `claude` (vanilla behaviour). Set to an enabled assistant id (e.g. `opencode-zen`) to provision a trial/demo workspace on a free assistant. If the chosen default isn't enabled the server logs a warning and falls back to claude. `hypervisor.defaultAssistant` (`HYPERVISOR_DEFAULT_ASSISTANT`) remains a back-compat override for the Hypervisor chat only. |
+
+#### OpenCode Zen Integration (free)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENCODE_API_KEY` | - | OpenCode Zen API key ([opencode.ai/zen](https://opencode.ai/zen)). Lights up the **OpenCode Zen** assistant — a hosted gateway of free coding models (~100 req/day, no credit card). ⚠️ Zen's free models may use submitted data to improve the model; the dashboard surfaces this disclosure. |
+| `KC_OPENCODE_ZEN_MODEL` | `deepseek-v4-flash-free` | Zen free-model id (e.g. `big-pickle`, `mimo-v2.5-free`). |
+| `KC_OPENCODE_ZEN_MODELS` | - | Comma-separated override of the in-chat model switcher's Zen list (default first). |
+| `KC_OPENCODE_ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | Zen gateway base URL (OpenAI chat/completions compatible). |
 
 #### OpenRouter Integration
 | Variable | Default | Description |

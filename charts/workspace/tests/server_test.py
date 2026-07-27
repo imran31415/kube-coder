@@ -15,8 +15,10 @@ Run with:    python3 -m unittest tests.server_test
 """
 
 import base64
+import contextlib
 import hmac
 import hashlib
+import io
 import json
 import os
 import sys
@@ -236,11 +238,17 @@ class AssistantSelectionTests(unittest.TestCase):
         # the resolver looks at.
         self._saved_env = {k: os.environ.pop(k) for k in (
             'OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
+            'DEEPSEEK_API_KEY', 'KC_DEEPSEEK_MODEL',
+            'OPENCODE_API_KEY', 'KC_OPENCODE_ZEN_MODEL', 'KC_OPENCODE_ZEN_MODELS',
             'KC_ANTIGRAVITY_MODEL',
             'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
             'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
             'KC_LIBREFANG_AGENT',
         ) if k in os.environ}
+        # available_assistants()/resolve_assistant() read the module-level
+        # WORKSPACE_DEFAULT_ASSISTANT (fixed at import from KC_DEFAULT_ASSISTANT).
+        # Snapshot it so tests can patch the workspace default and restore.
+        self._saved_default = server.WORKSPACE_DEFAULT_ASSISTANT
 
     def tearDown(self):
         server.ClaudeTaskManager.TASKS_DIR = self._orig_tasks_dir
@@ -250,12 +258,14 @@ class AssistantSelectionTests(unittest.TestCase):
         # Restore env
         for k in ('OPENROUTER_API_KEY', 'KC_OPENROUTER_MODEL',
                   'DEEPSEEK_API_KEY', 'KC_DEEPSEEK_MODEL',
+                  'OPENCODE_API_KEY', 'KC_OPENCODE_ZEN_MODEL', 'KC_OPENCODE_ZEN_MODELS',
                   'KC_ANTIGRAVITY_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
                   'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
                   'KC_LIBREFANG_AGENT'):
             os.environ.pop(k, None)
         os.environ.update(self._saved_env)
+        server.WORKSPACE_DEFAULT_ASSISTANT = self._saved_default
 
     def test_default_lists_claude_and_ante(self):
         avail = server.ClaudeTaskManager.available_assistants()
@@ -365,6 +375,99 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertEqual(
             server.ClaudeTaskManager.resolve_assistant('opencode-openrouter'),
             'claude',
+        )
+
+    # ── Workspace default assistant (KC_DEFAULT_ASSISTANT, issue #395) ────────
+
+    def test_vanilla_default_is_claude_first(self):
+        # No KC_DEFAULT_ASSISTANT → claude is first and the only default, exactly
+        # as before the knob existed.
+        server.WORKSPACE_DEFAULT_ASSISTANT = 'claude'
+        avail = server.ClaudeTaskManager.available_assistants()
+        self.assertEqual(avail[0]['id'], 'claude')
+        self.assertTrue(avail[0]['default'])
+        self.assertEqual([a for a in avail if a.get('default')][0]['id'], 'claude')
+
+    def test_configured_default_flagged_and_sorted_first(self):
+        # An enabled non-claude default (ante is always enabled) becomes the sole
+        # default and sorts to the front; claude loses the flag.
+        server.WORKSPACE_DEFAULT_ASSISTANT = 'ante'
+        avail = server.ClaudeTaskManager.available_assistants()
+        self.assertEqual(avail[0]['id'], 'ante')
+        self.assertTrue(avail[0]['default'])
+        defaults = [a['id'] for a in avail if a.get('default')]
+        self.assertEqual(defaults, ['ante'])
+
+    def test_configured_default_not_enabled_warns_and_falls_back(self):
+        # opencode-zen configured but no OPENCODE_API_KEY → not enabled, so the
+        # default falls back to claude AND a loud warning is emitted (never a
+        # silent revert).
+        server.WORKSPACE_DEFAULT_ASSISTANT = 'opencode-zen'
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            avail = server.ClaudeTaskManager.available_assistants()
+        self.assertEqual(avail[0]['id'], 'claude')
+        self.assertTrue(avail[0]['default'])
+        self.assertIn('opencode-zen', buf.getvalue())
+        self.assertIn('not enabled', buf.getvalue())
+
+    def test_resolve_falls_back_to_workspace_default(self):
+        # Unknown/disabled request → the configured workspace default (ante is
+        # always enabled), not hardcoded claude.
+        server.WORKSPACE_DEFAULT_ASSISTANT = 'ante'
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            self.assertEqual(server.ClaudeTaskManager.resolve_assistant('garbage'), 'ante')
+        self.assertEqual(server.ClaudeTaskManager.resolve_assistant(None), 'ante')
+
+    # ── OpenCode Zen assistant (issue #395) ───────────────────────────────────
+
+    def test_zen_listed_when_env_set(self):
+        os.environ['OPENCODE_API_KEY'] = 'sk-zen-test'
+        match = [a for a in server.ClaudeTaskManager.available_assistants()
+                 if a['id'] == 'opencode-zen']
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]['label'], 'OpenCode Zen')
+        self.assertTrue(match[0].get('free'))
+        self.assertTrue(match[0].get('trainingDisclosure'))
+        # Built-in default model, overridable via KC_OPENCODE_ZEN_MODEL.
+        self.assertEqual(match[0]['model'], 'deepseek-v4-flash-free')
+
+    def test_zen_not_listed_without_key(self):
+        ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+        self.assertNotIn('opencode-zen', ids)
+
+    def test_zen_is_default_when_configured_and_enabled(self):
+        os.environ['OPENCODE_API_KEY'] = 'sk-zen-test'
+        server.WORKSPACE_DEFAULT_ASSISTANT = 'opencode-zen'
+        avail = server.ClaudeTaskManager.available_assistants()
+        self.assertEqual(avail[0]['id'], 'opencode-zen')
+        self.assertTrue(avail[0]['default'])
+
+    def test_command_opencode_zen(self):
+        # Provider id prefix must match the opencode.json stanza start.sh writes.
+        # _shell_quote is a safety measure that no-ops on shell-safe strings
+        # (only `/` and `-`), so a plain model id passes through unquoted —
+        # matching the sibling opencode-deepseek command.
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('opencode-zen'),
+            'opencode --model opencode-zen/deepseek-v4-flash-free',
+        )
+        os.environ['KC_OPENCODE_ZEN_MODEL'] = 'big-pickle'
+        self.assertEqual(
+            server.ClaudeTaskManager.assistant_command('opencode-zen'),
+            'opencode --model opencode-zen/big-pickle',
+        )
+
+    def test_zen_models_list_default_first(self):
+        models = server.ClaudeTaskManager.available_models('opencode-zen')
+        self.assertEqual(models[0], 'deepseek-v4-flash-free')
+        self.assertIn('big-pickle', models)
+        # Env override fully replaces the built-in list.
+        os.environ['KC_OPENCODE_ZEN_MODELS'] = 'big-pickle, mimo-v2.5-free'
+        self.assertEqual(
+            server.ClaudeTaskManager.available_models('opencode-zen'),
+            ['big-pickle', 'mimo-v2.5-free'],
         )
 
     def test_command_per_assistant(self):

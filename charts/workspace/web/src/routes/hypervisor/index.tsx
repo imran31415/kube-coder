@@ -17,6 +17,7 @@ import {
   selectedModel,
   selectedWorkdir,
   assistantModels,
+  assistantNeedsDisclosure,
   setSelectedAssistant,
   setActiveThreadModel,
   initHypervisor,
@@ -306,10 +307,17 @@ export function HypervisorRoute() {
             {(cfg?.assistants ?? []).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.label}
+                {a.free ? ' · free' : ''}
                 {a.model ? ` · ${a.model}` : ''}
               </option>
             ))}
           </select>
+          {assistantNeedsDisclosure(effectiveAssistant) && (
+            <span class="hv-agent-disclosure" role="note">
+              ⚠️ Free models may use your prompts + code for training — avoid
+              confidential data. Add your own key in Settings → Provider keys.
+            </span>
+          )}
         </label>
 
         {/* Where a NEW chat starts (#345). The backend has always accepted a

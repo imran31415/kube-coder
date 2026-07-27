@@ -1,4 +1,5 @@
-/** Create a new Claude task. */
+/** Create a new coding-agent task (assistant chosen in the picker; defaults to
+ *  the workspace default assistant). */
 import { useNavigation } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import React, { useEffect, useState } from 'react';
@@ -48,6 +49,9 @@ export default function NewTaskScreen() {
       .catch(() => {/* keep the fallback list */});
   }, []);
 
+  const selected = assistants.find((a) => a.id === assistant);
+  const assistantName = selected?.label || 'the assistant';
+
   async function submit() {
     if (!prompt.trim()) return;
     setBusy(true);
@@ -80,7 +84,7 @@ export default function NewTaskScreen() {
           <TextInput
             value={prompt}
             onChangeText={setPrompt}
-            placeholder="Describe the task for Claude…"
+            placeholder={`Describe the task for ${assistantName}…`}
             placeholderTextColor={colors.textFaint}
             style={styles.prompt}
             multiline
@@ -104,10 +108,19 @@ export default function NewTaskScreen() {
                 onPress={() => setAssistant(a.id)}
                 style={[styles.chip, assistant === a.id && styles.chipActive]}
               >
-                <Text style={[styles.chipText, assistant === a.id && styles.chipTextActive]}>{a.label || a.id}</Text>
+                <Text style={[styles.chipText, assistant === a.id && styles.chipTextActive]}>
+                  {a.label || a.id}{a.free ? ' · free' : ''}
+                </Text>
               </Pressable>
             ))}
           </View>
+
+          {selected?.trainingDisclosure ? (
+            <Text style={styles.disclosure} accessibilityRole="text">
+              ⚠️ Free {selected.label} models may use your prompts and code to improve the
+              model — avoid confidential data. Add your own key in Settings → Provider keys.
+            </Text>
+          ) : null}
 
           {error ? (
             <Text style={styles.error} accessibilityRole="alert">
@@ -167,4 +180,10 @@ const styles = StyleSheet.create({
   chipText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '500' },
   chipTextActive: { color: colors.accent, fontWeight: '700' },
   error: { color: colors.danger, fontSize: font.size.sm, marginTop: space.xl, lineHeight: 19 },
+  disclosure: {
+    color: colors.textMuted,
+    fontSize: font.size.sm,
+    marginTop: space.lg,
+    lineHeight: 19,
+  },
 });

@@ -80,6 +80,13 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
     setName(randomBuildName());
   }
 
+  // The currently-selected assistant (for the free/training-disclosure note),
+  // and the label to show as the default before the list resolves. Falls back
+  // to 'claude' only when the server list hasn't loaded yet.
+  const selectedAssistant = assistants.find((a) => a.id === assistant);
+  const defaultAssistantLabel =
+    (assistants.find((a) => a.default) ?? assistants[0])?.label ?? 'claude';
+
   return (
     <form class="ntf" onSubmit={onSubmit}>
       <label class="ntf-field">
@@ -140,10 +147,11 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
             value={assistant}
             onChange={(e) => setAssistant((e.target as HTMLSelectElement).value)}
           >
-            {assistants.length === 0 && <option value="">claude (default)</option>}
+            {assistants.length === 0 && <option value="">{defaultAssistantLabel} (default)</option>}
             {assistants.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.label || a.id}
+                {a.free ? ' · free' : ''}
                 {a.default ? ' · default' : ''}
               </option>
             ))}
@@ -152,9 +160,17 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       </div>
 
       <p class="ntf-note muted">
-        You'll be dropped straight into a live <strong>{assistant || 'claude'}</strong> terminal —
+        You'll be dropped straight into a live <strong>{assistant || defaultAssistantLabel}</strong> terminal —
         type your first prompt there.
       </p>
+
+      {selectedAssistant?.trainingDisclosure && (
+        <p class="ntf-note ntf-disclosure" role="note">
+          ⚠️ Free {selectedAssistant.label} models may use your prompts and code to
+          improve the model — avoid sending confidential data. Add your own key in
+          Settings → Provider keys to switch providers.
+        </p>
+      )}
 
       {error && (
         <p class="ntf-error" role="alert">

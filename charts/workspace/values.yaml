@@ -318,9 +318,12 @@ claude:
 # blocks below (and the user's own ~/.ante/settings.json etc.).
 hypervisor:
   enabled: true
-  # Which assistant a new chat thread uses by default. The user can switch it
+  # Back-compat override for the Hypervisor chat's default assistant only.
+  # Empty = inherit the workspace-wide default (assistant.default, issue #395),
+  # which is what you normally want. Set it here only to give the Hypervisor a
+  # different default than the New Build picker. The user can still switch it
   # per-thread from the tab's selector (any enabled assistant).
-  defaultAssistant: "claude"
+  defaultAssistant: ""
   # Working directory for hypervisor chat sessions.
   workdir: "/home/dev"
 
@@ -369,6 +372,15 @@ gateway:
 # Public-repo defaults leave both empty, so the dashboard ships with
 # Claude-only behavior.
 assistant:
+  # Workspace-wide default assistant (issue #395) → KC_DEFAULT_ASSISTANT.
+  # Governs BOTH the Hypervisor chat and the New Build / task-create picker, so
+  # an operator can provision a trial/demo workspace that defaults to a free
+  # assistant instead of Claude. Empty = "claude" (vanilla behaviour). Set it to
+  # an assistant id that is actually enabled below, e.g. "opencode-zen" together
+  # with a Zen key in opencodeZen.apiKey / opencodeZen.sharedSecretName — if the
+  # chosen default isn't enabled the server logs a warning and falls back to
+  # claude rather than silently mis-defaulting.
+  default: ""
   # OpenCode → OpenRouter (https://openrouter.ai)
   openrouter:
     apiKey: ""                            # OPENROUTER_API_KEY (per-user; takes precedence)
@@ -384,6 +396,21 @@ assistant:
   deepseek:
     apiKey: ""                            # DEEPSEEK_API_KEY
     model: "deepseek-chat"                # or "deepseek-reasoner"
+  # OpenCode → Zen (https://opencode.ai/zen) — OpenCode's hosted gateway of
+  # free coding models (~100 req/day, no credit card, one-time free signup key).
+  # This is the zero-cost path for trial/demo workspaces: set assistant.default
+  # to "opencode-zen" and provide a key here. Unlike OpenRouter/DeepSeek, Zen is
+  # NOT auto-discovered — start.sh writes an explicit opencode.json provider
+  # stanza when OPENCODE_API_KEY is set.
+  # NOTE: Zen's free models may use submitted data to improve the model — the
+  # dashboard surfaces that disclosure; don't send confidential data on them.
+  opencodeZen:
+    apiKey: ""                            # OPENCODE_API_KEY (per-user; takes precedence)
+    model: "deepseek-v4-flash-free"       # KC_OPENCODE_ZEN_MODEL (a Zen free-model id)
+    # Optional shared free Zen key so EVERY trial workspace gets Zen without a
+    # per-user key: create one Secret (key: opencode-api-key) in the namespace
+    # and name it here. A per-user apiKey above still wins. Empty by default.
+    sharedSecretName: ""
   # Antigravity (https://antigravity.google) — Google's terminal coding agent
   # (`agy`), pre-installed in the image. Auth is OAuth Google Sign-In, NOT an
   # API key: it appears as a dashboard assistant automatically, and each user

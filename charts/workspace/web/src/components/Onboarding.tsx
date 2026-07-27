@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { githubStatus, setGitConfig, generateSshKey, type GitHubStatus } from '../api/github';
+import { getHypervisorConfig } from '../api/hypervisor';
 import { navigate } from '../store/router';
 import { justOnboarded } from '../store/onboarding';
 import { pushToast } from '../store/ui';
@@ -21,6 +22,11 @@ export function Onboarding() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
+  // The workspace's default assistant, so the copy names the agent the user
+  // will actually meet (Claude by default, e.g. "OpenCode Zen" on a trial
+  // workspace, #395). isClaude drives the free-provider upgrade-path note.
+  const [assistantLabel, setAssistantLabel] = useState('Claude Code');
+  const [assistantIsClaude, setAssistantIsClaude] = useState(true);
   const ref = useRef<HTMLDivElement | null>(null);
   useFocusTrap(show, ref);
 
@@ -38,13 +44,32 @@ export function Onboarding() {
       .catch(() => {
         // Workspace not reachable — skip onboarding silently.
       });
-    // A brand-new tester with no Claude credential must be guided to connect
-    // before the first-win build (#494) — open onboarding for that alone, even
-    // when git/SSH are already configured by the workspace.
-    void refreshClaudeReady().then((r) => {
-      if (r === false) setShow(true);
-    });
+    // Tailor onboarding to the configured default assistant (#395). A trial
+    // workspace on a free assistant (e.g. opencode-zen) needs no Claude login,
+    // so we must NOT force the Claude-connect flow there — only Claude-default
+    // workspaces get the "connect before your first build" gate (#494).
+    getHypervisorConfig()
+      .then((cfg) => {
+        const def = (cfg.assistants ?? []).find((a) => a.id === cfg.defaultAssistant);
+        const isClaude = (cfg.defaultAssistant || 'claude') === 'claude';
+        setAssistantLabel(def?.label || 'Claude Code');
+        setAssistantIsClaude(isClaude);
+        if (isClaude) {
+          void refreshClaudeReady().then((r) => {
+            if (r === false) setShow(true);
+          });
+        }
+      })
+      .catch(() => {
+        // Config unreachable — assume the Claude default and keep #494 behaviour.
+        void refreshClaudeReady().then((r) => {
+          if (r === false) setShow(true);
+        });
+      });
   }, []);
+
+  // Short verb-phrase name ("Claude" reads better than "Claude Code" mid-sentence).
+  const assistantName = assistantIsClaude ? 'Claude' : assistantLabel;
 
   function dismiss() {
     localStorage.setItem(DONE_KEY, 'true');
@@ -93,8 +118,9 @@ export function Onboarding() {
   // and #484/#485 auto-surface the preview.
   function enterCto() {
     // Backstop: never route a keyless user into the CTO with no way to build —
-    // send them to the connect step instead (#494).
-    if (claudeReady.value === false) {
+    // send them to the connect step instead (#494). Only applies to Claude-
+    // default workspaces; a free-assistant trial (#395) can build without a key.
+    if (assistantIsClaude && claudeReady.value === false) {
       setStep(4);
       return;
     }
@@ -110,7 +136,14 @@ export function Onboarding() {
       title: 'Welcome to kube-coder',
       body: (
         <>
-          <p>This workspace runs Claude Code in tmux sessions and tracks memory, triggers, and files in one place.</p>
+          <p>This workspace runs {assistantLabel} in tmux sessions and tracks memory, triggers, and files in one place.</p>
+          {!assistantIsClaude && (
+            <p class="muted">
+              It's set up on a free assistant so you can try everything right away —
+              no login needed. Want Claude or another provider? Add your own key
+              anytime in Settings → Provider keys.
+            </p>
+          )}
           <p class="muted">A few short steps. You can skip any of them.</p>
         </>
       ),
@@ -120,7 +153,7 @@ export function Onboarding() {
       title: 'Set your git identity',
       body: (
         <>
-          <p class="muted">Used for commits Claude makes on your behalf.</p>
+          <p class="muted">Used for commits {assistantName} makes on your behalf.</p>
           <div class="ob-row">
             <label class="ob-field">
               <span>Name</span>
@@ -145,7 +178,7 @@ export function Onboarding() {
       body: (
         <>
           <p class="muted">
-            Connect your personal GitHub so Claude can push to your repos and use your
+            Connect your personal GitHub so {assistantName} can push to your repos and use your
             identity. Sign in with your browser — no terminal needed.
           </p>
           <GithubConnect compact onConnected={() => setStep(3)} />
@@ -179,23 +212,33 @@ export function Onboarding() {
       ),
     },
     {
-      title: 'Connect Claude',
+      title: assistantIsClaude ? 'Connect Claude' : `You're all set on ${assistantLabel}`,
       body: (
         <>
-          <p class="muted">
-            kube-coder builds with Claude, so it needs your account before it can
-            do anything. Sign in with your Claude subscription (recommended — no
-            key to hunt for) or paste an API key.
-          </p>
-          <ClaudeCredentialSetup ready={claudeReady.value} onConnected={onClaudeConnected} />
+          {assistantIsClaude ? (
+            <>
+              <p class="muted">
+                kube-coder builds with Claude, so it needs your account before it can
+                do anything. Sign in with your Claude subscription (recommended — no
+                key to hunt for) or paste an API key.
+              </p>
+              <ClaudeCredentialSetup ready={claudeReady.value} onConnected={onClaudeConnected} />
+            </>
+          ) : (
+            <p class="muted">
+              This workspace runs on {assistantLabel} — a free assistant — so there's
+              nothing to log into. You can start building right away. Prefer Claude or
+              another provider? Add your own key anytime in Settings → Provider keys.
+            </p>
+          )}
         </>
       ),
       action: (
         <>
           <Button variant="ghost" onClick={() => setStep(5)}>
-            {claudeReady.value ? 'Continue' : 'Skip for now'}
+            {assistantIsClaude && !claudeReady.value ? 'Skip for now' : 'Continue'}
           </Button>
-          {!claudeReady.value && (
+          {assistantIsClaude && !claudeReady.value && (
             <span class="ob-note muted">Connect above to continue</span>
           )}
         </>
@@ -210,7 +253,7 @@ export function Onboarding() {
             one sentence what you'd like to build and it starts right away, with a
             live preview surfacing in the chat as it goes.
           </p>
-          {claudeReady.value === false && (
+          {assistantIsClaude && claudeReady.value === false && (
             <p class="ob-warn">
               Claude isn't connected yet — connect it first so your first build doesn't fail.
             </p>
@@ -218,7 +261,7 @@ export function Onboarding() {
         </>
       ),
       action:
-        claudeReady.value === false ? (
+        assistantIsClaude && claudeReady.value === false ? (
           <>
             <Button variant="ghost" onClick={dismiss}>Finish later</Button>
             <Button variant="primary" onClick={() => setStep(4)}>

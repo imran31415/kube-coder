@@ -98,6 +98,18 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertIn('--model', cmd)
         self.assertIn('openrouter/', cmd)
 
+    def test_headless_opencode_zen_uses_zen_provider_prefix(self):
+        # Provider id must match the opencode.json stanza start.sh writes (#395).
+        cmd = orch._assistant_command('opencode-zen', 'hi', headless=True)
+        self.assertIn('opencode run', cmd)
+        self.assertIn('opencode-zen/deepseek-v4-flash-free', cmd)
+
+    def test_interactive_opencode_zen_is_bare_repl(self):
+        cmd = orch._assistant_command('opencode-zen', 'ignored', headless=False)
+        self.assertIn('opencode --model', cmd)
+        self.assertIn('opencode-zen/', cmd)
+        self.assertNotIn('run', cmd)
+
     def test_interactive_claude_is_bare_repl(self):
         cmd = orch._assistant_command('claude', 'ignored', headless=False)
         self.assertEqual(cmd, 'claude')
@@ -234,6 +246,31 @@ class SpawnGuardTests(unittest.TestCase):
     def test_nonexistent_workdir_falls_back(self):
         meta = self._spawn_workdir({'workdir': '/no/such/dir/xyz'})
         self.assertEqual(meta['workdir'], '/home/dev')
+
+    def _spawn_meta(self, args, env=None):
+        with mock.patch.object(orch.subprocess, 'run', side_effect=_tmux_alive), \
+             mock.patch.object(orch, '_count_live_agent_sessions', return_value=0), \
+             mock.patch.object(orch.threading, 'Thread'), \
+             mock.patch.dict(orch.os.environ, env or {}, clear=False):
+            res = orch._tool_spawn_agent({'prompt': 'go', **args})
+        meta_path = os.path.join(self.tmp, json.loads(res['content'][0]['text'])['task_id'], 'task.json')
+        with open(meta_path) as f:
+            return json.load(f)
+
+    def test_spawn_default_is_ante_when_no_workspace_default(self):
+        # Vanilla: KC_DEFAULT_ASSISTANT unset → historical 'ante' fallback.
+        orch.os.environ.pop('KC_DEFAULT_ASSISTANT', None)
+        meta = self._spawn_meta({})
+        self.assertEqual(meta['assistant'], 'ante')
+
+    def test_spawn_honours_workspace_default(self):
+        # Trial workspace: KC_DEFAULT_ASSISTANT set → sub-agents inherit it (#395).
+        meta = self._spawn_meta({}, env={'KC_DEFAULT_ASSISTANT': 'claude'})
+        self.assertEqual(meta['assistant'], 'claude')
+
+    def test_spawn_explicit_assistant_wins_over_workspace_default(self):
+        meta = self._spawn_meta({'assistant': 'ante'}, env={'KC_DEFAULT_ASSISTANT': 'claude'})
+        self.assertEqual(meta['assistant'], 'ante')
 
 
 class ReconcileTests(unittest.TestCase):
