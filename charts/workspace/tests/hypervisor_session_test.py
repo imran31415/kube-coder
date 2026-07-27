@@ -465,6 +465,52 @@ class ReconcileStaleRunningTest(unittest.TestCase):
         self.assertEqual(s.read_meta()['updated_at'], before)
 
 
+class IsTurnLiveTest(unittest.TestCase):
+    """is_turn_live() must key busy-ness off the live in-process _RUNNING
+    registry, never meta['status'] — the same stale-'running' state #462
+    leaves behind forever, and which would otherwise pin any consumer
+    (e.g. the Walkie-Talkie preview's busy flag, #474) on THINKING…
+    indefinitely."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig
+
+    def test_false_when_status_stuck_running_but_not_actually_running(self):
+        s = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude')
+        meta = s.read_meta()
+        meta['status'] = 'running'
+        s._write_meta(meta)
+        # The OLD/naive signal really would say "running" — confirms this is
+        # exercising the exact bug being guarded against.
+        self.assertEqual(s.status(), 'running')
+        self.assertFalse(hs.HypervisorSession.is_turn_live(s.id))
+
+    def test_true_when_actually_running(self):
+        s = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude')
+        with hs._RUNLOCK:
+            hs._RUNNING[s.id] = True
+        try:
+            self.assertTrue(hs.HypervisorSession.is_turn_live(s.id))
+        finally:
+            with hs._RUNLOCK:
+                hs._RUNNING.pop(s.id, None)
+
+    def test_false_when_thread_does_not_exist(self):
+        self.assertFalse(hs.HypervisorSession.is_turn_live('no-such-thread'))
+
+    def test_false_when_idle(self):
+        s = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude')
+        self.assertFalse(hs.HypervisorSession.is_turn_live(s.id))
+
+
 class FallbackAdapterTest(unittest.TestCase):
     def test_strips_ansi_and_emits_message(self):
         a = hs.FallbackAdapter()

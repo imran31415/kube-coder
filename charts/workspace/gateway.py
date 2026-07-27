@@ -132,6 +132,11 @@ class OutboundMessage:
     template: Optional[str] = None  # logical template name for out-of-window
     template_args: Dict[str, Any] = field(default_factory=dict)
     seq: int = 0                    # per-conversation monotonic outbound sequence
+    # Hypervisor thread this reply belongs to, '' when there isn't one (system
+    # notices — not-linked, expired token, workspace list, …). The internal
+    # loopback preview (#474) uses this to scope the Walkie-Talkie view to the
+    # live conversation and never bleed a stale/foreign thread's reply into it.
+    thread_id: str = ''
 
 
 @dataclass
@@ -1004,7 +1009,7 @@ class ConversationGateway:
             self._send(adapter, identity, 'Could not deliver your message.')
             return InboundResult(status=500, action='error', thread_id=thread_id)
         if self.send_ack:
-            self._send(adapter, identity, self.ACK_TEXT)
+            self._send(adapter, identity, self.ACK_TEXT, thread_id=thread_id)
         return InboundResult(status=200, action='dispatched', thread_id=thread_id)
 
     # ── turn completion (the single hook) ─────────────────────────────────────
@@ -1073,7 +1078,7 @@ class ConversationGateway:
             key = f'{thread_id}:{since}:final:{i}'
             if not self.sequencer.dedupe(identity, key):
                 continue
-            self._send(adapter, identity, chunk, quick_replies=quick)
+            self._send(adapter, identity, chunk, quick_replies=quick, thread_id=thread_id)
 
     def _deliver_template(self, adapter, identity, thread_id, since) -> None:
         # The provider id comes from the live adapter (issue #328 gives every
@@ -1093,6 +1098,7 @@ class ConversationGateway:
             template='task_complete',
             template_args={'title': 'your task'},
             seq=self.sequencer.next(identity),
+            thread_id=thread_id,
         )
         try:
             adapter.outbound(msg)
@@ -1117,11 +1123,13 @@ class ConversationGateway:
             else 'No workspaces linked.'
 
     def _send(self, adapter: ChannelAdapter, identity: str, text: str,
-              quick_replies: Optional[List[str]] = None) -> DeliveryResult:
+              quick_replies: Optional[List[str]] = None,
+              thread_id: str = '') -> DeliveryResult:
         msg = OutboundMessage(
             channel_identity=identity, text=text,
             quick_replies=quick_replies or [],
             seq=self.sequencer.next(identity),
+            thread_id=thread_id,
         )
         try:
             result = adapter.outbound(msg)
@@ -1268,6 +1276,21 @@ class PreviewTranscript:
     def cursor(self) -> int:
         with self._lock:
             return self._seq
+
+    def set_meta(self, seq: int, patch: Dict[str, Any]) -> bool:
+        """Merge `patch` into the meta dict of the entry with this seq. Used to
+        back-fill the inbound user bubble's thread_id once dispatch resolves it
+        — the bubble is added BEFORE dispatch so it appears instantly, but the
+        thread (possibly a brand-new one, on a `new chat`) isn't known until
+        `handle_inbound` returns (#474). Returns False if the entry aged out of
+        the bounded deque (harmless — the caller's rendering degrades to
+        showing it as an always-visible untagged notice)."""
+        with self._lock:
+            for item in self._items:
+                if item['seq'] == seq:
+                    item['meta'] = {**item['meta'], **patch}
+                    return True
+            return False
 
     def clear(self) -> None:
         with self._lock:

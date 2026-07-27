@@ -9505,8 +9505,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         thread_id = binding.get('default_thread_id') if binding else None
         busy = False
         if thread_id and _HYPERVISOR_AVAILABLE:
-            s = HypervisorSession.get(thread_id)
-            busy = bool(s and s.status() == 'running')
+            # Live in-process signal only (#474) — never trust thread.json's
+            # persisted status, which can be stuck at 'running' forever after a
+            # mid-turn crash (#462) and would otherwise pin the Walkie-Talkie
+            # orb on THINKING… indefinitely.
+            busy = HypervisorSession.is_turn_live(thread_id)
         return thread_id, busy
 
     def handle_gateway_internal_inbound(self):
@@ -9532,11 +9535,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         # Record the user's own bubble + the inbound "wire" (the provider webhook
         # shape WhatsApp would POST) so the UI can show both sides of the wire.
-        preview.transcript.add('in', display, kind='message', wire={
+        # Added BEFORE dispatch so it appears instantly, but the thread it
+        # belongs to isn't known yet (a `new chat` mints a brand-new one inside
+        # handle_inbound) — back-fill it from the result below (#474).
+        item = preview.transcript.add('in', display, kind='message', wire={
             'inbound': {'from': INTERNAL_IDENTITY, 'text': text, 'button': button}})
         raw = RawRequest(method='POST', form={
             'from': INTERNAL_IDENTITY, 'text': text, 'button': button})
         result = gw.handle_inbound(loop, raw)
+        if result.thread_id:
+            preview.transcript.set_meta(item['seq'], {'thread_id': result.thread_id})
         self.send_json({'ok': True, 'action': result.action,
                         'cursor': preview.transcript.cursor()})
 
