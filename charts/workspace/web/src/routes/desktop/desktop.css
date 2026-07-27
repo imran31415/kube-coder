@@ -523,7 +523,40 @@
 }
 .dt-dock-btn:active { transform: translateY(0); }
 .dt-dock-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.dt-dock-emoji { font-size: 24px; line-height: 1; user-select: none; }
+/* User-supplied emoji (#507). The dock is deliberately monochrome line-work,
+   so a full-colour emoji is normalized rather than rejected: a neutral rounded
+   tile behind it, a grayscale wash over it, and a smaller optical size so it
+   carries the same visual weight as the Icon glyphs beside it (and reads the
+   same in light and dark). Hover/focus eases the wash back so the glyph is
+   still recognisable when you reach for it — nothing about the launcher
+   changes functionally. */
+.dt-dock-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--surface-3);
+  font-size: 17px;
+  line-height: 1;
+  user-select: none;
+  filter: grayscale(1);
+  opacity: 0.88;
+  transition: filter var(--motion-fast), opacity var(--motion-fast);
+}
+.dt-dock-btn:hover .dt-dock-emoji,
+.dt-dock-btn:focus-visible .dt-dock-emoji {
+  filter: grayscale(0.5);
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-dock-emoji { transition: none; }
+}
+/* "Done" emoji swapped for the line check — the one place the dock carries a
+   colour, and it's a token, so it tracks the theme. */
+.dt-dock-ok { display: inline-flex; color: var(--success); }
+.dt-dock-ok svg { color: inherit; }
 
 /* A hairline breathing gap before the trailing "+". */
 .dt-dock-item-add {
@@ -743,7 +776,7 @@
     pointer-events: auto;
   }
   .dt-dock-btn { width: 42px; height: 42px; }
-  .dt-dock-emoji { font-size: 22px; }
+  .dt-dock-emoji { width: 26px; height: 26px; font-size: 16px; }
   /* Tooltips point downward off a floating dock; inline at the page bottom they
      have room above, so keep the default (above) placement — nothing to do. */
 }

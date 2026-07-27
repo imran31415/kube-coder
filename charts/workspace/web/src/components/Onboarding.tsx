@@ -15,6 +15,13 @@ import './Onboarding.css';
 
 const DONE_KEY = 'kc.onboardingDone';
 
+// Step indices the open logic below jumps to. Named so the fast-path reads as
+// intent rather than as magic numbers.
+const STEP_WELCOME = 0;
+const STEP_IDENTITY = 1;
+const STEP_SSH = 3;
+const STEP_CLAUDE = 4;
+
 export function Onboarding() {
   const [show, setShow] = useState(false);
   const [step, setStep] = useState(0);
@@ -30,6 +37,42 @@ export function Onboarding() {
   const ref = useRef<HTMLDivElement | null>(null);
   useFocusTrap(show, ref);
 
+  // Where to open (#505). The two probes below race, so each records what it
+  // learned and lets openAtFirstGap() decide once the git status is in. Steps
+  // the workspace already satisfies are skipped: on a provisioned workspace git
+  // identity + SSH are pre-configured and the only real gate is "Connect
+  // Claude", which used to sit four clicks deep behind steps with nothing to do.
+  const opened = useRef(false);
+  const gitProbe = useRef<{ done: boolean; status: GitHubStatus | null }>({
+    done: false,
+    status: null,
+  });
+  const claudeGap = useRef(false);
+
+  function openAtFirstGap() {
+    if (opened.current) return;
+    const { done, status: s } = gitProbe.current;
+    if (!done) return; // the git probe owns every step before Claude — wait for it
+    let target: number;
+    if (s === null) {
+      // Workspace unreachable: we can't tell what's configured, so only a known
+      // Claude gap opens the wizard — and it opens at the top, as before.
+      if (!claudeGap.current) return;
+      target = STEP_WELCOME;
+    } else {
+      const identityOk = !!(s.git_user_name && s.git_user_email);
+      const sshOk = !!s.ssh_key_exists;
+      if (identityOk && sshOk && !claudeGap.current) return; // nothing to do
+      if (!identityOk && !sshOk) target = STEP_WELCOME; // fresh workspace: introduce it
+      else if (!identityOk) target = STEP_IDENTITY;
+      else if (!sshOk) target = STEP_SSH;
+      else target = STEP_CLAUDE; // the beta fast-path: Claude is the only gate
+    }
+    opened.current = true;
+    setStep(target);
+    setShow(true);
+  }
+
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
     if (localStorage.getItem(DONE_KEY) === 'true') return;
@@ -38,11 +81,14 @@ export function Onboarding() {
         setStatus(s);
         setName(s.git_user_name ?? '');
         setEmail(s.git_user_email ?? '');
-        // Don't auto-open if everything's already set.
-        if (!s.ssh_key_exists || !s.git_user_email) setShow(true);
+        gitProbe.current = { done: true, status: s };
+        openAtFirstGap();
       })
       .catch(() => {
-        // Workspace not reachable — skip onboarding silently.
+        // Workspace not reachable — nothing known about git; a Claude gap can
+        // still open the wizard (at the top), otherwise stay quiet.
+        gitProbe.current = { done: true, status: null };
+        openAtFirstGap();
       });
     // Tailor onboarding to the configured default assistant (#395). A trial
     // workspace on a free assistant (e.g. opencode-zen) needs no Claude login,
@@ -56,14 +102,20 @@ export function Onboarding() {
         setAssistantIsClaude(isClaude);
         if (isClaude) {
           void refreshClaudeReady().then((r) => {
-            if (r === false) setShow(true);
+            if (r === false) {
+              claudeGap.current = true;
+              openAtFirstGap();
+            }
           });
         }
       })
       .catch(() => {
         // Config unreachable — assume the Claude default and keep #494 behaviour.
         void refreshClaudeReady().then((r) => {
-          if (r === false) setShow(true);
+          if (r === false) {
+            claudeGap.current = true;
+            openAtFirstGap();
+          }
         });
       });
   }, []);
@@ -233,16 +285,15 @@ export function Onboarding() {
           )}
         </>
       ),
-      action: (
-        <>
-          <Button variant="ghost" onClick={() => setStep(5)}>
-            {assistantIsClaude && !claudeReady.value ? 'Skip for now' : 'Continue'}
-          </Button>
-          {assistantIsClaude && !claudeReady.value && (
-            <span class="ob-note muted">Connect above to continue</span>
-          )}
-        </>
-      ),
+      // The real CTA lives inside <ClaudeCredentialSetup>, so until Claude is
+      // connected the footer had nothing to offer but a ghost "Skip for now"
+      // and a muted note — which read as a dead control bar (#505). Suppress it
+      // entirely while the panel owns the action ("Skip tour" in the header is
+      // still the way out), then show one primary Continue once connected.
+      action:
+        assistantIsClaude && !claudeReady.value ? null : (
+          <Button variant="primary" onClick={() => setStep(5)}>Continue</Button>
+        ),
     },
     {
       title: 'Meet your AI CTO',
@@ -290,7 +341,7 @@ export function Onboarding() {
         </header>
         <h2 class="ob-title">{s.title}</h2>
         <div class="ob-body">{s.body}</div>
-        <footer class="ob-footer">{s.action}</footer>
+        {s.action && <footer class="ob-footer">{s.action}</footer>}
         <div class="ob-progress" aria-hidden>
           {steps.map((_, i) => (
             <span key={i} class={`ob-bullet ${i === step ? 'ob-bullet-active' : i < step ? 'ob-bullet-done' : ''}`} />
