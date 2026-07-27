@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { isErrorResponse } from '../../api/client';
 import { subscribeEvents } from '../../api/events';
@@ -67,6 +68,29 @@ interface AudioTap {
   raf: number;
 }
 
+/** Thread this transcript entry belongs to, or null when it's an untagged
+ *  system notice (not-linked, expired token, workspace list, "nothing is
+ *  running", …) that should always render regardless of which thread is
+ *  currently live — those aren't conversational content tied to one chat. */
+export function messageThreadId(m: PreviewMessage): string | null {
+  const t = m.meta?.thread_id;
+  return typeof t === 'string' && t ? t : null;
+}
+
+/** True when `m` belongs to the live thread, or carries no thread at all
+ *  (untagged notices are always visible). Scopes the live card + narration
+ *  to the current conversation so a foreign or since-rotated thread's reply
+ *  never bleeds in or gets spoken aloud (issue #474). */
+export function inLiveThread(m: PreviewMessage, liveThreadId: string | null): boolean {
+  const t = messageThreadId(m);
+  return t === null || t === liveThreadId;
+}
+
+// Defensive settle (#474): even a turn THIS surface started can't pin the
+// orb on THINKING… forever — if nothing ever resolves it, give up rather
+// than trust the server's busy flag indefinitely.
+const MAX_THINKING_MS = 120_000;
+
 export function WalkieTalkie() {
   const [state, setState] = useState<PreviewState | null>(null);
   const [draft, setDraft] = useState('');
@@ -110,6 +134,19 @@ export function WalkieTalkie() {
   // Newest outbound seq already narrated; null until the first snapshot lands
   // (history is never narrated — only messages that arrive while watching).
   const narratedSeq = useRef<number | null>(null);
+  // Turn ownership (#474): set the moment THIS surface sends a message,
+  // cleared once its answer lands (or the watchdog below fires). The gateway
+  // busy flag only drives the orb into THINKING… while this is set — never
+  // on its own — so activity elsewhere on the bound thread (Hypervisor chat,
+  // WhatsApp, cron, a stuck session) can never spin the orb for a query the
+  // user never asked here.
+  const pendingTurn = useRef<{ sinceCursor: number } | null>(null);
+  const busyWatchdog = useRef<number | null>(null);
+  // The thread this surface is currently showing. undefined until the first
+  // snapshot; tracked so a rotation (new chat / silent re-bind) can reset the
+  // narration + turn-ownership bookkeeping instead of bleeding into the new
+  // conversation.
+  const liveThreadRef = useRef<string | null | undefined>(undefined);
 
   const speakOn = speakReplies.value;
   const handsFreeOn = handsFree.value;
@@ -158,11 +195,27 @@ export function WalkieTalkie() {
     }
   }, [state?.linked, state?.available]);
 
+  // Reset narration + turn-ownership bookkeeping whenever the LIVE thread
+  // changes (new chat / a silent re-bind because the old thread vanished,
+  // #474). Without this, an old thread's still-arriving reply keeps the
+  // narration watermark advancing and a pending turn can be "answered" by a
+  // conversation that isn't even the one on screen anymore.
+  useEffect(() => {
+    const tid = state?.thread_id ?? null;
+    if (liveThreadRef.current === tid) return;
+    liveThreadRef.current = tid;
+    narratedSeq.current = null;
+    pendingTurn.current = null;
+    clearBusyWatchdog();
+    if (phaseRef.current === 'thinking') dispatch('quiet');
+  }, [state?.thread_id]);
+
   // ── narration: speak replies that arrive while watching ───────────────────
   useEffect(() => {
     if (!state) return;
+    const liveId = state.thread_id;
     const outs = state.messages.filter(
-      (m) => m.direction === 'out' && m.kind !== 'notice',
+      (m) => m.direction === 'out' && m.kind !== 'notice' && inLiveThread(m, liveId),
     );
     if (narratedSeq.current === null) {
       // First snapshot — everything on screen is history.
@@ -182,12 +235,30 @@ export function WalkieTalkie() {
     watchSpeech();
   }, [state?.cursor, speakOn]);
 
-  // Mirror the gateway busy flag into the phase machine, and settle `thinking`
-  // back to idle once the turn is over and nothing is being narrated. (Runs
-  // after the narration effect, so a just-queued reply keeps the floor.)
+  // Mirror the gateway busy flag into the phase machine — but ONLY while this
+  // surface owns the turn currently in flight (#474). Server `busy` is
+  // confirmation, never the trigger: activity elsewhere on the bound thread
+  // (Hypervisor chat, WhatsApp, cron, a stuck/crashed session) can no longer
+  // spin the orb, and the chip/orb label are both derived from `phase` below
+  // so they can't disagree with each other either. Runs after the narration
+  // effect, so a just-queued reply keeps the floor.
   useEffect(() => {
     if (!state) return;
-    if (state.busy) {
+    // Resolve our own pending turn the moment its answer lands, regardless of
+    // what `state.busy` currently says — this consumes the "I sent
+    // something" watermark so a later, unrelated busy can't re-trigger it.
+    if (pendingTurn.current) {
+      const watermark = pendingTurn.current.sinceCursor;
+      const answered = state.messages.some(
+        (m) => m.direction === 'out' && m.kind !== 'notice' && m.seq > watermark,
+      );
+      if (answered) {
+        pendingTurn.current = null;
+        clearBusyWatchdog();
+      }
+    }
+    const owned = pendingTurn.current !== null;
+    if (state.busy && owned) {
       dispatch('busy');
       return;
     }
@@ -205,6 +276,23 @@ export function WalkieTalkie() {
     } catch {
       return false;
     }
+  }
+
+  function clearBusyWatchdog() {
+    if (busyWatchdog.current !== null) {
+      clearTimeout(busyWatchdog.current);
+      busyWatchdog.current = null;
+    }
+  }
+
+  /** Arm the defensive-settle timer for a turn this surface just sent. */
+  function armBusyWatchdog() {
+    clearBusyWatchdog();
+    busyWatchdog.current = window.setTimeout(() => {
+      pendingTurn.current = null;
+      busyWatchdog.current = null;
+      if (phaseRef.current === 'thinking') dispatch('quiet');
+    }, MAX_THINKING_MS);
   }
 
   /** Poll the TTS engine until it goes quiet, then settle the phase. */
@@ -460,11 +548,17 @@ export function WalkieTalkie() {
 
   async function sendVoice(text: string) {
     try {
-      await sendPreview(text);
+      const res = await sendPreview(text);
+      // Own this turn (#474) — the busy-mirror effect only shows THINKING…
+      // while we're waiting on OUR OWN reply, using this as the watermark.
+      pendingTurn.current = { sinceCursor: res.cursor };
+      armBusyWatchdog();
       dispatch('sent');
       await refresh();
     } catch {
       setVoiceHint('Send failed — check the gateway and try again');
+      pendingTurn.current = null;
+      clearBusyWatchdog();
       dispatch('cancel');
     }
   }
@@ -476,9 +570,16 @@ export function WalkieTalkie() {
     stopSpeaking();
     setBusySend(true);
     try {
-      await sendPreview(button ? '' : text, button);
+      const res = await sendPreview(button ? '' : text, button);
+      // Own this turn (#474) — see sendVoice above for why.
+      pendingTurn.current = { sinceCursor: res.cursor };
+      armBusyWatchdog();
       if (!button) setDraft('');
       await refresh();
+    } catch (err) {
+      pendingTurn.current = null;
+      clearBusyWatchdog();
+      throw err;
     } finally {
       setBusySend(false);
     }
@@ -503,6 +604,8 @@ export function WalkieTalkie() {
     setVoiceHint('');
     dispatch('cancel');
     narratedSeq.current = null;
+    pendingTurn.current = null;
+    clearBusyWatchdog();
     await previewControl('reset');
     await refresh();
   }
@@ -519,6 +622,7 @@ export function WalkieTalkie() {
       stopSpeaking();
       closeTap();
       if (speechTimer.current) clearInterval(speechTimer.current);
+      clearBusyWatchdog();
     },
     [],
   );
@@ -537,26 +641,39 @@ export function WalkieTalkie() {
 
   // ── derived view state ────────────────────────────────────────────────────
   const linked = !!state?.linked;
-  const busy = !!state?.busy;
-  const signal = !state?.available ? 'off' : busy ? 'busy' : linked ? 'live' : 'down';
+  // THINKING… is derived from `phase`, not straight from state.busy (#474) —
+  // phase is already gated on turn ownership above, so the chip and the orb
+  // (whose own label also comes from `phase` via orbCopy below) can never
+  // disagree about whether this surface is actually waiting on something.
+  const thinking = phase === 'thinking';
+  const signal = !state?.available ? 'off' : thinking ? 'busy' : linked ? 'live' : 'down';
   const signalLabel = !state?.available
     ? 'OFFLINE'
-    : busy
+    : thinking
       ? 'THINKING…'
       : linked
         ? 'LINKED'
         : 'NOT LINKED';
 
+  // Thread scoping (#474): the live card/lastIn/"you" bubble only ever show
+  // the CURRENT conversation — untagged system notices (not-linked, workspace
+  // list, …) still always show. The History panel keeps every prior
+  // conversation (segmented by a divider below) so nothing is lost, it's just
+  // never mixed into the live exchange.
+  const liveThreadId = state?.thread_id ?? null;
   const messages = state?.messages ?? [];
-  const conversational = messages.filter((m) => m.kind !== 'notice');
-  const lastOutIdx = conversational.reduce(
+  const allConversational = messages.filter((m) => m.kind !== 'notice');
+  const liveConversational = allConversational.filter((m) => inLiveThread(m, liveThreadId));
+  const lastOutIdx = liveConversational.reduce(
     (acc, m, i) => (m.direction === 'out' ? i : acc),
     -1,
   );
-  const card: PreviewMessage | null = lastOutIdx >= 0 ? conversational[lastOutIdx] : null;
+  const card: PreviewMessage | null = lastOutIdx >= 0 ? liveConversational[lastOutIdx] : null;
   // The user's line this reply answers — the newest inbound before/after the card.
-  const lastIn = [...conversational].reverse().find((m) => m.direction === 'in') ?? null;
-  const history = conversational.slice(0, Math.max(lastOutIdx, 0));
+  const lastIn = [...liveConversational].reverse().find((m) => m.direction === 'in') ?? null;
+  // Everything before the live card, across every thread — the divider below
+  // marks where one conversation ends and the next begins.
+  const history = card ? allConversational.filter((m) => m.seq < card.seq) : allConversational;
   const youOpen = lastIn !== null && youOpenSeq === lastIn.seq;
   const copy = orbCopy(phase, {
     available: !!state?.available,
@@ -687,19 +804,33 @@ export function WalkieTalkie() {
         )}
         {showHistory && (
           <div class="wt-history" ref={historyRef}>
-            {history.map((m) => (
-              <div
-                key={m.seq}
-                class={`wt-msg wt-msg-${m.direction} ${m.kind === 'template' ? 'wt-msg-template' : ''}`}
-              >
-                <div class="wt-bubble">
-                  {m.kind === 'template' && (
-                    <span class="wt-tag">TEMPLATE · out-of-window</span>
+            {history.map((m, i) => {
+              // A divider marks where one conversation ends and the next
+              // begins (#474) — only drawn between two REAL, differing
+              // threads; an untagged system notice never breaks the run.
+              const tid = messageThreadId(m);
+              const prevTid = i > 0 ? messageThreadId(history[i - 1]) : null;
+              const showDivider = tid !== null && prevTid !== null && tid !== prevTid;
+              return (
+                <Fragment key={m.seq}>
+                  {showDivider && (
+                    <div class="wt-thread-divider" role="separator">
+                      <span>New conversation</span>
+                    </div>
                   )}
-                  <div class="wt-bubble-text">{m.text}</div>
-                </div>
-              </div>
-            ))}
+                  <div
+                    class={`wt-msg wt-msg-${m.direction} ${m.kind === 'template' ? 'wt-msg-template' : ''}`}
+                  >
+                    <div class="wt-bubble">
+                      {m.kind === 'template' && (
+                        <span class="wt-tag">TEMPLATE · out-of-window</span>
+                      )}
+                      <div class="wt-bubble-text">{m.text}</div>
+                    </div>
+                  </div>
+                </Fragment>
+              );
+            })}
           </div>
         )}
 

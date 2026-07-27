@@ -59,6 +59,29 @@ class PreviewTranscriptTest(unittest.TestCase):
         item = t.add('in', 'b')
         self.assertGreater(item['seq'], 1)
 
+    # ── thread tagging (issue #474) ────────────────────────────────────────
+
+    def test_meta_round_trips_thread_id(self):
+        t = gw.PreviewTranscript()
+        item = t.add('in', 'x', meta={'thread_id': 't1'})
+        self.assertEqual(item['meta']['thread_id'], 't1')
+        self.assertEqual(t.since(0)[0]['meta']['thread_id'], 't1')
+
+    def test_set_meta_patches_existing_entry(self):
+        # Mirrors the real back-fill: the inbound bubble is added BEFORE
+        # dispatch (so it appears instantly), and its thread isn't known
+        # until dispatch resolves it — possibly a brand-new thread on a
+        # rotation.
+        t = gw.PreviewTranscript()
+        item = t.add('in', 'x')
+        self.assertEqual(item['meta'], {})
+        self.assertTrue(t.set_meta(item['seq'], {'thread_id': 't1'}))
+        self.assertEqual(t.since(0)[0]['meta']['thread_id'], 't1')
+
+    def test_set_meta_unknown_seq_returns_false(self):
+        t = gw.PreviewTranscript()
+        self.assertFalse(t.set_meta(999, {'thread_id': 't1'}))
+
 
 class GatewayPreviewProbeTest(unittest.TestCase):
     def test_probe_only_forces_internal_identity_when_simulating(self):
@@ -110,6 +133,20 @@ class LoopbackAdapterTest(unittest.TestCase):
         item = self.t.since(0)[-1]
         self.assertEqual(item['kind'], 'template')
         self.assertEqual(item['wire']['payloads'][0]['type'], 'template')
+
+    def test_outbound_records_thread_id(self):
+        self.a.outbound(gw.OutboundMessage(
+            channel_identity='internal:local', text='hi', thread_id='t1'))
+        item = self.t.since(0)[-1]
+        self.assertEqual(item['meta']['thread_id'], 't1')
+
+    def test_outbound_thread_id_defaults_empty(self):
+        # Genuinely thread-less system replies (not-linked, workspace list, …)
+        # stay untagged — the client treats an empty thread_id as "always
+        # visible", not "belongs to nothing".
+        self.a.outbound(gw.OutboundMessage(channel_identity='internal:local', text='hi'))
+        item = self.t.since(0)[-1]
+        self.assertEqual(item['meta']['thread_id'], '')
 
 
 class LoopbackIntegrationTest(unittest.TestCase):
@@ -178,6 +215,49 @@ class LoopbackIntegrationTest(unittest.TestCase):
     def test_unknown_before_link_gets_not_linked(self):
         res = self._inbound('hi there')
         self.assertEqual(res.action, 'not_linked')
+
+    def test_two_threads_get_independently_tagged_replies(self):
+        """Each turn's reply is tagged with the thread that actually produced
+        it, not whatever the binding's CURRENT default happens to be — this
+        is the exact backend contract the Walkie-Talkie client's per-thread
+        scoping relies on to never bleed a foreign/rotated conversation into
+        the live view (issue #474). This harness drives the CORE gateway
+        directly (bypassing the HTTP handler that writes the 'in' bubble —
+        see test_inbound_backfills_the_post_rotation_thread_id for that half),
+        so only the 'out' replies are checked here."""
+        self._link()
+        res1 = self._inbound('first turn')
+        self.assertEqual(res1.action, 'dispatched')
+        thread_a = res1.thread_id
+        self.assertIsNotNone(thread_a)
+        self.assertTrue(_wait(lambda: any(
+            m['direction'] == 'out' and m['text'] == 'first turn'
+            for m in self.preview.transcript.since(0))),
+            'first turn never echoed back')
+
+        # Force the NEXT inbound to start a brand-new thread — exactly what a
+        # genuine rotation (new chat / the old thread vanishing out from
+        # under the binding) produces from the gateway's point of view: the
+        # binding no longer points at thread_a.
+        self.reg.set_default_thread(gw.INTERNAL_IDENTITY, 'default', None)
+        res2 = self._inbound('second turn')
+        self.assertEqual(res2.action, 'dispatched')
+        thread_b = res2.thread_id
+        self.assertIsNotNone(thread_b)
+        self.assertNotEqual(thread_a, thread_b)
+        self.assertTrue(_wait(lambda: any(
+            m['direction'] == 'out' and m['text'] == 'second turn'
+            for m in self.preview.transcript.since(0))),
+            'second turn never echoed back')
+
+        entries = self.preview.transcript.since(0)
+        out_a = next(m for m in entries if m['direction'] == 'out' and m['text'] == 'first turn')
+        out_b = next(m for m in entries if m['direction'] == 'out' and m['text'] == 'second turn')
+        self.assertEqual(out_a['meta'].get('thread_id'), thread_a)
+        self.assertEqual(out_b['meta'].get('thread_id'), thread_b)
+        # Late-delivery bleed check: thread_a's reply is NEVER attributed to
+        # thread_b, even though thread_b is now the live/default thread.
+        self.assertNotEqual(out_a['meta'].get('thread_id'), thread_b)
 
 
 class PreviewRouteTest(unittest.TestCase):
@@ -264,6 +344,54 @@ class PreviewRouteTest(unittest.TestCase):
         self.assertFalse(self.reg.is_linked(gw.INTERNAL_IDENTITY))
         self.assertEqual(self.preview.transcript.since(0), [])
 
+    def test_inbound_backfills_the_post_rotation_thread_id(self):
+        """The user's own bubble is written BEFORE dispatch (so it appears
+        instantly) but must end up tagged with whatever thread dispatch
+        actually resolved — including a brand-new one minted mid-request
+        (issue #474)."""
+        rotating = _RotatingClient()
+        self.gateway.client_factory = lambda b: rotating
+        self.reg.bind(gw.INTERNAL_IDENTITY, 'internal', workspace='default',
+                     workspace_host='h', token='tok')
+        h = self._handler()
+        h.read_json_body.return_value = {'text': 'ping'}
+        server.BrowserHandler.handle_gateway_internal_inbound(h)
+        obj = self.last()[0]
+        self.assertTrue(obj['ok'])
+        entries = self.preview.transcript.since(0)
+        in_entry = next(m for m in entries if m['text'] == 'ping')
+        self.assertEqual(in_entry['meta'].get('thread_id'), 'rot-1')
+
+    def test_busy_ignores_stale_running_status_with_no_live_turn(self):
+        """A crash mid-turn can leave thread.json stuck at 'running' forever
+        (#462) — _gw_internal_status must not trust it, or the Walkie-Talkie
+        orb would be pinned on THINKING… indefinitely (#474)."""
+        import hypervisor_session as hs_mod
+        tmp = tempfile.mkdtemp()
+        orig_dir = hs_mod.HYPERVISOR_DIR
+        hs_mod.HYPERVISOR_DIR = tmp
+        try:
+            session = hs_mod.HypervisorSession.create(
+                assistant='echo', workdir=tmp, cli_cmd='cat')
+            meta = session.read_meta()
+            meta['status'] = 'running'
+            session._write_meta(meta)
+            # Confirm the OLD/naive signal really would say "running" — the
+            # bug this guards against.
+            self.assertEqual(session.status(), 'running')
+
+            self.reg.bind(gw.INTERNAL_IDENTITY, 'internal', workspace='default',
+                         workspace_host='h', token='tok',
+                         default_thread_id=session.id)
+            h = self._handler()
+            h.path = '/api/gateway/internal/transcript?since=0'
+            server.BrowserHandler.handle_gateway_internal_transcript(h)
+            obj = self.last()[0]
+            self.assertEqual(obj['thread_id'], session.id)
+            self.assertFalse(obj['busy'])
+        finally:
+            hs_mod.HYPERVISOR_DIR = orig_dir
+
 
 class _NoopClient:
     def create_thread(self):
@@ -280,6 +408,23 @@ class _NoopClient:
         return True
     def exists(self, tid):
         return True
+
+
+class _RotatingClient(_NoopClient):
+    """Like _NoopClient, but create_thread() mints a fresh id each call and
+    exists() only recognizes ids this client actually minted — lets a route
+    test express real thread rotation, which the constant-id _NoopClient
+    cannot (issue #474)."""
+    def __init__(self):
+        self._minted = set()
+        self._n = 0
+    def create_thread(self):
+        self._n += 1
+        tid = f'rot-{self._n}'
+        self._minted.add(tid)
+        return tid
+    def exists(self, tid):
+        return tid in self._minted
 
 
 if __name__ == '__main__':

@@ -1620,6 +1620,19 @@ class HypervisorSession:
         m = self.read_meta() or {}
         return m.get('status', 'idle')
 
+    @staticmethod
+    def is_turn_live(thread_id: str) -> bool:
+        """True only when a turn is ACTUALLY running right now, per the live
+        in-process _RUNNING registry — never trusts meta['status'], which can
+        get stuck at 'running' forever after a crash mid-turn (#462), because
+        nothing reconciles it outside of server startup. Mirrors the same
+        signal WatcherManager._default_deliver already relies on, for the
+        identical reason (see its docstring below). Consumers that must not
+        be pinned indefinitely by a stale thread.json — e.g. the Walkie-Talkie
+        preview's busy flag (#474) — should call this instead of status()."""
+        with _RUNLOCK:
+            return bool(_RUNNING.get(thread_id))
+
     def set_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Rename the chat. Marks the title as user-set (`title_custom`) so the
         first-message auto-title in send() never clobbers a manual rename.

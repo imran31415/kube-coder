@@ -229,6 +229,27 @@
   border-radius: var(--radius);
 }
 
+/* Marks a thread boundary in the History panel (#474) — a full-width row
+   between two conversations, distinct from either side's bubble alignment. */
+.wt-thread-divider {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: var(--size-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.wt-thread-divider::before,
+.wt-thread-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
 .wt-msg {
   display: flex;
   flex-direction: column;

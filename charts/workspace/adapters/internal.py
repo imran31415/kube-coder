@@ -69,7 +69,8 @@ class LoopbackAdapter:
         item = self.transcript.add(
             'out', msg.text, wire=wire, quick_replies=list(msg.quick_replies),
             kind=kind, meta={'provider': self.wire_provider.name,
-                             'seq': msg.seq})
+                             'seq': msg.seq,
+                             'thread_id': msg.thread_id})
         if self.publish is not None:
             try:
                 self.publish('gateway.preview', {'seq': item['seq']})
