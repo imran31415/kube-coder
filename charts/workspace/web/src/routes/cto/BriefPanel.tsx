@@ -69,13 +69,59 @@ function MemoryRow({ m, withDate = false }: { m: BriefMemory; withDate?: boolean
   );
 }
 
-export function BriefPanel() {
+/** The collapsed brief (#530): a thin vertical edge tab that reads "Brief" and
+ *  carries a dot when the delta signal says the brief moved since the last
+ *  visit — so a fresh brief is never silently hidden. */
+export function BriefTab({ onExpand, delta = false }: { onExpand: () => void; delta?: boolean }) {
+  const label = delta ? 'Show project brief — updated' : 'Show project brief';
+  return (
+    <div class="cto-brief-tab">
+      <button
+        type="button"
+        class="cto-brief-tab-btn"
+        onClick={onExpand}
+        aria-expanded={false}
+        aria-controls="cto-brief"
+        aria-label={label}
+        title={label}
+      >
+        <Icon name="mission" size={14} />
+        <span class="cto-brief-tab-label">Brief</span>
+        {delta && <span class="cto-brief-tab-dot" aria-hidden="true" />}
+      </button>
+    </div>
+  );
+}
+
+/** Collapse control rendered inside the expanded panel — desktop only; the
+ *  mobile bottom sheet has its own dismiss. */
+function BriefCollapse({ onCollapse }: { onCollapse: () => void }) {
+  return (
+    <div class="cto-brief-bar">
+      <button
+        type="button"
+        class="cto-brief-collapse"
+        onClick={onCollapse}
+        aria-expanded
+        aria-controls="cto-brief"
+        aria-label="Collapse project brief"
+        title="Collapse brief"
+      >
+        <Icon name="chevron-right" size={14} />
+      </button>
+    </div>
+  );
+}
+
+export function BriefPanel({ onCollapse }: { onCollapse?: () => void } = {}) {
   const b = brief.value;
   const loading = briefLoading.value && !b;
+  const bar = onCollapse ? <BriefCollapse onCollapse={onCollapse} /> : null;
 
   if (selectedProjectId.value === null) {
     return (
-      <aside class="cto-brief" aria-label="Project brief">
+      <aside id="cto-brief" class="cto-brief" aria-label="Project brief">
+        {bar}
         <div class="cto-brief-empty">
           <p class="cto-brief-empty-lead">Workspace scope</p>
           <p class="cto-brief-empty-sub">
@@ -90,7 +136,8 @@ export function BriefPanel() {
 
   if (loading) {
     return (
-      <aside class="cto-brief" aria-label="Project brief" aria-busy="true">
+      <aside id="cto-brief" class="cto-brief" aria-label="Project brief" aria-busy="true">
+        {bar}
         <div class="cto-brief-skel cto-skel" aria-hidden="true" />
         <div class="cto-brief-skel cto-skel" aria-hidden="true" />
         <div class="cto-brief-skel cto-skel" aria-hidden="true" />
@@ -100,7 +147,8 @@ export function BriefPanel() {
 
   if (!b) {
     return (
-      <aside class="cto-brief" aria-label="Project brief">
+      <aside id="cto-brief" class="cto-brief" aria-label="Project brief">
+        {bar}
         <div class="cto-brief-empty">
           <p class="cto-brief-empty-sub">No brief available.</p>
         </div>
@@ -118,7 +166,8 @@ export function BriefPanel() {
     b.memories.length === 0 &&
     b.tasks.total === 0;
   return (
-    <aside class="cto-brief" aria-label="Project brief">
+    <aside id="cto-brief" class="cto-brief" aria-label="Project brief">
+      {bar}
       <header class="cto-brief-top">
         <span class="cto-eyebrow">Brief</span>
         <h2 class="cto-brief-title">{p.name}</h2>
