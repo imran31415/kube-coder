@@ -181,6 +181,19 @@ def cto_available():
     """AI CTO is usable only when its flag is on AND the Hypervisor it rides is
     available (#467). Resolved at call time so it tracks _HYPERVISOR_AVAILABLE."""
     return CTO_ENABLED and HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE
+
+
+def _is_first_cto_thread():
+    """True when the workspace has no CTO thread yet — i.e. the one being created
+    is the user's first-ever AI-CTO conversation (#486). Counts deleted threads
+    too: someone who already had a CTO thread and removed it is not a first-time
+    user. Best-effort — any error resolves to False so we fall back to the normal
+    propose-then-confirm posture rather than mis-firing the fast-path."""
+    try:
+        threads = HypervisorSession.list(include_deleted=True)
+    except Exception:
+        return False
+    return not any((t.get('persona') or '') == 'cto' for t in threads)
 # Short context note pasted as the first message of a new chat, so the agent
 # knows its role + that it has the dashboard tools. Kept terse on purpose —
 # a big preamble front-loads noise and some CLIs handle it poorly.
@@ -299,6 +312,33 @@ CTO_PREAMBLE = (
     "```\n"
     "Use it only for genuine either/or decisions, keep each option short, and "
     "never put anything after the block. The user can always type instead.]\n\n"
+)
+
+# First-win fast-path (#486). A brand-new user's very first CTO thread should
+# feel like magic: they type ONE sentence and a real build just starts, with the
+# live preview (#484/#485) auto-surfacing as it comes up — no ```choice gate, no
+# confirmation click. This addendum is appended to CTO_PREAMBLE ONLY for the
+# user's first-ever CTO thread that opens with a message; it OVERRIDES the
+# DISPATCH gate for the opening request alone, then hands back to the normal
+# propose-then-confirm posture for every later turn. It rides entirely on the
+# existing create_task auto-arm + auto-preview wiring from #490 — no new tools.
+CTO_FIRST_WIN_ADDENDUM = (
+    "[System: FIRST-WIN ONBOARDING — this is the user's very first message to "
+    "their AI CTO, so make it land. Treat their opening sentence as a "
+    "go-ahead to BUILD, not a topic to discuss or a plan to ratify. For THIS "
+    "opening request ONLY, override the DISPATCH rule's confirmation gate: do "
+    "NOT propose a numbered breakdown and do NOT end with a ```choice fence. "
+    "Instead, acknowledge in one short line what you're spinning up, then "
+    "immediately create_task to dispatch a real build agent (default its "
+    "workdir to the project's first workdir, leave preview on) and arm a "
+    "`watch` of kind 'task' on it — exactly as DISPATCH describes, just without "
+    "waiting for a click. A live preview auto-embeds here the moment the "
+    "build's dev server starts, so end your turn right after dispatching; do "
+    "not poll. Exception: if the opening message is plainly NOT a build request "
+    "(a bare greeting, a question, a vague 'help me think'), answer normally — "
+    "don't force a build. Once this first build is dispatched, REVERT to the "
+    "normal propose-then-confirm posture for every subsequent request in this "
+    "thread; the no-gate autonomy is for the opening build ONLY.]\n\n"
 )
 
 # Conversation Gateway (issue #306) — public host the gateway advertises when
@@ -8194,6 +8234,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     + f"[System: Project brief for `{project_id}` — a "
                     "point-in-time snapshot; call get_project_brief for live "
                     "state.]\n\n" + brief['brief_markdown'] + "\n\n")
+            # First-win fast-path (#486): the user's first-ever CTO thread that
+            # opens with a sentence should build immediately, without the
+            # ```choice gate. Append the addendum LAST so it overrides the
+            # DISPATCH rule for the opening turn. An empty opener (thread opened
+            # with no message) is not a build request, so it stays gated.
+            if message and _is_first_cto_thread():
+                preamble = preamble + CTO_FIRST_WIN_ADDENDUM
         # A CTO thread defaults its workdir to the project's first workdir (so
         # relative paths + dispatched tasks land in the project) when the client
         # didn't pin one; otherwise the usual hypervisor workdir.
