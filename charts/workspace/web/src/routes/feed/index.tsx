@@ -15,6 +15,7 @@ import {
   type FeedFilter,
 } from '../../store/feed';
 import { projects } from '../../store/projects';
+import { GuidePanel } from '../../components/GuidePanel';
 import { FeedItemView } from './FeedItem';
 import './feed.css';
 
@@ -150,6 +151,26 @@ export function FeedRoute() {
             )}
           </div>
         </header>
+
+        <GuidePanel
+          title="How the Feed works"
+          storageKey="kc.guide.feed"
+          intro="A running log of what changed and what matters across your workspace. Your AI CTO and your builds post here as things happen — you don't have to go looking."
+          steps={[
+            {
+              title: 'Briefings summarize',
+              body: 'Your CTO posts short summaries — where a project stands, what it decided, what it needs from you.',
+            },
+            {
+              title: 'Activity and decisions stream',
+              body: 'Builds starting and finishing land as Activity; choices the CTO made land as Decisions, so you can see the reasoning after the fact.',
+            },
+            {
+              title: 'Filter and focus',
+              body: 'The chips narrow by kind (Briefings / News / Activity / Decisions); the project selector scopes to one project. Items mark themselves read as you scroll past them.',
+            },
+          ]}
+        />
 
         {newCount > 0 && (
           <button type="button" class="feed-new-pill" onClick={jumpToTop}>
