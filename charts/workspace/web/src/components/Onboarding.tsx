@@ -8,6 +8,8 @@ import { Button } from './primitives/Button';
 import { Input } from './primitives/Input';
 import { Icon } from './Icon';
 import { GithubConnect } from './GithubConnect';
+import { ClaudeCredentialSetup } from './ClaudeCredentialSetup';
+import { claudeReady, refreshClaudeReady } from '../store/claude';
 import './Onboarding.css';
 
 const DONE_KEY = 'kc.onboardingDone';
@@ -37,6 +39,12 @@ export function Onboarding() {
       .catch(() => {
         // Workspace not reachable — skip onboarding silently.
       });
+    // A brand-new tester with no Claude credential must be guided to connect
+    // before the first-win build (#494) — open onboarding for that alone, even
+    // when git/SSH are already configured by the workspace.
+    void refreshClaudeReady().then((r) => {
+      if (r === false) setShow(true);
+    });
   }, []);
 
   function dismiss() {
@@ -74,7 +82,19 @@ export function Onboarding() {
     }
   }
 
+  // Connected via either path (OAuth or API key) — re-probe readiness so the
+  // panel flips to "connected", then advance to the first-win task step (#494).
+  function onClaudeConnected() {
+    void refreshClaudeReady().then(() => setStep(5));
+  }
+
   async function createFirstTask() {
+    // Backstop: never fire the first-win build without a credential — send the
+    // user to the connect step instead (#494).
+    if (claudeReady.value === false) {
+      setStep(4);
+      return;
+    }
     setBusy(true);
     try {
       const t = await createTask({ prompt, workdir: '/home/dev' });
@@ -95,7 +115,7 @@ export function Onboarding() {
       body: (
         <>
           <p>This workspace runs Claude Code in tmux sessions and tracks memory, triggers, and files in one place.</p>
-          <p class="muted">Four short steps. You can skip any of them.</p>
+          <p class="muted">A few short steps. You can skip any of them.</p>
         </>
       ),
       action: <Button variant="primary" onClick={() => setStep(1)}>Get started</Button>,
@@ -163,10 +183,38 @@ export function Onboarding() {
       ),
     },
     {
+      title: 'Connect Claude',
+      body: (
+        <>
+          <p class="muted">
+            kube-coder builds with Claude, so it needs your account before it can
+            do anything. Sign in with your Claude subscription (recommended — no
+            key to hunt for) or paste an API key.
+          </p>
+          <ClaudeCredentialSetup ready={claudeReady.value} onConnected={onClaudeConnected} />
+        </>
+      ),
+      action: (
+        <>
+          <Button variant="ghost" onClick={() => setStep(5)}>
+            {claudeReady.value ? 'Continue' : 'Skip for now'}
+          </Button>
+          {!claudeReady.value && (
+            <span class="ob-note muted">Connect above to continue</span>
+          )}
+        </>
+      ),
+    },
+    {
       title: 'Create your first task',
       body: (
         <>
           <p class="muted">Send Claude a starter prompt. It runs in a tmux session you can watch live.</p>
+          {claudeReady.value === false && (
+            <p class="ob-warn">
+              Claude isn't connected yet — connect it first so this build doesn't fail.
+            </p>
+          )}
           <textarea
             class="ob-textarea"
             rows={4}
@@ -176,14 +224,22 @@ export function Onboarding() {
           />
         </>
       ),
-      action: (
-        <>
-          <Button variant="ghost" onClick={dismiss}>Finish later</Button>
-          <Button variant="primary" disabled={!prompt.trim() || busy} onClick={createFirstTask}>
-            <Icon name="play" size={14} /> Create task
-          </Button>
-        </>
-      ),
+      action:
+        claudeReady.value === false ? (
+          <>
+            <Button variant="ghost" onClick={dismiss}>Finish later</Button>
+            <Button variant="primary" onClick={() => setStep(4)}>
+              <Icon name="link" size={14} /> Connect Claude to start
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="ghost" onClick={dismiss}>Finish later</Button>
+            <Button variant="primary" disabled={!prompt.trim() || busy} onClick={createFirstTask}>
+              <Icon name="play" size={14} /> Create task
+            </Button>
+          </>
+        ),
     },
   ];
 

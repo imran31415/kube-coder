@@ -19,6 +19,7 @@ import type { HvEvent } from '../routes/hypervisor/transcript';
 import { listTasks, type TaskSummary } from '../api/tasks';
 import { navigate, currentPath } from './router';
 import { rememberLastSession, forgetLastSession } from './lastSession';
+import { claudeReady } from './claude';
 
 /**
  * State for the Hypervisor chat tab. A thread is a structured agent session; the
@@ -249,6 +250,16 @@ let optimisticSeq = -1;
 export async function sendMessage(text: string): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed || sending.value) return;
+  // Gate the AI CTO first-win path on a working Claude credential (#494): with
+  // none present, firing a task just dies with a raw provider error, so refuse
+  // the send and point the user at the connect panel the CTO welcome renders.
+  // Only blocks the CTO surface, and only when readiness is known-false (null =
+  // not yet probed → don't block an existing authenticated user).
+  if (chatPersona.value === 'cto' && claudeReady.value === false) {
+    chatError.value =
+      'Connect your Claude account to start building — use the connect options above.';
+    return;
+  }
   sending.value = true;
   chatError.value = null;
   // Optimistically show the user's turn until the next poll replaces it with

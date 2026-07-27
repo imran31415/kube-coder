@@ -31,6 +31,8 @@ import {
   stopProjectsPolling,
 } from '../../store/projects';
 import { ctoHandoff } from '../../store/feed';
+import { claudeReady, refreshClaudeReady } from '../../store/claude';
+import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
 import { BriefPanel } from './BriefPanel';
 import {
@@ -98,6 +100,9 @@ export function CtoRoute() {
     if (disabled) return;
     setChatContext('cto', null);
     void initHypervisor();
+    // First-win gate (#494): know whether Claude is connected so the welcome
+    // can offer the connect panel instead of firing a doomed build.
+    void refreshClaudeReady();
     startProjectsPolling();
     // A Feed handoff overrides the usual most-active auto-select: jump straight
     // to the item's project and queue its context prefix to send.
@@ -298,27 +303,42 @@ export function CtoRoute() {
           </div>
         )}
 
-        {!active && (
+        {!active && claudeReady.value === false ? (
           <div class="cto-welcome">
             <p class="cto-welcome-lead">
-              {projectName
-                ? `I'm across ${projectName}. What do you want to move on?`
-                : "I already know your workspace. What do you want to build or move on?"}
+              Connect Claude and I'll start building. Sign in with your Claude
+              subscription, or paste an API key.
             </p>
-            <div class="cto-chips">
-              {chips.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  class="cto-chip"
-                  disabled={sending.value}
-                  onClick={() => chip(c)}
-                >
-                  {c}
-                </button>
-              ))}
+            <div class="cto-connect">
+              <ClaudeCredentialSetup
+                ready={claudeReady.value}
+                onConnected={() => void refreshClaudeReady()}
+              />
             </div>
           </div>
+        ) : (
+          !active && (
+            <div class="cto-welcome">
+              <p class="cto-welcome-lead">
+                {projectName
+                  ? `I'm across ${projectName}. What do you want to move on?`
+                  : "I already know your workspace. What do you want to build or move on?"}
+              </p>
+              <div class="cto-chips">
+                {chips.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    class="cto-chip"
+                    disabled={sending.value}
+                    onClick={() => chip(c)}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
         )}
 
         <Chat hideEmptyState />
