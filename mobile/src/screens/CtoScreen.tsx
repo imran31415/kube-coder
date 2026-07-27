@@ -20,7 +20,15 @@ import {
 import { Button, EmptyState, Loading, ScreenHeader } from '../components/ui';
 import { Markdown } from '../components/Markdown';
 import type { HvEvent, Project, ProjectBrief } from '../api/types';
-import { buildTurns, sameTranscript, type HvBlock, type HvTurn } from '../util/hvTranscript';
+import {
+  buildTurns,
+  sameTranscript,
+  turnWindow,
+  TURN_WINDOW,
+  TURN_WINDOW_STEP,
+  type HvBlock,
+  type HvTurn,
+} from '../util/hvTranscript';
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
 
@@ -48,11 +56,18 @@ export default function CtoScreen() {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [defaultAssistant, setDefaultAssistant] = useState<string | undefined>();
+  // Bounded render window over the tail of the transcript (#525) — ScrollView
+  // mounts every child, so a long CTO thread kept every turn alive until the
+  // app degraded. Reveal older turns a page at a time.
+  const [visibleTurns, setVisibleTurns] = useState(TURN_WINDOW);
 
   const optimisticSeq = useRef(-1);
   const transcriptSource = useRef<'session_log' | 'capture' | null>(null);
   const pendingDiscuss = useRef<string | null>(params.discussText ?? null);
   const scrollRef = useRef<ScrollView | null>(null);
+  // Set while revealing earlier turns so the onContentSizeChange auto-scroll
+  // doesn't yank the reader back to the bottom on that one growth.
+  const suppressAutoScroll = useRef(false);
 
   // Bootstrap: config + projects, then select (a Feed handoff wins, else the
   // most-active project, else the Workspace scope).
@@ -86,6 +101,7 @@ export default function CtoScreen() {
     setBrief(null);
     setEvents([]);
     setActiveId(null);
+    setVisibleTurns(TURN_WINDOW);
     (async () => {
       if (selected) {
         try { const b = await getProjectBrief(selected); if (alive) setBrief(b); } catch { /* */ }
@@ -148,7 +164,13 @@ export default function CtoScreen() {
 
   const selectedProject = projects?.find((p) => p.id === selected) ?? null;
   const turns = activeId || events.length ? buildTurns(events) : [];
+  const { start: turnStart, hidden: hiddenTurns } = turnWindow(turns.length, visibleTurns);
   const showWelcome = !activeId && events.length === 0;
+
+  function revealEarlier() {
+    suppressAutoScroll.current = true;
+    setVisibleTurns((v) => v + TURN_WINDOW_STEP);
+  }
 
   if (projects === null) return <Loading label="Meeting your workspace…" />;
 
@@ -195,7 +217,15 @@ export default function CtoScreen() {
           ref={scrollRef}
           style={styles.transcript}
           contentContainerStyle={styles.transcriptInner}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          onContentSizeChange={() => {
+            // Revealing earlier turns grows content upward — don't scroll to the
+            // bottom on that one change (#525); every other growth still pins.
+            if (suppressAutoScroll.current) {
+              suppressAutoScroll.current = false;
+              return;
+            }
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }}
         >
           {showWelcome ? (
             <View style={styles.welcome}>
@@ -213,7 +243,26 @@ export default function CtoScreen() {
               </View>
             </View>
           ) : (
-            turns.map((t, i) => <Turn key={i} turn={t} onChoice={(opt) => void send(opt)} />)
+            <>
+              {hiddenTurns > 0 && (
+                <Pressable
+                  onPress={revealEarlier}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Show ${hiddenTurns} earlier messages`}
+                  style={({ pressed }) => [styles.earlierBtn, pressed && { opacity: 0.6 }]}
+                >
+                  <Ionicons name="chevron-up" size={14} color={colors.textMuted} />
+                  <Text style={styles.earlierText}>
+                    Show {Math.min(hiddenTurns, TURN_WINDOW_STEP)} earlier
+                    {Math.min(hiddenTurns, TURN_WINDOW_STEP) === 1 ? ' message' : ' messages'}
+                  </Text>
+                  <Text style={styles.earlierCount}>{hiddenTurns} hidden</Text>
+                </Pressable>
+              )}
+              {turns.slice(turnStart).map((t, wi) => (
+                <Turn key={turnStart + wi} turn={t} onChoice={(opt) => void send(opt)} />
+              ))}
+            </>
           )}
           {status === 'running' && <Text style={styles.thinking}>Thinking…</Text>}
         </ScrollView>
@@ -357,6 +406,17 @@ const styles = StyleSheet.create({
   chat: { flex: 1 },
   transcript: { flex: 1 },
   transcriptInner: { padding: space.lg, gap: space.md },
+  // "Show earlier messages" — head of a windowed transcript (#525).
+  earlierBtn: {
+    flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 6,
+    paddingVertical: 6, paddingHorizontal: 12, borderRadius: radius.pill,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card,
+  },
+  earlierText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+  earlierCount: {
+    color: colors.textFaint, fontSize: font.size.xs, paddingLeft: 6, marginLeft: 2,
+    borderLeftWidth: 1, borderLeftColor: colors.border,
+  },
   welcome: { gap: space.md, paddingTop: space.lg },
   welcomeLead: { color: colors.text, fontSize: font.size.md, lineHeight: 22 },
   chips: { gap: 8 },
