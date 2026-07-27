@@ -176,6 +176,35 @@ tests:
           path: spec.validations[1].expression
           pattern: "ephemeralContainers"
 
+  - it: requires the image be pinned by digest (finding 7) by default
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      # Appended last, so it is validations[7] after the seven finding-4 rules.
+      - matchRegex:
+          path: spec.validations[7].expression
+          pattern: "contains\\('@sha256:'\\)"
+      - matchRegex:
+          path: spec.validations[7].message
+          pattern: "pinned by digest"
+
+  - it: omits the digest rule when requireDigest is disabled
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.requireDigest: false
+    documentIndex: 0
+    asserts:
+      # Only the seven finding-4 validations remain (indices 0..6); no 8th rule.
+      - notExists:
+          path: spec.validations[7]
+
   - it: binds the policy in Deny mode scoped to the control-plane namespace
     set:
       provision.enabled: true

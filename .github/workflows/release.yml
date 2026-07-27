@@ -1,21 +1,26 @@
-# Release: build the devlaptop image, publish it to GHCR, and sign it with
+# Release: build the release images, publish them to GHCR, and sign each with
 # keyless cosign (Sigstore OIDC — no long-lived keys, logged to Rekor) plus
-# BuildKit-native SBOM and SLSA provenance attestations.
+# BuildKit-native SBOM and SLSA provenance attestations. Two images are built
+# from one matrix (identical sign/attest path):
+#   * devlaptop   — the general workspace/controller image.
+#   * provisioner — the minimal tool-baked image the privileged provisioner Job
+#     runs (supply-chain finding 7). It is pinned by digest in the controller
+#     chart and verified at admission, so it MUST be signed here too.
 #
 # Fires on the repo's release tags — `v<X.Y.Z>`, cut from green main by
-# scripts/release.sh (`TAG="$VER"`). NB: `devlaptop-v<X.Y.Z>` is the *image* tag,
+# scripts/release.sh (`TAG="$VER"`). NB: `<image>-v<X.Y.Z>` is the *image* tag,
 # NOT the git tag, so the trigger + metadata pattern below key off `v*`. This is
 # additive: the DigitalOcean deploy image still
 # ships via `make push`; GHCR is the signed, attested, publicly-verifiable
 # artifact. No secrets required — the built-in GITHUB_TOKEN pushes to GHCR and
 # the OIDC id-token mints the signing certificate.
 #
-# Verify a released image:
-#   cosign verify ghcr.io/imran31415/kube-coder/devlaptop:<version> \
+# Verify a released image (swap devlaptop/provisioner):
+#   cosign verify ghcr.io/imran31415/kube-coder/provisioner:<version> \
 #     --certificate-identity-regexp '^https://github.com/imran31415/kube-coder/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
-#   cosign download sbom       ghcr.io/imran31415/kube-coder/devlaptop:<version>
-#   cosign verify-attestation  ghcr.io/imran31415/kube-coder/devlaptop:<version> \
+#   cosign download sbom       ghcr.io/imran31415/kube-coder/provisioner:<version>
+#   cosign verify-attestation  ghcr.io/imran31415/kube-coder/provisioner:<version> \
 #     --type slsaprovenance --certificate-identity-regexp ... --certificate-oidc-issuer ...
 name: release
 
@@ -45,8 +50,24 @@ jobs:
       contents: read
       packages: write   # push image to GHCR
       id-token: write   # keyless cosign (Sigstore OIDC)
+    strategy:
+      fail-fast: false
+      # Two images share this identical build→sign→attest path:
+      #   * devlaptop   — the general workspace/controller image.
+      #   * provisioner — the minimal, tool-baked image the privileged
+      #     provisioner Job runs (finding 7). Building it here means it is
+      #     signed + SBOM/provenance-attested exactly like devlaptop, so the
+      #     controller chart can pin it by digest and admission can verify it.
+      matrix:
+        include:
+          - name: devlaptop
+            file: devlaptop/Dockerfile
+            target: runtime
+          - name: provisioner
+            file: provisioner/Dockerfile
+            target: ""
     env:
-      IMAGE: ghcr.io/${{ github.repository }}/devlaptop
+      IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
       PUSH: ${{ github.event_name == 'push' || !inputs.dryRun }}
     steps:
       - name: Checkout
@@ -82,8 +103,8 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: devlaptop/Dockerfile
-          target: runtime
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
           platforms: linux/amd64
           push: ${{ env.PUSH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}

@@ -17,8 +17,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Pinned CLI/tool versions declared as ARG *_VERSION in the devlaptop image, annotated with a `# renovate:` datasource hint on the preceding line.",
-      "managerFilePatterns": ["devlaptop/Dockerfile"],
+      "description": "Pinned CLI/tool versions declared as ARG *_VERSION in the devlaptop and provisioner images, annotated with a `# renovate:` datasource hint on the preceding line.",
+      "managerFilePatterns": ["devlaptop/Dockerfile", "provisioner/Dockerfile"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\nARG \\S+=(?<currentValue>\\S+)"
       ]
@@ -40,8 +40,8 @@
   ],
   "packageRules": [
     {
-      "description": "Group the devlaptop image CLI/tool bumps into one weekly PR.",
-      "matchFileNames": ["devlaptop/Dockerfile"],
+      "description": "Group the devlaptop + provisioner image CLI/tool bumps into one weekly PR.",
+      "matchFileNames": ["devlaptop/Dockerfile", "provisioner/Dockerfile"],
       "groupName": "devlaptop CLI tools"
     },
     {

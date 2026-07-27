@@ -1489,8 +1489,11 @@ ALLOW_MUTABLE_CHART_REF = os.environ.get('ALLOW_MUTABLE_CHART_REF', '').strip().
     '1', 'true', 'yes', 'on')
 _CHART_REF_SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
 _CHART_REF_TAG_RE = re.compile(r'^v\d+\.\d+\.\d+$')
-# Image the provisioner Job runs (needs git+make+kubectl; installs helm on the
-# fly if absent). Defaults to the controller's own image.
+# Image the provisioner Job runs. Should be the dedicated, signed provisioner
+# image (provisioner/Dockerfile) pinned BY DIGEST via provision.image — it bakes
+# helm+kubectl+git+make so nothing is downloaded at runtime (finding 7). Falls
+# back to the controller's own image only if unset; the Job then fails closed if
+# that image lacks helm rather than fetching it over the network.
 PROVISIONER_IMAGE = os.environ.get('PROVISIONER_IMAGE', '').strip()
 PROVISIONER_SA = os.environ.get('PROVISIONER_SERVICE_ACCOUNT', 'workspace-provisioner').strip()
 PROVISIONER_PULL_SECRET = os.environ.get('PROVISIONER_PULL_SECRET', '').strip()
@@ -1856,30 +1859,33 @@ def _git(args):
 # cannot smuggle an attacker-controlled workload in under the provisioner
 # identity. Endgame: move the provisioner to a separate namespace behind a
 # constrained broker that stamps Jobs from an immutable template (see PR notes).
-# Pinned helm release + its published SHA-256 (from
-# https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum). The
-# runtime download is verified against this digest before it is unpacked or
-# executed — a tampered/MITM'd helm tarball fails closed with `exit 1` rather
-# than running under the cluster-privileged provisioner SA (finding 7). Bump both
-# lines together when moving helm versions.
+# Helm version the privileged provisioner runs. This is no longer downloaded at
+# runtime (finding 7): helm — like kubectl/git/make — is baked into the dedicated
+# provisioner image (provisioner/Dockerfile), checksum-verified at BUILD time and
+# pinned by digest via provision.image, then verified at admission. This constant
+# stays as the single declared expected version (asserted in the unit tests and
+# echoed for provenance); keep it in lockstep with provisioner/Dockerfile's
+# HELM_VERSION ARG.
 PROVISION_HELM_VERSION = 'v3.14.4'
-PROVISION_HELM_SHA256 = 'a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259'
 
 PROVISION_JOB_SCRIPT = (r"""
 set -euo pipefail
 export HOME=/tmp
-mkdir -p /tmp/bin
 export PATH="/tmp/bin:$PATH"
-HELM_VERSION="__HELM_VERSION__"
-HELM_SHA256="__HELM_SHA256__"
-if ! command -v helm >/dev/null 2>&1; then
-  echo "helm not found — installing ${HELM_VERSION} to /tmp/bin (sha256-verified)"
-  curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tgz
-  echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c - \
-    || { echo "FATAL: helm ${HELM_VERSION} checksum verification failed — refusing to run" >&2; exit 1; }
-  tar -xzf /tmp/helm.tgz -C /tmp
-  install -m 0755 /tmp/linux-amd64/helm /tmp/bin/helm
-fi
+# Supply-chain (finding 7): helm + kubectl + git + make are baked into the
+# dedicated, checksum-verified provisioner image and pinned by digest. This
+# privileged path performs NO runtime tool downloads — the only network it does
+# is the approved GitOps git clones below. Fail closed if the image is missing a
+# tool (e.g. provision.image was pointed at the old fat image) rather than
+# silently fetching binaries from the internet under the cluster-privileged
+# provisioner ServiceAccount.
+for tool in helm kubectl git make; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "FATAL: '$tool' not found in provisioner image — provisioning requires the dedicated provisioner image (provisioner/Dockerfile); refusing to download tools at runtime under the provisioner SA" >&2
+    exit 1
+  }
+done
+echo "provisioner: baked-in helm $(helm version --short 2>/dev/null || echo '?') (expected __HELM_VERSION__), kubectl present — no runtime tool download"
 git clone --depth 1 -b "$CHART_REF" "$CHART_REPO" /tmp/kc
 # Provenance: record the exact commit the privileged deploy actually runs from.
 echo "provisioner: chart ref ${CHART_REF} resolved to commit $(git -C /tmp/kc rev-parse HEAD)"
@@ -1892,8 +1898,7 @@ cd /tmp/kc
 # creates+labels the namespace and replicates regcred (see REGCRED_SRC_NAMESPACE).
 make deploy USER="${SLUG}" NAMESPACE="${WS_NAMESPACE}" REGCRED_SRC_NAMESPACE="${NAMESPACE}"
 """
-                        .replace('__HELM_VERSION__', PROVISION_HELM_VERSION)
-                        .replace('__HELM_SHA256__', PROVISION_HELM_SHA256))
+                        .replace('__HELM_VERSION__', PROVISION_HELM_VERSION))
 
 
 def build_job_manifest(slug):

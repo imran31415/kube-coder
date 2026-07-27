@@ -208,8 +208,40 @@ provision:
   admissionPolicy:
     enabled: true
 
-  # Image the Job runs. Empty => the controller image (has kubectl/git/make/curl;
-  # installs helm on the fly). Override only if you bake a dedicated tool image.
+    # Require the provisioner Job image to be pinned by digest (repo@sha256:...),
+    # not a mutable tag (supply-chain finding 7). The CEL ValidatingAdmissionPolicy
+    # enforces this — it is signature-independent and needs no extra controller.
+    # Keep it on; set `provision.image` to a digest ref below.
+    requireDigest: true
+
+    # Verify the provisioner image's keyless-cosign signature at admission
+    # (finding 7 acceptance: "admission rejects an unsigned or unexpected image").
+    # CEL cannot check signatures, so this renders an extra policy
+    # (provisioner-image-policy.yaml) for a signature-verifying admission
+    # controller. OFF by default because it REQUIRES one of these installed in the
+    # cluster:
+    #   * Kyverno (>= 1.11)               -> engine: kyverno   (default)
+    #   * Sigstore policy-controller      -> engine: sigstore
+    # Turn on only once that controller is present, or provisioning admission will
+    # hard-fail. The digest pin above holds regardless.
+    verifyImageSignature: false
+    engine: kyverno
+
+    # Keyless-cosign identity the signature policy trusts. Defaults match the
+    # release workflow's OIDC signer (.github/workflows/release.yml). Point
+    # `identityRegexp` at YOUR fork's repo if you publish your own signed image.
+    signatureIdentityRegexp: "^https://github.com/imran31415/kube-coder/"
+    signatureOidcIssuer: "https://token.actions.githubusercontent.com"
+
+  # Image the Job runs. STRONGLY prefer the dedicated, signed provisioner image
+  # pinned BY DIGEST (supply-chain finding 7) — it bakes helm+kubectl+git+make so
+  # provisioning downloads no tools at runtime, and admission can verify it:
+  #   image: ghcr.io/imran31415/kube-coder/provisioner@sha256:<digest>
+  # Get the digest from a release: `cosign verify … && docker buildx imagetools
+  # inspect ghcr.io/imran31415/kube-coder/provisioner:<version>`.
+  # Empty => falls back to the controller image, which lacks helm; the Job then
+  # fails closed (it will NOT download helm at runtime). Leaving this empty is
+  # only viable with admissionPolicy.requireDigest=false on a dev cluster.
   image: ""
 
   # Fallback image tag for new workspaces (chart prefixes it with `devlaptop-`).
