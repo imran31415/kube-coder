@@ -184,7 +184,13 @@ export default function CtoScreen() {
         </ScrollView>
       </View>
 
-      <KeyboardAvoidingView style={styles.chat} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+      {/* keyboardVerticalOffset stays 0: the KAV extends to the screen bottom
+          (its composer IS the bottom edge), so `padding` behaviour pads by
+          exactly the keyboard height. Any non-zero offset is added on top of
+          that, floating the composer a fixed gap above the keyboard (#492).
+          Mirrors HypervisorScreen, which shares this SafeAreaView-top +
+          in-flow ScreenHeader + bottom-composer layout. */}
+      <KeyboardAvoidingView style={styles.chat} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
         <ScrollView
           ref={scrollRef}
           style={styles.transcript}
