@@ -65,9 +65,9 @@ function starterChips(projectName: string | null): string[] {
  *  user. Tapping one sends a one-sentence build request that the #486 fast-path
  *  builds immediately, with the #484/#485 preview auto-surfacing. */
 const FIRST_WIN_CHIPS = [
-  'Build me a personal portfolio website',
-  'Make a simple to-do list app I can use',
-  'Create a landing page for my idea',
+  'Portfolio site',
+  'To-do app',
+  'Landing page',
 ];
 
 export function CtoRoute() {

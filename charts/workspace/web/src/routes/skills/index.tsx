@@ -12,6 +12,7 @@ import {
   selectSkill,
   startSkillsPolling,
   stopSkillsPolling,
+  skillsLoading,
 } from '../../store/skills';
 import {
   syncTargetsFor,
@@ -76,7 +77,7 @@ export function SkillsRoute() {
           <h1 class="route-title">Skills</h1>
           <p class="route-subtitle muted">
             Agent capabilities discovered across every harness — {skills.value.length} skills
-            from {skillSystems.value.length || '…'} system{skillSystems.value.length === 1 ? '' : 's'}.
+            from {skillsLoading.value ? '…' : skillSystems.value.length} system{skillSystems.value.length === 1 ? '' : 's'}.
           </p>
         </div>
         <div class="skl-header-actions">

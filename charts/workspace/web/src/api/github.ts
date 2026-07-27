@@ -35,9 +35,12 @@ export const setAuthMode = (mode: GitAuthMode) =>
 
 /** Best display handle for the workspace operator: the gh CLI login when
  *  signed in, else the configured git user name. Returns null when neither
- *  is known (e.g. an unauthenticated read-only visitor gets a 401). */
+ *  is known (e.g. an unauthenticated read-only visitor gets a 401). A trailing
+ *  `[bot]` suffix (GitHub App identities) is stripped so the greeting reads as
+ *  a human name rather than a raw bot handle. */
 export function githubDisplayName(s: GithubFullStatus | null | undefined): string | null {
-  const name = s?.gh_cli?.username?.trim() || s?.git_config?.user_name?.trim();
+  const raw = s?.gh_cli?.username?.trim() || s?.git_config?.user_name?.trim();
+  const name = raw?.replace(/\[bot\]$/, '').trim();
   return name || null;
 }
 

@@ -53,7 +53,7 @@ describe('CtoRoute', () => {
     claudeReady.value = true; // enterCto only routes here once Claude is ready
     render(<CtoRoute />);
     expect(screen.getByText(/Tell me in one sentence what you'd like to build/)).toBeTruthy();
-    expect(screen.getByText('Build me a personal portfolio website')).toBeTruthy();
+    expect(screen.getByText('Portfolio site')).toBeTruthy();
     // The normal returning-user chips are replaced, not shown alongside.
     expect(screen.queryByText('What should I focus on?')).toBeNull();
     // The one-shot flag is consumed on mount so a later visit is normal.
