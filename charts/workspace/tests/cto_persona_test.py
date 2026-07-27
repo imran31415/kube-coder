@@ -113,7 +113,8 @@ class CreateThreadPersonaTest(unittest.TestCase):
             lambda o, s=200: self.responses.append((o, s))
         return h
 
-    def _run(self, body, brief=None, project=None, cto_enabled=True):
+    def _run(self, body, brief=None, project=None, cto_enabled=True,
+             existing=None):
         captured = {}
         fake_session = mock.Mock()
         fake_session.summary.return_value = {'id': 'x'}
@@ -133,6 +134,8 @@ class CreateThreadPersonaTest(unittest.TestCase):
                                return_value='claude'), \
              mock.patch.object(server.HypervisorSession, 'create',
                                side_effect=fake_create), \
+             mock.patch.object(server.HypervisorSession, 'list',
+                               return_value=list(existing or [])), \
              mock.patch.object(server.ProjectsManager, 'brief',
                                return_value=brief), \
              mock.patch.object(server.ProjectsManager, 'get_project',
@@ -189,6 +192,41 @@ class CreateThreadPersonaTest(unittest.TestCase):
                            cto_enabled=False)
         self.assertEqual(cap['persona'], '')
         self.assertEqual(cap['project_id'], '')
+        self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
+
+    # ── first-win fast-path (#486) ──────────────────────────────────────────
+
+    def test_first_cto_thread_gets_first_win_addendum(self):
+        # No prior CTO thread + an opening message → the no-gate build addendum
+        # is appended so the user's one sentence starts a build immediately.
+        cap, _ = self._run(
+            {'message': 'build me a todo app', 'persona': 'cto',
+             'project_id': 'kc'},
+            existing=[{'id': '0', 'persona': ''}])  # only a plain thread exists
+        self.assertIn('FIRST-WIN ONBOARDING', cap['preamble'])
+        self.assertIn('AI CTO', cap['preamble'])  # base preamble still present
+        # Addendum is LAST so it overrides the DISPATCH gate.
+        self.assertTrue(cap['preamble'].endswith(server.CTO_FIRST_WIN_ADDENDUM))
+
+    def test_later_cto_thread_stays_gated(self):
+        # A prior CTO thread already exists → not a first-timer, so the normal
+        # propose-then-confirm preamble is used (no addendum).
+        cap, _ = self._run(
+            {'message': 'build me a todo app', 'persona': 'cto',
+             'project_id': 'kc'},
+            existing=[{'id': '9', 'persona': 'cto'}])
+        self.assertNotIn('FIRST-WIN ONBOARDING', cap['preamble'])
+        self.assertIn('AI CTO', cap['preamble'])
+
+    def test_first_cto_thread_without_message_stays_gated(self):
+        # An empty opener isn't a build request → no fast-path even when first.
+        cap, _ = self._run({'message': '', 'persona': 'cto', 'project_id': 'kc'},
+                           existing=[])
+        self.assertNotIn('FIRST-WIN ONBOARDING', cap['preamble'])
+
+    def test_first_win_never_applies_to_plain_thread(self):
+        # A default (non-cto) thread is never a first-win, regardless of history.
+        cap, _ = self._run({'message': 'hi'}, existing=[])
         self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
 
 
