@@ -727,9 +727,23 @@
   .dt-composer-workdir { max-width: 55%; }
   /* One card per row on phones. */
   .dt-mc-cards { grid-template-columns: minmax(0, 1fr); }
-  /* Slightly tighter dock tiles on phones — and lifted above the fixed
-     BottomNav, which .app-main only compensates for with padding. */
-  .dt-dock { padding: var(--size-4) 0 var(--size-2); bottom: var(--bottomnav-total); }
+  /* #506: on phones there is already a fixed BottomNav. Keeping the dock as a
+     second *floating* bar above it made two stacked bottom bars, and — because
+     the pinned dock sits over content that can't always scroll — it overlapped
+     the last card. Drop the sticky float on mobile: the dock rides inline at
+     the end of the content flow (macOS-style float stays on desktop, which has
+     no bottom nav). No pin, no overlap, no double bar. */
+  .dt-dock {
+    /* static (not sticky) — so it can't float up over content; the base
+       margin-top:auto still bottom-anchors it above the BottomNav when the
+       page is short, and it scrolls with content when the page is long. */
+    position: static;
+    padding: var(--size-4) 0 var(--size-2);
+    background: none; /* the fade only made sense for a floating bar */
+    pointer-events: auto;
+  }
   .dt-dock-btn { width: 42px; height: 42px; }
   .dt-dock-emoji { font-size: 22px; }
+  /* Tooltips point downward off a floating dock; inline at the page bottom they
+     have room above, so keep the default (above) placement — nothing to do. */
 }
