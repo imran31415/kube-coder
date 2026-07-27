@@ -1792,14 +1792,30 @@ class HypervisorSession:
         if log_events is None:
             return {'events': [e for e in capture if e.get('seq', 0) > since_seq],
                     'source': 'capture'}
-        # Carry over trailing hypervisor-synthetic notices (errors / stop
-        # markers) the log has no record of — tool_results ARE in the log, so
-        # only plain system messages + errors are appended.
-        extras = [e for e in capture if e.get('role') == 'system'
-                  and e.get('type') in ('error', 'message')]
-        stamped = self._stamp(log_events + [dict(e) for e in extras])
+        stamped = self._stamp(log_events + self._trailing_notices(capture))
         return {'events': [e for e in stamped if e.get('seq', 0) > since_seq],
                 'source': 'session_log'}
+
+    @staticmethod
+    def _trailing_notices(capture: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """The hypervisor-synthetic notices (errors / stop markers) at the very
+        END of the capture — the ones the log has no record of and that belong
+        to the latest turn. tool_results ARE in the log, so only plain system
+        messages + errors qualify.
+
+        Only the trailing contiguous run counts. Taking EVERY system notice in
+        the capture re-appended a long-past "⏹ Stopped by user." to the tail of
+        every later transcript, so one genuine stop made every healthy turn
+        after it look aborted (#532). A notice from an earlier turn was already
+        shown at the time and has no correct position in the log's ordering, so
+        it is dropped rather than replayed at the end."""
+        out: List[Dict[str, Any]] = []
+        for e in reversed(capture):
+            if e.get('role') != 'system' or e.get('type') not in ('error', 'message'):
+                break
+            out.append(dict(e))
+        out.reverse()
+        return out
 
     def _session_log_events(self) -> Optional[List[Dict[str, Any]]]:
         """Parsed Claude session-log events for this thread, or None when the
@@ -1907,11 +1923,16 @@ class HypervisorSession:
     def stop(self) -> bool:
         """Terminate the turn currently running in this thread, if any.
 
-        Returns True if a running turn was found and signalled, False if the
-        thread was already idle (a safe no-op). Sends SIGTERM to the CLI's
-        process group, escalating to SIGKILL after a short grace period; the
-        runner thread's finally clause records the "stopped" marker and resets
-        status to idle.
+        Returns True if a *live* turn was found and signalled, False if the
+        thread was already idle or its CLI had already exited on its own (both
+        safe no-ops). Sends SIGTERM to the CLI's process group, escalating to
+        SIGKILL after a short grace period; the runner thread's finally clause
+        records the "stopped" marker and resets status to idle.
+
+        Only a stop that actually terminates live work marks the thread in
+        _STOPPING — a stop landing in the sliver between the CLI exiting and
+        the runner's finally clearing the registry would otherwise stamp a
+        naturally-completed turn as "⏹ Stopped by user." (#532).
         """
         # Stopping the thread also disarms its cross-turn watchers (#402): the
         # user is halting the work, so its pending "tell me when X" polls must
@@ -1921,6 +1942,13 @@ class HypervisorSession:
             proc = _PROCS.get(self.id)
             running = bool(_RUNNING.get(self.id))
             if not running and proc is None:
+                return False
+            # The CLI already exited by itself: the turn is finishing normally
+            # and its output is a real answer. Nothing left to kill — don't
+            # flag it as user-stopped. poll() is non-blocking and Popen caches
+            # the returncode, so the runner's own wait()/communicate() is
+            # unaffected.
+            if proc is not None and proc.poll() is not None:
                 return False
             _STOPPING.add(self.id)
         if proc is None:

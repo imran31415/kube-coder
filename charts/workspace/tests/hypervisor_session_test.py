@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -969,6 +970,92 @@ class StopTest(unittest.TestCase):
         self.assertTrue(self.s.stop())
         self.assertTrue(self.s._stop_requested())
 
+    def test_stop_landing_after_cli_exited_does_not_flag(self):
+        # The sliver between the CLI exiting on its own and the runner's finally
+        # clearing the registry: there is nothing left to kill, so the turn is
+        # completing normally and must NOT be marked "stopped by user" (#532).
+        import subprocess
+        proc = subprocess.Popen(['true'])
+        proc.wait()
+        with hs._RUNLOCK:
+            hs._RUNNING[self.s.id] = True
+            hs._PROCS[self.s.id] = proc
+        self.assertFalse(self.s.stop())
+        self.assertFalse(self.s._stop_requested())
+
+
+class TurnStopNoticeTest(unittest.TestCase):
+    """The "⏹ Stopped by user." notice must ride a real mid-flight stop only —
+    a normally-completing turn never gets one (#532). Drives _run_turn end to
+    end through the fallback adapter (a plain shell command, no CLI needed)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_dir = hs.HYPERVISOR_DIR
+        self._orig_home = hs.WORKSPACE_HOME
+        hs.HYPERVISOR_DIR = os.path.join(self.tmp, 'threads')
+        hs.WORKSPACE_HOME = self.tmp
+        os.makedirs(hs.HYPERVISOR_DIR, exist_ok=True)
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig_dir
+        hs.WORKSPACE_HOME = self._orig_home
+
+    def _mk(self, cli_cmd):
+        # assistant='shell' routes to the FallbackAdapter, which just runs
+        # cli_cmd with the user's text on stdin.
+        return hs.HypervisorSession.create(
+            assistant='shell', workdir=self.tmp, cli_cmd=cli_cmd,
+            preamble='', title='x')
+
+    def _wait_idle(self, s, timeout=20.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with hs._RUNLOCK:
+                if not hs._RUNNING.get(s.id):
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def _wait_proc(self, s, timeout=20.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with hs._RUNLOCK:
+                proc = hs._PROCS.get(s.id)
+            if proc is not None:
+                return proc
+            time.sleep(0.05)
+        return None
+
+    @staticmethod
+    def _notices(s):
+        return [e for e in s.read_events()
+                if 'Stopped by user' in (e.get('text') or '')]
+
+    def test_normal_completion_emits_no_stop_notice(self):
+        s = self._mk('cat')  # echoes the turn's stdin back, then exits 0
+        s.send('hello')
+        self.assertTrue(self._wait_idle(s), 'turn never finished')
+        self.assertEqual(self._notices(s), [])
+        self.assertEqual(s.read_meta()['status'], 'idle')
+        # …and the assistant's real answer survived.
+        self.assertTrue(any(e.get('role') == 'assistant' and 'hello' in e.get('text', '')
+                            for e in s.read_events()))
+
+    def test_midflight_stop_emits_the_notice_exactly_once(self):
+        s = self._mk('sleep 30')
+        s.send('hello')
+        proc = self._wait_proc(s)
+        self.assertIsNotNone(proc, 'runner never spawned a process')
+        try:
+            self.assertTrue(s.stop())
+            self.assertTrue(self._wait_idle(s), 'stopped turn never finished')
+            self.assertEqual(len(self._notices(s)), 1)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
 
 class ChoiceExpansionTest(unittest.TestCase):
     """The ```choice fence → canonical `choice` event split (harness-agnostic)."""
@@ -1243,6 +1330,45 @@ class TranscriptSourceTest(unittest.TestCase):
                           'text': 'claude exited 1',
                           'seq': tx['events'][-1]['seq'],
                           'ts': tx['events'][-1]['ts']})
+
+    def test_stale_stop_marker_from_an_earlier_turn_is_not_replayed(self):
+        # A genuine stop in turn 1 must not be re-appended to the tail of every
+        # later log-sourced transcript — that made healthy turns look aborted
+        # (#532). The later turn's own events come from the log.
+        s = self._mk(workdir='/w')
+        m = s.read_meta()
+        m['adapter']['claude_session_id'] = 'sid-4'
+        s._write_meta(m)
+        s._append([{'role': 'user', 'type': 'message', 'text': 'turn 1'}])
+        s._append([{'role': 'system', 'type': 'message',
+                    'text': '⏹ Stopped by user.'}])
+        s._append([{'role': 'user', 'type': 'message', 'text': 'turn 2'}])
+        self._write_log('/w', 'sid-4', [
+            {'type': 'user', 'message': {'role': 'user', 'content': 'turn 1'}},
+            {'type': 'user', 'message': {'role': 'user', 'content': 'turn 2'}},
+            {'type': 'assistant', 'message': {'role': 'assistant',
+                'content': [{'type': 'text', 'text': 'all good'}]}},
+        ])
+        tx = s.transcript()
+        self.assertEqual(tx['source'], 'session_log')
+        self.assertEqual([e['text'] for e in tx['events']],
+                         ['turn 1', 'turn 2', 'all good'])
+
+    def test_stop_marker_of_the_latest_turn_is_carried_over(self):
+        # The flip side: the notice for the turn that just ended is still shown,
+        # since Claude's log has no record of it.
+        s = self._mk(workdir='/w')
+        m = s.read_meta()
+        m['adapter']['claude_session_id'] = 'sid-5'
+        s._write_meta(m)
+        s._append([{'role': 'user', 'type': 'message', 'text': 'do it'}])
+        s._append([{'role': 'system', 'type': 'message',
+                    'text': '⏹ Stopped by user.'}])
+        self._write_log('/w', 'sid-5', [
+            {'type': 'user', 'message': {'role': 'user', 'content': 'do it'}}])
+        tx = s.transcript()
+        self.assertEqual([e['text'] for e in tx['events']],
+                         ['do it', '⏹ Stopped by user.'])
 
 
 class WatcherTestBase(unittest.TestCase):
