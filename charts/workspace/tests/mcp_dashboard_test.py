@@ -12,6 +12,7 @@ Run with:    python3 -m unittest tests.mcp_dashboard_test
 import os
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -55,6 +56,57 @@ class RenderToolsTest(unittest.TestCase):
         self.assertTrue(m._t_show_app_preview({'port': 0}).get('isError'))
         # A valid port doesn't error even when /api/apps is unreachable in tests.
         self.assertFalse(m._t_show_app_preview({'port': 3000}).get('isError'))
+
+
+class CreateTaskAutoPreviewTest(unittest.TestCase):
+    """create_task arms a `port` watcher so a build's dev server auto-surfaces
+    as a live preview in the chat (issue #484)."""
+
+    def _run(self, args, thread_id='thread-xyz'):
+        calls = []
+
+        def fake_api(method, path, body=None, query=None):
+            calls.append((method, path, body))
+            if path == '/api/claude/tasks':
+                return 201, {'task_id': 'task-123', 'status': 'running'}
+            return 201, {'watcher': {'id': 'w1'}}
+
+        env = {} if thread_id is None else {'KC_HYPERVISOR_THREAD_ID': thread_id}
+        with mock.patch.object(m, '_api', side_effect=fake_api), \
+                mock.patch.dict(os.environ, env, clear=False):
+            if thread_id is None:
+                os.environ.pop('KC_HYPERVISOR_THREAD_ID', None)
+            res = m._t_create_task(args)
+        return res, calls
+
+    def test_arms_port_watcher_after_creating_task(self):
+        res, calls = self._run({'prompt': 'build my app'})
+        self.assertFalse(res.get('isError'))
+        watcher_calls = [c for c in calls if c[1].endswith('/watchers')]
+        self.assertEqual(len(watcher_calls), 1)
+        method, path, body = watcher_calls[0]
+        self.assertEqual(method, 'POST')
+        self.assertIn('thread-xyz', path)
+        self.assertEqual(body['kind'], 'port')
+        self.assertEqual(body['target'], 'new')
+        self.assertIn('task-123', body['note'])
+
+    def test_preview_false_skips_the_watcher(self):
+        _, calls = self._run({'prompt': 'build', 'preview': False})
+        self.assertEqual([c for c in calls if c[1].endswith('/watchers')], [])
+
+    def test_no_watcher_outside_a_hypervisor_thread(self):
+        _, calls = self._run({'prompt': 'build'}, thread_id=None)
+        self.assertEqual([c for c in calls if c[1].endswith('/watchers')], [])
+
+    def test_task_create_failure_short_circuits(self):
+        def fake_api(method, path, body=None, query=None):
+            return 500, {'error': 'boom'}
+        with mock.patch.object(m, '_api', side_effect=fake_api), \
+                mock.patch.dict(os.environ,
+                                {'KC_HYPERVISOR_THREAD_ID': 't'}, clear=False):
+            res = m._t_create_task({'prompt': 'build'})
+        self.assertTrue(res.get('isError'))
 
 
 if __name__ == '__main__':

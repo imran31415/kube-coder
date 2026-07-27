@@ -209,8 +209,11 @@ HYPERVISOR_PREAMBLE = (
     "To wait on something across turns, arm a runner-owned watcher with the "
     "dashboard `watch` tool: kind 'task' with a task_id (fires when the task "
     "completes, errors, is killed, or goes waiting-for-input), kind 'command' "
-    "with a shell predicate (fires when it exits 0), or kind 'file' with a "
-    "path (fires when it appears/changes). The workspace runner polls it after "
+    "with a shell predicate (fires when it exits 0), kind 'file' with a "
+    "path (fires when it appears/changes), or kind 'port' with 'new' or a port "
+    "number (auto-embeds a LIVE PREVIEW of a dev server in this chat the moment "
+    "its port comes up — great right after spawning a build, though create_task "
+    "already arms one for you). The workspace runner polls it after "
     "your turn ends and posts the outcome into this chat as a new message — "
     "so after arming one, just end your turn; do not poll. Use list_watchers / "
     "cancel_watcher to inspect or disarm. Only use run_in_background for work "
@@ -12921,8 +12924,19 @@ if __name__ == "__main__":
             ClaudeTaskManager._reconcile_status(meta, task_dir)
             return meta.get('status', 'unknown')
 
+        def _hv_watch_listening_ports():
+            # App ports the port-diff watcher (issue #484) can preview: every
+            # loopback LISTEN socket minus the ports the workspace itself owns.
+            try:
+                internal = AppsManager.INTERNAL_PORTS
+                return [e['port'] for e in AppsManager.parse_listen_ports()
+                        if e['port'] not in internal]
+            except Exception:
+                return []
+
         try:
             hv_watchers.set_task_status_provider(_hv_watch_task_status)
+            hv_watchers.set_ports_provider(_hv_watch_listening_ports)
             hv_watchers.start()
             print('[hypervisor] cross-turn watcher loop started')
         except Exception as e:

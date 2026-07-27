@@ -386,7 +386,39 @@ def _t_create_task(a):
         body['workdir'] = a['workdir']
     if a.get('assistant'):
         body['assistant'] = a['assistant']
-    return _call('POST', '/api/claude/tasks', body=body)
+    status, payload = _api('POST', '/api/claude/tasks', body=body)
+    if status not in (200, 201, 202):
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        return _err(f'dashboard API POST /api/claude/tasks returned '
+                    f'HTTP {status}: {detail}')
+    # First-win auto-preview (issue #484): the moment this task's dev server
+    # starts listening, a live preview embed surfaces in THIS chat — no reliance
+    # on the agent remembering to render one. Best-effort; a port watcher that
+    # never sees a new port just times out quietly. Opt out with preview=false.
+    if a.get('preview') is not False:
+        _arm_preview_watcher(payload)
+    return _ok(_pretty(payload))
+
+
+def _arm_preview_watcher(task_payload) -> None:
+    """Arm a `port` watcher on the current Hypervisor thread so a build task's
+    dev server auto-surfaces as a live preview. Silent on any failure (no
+    thread, watcher cap reached, API down) — a missing preview must never break
+    task creation."""
+    tid = _hv_thread_id()
+    if not tid:
+        return
+    task_id = task_payload.get('task_id') if isinstance(task_payload, dict) \
+        else None
+    note = (f'live preview for build task {task_id}' if task_id
+            else 'live preview for the build')
+    try:
+        _api('POST',
+             f'/api/hypervisor/threads/{urllib.parse.quote(tid)}/watchers',
+             body={'kind': 'port', 'target': 'new', 'note': note,
+                   'timeout': 300})
+    except Exception:
+        pass
 
 
 def _t_send_task_message(a):
@@ -705,7 +737,9 @@ TOOLS: Dict[str, Any] = {
         'create_task',
         'Create a new build/agent task that runs a prompt in the workspace '
         '(the same thing the Build tab "new task" does). Use when the user asks '
-        'you to run, build, test, or start something as a background task.',
+        'you to run, build, test, or start something as a background task. If '
+        'the task starts a dev server, a live preview of the app auto-embeds in '
+        'this chat the moment its port comes up (no action needed).',
         _t_create_task,
         properties={
             'prompt': {'type': 'string',
@@ -719,6 +753,10 @@ TOOLS: Dict[str, Any] = {
                              'unattended task does not stall (default true). '
                              'Set false to run with interactive approval '
                              'prompts.'},
+            'preview': {'type': 'boolean',
+                        'description': 'Auto-embed a live preview when the task '
+                        'opens a dev-server port (default true). Set false for '
+                        'a task that is not expected to serve anything.'},
         }, required=['prompt'], kind='write'),
     'send_task_message': _tool(
         'send_task_message',
@@ -752,15 +790,21 @@ TOOLS: Dict[str, Any] = {
         "completes, errors, is killed, or goes waiting-for-input. 'command' — "
         "target is a shell command; fires when it exits 0. 'file' — target is "
         'an absolute path; fires when it appears, is removed, or its mtime '
-        'changes. On timeout you get an explicit timeout message instead. '
-        'After arming, just end your turn.',
+        "changes. 'port' — target is 'new' (any newly-listening app port vs. "
+        'when you armed) or a specific port number; instead of posting a '
+        'message it auto-embeds a LIVE PREVIEW of the app in this chat the '
+        'moment the port comes up, so use it right after spawning a build to '
+        'let the user watch their app appear. On timeout you get an explicit '
+        'timeout message instead (a port watcher just goes quiet). After '
+        'arming, just end your turn.',
         _t_watch,
         properties={
             'kind': {'type': 'string',
-                     'description': "'task' | 'command' | 'file'."},
+                     'description': "'task' | 'command' | 'file' | 'port'."},
             'target': {'type': 'string',
-                       'description': 'Task id, shell predicate, or absolute '
-                                      'path (per kind).'},
+                       'description': 'Task id, shell predicate, absolute path, '
+                                      "or port ('new' or a port number) per "
+                                      'kind.'},
             'note': {'type': 'string',
                      'description': 'Optional: why you are waiting — echoed '
                                     'back in the notification.'},

@@ -36,6 +36,11 @@ EVENT SCHEMA (one JSON object per line in events.jsonl):
       #   error        -> "text": str
       #   status       -> "status": "running"|"idle"|"error" ("turn" lifecycle)
       #   choice       -> "options": [str, ...], "question": str (optional)
+      # Optional flag:
+      #   kc_synthetic -> true on events the runner injected itself (e.g. the
+      #                   auto app-preview embed), so transcript() carries them
+      #                   onto the session-log transcript where Claude's own log
+      #                   has no record of them.
     }
 
 The `choice` event is how the agent asks the user to pick between a few options
@@ -1679,9 +1684,13 @@ class HypervisorSession:
                     'source': 'capture'}
         # Carry over trailing hypervisor-synthetic notices (errors / stop
         # markers) the log has no record of — tool_results ARE in the log, so
-        # only plain system messages + errors are appended.
-        extras = [e for e in capture if e.get('role') == 'system'
-                  and e.get('type') in ('error', 'message')]
+        # only plain system messages + errors are appended. Runner-injected
+        # `kc_synthetic` events (the auto app-preview embed, issue #484) are
+        # carried too: they live only in the capture, never in Claude's log.
+        extras = [e for e in capture
+                  if (e.get('role') == 'system'
+                      and e.get('type') in ('error', 'message'))
+                  or e.get('kc_synthetic')]
         stamped = self._stamp(log_events + [dict(e) for e in extras])
         return {'events': [e for e in stamped if e.get('seq', 0) > since_seq],
                 'source': 'session_log'}
@@ -1757,6 +1766,24 @@ class HypervisorSession:
                     e['ts'] = _now()
                     f.write(json.dumps(e, ensure_ascii=False) + '\n')
                     seq += 1
+
+    def emit_app_preview(self, port: int, note: str = '') -> None:
+        """Append a deterministic live app-preview to the transcript: a short
+        caption plus a synthetic `show_app_preview` tool_call the frontend
+        renders as an inline app-proxy iframe (issue #484). Marked
+        `kc_synthetic` so transcript() carries it over onto the session-log
+        transcript (Claude's own log has no record of a runner-injected embed)."""
+        caption = f'🎬 Live preview — your app is now serving on port {port}.'
+        if note:
+            caption += f' ({note})'
+        self._append([
+            {'role': 'system', 'type': 'message', 'text': caption,
+             'kc_synthetic': True},
+            {'role': 'assistant', 'type': 'tool_call',
+             'tool': {'name': 'mcp__dashboard__show_app_preview',
+                      'input': {'port': port}},
+             'tool_id': f'kcprev-{port}-{int(_now())}', 'kc_synthetic': True},
+        ])
 
     # ── turns ──────────────────────────────────────────────────────────────
     def send(self, text: str) -> None:
@@ -2108,6 +2135,11 @@ def reconcile_stale_running_threads() -> List[str]:
 #             real-world wait ("tell me when the build task finishes").
 #   command — a shell predicate run by the runner; fires when it exits 0.
 #   file    — a path appearing, disappearing, or its mtime changing.
+#   port    — a newly-listening loopback port (port-diff vs an arm-time
+#             baseline, or a specific port coming up). Unlike the other kinds it
+#             does NOT inject a follow-up turn — it deterministically emits a
+#             live app-preview embed straight into the chat (issue #484), so a
+#             build's dev server auto-surfaces with no LLM discretion.
 #
 # Persistence: one watchers.json per thread dir, scanned every tick — so
 # watchers survive turn boundaries by construction (they never lived in the
@@ -2115,8 +2147,13 @@ def reconcile_stale_running_threads() -> List[str]:
 # registry to lose). Thread stop()/delete() cancels its watchers.
 # ───────────────────────────────────────────────────────────────────────────
 WATCH_TICK = float(os.environ.get('KC_HYPERVISOR_WATCH_TICK', '5'))
-WATCH_KINDS = ('task', 'command', 'file')
+WATCH_KINDS = ('task', 'command', 'file', 'port')
+# `port` targets that mean "any newly-listening port" rather than a specific one.
+WATCH_PORT_ANY = ('new', 'any')
 WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL, WATCH_DEFAULT_INTERVAL = 5.0, 600.0, 20.0
+# A dev server binds within seconds, so `port` watchers poll fast by default
+# (the "first-win" preview should surface promptly) instead of the 20s default.
+WATCH_PORT_DEFAULT_INTERVAL = WATCH_MIN_INTERVAL
 WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT, WATCH_DEFAULT_TIMEOUT = 10.0, 86400.0, 3600.0
 # Guard rail: a runaway agent can't accumulate unbounded poll loops per thread.
 WATCH_MAX_PER_THREAD = int(os.environ.get('KC_HYPERVISOR_WATCH_MAX', '8'))
@@ -2155,12 +2192,23 @@ class WatcherManager:
         # Injected by server.py at startup (this module can't import server).
         # Returns a task's status string, or None when the task doesn't exist.
         self._task_status: Optional[Callable[[str], Optional[str]]] = None
+        # Injected by server.py too — returns the currently-listening loopback
+        # app ports (internal/workspace ports already filtered out). Powers the
+        # `port` watcher's port-diff (issue #484).
+        self._ports: Optional[Callable[[], Any]] = None
         # Delivery seam — tests replace this to observe/steer injection.
         self._deliver: Callable[[str, str], Optional[bool]] = self._default_deliver
+        # Emit seam for `port` watchers — tests replace this to observe the
+        # deterministic embed emission (distinct from _deliver's turn injection).
+        self._emit_preview: Callable[[str, Dict[str, Any]], Optional[bool]] = \
+            self._default_emit_preview
 
     # ── wiring ─────────────────────────────────────────────────────────────
     def set_task_status_provider(self, fn: Callable[[str], Optional[str]]) -> None:
         self._task_status = fn
+
+    def set_ports_provider(self, fn: Callable[[], Any]) -> None:
+        self._ports = fn
 
     def start(self) -> None:
         """Start the background tick loop (idempotent) and register for
@@ -2226,18 +2274,25 @@ class WatcherManager:
             raise ValueError(f'kind must be one of {", ".join(WATCH_KINDS)}')
         if not target:
             raise ValueError('target is required')
+        if kind == 'port' and not (target.lower() in WATCH_PORT_ANY
+                                   or target.isdigit()):
+            raise ValueError(
+                "port target must be a port number or one of "
+                f'{", ".join(WATCH_PORT_ANY)}')
         session = HypervisorSession.get(thread_id)
         meta = session.read_meta() if session else None
         if meta is None or meta.get('deleted_at') is not None:
             raise ValueError('thread not found')
         now = _now()
+        default_interval = (WATCH_PORT_DEFAULT_INTERVAL if kind == 'port'
+                            else WATCH_DEFAULT_INTERVAL)
         w: Dict[str, Any] = {
             'id': f'w{int(now)}-{uuid.uuid4().hex[:6]}',
             'kind': kind,
             'target': target,
             'note': (note or '').strip()[:300],
             'interval': _clamp(interval, WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL,
-                               WATCH_DEFAULT_INTERVAL),
+                               default_interval),
             'timeout': _clamp(timeout, WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT,
                               WATCH_DEFAULT_TIMEOUT),
             'created_at': now,
@@ -2254,6 +2309,10 @@ class WatcherManager:
                     w['baseline_mtime'] = os.path.getmtime(target)
                 except OSError:
                     w['baseline_exists'] = False
+        if kind == 'port':
+            # Baseline snapshot so a port-diff fire means "a NEW port appeared
+            # since arm time" — not one that was already up when the build began.
+            w['baseline_ports'] = sorted(self._listening_ports())
         with self._lock:
             items = self._load(thread_id)
             active = sum(1 for x in items if x.get('state') in _WATCH_ACTIVE_STATES)
@@ -2351,7 +2410,12 @@ class WatcherManager:
         for w in items:
             if w.get('state') not in ('fired', 'timeout'):
                 continue
-            delivered = self._deliver(thread_id, self._notification_text(w))
+            # `port` watchers surface a preview embed directly (no turn
+            # injection); every other kind posts a follow-up notification turn.
+            if w.get('kind') == 'port':
+                delivered = self._emit_preview(thread_id, w)
+            else:
+                delivered = self._deliver(thread_id, self._notification_text(w))
             if delivered is True:
                 w['state'] = 'delivered'
                 w['delivered_at'] = now
@@ -2364,6 +2428,16 @@ class WatcherManager:
             # the turn-complete hook.
         if changed:
             self._save(thread_id, items)
+
+    def _listening_ports(self) -> set:
+        """Currently-listening loopback app ports as a set of ints (empty when
+        the provider isn't wired or errors — never raises)."""
+        if self._ports is None:
+            return set()
+        try:
+            return {int(p) for p in self._ports()}
+        except Exception:
+            return set()
 
     def _evaluate(self, w: Dict[str, Any]) -> tuple:
         """(fired, outcome) for one armed watcher. Exceptions bubble to the
@@ -2401,6 +2475,24 @@ class WatcherManager:
             if mtime != w.get('baseline_mtime'):
                 return True, f'path {target} was modified'
             return False, ''
+        if kind == 'port':
+            current = self._listening_ports()
+            if not current:
+                return False, ''
+            if str(target).isdigit():
+                p = int(target)
+                if p in current:
+                    w['detected_port'] = p
+                    return True, f'port {p} is now listening'
+                return False, ''
+            # 'new'/'any': fire on the first port not present at arm time. When a
+            # tick sees several at once (rare), the lowest is the deterministic
+            # pick — dev servers usually bind their main HTTP port first anyway.
+            new = sorted(current - set(w.get('baseline_ports') or []))
+            if new:
+                w['detected_port'] = new[0]
+                return True, f'a new dev server is listening on port {new[0]}'
+            return False, ''
         return False, ''
 
     @staticmethod
@@ -2432,6 +2524,25 @@ class WatcherManager:
             if _RUNNING.get(thread_id):
                 return False
         session.send(text)
+        return True
+
+    @staticmethod
+    def _default_emit_preview(thread_id: str, w: Dict[str, Any]) -> Optional[bool]:
+        """Deliver a fired `port` watcher by emitting a live-preview embed into
+        the thread (issue #484). True = emitted; None = thread gone/deleted.
+
+        Never defers on a running turn: appending an embed event is a safe,
+        append-only write that renders in both the live capture and the
+        session-log transcript (see HypervisorSession.transcript), so there is
+        no need to wait for idle the way a turn-injecting delivery does. A
+        timed-out port watcher emits nothing — a preview that never came up is
+        not worth cluttering the chat with."""
+        session = HypervisorSession.get(thread_id)
+        meta = session.read_meta() if session else None
+        if meta is None or meta.get('deleted_at') is not None:
+            return None
+        if w.get('state') == 'fired' and isinstance(w.get('detected_port'), int):
+            session.emit_app_preview(w['detected_port'], w.get('note') or '')
         return True
 
 

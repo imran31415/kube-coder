@@ -1176,6 +1176,25 @@ class TranscriptSourceTest(unittest.TestCase):
                           'seq': tx['events'][-1]['seq'],
                           'ts': tx['events'][-1]['ts']})
 
+    def test_carries_over_synthetic_preview_embed_from_capture(self):
+        # The runner-injected app-preview embed (issue #484) lives only in the
+        # capture — a session-log transcript must still carry it so the preview
+        # survives once the thread goes idle and the log takes over.
+        s = self._mk(workdir='/w')
+        m = s.read_meta()
+        m['adapter']['claude_session_id'] = 'sid-4'
+        s._write_meta(m)
+        self._write_log('/w', 'sid-4', [
+            {'type': 'assistant', 'message': {'role': 'assistant',
+                'content': [{'type': 'text', 'text': 'ok'}]}}])
+        s.emit_app_preview(5173, 'the build')
+        tx = s.transcript()
+        self.assertEqual(tx['source'], 'session_log')
+        embed = tx['events'][-1]
+        self.assertEqual(embed['type'], 'tool_call')
+        self.assertEqual(embed['tool']['input'], {'port': 5173})
+        self.assertTrue(embed['kc_synthetic'])
+
 
 class WatcherTestBase(unittest.TestCase):
     """Shared temp-dir plumbing for the cross-turn watcher tests (issue #402).
@@ -1338,6 +1357,97 @@ class WatcherFireTest(WatcherTestBase):
         self.mgr.tick(now=self.now + 100 + w2['interval'])
         self.assertNotIn('armed', self._states())
         self.assertIn('was modified', self.delivered[-1][1])
+
+
+class PortWatcherTest(WatcherTestBase):
+    """The port-diff watcher (issue #484): fires on a newly-listening port and
+    emits a live-preview embed instead of injecting a follow-up turn."""
+
+    def setUp(self):
+        super().setUp()
+        # Record embed emissions rather than writing them, so the port path is
+        # observable without touching events.jsonl.
+        self.embedded = []  # (thread_id, detected_port, state)
+        self.mgr._emit_preview = lambda tid, w: (
+            self.embedded.append((tid, w.get('detected_port'), w.get('state')))
+            or True)
+
+    def test_arm_snapshots_baseline_and_defaults_to_fast_interval(self):
+        self.mgr.set_ports_provider(lambda: [3000])
+        w = self._arm(kind='port', target='new')
+        self.assertEqual(w['baseline_ports'], [3000])
+        # Port watchers poll fast so the preview surfaces promptly.
+        self.assertEqual(w['interval'], hs.WATCH_PORT_DEFAULT_INTERVAL)
+
+    def test_arm_rejects_bad_port_target(self):
+        with self.assertRaises(ValueError):
+            self._arm(kind='port', target='not-a-port')
+
+    def test_fires_on_new_port_and_emits_preview(self):
+        ports = [3000]
+        self.mgr.set_ports_provider(lambda: list(ports))
+        w = self._arm(kind='port', target='new')
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])
+        self.assertEqual(self.embedded, [])
+        # A new dev server binds 5173.
+        ports.append(5173)
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertEqual(self.embedded, [(self.session.id, 5173, 'fired')])
+        # The generic turn-injecting delivery seam is NOT used for port kind.
+        self.assertEqual(self.delivered, [])
+
+    def test_specific_port_target_waits_for_that_port(self):
+        ports = [3000]
+        self.mgr.set_ports_provider(lambda: list(ports))
+        w = self._arm(kind='port', target='8000')
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])
+        ports.append(5173)  # some other port — must NOT fire
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['armed'])
+        ports.append(8000)
+        self.mgr.tick(now=self.now + 2 * w['interval'])
+        self.assertEqual(self.embedded, [(self.session.id, 8000, 'fired')])
+
+    def test_ports_already_up_at_arm_do_not_fire(self):
+        self.mgr.set_ports_provider(lambda: [3000, 5173])
+        w = self._arm(kind='port', target='new')
+        self.mgr.tick(now=self.now)
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['armed'])
+        self.assertEqual(self.embedded, [])
+
+    def test_timeout_emits_nothing(self):
+        self.mgr.set_ports_provider(lambda: [3000])
+        # Route through the real emit so timeout-silence is exercised end to end.
+        self.mgr._emit_preview = hs.WatcherManager._default_emit_preview
+        w = self._arm(kind='port', target='new', timeout=60)
+        self.mgr.tick(now=w['deadline'] + 1)
+        self.assertEqual(self._states(), ['delivered'])
+        # No embed and no turn injection for a preview that never came up.
+        self.assertEqual(self.session.read_events(), [])
+
+    def test_default_emit_appends_preview_embed_to_transcript(self):
+        w = {'state': 'fired', 'detected_port': 5173, 'note': 'the build'}
+        ok = hs.WatcherManager._default_emit_preview(self.session.id, w)
+        self.assertTrue(ok)
+        events = self.session.read_events()
+        caption = events[0]
+        self.assertEqual(caption['role'], 'system')
+        self.assertIn('5173', caption['text'])
+        self.assertTrue(caption['kc_synthetic'])
+        embed = events[1]
+        self.assertEqual(embed['type'], 'tool_call')
+        self.assertEqual(embed['tool']['name'], 'mcp__dashboard__show_app_preview')
+        self.assertEqual(embed['tool']['input'], {'port': 5173})
+        self.assertTrue(embed['kc_synthetic'])
+
+    def test_default_emit_drops_for_deleted_thread(self):
+        self.assertIsNone(
+            hs.WatcherManager._default_emit_preview(
+                'no-such-thread', {'state': 'fired', 'detected_port': 1}))
 
 
 class WatcherTimeoutTest(WatcherTestBase):
