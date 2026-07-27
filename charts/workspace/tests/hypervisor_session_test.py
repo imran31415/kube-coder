@@ -1421,6 +1421,83 @@ class WatcherDeliveryTest(WatcherTestBase):
             hs.WatcherManager._default_deliver('no-such-thread', 'x'))
 
 
+class WatcherPortTest(WatcherTestBase):
+    """The first-win auto-preview (#484): a `port` watcher baselines the
+    listening ports at arm time, fires when a NEW one appears, and delivers a
+    deterministic `show_app_preview` embed (not a text turn). A timeout expires
+    silently — a build that never opened a port has nothing to show."""
+
+    def test_arm_snapshots_baseline_ports(self):
+        self.mgr.set_ports_provider(lambda: [5900, 5173])
+        w = self._arm(kind='port', target='task-abc')
+        self.assertEqual(w['baseline_ports'], [5173, 5900])  # sorted
+
+    def test_does_not_fire_on_preexisting_port(self):
+        self.mgr.set_ports_provider(lambda: [5173])
+        self.mgr._deliver_embed = lambda tid, w: self.fail('should not fire')
+        w = self._arm(kind='port', target='task-abc')
+        self.mgr.tick(now=self.now)
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['armed'])
+
+    def test_fires_on_new_port_and_delivers_embed_not_text(self):
+        ports = {5900}
+        self.mgr.set_ports_provider(lambda: sorted(ports))
+        embeds = []
+        self.mgr._deliver_embed = lambda tid, w: (
+            embeds.append((tid, w.get('detected_port'))) or True)
+        w = self._arm(kind='port', target='task-abc')
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['armed'])  # nothing new yet
+        ports.add(5173)  # dev server comes up
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertEqual(embeds, [(self.session.id, 5173)])
+        self.assertEqual(self.delivered, [])  # embed path, never the text seam
+
+    def test_picks_smallest_new_port(self):
+        ports = set()
+        self.mgr.set_ports_provider(lambda: sorted(ports))
+        got = []
+        self.mgr._deliver_embed = lambda tid, w: (
+            got.append(w.get('detected_port')) or True)
+        w = self._arm(kind='port', target='task-abc')
+        ports.update({8000, 3000, 46215})  # dev port + ephemeral helper
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(got, [3000])
+
+    def test_timeout_expires_silently(self):
+        self.mgr.set_ports_provider(lambda: [])
+        self.mgr._deliver_embed = lambda tid, w: self.fail('nothing to embed')
+        w = self._arm(kind='port', target='task-abc')
+        self.mgr.tick(now=w['deadline'] + 1)
+        self.assertEqual(self._states(), ['delivered'])  # marked done…
+        self.assertEqual(self.delivered, [])  # …with no chat notification
+
+    def test_default_embed_appends_show_app_preview_event(self):
+        # End-to-end through the real _default_deliver_embed: the transcript
+        # gains an assistant show_app_preview tool_call the SPA renders inline.
+        ports = set()
+        self.mgr.set_ports_provider(lambda: sorted(ports))
+        w = self._arm(kind='port', target='task-abc')
+        ports.add(8000)
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['delivered'])
+        events = self.session.read_events()
+        calls = [e for e in events if e.get('type') == 'tool_call']
+        self.assertTrue(any(
+            e['tool']['name'] == 'mcp__dashboard__show_app_preview'
+            and e['tool']['input']['port'] == 8000 for e in calls))
+
+    def test_missing_provider_never_fires(self):
+        # Provider unwired → empty snapshot, no false fire.
+        self.mgr._deliver_embed = lambda tid, w: self.fail('should not fire')
+        w = self._arm(kind='port', target='task-abc')
+        self.assertEqual(w['baseline_ports'], [])
+        self.mgr.tick(now=self.now + w['interval'])
+        self.assertEqual(self._states(), ['armed'])
+
+
 class WatcherCancelTest(WatcherTestBase):
     def test_thread_stop_cancels_watchers(self):
         # stop() must disarm even when idle (its running-turn kill is a no-op).

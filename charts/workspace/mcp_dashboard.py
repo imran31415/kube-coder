@@ -371,10 +371,39 @@ def _t_show_file(a):
 # Tool handlers — safe write
 # ───────────────────────────────────────────────────────────────────────────
 
+# Appended to a build task's prompt when preview=True — the deterministic half
+# of the first-win dispatch contract (#485). The auto-preview (#484) has nothing
+# to show if the build just writes files and exits, so we tell the agent to leave
+# a dev server RUNNING and DISCOVERABLE. Detached (setsid nohup) so it outlives
+# this task's turn/session; loopback so the app-proxy can reach it.
+_BUILD_PREVIEW_CONTRACT = (
+    "\n\n[Build-preview contract: the dashboard auto-embeds a LIVE preview of "
+    "this app in the chat the instant a dev server starts listening — so after "
+    "you implement, actually RUN the app and LEAVE IT RUNNING. Start it detached "
+    "so it survives this task ending, bound to loopback on a normal dev port "
+    "(e.g. 3000 / 5173 / 8000): e.g. "
+    "`setsid nohup <run-command> > /home/dev/devserver.log 2>&1 &`. For a static "
+    "site, serve it (`setsid nohup python3 -m http.server 8000 >/dev/null 2>&1 "
+    "&`). Then CONFIRM it is listening (curl the port) before you finish. Do not "
+    "just write files and exit — a build with no running server has nothing to "
+    "preview.]"
+)
+
+
 def _t_create_task(a):
     prompt = (a.get('prompt') or '').strip()
     if not prompt:
         return _err('prompt is required')
+    # First-win auto-preview (#484/#485): unless the caller opts out, treat this
+    # as a runnable build — append the dev-server contract to the prompt and arm
+    # a `port` watcher on this CTO thread so a live preview auto-surfaces the
+    # moment the app comes up. Harmless for non-app tasks: the watcher expires
+    # silently if no new port ever appears.
+    preview = a.get('preview')
+    preview = True if preview is None else bool(preview)
+    tid = _hv_thread_id()
+    if preview:
+        prompt = prompt + _BUILD_PREVIEW_CONTRACT
     # Hypervisor-spawned tasks are unattended — nobody is watching the live
     # terminal to answer the CLI's API-key dialog or per-tool permission
     # prompts — so launch in auto-approve/skip-permissions mode by default. A
@@ -386,7 +415,22 @@ def _t_create_task(a):
         body['workdir'] = a['workdir']
     if a.get('assistant'):
         body['assistant'] = a['assistant']
-    return _call('POST', '/api/claude/tasks', body=body)
+    status, payload = _api('POST', '/api/claude/tasks', body=body)
+    if status not in (200, 201, 202):
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        return _err(f'dashboard API POST /api/claude/tasks returned HTTP '
+                    f'{status}: {detail}')
+    # Auto-arm the port watcher (best-effort — a failure here must not fail the
+    # task creation, which already succeeded). Only inside a Hypervisor turn,
+    # where there's a thread to surface the preview in.
+    task_id = payload.get('task_id') if isinstance(payload, dict) else None
+    if preview and tid and task_id:
+        _api('POST',
+             f'/api/hypervisor/threads/{urllib.parse.quote(tid)}/watchers',
+             body={'kind': 'port', 'target': task_id, 'interval': 5,
+                   'timeout': 600,
+                   'note': f'live preview for build task {task_id}'})
+    return _ok(_pretty(payload))
 
 
 def _t_send_task_message(a):
@@ -705,7 +749,10 @@ TOOLS: Dict[str, Any] = {
         'create_task',
         'Create a new build/agent task that runs a prompt in the workspace '
         '(the same thing the Build tab "new task" does). Use when the user asks '
-        'you to run, build, test, or start something as a background task.',
+        'you to run, build, test, or start something as a background task. For '
+        'a task that builds or runs a web app, leave preview on (the default): '
+        'a live preview auto-surfaces in this chat the moment its dev server '
+        'comes up — no need to call show_app_preview yourself.',
         _t_create_task,
         properties={
             'prompt': {'type': 'string',
@@ -719,6 +766,12 @@ TOOLS: Dict[str, Any] = {
                              'unattended task does not stall (default true). '
                              'Set false to run with interactive approval '
                              'prompts.'},
+            'preview': {'type': 'boolean',
+                        'description': 'Default true: append a dev-server '
+                        'contract to the prompt and auto-arm a live preview '
+                        'that embeds the running app in this chat when it comes '
+                        'up. Set false for tasks that do not run a web app '
+                        '(pure refactors, tests, docs).'},
         }, required=['prompt'], kind='write'),
     'send_task_message': _tool(
         'send_task_message',
@@ -752,12 +805,17 @@ TOOLS: Dict[str, Any] = {
         "completes, errors, is killed, or goes waiting-for-input. 'command' — "
         "target is a shell command; fires when it exits 0. 'file' — target is "
         'an absolute path; fires when it appears, is removed, or its mtime '
-        'changes. On timeout you get an explicit timeout message instead. '
-        'After arming, just end your turn.',
+        "changes. 'port' — target is the related task_id; fires when a NEW "
+        'loopback dev-server port starts listening and auto-embeds a live '
+        'preview of it in this chat (you normally get this automatically from '
+        'create_task; arm it by hand only for an app started some other way). '
+        'On timeout you get an explicit timeout message instead (except a '
+        "'port' watcher, which expires silently). After arming, just end your "
+        'turn.',
         _t_watch,
         properties={
             'kind': {'type': 'string',
-                     'description': "'task' | 'command' | 'file'."},
+                     'description': "'task' | 'command' | 'file' | 'port'."},
             'target': {'type': 'string',
                        'description': 'Task id, shell predicate, or absolute '
                                       'path (per kind).'},
