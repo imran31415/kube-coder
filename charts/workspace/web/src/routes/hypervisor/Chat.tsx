@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
@@ -21,6 +22,7 @@ import { supportsSlash, slashToken, matchCommands } from './slashPicker';
 import { WorkspaceContext } from './WorkspaceContext';
 import { ActivityPanel } from './ActivityPanel';
 import { buildTurns, renderMarkdown, turnCopyText, type Block } from './transcript';
+import { turnWindow, TURN_WINDOW, TURN_WINDOW_STEP } from './transcriptWindow';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
 import { withOauthPrefix } from '../../api/client';
@@ -300,6 +302,39 @@ function ChoiceBlock({
   );
 }
 
+/** Viewport-gated mount for a heavy inline embed (#525). `show_app_preview`
+ *  iframes, `show_media` players and `show_file` frames used to stay live for
+ *  every turn ever rendered, so a long transcript leaked unbounded iframes/DOM
+ *  until the tab crashed. We only mount the embed while it's near the viewport
+ *  and unmount it once it scrolls well away — a `minHeight` placeholder holds
+ *  its slot so scroll position and the bottom-pin math stay stable. Falls back
+ *  to eager-mount where IntersectionObserver is unavailable (tests, old
+ *  browsers) so content is never silently dropped. Mirrors the feed's IO use. */
+function LazyBlock({ minHeight, children }: { minHeight: number; children: ComponentChildren }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [show, setShow] = useState(() => typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) setShow(e.isIntersecting);
+      },
+      // Mount a screenful early / keep mounted a screenful past the fold so a
+      // scrolled-back embed is already there and a slow reload isn't visible.
+      { rootMargin: '800px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return (
+    <div ref={ref} class="hv-lazyblock" style={show ? undefined : { minHeight: `${minHeight}px` }}>
+      {show ? children : null}
+    </div>
+  );
+}
+
 function AgentBlocks({
   blocks,
   interactive,
@@ -323,20 +358,29 @@ function AgentBlocks({
               />
             );
           case 'embed':
-            return <EmbedBlock key={i} port={b.port} title={b.title} height={b.height} />;
+            return (
+              <LazyBlock key={i} minHeight={b.height && b.height >= 80 ? b.height : 280}>
+                <EmbedBlock port={b.port} title={b.title} height={b.height} />
+              </LazyBlock>
+            );
           case 'media':
             return (
-              <MediaBlock
-                key={i}
-                mediaKind={b.mediaKind}
-                path={b.path}
-                url={b.url}
-                title={b.title}
-                height={b.height}
-              />
+              <LazyBlock key={i} minHeight={b.height && b.height >= 40 ? b.height : 260}>
+                <MediaBlock
+                  mediaKind={b.mediaKind}
+                  path={b.path}
+                  url={b.url}
+                  title={b.title}
+                  height={b.height}
+                />
+              </LazyBlock>
             );
           case 'file':
-            return <FileBlock key={i} path={b.path} title={b.title} height={b.height} />;
+            return (
+              <LazyBlock key={i} minHeight={b.height && b.height >= 80 ? b.height : 260}>
+                <FileBlock path={b.path} title={b.title} height={b.height} />
+              </LazyBlock>
+            );
           case 'choice':
             return (
               <ChoiceBlock
@@ -420,6 +464,11 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
   // draft — no separate "open" boolean to keep in sync.
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
+  // How many turns from the tail to render (#525). A long transcript otherwise
+  // kept every turn — and every live embed — in the DOM until the tab crashed;
+  // we window to the most recent turns and let the user reveal older ones a
+  // page at a time. Grows by TURN_WINDOW_STEP; reset when the thread changes.
+  const [visibleTurns, setVisibleTurns] = useState(TURN_WINDOW);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -605,6 +654,8 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
 
   const turns = useMemo(() => buildTurns(evts), [evts]);
   const hasAgentTail = turns.length > 0 && turns[turns.length - 1].role === 'agent';
+  // Bounded render window over the tail of the transcript (#525).
+  const { start: turnStart, hidden: hiddenTurns } = turnWindow(turns.length, visibleTurns);
 
   useEffect(() => {
     const el = taRef.current;
@@ -648,10 +699,19 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
-  // A freshly opened thread starts pinned to the bottom.
+  // A freshly opened thread starts pinned to the bottom, and re-windowed to the
+  // tail so switching threads never inherits a huge revealed range (#525).
   useEffect(() => {
     pinnedRef.current = true;
+    setVisibleTurns(TURN_WINDOW);
   }, [active]);
+
+  function revealEarlier() {
+    // Revealing older turns must not yank the view to the bottom — unpin so the
+    // auto-scroll effect leaves the reader where they are.
+    pinnedRef.current = false;
+    setVisibleTurns((v) => v + TURN_WINDOW_STEP);
+  }
 
   function submit(text?: string) {
     if (blocked) return;
@@ -826,8 +886,19 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
                 <Icon name="check" size={11} /> Structured transcript · session log
               </div>
             )}
-            {turns.map((t, i) =>
-              t.role === 'user' ? (
+            {hiddenTurns > 0 && (
+              <div class="hv-earlier">
+                <button type="button" class="hv-earlier-btn" onClick={revealEarlier}>
+                  <Icon name="chevron-down" size={13} class="hv-earlier-caret" />
+                  Show {Math.min(hiddenTurns, TURN_WINDOW_STEP)} earlier message
+                  {Math.min(hiddenTurns, TURN_WINDOW_STEP) === 1 ? '' : 's'}
+                  <span class="hv-earlier-count">{hiddenTurns} hidden</span>
+                </button>
+              </div>
+            )}
+            {turns.slice(turnStart).map((t, j) => {
+              const i = turnStart + j;
+              return t.role === 'user' ? (
                 <div key={i} class="hv-msg hv-msg-user">
                   <div class="hv-bubble">{t.text}</div>
                   <button
@@ -877,8 +948,8 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
                     />
                   </div>
                 </div>
-              ),
-            )}
+              );
+            })}
 
             {/* Agent is working but hasn't emitted its turn block yet. */}
             {active && thinking && !hasAgentTail && (

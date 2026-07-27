@@ -617,6 +617,40 @@
 }
 .hv-source-chip svg { color: var(--success, #2e7d32); }
 
+/* "Show earlier messages" — the head of a windowed transcript (#525). Older
+   turns are kept out of the DOM until revealed a page at a time. */
+.hv-earlier {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0 6px;
+}
+.hv-earlier-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.hv-earlier-btn:hover { background: var(--surface-hover, var(--surface)); color: var(--text); }
+.hv-earlier-caret { transform: rotate(180deg); opacity: 0.7; }
+.hv-earlier-count {
+  padding-left: 7px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+  color: var(--text-faint, var(--text-subtle));
+  font-weight: 500;
+}
+
+/* Placeholder slot for a not-yet-mounted heavy embed (#525) — holds height so
+   scroll position and the bottom-pin math stay stable while it's unmounted. */
+.hv-lazyblock { width: 100%; }
+
 .hv-welcome-host {
   margin: auto;
   width: 100%;

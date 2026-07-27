@@ -55,6 +55,31 @@ export function sameTranscript(
   return a.seq === b.seq && a.type === b.type && a.text === b.text;
 }
 
+/** Turns rendered from the tail of a long transcript by default (#525). React
+ *  Native's ScrollView mounts every child, so a long founder/ops chat kept
+ *  every turn — and every inline WebView embed — alive until the app went
+ *  sluggish and crashed. We window to the most recent turns and let the user
+ *  reveal older ones a page at a time. Mirrors the web transcriptWindow.ts. */
+export const TURN_WINDOW = 30;
+export const TURN_WINDOW_STEP = 30;
+
+export interface TurnWindow {
+  /** Index of the first rendered turn — turns before it are hidden. */
+  start: number;
+  /** How many turns are hidden above the window (0 ⇒ the whole thread fits). */
+  hidden: number;
+}
+
+/** Tail slice of a transcript to render. `visible` is clamped up to at least
+ *  TURN_WINDOW and down to the total, so a caller can seed it at TURN_WINDOW
+ *  and grow it by TURN_WINDOW_STEP with no bounds bookkeeping. Pure so it is
+ *  unit-tested; shared in spirit with the web turnWindow(). */
+export function turnWindow(total: number, visible: number): TurnWindow {
+  const shown = Math.min(Math.max(0, total), Math.max(TURN_WINDOW, visible));
+  const start = Math.max(0, total - shown);
+  return { start, hidden: start };
+}
+
 /** MCP render tools whose tool_call renders inline instead of a text chip. */
 const APP_PREVIEW_TOOL = 'mcp__dashboard__show_app_preview';
 const MEDIA_TOOL = 'mcp__dashboard__show_media';

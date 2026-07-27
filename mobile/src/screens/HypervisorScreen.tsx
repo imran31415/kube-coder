@@ -53,7 +53,15 @@ import { AppEmbed } from '../components/AppEmbed';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
 import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource, WorkdirOption } from '../api/types';
-import { buildTurns, sameTranscript, turnCopyText, type HvBlock } from '../util/hvTranscript';
+import {
+  buildTurns,
+  sameTranscript,
+  turnCopyText,
+  turnWindow,
+  TURN_WINDOW,
+  TURN_WINDOW_STEP,
+  type HvBlock,
+} from '../util/hvTranscript';
 import {
   readSpeakPref,
   writeSpeakPref,
@@ -116,6 +124,11 @@ export default function HypervisorScreen() {
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // How many turns from the tail to render (#525). ScrollView mounts every
+  // child, so a long transcript kept every turn — and every inline WebView —
+  // alive until the app crashed; we window to the tail and reveal older turns a
+  // page at a time. Grows by TURN_WINDOW_STEP; reset when the thread changes.
+  const [visibleTurns, setVisibleTurns] = useState(TURN_WINDOW);
   const [chatsOpen, setChatsOpen] = useState(false);
   // Assistant chosen for the NEXT new chat (existing threads keep their own).
   const [selectedAssistant, setSelectedAssistant] = useState<string | undefined>(undefined);
@@ -330,10 +343,19 @@ export default function HypervisorScreen() {
     return () => clearTimeout(t);
   }, [events]);
 
-  // A freshly opened thread starts pinned to the bottom.
+  // A freshly opened thread starts pinned to the bottom, and re-windowed to the
+  // tail so switching threads never inherits a huge revealed range (#525).
   useEffect(() => {
     pinnedRef.current = true;
+    setVisibleTurns(TURN_WINDOW);
   }, [activeId]);
+
+  function revealEarlier() {
+    // Revealing older turns must not yank to the bottom — unpin so the
+    // scroll-pin effect leaves the reader where they are.
+    pinnedRef.current = false;
+    setVisibleTurns((v) => v + TURN_WINDOW_STEP);
+  }
 
   // Pinned when within ~80px of the bottom. Scrolling up unpins (so polls stop
   // pulling down); scrolling back to the bottom re-pins.
@@ -572,6 +594,8 @@ export default function HypervisorScreen() {
   }
 
   const turns = buildTurns(events);
+  // Bounded render window over the tail of the transcript (#525).
+  const { start: turnStart, hidden: hiddenTurns } = turnWindow(turns.length, visibleTurns);
   const agentName = config?.defaultAssistant || 'claude';
   const activeThread = threads.find((t) => t.id === activeId) || null;
   const working = status === 'running';
@@ -677,8 +701,25 @@ export default function HypervisorScreen() {
               </View>
             </View>
           ) : (
-            turns.map((turn, i) =>
-              turn.role === 'user' ? (
+            <>
+            {hiddenTurns > 0 && (
+              <Pressable
+                onPress={revealEarlier}
+                accessibilityRole="button"
+                accessibilityLabel={`Show ${hiddenTurns} earlier messages`}
+                style={({ pressed }) => [styles.earlierBtn, pressed && { opacity: 0.6 }]}
+              >
+                <Ionicons name="chevron-up" size={14} color={colors.textMuted} />
+                <Text style={styles.earlierText}>
+                  Show {Math.min(hiddenTurns, TURN_WINDOW_STEP)} earlier
+                  {Math.min(hiddenTurns, TURN_WINDOW_STEP) === 1 ? ' message' : ' messages'}
+                </Text>
+                <Text style={styles.earlierCount}>{hiddenTurns} hidden</Text>
+              </Pressable>
+            )}
+            {turns.slice(turnStart).map((turn, wi) => {
+              const i = turnStart + wi;
+              return turn.role === 'user' ? (
                 <View key={i} style={styles.userRow}>
                   <View style={styles.userBubble}>
                     <Text style={styles.userText} selectable>
@@ -740,8 +781,9 @@ export default function HypervisorScreen() {
                     />
                   ))}
                 </View>
-              ),
-            )
+              );
+            })}
+            </>
           )}
           {!empty && working && turns[turns.length - 1]?.role !== 'agent' && (
             <View style={styles.agentRow}>
@@ -1581,6 +1623,28 @@ const styles = StyleSheet.create({
   },
   restoreBtnText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
   transcript: { padding: space.lg, gap: space.md },
+  // "Show earlier messages" — head of a windowed transcript (#525).
+  earlierBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  earlierText: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+  earlierCount: {
+    color: colors.textFaint,
+    fontSize: font.size.xs,
+    paddingLeft: 6,
+    marginLeft: 2,
+    borderLeftWidth: 1,
+    borderLeftColor: colors.border,
+  },
   welcome: { paddingTop: space.xxl, gap: space.lg },
   suggests: { gap: space.sm, paddingHorizontal: space.lg },
   suggest: {
