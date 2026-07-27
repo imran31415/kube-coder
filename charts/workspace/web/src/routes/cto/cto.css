@@ -447,3 +447,20 @@
   .cto-main { flex: 1; min-height: 0; }
   /* The desktop brief column is not rendered on mobile (BottomSheet instead). */
 }
+
+/* ── Touch targets (#503) — phones give chips + icon buttons a ≥44px tap
+   area (WCAG 2.5.5). Visual padding is preserved via flex centering, so the
+   pill grows only its hit box, not its ink. Desktop density is unchanged. */
+@media (max-width: 720px) {
+  .cto-chip,
+  .cto-brief-toggle {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .cto-card-menu-btn,
+  .cto-delta-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

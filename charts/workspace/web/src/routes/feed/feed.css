@@ -215,4 +215,18 @@
   .feed-head { padding: var(--size-3); }
   .feed-stream { padding: var(--size-2) var(--size-3) var(--size-6); }
   .feed-project-select { margin-left: 0; }
+
+  /* Touch targets (#503) — ≥44px tap area for filters, action chips and the
+     dismiss icon (WCAG 2.5.5). Flex centering keeps the visual padding, so
+     only the hit box grows; desktop density is unchanged. */
+  .feed-filter,
+  .feed-chip {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .feed-dismiss {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
