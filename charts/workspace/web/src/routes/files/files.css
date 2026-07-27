@@ -1,4 +1,4 @@
-.files-actions { display: flex; gap: var(--size-2); align-items: center; flex-wrap: wrap; }
+.files-actions { display: flex; flex-direction: row; gap: var(--size-2); align-items: center; flex-wrap: wrap; }
 .files-upload { display: inline-flex; }
 .files-upload .btn { cursor: pointer; }
 .files-upload-prog { font-size: 12px; white-space: nowrap; }
