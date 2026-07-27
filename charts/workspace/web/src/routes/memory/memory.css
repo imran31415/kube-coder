@@ -259,7 +259,7 @@
 .md-relation-unlink:hover { color: var(--danger, #f87171); border-color: var(--border); background: var(--surface-2); }
 
 /* Memory header actions (Export / Import / New) */
-.mem-header-actions { display: flex; align-items: center; gap: var(--size-2); flex-wrap: wrap; }
+.mem-header-actions { display: flex; flex-direction: row; align-items: center; gap: var(--size-2); flex-wrap: wrap; }
 
 /* Import drawer */
 .mem-import-mode { gap: 8px; }

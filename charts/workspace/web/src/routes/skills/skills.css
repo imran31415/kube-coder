@@ -21,7 +21,7 @@
 }
 
 /* Header actions — help tooltip + "Add skill" launcher. */
-.skl-header-actions { display: flex; align-items: center; gap: var(--size-2); flex-shrink: 0; }
+.skl-header-actions { display: flex; flex-direction: row; align-items: center; gap: var(--size-2); flex-shrink: 0; }
 .skl-help {
   display: inline-flex;
   align-items: center;

@@ -44,7 +44,7 @@
   justify-content: space-between;
   gap: var(--size-3);
 }
-.route-header-with-action > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.route-header-with-action > div:first-child { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 @media (max-width: 600px) {
   .route-header-with-action { flex-direction: column; align-items: stretch; }
 }
