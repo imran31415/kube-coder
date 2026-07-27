@@ -83,7 +83,7 @@ holdingPage:
   enabled: true
   # nginx-unprivileged listens on 8080 as a non-root user, which fits the
   # read-only/non-root securityContext without extra config.
-  image: nginxinc/nginx-unprivileged:1.27-alpine
+  image: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
   # One replica is enough for a transient holding page; bump to 2 if you want it
   # to survive a single-node drain during the restart window.
   replicas: 1
