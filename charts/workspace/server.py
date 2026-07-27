@@ -267,6 +267,11 @@ CTO_PREAMBLE = (
     "workdir to one of the project's workdirs from the brief) and arm a `watch` "
     "of kind 'task' on each so completions flow back into this chat. NEVER "
     "dispatch a task without explicit confirmation. "
+    "For a task that BUILDS OR RUNS A WEB APP, leave create_task's `preview` on "
+    "(the default): a live preview auto-embeds in this chat the moment the app's "
+    "dev server starts — so do NOT call show_app_preview yourself for dispatched "
+    "builds, and do not manually poll for the port. Pass preview=false only for "
+    "tasks that never run an app (pure refactors, tests, docs). "
     "FEED: when you surface a finding that deserves the user's attention beyond "
     "this thread — a briefing/digest, a relevant dependency advisory or release "
     "note, a heads-up — post it to the Feed with post_update, don't just say it "
@@ -12921,8 +12926,19 @@ if __name__ == "__main__":
             ClaudeTaskManager._reconcile_status(meta, task_dir)
             return meta.get('status', 'unknown')
 
+        def _hv_watch_listening_ports():
+            # Loopback dev-server ports currently listening, with the workspace's
+            # own infrastructure ports filtered out — the baseline/diff source
+            # for `port` watchers (first-win auto-preview, #484).
+            try:
+                ports = {e['port'] for e in AppsManager.parse_listen_ports()}
+            except Exception:
+                return []
+            return sorted(ports - AppsManager.INTERNAL_PORTS)
+
         try:
             hv_watchers.set_task_status_provider(_hv_watch_task_status)
+            hv_watchers.set_ports_provider(_hv_watch_listening_ports)
             hv_watchers.start()
             print('[hypervisor] cross-turn watcher loop started')
         except Exception as e:

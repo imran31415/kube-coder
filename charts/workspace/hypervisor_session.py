@@ -2108,6 +2108,13 @@ def reconcile_stale_running_threads() -> List[str]:
 #             real-world wait ("tell me when the build task finishes").
 #   command — a shell predicate run by the runner; fires when it exits 0.
 #   file    — a path appearing, disappearing, or its mtime changing.
+#   port    — a NEW loopback dev-server port appears (diffed against an arm-time
+#             baseline). Powers the first-win auto-preview (issue #484): on fire
+#             it appends a `show_app_preview` embed straight into the transcript
+#             — no agent turn, no LLM discretion — so a live preview surfaces in
+#             chat the moment a build's dev server comes up. A timeout expires
+#             silently (nothing came up = nothing to show), so it is safe to arm
+#             by default alongside every dispatched build.
 #
 # Persistence: one watchers.json per thread dir, scanned every tick — so
 # watchers survive turn boundaries by construction (they never lived in the
@@ -2115,7 +2122,7 @@ def reconcile_stale_running_threads() -> List[str]:
 # registry to lose). Thread stop()/delete() cancels its watchers.
 # ───────────────────────────────────────────────────────────────────────────
 WATCH_TICK = float(os.environ.get('KC_HYPERVISOR_WATCH_TICK', '5'))
-WATCH_KINDS = ('task', 'command', 'file')
+WATCH_KINDS = ('task', 'command', 'file', 'port')
 WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL, WATCH_DEFAULT_INTERVAL = 5.0, 600.0, 20.0
 WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT, WATCH_DEFAULT_TIMEOUT = 10.0, 86400.0, 3600.0
 # Guard rail: a runaway agent can't accumulate unbounded poll loops per thread.
@@ -2155,12 +2162,27 @@ class WatcherManager:
         # Injected by server.py at startup (this module can't import server).
         # Returns a task's status string, or None when the task doesn't exist.
         self._task_status: Optional[Callable[[str], Optional[str]]] = None
-        # Delivery seam — tests replace this to observe/steer injection.
+        # Returns the set/list of loopback dev-server ports currently listening
+        # (workspace-internal ports already filtered out). Powers `port`
+        # watchers; None when unwired (outside a real pod).
+        self._ports: Optional[Callable[[], Any]] = None
+        # Delivery seams — tests replace these to observe/steer injection.
+        # `_deliver` injects a follow-up text turn (task/command/file watchers);
+        # `_deliver_embed` appends a live-preview embed straight into the
+        # transcript (port watchers), no agent turn.
         self._deliver: Callable[[str, str], Optional[bool]] = self._default_deliver
+        self._deliver_embed: Callable[[str, Dict[str, Any]], Optional[bool]] = \
+            self._default_deliver_embed
 
     # ── wiring ─────────────────────────────────────────────────────────────
     def set_task_status_provider(self, fn: Callable[[str], Optional[str]]) -> None:
         self._task_status = fn
+
+    def set_ports_provider(self, fn: Callable[[], Any]) -> None:
+        """Wire the live-port lister used by `port` watchers. `fn()` returns the
+        currently-listening loopback dev-server ports (ints), with workspace
+        infrastructure ports already filtered out."""
+        self._ports = fn
 
     def start(self) -> None:
         """Start the background tick loop (idempotent) and register for
@@ -2254,6 +2276,11 @@ class WatcherManager:
                     w['baseline_mtime'] = os.path.getmtime(target)
                 except OSError:
                     w['baseline_exists'] = False
+        elif kind == 'port':
+            # Baseline snapshot so "new port" is relative to arm time — a dev
+            # server already listening when the build was dispatched must not
+            # false-fire the preview.
+            w['baseline_ports'] = self._current_ports()
         with self._lock:
             items = self._load(thread_id)
             active = sum(1 for x in items if x.get('state') in _WATCH_ACTIVE_STATES)
@@ -2351,7 +2378,18 @@ class WatcherManager:
         for w in items:
             if w.get('state') not in ('fired', 'timeout'):
                 continue
-            delivered = self._deliver(thread_id, self._notification_text(w))
+            if w.get('kind') == 'port':
+                # Port watchers deliver a deterministic preview embed on fire,
+                # and expire SILENTLY on timeout — a build that never opened a
+                # port has nothing to preview, and a "watcher timed out" note
+                # would just be chat noise (the task watcher still reports the
+                # build's completion).
+                if w.get('state') == 'fired':
+                    delivered = self._deliver_embed(thread_id, w)
+                else:
+                    delivered = True
+            else:
+                delivered = self._deliver(thread_id, self._notification_text(w))
             if delivered is True:
                 w['state'] = 'delivered'
                 w['delivered_at'] = now
@@ -2401,7 +2439,29 @@ class WatcherManager:
             if mtime != w.get('baseline_mtime'):
                 return True, f'path {target} was modified'
             return False, ''
+        if kind == 'port':
+            if self._ports is None:
+                return False, ''  # provider not wired (shouldn't happen in-pod)
+            baseline = set(w.get('baseline_ports') or [])
+            new = sorted(p for p in self._current_ports() if p not in baseline)
+            if new:
+                # Smallest new port — deterministic, and the common dev-server
+                # ports (3000, 5173, 8000…) sort ahead of ephemeral helpers.
+                port = new[0]
+                w['detected_port'] = port
+                return True, f'a dev server is now listening on port {port}'
+            return False, ''
         return False, ''
+
+    def _current_ports(self) -> List[int]:
+        """Snapshot of listening dev-server ports via the wired provider. Never
+        raises — a provider hiccup yields an empty snapshot (no false fire)."""
+        if self._ports is None:
+            return []
+        try:
+            return sorted(int(p) for p in self._ports())
+        except Exception:
+            return []
 
     @staticmethod
     def _notification_text(w: Dict[str, Any]) -> str:
@@ -2432,6 +2492,35 @@ class WatcherManager:
             if _RUNNING.get(thread_id):
                 return False
         session.send(text)
+        return True
+
+    @staticmethod
+    def _default_deliver_embed(thread_id: str,
+                               w: Dict[str, Any]) -> Optional[bool]:
+        """Append a live-preview embed straight into the transcript. True =
+        delivered; None = thread gone/deleted, drop.
+
+        Unlike _default_deliver this does NOT spawn an agent turn and does NOT
+        defer on a busy thread: the embed is a pair of appended assistant events
+        (a short prose line + a `show_app_preview` tool_call the SPA renders as
+        an inline iframe — see web/src/routes/hypervisor/transcript.ts). This is
+        the deterministic heart of the first-win auto-preview (#484): the live
+        app surfaces in chat with zero LLM discretion."""
+        session = HypervisorSession.get(thread_id)
+        meta = session.read_meta() if session else None
+        if meta is None or meta.get('deleted_at') is not None:
+            return None
+        port = w.get('detected_port')
+        if not isinstance(port, int) or port <= 0:
+            return None  # nothing concrete to embed — drop rather than misfire
+        session._append([
+            {'role': 'assistant', 'type': 'message',
+             'text': f'🚀 Your app is live on port {port} — here it is:'},
+            {'role': 'assistant', 'type': 'tool_call',
+             'tool': {'name': 'mcp__dashboard__show_app_preview',
+                      'input': {'port': port}},
+             'tool_id': f'autopreview-{w.get("id", "")}'},
+        ])
         return True
 
 
