@@ -539,9 +539,9 @@ class ClaudeAdapter(Adapter):
             if o.get('session_id'):
                 ctx['claude_session_id'] = o['session_id']
             if o.get('subtype') not in (None, 'success'):
+                raw = _stringify(o.get('result') or o.get('subtype'))
                 out.append({'role': 'system', 'type': 'error',
-                            'text': _stringify(o.get('result')
-                                               or o.get('subtype'))})
+                            'text': _claude_result_error_text(raw)})
             return out
         return []
 
@@ -936,6 +936,34 @@ def _stringify(v: Any) -> str:
         return json.dumps(v, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(v)
+
+
+# A `claude -p` turn that dies for lack of a working credential (no subscription
+# login and no valid ANTHROPIC_API_KEY) surfaces the provider's raw error, which
+# reads as a broken app to a first-time user (#494). Detect that narrow case and
+# swap in a plain-language "connect Claude" message; anything else passes through
+# verbatim so real failures aren't swallowed.
+_CLAUDE_AUTH_ERR_RE = re.compile(
+    r'invalid api key|authentication[_ ]error|\bunauthorized\b|\b401\b'
+    r'|oauth token (?:has )?expired|please run [`\'"]?/?login'
+    r'|credit balance is too low|not (?:logged in|authenticated)'
+    r'|no (?:valid )?(?:api key|credentials|auth)',
+    re.IGNORECASE)
+
+CLAUDE_AUTH_NEEDED_MSG = (
+    "Claude isn't connected yet, so this build can't run. Connect your Claude "
+    "account (Pro/Max sign-in — no key needed) or paste an ANTHROPIC_API_KEY in "
+    "Settings → Provider keys, then send your request again. New here? The "
+    "onboarding walkthrough has a one-click connect step."
+)
+
+
+def _claude_result_error_text(raw: str) -> str:
+    """Map a Claude result-error string to the friendly connect prompt when it's
+    an auth/credential failure, else return it unchanged (#494)."""
+    if raw and _CLAUDE_AUTH_ERR_RE.search(raw):
+        return CLAUDE_AUTH_NEEDED_MSG
+    return raw
 
 
 # ───────────────────────────────────────────────────────────────────────────

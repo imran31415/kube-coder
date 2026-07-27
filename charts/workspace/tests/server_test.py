@@ -1064,6 +1064,44 @@ class SubscriptionStatusManagerTests(unittest.TestCase):
             self.assertEqual(
                 server.SubscriptionStatusManager._codex_status()['kind'], 'api_key')
 
+    def test_claude_credential_present_active_subscription(self):
+        # A non-expired subscription login alone is a working credential (#494).
+        future = (server.time.time() + 3600) * 1000
+        self._write_claude({'accessToken': 't', 'subscriptionType': 'max', 'expiresAt': future})
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay', return_value={}):
+            os.environ.pop('ANTHROPIC_API_KEY', None)
+            self.assertTrue(server.SubscriptionStatusManager.claude_credential_present())
+
+    def test_claude_credential_absent_when_nothing_configured(self):
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay', return_value={}):
+            os.environ.pop('ANTHROPIC_API_KEY', None)
+            self.assertFalse(server.SubscriptionStatusManager.claude_credential_present())
+
+    def test_claude_credential_present_expired_sub_but_env_key(self):
+        # Expired subscription, but a pasted/env API key still works.
+        past = (server.time.time() - 3600) * 1000
+        self._write_claude({'accessToken': 't', 'subscriptionType': 'pro', 'expiresAt': past})
+        with mock.patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'sk-ant-x'}), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay', return_value={}):
+            self.assertTrue(server.SubscriptionStatusManager.claude_credential_present())
+
+    def test_claude_credential_absent_when_sub_expired_and_no_key(self):
+        past = (server.time.time() - 3600) * 1000
+        self._write_claude({'accessToken': 't', 'subscriptionType': 'pro', 'expiresAt': past})
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay', return_value={}):
+            os.environ.pop('ANTHROPIC_API_KEY', None)
+            self.assertFalse(server.SubscriptionStatusManager.claude_credential_present())
+
+    def test_claude_credential_present_via_overlay_key(self):
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                                  return_value={'ANTHROPIC_API_KEY': 'sk-ant-y'}):
+            os.environ.pop('ANTHROPIC_API_KEY', None)
+            self.assertTrue(server.SubscriptionStatusManager.claude_credential_present())
+
     def test_logout_rejects_unknown_provider(self):
         ok, err = server.SubscriptionStatusManager.logout('aws')
         self.assertFalse(ok)

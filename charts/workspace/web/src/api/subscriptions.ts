@@ -24,7 +24,7 @@ export interface SubscriptionStatus {
 export type SubscriptionsView = Record<SubscriptionProvider, SubscriptionStatus>;
 
 export const getSubscriptions = () =>
-  apiGet<{ subscriptions: SubscriptionsView }>('/api/subscriptions');
+  apiGet<{ subscriptions: SubscriptionsView; claude_ready: boolean }>('/api/subscriptions');
 
 export const logoutSubscription = (provider: SubscriptionProvider) =>
   apiDelete<{ ok: true }>(`/api/subscriptions/${provider}`);
@@ -47,6 +47,8 @@ export interface ClaudeConnectPoll {
   state?: string;
   error?: string;
   subscriptions?: SubscriptionsView;
+  /** Whether a spawned Claude session now has a working credential (#494). */
+  claude_ready?: boolean;
 }
 
 export const startClaudeConnect = () =>

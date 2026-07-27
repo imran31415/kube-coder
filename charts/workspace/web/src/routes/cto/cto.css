@@ -315,6 +315,9 @@
   max-width: 52ch;
   line-height: 1.5;
 }
+/* First-win connect gate (#494) — same column as the welcome, capped so the
+   two options don't sprawl on a wide desktop pane. */
+.cto-connect { max-width: 460px; }
 .cto-chips { display: flex; flex-wrap: wrap; gap: var(--size-2); }
 .cto-chip {
   font-size: 13px;

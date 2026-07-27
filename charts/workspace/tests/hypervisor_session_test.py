@@ -64,6 +64,28 @@ class ClaudeAdapterParseTest(unittest.TestCase):
         self.assertEqual(out[0]['type'], 'error')
         self.assertEqual(self.ctx['claude_session_id'], 'sess-9')
 
+    def test_auth_failure_result_swaps_in_connect_message(self):
+        # A credential failure surfaces the friendly connect prompt, not the raw
+        # provider error (#494).
+        line = json.dumps({'type': 'result', 'subtype': 'error',
+                           'result': 'API Error: 401 {"error":{"type":"authentication_error"}}'})
+        out = self.a.parse(self.ctx, line)
+        self.assertEqual(out[0]['type'], 'error')
+        self.assertEqual(out[0]['text'], hs.CLAUDE_AUTH_NEEDED_MSG)
+
+    def test_invalid_api_key_result_swaps_in_connect_message(self):
+        line = json.dumps({'type': 'result', 'subtype': 'error',
+                           'result': 'Invalid API key · Please run /login'})
+        out = self.a.parse(self.ctx, line)
+        self.assertEqual(out[0]['text'], hs.CLAUDE_AUTH_NEEDED_MSG)
+
+    def test_non_auth_result_error_passes_through(self):
+        # Unrelated failures must NOT be swallowed by the auth remap.
+        line = json.dumps({'type': 'result', 'subtype': 'error',
+                           'result': 'Tool execution failed: file not found'})
+        out = self.a.parse(self.ctx, line)
+        self.assertEqual(out[0]['text'], 'Tool execution failed: file not found')
+
     def test_garbage_line_is_ignored(self):
         self.assertEqual(self.a.parse(self.ctx, 'not json at all'), [])
 

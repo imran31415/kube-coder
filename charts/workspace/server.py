@@ -4777,6 +4777,21 @@ class SubscriptionStatusManager:
         }
 
     @classmethod
+    def claude_credential_present(cls):
+        """True when a Claude session spawned right now would have SOME working
+        credential — a non-expired subscription OAuth login, or a pasted/env
+        ANTHROPIC_API_KEY. The onboarding first-win build is gated on this
+        (#494): with no credential we surface a "connect Claude" prompt instead
+        of firing a task that dies with a raw provider error. Mirrors the auth
+        precedence at spawn (subscription oauth, else the env/overlay API key)."""
+        st = cls._claude_status()
+        if st.get('logged_in') and not st.get('expired'):
+            return True
+        if 'ANTHROPIC_API_KEY' in ProviderKeysManager.env_overlay():
+            return True
+        return bool(os.environ.get('ANTHROPIC_API_KEY'))
+
+    @classmethod
     def logout(cls, provider):
         argv = cls.LOGOUT_CMDS.get(provider)
         if not argv:
@@ -4927,7 +4942,8 @@ class ClaudeWebLoginManager:
         if state == 'success':
             cls.cancel()
             return {'connected': True, 'in_progress': False,
-                    'subscriptions': SubscriptionStatusManager.public_view()}
+                    'subscriptions': SubscriptionStatusManager.public_view(),
+                    'claude_ready': SubscriptionStatusManager.claude_credential_present()}
         if state == 'failed' or not running:
             cls.cancel()
             return {'connected': False, 'in_progress': False,
@@ -8938,7 +8954,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not self.check_claude_auth(allow_none_mode=False):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        self.send_json({'subscriptions': SubscriptionStatusManager.public_view()})
+        self.send_json({
+            'subscriptions': SubscriptionStatusManager.public_view(),
+            # Whether a spawned Claude session would have a working credential —
+            # the first-win gate (#494) reads this rather than re-deriving the
+            # oauth/api-key precedence in the SPA.
+            'claude_ready': SubscriptionStatusManager.claude_credential_present(),
+        })
 
     def handle_subscriptions_logout(self, provider):
         if not self.check_claude_auth(allow_none_mode=False):
