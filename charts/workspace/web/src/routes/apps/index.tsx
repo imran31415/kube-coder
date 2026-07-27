@@ -76,7 +76,7 @@ function AppsList() {
     <div class="route route-apps">
       <header class="route-header route-header-with-action">
         <div>
-          <h1 class="route-title">Applications</h1>
+          <h1 class="route-title">Apps</h1>
           <p class="route-subtitle muted">
             Locally-listening services discovered on this workspace. Pin a
             port to give it a friendly name and access it from the dashboard.

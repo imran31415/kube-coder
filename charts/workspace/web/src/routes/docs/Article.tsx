@@ -14,7 +14,13 @@ interface ArticleProps {
  * to `/docs/...` are intercepted so they navigate within the SPA.
  */
 export function DocsArticle({ page }: ArticleProps) {
-  const html = useMemo(() => renderMarkdown(page.markdown), [page.markdown]);
+  // The header already renders `page.title` as the article <h1>. Many docs
+  // bodies open with their own duplicate `# Title`, which would render a second
+  // identical heading — strip a leading H1 that matches the page title.
+  const html = useMemo(
+    () => renderMarkdown(stripDuplicateTitle(page.markdown, page.title)),
+    [page.markdown, page.title],
+  );
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -59,6 +65,24 @@ export function DocsArticle({ page }: ArticleProps) {
       />
     </article>
   );
+}
+
+/**
+ * Drop a leading `# Heading` from the markdown body when it duplicates the
+ * page title (which the header already renders as an <h1>). Only a top-of-body
+ * H1 is considered — leading blank lines are skipped, deeper headings and any
+ * H1 further down are left untouched. Matching is case- and whitespace-lenient.
+ */
+function stripDuplicateTitle(src: string, title: string): string {
+  const lines = src.split('\n');
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === '') i++;
+  const m = lines[i]?.match(/^#\s+(.*)$/);
+  if (m && m[1].trim().toLowerCase() === title.trim().toLowerCase()) {
+    lines.splice(0, i + 1);
+    return lines.join('\n');
+  }
+  return src;
 }
 
 /**
