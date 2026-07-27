@@ -44,8 +44,12 @@
 .apps-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 @media (max-width: 600px) {
-  .apps-row { flex-direction: column; align-items: stretch; }
-  .apps-row-actions { justify-content: flex-end; }
+  /* #506: the old column/stretch layout dropped the actions onto their own
+     full-width row justified flex-end, leaving the name top-left and the
+     buttons bottom-right with a dead diagonal gap. Keep the row horizontal so
+     name (left) and actions (right) stay on facing edges; tighten the gap so
+     the ≤3 compact buttons still fit at 390px. */
+  .apps-row { gap: var(--size-2); }
 }
 
 /* --- pin dialog --- */

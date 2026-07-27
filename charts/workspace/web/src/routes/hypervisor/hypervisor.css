@@ -1212,6 +1212,18 @@
   }
   .hv-topbar-menu { display: inline-flex; }
   .hv-sidebar-close { display: inline-flex; }
+  /* Chat toolbar (#506): at ≤390px the pill row (Chats · Walkie · speaker ·
+     model select) is wider than the viewport and the model <select> gets
+     clipped off the right edge. Let the row scroll horizontally instead of
+     hard-clipping, keep the title from hogging space, and let the select
+     shrink so it stays reachable. */
+  .hv-topbar {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .hv-topbar::-webkit-scrollbar { display: none; }
+  .hv-topbar-title { flex: 0 1 auto; }
+  .hv-model-select { min-width: 0; }
   .hv-msg { max-width: 92%; }
   .hv-transcript { padding: var(--size-3) var(--size-3) var(--size-4); }
   /* Keep a long filename chip from spanning the whole narrow row. */

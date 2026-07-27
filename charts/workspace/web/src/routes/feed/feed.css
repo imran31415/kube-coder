@@ -67,12 +67,20 @@
   color: var(--text-muted);
 }
 
+/* #506: previously absolutely positioned at top:calc(var(--topbar-total)+96px)
+   — the 96px hard-coded the head height and drifted whenever the mobile header
+   shrank or the filters wrapped. Now it's a sticky child of .feed-stream, so it
+   rides just below .feed-head's bottom at any head height and pins there as the
+   stream scrolls. Centered with auto margins (not a transform) so the slide-in
+   keyframe's translateY doesn't fight the centering. */
 .feed-new-pill {
-  position: absolute;
-  top: calc(var(--topbar-total) + 96px);
-  left: 50%;
-  transform: translateX(-50%);
-  display: inline-flex;
+  position: sticky;
+  top: var(--size-2);
+  z-index: 3;
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto var(--size-2);
   align-items: center;
   gap: 5px;
   font-size: 12px;
@@ -83,7 +91,6 @@
   background: var(--surface-2);
   color: var(--text);
   cursor: pointer;
-  z-index: 3;
   box-shadow: var(--shadow-2);
   animation: feed-slide-in var(--motion-base) both;
 }

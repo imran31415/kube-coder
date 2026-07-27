@@ -172,13 +172,14 @@ export function FeedRoute() {
           ]}
         />
 
-        {newCount > 0 && (
-          <button type="button" class="feed-new-pill" onClick={jumpToTop}>
-            <Icon name="chevron-up" size={12} /> {newCount} new
-          </button>
-        )}
-
         <div class="feed-stream" ref={scrollRef} onScroll={onScroll}>
+          {/* Sticky inside the scroll stream so it rides just below the
+              (variable-height) head — no magic pixel offset. #506 */}
+          {newCount > 0 && (
+            <button type="button" class="feed-new-pill" onClick={jumpToTop}>
+              <Icon name="chevron-up" size={12} /> {newCount} new
+            </button>
+          )}
           {items.length === 0 ? (
             <p class="feed-empty">
               {feedLoading.value

@@ -257,12 +257,21 @@
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
+/* Body cells: break only genuinely long tokens (paths/URLs) that can't fit on
+   their own line. Using `break-word` (not `anywhere`) keeps the cell's
+   min-content at word width, so ordinary words like 'Desktop' stay whole and
+   the table widens into its .docs-table-wrap scroller instead of shredding. */
+.docs-article-body td {
+  overflow-wrap: break-word;
+}
+/* #506: headers wrapped mid-word ('Surfa/ce') at 390px because word-break
+   shredded them to fit width:100%. Keep header words whole and let the table
+   overflow into its .docs-table-wrap (overflow-x:auto) scroller instead. */
 .docs-article-body th {
   background: var(--surface-2);
   font-weight: 600;
+  white-space: nowrap;
 }
 .docs-article-body hr {
   border: none;
