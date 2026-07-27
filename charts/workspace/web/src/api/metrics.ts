@@ -36,12 +36,54 @@ export interface MetricsAlert {
   message: string;
 }
 
+/**
+ * Product-usage metrics (#363) — how the product is *used*, distinct from the
+ * system cpu/memory/disk above. NB: `ProductMetrics.memory` is the knowledge
+ * store's recall counts, NOT RAM (that's `SystemMetrics.memory`). All fields are
+ * optional/defaulted so an older pod that omits `product` degrades gracefully.
+ */
+export interface ChatMetrics {
+  total: number;
+  active: number;
+}
+
+export interface TokenMetrics {
+  total: number;
+  input: number;
+  output: number;
+  per_session_avg: number;
+}
+
+export interface SkillMetrics {
+  invocations_by_name: Record<string, number>;
+}
+
+export interface MemoryRecall {
+  namespace: string;
+  key: string;
+  count: number;
+  last_accessed_at?: number | null;
+}
+
+export interface ProductMemoryMetrics {
+  recall_count_by_key: MemoryRecall[];
+}
+
+export interface ProductMetrics {
+  chats: ChatMetrics;
+  tokens: TokenMetrics;
+  skills: SkillMetrics;
+  memory: ProductMemoryMetrics;
+}
+
 export interface SystemMetrics {
   cpu: CpuMetrics;
   memory: MemoryMetrics;
   disk: DiskMetrics;
   alerts: MetricsAlert[];
   timestamp: number;
+  // Present on pods running the #363 build; older pods omit it.
+  product?: ProductMetrics;
 }
 
 export interface HealthService {

@@ -186,6 +186,76 @@ function PortsBlock() {
   );
 }
 
+// Product-usage metrics (#363): chat/session counts, token usage, favourite
+// skills, and most-recalled memory. Renders nothing on an older pod whose
+// /metrics omits `product`, so the section degrades gracefully.
+function ProductUsageBlock() {
+  const p = metrics.value?.product;
+  if (!p) return null;
+  const num = (n: number) => (n ?? 0).toLocaleString();
+  const skills = Object.entries(p.skills?.invocations_by_name ?? {})
+    .sort((a, b) => b[1] - a[1]);
+  const recalls = p.memory?.recall_count_by_key ?? [];
+  const chats = p.chats ?? { total: 0, active: 0 };
+  const tokens = p.tokens ?? { total: 0, per_session_avg: 0, input: 0, output: 0 };
+  return (
+    <div class="metrics-running">
+      <div class="metrics-running-head">
+        <h3 class="metrics-running-title">Product usage</h3>
+        <InfoHint text="How this workspace is used: chat/session counts, token usage, which skills get invoked, and which memories get recalled most. Note: this 'memory' is the knowledge store — not RAM." />
+      </div>
+      <div class="product-stats">
+        <div class="product-stat">
+          <span class="product-stat-value mono">{num(chats.total)}</span>
+          <span class="product-stat-label muted">chats <span class="mono">({num(chats.active)} active)</span></span>
+        </div>
+        <div class="product-stat">
+          <span class="product-stat-value mono">{num(tokens.per_session_avg)}</span>
+          <span class="product-stat-label muted">avg tokens / session</span>
+        </div>
+        <div class="product-stat">
+          <span class="product-stat-value mono">{num(tokens.total)}</span>
+          <span class="product-stat-label muted">tokens total</span>
+        </div>
+      </div>
+      <div class="product-cols">
+        <div class="product-col">
+          <div class="product-col-head muted">Top skills</div>
+          {skills.length === 0 ? (
+            <div class="metrics-empty muted">No skill invocations yet.</div>
+          ) : (
+            <ul class="metrics-list">
+              {skills.slice(0, 8).map(([name, count]) => (
+                <li key={name} class="metrics-item">
+                  <span class="metrics-item-label mono" title={name}>/{name}</span>
+                  <Pill tone="neutral" mono>{num(count)}</Pill>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div class="product-col">
+          <div class="product-col-head muted">Most-recalled memory</div>
+          {recalls.length === 0 ? (
+            <div class="metrics-empty muted">No memory recalls yet.</div>
+          ) : (
+            <ul class="metrics-list">
+              {recalls.slice(0, 8).map((r) => (
+                <li key={`${r.namespace}/${r.key}`} class="metrics-item">
+                  <span class="metrics-item-label mono" title={`${r.namespace}/${r.key}`}>
+                    {r.namespace}/{r.key}
+                  </span>
+                  <Pill tone="neutral" mono>{num(r.count)}</Pill>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MetricsSection() {
   useEffect(() => {
     startMetricsPolling(10000);
@@ -262,6 +332,8 @@ export function MetricsSection() {
           </div>
         </>
       )}
+
+      <ProductUsageBlock />
 
       <RunningTasksBlock />
       <PortsBlock />

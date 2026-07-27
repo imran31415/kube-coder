@@ -261,5 +261,51 @@ class ExportImportTests(LifecycleTestCase):
             MemoryManager.import_json({'memories': []}, mode='nope')
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Recall counts (product metrics #363)
+# ───────────────────────────────────────────────────────────────────────────
+
+class RecallCountsTests(LifecycleTestCase):
+    def setUp(self):
+        super().setUp()
+        MemoryManager.upsert(namespace='proj', key='alpha', value='a')
+        MemoryManager.upsert(namespace='proj', key='beta', value='b')
+        MemoryManager.upsert(namespace='proj', key='never', value='n')
+
+    def _recall(self, ns, key, n=1):
+        for _ in range(n):
+            MemoryManager.log_ref(namespace=ns, key=key, ref_kind='api',
+                                  ref_id='t', access_kind='read')
+
+    def test_ranks_by_access_count_desc(self):
+        self._recall('proj', 'alpha', 3)
+        self._recall('proj', 'beta', 1)
+        rc = MemoryManager.recall_counts(limit=10)
+        self.assertEqual(
+            [(r['namespace'], r['key'], r['count']) for r in rc],
+            [('proj', 'alpha', 3), ('proj', 'beta', 1)])
+
+    def test_excludes_never_recalled(self):
+        self._recall('proj', 'alpha', 1)
+        keys = {r['key'] for r in MemoryManager.recall_counts()}
+        self.assertIn('alpha', keys)
+        self.assertNotIn('never', keys)  # access_count == 0 is excluded
+
+    def test_excludes_soft_deleted(self):
+        self._recall('proj', 'alpha', 2)
+        MemoryManager.soft_delete(namespace='proj', key='alpha')
+        self.assertEqual(MemoryManager.recall_counts(), [])
+
+    def test_limit_caps_results(self):
+        self._recall('proj', 'alpha', 5)
+        self._recall('proj', 'beta', 4)
+        rc = MemoryManager.recall_counts(limit=1)
+        self.assertEqual(len(rc), 1)
+        self.assertEqual(rc[0]['key'], 'alpha')
+
+    def test_empty_when_no_recalls(self):
+        self.assertEqual(MemoryManager.recall_counts(), [])
+
+
 if __name__ == '__main__':
     unittest.main()

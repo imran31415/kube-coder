@@ -422,6 +422,30 @@ class MemoryManager:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    @classmethod
+    def recall_counts(cls, *, limit: int = 10) -> List[Dict[str, Any]]:
+        """Most-recalled memories (product metrics #363). Every memory carries a
+        maintained ``access_count`` bumped on each read (see log_ref), so this is
+        a cheap top-N query — no scanning of the (capped) ref-log. Returns
+        [{namespace, key, count, last_accessed_at}] ordered by recall count,
+        most-recent access as the tiebreak. Never raises — a metrics read must
+        not perturb the app."""
+        limit = max(1, min(int(limit), 100))
+        try:
+            with cls.store().conn() as c:
+                rows = c.execute(
+                    'SELECT namespace, key, access_count, last_accessed_at '
+                    '  FROM memories '
+                    ' WHERE deleted_at IS NULL AND access_count > 0 '
+                    ' ORDER BY access_count DESC, last_accessed_at DESC LIMIT ?',
+                    (limit,),
+                ).fetchall()
+            return [{'namespace': r['namespace'], 'key': r['key'],
+                     'count': int(r['access_count'] or 0),
+                     'last_accessed_at': r['last_accessed_at']} for r in rows]
+        except sqlite3.Error:
+            return []
+
     # ── Search (Phase 1: FTS + scoring) ───────────────────────────────────
 
     @classmethod
