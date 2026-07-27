@@ -7,6 +7,9 @@ Maintains two files:
     - mcpServers.memory entry pointing at the stdio MCP server.
 
   ~/.claude/settings.json
+    - The kube-coder-managed keys in ENFORCED_SETTINGS / DEFAULT_SETTINGS,
+      which pre-answer first-run dialogs that would otherwise swallow the
+      auto-pasted prompt of a dispatched task on a fresh pod.
     - Strips the legacy hooks.UserPromptSubmit memory-injection entry if
       present. That hook prepended a <workspace_memories> block to every
       prompt; it's now removed in favor of on-demand recall via the memory
@@ -26,6 +29,33 @@ import tempfile
 
 CONFIG_PATH = os.path.expanduser('~/.claude.json')
 SETTINGS_PATH = os.path.expanduser('~/.claude/settings.json')
+
+# Settings we hold to a fixed value, repairing them on every boot.
+#
+# skipDangerousModePermissionPrompt: the Hypervisor runs Claude headless in
+# bypass-permissions mode (`claude -p --permission-mode bypassPermissions`, see
+# hypervisor_session.py). This pre-accepts the one-time "Bypass Permissions
+# mode" acknowledgement so no interactive dialog can gate a headless run. It is
+# ONLY consulted when a bypass/dangerous flag is passed, so it does NOT affect
+# the Build tab's plain `claude` (which still prompts).
+ENFORCED_SETTINGS = {
+    'skipDangerousModePermissionPrompt': True,
+}
+
+# Settings we seed only when ABSENT — a value the user chose interactively is
+# theirs and is left alone.
+#
+# tui: Claude Code shows a first-run "Try the new fullscreen renderer?" upsell
+# dialog whose only gate is `settings.tui === undefined` (verified against the
+# shipped CLI). On a fresh pod that dialog swallows the auto-pasted prompt of a
+# dispatched build task, so the task stalls and never builds (issue #529).
+# Seeding any defined value suppresses it. We choose "default" (the classic
+# main-screen renderer) rather than "fullscreen": dispatched tasks are captured
+# out of tmux via get_task_output, and the fullscreen renderer drives the
+# alt-screen with cursor-addressing escapes that garble that capture.
+DEFAULT_SETTINGS = {
+    'tui': 'default',
+}
 
 MCP_SCRIPT = '/home/dev/.claude-memory/mcp_memory.py'
 INJECT_HOOK = '/home/dev/.claude-memory/memory_inject_hook.py'
@@ -183,20 +213,27 @@ def _remove_inject_hook() -> None:
 def _seed_settings() -> None:
     """Ensure kube-coder-managed keys in ~/.claude/settings.json.
 
-    skipDangerousModePermissionPrompt=true: the Hypervisor runs Claude headless
-    in bypass-permissions mode (`claude -p --permission-mode bypassPermissions`,
-    see hypervisor_session.py). This key pre-accepts the one-time "Bypass
-    Permissions mode" acknowledgement so no interactive dialog can ever gate a
-    headless run. It is ONLY consulted when a bypass/dangerous flag is passed,
-    so it does NOT affect the Build tab's plain `claude` (which still prompts).
-    Idempotent — only writes when the value is missing/wrong.
+    ENFORCED_SETTINGS are repaired whenever they drift; DEFAULT_SETTINGS are
+    seeded only when the key is absent, so a value the user picked in the TUI
+    survives the next boot. See those tables for the per-key rationale.
+    Idempotent — writes nothing when every managed key is already right.
     """
     settings = _load_json(SETTINGS_PATH)
-    if settings.get('skipDangerousModePermissionPrompt') is True:
+
+    written = []
+    for key, value in ENFORCED_SETTINGS.items():
+        if settings.get(key) != value:
+            settings[key] = value
+            written.append(key)
+    for key, value in DEFAULT_SETTINGS.items():
+        if key not in settings:
+            settings[key] = value
+            written.append(key)
+
+    if not written:
         return
-    settings['skipDangerousModePermissionPrompt'] = True
     _atomic_write(SETTINGS_PATH, json.dumps(settings, indent=2) + '\n')
-    print(f'[seed_claude_config] set skipDangerousModePermissionPrompt in {SETTINGS_PATH}')
+    print(f'[seed_claude_config] set {", ".join(written)} in {SETTINGS_PATH}')
 
 
 def main() -> int:
