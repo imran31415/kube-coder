@@ -45,6 +45,15 @@
 }
 @media (max-width: 720px) {
   .mission-filter { margin-left: 0; min-width: 0; width: 100%; }
+  /* Touch targets (#503) — kind chips get a ≥44px tap area on phones
+     (WCAG 2.5.5). Flex centering preserves the pill's visual padding, so only
+     the hit box grows; desktop density is unchanged. Scoped to .mission-chips
+     so the tiny display-only evidence chips (.mission-evidence) are untouched. */
+  .mission-chips .mission-chip {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
 }
 
 /* ---- pulse strip ---- */
