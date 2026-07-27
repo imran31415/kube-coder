@@ -1165,6 +1165,11 @@ export interface Assistant {
   label?: string;
   default?: boolean;
   model?: string;
+  /** Zero-cost provider (e.g. opencode-zen, #395) — drives the "free" marker. */
+  free?: boolean;
+  /** Provider may train on submitted data (Zen free models) — drives the
+   *  data-training disclosure note near the picker. */
+  trainingDisclosure?: boolean;
 }
 
 export async function listAssistants(): Promise<Assistant[]> {

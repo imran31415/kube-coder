@@ -239,7 +239,7 @@ def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
 # Assistants with a non-interactive one-shot "print" mode that exits when
 # the task is done. Anything not listed has no reliable headless interface
 # (kc-harness) and is always run interactively (prompt pasted into the REPL).
-_HEADLESS_CAPABLE = {'claude', 'ante', 'codex', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek'}
+_HEADLESS_CAPABLE = {'claude', 'ante', 'codex', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'opencode-zen'}
 
 
 def _codex_model_flag() -> str:
@@ -252,6 +252,11 @@ def _codex_model_flag() -> str:
 def _opencode_model(assistant: str) -> str:
     if assistant == 'opencode-deepseek':
         return 'deepseek/' + os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
+    if assistant == 'opencode-zen':
+        # Provider id `opencode-zen` matches the opencode.json stanza start.sh
+        # writes; the model is one of Zen's free ids (#395). Keep the default in
+        # sync with server.py's _OPENCODE_ZEN_DEFAULT_MODEL.
+        return 'opencode-zen/' + os.environ.get('KC_OPENCODE_ZEN_MODEL', 'deepseek-v4-flash-free')
     return 'openrouter/' + os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
 
 
@@ -299,7 +304,7 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
     """
     if not headless or assistant not in _HEADLESS_CAPABLE:
         # Interactive REPL — prompt delivered via tmux paste by the caller.
-        if assistant in ('opencode-openrouter', 'opencode-deepseek'):
+        if assistant in ('opencode-openrouter', 'opencode-deepseek', 'opencode-zen'):
             return f'opencode --model {_shell_quote(_opencode_model(assistant))}'
         if assistant == 'antigravity':
             m = _antigravity_model()
@@ -380,6 +385,7 @@ _ASSISTANTS_LIST = [
     {'id': 'librefang', 'label': 'LibreFang'},
     {'id': 'opencode-openrouter', 'label': 'OpenRouter'},
     {'id': 'opencode-deepseek', 'label': 'DeepSeek'},
+    {'id': 'opencode-zen', 'label': 'OpenCode Zen'},
     {'id': 'kc-harness', 'label': 'Opensource GPU'},
 ]
 
@@ -390,7 +396,11 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     if not prompt:
         return {'isError': True, 'content': [{'type': 'text', 'text': 'prompt is required'}]}
 
-    assistant = args.get('assistant', 'ante')
+    # No explicit assistant → honour the workspace default (KC_DEFAULT_ASSISTANT,
+    # #395) so sub-agents on a trial workspace run on the free assistant too.
+    # Only set on workspaces that opted in; vanilla leaves it unset and keeps the
+    # historical 'ante' fallback (a keyless, always-available CLI).
+    assistant = args.get('assistant') or os.environ.get('KC_DEFAULT_ASSISTANT') or 'ante'
     # Default the sub-agent's working directory to the SPAWNING agent's cwd.
     # This MCP server is a stdio subprocess of the parent CLI, so os.getcwd()
     # is the directory the parent was launched in (its project) — a far better
@@ -758,9 +768,9 @@ TOOLS: Dict[str, Any] = {
                     'prompt': {'type': 'string', 'description': 'The task prompt/instructions'},
                     'assistant': {
                         'type': 'string',
-                        'description': 'Which agent to spawn',
-                        'enum': ['ante', 'claude', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'kc-harness'],
-                        'default': 'ante',
+                        'description': 'Which agent to spawn. Omit to use the '
+                                       'workspace default assistant.',
+                        'enum': ['ante', 'claude', 'codex', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'opencode-zen', 'kc-harness'],
                     },
                     'mode': {
                         'type': 'string',

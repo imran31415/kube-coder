@@ -57,6 +57,14 @@
 }
 .ntf-note strong { color: var(--accent); font-weight: 600; }
 
+/* Data-training disclosure for free Zen models (#395) — warmer than the plain
+   note so it reads as an advisory, not a neutral hint. */
+.ntf-disclosure {
+  background: color-mix(in srgb, var(--warning, #b8860b) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--warning, #b8860b) 35%, var(--border));
+  color: var(--text);
+}
+
 .ntf-error {
   margin: 0;
   padding: 10px 12px;

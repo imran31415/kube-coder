@@ -167,7 +167,16 @@ PUBLIC_DEMO_ACK = os.environ.get('PUBLIC_DEMO_ACK', 'false').lower() == 'true'
 # tools. Threads are hypervisor-flavoured tasks (source="hypervisor") reusing
 # ClaudeTaskManager; there is no separate LLM/provider loop.
 HYPERVISOR_ENABLED = os.environ.get('HYPERVISOR_ENABLED', 'true').lower() == 'true'
-HYPERVISOR_DEFAULT_ASSISTANT = os.environ.get('HYPERVISOR_DEFAULT_ASSISTANT', 'claude')
+# Workspace-wide default assistant (issue #395). Governs BOTH the Hypervisor
+# chat and the New Build / task-create pickers so an operator can provision a
+# trial/demo workspace that defaults to a free assistant (e.g. opencode-zen)
+# instead of Claude. Empty/unset → 'claude', so vanilla deployments are
+# unchanged. HYPERVISOR_DEFAULT_ASSISTANT stays a back-compat override for the
+# Hypervisor chat only: when explicitly set it wins there; otherwise the
+# Hypervisor inherits the workspace default.
+WORKSPACE_DEFAULT_ASSISTANT = os.environ.get('KC_DEFAULT_ASSISTANT') or 'claude'
+HYPERVISOR_DEFAULT_ASSISTANT = (
+    os.environ.get('HYPERVISOR_DEFAULT_ASSISTANT') or WORKSPACE_DEFAULT_ASSISTANT)
 HYPERVISOR_WORKDIR = os.environ.get('HYPERVISOR_WORKDIR', '/home/dev')
 # AI CTO (#467) — the /cto page (project registry + CTO-persona chat + brief).
 # It rides the Hypervisor, so it's available only when BOTH this flag and the
@@ -194,6 +203,22 @@ def _is_first_cto_thread():
     except Exception:
         return False
     return not any((t.get('persona') or '') == 'cto' for t in threads)
+# OpenCode Zen (issue #395) — the free coding models on OpenCode's hosted Zen
+# gateway. The whole list is offered in the in-chat model switcher; the first
+# entry is the built-in default (a coding-oriented model), overridable per
+# deployment via KC_OPENCODE_ZEN_MODEL / KC_OPENCODE_ZEN_MODELS. Zen advertises
+# these as free-for-a-limited-time and may train on submitted data — the UI
+# surfaces that disclosure (see the trainingDisclosure flag on the assistant).
+_OPENCODE_ZEN_FREE_MODELS = (
+    'deepseek-v4-flash-free',
+    'big-pickle',
+    'mimo-v2.5-free',
+    'laguna-s-2.1-free',
+    'ling-3.0-flash-free',
+    'north-mini-code-free',
+    'nemotron-3-ultra-free',
+)
+_OPENCODE_ZEN_DEFAULT_MODEL = _OPENCODE_ZEN_FREE_MODELS[0]
 # Short context note pasted as the first message of a new chat, so the agent
 # knows its role + that it has the dashboard tools. Kept terse on purpose —
 # a big preamble front-loads noise and some CLIs handle it poorly.
@@ -1466,6 +1491,17 @@ class ClaudeTaskManager:
             'id': 'opencode-deepseek',
             'label': 'DeepSeek',
         },
+        # OpenCode Zen (#395) — OpenCode's hosted gateway of free coding models.
+        # No credit card, ~100 req/day on a one-time free signup key, so it's the
+        # zero-cost default for trial/demo workspaces. `free` drives the "free"
+        # marker in the picker; `trainingDisclosure` drives the UI note that Zen
+        # may train on submitted data.
+        'opencode-zen': {
+            'id': 'opencode-zen',
+            'label': 'OpenCode Zen',
+            'free': True,
+            'trainingDisclosure': True,
+        },
         # kc-harness — thin in-pod LLM tool-call loop at /tmp/browser/harness.py
         # See charts/workspace/harness.py for the design rationale.
         'kc-harness': {
@@ -1476,7 +1512,11 @@ class ClaudeTaskManager:
 
     @staticmethod
     def available_assistants():
-        out = [dict(ClaudeTaskManager.ASSISTANTS['claude'], default=True)]
+        # Claude is always first-listed and always installed, but it is no
+        # longer hard-flagged as the default — the configured workspace default
+        # (KC_DEFAULT_ASSISTANT, issue #395) decides which entry carries
+        # default=True and sorts to the front. See _apply_default_flag below.
+        out = [dict(ClaudeTaskManager.ASSISTANTS['claude'])]
         out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
         # Antigravity — listed only when its `agy` CLI is actually resolvable
         # (older images predate it; /usr/local/bin/agy is a symlink to a PVC path
@@ -1512,6 +1552,16 @@ class ClaudeTaskManager:
                 ClaudeTaskManager.ASSISTANTS['opencode-deepseek'],
                 model=os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat'),
             ))
+        # OpenCode Zen (issue #395) — OpenCode's hosted gateway of free coding
+        # models. Unlike OpenRouter/DeepSeek it is NOT a first-class
+        # auto-discovered provider: start.sh writes an explicit opencode.json
+        # provider stanza when OPENCODE_API_KEY is set (a per-user or a shared
+        # platform key), which is the same signal we gate the dropdown on here.
+        if os.environ.get('OPENCODE_API_KEY'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['opencode-zen'],
+                model=os.environ.get('KC_OPENCODE_ZEN_MODEL', _OPENCODE_ZEN_DEFAULT_MODEL),
+            ))
         if os.environ.get('KC_FALLBACK_BASE_URL'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['kc-harness'],
@@ -1524,7 +1574,31 @@ class ClaudeTaskManager:
         # is the default.
         for a in out:
             a['models'] = ClaudeTaskManager.available_models(a['id'])
-        return out
+        return ClaudeTaskManager._apply_default_flag(out)
+
+    @staticmethod
+    def _apply_default_flag(assistants):
+        """Flag the configured workspace default (KC_DEFAULT_ASSISTANT, #395)
+        with default=True and sort it to the front; every other entry gets
+        default=False. When the configured default isn't in the enabled set
+        (e.g. opencode-zen selected but no OPENCODE_API_KEY provisioned) we log
+        loudly and fall back to claude instead of silently mis-defaulting."""
+        ids = {a['id'] for a in assistants}
+        target = WORKSPACE_DEFAULT_ASSISTANT
+        if target not in ids:
+            if target != 'claude':
+                print(
+                    f'[assistant] configured default {target!r} is not enabled '
+                    f'(available: {sorted(ids)}); falling back to claude. '
+                    'Check the assistant.default value and that its API key / '
+                    'shared secret is provisioned.',
+                    file=sys.stderr)
+            target = 'claude'
+        for a in assistants:
+            a['default'] = (a['id'] == target)
+        # Stable sort: the flagged default first, everything else keeps order.
+        assistants.sort(key=lambda a: 0 if a['default'] else 1)
+        return assistants
 
     # Models the in-chat switcher offers per assistant (issue #308). An assistant
     # appears here only when its adapter threads a per-thread `--model`:
@@ -1551,6 +1625,7 @@ class ClaudeTaskManager:
         'claude': 'KC_CLAUDE_MODELS',
         'opencode-openrouter': 'KC_OPENROUTER_MODELS',
         'opencode-deepseek': 'KC_DEEPSEEK_MODELS',
+        'opencode-zen': 'KC_OPENCODE_ZEN_MODELS',
         'codex': 'KC_CODEX_MODELS',
         'antigravity': 'KC_ANTIGRAVITY_MODELS',
     }
@@ -1573,6 +1648,12 @@ class ClaudeTaskManager:
             # Native DeepSeek API ids; the opencode adapter prepends `deepseek/`.
             default = os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
             return _dedup_keep_order([default, 'deepseek-chat', 'deepseek-reasoner'])
+        if assistant_id == 'opencode-zen':
+            # Zen's free model ids; the opencode adapter prepends `opencode-zen/`.
+            # Configured default first (unchanged behaviour), then the rest of
+            # the free catalogue so they're one tap away in the switcher.
+            default = os.environ.get('KC_OPENCODE_ZEN_MODEL', _OPENCODE_ZEN_DEFAULT_MODEL)
+            return _dedup_keep_order([default, *_OPENCODE_ZEN_FREE_MODELS])
         return []
 
     @staticmethod
@@ -1602,12 +1683,29 @@ class ClaudeTaskManager:
 
     @staticmethod
     def resolve_assistant(requested):
-        """Validate the caller's choice; fall back to claude on anything
-        unknown or disabled (the dashboard hides disabled options, but
-        webhooks/crons/CLI clients are free-form so we defend the boundary)."""
+        """Validate the caller's choice; fall back to the configured workspace
+        default (KC_DEFAULT_ASSISTANT, #395), then claude, on anything unknown
+        or disabled (the dashboard hides disabled options, but webhooks/crons/
+        CLI clients are free-form so we defend the boundary). Logs loudly on
+        every fallback so a mis-provisioned default is visible instead of
+        silently reverting to claude."""
         enabled = {a['id'] for a in ClaudeTaskManager.available_assistants()}
         if requested and requested in enabled:
             return requested
+        if requested:
+            print(
+                f'[assistant] requested assistant {requested!r} is not enabled '
+                f'(available: {sorted(enabled)}); falling back to the workspace '
+                'default.',
+                file=sys.stderr)
+        default = WORKSPACE_DEFAULT_ASSISTANT
+        if default in enabled:
+            return default
+        if default != 'claude':
+            print(
+                f'[assistant] configured default {default!r} is not enabled '
+                f'(available: {sorted(enabled)}); falling back to claude.',
+                file=sys.stderr)
         return 'claude'
 
     # Unattended task sources — no human is watching the live terminal, so the
@@ -1700,6 +1798,13 @@ class ClaudeTaskManager:
         if assistant == 'opencode-deepseek':
             model = os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
             return f'opencode --model {_shell_quote(f"deepseek/{model}")}'
+        if assistant == 'opencode-zen':
+            # OpenCode Zen (#395). The provider id `opencode-zen` matches the
+            # custom provider stanza start.sh writes into opencode.json; the
+            # model is one of Zen's free ids. Quote so a hostile env var can't
+            # break out of the `bash -lc` shell_cmd built in create_task().
+            model = os.environ.get('KC_OPENCODE_ZEN_MODEL', _OPENCODE_ZEN_DEFAULT_MODEL)
+            return f'opencode --model {_shell_quote(f"opencode-zen/{model}")}'
         if assistant == 'kc-harness':
             # Reads stdin (tmux paste) and emits dashboard JSONL events.
             # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the
@@ -4393,7 +4498,7 @@ class ProviderKeysManager:
     # OPENAI_API_KEY (issue #396) also powers the voice interface's server-side
     # transcription (SpeechTranscriber) besides riding CLI spawns like the rest.
     ALLOWED = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY',
-               'OPENAI_API_KEY')
+               'OPENAI_API_KEY', 'OPENCODE_API_KEY')
 
     @classmethod
     def _read(cls):

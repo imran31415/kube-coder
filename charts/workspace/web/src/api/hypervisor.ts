@@ -17,6 +17,11 @@ export interface HypervisorAssistant {
   /** Selectable models for the in-chat model switcher (#308), default first.
    *  Empty/absent → the assistant offers no model choice (switcher hidden). */
   models?: string[];
+  /** Zero-cost provider (e.g. opencode-zen, #395) — drives the "free" marker. */
+  free?: boolean;
+  /** Provider may train on submitted data (Zen free models, #395) — drives the
+   *  in-chat data-training disclosure note. */
+  trainingDisclosure?: boolean;
 }
 
 /** One entry in the composer's `/` picker: an invocable skill or a custom

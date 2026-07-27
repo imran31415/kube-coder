@@ -28,7 +28,7 @@ spec:
         checksum/claude-config: {{ include (print $.Template.BasePath "/claude-configmap.yaml") . | sha256sum }}
         checksum/terminal-entry: {{ include (print $.Template.BasePath "/terminal-entry-configmap.yaml") . | sha256sum }}
         checksum/workspace-entrypoint: {{ include (print $.Template.BasePath "/workspace-entrypoint-configmap.yaml") . | sha256sum }}
-        {{- if or .Values.assistant.openrouter.apiKey .Values.assistant.deepseek.apiKey .Values.assistant.fallback.baseUrl }}
+        {{- if or .Values.assistant.openrouter.apiKey .Values.assistant.deepseek.apiKey .Values.assistant.fallback.baseUrl (.Values.assistant.opencodeZen).apiKey }}
         checksum/assistant-secret: {{ include (print $.Template.BasePath "/assistant-secret.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.github.app.appId }}
@@ -113,6 +113,21 @@ spec:
         - name: KC_DEEPSEEK_MODEL
           value: {{ .Values.assistant.deepseek.model | quote }}
         {{- end }}
+        {{- if or (.Values.assistant.opencodeZen).apiKey (.Values.assistant.opencodeZen).sharedSecretName }}
+        - name: OPENCODE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.assistant.opencodeZen.apiKey }}
+              name: assistant-secrets-{{ .Values.user.name }}
+              {{- else }}
+              # Shared free OpenCode Zen key for all trial workspaces — a
+              # per-user assistant.opencodeZen.apiKey (above) takes precedence.
+              name: {{ .Values.assistant.opencodeZen.sharedSecretName }}
+              {{- end }}
+              key: opencode-api-key
+        - name: KC_OPENCODE_ZEN_MODEL
+          value: {{ .Values.assistant.opencodeZen.model | quote }}
+        {{- end }}
         {{- if (.Values.assistant.antigravity).model }}
         - name: KC_ANTIGRAVITY_MODEL
           value: {{ .Values.assistant.antigravity.model | quote }}
@@ -194,10 +209,23 @@ spec:
         # user's existing CLI agents (claude/ante/opencode/…) plus the dashboard
         # MCP tools. These just flag the feature + its default agent/workdir;
         # provider/model/keys come from the existing assistant.* config above.
+        # Workspace-wide default assistant (issue #395). Governs the Hypervisor
+        # chat, the New Build picker, and sub-agent spawning. Only emitted when
+        # explicitly set, so vanilla deployments leave it unset and every
+        # consumer keeps its existing default (server → claude, orchestrator
+        # spawn → ante) — byte-for-byte unchanged. Set assistant.default to e.g.
+        # opencode-zen to provision a trial workspace on a free assistant.
+        {{- if (.Values.assistant).default }}
+        - name: KC_DEFAULT_ASSISTANT
+          value: {{ .Values.assistant.default | quote }}
+        {{- end }}
         - name: HYPERVISOR_ENABLED
           value: {{ (.Values.hypervisor).enabled | default true | quote }}
+        # Back-compat override for the Hypervisor chat only: when
+        # hypervisor.defaultAssistant is set it wins there; otherwise the
+        # Hypervisor inherits the workspace default (assistant.default).
         - name: HYPERVISOR_DEFAULT_ASSISTANT
-          value: {{ (.Values.hypervisor).defaultAssistant | default "claude" | quote }}
+          value: {{ (.Values.hypervisor).defaultAssistant | default ((.Values.assistant).default | default "claude") | quote }}
         - name: HYPERVISOR_WORKDIR
           value: {{ (.Values.hypervisor).workdir | default "/home/dev" | quote }}
         # AI CTO (#467) — the /cto page. `dig` (not `default`) so an explicit

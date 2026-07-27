@@ -39,6 +39,8 @@ import {
   selectedModel,
   selectedWorkdir,
   assistantModels,
+  assistantInfo,
+  assistantNeedsDisclosure,
   setSelectedAssistant,
   setActiveThreadModel,
   sameTranscript,
@@ -155,6 +157,31 @@ describe('model switcher (#308)', () => {
     setThreadModel.mockRejectedValue(new Error('boom'));
     await setActiveThreadModel('opus');
     expect(threads.value.find((t) => t.id === 'a')?.model).toBe('default');
+  });
+});
+
+describe('free-provider disclosure (#395)', () => {
+  beforeEach(() => {
+    config.value = cfg({
+      defaultAssistant: 'opencode-zen',
+      assistants: [
+        { id: 'claude', label: 'Claude Code', models: ['default', 'opus'] },
+        { id: 'opencode-zen', label: 'OpenCode Zen', models: [], free: true, trainingDisclosure: true },
+      ],
+    });
+  });
+
+  it('assistantInfo returns the config entry (with its flags) or undefined', () => {
+    expect(assistantInfo('opencode-zen')?.free).toBe(true);
+    expect(assistantInfo('claude')?.trainingDisclosure).toBeUndefined();
+    expect(assistantInfo('nope')).toBeUndefined();
+    expect(assistantInfo(null)).toBeUndefined();
+  });
+
+  it('assistantNeedsDisclosure is true only for a training-disclosure assistant', () => {
+    expect(assistantNeedsDisclosure('opencode-zen')).toBe(true);
+    expect(assistantNeedsDisclosure('claude')).toBe(false);
+    expect(assistantNeedsDisclosure(null)).toBe(false);
   });
 });
 

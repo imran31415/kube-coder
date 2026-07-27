@@ -94,6 +94,18 @@ export function assistantModels(assistantId: string | null | undefined): string[
   return a?.models ?? [];
 }
 
+/** The full config entry for an assistant id (or undefined). */
+export function assistantInfo(assistantId: string | null | undefined) {
+  if (!assistantId) return undefined;
+  return (config.value?.assistants ?? []).find((x) => x.id === assistantId);
+}
+
+/** True when the assistant is a free provider that may train on submitted data
+ *  (Zen free models, #395) — drives the in-chat disclosure note. */
+export function assistantNeedsDisclosure(assistantId: string | null | undefined): boolean {
+  return !!assistantInfo(assistantId)?.trainingDisclosure;
+}
+
 /** Pick the assistant a new chat will use, resetting the model to that
  *  assistant's default so the switcher never shows an off-list model. */
 export function setSelectedAssistant(assistantId: string): void {

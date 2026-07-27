@@ -107,6 +107,11 @@ export interface AssistantOption {
   label: string;
   description?: string;
   default?: boolean;
+  /** Zero-cost provider (e.g. opencode-zen) — drives the "free" picker marker. */
+  free?: boolean;
+  /** Provider may train on submitted data (Zen free models, #395) — drives the
+   *  data-training disclosure note near the picker. */
+  trainingDisclosure?: boolean;
 }
 
 export interface WorkdirOption {

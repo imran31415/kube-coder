@@ -157,7 +157,7 @@ export function TaskList() {
             description={
               taskFilter.value
                 ? 'Try clearing the filter or searching for something else.'
-                : 'Create a task to run Claude Code in a tmux session.'
+                : 'Create a task to run a coding agent in a tmux session.'
             }
           />
         )
