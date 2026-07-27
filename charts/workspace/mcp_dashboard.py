@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 import traceback
 import urllib.error
@@ -96,6 +97,37 @@ def _err(text: str) -> Dict[str, Any]:
 # ───────────────────────────────────────────────────────────────────────────
 
 def _token() -> str:
+    """The task-API bearer token, creating it if the file is absent.
+
+    The server materializes this at boot (issue #528), so the create path is
+    belt-and-braces for a pod where the file went missing — without it an empty
+    Bearer means every dispatch 401s, which is exactly how the first-win build
+    broke on fresh pods. O_EXCL so two racing MCP processes can't each mint a
+    token and leave one of them holding a stale value: the loser falls through
+    to reading whatever landed on disk.
+    """
+    try:
+        with open(TOKEN_FILE, 'r') as f:
+            token = f.read().strip()
+        if token:
+            return token
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(TOKEN_FILE), mode=0o700, exist_ok=True)
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            minted = secrets.token_urlsafe(36)
+            os.write(fd, minted.encode('utf-8'))
+        finally:
+            os.close(fd)
+        _log(f'minted task-API token at {TOKEN_FILE}')
+        return minted
+    except FileExistsError:
+        pass
+    except OSError as e:
+        _log(f'could not create {TOKEN_FILE}: {e}')
+        return ''
     try:
         with open(TOKEN_FILE, 'r') as f:
             return f.read().strip()

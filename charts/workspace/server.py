@@ -12987,6 +12987,21 @@ if __name__ == "__main__":
     # Change to the directory containing our files
     os.chdir('/tmp/browser')
 
+    # Materialize the task-API bearer token before we accept any request
+    # (issue #528). It used to be created lazily by GET /api/claude/auth/token,
+    # but the programmatic dispatch path reads .claude-tasks/.api-token off disk
+    # directly (mcp_dashboard.py) — so on a fresh pod, where nothing had hit the
+    # auth endpoint yet, the CTO's first build dispatch sent an empty Bearer and
+    # verify_token() 401'd on the missing file. Creating it at boot means the
+    # file always exists before the first dispatch. Idempotent: an existing
+    # token is read back, never rotated.
+    try:
+        ClaudeTaskManager.get_or_create_token()
+        print('[tasks] bearer token ready at '
+              f'{ClaudeTaskManager.TOKEN_FILE}')
+    except Exception as e:
+        print(f'[tasks] token materialization failed: {e}', file=sys.stderr)
+
     # Initialize the persistent-memory subsystem (runs migrations, opens DB).
     # Failure here is non-fatal: the rest of the server keeps working, and
     # /api/memory* returns 503 until the import error is fixed.
