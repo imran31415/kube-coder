@@ -538,6 +538,21 @@ class ClaudeAdapter(Adapter):
         if t == 'result':
             if o.get('session_id'):
                 ctx['claude_session_id'] = o['session_id']
+            # Product metrics (#363): the terminal `result` event carries the
+            # turn's authoritative cumulative token usage. Stash it on ctx so the
+            # runner's finalize can fold it into the thread's running total —
+            # this is the ONLY place token usage is exposed, and it's per-turn
+            # cumulative (not per-chunk), so no double counting. Any adapter may
+            # set ctx['_turn_usage'] = {'input': int, 'output': int}; only Claude
+            # reports it today, others simply contribute 0.
+            usage = o.get('usage')
+            if isinstance(usage, dict):
+                ctx['_turn_usage'] = {
+                    'input': (int(usage.get('input_tokens') or 0)
+                              + int(usage.get('cache_read_input_tokens') or 0)
+                              + int(usage.get('cache_creation_input_tokens') or 0)),
+                    'output': int(usage.get('output_tokens') or 0),
+                }
             if o.get('subtype') not in (None, 'success'):
                 raw = _stringify(o.get('result') or o.get('subtype'))
                 out.append({'role': 'system', 'type': 'error',
@@ -1442,6 +1457,19 @@ def _notify_turn_complete(thread_id: str) -> None:
             _log(f'turn observer error: {type(e).__name__}: {e}')
 
 
+# Product metrics (#363): a leading `/name` is the composer's convention for
+# invoking a skill / custom slash command (the `/` picker lists exactly these).
+# The `(?=\s|$)` boundary keeps a bare filesystem path like `/home/dev/x` from
+# being mistaken for a command.
+_SLASH_CMD_RE = re.compile(r'^/([a-z0-9][a-z0-9-]*)(?=\s|$)')
+
+
+def _slash_command_name(text: str) -> Optional[str]:
+    """The skill/slash-command name a user turn invokes, or None."""
+    m = _SLASH_CMD_RE.match((text or '').strip())
+    return m.group(1) if m else None
+
+
 class HypervisorSession:
     def __init__(self, thread_id: str):
         self.id = thread_id
@@ -1531,6 +1559,52 @@ class HypervisorSession:
         key = 'deleted_at' if only_deleted else 'updated_at'
         out.sort(key=lambda t: t.get(key) or 0, reverse=True)
         return out
+
+    @classmethod
+    def product_totals(cls) -> Dict[str, Any]:
+        """Aggregate per-thread product metrics (#363) across live (non-deleted)
+        threads: chat counts, token usage, and skill invocations. Reads only the
+        small thread.json metas — never the big events.jsonl — so it stays cheap
+        enough for every /metrics poll. Memory recalls live in the memory store,
+        not threads, and are joined in by the caller.
+
+        chats.active counts threads with a turn ACTUALLY running now (the live
+        _RUNNING registry, via is_turn_live), not meta['status'] which can stick
+        at 'running' after a crash. tokens.per_session_avg divides by the number
+        of threads that reported any usage, so adapters that report none don't
+        dilute the average."""
+        total = active = 0
+        tok_input = tok_output = token_sessions = 0
+        skills: Dict[str, int] = {}
+        if os.path.isdir(HYPERVISOR_DIR):
+            for tid in os.listdir(HYPERVISOR_DIR):
+                s = cls.get(tid)
+                if not s:
+                    continue
+                m = s.read_meta()
+                if not m or m.get('deleted_at') is not None:
+                    continue
+                total += 1
+                if cls.is_turn_live(tid):
+                    active += 1
+                prod = m.get('product') or {}
+                tok = prod.get('tokens') or {}
+                ti = int(tok.get('input', 0) or 0)
+                to = int(tok.get('output', 0) or 0)
+                if ti or to:
+                    tok_input += ti
+                    tok_output += to
+                    token_sessions += 1
+                for name, count in (prod.get('skills') or {}).items():
+                    skills[name] = skills.get(name, 0) + int(count or 0)
+        tok_total = tok_input + tok_output
+        per_session_avg = int(round(tok_total / token_sessions)) if token_sessions else 0
+        return {
+            'chats': {'total': total, 'active': active},
+            'tokens': {'total': tok_total, 'input': tok_input,
+                       'output': tok_output, 'per_session_avg': per_session_avg},
+            'skills': {'invocations_by_name': skills},
+        }
 
     def delete(self) -> None:
         """Soft-delete: stamp ``deleted_at`` so the thread drops out of the
@@ -1815,6 +1889,14 @@ class HypervisorSession:
                 and meta.get('title', 'New chat') in ('New chat', '')):
             meta['title'] = text[:80]
         self._append([{'role': 'user', 'type': 'message', 'text': text}])
+        # Product metrics (#363): count a slash-command turn as a skill
+        # invocation, keyed by name, in the thread's own metadata (folded into
+        # the write below — no extra I/O). Aggregated across threads by
+        # product_totals().
+        skill = _slash_command_name(text)
+        if skill:
+            skills = meta.setdefault('product', {}).setdefault('skills', {})
+            skills[skill] = int(skills.get(skill, 0)) + 1
         meta['status'] = 'running'
         self._write_meta(meta)
         with _RUNLOCK:
@@ -2062,6 +2144,18 @@ class HypervisorSession:
                 self._append([{'role': 'system', 'type': 'message',
                                'text': '⏹ Stopped by user.'}])
             m = self.read_meta() or meta
+            # Product metrics (#363): fold this turn's token usage into the
+            # thread's running total before persisting. The adapter stashes a
+            # per-turn cumulative {'input','output'} on ctx (Claude only, today);
+            # `turns` counts only turns that actually reported usage, so the
+            # per-session average isn't diluted by adapters that report none.
+            usage = ctx.pop('_turn_usage', None)
+            if isinstance(usage, dict):
+                prod = m.setdefault('product', {})
+                tok = prod.setdefault('tokens', {'input': 0, 'output': 0})
+                tok['input'] = int(tok.get('input', 0)) + int(usage.get('input', 0))
+                tok['output'] = int(tok.get('output', 0)) + int(usage.get('output', 0))
+                prod['turns'] = int(prod.get('turns', 0)) + 1
             m['adapter'] = ctx  # persist any session id the adapter captured
             m['status'] = 'idle'
             self._write_meta(m)

@@ -107,3 +107,71 @@ describe('MetricsSection', () => {
     expect(screen.getByText('No builds or chats are running right now.')).toBeInTheDocument();
   });
 });
+
+// Product usage card (#363).
+const PRODUCT = {
+  chats: { total: 14, active: 2 },
+  tokens: { total: 1284500, input: 900000, output: 384500, per_session_avg: 107042 },
+  skills: { invocations_by_name: { 'kc-preflight': 9, graphify: 6, worktree: 3 } },
+  memory: {
+    recall_count_by_key: [
+      { namespace: 'project.kube-coder', key: 'first-win-gap-map', count: 23 },
+      { namespace: 'user', key: 'pronouns', count: 11 },
+    ],
+  },
+};
+
+function sys(over: Record<string, unknown> = {}) {
+  return {
+    cpu: { usage_percent: 12, cores: 8 },
+    memory: { total_mb: 16000, used_mb: 6400, available_mb: 9600, percent: 40 },
+    disk: { total_gb: 100, used_gb: 38, available_gb: 62, percent: 38, path: '/home/dev' },
+    alerts: [],
+    timestamp: 0,
+    ...over,
+  };
+}
+
+describe('MetricsSection — Product usage card (#363)', () => {
+  beforeEach(() => {
+    apps = [];
+    tasks.value = [];
+    health.value = null;
+    serverMode.value = { readOnly: false, authed: true, authMode: 'basic', demoShowAll: false };
+  });
+
+  it('renders chats, top skills, and most-recalled memory', () => {
+    metrics.value = sys({ product: PRODUCT }) as never;
+    render(<MetricsSection />);
+    expect(screen.getByText('Product usage')).toBeInTheDocument();
+    expect(screen.getByText('14')).toBeInTheDocument();          // chats total
+    expect(screen.getByText(/2 active/)).toBeInTheDocument();
+    // Highest-count skill first, rendered with the slash prefix.
+    expect(screen.getByText('/kc-preflight')).toBeInTheDocument();
+    expect(screen.getByText('project.kube-coder/first-win-gap-map')).toBeInTheDocument();
+    // 'memory' here is explicitly the knowledge store, not RAM.
+    expect(document.body.innerHTML).toContain('knowledge store');
+  });
+
+  it('is absent when the pod omits product (backward compatible)', () => {
+    metrics.value = sys() as never;   // no product key
+    render(<MetricsSection />);
+    expect(screen.queryByText('Product usage')).not.toBeInTheDocument();
+    expect(screen.getByText('System metrics')).toBeInTheDocument();
+  });
+
+  it('shows empty states when product data is all zero/empty', () => {
+    metrics.value = sys({
+      product: {
+        chats: { total: 0, active: 0 },
+        tokens: { total: 0, input: 0, output: 0, per_session_avg: 0 },
+        skills: { invocations_by_name: {} },
+        memory: { recall_count_by_key: [] },
+      },
+    }) as never;
+    render(<MetricsSection />);
+    expect(screen.getByText('Product usage')).toBeInTheDocument();
+    expect(screen.getByText('No skill invocations yet.')).toBeInTheDocument();
+    expect(screen.getByText('No memory recalls yet.')).toBeInTheDocument();
+  });
+});

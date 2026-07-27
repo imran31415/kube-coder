@@ -975,7 +975,54 @@ class MetricsCollector:
             'memory': memory,
             'disk': disk,
             'alerts': alerts,
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            # Product-usage metrics (#363) — a SEPARATE section from the system
+            # cpu/memory/disk above. NB: this 'product.memory' is the knowledge
+            # store's recall counts, NOT RAM (which is the top-level 'memory').
+            'product': ProductMetricsCollector.get_product_metrics(),
+        }
+
+
+class ProductMetricsCollector:
+    """Product-usage metrics (#363): chat counts, token usage, skill
+    invocations, and memory-store recall counts — how the product is *used*,
+    as opposed to MetricsCollector's system health (CPU/RAM/disk).
+
+    Deliberately a separate collector/section so 'memory' (the knowledge store)
+    is never conflated with 'memory' (RAM). Every source is optional and
+    failure-isolated: a missing subsystem or a read error degrades that one
+    section to zeros/empty rather than failing the whole /metrics response."""
+
+    RECALL_TOP_N = 10
+
+    @staticmethod
+    def get_product_metrics():
+        # chats / tokens / skills are aggregated from the hypervisor thread
+        # metadata (cheap thread.json reads); memory recalls come from the
+        # memory store's maintained access counters.
+        chats = {'total': 0, 'active': 0}
+        tokens = {'total': 0, 'input': 0, 'output': 0, 'per_session_avg': 0}
+        skills = {'invocations_by_name': {}}
+        if HypervisorSession is not None:
+            try:
+                totals = HypervisorSession.product_totals()
+                chats = totals.get('chats', chats)
+                tokens = totals.get('tokens', tokens)
+                skills = totals.get('skills', skills)
+            except Exception as e:  # never let one section 500 the endpoint
+                chats = {**chats, 'error': str(e)}
+        memory = {'recall_count_by_key': []}
+        if MemoryManager is not None:
+            try:
+                memory = {'recall_count_by_key': MemoryManager.recall_counts(
+                    limit=ProductMetricsCollector.RECALL_TOP_N)}
+            except Exception as e:
+                memory = {'recall_count_by_key': [], 'error': str(e)}
+        return {
+            'chats': chats,
+            'tokens': tokens,
+            'skills': skills,
+            'memory': memory,
         }
 
 

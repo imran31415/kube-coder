@@ -2028,5 +2028,60 @@ class DetectUserTests(unittest.TestCase):
             self.assertEqual(server.CronManager.detect_user(), 'imran')
 
 
+class ProductMetricsCollectorTest(unittest.TestCase):
+    """Product metrics (#363): a section separate from the system cpu/mem/disk,
+    merging hypervisor-derived chats/tokens/skills with memory-store recalls.
+    Each source is failure-isolated so /metrics never 500s."""
+
+    def test_merges_hypervisor_and_memory_sources(self):
+        totals = {'chats': {'total': 2, 'active': 1},
+                  'tokens': {'total': 300, 'input': 200, 'output': 100,
+                             'per_session_avg': 150},
+                  'skills': {'invocations_by_name': {'deploy': 4}}}
+        recalls = [{'namespace': 'proj', 'key': 'alpha', 'count': 5,
+                    'last_accessed_at': 1}]
+        with mock.patch.object(server.HypervisorSession, 'product_totals',
+                               return_value=totals), \
+             mock.patch.object(server.MemoryManager, 'recall_counts',
+                               return_value=recalls):
+            p = server.ProductMetricsCollector.get_product_metrics()
+        self.assertEqual(p['chats'], totals['chats'])
+        self.assertEqual(p['tokens'], totals['tokens'])
+        self.assertEqual(p['skills'], totals['skills'])
+        self.assertEqual(p['memory'], {'recall_count_by_key': recalls})
+
+    def test_hypervisor_error_isolated_from_memory(self):
+        recalls = [{'namespace': 'p', 'key': 'k', 'count': 1,
+                    'last_accessed_at': 0}]
+        with mock.patch.object(server.HypervisorSession, 'product_totals',
+                               side_effect=RuntimeError('boom')), \
+             mock.patch.object(server.MemoryManager, 'recall_counts',
+                               return_value=recalls):
+            p = server.ProductMetricsCollector.get_product_metrics()
+        self.assertIn('error', p['chats'])          # degraded, flagged
+        self.assertEqual(p['chats']['total'], 0)
+        self.assertEqual(p['memory']['recall_count_by_key'], recalls)  # unaffected
+
+    def test_missing_subsystems_degrade_to_zero(self):
+        with mock.patch.object(server, 'HypervisorSession', None), \
+             mock.patch.object(server, 'MemoryManager', None):
+            p = server.ProductMetricsCollector.get_product_metrics()
+        self.assertEqual(p['chats'], {'total': 0, 'active': 0})
+        self.assertEqual(p['tokens']['total'], 0)
+        self.assertEqual(p['skills']['invocations_by_name'], {})
+        self.assertEqual(p['memory']['recall_count_by_key'], [])
+
+    def test_get_all_metrics_carries_separate_product_section(self):
+        with mock.patch.object(
+                server.ProductMetricsCollector, 'get_product_metrics',
+                return_value={'chats': {}, 'tokens': {}, 'skills': {},
+                              'memory': {}}):
+            m = server.MetricsCollector.get_all_metrics()
+        for k in ('cpu', 'memory', 'disk', 'alerts', 'product'):
+            self.assertIn(k, m)
+        # 'memory' (RAM) and 'product' (usage) stay distinct top-level keys.
+        self.assertIsNot(m['memory'], m['product'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -371,6 +371,36 @@
   min-width: 0;
 }
 .metrics-item-meta { font-size: 11px; flex: 0 0 auto; }
+
+/* Product usage (#363) — stat tiles + two side-by-side lists. */
+.product-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--size-2);
+  margin-bottom: var(--size-3);
+}
+.product-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.product-stat-value { font-size: 20px; font-weight: 600; line-height: 1.15; }
+.product-stat-label { font-size: 11.5px; }
+.product-cols { display: grid; grid-template-columns: 1fr; gap: var(--size-3); }
+@media (min-width: 560px) {
+  .product-cols { grid-template-columns: 1fr 1fr; }
+}
+.product-col-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
 .metrics-item-actions {
   display: flex;
   align-items: center;

@@ -1602,5 +1602,97 @@ class WatcherRestartTest(WatcherTestBase):
         self.assertIn('[Hypervisor watcher fired]', delivered[0][1])
 
 
+class SlashCommandNameTest(unittest.TestCase):
+    """Product metrics (#363): only a leading `/name` (with a word boundary)
+    counts as a skill invocation — never a bare filesystem path."""
+
+    def test_detects_command(self):
+        self.assertEqual(hs._slash_command_name('/deploy the app'), 'deploy')
+        self.assertEqual(hs._slash_command_name('/kc-preflight'), 'kc-preflight')
+        self.assertEqual(hs._slash_command_name('  /graphify  '), 'graphify')
+
+    def test_rejects_non_commands(self):
+        for t in ('/home/dev/x', 'hello /deploy', '/', '', 'no slash', '/ leading space'):
+            self.assertIsNone(hs._slash_command_name(t), t)
+
+
+class ClaudeAdapterUsageCaptureTest(unittest.TestCase):
+    """The terminal `result` event's usage is stashed on ctx for the runner to
+    fold into the thread's token total (#363)."""
+
+    def test_result_usage_captured_on_ctx(self):
+        a = hs.ClaudeAdapter()
+        ctx = {}
+        line = json.dumps({'type': 'result', 'subtype': 'success',
+                           'usage': {'input_tokens': 10, 'output_tokens': 7,
+                                     'cache_read_input_tokens': 5,
+                                     'cache_creation_input_tokens': 2}})
+        a.parse(ctx, line)
+        self.assertEqual(ctx['_turn_usage'], {'input': 17, 'output': 7})
+
+    def test_result_without_usage_sets_nothing(self):
+        a = hs.ClaudeAdapter()
+        ctx = {}
+        a.parse(ctx, json.dumps({'type': 'result', 'subtype': 'success'}))
+        self.assertNotIn('_turn_usage', ctx)
+
+
+class ProductTotalsTest(unittest.TestCase):
+    """Aggregation over thread.json metas (#363)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_dir = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = self.tmp
+        # No live turns by default.
+        self._running_patch = mock.patch.object(
+            hs.HypervisorSession, 'is_turn_live', staticmethod(lambda tid: False))
+        self._running_patch.start()
+
+    def tearDown(self):
+        self._running_patch.stop()
+        hs.HYPERVISOR_DIR = self._orig_dir
+
+    def _thread(self, tid, meta):
+        os.makedirs(os.path.join(self.tmp, tid))
+        with open(os.path.join(self.tmp, tid, 'thread.json'), 'w') as f:
+            json.dump(meta, f)
+
+    def test_empty_dir_is_all_zero(self):
+        t = hs.HypervisorSession.product_totals()
+        self.assertEqual(t['chats'], {'total': 0, 'active': 0})
+        self.assertEqual(t['tokens']['total'], 0)
+        self.assertEqual(t['tokens']['per_session_avg'], 0)
+        self.assertEqual(t['skills']['invocations_by_name'], {})
+
+    def test_aggregates_tokens_skills_and_excludes_deleted(self):
+        self._thread('t1', {'id': 't1', 'product': {
+            'tokens': {'input': 100, 'output': 50}, 'turns': 2,
+            'skills': {'deploy': 3, 'graphify': 1}}})
+        self._thread('t2', {'id': 't2', 'product': {
+            'tokens': {'input': 20, 'output': 30}, 'turns': 1,
+            'skills': {'deploy': 2}}})
+        self._thread('t3', {'id': 't3'})  # no product data
+        self._thread('t4', {'id': 't4', 'deleted_at': 123,
+                            'product': {'tokens': {'input': 999, 'output': 999}}})
+        t = hs.HypervisorSession.product_totals()
+        self.assertEqual(t['chats']['total'], 3)          # t4 excluded
+        self.assertEqual(t['tokens']['total'], 200)       # 150 + 50
+        # avg over the 2 threads that reported usage, not all 3.
+        self.assertEqual(t['tokens']['per_session_avg'], 100)
+        self.assertEqual(t['skills']['invocations_by_name'],
+                         {'deploy': 5, 'graphify': 1})
+
+    def test_active_counts_only_live_turns(self):
+        self._thread('t1', {'id': 't1'})
+        self._thread('t2', {'id': 't2'})
+        self._running_patch.stop()
+        with mock.patch.object(hs.HypervisorSession, 'is_turn_live',
+                               staticmethod(lambda tid: tid == 't2')):
+            t = hs.HypervisorSession.product_totals()
+        self._running_patch.start()  # keep tearDown symmetric
+        self.assertEqual(t['chats'], {'total': 2, 'active': 1})
+
+
 if __name__ == '__main__':
     unittest.main()
