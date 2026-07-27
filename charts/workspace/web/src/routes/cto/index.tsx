@@ -31,6 +31,7 @@ import {
   stopProjectsPolling,
 } from '../../store/projects';
 import { ctoHandoff } from '../../store/feed';
+import { justOnboarded } from '../../store/onboarding';
 import { claudeReady, refreshClaudeReady } from '../../store/claude';
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
@@ -60,12 +61,25 @@ function starterChips(projectName: string | null): string[] {
   ];
 }
 
+/** First-win starter chips (#487) — build-first prompts for a just-onboarded
+ *  user. Tapping one sends a one-sentence build request that the #486 fast-path
+ *  builds immediately, with the #484/#485 preview auto-surfacing. */
+const FIRST_WIN_CHIPS = [
+  'Build me a personal portfolio website',
+  'Make a simple to-do list app I can use',
+  'Create a landing page for my idea',
+];
+
 export function CtoRoute() {
   // The 3-pane layout collapses to stacked (rail strip + chat + brief sheet)
   // at 860px — the SAME threshold as cto.css, so the split handle + desktop
   // brief aside never render in the cramped 721–860px band (design review #1).
   const narrow = useMediaQuery('(max-width: 860px)');
   const disabled = serverMode.value.ctoEnabled === false;
+  // First-win landing (#487): a user routed here straight from onboarding gets
+  // a warm build-first opener. Capture the transient flag at mount and clear
+  // the signal so a later visit in the same session shows the normal welcome.
+  const [firstWin] = useState(() => justOnboarded.value);
   const [briefOpen, setBriefOpen] = useState(false);
   const [deltaDismissed, setDeltaDismissed] = useState<Set<string>>(new Set());
 
@@ -84,6 +98,12 @@ export function CtoRoute() {
   // A "Discuss with CTO" handoff from the Feed (#470): its context prefix is
   // queued here and sent once the target project's thread is ready.
   const pendingHandoff = useRef<string | null>(null);
+
+  // Consume the one-shot first-win flag so it never re-triggers on a later
+  // same-session visit (the captured `firstWin` local still drives this mount).
+  useEffect(() => {
+    if (justOnboarded.value) justOnboarded.value = false;
+  }, []);
 
   function persistRailW(px: number) {
     try {
@@ -173,7 +193,12 @@ export function CtoRoute() {
     void sendMessage(text);
   }
 
-  const chips = starterChips(projectName);
+  const chips = firstWin ? FIRST_WIN_CHIPS : starterChips(projectName);
+  const welcomeLead = firstWin
+    ? "Welcome aboard — I'm your AI CTO. Tell me in one sentence what you'd like to build, and I'll get started right away."
+    : projectName
+      ? `I'm across ${projectName}. What do you want to move on?`
+      : "I already know your workspace. What do you want to build or move on?";
 
   const brandLine = 'Engineering judgment for your whole workspace';
 
@@ -319,11 +344,7 @@ export function CtoRoute() {
         ) : (
           !active && (
             <div class="cto-welcome">
-              <p class="cto-welcome-lead">
-                {projectName
-                  ? `I'm across ${projectName}. What do you want to move on?`
-                  : "I already know your workspace. What do you want to build or move on?"}
-              </p>
+              <p class="cto-welcome-lead">{welcomeLead}</p>
               <div class="cto-chips">
                 {chips.map((c) => (
                   <button

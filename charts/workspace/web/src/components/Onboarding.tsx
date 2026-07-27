@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { githubStatus, setGitConfig, generateSshKey, type GitHubStatus } from '../api/github';
-import { createTask } from '../store/tasks';
 import { navigate } from '../store/router';
+import { justOnboarded } from '../store/onboarding';
 import { pushToast } from '../store/ui';
 import { Button } from './primitives/Button';
 import { Input } from './primitives/Input';
@@ -20,7 +20,6 @@ export function Onboarding() {
   const [status, setStatus] = useState<GitHubStatus | null>(null);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [prompt, setPrompt] = useState('Take a tour of /home/dev and tell me what kind of projects are here.');
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   useFocusTrap(show, ref);
@@ -83,28 +82,25 @@ export function Onboarding() {
   }
 
   // Connected via either path (OAuth or API key) — re-probe readiness so the
-  // panel flips to "connected", then advance to the first-win task step (#494).
+  // panel flips to "connected", then advance to the AI CTO front-door step (#494).
   function onClaudeConnected() {
     void refreshClaudeReady().then(() => setStep(5));
   }
 
-  async function createFirstTask() {
-    // Backstop: never fire the first-win build without a credential — send the
-    // user to the connect step instead (#494).
+  // Land the newly-onboarded user in the AI CTO front door (#487) instead of
+  // seeding a Build-tab "tour" task. The CTO welcome shows a warm first-win
+  // opener; combined with #486 the user's one-sentence reply builds immediately
+  // and #484/#485 auto-surface the preview.
+  function enterCto() {
+    // Backstop: never route a keyless user into the CTO with no way to build —
+    // send them to the connect step instead (#494).
     if (claudeReady.value === false) {
       setStep(4);
       return;
     }
-    setBusy(true);
-    try {
-      const t = await createTask({ prompt, workdir: '/home/dev' });
-      if (t) {
-        navigate('/tasks');
-        dismiss();
-      }
-    } finally {
-      setBusy(false);
-    }
+    justOnboarded.value = true;
+    navigate('/cto');
+    dismiss();
   }
 
   if (!show) return null;
@@ -206,22 +202,19 @@ export function Onboarding() {
       ),
     },
     {
-      title: 'Create your first task',
+      title: 'Meet your AI CTO',
       body: (
         <>
-          <p class="muted">Send Claude a starter prompt. It runs in a tmux session you can watch live.</p>
+          <p class="muted">
+            You're all set. Your AI CTO already knows this workspace — tell it in
+            one sentence what you'd like to build and it starts right away, with a
+            live preview surfacing in the chat as it goes.
+          </p>
           {claudeReady.value === false && (
             <p class="ob-warn">
-              Claude isn't connected yet — connect it first so this build doesn't fail.
+              Claude isn't connected yet — connect it first so your first build doesn't fail.
             </p>
           )}
-          <textarea
-            class="ob-textarea"
-            rows={4}
-            aria-label="Starter prompt for your first task"
-            value={prompt}
-            onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
-          />
         </>
       ),
       action:
@@ -235,8 +228,8 @@ export function Onboarding() {
         ) : (
           <>
             <Button variant="ghost" onClick={dismiss}>Finish later</Button>
-            <Button variant="primary" disabled={!prompt.trim() || busy} onClick={createFirstTask}>
-              <Icon name="play" size={14} /> Create task
+            <Button variant="primary" disabled={busy} onClick={enterCto}>
+              <Icon name="cto" size={14} /> Meet your AI CTO
             </Button>
           </>
         ),
