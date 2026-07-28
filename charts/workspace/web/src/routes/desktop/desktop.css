@@ -35,7 +35,7 @@
   padding: var(--size-2) var(--size-3);
   border-radius: var(--radius);
   margin: var(--size-3) 0;
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -57,14 +57,14 @@
 .dt-greeting {
   margin: 0;
   text-align: center;
-  font-size: 26px;
-  font-weight: 650;
+  font-size: var(--text-5xl);
+  font-weight: var(--weight-bold);
   letter-spacing: -0.015em;
   line-height: 1.2;
   color: var(--text);
   animation: dt-composer-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
-.dt-greeting-name { color: var(--text-muted); font-weight: 550; }
+.dt-greeting-name { color: var(--text-muted); font-weight: var(--weight-semibold); }
 
 .dt-section {
   display: flex;
@@ -82,8 +82,8 @@
   align-items: center;
   gap: 7px;
   flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -109,7 +109,7 @@
 }
 .dt-section-meta {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-subtle);
   white-space: nowrap;
 }
@@ -166,7 +166,7 @@
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 15px;
+  font-size: var(--text-xl);
   line-height: 1.45;
   resize: none;
   overflow-y: auto;
@@ -192,11 +192,11 @@
   gap: 5px;
   padding: 3px 9px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   cursor: pointer;
   white-space: nowrap;
   min-width: 0;
@@ -217,7 +217,7 @@
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   padding: 0;
   cursor: pointer;
   max-width: 100%;
@@ -226,7 +226,7 @@
 .dt-composer-workdir select:focus { outline: none; }
 .dt-composer-workdir-static {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -237,7 +237,7 @@
 .dt-composer-hint {
   margin-left: auto;
   color: var(--text-subtle);
-  font-size: 11px;
+  font-size: var(--text-xs);
   white-space: nowrap;
   opacity: 0;
   transition: opacity var(--motion-fast);
@@ -245,11 +245,11 @@
 .dt-composer-box:focus-within .dt-composer-hint { opacity: 1; }
 .dt-composer-hint kbd {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   padding: 1px 4px;
   border: 1px solid var(--border);
   border-bottom-width: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   background: var(--surface-2);
   color: var(--text-muted);
 }
@@ -299,11 +299,11 @@
 }
 .dt-composer-chip {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
   color: var(--text-muted);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 12px;
   cursor: pointer;
   transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
@@ -324,7 +324,7 @@
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-xs);
   padding: 2px 4px;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -336,13 +336,13 @@
   display: flex;
   gap: var(--size-4);
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-subtle);
   margin-bottom: var(--size-3);
 }
 .dt-mc-pulse b {
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-variant-numeric: tabular-nums;
 }
 .dt-mc-pulse .dt-mc-pulse-warn,
@@ -382,8 +382,8 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10.5px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   flex: none;
@@ -407,22 +407,22 @@
 }
 
 .dt-mc-kind {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.04em;
   color: var(--text-subtle);
   flex: none;
 }
 .dt-mc-time {
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   flex: none;
   font-variant-numeric: tabular-nums;
 }
 
 .dt-mc-title {
-  font-size: 13px;
-  font-weight: 550;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
   color: var(--text);
   line-height: 1.3;
   overflow: hidden;
@@ -430,7 +430,7 @@
   white-space: nowrap;
 }
 .dt-mc-headline {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.35;
   margin-top: 2px;
   overflow: hidden;
@@ -450,7 +450,7 @@
   cursor: default;
 }
 .dt-mc-q {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.4;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -538,7 +538,7 @@
   height: 28px;
   border-radius: 9px;
   background: var(--surface-3);
-  font-size: 17px;
+  font-size: var(--text-2xl);
   line-height: 1;
   user-select: none;
   filter: grayscale(1);
@@ -582,8 +582,8 @@
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
-  font-size: 11.5px;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
   opacity: 0;
@@ -595,8 +595,8 @@
 .dt-dock-item:hover .dt-dock-tip,
 .dt-dock-item:focus-within .dt-dock-tip { opacity: 1; }
 .dt-dock-tip-key {
-  font-size: 9.5px;
-  font-weight: 600;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
   color: var(--text-muted);
   background: var(--surface-3);
   border: 1px solid var(--border);
@@ -634,7 +634,7 @@
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   text-align: left;
   cursor: pointer;
 }
@@ -660,21 +660,21 @@
 .dt-editor-field-grow { flex: 1; min-width: 0; }
 .dt-editor-field-icon { flex: 0 0 80px; }
 .dt-editor-label {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
   color: var(--text-muted);
   letter-spacing: 0;
 }
-.dt-editor-hint { font-size: 11.5px; line-height: 1.4; }
+.dt-editor-hint { font-size: var(--text-sm); line-height: 1.4; }
 .dt-editor-hint code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   background: var(--surface-2);
   padding: 1px 4px;
   border-radius: var(--radius-sm);
 }
 .dt-editor-icon-input {
-  font-size: 28px;
+  font-size: var(--text-5xl);
   line-height: 1;
   text-align: center;
   width: 100%;
@@ -695,7 +695,7 @@
   font: inherit;
   resize: vertical;
 }
-.dt-editor-textarea.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.dt-editor-textarea.mono { font-family: var(--font-mono); font-size: var(--text-md); }
 
 .dt-editor-action {
   border: 1px solid var(--border);
@@ -718,7 +718,7 @@
   display: inline-flex;
   align-items: center;
   padding: 5px 12px;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   color: var(--text-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
@@ -733,7 +733,7 @@
 .dt-editor-radio.is-active {
   background: var(--surface);
   color: var(--text);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
 .dt-editor-fields { display: flex; flex-direction: column; gap: var(--size-3); }
 
@@ -753,8 +753,8 @@
 @media (max-width: 720px) {
   .route-desktop { padding: var(--size-3) var(--size-3) 0; }
   .dt-page { padding-top: var(--size-5); gap: var(--size-5); }
-  .dt-greeting { font-size: 21px; }
-  .dt-composer-input { font-size: 15px; } /* keep ≥16px?—14/15 avoids iOS zoom w/ our meta */
+  .dt-greeting { font-size: var(--text-4xl); }
+  .dt-composer-input { font-size: var(--text-xl); } /* keep ≥16px?—14/15 avoids iOS zoom w/ our meta */
   .dt-composer-hint { display: none; } /* no physical keyboard — hide the hint */
   .dt-composer-send { margin-left: auto; } /* the hidden hint owned the auto margin */
   .dt-composer-workdir { max-width: 55%; }
@@ -776,7 +776,7 @@
     pointer-events: auto;
   }
   .dt-dock-btn { width: 42px; height: 42px; }
-  .dt-dock-emoji { width: 26px; height: 26px; font-size: 16px; }
+  .dt-dock-emoji { width: 26px; height: 26px; font-size: var(--text-2xl); }
   /* Tooltips point downward off a floating dock; inline at the page bottom they
      have room above, so keep the default (above) placement — nothing to do. */
 }

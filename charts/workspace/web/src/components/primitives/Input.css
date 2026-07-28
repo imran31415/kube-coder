@@ -2,9 +2,11 @@
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: var(--radius-sm);
+  /* Matches .btn — an input and the button beside it in a form row read as
+     one control, so they have to share a corner radius (#509). */
+  border-radius: var(--radius);
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-md);
   min-height: 32px;
   transition: border-color var(--motion-fast), background var(--motion-fast);
   width: auto;
@@ -15,5 +17,5 @@
 .input-full { width: 100%; }
 
 @media (pointer: coarse) {
-  .input { min-height: 44px; font-size: 14px; }
+  .input { min-height: 44px; font-size: var(--text-lg); }
 }

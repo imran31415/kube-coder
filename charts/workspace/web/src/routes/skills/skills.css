@@ -39,7 +39,7 @@
 .skl-facet-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .skl-facet {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   padding: 3px 8px;
   border-radius: var(--radius-pill);
   color: var(--text-muted);
@@ -87,14 +87,14 @@
   min-width: 0;
 }
 .skl-row-name {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .skl-row-desc {
-  font-size: 12.5px;
+  font-size: var(--text-md);
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -104,12 +104,12 @@
   overflow-wrap: anywhere;
 }
 .skl-row-systems { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; min-width: 0; }
-.skl-invocable { font-size: 10.5px; }
+.skl-invocable { font-size: var(--text-xs); }
 
 /* System badge — shared between rows, detail, and sources. */
 .skl-system {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   padding: 1px 7px;
   border-radius: var(--radius-pill);
   background: var(--accent-soft);
@@ -122,35 +122,35 @@
 .skl-detail { padding: var(--size-3) var(--size-4); display: flex; flex-direction: column; gap: var(--size-3); }
 .skl-detail-header { display: flex; flex-direction: column; gap: 6px; }
 .skl-detail-headline { display: flex; align-items: center; gap: var(--size-2); flex-wrap: wrap; }
-.skl-detail-name { font-size: 15px; font-weight: 650; }
-.skl-detail-desc { font-size: 13px; line-height: 1.5; margin: 0; }
+.skl-detail-name { font-size: var(--text-xl); font-weight: var(--weight-bold); }
+.skl-detail-desc { font-size: var(--text-md); line-height: 1.5; margin: 0; }
 
 .skl-meta {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 6px 14px;
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--text-md);
 }
-.skl-meta dt { color: var(--text-muted); font-weight: 500; }
+.skl-meta dt { color: var(--text-muted); font-weight: var(--weight-medium); }
 .skl-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; display: flex; gap: 4px; flex-wrap: wrap; }
 
 .skl-section-title {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
   margin: var(--size-2) 0 0;
 }
 .skl-sources { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
-.skl-sources li { display: flex; gap: var(--size-2); align-items: baseline; font-size: 12px; min-width: 0; flex-wrap: wrap; }
+.skl-sources li { display: flex; gap: var(--size-2); align-items: baseline; font-size: var(--text-sm); min-width: 0; flex-wrap: wrap; }
 .skl-source-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; color: var(--text-muted); }
 .skl-source-shadowed { opacity: 0.55; }
 
 .skl-body {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.55;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -174,7 +174,7 @@
   flex-direction: column;
   gap: var(--size-2);
 }
-.skl-sync-hint, .skl-sync-none { font-size: 12px; margin: 0; }
+.skl-sync-hint, .skl-sync-none { font-size: var(--text-sm); margin: 0; }
 .skl-sync-targets { display: flex; flex-wrap: wrap; gap: 6px; }
 .skl-sync-target {
   display: inline-flex;
@@ -185,7 +185,7 @@
   border: 1px solid var(--border);
   background: var(--surface);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .skl-sync-target input { cursor: pointer; margin: 0; }
 .skl-sync-target-on {
@@ -194,11 +194,11 @@
 }
 .skl-sync-actions { display: flex; gap: 6px; align-items: center; }
 .skl-sync-conflict {
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--text);
-  background: color-mix(in srgb, var(--warn, #b8860b) 12%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--warn, #b8860b) 35%, var(--border));
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
   border-radius: var(--radius);
   padding: var(--size-2);
   display: flex;

@@ -12,7 +12,7 @@
   align-items: center;
   gap: 5px;
   padding: 3px 8px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   background: transparent;
@@ -22,7 +22,7 @@
 .mbar-cell:hover { background: var(--surface); color: var(--text); }
 .mbar-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   letter-spacing: 0.05em;
   color: var(--text-subtle);
 }

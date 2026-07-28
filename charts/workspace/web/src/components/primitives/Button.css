@@ -4,7 +4,7 @@
   justify-content: center;
   gap: 6px;
   border-radius: var(--radius);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   font-family: inherit;
   cursor: pointer;
   user-select: none;
@@ -15,9 +15,9 @@
 .btn:active:not(:disabled) { transform: translateY(0.5px); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.btn-sm { font-size: 12px; padding: 4px 10px; min-height: 28px; }
-.btn-md { font-size: 13px; padding: 6px 12px; min-height: 32px; }
-.btn-lg { font-size: 14px; padding: 8px 16px; min-height: 40px; }
+.btn-sm { font-size: var(--text-sm); padding: 4px 10px; min-height: 28px; }
+.btn-md { font-size: var(--text-md); padding: 6px 12px; min-height: 32px; }
+.btn-lg { font-size: var(--text-lg); padding: 8px 16px; min-height: 40px; }
 
 @media (pointer: coarse) {
   .btn-sm { min-height: 36px; }

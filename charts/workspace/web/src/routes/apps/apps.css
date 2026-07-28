@@ -6,7 +6,7 @@
   color: var(--text);
   padding: var(--size-3);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 .apps-error {
@@ -15,7 +15,7 @@
   color: var(--danger);
   padding: var(--size-3);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 /* --- list --- */
@@ -36,10 +36,10 @@
 .apps-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .apps-row-name {
   display: flex; align-items: center; gap: var(--size-2);
-  font-size: 14px; font-weight: 500;
+  font-size: var(--text-lg); font-weight: var(--weight-medium);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.apps-row-meta { font-size: 11.5px; font-family: var(--font-mono, ui-monospace, monospace); }
+.apps-row-meta { font-size: var(--text-sm); font-family: var(--font-mono); }
 
 .apps-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
@@ -55,26 +55,26 @@
 /* --- pin dialog --- */
 /* Chrome (backdrop + box) now comes from the shared <Modal> primitive; only
    the pin-form's inner layout classes live here. */
-.apps-modal-title { margin: 0; font-size: 16px; }
-.apps-modal-hint { font-size: 12.5px; margin: 0; }
+.apps-modal-title { margin: 0; font-size: var(--text-2xl); }
+.apps-modal-hint { font-size: var(--text-md); margin: 0; }
 .apps-modal-row {
   display: grid; grid-template-columns: 100px 1fr; gap: var(--size-3);
 }
 @media (max-width: 480px) { .apps-modal-row { grid-template-columns: 1fr; } }
-.apps-modal-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.apps-modal-label { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-muted); }
 .apps-modal-check {
   display: flex; align-items: flex-start; gap: var(--size-2);
-  font-size: 12.5px; line-height: 1.4;
+  font-size: var(--text-md); line-height: 1.4;
 }
 .apps-modal-check code {
   background: var(--surface-2);
   padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 11.5px;
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
 }
 .apps-modal-err {
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: var(--text-md);
 }
 .apps-modal-actions { display: flex; justify-content: flex-end; gap: var(--size-2); }
 
@@ -86,7 +86,7 @@
    * var(--size-4) (16px) by default. Going negative reclaims it. */
   height: 100%;
   min-height: 60vh;
-  margin: calc(var(--size-4, 16px) * -1);
+  margin: calc(var(--size-4) * -1);
 }
 .apps-embed-header {
   display: flex; align-items: center; gap: var(--size-3);
@@ -98,16 +98,16 @@
 }
 .apps-embed-title {
   flex: 1 1 auto; min-width: 0;
-  font-size: 14px; font-weight: 500;
+  font-size: var(--text-lg); font-weight: var(--weight-medium);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.apps-embed-port { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; margin-left: 4px; }
+.apps-embed-port { font-family: var(--font-mono); font-size: var(--text-sm); margin-left: 4px; }
 .apps-embed-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .apps-embed-frame {
   flex: 1 1 auto;
   width: 100%;
   border: 0;
-  background: var(--surface-2, #fff);
+  background: var(--surface-2);
 }
 
 /* On mobile, drop the padding on the main pane so the iframe goes

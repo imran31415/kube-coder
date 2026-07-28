@@ -280,7 +280,7 @@ export function MetricsSection() {
         <h2 class="settings-section-title">System metrics</h2>
         <div class="metrics-head-actions">
           {secsAgo != null && (
-            <span class="muted" style={{ fontSize: 11.5 }}>
+            <span class="muted" style={{ fontSize: 'var(--text-sm)' }}>
               {err ? 'fetch failed' : `updated ${secsAgo}s ago · polls every 10s`}
             </span>
           )}
@@ -291,7 +291,7 @@ export function MetricsSection() {
       </div>
 
       {!m && !err && (
-        <div class="muted" style={{ padding: 'var(--size-3) 0', fontSize: 13 }}>Loading metrics…</div>
+        <div class="muted" style={{ padding: 'var(--size-3) 0', fontSize: 'var(--text-md)' }}>Loading metrics…</div>
       )}
       {err && !m && (
         <div class="metrics-error" role="alert">{err}</div>

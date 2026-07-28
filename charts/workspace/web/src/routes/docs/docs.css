@@ -11,22 +11,22 @@
 .docs-loading,
 .docs-error {
   padding: 12px 16px;
-  border-radius: var(--radius-sm, 6px);
-  border: 1px solid var(--border, #2a2a31);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
   background: var(--surface);
 }
 .docs-error {
-  border-color: var(--danger, #e15a5a);
-  color: var(--danger, #e15a5a);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .docs-error-retry {
   margin-left: 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: transparent;
   color: inherit;
   border: 1px solid currentColor;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
 }
 
@@ -56,10 +56,10 @@
   gap: 18px;
 }
 .docs-section-title {
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-subtle, #9a9aa3);
+  color: var(--text-subtle);
   padding: 0 8px;
   margin-bottom: 4px;
 }
@@ -79,9 +79,9 @@
   text-align: left;
   background: transparent;
   border: none;
-  color: var(--text, #e6e6ea);
+  color: var(--text);
   padding: 6px 10px;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font: inherit;
 }
@@ -90,26 +90,26 @@
 }
 .docs-page-link-active {
   background: var(--surface-2);
-  color: var(--accent, #6db9ff);
+  color: var(--accent);
 }
 .docs-page-link-title {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
 }
 .docs-page-link-summary {
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   line-height: 1.35;
 }
 
 .docs-mobile-toc {
   margin-bottom: 16px;
-  border: 1px solid var(--border, #2a2a31);
-  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
 }
 .docs-mobile-toc > summary {
   cursor: pointer;
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
 .docs-mobile-toc[open] > summary {
   margin-bottom: 12px;
@@ -123,7 +123,7 @@
   margin-bottom: 16px;
 }
 .docs-article-breadcrumbs {
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-bottom: 6px;
 }
 .docs-crumb-sep {
@@ -131,7 +131,7 @@
   opacity: 0.6;
 }
 .docs-article-title {
-  font-size: 28px;
+  font-size: var(--text-5xl);
   margin: 0 0 6px 0;
   letter-spacing: -0.015em;
   line-height: 1.15;
@@ -139,14 +139,14 @@
 }
 .docs-article-summary {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-lg);
   line-height: 1.5;
 }
 
 .docs-article-body {
-  font-size: 14.5px;
+  font-size: var(--text-lg);
   line-height: 1.65;
-  color: var(--text, #e6e6ea);
+  color: var(--text);
   min-width: 0;
 }
 .docs-article-body p,
@@ -157,15 +157,15 @@
   overflow-wrap: anywhere;
 }
 .docs-article-body h2 {
-  font-size: 20px;
+  font-size: var(--text-4xl);
   margin-top: 32px;
   margin-bottom: 10px;
   letter-spacing: -0.01em;
   padding-bottom: 6px;
-  border-bottom: 1px solid var(--border, #2a2a31);
+  border-bottom: 1px solid var(--border);
 }
 .docs-article-body h3 {
-  font-size: 16px;
+  font-size: var(--text-2xl);
   margin-top: 24px;
   margin-bottom: 8px;
 }
@@ -181,7 +181,7 @@
   margin: 4px 0;
 }
 .docs-article-body a {
-  color: var(--accent, #6db9ff);
+  color: var(--accent);
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
@@ -190,11 +190,11 @@
   text-decoration-thickness: 2px;
 }
 .docs-article-body code {
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12.5px;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
   background: var(--surface-2);
   padding: 2px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   /* Inline code (file paths, env vars) inside flowing prose should wrap
      so it never widens its parent past the viewport. Block code in <pre>
      opts out below — long shell commands stay on one scrolling line. */
@@ -205,9 +205,9 @@
   background: var(--surface-2);
   color: var(--text);
   padding: 12px 14px;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   overflow-x: auto;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   line-height: 1.5;
   max-width: 100%;
 }
@@ -222,12 +222,12 @@
   font-size: inherit;
 }
 .docs-article-body blockquote {
-  border-left: 3px solid var(--border-strong, #3a3a44);
+  border-left: 3px solid var(--border-strong);
   margin: 14px 0;
   padding: 4px 14px;
-  color: var(--text-subtle, #9a9aa3);
+  color: var(--text-subtle);
   background: var(--surface);
-  border-radius: 0 var(--radius-sm, 6px) var(--radius-sm, 6px) 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .docs-article-body blockquote p:first-child {
   margin-top: 0;
@@ -248,12 +248,12 @@
   border-collapse: collapse;
   margin: 14px 0;
   width: 100%;
-  font-size: 13px;
+  font-size: var(--text-md);
   table-layout: auto;
 }
 .docs-article-body th,
 .docs-article-body td {
-  border: 1px solid var(--border, #2a2a31);
+  border: 1px solid var(--border);
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
@@ -270,32 +270,32 @@
    overflow into its .docs-table-wrap (overflow-x:auto) scroller instead. */
 .docs-article-body th {
   background: var(--surface-2);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   white-space: nowrap;
 }
 .docs-article-body hr {
   border: none;
-  border-top: 1px solid var(--border, #2a2a31);
+  border-top: 1px solid var(--border);
   margin: 28px 0;
 }
 
 .docs-callout {
   margin: 16px 0;
   padding: 12px 16px;
-  border-radius: var(--radius-sm, 6px);
-  border-left: 3px solid var(--accent, #6db9ff);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent);
   background: var(--surface);
 }
 .docs-callout-label {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--accent, #6db9ff);
-  font-weight: 600;
+  color: var(--accent);
+  font-weight: var(--weight-semibold);
   margin-bottom: 6px;
 }
 .docs-callout-scenario {
-  border-left-color: var(--accent, #6db9ff);
+  border-left-color: var(--accent);
 }
 
 /* Mobile tightening — give pages the full width and trim chrome that
@@ -311,28 +311,28 @@
     display: none;
   }
   .docs-article-title {
-    font-size: 22px;
+    font-size: var(--text-4xl);
   }
   .docs-article-summary {
-    font-size: 13px;
+    font-size: var(--text-md);
   }
   .docs-article-body {
-    font-size: 14px;
+    font-size: var(--text-lg);
   }
   .docs-article-body h2 {
-    font-size: 17px;
+    font-size: var(--text-2xl);
     margin-top: 24px;
   }
   .docs-article-body h3 {
-    font-size: 15px;
+    font-size: var(--text-xl);
     margin-top: 18px;
   }
   .docs-article-body pre {
     padding: 10px 12px;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
   }
   .docs-article-body table {
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
   .docs-article-body th,
   .docs-article-body td {

@@ -11,7 +11,7 @@
 
 .ghc-hint,
 .ghc-lead {
-  font-size: 12.5px;
+  font-size: var(--text-md);
   margin: 0;
 }
 
@@ -22,7 +22,7 @@
 .ghc-error {
   margin: 0;
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: var(--text-md);
 }
 
 .ghc-connected {
@@ -31,7 +31,7 @@
   gap: 6px;
   margin: 0;
   color: var(--success);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 .ghc-code-row {
@@ -42,11 +42,11 @@
 }
 
 .ghc-code {
-  font-size: 22px;
+  font-size: var(--text-4xl);
   letter-spacing: 3px;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   padding: 8px 14px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -64,7 +64,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   margin: 0;
 }
 

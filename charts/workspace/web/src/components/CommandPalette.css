@@ -42,17 +42,17 @@
   border: 0;
   outline: none;
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--text-lg);
 }
 .palette-input::placeholder { color: var(--text-subtle); }
 
 .palette-kbd {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--text-subtle);
   border: 1px solid var(--border-2);
   border-bottom-width: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   padding: 1px 5px;
   background: var(--surface);
 }
@@ -61,11 +61,11 @@
 
 .palette-group {
   padding: 8px 14px 4px;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-subtle);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .palette-row {
@@ -74,14 +74,14 @@
   width: 100%;
   text-align: left;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .palette-row-label { flex: 1; color: var(--text); }
-.palette-row-hint { font-family: var(--font-mono); font-size: 11px; color: var(--text-subtle); }
+.palette-row-hint { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-subtle); }
 .palette-row-active {
   background: var(--accent-soft);
   color: var(--accent);
 }
 .palette-row-active .palette-row-label { color: var(--accent); }
 
-.palette-empty { padding: 16px 14px; font-size: 13px; }
+.palette-empty { padding: 16px 14px; font-size: var(--text-md); }

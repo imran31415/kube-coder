@@ -31,8 +31,8 @@
   align-items: baseline;
   gap: var(--size-3);
 }
-.feed-masthead { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; }
-.feed-sub { font-size: 12px; color: var(--text-subtle); }
+.feed-masthead { font-size: var(--text-4xl); font-weight: var(--weight-bold); letter-spacing: 0.01em; }
+.feed-sub { font-size: var(--text-sm); color: var(--text-subtle); }
 
 .feed-filters {
   display: flex;
@@ -42,7 +42,7 @@
   align-items: center;
 }
 .feed-filter {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -59,7 +59,7 @@
 }
 .feed-project-select {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -83,11 +83,11 @@
   margin: 0 auto var(--size-2);
   align-items: center;
   gap: 5px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
   padding: 5px 12px;
   border: 1px solid var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
   color: var(--text);
   cursor: pointer;
@@ -103,7 +103,7 @@
 }
 .feed-empty {
   color: var(--text-subtle);
-  font-size: 13px;
+  font-size: var(--text-md);
   padding: var(--size-6) var(--size-2);
   text-align: center;
 }
@@ -113,11 +113,11 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-subtle);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   padding: var(--size-2) 0 6px;
   background: var(--bg);
 }
@@ -151,11 +151,11 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-subtle);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 .feed-unread-dot {
   width: 6px;
@@ -167,14 +167,14 @@
 .feed-meta-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .feed-item-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
   color: var(--text);
   margin: 5px 0 0;
   line-height: 1.35;
 }
 .feed-item-body {
-  font-size: 13px;
+  font-size: var(--text-md);
   color: var(--text-muted);
   line-height: 1.5;
   margin-top: 6px;
@@ -182,7 +182,7 @@
 .feed-item-body :is(p, ul, ol) { margin: 4px 0; }
 .feed-item-body code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--surface-2);
   padding: 1px 4px;
   border-radius: var(--radius-sm);
@@ -196,7 +196,7 @@
   align-items: center;
 }
 .feed-chip {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 5px 10px;
   border: 1px solid var(--border-2);
   border-radius: var(--radius);

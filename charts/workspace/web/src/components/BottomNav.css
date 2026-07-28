@@ -3,6 +3,10 @@
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
   height: calc(var(--bottomnav-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
+  /* Landscape: the notch/rounded corners eat the side edges, so keep the
+     first and last tab out from under them. */
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
   background: color-mix(in srgb, var(--surface) 95%, transparent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -23,9 +27,9 @@
   padding: 6px 4px;
   color: var(--text-muted);
   position: relative;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
-.bn-label { font-size: 10.5px; letter-spacing: -0.005em; }
+.bn-label { font-size: var(--text-xs); letter-spacing: -0.005em; }
 .bn-item:hover { color: var(--text); }
 .bn-item-active { color: var(--accent); }
 .bn-item-active::before {

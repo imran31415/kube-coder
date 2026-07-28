@@ -677,7 +677,7 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
       {phase === 'error' && (
         <div class="term-pane-error" role="alert">
           <strong>Could not attach:</strong> {err}
-          <div class="muted" style={{ marginTop: 4, fontSize: 12 }}>
+          <div class="muted" style={{ marginTop: 4, fontSize: 'var(--text-sm)' }}>
             The task may have ended, or the workspace is missing the ttyd entrypoint.
           </div>
           <div class="term-pane-error-actions">

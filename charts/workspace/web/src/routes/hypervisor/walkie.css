@@ -53,8 +53,8 @@
   background: var(--surface-2);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
   letter-spacing: 0.07em;
   color: var(--text-muted);
 }
@@ -155,7 +155,7 @@
   background: var(--surface-2);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .wt-readout-row {
   display: flex;
@@ -169,7 +169,7 @@
 }
 .wt-readout-value {
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 /* ── response stage ─────────────────────────────────────────────────────── */
@@ -185,7 +185,7 @@
 .wt-error {
   flex: none;
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: var(--text-md);
   padding: 6px 8px;
   border: 1px solid var(--danger);
   border-radius: var(--radius-sm);
@@ -200,8 +200,8 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
   color: var(--text-subtle);
   background: none;
   border: none;
@@ -236,8 +236,8 @@
   display: flex;
   align-items: center;
   gap: var(--size-2);
-  font-size: 10.5px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -267,7 +267,7 @@
 .wt-bubble {
   padding: 7px 11px;
   border-radius: 13px;
-  font-size: 13px;
+  font-size: var(--text-md);
   line-height: 1.45;
 }
 .wt-msg-in .wt-bubble {
@@ -293,7 +293,7 @@
   flex: none;
   display: inline-block;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   letter-spacing: 0.05em;
   color: var(--warn);
   margin-bottom: 4px;
@@ -306,13 +306,13 @@
   color: var(--text-muted);
 }
 .wt-empty-title {
-  font-weight: 650;
-  font-size: 17px;
+  font-weight: var(--weight-bold);
+  font-size: var(--text-2xl);
   color: var(--text);
   margin: 0 0 6px;
 }
 .wt-empty-sub {
-  font-size: 13px;
+  font-size: var(--text-md);
   line-height: 1.55;
   margin: 0;
 }
@@ -330,7 +330,7 @@
 .wt-you {
   flex: none;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   color: var(--text-subtle);
   font-style: italic;
   max-width: 52ch;
@@ -385,7 +385,7 @@
   min-height: 3.4em;
   overflow-y: auto;
   overscroll-behavior: contain;
-  font-size: 15.5px;
+  font-size: var(--text-xl);
   line-height: 1.6;
   color: var(--text);
   white-space: pre-wrap;
@@ -418,8 +418,8 @@
 .wt-reply {
   max-width: 100%;
   overflow-wrap: anywhere;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
   padding: 6px 14px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--accent);
@@ -462,7 +462,7 @@
   overflow-y: auto;
   overflow-wrap: anywhere;
   text-align: center;
-  font-size: 14px;
+  font-size: var(--text-lg);
   line-height: 1.5;
   color: var(--text-muted);
   font-style: italic;
@@ -628,8 +628,8 @@
 }
 .wt-orb-label {
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 800;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
   letter-spacing: 0.12em;
 }
 
@@ -645,8 +645,8 @@
   border: 1px solid color-mix(in srgb, var(--wt-glow) 55%, var(--border-2));
   background: var(--surface);
   color: var(--text);
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
   cursor: pointer;
   transition: border-color var(--motion-fast), background var(--motion-fast);
 }
@@ -660,7 +660,7 @@
 
 .wt-hint {
   min-height: 18px;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   color: var(--text-muted);
   text-align: center;
   overflow-wrap: anywhere;
@@ -673,8 +673,8 @@
   padding-bottom: var(--size-1);
 }
 .wt-type-link {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
   color: var(--text-subtle);
   background: none;
   border: none;
@@ -697,7 +697,7 @@
 .wt-input {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--text-lg);
   padding: 10px 12px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-2);
@@ -709,8 +709,8 @@
   border-color: var(--accent);
 }
 .wt-send {
-  font-size: 13px;
-  font-weight: 700;
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
   padding: 9px 18px;
   border-radius: var(--radius-pill);
   border: none;
@@ -773,17 +773,17 @@
 .wt-switch-label {
   display: flex;
   flex-direction: column;
-  font-size: 12.5px;
+  font-size: var(--text-md);
   color: var(--text);
   line-height: 1.25;
 }
 .wt-switch-hint {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--text-subtle);
 }
 
 .wt-ctl-btn {
-  font-size: 12.5px;
+  font-size: var(--text-md);
   padding: 6px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-2);
@@ -882,7 +882,7 @@
     padding: var(--size-3);
   }
   .wt-card-text {
-    font-size: 14px;
+    font-size: var(--text-lg);
   }
   .wt-history {
     max-height: 34vh;

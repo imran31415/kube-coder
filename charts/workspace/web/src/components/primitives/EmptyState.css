@@ -17,6 +17,6 @@
   color: var(--text-muted);
   margin-bottom: var(--size-2);
 }
-.empty-state-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-.empty-state-desc { font-size: 13px; max-width: 360px; }
+.empty-state-title { font-size: var(--text-3xl); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
+.empty-state-desc { font-size: var(--text-md); max-width: 360px; }
 .empty-state-action { margin-top: var(--size-3); display: flex; gap: var(--size-2); justify-content: center; }
