@@ -232,6 +232,200 @@ class CreateThreadPersonaTest(unittest.TestCase):
 
 # ─────────────────────── server: thread-list filter ───────────────────────
 
+class CreateThreadProjectDefaultsTest(unittest.TestCase):
+    """Per-project assistant configuration (#483, #362).
+
+    A CTO thread whose body omits assistant/model/effort inherits the bound
+    project's defaults, then the workspace default — so the MCP and cron paths,
+    which never send those fields, are correct too. An explicit body value wins.
+    Nothing bypasses resolve_*, so a project pinned to a provider this workspace
+    no longer has a key for degrades instead of launching a dead CLI.
+    """
+
+    def _handler(self, body):
+        h = mock.Mock(spec=server.BrowserHandler)
+        h.check_claude_auth.return_value = True
+        h.read_json_body.return_value = body
+        self.responses = []
+        h.send_json.side_effect = lambda o, s=200: self.responses.append((o, s))
+        return h
+
+    def _run(self, body, project=None):
+        """Returns (create_kwargs, requested) where `requested` records what was
+        handed to each resolver — the fallback chain under test."""
+        captured = {}
+        requested = {}
+        fake_session = mock.Mock()
+        fake_session.summary.return_value = {'id': 'x'}
+
+        def fake_create(**kw):
+            captured.update(kw)
+            return fake_session
+
+        def fake_resolve_assistant(req):
+            requested['assistant'] = req
+            return req or 'claude'
+
+        def fake_resolve_model(assistant, req):
+            requested['model'] = req
+            return req or ''
+
+        def fake_resolve_effort(assistant, req):
+            requested['effort'] = req
+            return req or ''
+
+        with mock.patch.object(server, 'HYPERVISOR_ENABLED', True), \
+             mock.patch.object(server, 'cto_available', return_value=True), \
+             mock.patch.object(server, '_HYPERVISOR_AVAILABLE', True), \
+             mock.patch.object(server, 'HYPERVISOR_DEFAULT_ASSISTANT', 'ante'), \
+             mock.patch.object(server.ClaudeTaskManager, 'resolve_assistant',
+                               side_effect=fake_resolve_assistant), \
+             mock.patch.object(server.ClaudeTaskManager, 'resolve_model',
+                               side_effect=fake_resolve_model), \
+             mock.patch.object(server.ClaudeTaskManager, 'resolve_effort',
+                               side_effect=fake_resolve_effort), \
+             mock.patch.object(server.ClaudeTaskManager, 'assistant_command',
+                               return_value='claude'), \
+             mock.patch.object(server.HypervisorSession, 'create',
+                               side_effect=fake_create), \
+             mock.patch.object(server.HypervisorSession, 'list',
+                               return_value=[{'persona': 'cto'}]), \
+             mock.patch.object(server.ProjectsManager, 'brief',
+                               return_value=None), \
+             mock.patch.object(server.ProjectsManager, 'get_project',
+                               return_value=project or {'id': 'kc'}), \
+             mock.patch.object(server.ProjectsManager, 'defaults_for',
+                               side_effect=lambda pid: (
+                                   ((project or {}).get('default_assistant', ''),
+                                    (project or {}).get('default_model', ''),
+                                    (project or {}).get('default_effort', ''))
+                                   if pid else ('', '', ''))):
+            h = self._handler(body)
+            server.BrowserHandler.handle_hypervisor_create_thread(h)
+        return captured, requested
+
+    _CONFIGURED = {'id': 'kc', 'default_assistant': 'codex',
+                   'default_model': 'opus', 'default_effort': 'xhigh'}
+
+    def test_project_defaults_used_when_body_omits_them(self):
+        cap, req = self._run({'message': 'hi', 'persona': 'cto',
+                              'project_id': 'kc'}, project=self._CONFIGURED)
+        self.assertEqual(req['assistant'], 'codex')
+        self.assertEqual(req['model'], 'opus')
+        self.assertEqual(req['effort'], 'xhigh')
+        self.assertEqual(cap['model'], 'opus')
+        self.assertEqual(cap['effort'], 'xhigh')
+
+    def test_explicit_body_values_win_over_the_project(self):
+        cap, req = self._run({'message': 'hi', 'persona': 'cto',
+                              'project_id': 'kc', 'assistant': 'claude',
+                              'model': 'haiku', 'effort': 'low'},
+                             project=self._CONFIGURED)
+        self.assertEqual(req['assistant'], 'claude')
+        self.assertEqual(req['model'], 'haiku')
+        self.assertEqual(req['effort'], 'low')
+        self.assertEqual(cap['assistant'], 'claude')
+
+    def test_unconfigured_project_falls_through_to_the_workspace_default(self):
+        _, req = self._run({'message': 'hi', 'persona': 'cto',
+                            'project_id': 'kc'}, project={'id': 'kc'})
+        self.assertEqual(req['assistant'], 'ante')
+        self.assertEqual(req['model'], '')
+        self.assertEqual(req['effort'], '')
+
+    def test_plain_chat_never_reads_a_project_default(self):
+        # No persona → no project binding → the Chat tab is untouched by #483.
+        _, req = self._run({'message': 'hi'}, project=self._CONFIGURED)
+        self.assertEqual(req['assistant'], 'ante')
+        self.assertEqual(req['model'], '')
+
+    def test_inherited_values_are_stamped_on_the_session(self):
+        # The adapters read model/effort out of the thread's ctx fresh every turn
+        # (#308/#362), so the inherited values only take effect if they are
+        # recorded at creation — not just used to build the launch command.
+        cap, _ = self._run({'message': 'hi', 'persona': 'cto',
+                            'project_id': 'kc'}, project=self._CONFIGURED)
+        self.assertEqual(cap['assistant'], 'codex')
+        self.assertEqual(cap['model'], 'opus')
+        self.assertEqual(cap['effort'], 'xhigh')
+        self.assertEqual(cap['project_id'], 'kc')
+
+
+class DispatchedBuildDefaultsTest(unittest.TestCase):
+    """create_task honours the bound project's assistant config (#483) — this is
+    the path the CTO's own dispatch tool takes, and it sends only project_id."""
+
+    def _create(self, project_defaults, **kwargs):
+        seen = {}
+
+        def fake_command(assistant, auto_approve=False, model='', effort=''):
+            seen.update(assistant=assistant, model=model, effort=effort)
+            return 'true'
+
+        def fake_resolve_assistant(req):
+            seen['requested_assistant'] = req
+            return req or 'claude'
+
+        def fake_resolve_model(assistant, req):
+            seen['requested_model'] = req
+            return req or ''
+
+        def fake_resolve_effort(assistant, req):
+            seen['requested_effort'] = req
+            return req or ''
+
+        with mock.patch.object(server.ProjectsManager, 'defaults_for',
+                               return_value=project_defaults), \
+             mock.patch.object(server.ClaudeTaskManager, 'resolve_assistant',
+                               side_effect=fake_resolve_assistant), \
+             mock.patch.object(server.ClaudeTaskManager, 'resolve_model',
+                               side_effect=fake_resolve_model), \
+             mock.patch.object(server.ClaudeTaskManager, 'resolve_effort',
+                               side_effect=fake_resolve_effort), \
+             mock.patch.object(server.ClaudeTaskManager, 'ensure_tasks_dir'), \
+             mock.patch.object(server.ClaudeTaskManager, '_ensure_claude_trust'), \
+             mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                               return_value={}), \
+             mock.patch.object(server.ClaudeTaskManager, 'at_capacity',
+                               return_value=(False, 0, 12)), \
+             mock.patch.object(server.ClaudeTaskManager, 'assistant_command',
+                               side_effect=fake_command), \
+             mock.patch('os.makedirs'), \
+             mock.patch('builtins.open', mock.mock_open()), \
+             mock.patch('subprocess.run') as run, \
+             mock.patch('threading.Thread'), \
+             mock.patch.object(server.EventBroker, 'publish'):
+            run.return_value = mock.Mock(returncode=0, stderr='')
+            meta = server.ClaudeTaskManager.create_task(
+                'build it', project_id='kc', **kwargs)
+        return seen, meta, run
+
+    def test_dispatch_inherits_the_projects_assistant_config(self):
+        seen, meta, _ = self._create(('codex', 'opus', 'xhigh'))
+        self.assertEqual(seen['requested_assistant'], 'codex')
+        self.assertEqual(seen['requested_model'], 'opus')
+        self.assertEqual(seen['requested_effort'], 'xhigh')
+        self.assertEqual(meta['model'], 'opus')
+        self.assertEqual(meta['effort'], 'xhigh')
+
+    def test_explicit_assistant_beats_the_project_default(self):
+        seen, _, _ = self._create(('codex', 'opus', 'xhigh'),
+                                  assistant='claude', model='haiku',
+                                  effort='low')
+        self.assertEqual(seen['requested_assistant'], 'claude')
+        self.assertEqual(seen['requested_model'], 'haiku')
+        self.assertEqual(seen['requested_effort'], 'low')
+
+    def test_effort_env_reaches_the_tmux_session(self):
+        # Claude Code takes effort as an env var, so it must be exported onto
+        # the new session rather than appended to argv.
+        with mock.patch.object(server.ClaudeTaskManager, 'effort_env',
+                               return_value={'CLAUDE_CODE_EFFORT_LEVEL': 'xhigh'}):
+            _, _, run = self._create(('claude', 'opus', 'xhigh'))
+        argv = run.call_args_list[0][0][0]
+        self.assertIn('CLAUDE_CODE_EFFORT_LEVEL=xhigh', argv)
+
+
 class ListThreadsFilterTest(unittest.TestCase):
     THREADS = [
         {'id': '1', 'persona': 'cto', 'project_id': 'kc'},

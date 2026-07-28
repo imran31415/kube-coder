@@ -337,6 +337,63 @@
 }
 .cto-brief-toggle:hover { color: var(--text); border-color: var(--border-2); }
 
+/* Per-project assistant setup (#483/#362) — a quiet gear in the topbar, not a
+   settings panel bolted onto the masthead. The dot marks a live selection that
+   differs from what the project has stored. */
+.cto-config-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 190px;
+  padding: 5px 9px;
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.cto-config-trigger:hover { color: var(--text); border-color: var(--border-2); }
+.cto-config-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cto-config-trigger.is-dirty::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.cto-config { display: flex; flex-direction: column; gap: 10px; padding: 4px; }
+.cto-config-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+}
+.cto-config-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--text-subtle);
+}
+.cto-config-error { margin: 0; font-size: var(--text-xs); color: var(--danger); }
+.cto-config-save {
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.cto-config-save:hover:not(:disabled) { border-color: var(--accent); }
+.cto-config-save:disabled { opacity: 0.55; cursor: default; }
+
 /* Delta strip — a prompt to ask, not a report. */
 .cto-delta {
   display: flex;
@@ -585,6 +642,11 @@
     display: inline-flex;
     align-items: center;
   }
+  .cto-config-trigger {
+    min-height: 44px;
+  }
+  /* The label would crowd the masthead on a phone — the gear alone carries it. */
+  .cto-config-trigger-text { display: none; }
   .cto-card-menu-btn,
   .cto-delta-close {
     min-width: 44px;

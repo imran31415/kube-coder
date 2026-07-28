@@ -24,6 +24,12 @@ export interface Project {
   memory_namespace: string;
   status: ProjectStatus;
   north_star: string;
+  /** Per-project assistant configuration (#483/#362). '' (or absent, on records
+   *  written before this landed) = inherit the workspace default. New CTO
+   *  threads and builds dispatched for this project run on these. */
+  default_assistant?: string;
+  default_model?: string;
+  default_effort?: string;
   last_seen_at: number | null;
   created_at: number;
   updated_at: number;

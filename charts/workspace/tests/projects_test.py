@@ -159,6 +159,57 @@ class CrudTests(ProjectsManagerBase):
         cfg, _ = PM.update('keep', {'id': 'hijack'})
         self.assertEqual(cfg['id'], 'keep')
 
+    # ── per-project assistant configuration (#483, #362) ──────────────────
+
+    def test_assistant_defaults_start_empty(self):
+        # Empty = "inherit the workspace default", the state every existing
+        # project is already in.
+        cfg, _ = PM.create({'id': 'p', 'workdirs': []})
+        self.assertEqual(cfg['default_assistant'], '')
+        self.assertEqual(cfg['default_model'], '')
+        self.assertEqual(cfg['default_effort'], '')
+        self.assertEqual(PM.defaults_for('p'), ('', '', ''))
+
+    def test_assistant_defaults_round_trip(self):
+        PM.create({'id': 'p', 'workdirs': [],
+                   'default_assistant': 'codex', 'default_model': 'opus',
+                   'default_effort': 'xhigh'})
+        stored = PM.get_project('p')
+        self.assertEqual(stored['default_assistant'], 'codex')
+        self.assertEqual(stored['default_model'], 'opus')
+        self.assertEqual(stored['default_effort'], 'xhigh')
+        self.assertEqual(PM.defaults_for('p'), ('codex', 'opus', 'xhigh'))
+
+    def test_assistant_defaults_are_mutable_via_update(self):
+        # This is the path both PUT /api/projects/{id} and the update_project
+        # MCP tool take, so the CTO can configure itself.
+        PM.create({'id': 'p', 'workdirs': []})
+        cfg, err = PM.update('p', {'default_assistant': 'claude',
+                                   'default_model': 'opus'})
+        self.assertIsNone(err)
+        self.assertEqual(cfg['default_assistant'], 'claude')
+        self.assertEqual(PM.defaults_for('p'), ('claude', 'opus', ''))
+
+    def test_assistant_defaults_are_trimmed_and_type_checked(self):
+        PM.create({'id': 'p', 'workdirs': []})
+        cfg, err = PM.update('p', {'default_model': '  opus  '})
+        self.assertIsNone(err)
+        self.assertEqual(cfg['default_model'], 'opus')
+        _, err = PM.update('p', {'default_assistant': ['claude']})
+        self.assertEqual(err, 'default_assistant must be a string')
+
+    def test_defaults_for_tolerates_unknown_and_legacy_records(self):
+        self.assertEqual(PM.defaults_for('ghost'), ('', '', ''))
+        self.assertEqual(PM.defaults_for(''), ('', '', ''))
+        self.assertEqual(PM.defaults_for(None), ('', '', ''))
+        # A record written before this landed simply has no such keys.
+        PM.create({'id': 'old', 'workdirs': []})
+        raw = PM.get_project('old')
+        for k in ('default_assistant', 'default_model', 'default_effort'):
+            raw.pop(k, None)
+        PM._write(raw)
+        self.assertEqual(PM.defaults_for('old'), ('', '', ''))
+
     def test_delete(self):
         PM.create({'id': 'gone', 'workdirs': []})
         self.assertTrue(PM.delete('gone'))
