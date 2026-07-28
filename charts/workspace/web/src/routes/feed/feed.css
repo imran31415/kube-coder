@@ -31,7 +31,11 @@
   align-items: baseline;
   gap: var(--size-3);
 }
-.feed-masthead { font-size: var(--text-4xl); font-weight: var(--weight-bold); letter-spacing: 0.01em; }
+/* Masthead — the shared `.route-title` treatment (#510), same as CTO and
+   Mission. The Feed shipped its own 20px/700 scale, which read as a different
+   product one tab over; nothing is set here beyond the line-height that keeps
+   it on the subtitle's baseline. */
+.feed-masthead { line-height: 1.2; }
 .feed-sub { font-size: var(--text-sm); color: var(--text-subtle); }
 
 .feed-filters {
@@ -138,6 +142,36 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .feed-item, .feed-new-pill { animation: none; }
+}
+
+/* First-load skeletons (#510) — the same hairline shimmer the CTO rail and
+   brief use, never a spinner. Shaped like a real item so the stream settles
+   rather than pops. */
+.feed-item-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  animation: none;
+  pointer-events: none;
+}
+.feed-skel {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  animation: feed-shimmer 1.8s ease-in-out infinite;
+}
+.feed-skel-meta { width: 34%; height: 9px; }
+.feed-skel-title { width: 68%; height: 13px; }
+.feed-skel-body { width: 88%; height: 10px; }
+.feed-item-skeleton:nth-child(2) .feed-skel { animation-delay: 120ms; }
+.feed-item-skeleton:nth-child(3) .feed-skel { animation-delay: 240ms; }
+.feed-item-skeleton:nth-child(4) .feed-skel { animation-delay: 360ms; }
+@keyframes feed-shimmer {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.75; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .feed-skel { animation: none; opacity: 0.5; }
 }
 
 /* Kind rule — the only colour on the card. */

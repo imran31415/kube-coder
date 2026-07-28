@@ -219,6 +219,8 @@ export function _resetFeedForTest(): void {
   feedKindFilter.value = 'all';
   feedProjectFilter.value = null;
   feedLastFetch.value = null;
+  feedLoading.value = false;
+  feedError.value = null;
   ctoHandoff.value = null;
   stopFeedPolling();
 }

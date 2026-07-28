@@ -450,9 +450,15 @@ function SlashMenu({
 
 /** `hideEmptyState` suppresses the built-in new-chat hero + suggestion chips so
  *  an embedding surface (the AI CTO page, #466) can render its own welcome +
- *  starter chips above the composer without a duplicate hero. Default keeps the
- *  Hypervisor tab unchanged. */
-export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = {}) {
+ *  starter chips instead, without a duplicate hero. `welcome` is that surface's
+ *  hero: it renders *into* the transcript's centring slot (#500) so opener →
+ *  chips → composer read as one vertically-centred unit rather than the opener
+ *  pinning to the top of the column with a dead gap above the composer.
+ *  Defaults keep the Hypervisor tab unchanged. */
+export function Chat({
+  hideEmptyState = false,
+  welcome,
+}: { hideEmptyState?: boolean; welcome?: ComponentChildren } = {}) {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Inline feedback when the user tries to attach something we can't send
@@ -898,9 +904,10 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
 
       <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
         {empty && hideEmptyState ? (
-          // Embedding surface (CTO page) renders its own welcome — show nothing
-          // here so the two heroes don't stack.
-          <div class="hv-welcome-host hv-welcome-blank" />
+          // Embedding surface (CTO page) supplies its own hero — host it in the
+          // centring slot so it sits mid-column, right above the composer. With
+          // no hero passed the slot stays blank (the two heroes never stack).
+          <div class="hv-welcome-host hv-welcome-blank">{welcome}</div>
         ) : empty ? (
           <div class="hv-welcome-host">
             <EmptyState

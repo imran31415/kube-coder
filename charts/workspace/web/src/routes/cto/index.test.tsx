@@ -5,7 +5,7 @@ import { CTO_RAIL_COLLAPSED_KEY, CTO_BRIEF_COLLAPSED_KEY } from './railSplit';
 import { _resetProjectsForTest } from '../../store/projects';
 import { closeThread, sending, setChatContext } from '../../store/hypervisor';
 import { justOnboarded } from '../../store/onboarding';
-import { claudeReady } from '../../store/claude';
+import { claudeReady, claudeProbed } from '../../store/claude';
 
 // The route mounts several async loaders (config, threads, discover, projects).
 // Feed them all benign JSON so nothing rejects; we only assert the deterministic
@@ -17,14 +17,22 @@ function payloadFor(url: string): unknown {
   if (url.includes('/api/hypervisor/threads')) return { threads: [] };
   if (url.includes('/api/projects/_discover')) return { candidates: [], registered: [] };
   if (url.includes('/api/projects')) return { projects: [] };
+  // Claude readiness (#494/#500): connected by default, so the welcome path
+  // under test is the chips one. The keyless-gate test flips this.
+  if (url.includes('/api/subscriptions')) return { subscriptions: {}, claude_ready: claudeReadyResponse };
   return {};
 }
+
+/** What the readiness probe reports for the test in flight. */
+let claudeReadyResponse = true;
 
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   _resetProjectsForTest();
   localStorage.clear();
+  claudeProbed.value = false;
+  claudeReadyResponse = true;
   globalThis.fetch = vi.fn(async (url: string) => ({
     ok: true, status: 200,
     headers: { get: () => 'application/json' },
@@ -39,6 +47,7 @@ afterEach(() => {
   _resetProjectsForTest();
   justOnboarded.value = false;
   claudeReady.value = null;
+  claudeProbed.value = false;
 });
 
 describe('CtoRoute', () => {
@@ -63,6 +72,44 @@ describe('CtoRoute', () => {
     expect(screen.queryByText('What should I focus on?')).toBeNull();
     // The one-shot flag is consumed on mount so a later visit is normal.
     expect(justOnboarded.value).toBe(false);
+  });
+});
+
+// ── First-win hero composition + keyless chip-flash (#500) ───────────────────
+describe('CtoRoute first-win hero (#500)', () => {
+  it('composes the welcome into the transcript centring slot, not above the chat', () => {
+    const { container } = render(<CtoRoute />);
+    // The hero lives inside the transcript's centring host, so opener → chips →
+    // composer read as one vertically-centred unit.
+    expect(container.querySelector('.hv-welcome-host .cto-welcome')).toBeTruthy();
+    // …and no longer as a sibling pinned to the top of the chat column.
+    expect(container.querySelector('.cto-main > .cto-welcome')).toBeNull();
+  });
+
+  it('hosts the keyless connect gate in the same slot', async () => {
+    claudeReadyResponse = false;
+    const { container } = render(<CtoRoute />);
+    await waitFor(() =>
+      expect(container.querySelector('.hv-welcome-host .cto-connect')).toBeTruthy(),
+    );
+    expect(container.querySelector('.cto-chip')).toBeNull();
+  });
+
+  it('holds the chips inert until the readiness probe settles, then releases them', async () => {
+    render(<CtoRoute />);
+    // Probe still in flight: the chips render (no layout jump) but can't fire a
+    // build that would die keyless before the connect gate swaps in.
+    expect((screen.getByText('What should I focus on?') as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() =>
+      expect((screen.getByText('What should I focus on?') as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+  });
+
+  it('wears the shared route masthead so CTO/Feed/Mission match (#510)', () => {
+    render(<CtoRoute />);
+    expect(screen.getByText('AI CTO').classList.contains('route-title')).toBe(true);
   });
 });
 

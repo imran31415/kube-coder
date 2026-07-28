@@ -309,12 +309,12 @@
   min-height: var(--topbar-h);
 }
 .cto-topbar-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.cto-masthead {
-  font-size: var(--text-md);
-  font-weight: var(--weight-bold);
-  letter-spacing: 0.02em;
-  color: var(--text);
-}
+/* Masthead — the shared `.route-title` treatment (#510). CTO, Feed and Mission
+   are one family and used to ship three different title scales; they now all
+   wear the app-wide masthead so moving between them feels like one system.
+   Only the line-height is tightened here, for the compact topbar that also
+   carries the brand subline. */
+.cto-masthead { line-height: 1.2; }
 .cto-brand {
   font-size: var(--text-xs);
   color: var(--text-subtle);
@@ -368,23 +368,37 @@
 @keyframes cto-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .cto-delta { animation: none; } }
 
-/* Deterministic welcome + starter chips (no LLM until tapped). */
+/* Deterministic welcome + starter chips (no LLM until tapped). Rendered into
+   the transcript's `.hv-welcome-host` centring slot (#500) rather than above
+   <Chat>, so the opener, the chips and the composer read as one centred hero
+   instead of the ask pinning to the top of the column with a dead vertical gap
+   above where the user acts. Centred, like every other empty state here. */
 .cto-welcome {
-  padding: var(--size-4) var(--size-4) var(--size-2);
   display: flex;
   flex-direction: column;
-  gap: var(--size-3);
+  align-items: center;
+  gap: var(--size-4);
+  padding: var(--size-3) var(--size-2);
+  text-align: center;
 }
 .cto-welcome-lead {
-  font-size: var(--text-xl);
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-medium);
   color: var(--text);
-  max-width: 52ch;
-  line-height: 1.5;
+  max-width: 40ch;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
 }
 /* First-win connect gate (#494) — same column as the welcome, capped so the
    two options don't sprawl on a wide desktop pane. */
-.cto-connect { max-width: 460px; }
-.cto-chips { display: flex; flex-wrap: wrap; gap: var(--size-2); }
+.cto-connect { max-width: 460px; width: 100%; text-align: left; }
+.cto-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--size-2);
+}
 .cto-chip {
   font-size: var(--text-md);
   padding: 7px 12px;

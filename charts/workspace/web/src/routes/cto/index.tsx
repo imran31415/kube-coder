@@ -32,7 +32,7 @@ import {
 } from '../../store/projects';
 import { ctoHandoff } from '../../store/feed';
 import { justOnboarded } from '../../store/onboarding';
-import { claudeReady, refreshClaudeReady } from '../../store/claude';
+import { claudeReady, claudeProbed, refreshClaudeReady } from '../../store/claude';
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
 import { BriefPanel, BriefTab } from './BriefPanel';
@@ -266,6 +266,48 @@ export function CtoRoute() {
 
   const brandLine = 'Engineering judgment for your whole workspace';
 
+  // Keyless chip-flash (#500): the connect gate keys off `claudeReady === false`,
+  // but the signal starts `null`, so a keyless user who deep-links to /cto used
+  // to see live build chips for the length of the probe — tapping one in that
+  // window fired a build that dies on a raw provider error. The chips stay inert
+  // until the first probe *settles*; `claudeProbed` (not `claudeReady !== null`)
+  // is the condition so a failed probe, which deliberately leaves the value
+  // unknown, releases them rather than disabling them forever.
+  const chipsPending = !claudeProbed.value;
+
+  const welcome =
+    claudeReady.value === false ? (
+      <div class="cto-welcome">
+        <p class="cto-welcome-lead">
+          Connect Claude and I'll start building. Sign in with your Claude
+          subscription, or paste an API key.
+        </p>
+        <div class="cto-connect">
+          <ClaudeCredentialSetup
+            ready={claudeReady.value}
+            onConnected={() => void refreshClaudeReady()}
+          />
+        </div>
+      </div>
+    ) : (
+      <div class="cto-welcome">
+        <p class="cto-welcome-lead">{welcomeLead}</p>
+        <div class="cto-chips" aria-busy={chipsPending}>
+          {chips.map((c) => (
+            <button
+              key={c}
+              type="button"
+              class="cto-chip"
+              disabled={sending.value || chipsPending}
+              onClick={() => chip(c)}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+
   // Deep-linked to /cto on a deployment where the feature is off (#467).
   if (disabled) {
     return (
@@ -351,7 +393,7 @@ export function CtoRoute() {
       <section class="cto-main">
         <header class="cto-topbar">
           <div class="cto-topbar-title">
-            <span class="cto-masthead">AI CTO</span>
+            <span class="route-title cto-masthead">AI CTO</span>
             <span class="cto-brand">{projectName ? projectName : brandLine}</span>
           </div>
           <div class="cto-topbar-meta">
@@ -397,41 +439,12 @@ export function CtoRoute() {
           </div>
         )}
 
-        {!active && claudeReady.value === false ? (
-          <div class="cto-welcome">
-            <p class="cto-welcome-lead">
-              Connect Claude and I'll start building. Sign in with your Claude
-              subscription, or paste an API key.
-            </p>
-            <div class="cto-connect">
-              <ClaudeCredentialSetup
-                ready={claudeReady.value}
-                onConnected={() => void refreshClaudeReady()}
-              />
-            </div>
-          </div>
-        ) : (
-          !active && (
-            <div class="cto-welcome">
-              <p class="cto-welcome-lead">{welcomeLead}</p>
-              <div class="cto-chips">
-                {chips.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    class="cto-chip"
-                    disabled={sending.value}
-                    onClick={() => chip(c)}
-                  >
-                    {c}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )
-        )}
-
-        <Chat hideEmptyState />
+        {/* The welcome is handed to <Chat> rather than rendered above it, so it
+            lands in the transcript's centring slot (#500) — opener, chips and
+            composer then read as one hero instead of the opener pinning to the
+            top with a dead gap above the composer. Chat renders it only while
+            the thread is empty, which is also the old `!active` condition. */}
+        <Chat hideEmptyState welcome={welcome} />
       </section>
 
       {!narrow &&
