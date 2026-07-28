@@ -218,6 +218,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Build Docker image for scanning
+        id: scan-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -226,6 +227,15 @@ jobs:
           push: false
           load: true
           tags: kube-coder-ci:latest
+          # Reuse the layers docker-build (this job's `needs:`) just pushed to
+          # the GHA cache — same default scope, so every layer is a hit and the
+          # image is rebuilt in seconds instead of ~2min. It also stops this
+          # step from re-fetching every third-party install URL on each run,
+          # which is how a transient upstream outage (deb.nodesource.com 403,
+          # 2026-07-27) could fail Security Scanning while the identical
+          # docker-build job stayed green on cache. Read-only: docker-build
+          # owns `cache-to`, so the two jobs can't race on writes.
+          cache-from: type=gha
           target: runtime
 
       - name: Docker Image Vulnerability Scanning
@@ -258,10 +268,13 @@ jobs:
 
       - name: Generate SBOM (Syft)
         # SPDX-JSON software bill of materials for the built image, uploaded as
-        # a CI artifact. Runs regardless of the scan result so the SBOM is
-        # always available for triage.
+        # a CI artifact. Runs regardless of the SCAN result so the SBOM is always
+        # available for triage — but not when the image itself never got built:
+        # Syft then can't resolve `kube-coder-ci:latest`, and its "could not
+        # determine source" provider dump (docker/podman/containerd/registry/…)
+        # buries the real failure a few steps up.
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        if: success() || failure()
+        if: (success() || failure()) && steps.scan-image.outcome == 'success'
         with:
           image: kube-coder-ci:latest
           format: spdx-json
