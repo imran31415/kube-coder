@@ -12,12 +12,15 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
 
 import hypervisor_session as hv  # noqa: E402
 import server  # noqa: E402
+from envassert import assert_env_lacks  # noqa: E402
 
 CTM = server.ClaudeTaskManager
 
@@ -143,8 +146,14 @@ class AdapterInjectionTests(unittest.TestCase):
         self.assertEqual(spec['env'].get('CLAUDE_CODE_EFFORT_LEVEL'), 'xhigh')
 
     def test_claude_omits_env_when_unset(self):
-        spec = hv._adapter_for('claude').build({'workdir': '/w'}, 'hi', True)
-        self.assertNotIn('CLAUDE_CODE_EFFORT_LEVEL', spec['env'])
+        # The adapter copies os.environ, so this must assert the adapter does
+        # not ADD the var — not that the developer's shell lacks it. Without
+        # isolation this fails for anyone running inside a Claude session
+        # (which exports it), and the failure used to dump every secret (#562).
+        with mock.patch.dict(os.environ):
+            os.environ.pop('CLAUDE_CODE_EFFORT_LEVEL', None)
+            spec = hv._adapter_for('claude').build({'workdir': '/w'}, 'hi', True)
+        assert_env_lacks(self, spec['env'], 'CLAUDE_CODE_EFFORT_LEVEL')
 
     def test_codex_adds_config_flag(self):
         opts = hv._adapter_for('codex')._opts({'effort': 'high'})
@@ -161,9 +170,11 @@ class AdapterInjectionTests(unittest.TestCase):
         self.assertEqual(spec['env'].get('KC_EFFORT'), 'high')
 
     def test_fallback_knobless_assistant_injects_nothing(self):
-        spec = hv._adapter_for('librefang').build(
-            {'assistant': 'librefang', 'effort': 'max', 'cli_cmd': 'x'}, 'hi', True)
-        self.assertNotIn('KC_EFFORT', spec['env'])
+        with mock.patch.dict(os.environ):
+            os.environ.pop('KC_EFFORT', None)
+            spec = hv._adapter_for('librefang').build(
+                {'assistant': 'librefang', 'effort': 'max', 'cli_cmd': 'x'}, 'hi', True)
+        assert_env_lacks(self, spec['env'], 'KC_EFFORT')
 
 
 class PerThreadPersistenceTests(unittest.TestCase):
