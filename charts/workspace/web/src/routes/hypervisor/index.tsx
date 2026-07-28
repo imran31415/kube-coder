@@ -15,11 +15,16 @@ import {
   activeStatus,
   selectedAssistant,
   selectedModel,
+  selectedEffort,
   selectedWorkdir,
   assistantModels,
+  assistantEfforts,
+  assistantEffortDefault,
+  assistantEffortCap,
   assistantNeedsDisclosure,
   setSelectedAssistant,
   setActiveThreadModel,
+  setActiveThreadEffort,
   initHypervisor,
   openThread,
   newChat,
@@ -168,6 +173,19 @@ export function HypervisorRoute() {
   const currentModel = active
     ? activeThread?.model || models[0] || ''
     : selectedModel.value || models[0] || '';
+
+  // Effort selector (#362), twin of the model switcher. Same 5-stop list for
+  // every assistant that has a knob (empty → hidden); a pick above the
+  // assistant's native cap is honestly shown as "→ <cap>".
+  const efforts = assistantEfforts(effectiveAssistant);
+  const effortDefault = assistantEffortDefault(effectiveAssistant);
+  const currentEffort = active
+    ? activeThread?.effort || effortDefault || ''
+    : selectedEffort.value || effortDefault || '';
+  const effortCap = assistantEffortCap(effectiveAssistant);
+  const effortClamped =
+    !!effortCap &&
+    efforts.indexOf(currentEffort) > efforts.indexOf(effortCap);
 
   // Split into what you're working with now vs. older chats. Derived purely
   // from status + updated_at (see chatTabs.ts) — no server change needed.
@@ -591,6 +609,42 @@ export function HypervisorRoute() {
                     </option>
                   ))}
                 </select>
+              </label>
+            )}
+            {/* Reasoning-effort selector (#362). Same behaviour as the model
+                picker: sets the new-thread default with no thread open, switches
+                the open thread live (next turn). Shown only when the effective
+                assistant has an effort knob; a clamped pick shows "→ <cap>". */}
+            {efforts.length > 0 && (
+              <label
+                class="hv-model-picker"
+                title={
+                  effortClamped
+                    ? `Reasoning effort: ${currentEffort} — this assistant runs ${effortCap}`
+                    : `Reasoning effort: ${currentEffort}`
+                }
+              >
+                <span class="hv-model-label">Effort</span>
+                <select
+                  class="hv-model-select"
+                  value={currentEffort}
+                  disabled={status === 'running'}
+                  onChange={(e) =>
+                    void setActiveThreadEffort((e.target as HTMLSelectElement).value)
+                  }
+                  aria-label="Reasoning effort"
+                >
+                  {efforts.map((lv) => (
+                    <option key={lv} value={lv}>
+                      {lv}
+                    </option>
+                  ))}
+                </select>
+                {effortClamped && (
+                  <span class="hv-effort-hint mono" aria-label={`Runs ${effortCap}`}>
+                    → {effortCap}
+                  </span>
+                )}
               </label>
             )}
             {active && status && (

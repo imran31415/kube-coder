@@ -569,3 +569,49 @@ tests:
       - equal:
           path: spec.template.spec.containers[2].securityContext.runAsUser
           value: 0
+
+  # ── Reasoning-effort defaults (#362) ───────────────────────────────────────
+
+  - it: emits KC_*_EFFORT env only for assistants configured with a default effort
+    template: templates/deployment.yaml
+    set:
+      claude.effort: xhigh
+      assistant.codex.effort: high
+      assistant.fallback.effort: max
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_CLAUDE_EFFORT
+            value: "xhigh"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_CODEX_EFFORT
+            value: "high"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_HARNESS_EFFORT
+            value: "max"
+
+  - it: omits KC_*_EFFORT env when no default effort is configured
+    template: templates/deployment.yaml
+    asserts:
+      # any:true = subset match on each array element, so a name-only content
+      # actually detects the var regardless of its value.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_CLAUDE_EFFORT
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_CODEX_EFFORT
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_HARNESS_EFFORT

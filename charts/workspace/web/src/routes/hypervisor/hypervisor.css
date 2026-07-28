@@ -497,6 +497,13 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+/* Effort clamp hint (#362): shown when the picked level exceeds the assistant's
+   native ceiling, e.g. "→ xhigh" beside a `max` pick. */
+.hv-effort-hint {
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
 .hv-model-select {
   max-width: 130px;
   padding: 4px 7px;

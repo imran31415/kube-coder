@@ -1621,6 +1621,12 @@ class ClaudeTaskManager:
         # is the default.
         for a in out:
             a['models'] = ClaudeTaskManager.available_models(a['id'])
+            # Reasoning-effort axis (#362): the 5-stop list (empty → SPA hides
+            # the selector), the assistant's default, and its native ceiling so
+            # the UI can show an honest "runs <cap>" hint when a pick is clamped.
+            a['efforts'] = ClaudeTaskManager.available_efforts(a['id'])
+            a['effort'] = ClaudeTaskManager.default_effort(a['id'])
+            a['effortCap'] = ClaudeTaskManager.effort_cap(a['id'])
         return ClaudeTaskManager._apply_default_flag(out)
 
     @staticmethod
@@ -1727,6 +1733,104 @@ class ClaudeTaskManager:
         if requested and requested in models:
             return requested
         return models[0]
+
+    # ── Reasoning effort (#362) ──────────────────────────────────────────────
+    # A single canonical 5-stop axis surfaced identically for every assistant
+    # (stable labels), mapped per-assistant to each CLI's native knob. The
+    # concept replaces the deprecated raw thinking-token budget: current models
+    # expose `effort`, not a fixed token count.
+    _EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
+    _DEFAULT_EFFORT = 'high'
+
+    # assistant id → its native effort support, expressed as the TOP canonical
+    # level the assistant actually honours (its native set is [low..cap]). A pick
+    # above the cap clamps DOWN to it (resolve_native_effort). Assistants absent
+    # here have no usable per-thread effort knob and the selector stays hidden:
+    #   * opencode-*  — reasoningEffort is opencode.json-only (one shared file,
+    #                   racy per-turn) AND a silent no-op for Anthropic models
+    #                   over OpenRouter; no clean per-invocation override exists.
+    #   * ante        — no documented effort/reasoning surface (~/.ante/settings.json
+    #                   only carries mcp_servers).
+    #   * librefang / antigravity — no effort concept.
+    # Claude Code + Codex top out at native `xhigh` (raw APIs go to `max`, but the
+    # CLIs cap at xhigh), so `max` clamps to `xhigh`. kc-harness talks an
+    # OpenAI-compatible endpoint whose `reasoning_effort` tops at `high`, so both
+    # `xhigh` and `max` clamp to `high`.
+    _EFFORT_CAP = {
+        'claude': 'xhigh',
+        'codex': 'xhigh',
+        'kc-harness': 'high',
+    }
+
+    # assistant id → env var overriding its DEFAULT effort (helm
+    # assistant.<name>.effort → KC_*_EFFORT), mirroring _MODEL_LIST_ENV/KC_*_MODEL.
+    _EFFORT_DEFAULT_ENV = {
+        'claude': 'KC_CLAUDE_EFFORT',
+        'codex': 'KC_CODEX_EFFORT',
+        'kc-harness': 'KC_HARNESS_EFFORT',
+    }
+
+    @staticmethod
+    def _effort_supported(assistant):
+        return assistant in ClaudeTaskManager._EFFORT_CAP
+
+    @staticmethod
+    def effort_cap(assistant):
+        """Highest canonical level this assistant honours natively ('' when it
+        has no effort knob). Drives the SPA's 'runs <cap>' hint when a pick is
+        clamped."""
+        return ClaudeTaskManager._EFFORT_CAP.get(assistant, '')
+
+    @staticmethod
+    def available_efforts(assistant):
+        """Canonical levels to show for `assistant` — always the full 5-stop axis
+        (stable labels) when the assistant has ANY effort knob, else [] so the
+        SPA hides the selector (same pattern as assistants with no model list)."""
+        if not ClaudeTaskManager._effort_supported(assistant):
+            return []
+        return list(ClaudeTaskManager._EFFORT_LEVELS)
+
+    @staticmethod
+    def default_effort(assistant):
+        """The assistant's default canonical effort: an operator override
+        (KC_*_EFFORT, validated) else `high`. '' when the assistant has no knob."""
+        if not ClaudeTaskManager._effort_supported(assistant):
+            return ''
+        env_key = ClaudeTaskManager._EFFORT_DEFAULT_ENV.get(assistant)
+        override = (os.environ.get(env_key) or '').strip().lower() if env_key else ''
+        if override in ClaudeTaskManager._EFFORT_LEVELS:
+            return override
+        return ClaudeTaskManager._DEFAULT_EFFORT
+
+    @staticmethod
+    def resolve_effort(assistant, requested):
+        """Validate a requested CANONICAL effort against the 5-stop axis; fall
+        back to the assistant's default. Returns '' when the assistant has no
+        effort knob (selector hidden; webhooks/CLI callers are free-form so we
+        defend the boundary). Note this returns the canonical level as picked —
+        clamping to the assistant's native ceiling happens at injection time in
+        resolve_native_effort so the UI can still show the honest effective level."""
+        if not ClaudeTaskManager._effort_supported(assistant):
+            return ''
+        req = (requested or '').strip().lower()
+        if req in ClaudeTaskManager._EFFORT_LEVELS:
+            return req
+        return ClaudeTaskManager.default_effort(assistant)
+
+    @staticmethod
+    def resolve_native_effort(assistant, requested):
+        """The concrete level to hand the assistant's CLI: the resolved canonical
+        pick, clamped DOWN to the assistant's native ceiling (_EFFORT_CAP). E.g.
+        `max`→`xhigh` for claude/codex, `xhigh`/`max`→`high` for kc-harness.
+        Returns '' when the assistant has no effort knob (nothing injected)."""
+        level = ClaudeTaskManager.resolve_effort(assistant, requested)
+        if not level:
+            return ''
+        cap = ClaudeTaskManager._EFFORT_CAP.get(assistant, '')
+        levels = ClaudeTaskManager._EFFORT_LEVELS
+        if cap and levels.index(level) > levels.index(cap):
+            return cap
+        return level
 
     @staticmethod
     def resolve_assistant(requested):
@@ -8548,6 +8652,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Per-thread model choice (#308) — validated against the assistant's
         # allow-list; '' when the assistant offers no choice (adapter default).
         model = ClaudeTaskManager.resolve_model(assistant, data.get('model'))
+        # Per-thread reasoning effort (#362) — validated against the canonical
+        # 5-stop axis; '' when the assistant has no effort knob (selector hidden).
+        effort = ClaudeTaskManager.resolve_effort(assistant, data.get('effort'))
         # AI CTO persona (#465): a 'cto' thread swaps in CTO_PREAMBLE + the
         # project's markdown brief (injected on turn 1 via the adapter's
         # preamble path) and binds a project_id. Any other/absent persona is a
@@ -8596,7 +8703,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         try:
             session = HypervisorSession.create(
                 assistant=assistant, workdir=workdir, cli_cmd=cli_cmd,
-                preamble=preamble, title=message, model=model,
+                preamble=preamble, title=message, model=model, effort=effort,
                 persona=persona, project_id=project_id)
         except Exception as e:
             self.send_json({'error': f'failed to start chat: {e}'}, 500)
@@ -8754,6 +8861,32 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         model = ClaudeTaskManager.resolve_model(
             meta.get('assistant') or '', data.get('model'))
         summary = session.set_model(model)
+        if summary is None:
+            self.send_json({'error': 'not found'}, 404)
+            return
+        self.send_json({'thread': summary})
+
+    def handle_hypervisor_set_effort(self, thread_id):
+        """Switch a live thread's reasoning effort (#362). Takes effect on the
+        next turn — each adapter reads ctx['effort'] fresh at build and maps it
+        to its CLI's native knob. Validated against the thread's own assistant
+        (canonical 5-stop axis); an assistant with no effort knob resolves to ''
+        and the field is simply cleared."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        meta = session.read_meta() or {}
+        effort = ClaudeTaskManager.resolve_effort(
+            meta.get('assistant') or '', data.get('effort'))
+        summary = session.set_effort(effort)
         if summary is None:
             self.send_json({'error': 'not found'}, 404)
             return
@@ -12400,6 +12533,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/model$', path)
                 if m:
                     self.handle_hypervisor_set_model(m.group(1))
+                    return
+                # /api/hypervisor/threads/{id}/effort — switch reasoning effort (#362)
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/effort$', path)
+                if m:
+                    self.handle_hypervisor_set_effort(m.group(1))
                     return
                 # /api/skills/{name}/sync — cross-harness install (PR2).
                 # Stricter name charset than the GET route: only the

@@ -216,6 +216,28 @@ def _expand_choices(partial: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ───────────────────────────────────────────────────────────────────────────
 
 
+# ── Reasoning effort (#362) ─────────────────────────────────────────────────
+# Canonical 5-stop axis, ascending. Each assistant honours up to a native
+# ceiling; a higher pick clamps DOWN to that ceiling. Assistants absent from
+# EFFORT_CAP have no usable per-thread effort knob (nothing is injected).
+# NB: this cap table MUST mirror server.ClaudeTaskManager._EFFORT_CAP — a unit
+# test asserts the two stay in lockstep (they live in separate modules because
+# server imports this one, not vice-versa).
+EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
+EFFORT_CAP = {'claude': 'xhigh', 'codex': 'xhigh', 'kc-harness': 'high'}
+
+
+def native_effort(assistant: str, canonical: str) -> str:
+    """Map a per-thread canonical effort to the concrete level to hand
+    `assistant`'s CLI, clamped to its native ceiling. Returns '' when the
+    assistant has no knob or the level is unset/unknown (inject nothing)."""
+    lvl = (canonical or '').strip().lower()
+    cap = EFFORT_CAP.get(assistant, '')
+    if not cap or lvl not in EFFORT_LEVELS:
+        return ''
+    return cap if EFFORT_LEVELS.index(lvl) > EFFORT_LEVELS.index(cap) else lvl
+
+
 class Adapter:
     kind = 'base'
 
@@ -507,6 +529,13 @@ class ClaudeAdapter(Adapter):
         env = {k: v for k, v in os.environ.items()
                if k not in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')}
         env['HOME'] = WORKSPACE_HOME
+        # Reasoning effort (#362): the env var is the cleanest delivery — no argv
+        # change, and it wins over --effort/settings.json. Read fresh each turn so
+        # a mid-session switch takes effect. Claude Code tops at xhigh, so `max`
+        # arrives here already clamped by native_effort.
+        eff = native_effort('claude', ctx.get('effort'))
+        if eff:
+            env['CLAUDE_CODE_EFFORT_LEVEL'] = eff
         return {'argv': argv, 'cwd': ctx.get('workdir') or WORKSPACE_HOME, 'env': env}
 
     def parse(self, ctx, line):
@@ -598,6 +627,13 @@ class FallbackAdapter(Adapter):
         env = dict(os.environ)
         env.update({'TERM': 'dumb', 'NO_COLOR': '1', 'CI': '1',
                     'HOME': WORKSPACE_HOME})
+        # Reasoning effort (#362): kc-harness talks an OpenAI-compatible endpoint,
+        # so harness.py forwards KC_EFFORT as the request's `reasoning_effort`.
+        # Gated on the assistant — the fallback adapter also serves knob-less CLIs
+        # (librefang), which get nothing. native_effort clamps xhigh/max → high.
+        eff = native_effort(ctx.get('assistant', ''), ctx.get('effort'))
+        if eff:
+            env['KC_EFFORT'] = eff
         return {'argv': ['bash', '-lc', cli_cmd],
                 'cwd': ctx.get('workdir') or WORKSPACE_HOME,
                 'env': env, 'stdin': stdin + '\n', 'timeout': FALLBACK_TURN_TIMEOUT,
@@ -865,6 +901,12 @@ class CodexAdapter(_StructuredCliAdapter):
         model = (ctx.get('model') or os.environ.get('KC_CODEX_MODEL', '')).strip()
         if model:
             opts += ['--model', model]
+        # Reasoning effort (#362): codex takes it as a `-c` config override. The
+        # value is a fixed enum (low/medium/high/xhigh — `max` clamps to xhigh),
+        # so it's injection-safe. Read fresh each turn for mid-session switching.
+        eff = native_effort('codex', ctx.get('effort'))
+        if eff:
+            opts += ['-c', f'model_reasoning_effort="{eff}"']
         return opts
 
     def build(self, ctx, text, first):
@@ -1488,7 +1530,7 @@ class HypervisorSession:
     def create(cls, assistant: str, workdir: str, cli_cmd: str,
                preamble: str = '', title: str = '',
                model: str = '', persona: str = '',
-               project_id: str = '') -> 'HypervisorSession':
+               project_id: str = '', effort: str = '') -> 'HypervisorSession':
         os.makedirs(HYPERVISOR_DIR, exist_ok=True)
         thread_id = f'{int(time.time())}-{uuid.uuid4().hex[:8]}'
         self = cls(thread_id)
@@ -1517,6 +1559,9 @@ class HypervisorSession:
                 'cli_cmd': cli_cmd,
                 'preamble': preamble,
                 'model': model or '',
+                # Per-thread reasoning effort (#362), canonical level. Read fresh
+                # each turn by the adapter and mapped to its CLI's native knob.
+                'effort': effort or '',
             },
         }
         self._write_meta(meta)
@@ -1733,6 +1778,20 @@ class HypervisorSession:
         self._write_meta(meta, touch=False)
         return self.summary(meta)
 
+    def set_effort(self, effort: str) -> Optional[Dict[str, Any]]:
+        """Switch the thread's reasoning effort (#362), twin of set_model. Stored
+        in the adapter ctx so the next turn's build() reads it; a running turn
+        already spawned keeps its effort. Left untouched (updated_at not bumped)
+        so a mid-session effort tweak doesn't reorder the chat list. Returns the
+        updated summary, or None if the thread is gone."""
+        meta = self.read_meta()
+        if meta is None:
+            return None
+        ctx = meta.setdefault('adapter', {})
+        ctx['effort'] = (effort or '').strip()
+        self._write_meta(meta, touch=False)
+        return self.summary(meta)
+
     def summary(self, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         m = meta or self.read_meta() or {}
         return {
@@ -1742,6 +1801,9 @@ class HypervisorSession:
             # The per-thread model when the adapter honours one ('' otherwise),
             # so the switcher reflects a reopened thread's choice (#308).
             'model': (m.get('adapter') or {}).get('model') or '',
+            # Per-thread reasoning effort (#362), canonical level ('' when the
+            # assistant has no knob) — so a reopened thread reflects its choice.
+            'effort': (m.get('adapter') or {}).get('effort') or '',
             'status': self.status(),
             'created_at': m.get('created_at'),
             'updated_at': m.get('updated_at'),

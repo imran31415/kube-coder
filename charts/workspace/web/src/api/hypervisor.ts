@@ -17,6 +17,14 @@ export interface HypervisorAssistant {
   /** Selectable models for the in-chat model switcher (#308), default first.
    *  Empty/absent → the assistant offers no model choice (switcher hidden). */
   models?: string[];
+  /** Reasoning-effort axis (#362): the canonical 5-stop levels to show
+   *  (low/medium/high/xhigh/max). Empty/absent → no effort knob (selector
+   *  hidden). `effort` is the default level; `effortCap` is the highest level
+   *  the assistant honours natively — a pick above it is clamped, so the UI
+   *  can show an honest "runs <cap>" hint. */
+  efforts?: string[];
+  effort?: string;
+  effortCap?: string;
   /** Zero-cost provider (e.g. opencode-zen, #395) — drives the "free" marker. */
   free?: boolean;
   /** Provider may train on submitted data (Zen free models, #395) — drives the
@@ -55,6 +63,9 @@ export interface HypervisorThread {
   // The thread's selected model when its assistant offers a choice (#308);
   // '' when none. Reflected by the in-chat switcher when the thread is open.
   model?: string;
+  // The thread's reasoning effort when its assistant offers one (#362); '' when
+  // none. Reflected by the in-chat effort selector when the thread is open.
+  effort?: string;
   status: ThreadStatus;
   created_at: number | null;
   updated_at: number | null;
@@ -161,6 +172,8 @@ export const createThread = (opts: {
   assistant?: string;
   workdir?: string;
   model?: string;
+  // Reasoning effort (#362): canonical level, applied from turn 1.
+  effort?: string;
   // AI CTO (#465): persona 'cto' + the bound project id.
   persona?: string;
   project_id?: string;
@@ -197,6 +210,14 @@ export const setThreadModel = (id: string, model: string) =>
   apiPost<{ thread: HypervisorThread }>(
     `/api/hypervisor/threads/${encodeURIComponent(id)}/model`,
     { model },
+  ).then((r) => r.thread);
+
+/** Switch a live thread's reasoning effort (#362). Takes effect on the next
+ *  turn (each adapter reads it fresh at build). */
+export const setThreadEffort = (id: string, effort: string) =>
+  apiPost<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/effort`,
+    { effort },
   ).then((r) => r.thread);
 
 export const stopThread = (id: string) =>

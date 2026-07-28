@@ -426,15 +426,29 @@ def parse_xml_tool_calls(content: str):
 
 # ───────────────────────── HTTP to the LLM ─────────────────────────
 
+def pick_effort():
+    """Canonical reasoning effort for this run (#362), passed by the hypervisor
+    adapter as KC_EFFORT (already clamped to low/medium/high for this harness).
+    Empty when the user hasn't chosen one — we then omit the field so the model
+    keeps its own default."""
+    return (os.environ.get("KC_EFFORT") or "").strip().lower()
+
+
 def chat(messages, base_url, api_key, model):
-    body = json.dumps({
+    payload = {
         "model": model,
         "messages": messages,
         "tools": tools_schema(),
         "tool_choice": "auto",
         "stream": False,
         "temperature": 0.1,
-    }).encode()
+    }
+    # OpenAI-compatible reasoning control (#362). Ollama's /v1 endpoint and
+    # OpenAI-family models both honour `reasoning_effort`; harmless to omit.
+    effort = pick_effort()
+    if effort:
+        payload["reasoning_effort"] = effort
+    body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
