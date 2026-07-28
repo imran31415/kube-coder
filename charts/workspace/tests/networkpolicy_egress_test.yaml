@@ -52,9 +52,38 @@ tests:
           path: spec.egress[0].to[0].ipBlock.except
           content: 10.245.0.0/16
       # …while leaving GitHub / npm / PyPI / registries / model providers open.
+      # Two peers: one per address family (an ipBlock is single-family).
+      - lengthEqual:
+          path: spec.egress[0].to
+          count: 2
+      # The portable flavor is purely additive — no deny construct exists here.
+      - notExists:
+          path: spec.egressDeny
+
+  # Without a ::/0 peer, policyTypes:Egress default-deny would drop ALL IPv6
+  # egress on a dual-stack cluster — a silent product break, not a hardening.
+  - it: allows IPv6 egress minus the v6 link-local/metadata ranges
+    asserts:
+      - equal:
+          path: spec.egress[0].to[1].ipBlock.cidr
+          value: ::/0
+      - contains:
+          path: spec.egress[0].to[1].ipBlock.except
+          content: fe80::/10
+      - contains:
+          path: spec.egress[0].to[1].ipBlock.except
+          content: fd00:ec2::/32
+
+  - it: drops the IPv6 peer when allowIPv6 is off
+    set:
+      networkPolicy.egress.allowIPv6: false
+    asserts:
       - lengthEqual:
           path: spec.egress[0].to
           count: 1
+      - equal:
+          path: spec.egress[0].to[0].ipBlock.cidr
+          value: 0.0.0.0/0
 
   - it: keeps DNS reachable both by ClusterIP and by kube-dns pod labels
     asserts:
@@ -197,10 +226,60 @@ tests:
           path: spec.egress[0].toCIDRSet[0].except
           content: 169.254.0.0/16
 
+  # The fix for the Cilium branch: an explicit deny, which per Cilium's docs
+  # outranks every allow rule — so whether the agent classifies 169.254/16 as
+  # world, host or anything else stops being load-bearing.
+  - it: leads the Cilium flavor with an egressDeny covering every denied range
+    set:
+      networkPolicy.egress.flavor: cilium
+    asserts:
+      - contains:
+          path: spec.egressDeny[0].toCIDR
+          content: 169.254.0.0/16
+      - contains:
+          path: spec.egressDeny[0].toCIDR
+          content: 10.244.0.0/16
+      - contains:
+          path: spec.egressDeny[0].toCIDR
+          content: 10.245.0.0/16
+      # v6 denies land in the same rule, and stay there even with the v6 allow
+      # switched off — deny is unconditional.
+      - contains:
+          path: spec.egressDeny[0].toCIDR
+          content: fe80::/10
+
+  - it: keeps the egressDeny when IPv6 egress is switched off
+    set:
+      networkPolicy.egress.flavor: cilium
+      networkPolicy.egress.allowIPv6: false
+    asserts:
+      - contains:
+          path: spec.egressDeny[0].toCIDR
+          content: fd00:ec2::/32
+      - lengthEqual:
+          path: spec.egress[0].toCIDRSet
+          count: 1
+
+  - it: renders the deny from the same list the allow excepts (no drift)
+    set:
+      networkPolicy.egress.flavor: cilium
+      networkPolicy.egress.deniedCIDRs:
+        - 169.254.169.254/32
+      networkPolicy.egress.deniedCIDRsV6: []
+    asserts:
+      - equal:
+          path: spec.egressDeny[0].toCIDR
+          value:
+            - 169.254.169.254/32
+      - equal:
+          path: spec.egress[0].toCIDRSet[0].except
+          value:
+            - 169.254.169.254/32
+
   # CIDR rules in Cilium don't select node or apiserver identities, so those
-  # have to be named as entities — and `world` must never appear here, since it
-  # would re-allow the link-local range the first rule just excluded.
-  - it: names the apiserver/node entities in the Cilium flavor, never world
+  # have to be named as entities. They can stay broad now: the egressDeny above
+  # outranks them, so they can't re-open a denied range.
+  - it: names the apiserver/node entities in the Cilium flavor
     set:
       networkPolicy.egress.flavor: cilium
     asserts:
@@ -210,9 +289,6 @@ tests:
             - kube-apiserver
             - host
             - remote-node
-      - notContains:
-          path: spec.egress[1].toEntities
-          content: world
 
   - it: selects kube-dns by endpoint labels in the Cilium flavor
     set:

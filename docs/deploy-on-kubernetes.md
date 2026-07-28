@@ -222,6 +222,18 @@ networkPolicy:
 
 A range that doesn't exist on your cluster is a harmless no-op — the failure mode of leaving the defaults is *less* protection, not a broken workspace. After deploying, verify from inside the pod (Step 8): `curl -m 5 http://169.254.169.254/` must hang or fail, while `curl https://github.com` and `nslookup github.com` must still work. If DNS or `kubectl` breaks, your CIDRs or DNS labels differ — fix those values, or set `networkPolicy.egress.enabled: false` to fall back to open egress.
 
+**The two flavors do not enforce identically.** On a Cilium cluster the chart renders a `CiliumNetworkPolicy` led by an `egressDeny` block, because Cilium's identity for a link-local address isn't stable across agent restarts ([cilium/cilium#18644](https://github.com/cilium/cilium/issues/18644)) and [deny rules outrank every allow](https://docs.cilium.io/en/stable/security/policy/deny/) — which makes the classification question moot instead of load-bearing. That needs Cilium ≥ 1.9. The practical consequence for you:
+
+| | portable `NetworkPolicy` | `CiliumNetworkPolicy` |
+|---|---|---|
+| `allowCIDRs` inside a denied range | punches back through (additive) | **silent no-op** — deny wins |
+| reaching an address in a denied range | either `allowCIDRs` or narrowing `deniedCIDRs` | narrow `deniedCIDRs` only |
+| other tenants' pods | blocked by the pod-CIDR deny | blocked by default-deny (CIDR rules don't apply to pod-to-pod traffic) |
+
+So to keep a NodeLocal DNSCache at `169.254.20.10` reachable while still blocking metadata, narrow the range — `169.254.128.0/17` still covers `169.254.169.254` — rather than adding an `allowCIDRs` entry that works on one flavor and silently doesn't on the other. `flavor: networkpolicy` pins the portable form everywhere.
+
+IPv6 egress is allowed by default via a companion `::/0` rule with the v6 link-local/metadata ranges excepted (`allowIPv6`, `deniedCIDRsV6`). An `ipBlock` is single-family, so without that rule enabling the policy would drop *all* IPv6 egress on a dual-stack cluster. On a dual-stack cluster, add your v6 pod/service CIDRs to `deniedCIDRsV6` as well.
+
 ---
 
 ## Step 6 — Point DNS at the ingress

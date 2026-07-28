@@ -12,10 +12,17 @@ agent-generated code by design, and with no egress policy that code can reach:
     at the same link-local address, so this is deliberately not DO-specific.
   * the pod/service CIDRs — other tenants' pods and in-cluster services.
 
-Everything else stays open: the first rule is 0.0.0.0/0 minus the denied
-ranges, so GitHub, npm, PyPI, registries and model providers are untouched.
-This is the cheap, default-safe half of egress hardening; the expensive,
-opt-in domain-allowlist half is #355.
+Everything else stays open: the allow rule is 0.0.0.0/0 (plus ::/0) minus the
+denied ranges, so GitHub, npm, PyPI, registries and model providers are
+untouched. This is the cheap, default-safe half of egress hardening; the
+expensive, opt-in domain-allowlist half is #355.
+
+DUAL-STACK: an ipBlock/CIDRSet is single-family, so the v4 allow cannot carry
+v6 excepts — v6 needs its own ::/0 rule. Without one, `policyTypes: Egress`
+default-deny silently kills ALL IPv6 egress on a dual-stack cluster, which is a
+product break dressed up as a security default. So the v6 rule renders by
+default (allowIPv6), with the v6 link-local/metadata equivalents excepted; on a
+v4-only cluster it is inert because no v6 traffic exists to match it.
 
 The carve-outs matter as much as the denies. kube-dns AND the kube-apiserver
 both live inside the service CIDR, so a blunt service-CIDR deny would kill name
@@ -38,10 +45,54 @@ this policy needs a labelling change to that wrapper — a follow-up, not a
 regression: they are exactly as exposed as they were before this policy.
 
 FLAVOR: portable networking.k8s.io/v1 by default, CiliumNetworkPolicy when the
-cluster has the CRD (see .Values.networkPolicy.egress.flavor). The two cannot be
-layered — NetworkPolicy is allow-list based, so a second policy allowing a
-superset (Cilium's `world` entity includes link-local) would silently re-open
-the very hole this closes. Exactly one object is rendered.
+cluster has the CRD (see .Values.networkPolicy.egress.flavor). Exactly one
+object is rendered — the two are never layered, because a k8s NetworkPolicy is
+allow-list only and a second policy allowing a superset would just re-open the
+hole.
+
+The two flavors do NOT enforce the same way, and the difference is deliberate:
+
+  * Portable: the deny is the absence of an allow — `ipBlock.except` subtracts
+    within its own rule, and the narrower DNS/apiserver/controller rules below
+    add specific destinations back. Additive, so allowCIDRs can punch back
+    through a denied range.
+  * Cilium: an explicit `egressDeny` leads, and per Cilium's docs deny rules
+    "take precedence over allow policies, regardless of whether they are a
+    Cilium Network Policy, a Clusterwide Cilium Network Policy or even a
+    Kubernetes Network Policy". So nothing downstream can re-open a denied
+    range — not `toEntities`, not `world`, and not allowCIDRs.
+
+Why the Cilium flavor needs that deny rather than an `except` alone: Cilium
+resolves a link-local address to an identity, and which identity is not stable
+— cilium/cilium#18644 shows a CIDR policy for node-local-dns at 169.254.20.10
+matching or not depending on whether node-local-dns started before or after the
+agent, resolving host-ward only after an agent restart. The docs define `host`
+as "the local host, including all containers running in host networking mode"
+without saying whether link-local is in it. A control whose correctness depends
+on daemon startup order is not a control, so rather than answer the entity
+question the deny outranks it: no allow rule of any kind — `toCIDRSet`,
+`toEntities`, `world` — can put a denied range back.
+
+Two things the deny does NOT do, stated plainly rather than assumed away:
+
+  1. Cilium's CIDR rules, deny or allow, "do not apply to traffic where both
+     sides of the connection are either managed by Cilium or use an IP
+     belonging to a node in the cluster". So the pod/service CIDR entries are
+     inert on this flavor — and, by the same rule, so is the residual case
+     where an agent maps a link-local address host-ward (a host-networking pod
+     bound to it, as in #18644): CIDR matching of either polarity is skipped
+     and `toEntities: host` would admit it. Drop `host` from
+     networkPolicy.egress.entities if nothing on your cluster is legitimately
+     reachable at a node address, and confirm with a runtime curl either way.
+  2. It is not what blocks other tenants' pods here. That comes from the
+     allow-list being label-based: default-deny plus no rule selecting them.
+     In-cluster reachability on this flavor is therefore stricter than the
+     portable one — only kube-dns and the controller are reachable at all,
+     whatever deniedCIDRs says.
+
+Deny rules are L3/L4 only (no L7, no toFQDNs) — irrelevant for plain CIDRs —
+and are available and enabled by default since Cilium 1.9. On an older agent
+the field is not enforced, so this flavor needs >= 1.9.
 */}}
 {{- $ne := .Values.networkPolicy.egress }}
 {{- if $ne.enabled }}
@@ -49,6 +100,9 @@ the very hole this closes. Exactly one object is rendered.
 {{- fail (printf "networkPolicy.egress.flavor must be one of auto|networkpolicy|cilium, got %q" $ne.flavor) }}
 {{- end }}
 {{- $cilium := or (eq $ne.flavor "cilium") (and (eq $ne.flavor "auto") (.Capabilities.APIVersions.Has "cilium.io/v2")) }}
+{{/* Both families, for the Cilium deny list — deny applies regardless of
+     whether the matching v6 allow is rendered. */}}
+{{- $deniedAll := concat ($ne.deniedCIDRs | default list) ($ne.deniedCIDRsV6 | default list) }}
 {{- if $cilium }}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -61,10 +115,24 @@ spec:
   endpointSelector:
     matchLabels:
       app: ws-{{ .Values.user.name }}
+  {{- if $deniedAll }}
+  # THE control on this flavor, and the reason the allows below can be broad:
+  # Cilium deny rules take precedence over every allow rule anywhere in the
+  # cluster, so no entity, CIDR or FQDN allow can put 169.254.169.254 back.
+  # That removes the dependency on how Cilium happens to classify a link-local
+  # address on this particular agent (see the header comment for the one
+  # residual case it cannot cover, and for why the pod/service CIDR entries are
+  # inert here). Both address families are denied even when the v6 allow is off.
+  egressDeny:
+  - toCIDR:
+    {{- range $deniedAll }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
   egress:
-  # The internet, minus the denied ranges. `toCIDRSet.except` is Cilium's
-  # equivalent of ipBlock.except and is what actually blocks the metadata
-  # endpoint; entity rules below are additive and must not include `world`.
+  # The internet. `except` mirrors the portable flavor and keeps the allow
+  # itself honest, but it is belt-and-braces: egressDeny above is what
+  # enforces, including on the paths CIDR matching would miss.
   - toCIDRSet:
     - cidr: 0.0.0.0/0
       {{- if $ne.deniedCIDRs }}
@@ -73,8 +141,20 @@ spec:
       - {{ . | quote }}
       {{- end }}
       {{- end }}
+    {{- if $ne.allowIPv6 }}
+    - cidr: ::/0
+      {{- if $ne.deniedCIDRsV6 }}
+      except:
+      {{- range $ne.deniedCIDRsV6 }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- end }}
+    {{- end }}
   {{- if $ne.allowCIDRs }}
-  # Operator carve-outs (node-local DNS, a needed in-cluster service, ::/0, …).
+  # Operator carve-outs. NOTE the flavor difference: these cannot re-open
+  # anything inside deniedCIDRs here — deny wins. To reach an address inside a
+  # denied range (a NodeLocal DNSCache at 169.254.20.10, say), narrow
+  # deniedCIDRs instead; adding it here is a silent no-op.
   - toCIDR:
     {{- range $ne.allowCIDRs }}
     - {{ . | quote }}
@@ -83,8 +163,8 @@ spec:
   {{- if $ne.entities }}
   # Cilium assigns nodes and the apiserver their own identities, which CIDR
   # rules do not select — without this the apiserver, node-local DNS and
-  # NodePorts would be denied even though their addresses are not in a
-  # denied range. `world` is deliberately absent (it would re-allow 169.254/16).
+  # NodePorts would be denied even though their addresses are not in a denied
+  # range. Safe to keep broad precisely because egressDeny outranks them.
   - toEntities:
     {{- range $ne.entities }}
     - {{ . | quote }}
@@ -135,9 +215,11 @@ spec:
   policyTypes:
   - Egress
   egress:
-  # The internet, minus the denied ranges. This single `except` list is the
-  # control: adding policyTypes:Egress makes everything default-deny, and this
-  # rule then re-allows all of it apart from link-local + the cluster ranges.
+  # The internet, minus the denied ranges. These `except` lists are the control:
+  # adding policyTypes:Egress makes everything default-deny, and this rule then
+  # re-allows all of it apart from link-local + the cluster ranges. An ipBlock
+  # is single-family, hence one peer per family — dropping the v6 peer would
+  # deny all IPv6 egress rather than filter it.
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
@@ -147,6 +229,16 @@ spec:
         - {{ . | quote }}
         {{- end }}
         {{- end }}
+    {{- if $ne.allowIPv6 }}
+    - ipBlock:
+        cidr: ::/0
+        {{- if $ne.deniedCIDRsV6 }}
+        except:
+        {{- range $ne.deniedCIDRsV6 }}
+        - {{ . | quote }}
+        {{- end }}
+        {{- end }}
+    {{- end }}
   {{- if $ne.allowCIDRs }}
   # Operator carve-outs (node-local DNS, a needed in-cluster service, ::/0, …).
   - to:
