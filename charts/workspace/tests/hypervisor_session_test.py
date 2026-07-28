@@ -18,7 +18,9 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
 import hypervisor_session as hs  # noqa: E402
+from envassert import assert_env_lacks  # noqa: E402
 
 
 class ClaudeAdapterParseTest(unittest.TestCase):
@@ -114,7 +116,7 @@ class ClaudeAdapterParseTest(unittest.TestCase):
     def test_build_forces_home_and_drops_api_key(self):
         spec = self.a.build(self.ctx, 'hello', first=True)
         self.assertEqual(spec['env']['HOME'], hs.WORKSPACE_HOME)
-        self.assertNotIn('ANTHROPIC_API_KEY', spec['env'])
+        assert_env_lacks(self, spec['env'], 'ANTHROPIC_API_KEY')
 
     def test_build_passes_selected_model(self):
         self.ctx['model'] = 'opus'

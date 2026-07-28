@@ -24,6 +24,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
 
 try:
     import fcntl  # noqa: F401
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - platform shim
 import hypervisor_session as hs  # noqa: E402
 import mcp_dashboard as mcp  # noqa: E402
 import server  # noqa: E402
+from envassert import assert_env_lacks  # noqa: E402
 
 
 # ──────────────────────── hypervisor_session meta ─────────────────────────
@@ -90,15 +92,21 @@ class PersonaMetaTest(unittest.TestCase):
         self.assertEqual(captured['env'].get('KC_PROJECT_ID'), 'kc')
         self.assertEqual(captured['env'].get('KC_HYPERVISOR_THREAD_ID'), s.id)
 
-        # Plain thread: no KC_PROJECT_ID.
+        # Plain thread: no KC_PROJECT_ID. The turn env is copied from
+        # os.environ, so isolate it — otherwise this asserts "the developer's
+        # shell lacks KC_PROJECT_ID" rather than "an unbound thread does not
+        # set it", and fails for anyone working inside a bound agent session
+        # (which exports it). That false failure is what leaked the env in #562.
         s2 = self._mk()
         captured.clear()
-        with mock.patch.object(hs.subprocess, 'Popen', side_effect=fake_popen):
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(hs.subprocess, 'Popen', side_effect=fake_popen):
+            os.environ.pop('KC_PROJECT_ID', None)
             try:
                 s2._run_turn('hi', first=True, meta=s2.read_meta())
             except Exception:
                 pass
-        self.assertNotIn('KC_PROJECT_ID', captured['env'])
+        assert_env_lacks(self, captured['env'], 'KC_PROJECT_ID')
 
 
 # ─────────────────────── server: create-thread persona ────────────────────
