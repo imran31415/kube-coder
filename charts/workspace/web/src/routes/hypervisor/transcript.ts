@@ -198,6 +198,85 @@ export function buildTurns(events: HvEvent[]): Turn[] {
   return turns;
 }
 
+/* ── Render-time activity grouping (#546) ────────────────────────────────────
+ * An agent turn routinely contains 5–30 consecutive tool calls, and one chip
+ * per call pushes the prose the user actually wants off-screen. Folding runs of
+ * consecutive activity blocks into a single summary chip is purely a *render*
+ * concern, so it lives here as a pure helper applied on top of buildTurns()'s
+ * output — the block contract, turnCopyText(), speakableText() and the Activity
+ * side panel all keep seeing the flat, ungrouped list. */
+
+export type ActivityBlock = Extract<Block, { kind: 'activity' }>;
+export type ActivityGroupBlock = {
+  kind: 'activity_group';
+  /** Summary line, e.g. "Ran 6 commands" (plus " · 1 failed" when any errored). */
+  label: string;
+  items: ActivityBlock[];
+  errors: number;
+};
+export type RenderBlock = Block | ActivityGroupBlock;
+
+/** Runs shorter than this render exactly as before — collapsing one or two
+ *  chips would add a click for no gain. */
+export const GROUP_MIN = 3;
+
+/** Plural summaries for the labels toolLabel() knows about. Anything else (MCP
+ *  tools arrive as e.g. "show app preview") falls back to "<label> ×N". */
+const GROUP_LABEL: Record<string, (n: number) => string> = {
+  'Ran command': (n) => `Ran ${n} commands`,
+  'Read file': (n) => `Read ${n} files`,
+  'Wrote file': (n) => `Wrote ${n} files`,
+  'Edited file': (n) => `Edited ${n} files`,
+  Searched: (n) => `Searched ${n} times`,
+  'Searched files': (n) => `Searched ${n} times`,
+  'Searched the web': (n) => `Searched the web ${n} times`,
+  'Ran a task': (n) => `Ran ${n} tasks`,
+  'Fetched a page': (n) => `Fetched ${n} pages`,
+  Error: (n) => `${n} errors`,
+  Result: (n) => `${n} results`,
+};
+
+function groupLabel(items: ActivityBlock[], errors: number): string {
+  const n = items.length;
+  const same = items.every((b) => b.label === items[0].label);
+  const only = items[0].label;
+  const base = !same
+    ? `Ran ${n} tools`
+    : GROUP_LABEL[only]
+      ? GROUP_LABEL[only](n)
+      : `${only} ×${n}`;
+  // Failures are never hidden behind a bland count.
+  return errors > 0 ? `${base} · ${errors} failed` : base;
+}
+
+/** Fold runs of >= GROUP_MIN consecutive activity blocks into one summary
+ *  block. Any other block (prose / embed / media / file / choice) breaks the
+ *  run, so a turn that interleaves narration with tool calls keeps its
+ *  narrative order. Order is otherwise preserved and nothing is dropped. */
+export function groupActivity(blocks: Block[]): RenderBlock[] {
+  const out: RenderBlock[] = [];
+  let run: ActivityBlock[] = [];
+  const flush = () => {
+    if (run.length >= GROUP_MIN) {
+      const errors = run.filter((b) => b.error).length;
+      out.push({ kind: 'activity_group', label: groupLabel(run, errors), items: run, errors });
+    } else {
+      out.push(...run);
+    }
+    run = [];
+  };
+  for (const b of blocks) {
+    if (b.kind === 'activity') {
+      run.push(b);
+      continue;
+    }
+    flush();
+    out.push(b);
+  }
+  flush();
+  return out;
+}
+
 /** The prose of an agent turn as plain markdown — what a per-turn copy button
  *  puts on the clipboard. Tool chips / embeds / media are activity, not the
  *  message, so only prose blocks count. */

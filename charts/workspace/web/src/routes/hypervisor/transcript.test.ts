@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { buildTurns, renderMarkdown, turnCopyText, type Block, type HvEvent } from './transcript';
+import {
+  buildTurns,
+  groupActivity,
+  renderMarkdown,
+  turnCopyText,
+  type Block,
+  type HvEvent,
+  type RenderBlock,
+} from './transcript';
 
 function ev(partial: Partial<HvEvent> & Pick<HvEvent, 'role' | 'type'>, seq: number): HvEvent {
   return { seq, ts: seq, ...partial } as HvEvent;
@@ -233,5 +241,76 @@ describe('turnCopyText', () => {
 
   it('returns an empty string for a turn with no prose', () => {
     expect(turnCopyText([{ kind: 'activity', label: 'Ran command', detail: 'ls' }])).toBe('');
+  });
+});
+
+describe('groupActivity (#546)', () => {
+  const act = (label: string, detail = '', error?: boolean): Block => ({
+    kind: 'activity',
+    label,
+    detail,
+    ...(error ? { error: true } : {}),
+  });
+
+  it('is a no-op for an empty list and for turns with no activity', () => {
+    expect(groupActivity([])).toEqual([]);
+    const prose: Block[] = [{ kind: 'prose', text: 'hi' }, { kind: 'embed', port: 3000 }];
+    expect(groupActivity(prose)).toEqual(prose);
+  });
+
+  it('leaves a run shorter than GROUP_MIN untouched', () => {
+    const blocks: Block[] = [act('Ran command', 'ls'), act('Ran command', 'pwd')];
+    expect(groupActivity(blocks)).toEqual(blocks);
+  });
+
+  it('folds a run of GROUP_MIN+ into one group, preserving order', () => {
+    const blocks: Block[] = [act('Ran command', 'a'), act('Ran command', 'b'), act('Ran command', 'c')];
+    const out = groupActivity(blocks);
+    expect(out).toHaveLength(1);
+    const g = out[0] as Extract<RenderBlock, { kind: 'activity_group' }>;
+    expect(g.kind).toBe('activity_group');
+    expect(g.label).toBe('Ran 3 commands');
+    expect(g.errors).toBe(0);
+    expect(g.items.map((b) => b.detail)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('breaks the run on prose and keeps narrative order', () => {
+    const blocks: Block[] = [
+      act('Ran command', 'a'),
+      act('Ran command', 'b'),
+      act('Ran command', 'c'),
+      { kind: 'prose', text: 'now the answer' },
+      act('Read file', 'x'),
+      act('Read file', 'y'),
+      act('Read file', 'z'),
+      act('Read file', 'w'),
+    ];
+    const out = groupActivity(blocks);
+    expect(out.map((b) => b.kind)).toEqual(['activity_group', 'prose', 'activity_group']);
+    expect((out[0] as { label: string }).label).toBe('Ran 3 commands');
+    expect((out[2] as { label: string }).label).toBe('Read 4 files');
+  });
+
+  it('pluralises known labels and falls back to ×N for unknown (MCP) ones', () => {
+    const label = (l: string, n: number) =>
+      (groupActivity(Array.from({ length: n }, () => act(l)))[0] as { label: string }).label;
+    expect(label('Wrote file', 3)).toBe('Wrote 3 files');
+    expect(label('Edited file', 5)).toBe('Edited 5 files');
+    expect(label('Searched', 4)).toBe('Searched 4 times');
+    expect(label('Ran a task', 3)).toBe('Ran 3 tasks');
+    expect(label('Fetched a page', 3)).toBe('Fetched 3 pages');
+    expect(label('show app preview', 4)).toBe('show app preview ×4');
+  });
+
+  it('summarises a mixed run as "Ran N tools"', () => {
+    const blocks: Block[] = [act('Ran command'), act('Read file'), act('Edited file')];
+    expect((groupActivity(blocks)[0] as { label: string }).label).toBe('Ran 3 tools');
+  });
+
+  it('counts failures and never hides them', () => {
+    const blocks: Block[] = [act('Ran command', 'a'), act('Ran command', 'b', true), act('Ran command', 'c')];
+    const g = groupActivity(blocks)[0] as Extract<RenderBlock, { kind: 'activity_group' }>;
+    expect(g.errors).toBe(1);
+    expect(g.label).toBe('Ran 3 commands · 1 failed');
   });
 });
