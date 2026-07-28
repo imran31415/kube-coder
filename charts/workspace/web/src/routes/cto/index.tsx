@@ -18,6 +18,8 @@ import {
   sending,
   threads,
   setChatContext,
+  seedCtoConfig,
+  config as hvConfig,
 } from '../../store/hypervisor';
 import {
   projects,
@@ -35,6 +37,7 @@ import { justOnboarded } from '../../store/onboarding';
 import { claudeReady, claudeProbed, refreshClaudeReady } from '../../store/claude';
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
+import { CtoConfig } from './CtoConfig';
 import { BriefPanel, BriefTab } from './BriefPanel';
 import {
   clampCtoRailW,
@@ -207,6 +210,24 @@ export function CtoRoute() {
   const status = activeStatus.value;
   const selectedProject = projects.value.find((p) => p.id === selId) ?? null;
   const projectName = selectedProject?.name ?? null;
+
+  // Seed the CTO's own assistant/model/effort from the selected project's stored
+  // defaults (#483) — falling back to the workspace default when it has none.
+  // Keyed on the three stored fields (plus the config's arrival, which is what
+  // makes the per-assistant model/effort lists knowable) so switching projects
+  // re-seeds, but a user's in-session pick isn't stomped on every render.
+  const cfgLoaded = !!hvConfig.value;
+  const pAssistant = selectedProject?.default_assistant ?? '';
+  const pModel = selectedProject?.default_model ?? '';
+  const pEffort = selectedProject?.default_effort ?? '';
+  useEffect(() => {
+    if (disabled || !cfgLoaded) return;
+    seedCtoConfig({
+      default_assistant: pAssistant,
+      default_model: pModel,
+      default_effort: pEffort,
+    });
+  }, [selId, pAssistant, pModel, pEffort, cfgLoaded, disabled]);
 
   // Returning-visit delta strip: computed deterministically from the brief vs.
   // the last_seen_at baseline captured when this project was selected.
@@ -397,6 +418,10 @@ export function CtoRoute() {
             <span class="cto-brand">{projectName ? projectName : brandLine}</span>
           </div>
           <div class="cto-topbar-meta">
+            {/* Per-project provider/model/effort (#483, #362). Compact by
+                design — the CTO surface stays executive-clean and the dials
+                live one tap behind the gear. */}
+            <CtoConfig project={selectedProject} />
             {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
                 {status === 'running' ? 'thinking' : status || 'idle'}

@@ -148,6 +148,33 @@ export async function initCto(): Promise<void> {
   await selectProject(pick ? pick.id : null);
 }
 
+/**
+ * Persist a project's assistant configuration (#483/#362) — the provider,
+ * model and reasoning effort its CTO threads and dispatched builds default to.
+ * Written through the same PUT /api/projects/{id} the CTO's own `update_project`
+ * MCP tool uses, so a choice made in the UI and one the CTO makes for itself
+ * land in the same field. Optimistically patches the in-memory list so the
+ * picker doesn't flicker back to the old value while the refresh is in flight.
+ */
+export async function setProjectAssistantDefaults(
+  id: string,
+  fields: {
+    default_assistant?: string;
+    default_model?: string;
+    default_effort?: string;
+  },
+): Promise<void> {
+  const prev = projects.value;
+  projects.value = prev.map((p) => (p.id === id ? { ...p, ...fields } : p));
+  try {
+    await updateProject(id, fields);
+  } catch (err) {
+    projects.value = prev;
+    throw err;
+  }
+  await refreshProjects();
+}
+
 /** Archive a wrongly-discovered project from the card overflow (never an
  *  upfront confirm wizard — UX F1). Non-destructive: status → archived. */
 export async function archiveProject(id: string): Promise<void> {

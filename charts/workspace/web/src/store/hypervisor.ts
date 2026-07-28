@@ -87,6 +87,18 @@ export const selectedModel = signal<string>('');
  *  acts on that thread instead (setActiveThreadEffort). */
 export const selectedEffort = signal<string>('');
 
+/**
+ * The AI CTO's OWN assistant/model/effort (#483). Deliberately separate from
+ * the three signals above: the CTO page reuses this store, and before this it
+ * inherited whatever the Chat tab happened to have selected — so a model picked
+ * for a throwaway chat silently became the CTO's. These are seeded from the
+ * selected project's defaults (falling back to the workspace default) and are
+ * what sendMessage passes when the surface is the CTO.
+ */
+export const ctoAssistant = signal<string>('');
+export const ctoModel = signal<string>('');
+export const ctoEffort = signal<string>('');
+
 /** The folder a NEW thread starts in (#345) — seeded from config.workdir (the
  *  server's HYPERVISOR_WORKDIR) so the picker shows the real default. '' is
  *  passed as no workdir, letting the server default apply. A thread keeps the
@@ -140,6 +152,65 @@ export function setSelectedAssistant(assistantId: string): void {
   selectedEffort.value = assistantEffortDefault(assistantId);
 }
 
+/** Same, for the CTO surface's own selection (#483). */
+export function setCtoAssistant(assistantId: string): void {
+  ctoAssistant.value = assistantId;
+  ctoModel.value = assistantModels(assistantId)[0] ?? '';
+  ctoEffort.value = assistantEffortDefault(assistantId);
+}
+
+/**
+ * Seed the CTO's selection from a project's stored defaults (#483), falling back
+ * to the workspace default when the project has none — which is the state every
+ * project starts in, so nothing is written until the user explicitly sets one.
+ * A stored value the workspace can no longer offer (a provider whose key is
+ * gone, a model dropped from the curated list) falls back too, so the picker
+ * never shows a dead option. Called whenever the selected project changes.
+ */
+export function seedCtoConfig(
+  project: {
+    default_assistant?: string;
+    default_model?: string;
+    default_effort?: string;
+  } | null,
+): void {
+  const wantAssistant = project?.default_assistant || '';
+  const known = (config.value?.assistants ?? []).some((a) => a.id === wantAssistant);
+  const assistant =
+    (known ? wantAssistant : '') || config.value?.defaultAssistant || 'claude';
+  ctoAssistant.value = assistant;
+  const models = assistantModels(assistant);
+  const wantModel = project?.default_model || '';
+  ctoModel.value =
+    (wantModel && models.includes(wantModel) ? wantModel : models[0]) ?? '';
+  const levels = assistantEfforts(assistant);
+  const wantEffort = project?.default_effort || '';
+  ctoEffort.value =
+    wantEffort && levels.includes(wantEffort)
+      ? wantEffort
+      : assistantEffortDefault(assistant);
+}
+
+/** True when the current chat surface is the AI CTO rather than the Chat tab. */
+export function isCtoSurface(): boolean {
+  return chatPersona.value === 'cto';
+}
+
+/** The assistant/model/effort a NEW thread on the CURRENT surface will use.
+ *  Reading through these (rather than the raw signals) is what keeps the CTO
+ *  and the Chat tab from borrowing each other's selection (#483). */
+export function surfaceAssistant(): string {
+  return isCtoSurface() ? ctoAssistant.value : selectedAssistant.value;
+}
+
+export function surfaceModel(): string {
+  return isCtoSurface() ? ctoModel.value : selectedModel.value;
+}
+
+export function surfaceEffort(): string {
+  return isCtoSurface() ? ctoEffort.value : selectedEffort.value;
+}
+
 /** Live workspace "entities" surfaced as chips in the chat — currently the
  *  other tasks/agents running in the pod, so the user can see what the
  *  Hypervisor is talking about without leaving the chat. */
@@ -173,6 +244,9 @@ export async function initHypervisor(): Promise<void> {
     if (!selectedEffort.value) {
       selectedEffort.value = assistantEffortDefault(selectedAssistant.value);
     }
+    // The CTO surface reseeds from its project (seedCtoConfig) as soon as one is
+    // selected; this only covers the gap before that lands (#483).
+    if (!ctoAssistant.value) seedCtoConfig(null);
     if (!selectedWorkdir.value) {
       selectedWorkdir.value = cfg.workdir || '';
     }
@@ -317,9 +391,11 @@ export async function sendMessage(text: string): Promise<void> {
     if (!activeThreadId.value) {
       const thread = await createThread({
         message: trimmed,
-        assistant: selectedAssistant.value || undefined,
-        model: selectedModel.value || undefined,
-        effort: selectedEffort.value || undefined,
+        // Surface-scoped (#483): the CTO uses its own project-seeded selection,
+        // the Chat tab its own — neither borrows the other's.
+        assistant: surfaceAssistant() || undefined,
+        model: surfaceModel() || undefined,
+        effort: surfaceEffort() || undefined,
         // A CTO thread omits the workdir so the server defaults it to the bound
         // project's first workdir; a plain chat sends the picker's folder. Sending
         // the picker's /home/dev default would defeat the server's project
@@ -399,7 +475,9 @@ export async function renameThreadTitle(id: string, title: string): Promise<void
 export async function setActiveThreadModel(model: string): Promise<void> {
   const id = activeThreadId.value;
   if (!id) {
-    selectedModel.value = model;
+    // Move the current surface's new-chat default, not the other's (#483).
+    if (isCtoSurface()) ctoModel.value = model;
+    else selectedModel.value = model;
     return;
   }
   const prev = threads.value;
@@ -418,7 +496,8 @@ export async function setActiveThreadModel(model: string): Promise<void> {
 export async function setActiveThreadEffort(effort: string): Promise<void> {
   const id = activeThreadId.value;
   if (!id) {
-    selectedEffort.value = effort;
+    if (isCtoSurface()) ctoEffort.value = effort;
+    else selectedEffort.value = effort;
     return;
   }
   const prev = threads.value;

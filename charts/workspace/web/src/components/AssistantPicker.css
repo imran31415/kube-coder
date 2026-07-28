@@ -1,0 +1,54 @@
+/* Shared assistant / model / effort picker (#483).
+   Stacked, so it reads as a small settings form inside a popover or sheet. A
+   caller that needs the fields laid out inline passes its own className. */
+
+.assistant-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ap-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ap-label {
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ap-select {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--motion-fast);
+}
+
+.ap-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ap-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ap-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--text-subtle);
+}

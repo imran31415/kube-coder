@@ -90,6 +90,53 @@ class NativeClampTests(unittest.TestCase):
         self.assertEqual(tuple(CTM._EFFORT_LEVELS), tuple(hv.EFFORT_LEVELS))
 
 
+class TmuxDeliveryTests(unittest.TestCase):
+    """Effort delivery for the tmux-launched CLIs (#483 — the Build tab and the
+    builds the CTO dispatches). A Hypervisor thread never comes through here;
+    its adapter injects the same knob itself (AdapterInjectionTests below)."""
+
+    def test_delivery_table_matches_the_cap_table(self):
+        # Adding an assistant to one table and not the other would either silently
+        # deliver nothing or clamp against a missing ceiling.
+        self.assertEqual(set(CTM._EFFORT_DELIVERY), set(CTM._EFFORT_CAP))
+
+    def test_env_channel_is_clamped(self):
+        self.assertEqual(CTM.effort_env('claude', 'max'),
+                         {'CLAUDE_CODE_EFFORT_LEVEL': 'xhigh'})
+        self.assertEqual(CTM.effort_env('kc-harness', 'xhigh'),
+                         {'KC_EFFORT': 'high'})
+
+    def test_env_channel_empty_for_flag_or_knobless_assistants(self):
+        self.assertEqual(CTM.effort_env('codex', 'high'), {})
+        self.assertEqual(CTM.effort_env('ante', 'high'), {})
+        self.assertEqual(CTM.effort_env('librefang', 'max'), {})
+
+    def test_arg_channel_is_shell_safe_and_clamped(self):
+        # The level is a fixed enum, so _shell_quote is a no-op here — asserted
+        # so the pair stays splice-safe if the value ever stops being an enum.
+        self.assertEqual(CTM.effort_cli_args('codex', 'max'),
+                         ['-c', 'model_reasoning_effort=xhigh'])
+        self.assertEqual(CTM.effort_cli_args('claude', 'high'), [])
+        self.assertEqual(CTM.effort_cli_args('ante', 'high'), [])
+
+    def test_codex_command_carries_the_effort_flag(self):
+        cmd = CTM.assistant_command('codex', effort='max')
+        self.assertIn('-c model_reasoning_effort=xhigh', cmd)
+
+    def test_assistant_command_unchanged_without_a_pick(self):
+        # Byte-identical to the pre-#483 command for every call site that passes
+        # neither model nor effort.
+        self.assertEqual(CTM.assistant_command('claude'), 'claude')
+        self.assertEqual(CTM.assistant_command('claude', auto_approve=True),
+                         'claude --dangerously-skip-permissions')
+
+    def test_claude_model_reaches_argv_but_the_default_sentinel_does_not(self):
+        self.assertEqual(CTM.assistant_command('claude', model='opus'),
+                         'claude --model opus')
+        self.assertEqual(CTM.assistant_command('claude', model='default'),
+                         'claude')
+
+
 class AdapterInjectionTests(unittest.TestCase):
     def test_claude_sets_env_clamped(self):
         spec = hv._adapter_for('claude').build({'effort': 'max', 'workdir': '/w'}, 'hi', True)

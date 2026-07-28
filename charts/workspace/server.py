@@ -1832,6 +1832,40 @@ class ClaudeTaskManager:
             return cap
         return level
 
+    # assistant id → how a NON-Hypervisor launch (a Build tab / dispatched task,
+    # which runs the CLI under tmux rather than through an adapter) hands over
+    # the effort: an env var, or a `-c key=value` argv pair. A Hypervisor thread
+    # doesn't come through here — its adapter injects the same knob itself (see
+    # hypervisor_session's native_effort call sites) because it builds its own
+    # argv/env per turn. Keys MUST match _EFFORT_CAP; a unit test asserts it, so
+    # adding an assistant to one table without the other fails loudly.
+    _EFFORT_DELIVERY = {
+        'claude': {'env': 'CLAUDE_CODE_EFFORT_LEVEL'},
+        'codex': {'config': 'model_reasoning_effort'},
+        'kc-harness': {'env': 'KC_EFFORT'},
+    }
+
+    @staticmethod
+    def effort_env(assistant, effort):
+        """Env overlay delivering `effort` to a tmux-launched CLI ({} when the
+        assistant takes it as an argv flag instead, or has no knob)."""
+        spec = ClaudeTaskManager._EFFORT_DELIVERY.get(assistant) or {}
+        native = ClaudeTaskManager.resolve_native_effort(assistant, effort)
+        if not native or not spec.get('env'):
+            return {}
+        return {spec['env']: native}
+
+    @staticmethod
+    def effort_cli_args(assistant, effort):
+        """argv fragment delivering `effort` to a tmux-launched CLI ([] when it
+        takes an env var instead, or has no knob). Shell-quoted: the result is
+        spliced into the `bash -lc` command line built by assistant_command."""
+        spec = ClaudeTaskManager._EFFORT_DELIVERY.get(assistant) or {}
+        native = ClaudeTaskManager.resolve_native_effort(assistant, effort)
+        if not native or not spec.get('config'):
+            return []
+        return ['-c', _shell_quote(f'{spec["config"]}={native}')]
+
     @staticmethod
     def resolve_assistant(requested):
         """Validate the caller's choice; fall back to the configured workspace
@@ -1889,7 +1923,15 @@ class ClaudeTaskManager:
         return ClaudeTaskManager._is_unattended_source(source)
 
     @staticmethod
-    def assistant_command(assistant, auto_approve=False):
+    def assistant_command(assistant, auto_approve=False, model='', effort=''):
+        # `model` / `effort` are the caller's per-launch choices (already run
+        # through resolve_model / resolve_effort). Both are optional and both
+        # fall back to the workspace env default when empty, so every existing
+        # call site keeps its exact previous command. `model` is what lets a
+        # project default (#483) reach an interactive build; `effort` (#362) is
+        # only used by the CLIs that take it as a flag — the ones that read an
+        # env var instead are served by effort_env() at launch.
+        #
         # auto_approve launches the interactive REPL with the CLI's
         # skip-permissions flag so it never blocks on an in-terminal approval
         # menu. This is required for surfaces that drive the agent purely by
@@ -1905,7 +1947,7 @@ class ClaudeTaskManager:
             # model via KC_ANTIGRAVITY_MODEL (agy picks a sensible default
             # otherwise); quoted so a hostile env var can't break out of the
             # `bash -lc` shell_cmd built downstream in create_task().
-            model = os.environ.get('KC_ANTIGRAVITY_MODEL', '')
+            model = model or os.environ.get('KC_ANTIGRAVITY_MODEL', '')
             skip = '--dangerously-skip-permissions ' if auto_approve else ''
             model_flag = f'--model {_shell_quote(model)}' if model else ''
             return f'agy {skip}{model_flag}'.strip()
@@ -1915,10 +1957,16 @@ class ClaudeTaskManager:
             # hostile env var can't break out of the `bash -lc` shell_cmd built
             # downstream in create_task(). The pod is externally sandboxed (k8s),
             # so auto_approve uses the bypass flag documented for exactly that.
-            model = os.environ.get('KC_CODEX_MODEL', '')
-            skip = '--dangerously-bypass-approvals-and-sandbox ' if auto_approve else ''
-            model_flag = f'--model {_shell_quote(model)}' if model else ''
-            return f'codex {skip}{model_flag}'.strip()
+            model = model or os.environ.get('KC_CODEX_MODEL', '')
+            parts = ['codex']
+            if auto_approve:
+                parts.append('--dangerously-bypass-approvals-and-sandbox')
+            if model:
+                parts.append(f'--model {_shell_quote(model)}')
+            # Reasoning effort (#362): `-c model_reasoning_effort=<level>`
+            # overrides ~/.codex/config.toml for this invocation only.
+            parts += ClaudeTaskManager.effort_cli_args('codex', effort)
+            return ' '.join(parts)
         if assistant == 'librefang':
             # Interactive chat REPL with the registry's "coder" agent (synced
             # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT
@@ -1942,26 +1990,36 @@ class ClaudeTaskManager:
                 f'librefang chat {agent}'
             )
         if assistant == 'opencode-openrouter':
-            model = os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
+            model = model or os.environ.get('KC_OPENROUTER_MODEL',
+                                            'anthropic/claude-sonnet-4')
             # Quote the model so a hostile env var can't break out of the
             # `bash -lc` shell_cmd built downstream in create_task().
             return f'opencode --model {_shell_quote(f"openrouter/{model}")}'
         if assistant == 'opencode-deepseek':
-            model = os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
+            model = model or os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
             return f'opencode --model {_shell_quote(f"deepseek/{model}")}'
         if assistant == 'opencode-zen':
             # OpenCode Zen (#395). The provider id `opencode-zen` matches the
             # custom provider stanza start.sh writes into opencode.json; the
             # model is one of Zen's free ids. Quote so a hostile env var can't
             # break out of the `bash -lc` shell_cmd built in create_task().
-            model = os.environ.get('KC_OPENCODE_ZEN_MODEL', _OPENCODE_ZEN_DEFAULT_MODEL)
+            model = model or os.environ.get('KC_OPENCODE_ZEN_MODEL',
+                                            _OPENCODE_ZEN_DEFAULT_MODEL)
             return f'opencode --model {_shell_quote(f"opencode-zen/{model}")}'
         if assistant == 'kc-harness':
             # Reads stdin (tmux paste) and emits dashboard JSONL events.
             # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the
             # default lives in harness.py.
             return 'python3 /tmp/browser/harness.py'
-        return 'claude --dangerously-skip-permissions' if auto_approve else 'claude'
+        # Claude Code. `default` is the "let the CLI pick" sentinel from the
+        # model list, so it never becomes a --model flag. Effort rides
+        # CLAUDE_CODE_EFFORT_LEVEL in the launch env (see effort_env), not argv.
+        parts = ['claude']
+        if auto_approve:
+            parts.append('--dangerously-skip-permissions')
+        if model and model != 'default':
+            parts.append(f'--model {_shell_quote(model)}')
+        return ' '.join(parts)
 
     # Soft ceiling on concurrently-live tasks created through this manager
     # (dashboard / desktop / webhook / cron). Protects a small 2-3 CPU pod from
@@ -2001,12 +2059,11 @@ class ClaudeTaskManager:
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
                     source=None, disable_memory_injection=False, assistant=None,
                     parent_task_id=None, system_preamble=None, auto_approve=False,
-                    project_id=None):
+                    project_id=None, model=None, effort=None):
         at_cap, _, _ = ClaudeTaskManager.at_capacity()
         if at_cap:
             return ClaudeTaskManager._capacity_rejection()
         ClaudeTaskManager.ensure_tasks_dir()
-        assistant = ClaudeTaskManager.resolve_assistant(assistant)
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
         session_id = str(uuid.uuid4())
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
@@ -2025,6 +2082,18 @@ class ClaudeTaskManager:
             except Exception as e:  # attribution must never fail a task launch
                 print(f'[projects] workdir attribution failed: {e}', file=sys.stderr)
                 project_id = ''
+
+        # Per-project assistant/model/effort defaults (#483). Resolved AFTER the
+        # project binding above and BEFORE the assistant, so a build the CTO
+        # dispatches for a project runs on that project's configured harness even
+        # though the dispatch tool sends no assistant. An explicit caller value
+        # always wins; the workspace default remains the last resort. Everything
+        # still goes through resolve_*, so a stale project default degrades
+        # instead of launching a dead CLI.
+        p_assistant, p_model, p_effort = ProjectsManager.defaults_for(project_id)
+        assistant = ClaudeTaskManager.resolve_assistant(assistant or p_assistant)
+        model = ClaudeTaskManager.resolve_model(assistant, model or p_model)
+        effort = ClaudeTaskManager.resolve_effort(assistant, effort or p_effort)
 
         session_name = f'kube-coder-{task_id}'
 
@@ -2059,6 +2128,10 @@ class ClaudeTaskManager:
             'created_at': time.time(),
             'tmux_session': session_name,
             'assistant': assistant,
+            # Effective model / reasoning effort for this build (#483, #362).
+            # '' when the assistant offers no such choice.
+            'model': model or '',
+            'effort': effort or '',
             'parent_task_id': parent_task_id,
             'sub_task_ids': [],
             'memory_injected': [
@@ -2127,13 +2200,20 @@ class ClaudeTaskManager:
                 workdir,
                 reject_api_key=ClaudeTaskManager._api_key_to_reject())
 
-        cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=auto_approve)
+        cli_cmd = ClaudeTaskManager.assistant_command(
+            assistant, auto_approve=auto_approve, model=model, effort=effort)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
         # Overlay any user-set provider keys onto the new session's env, so a key
         # set in Settings (no redeploy) reaches the CLI subprocess. Store wins
         # over the pod env; when unset the pod/helm default carries through.
         provider_env = []
         for k, v in ProviderKeysManager.env_overlay().items():
+            provider_env += ['-e', f'{k}={v}']
+        # Reasoning effort for the CLIs that read it from the environment (#362) —
+        # Claude Code's CLAUDE_CODE_EFFORT_LEVEL and kc-harness's KC_EFFORT.
+        # Empty for assistants that take a flag (codex, via assistant_command)
+        # or have no knob at all, so nothing changes for them.
+        for k, v in ClaudeTaskManager.effort_env(assistant, effort).items():
             provider_env += ['-e', f'{k}={v}']
         tmux_cmd = [
             'tmux', 'new-session', '-d',
@@ -3320,6 +3400,11 @@ class ProjectsManager:
           "memory_namespace": "project.kube-coder",
           "status": "active",              # active | paused | archived
           "north_star": "one-line goal",
+          # Per-project assistant configuration (#483/#362). '' = inherit the
+          # workspace default. New CTO threads and dispatched builds for this
+          # project run on these unless the caller passes its own.
+          "default_assistant": "claude", "default_model": "opus",
+          "default_effort": "xhigh",
           "last_seen_at": <epoch|null>,    # set when viewed in /cto (delta strip)
           "created_at": <epoch>, "updated_at": <epoch>
         }
@@ -3334,7 +3419,13 @@ class ProjectsManager:
     _ID_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
     STATUSES = ('active', 'paused', 'archived')
     _MUTABLE_FIELDS = ('name', 'workdirs', 'repo', 'memory_namespace',
-                       'status', 'north_star', 'last_seen_at')
+                       'status', 'north_star', 'last_seen_at',
+                       # Per-project assistant configuration (#483, #362). Ride
+                       # PUT /api/projects/{id} and the update_project MCP tool
+                       # for free, so the CTO can also set them itself.
+                       'default_assistant', 'default_model', 'default_effort')
+    # The three fields above, as one tuple — used by _normalize and defaults_for.
+    _ASSISTANT_FIELDS = ('default_assistant', 'default_model', 'default_effort')
 
     # Brief caps — keep the injected digest ~1-2k tokens (#464 note 2).
     _BRIEF_GOALS = 8
@@ -3412,6 +3503,29 @@ class ProjectsManager:
             return None
 
     @staticmethod
+    def defaults_for(project_id):
+        """(default_assistant, default_model, default_effort) for a project —
+        the per-project assistant configuration from #483/#362.
+
+        All three are '' when the project is unknown, unset, or unreadable, so
+        every caller can write `explicit or project_default` and let the
+        workspace default win last. Never raises: a registry hiccup must not
+        stop a build from launching."""
+        empty = ('', '', '')
+        if not project_id:
+            return empty
+        try:
+            cfg = ProjectsManager.get_project(project_id)
+        except Exception as e:  # pragma: no cover - defensive
+            print(f'[projects] defaults lookup failed: {e}', file=sys.stderr)
+            return empty
+        if not cfg:
+            return empty
+        return tuple(
+            (cfg.get(k) or '').strip() if isinstance(cfg.get(k), str) else ''
+            for k in ProjectsManager._ASSISTANT_FIELDS)
+
+    @staticmethod
     def delete(project_id):
         if not ProjectsManager.valid_id(project_id):
             return False
@@ -3450,7 +3564,8 @@ class ProjectsManager:
             return f'status must be one of {ProjectsManager.STATUSES}'
         cfg['status'] = status
 
-        for k in ('name', 'repo', 'memory_namespace', 'north_star'):
+        for k in ('name', 'repo', 'memory_namespace', 'north_star',
+                  *ProjectsManager._ASSISTANT_FIELDS):
             v = cfg.get(k)
             if v is None:
                 continue
@@ -3482,6 +3597,12 @@ class ProjectsManager:
             'memory_namespace': data.get('memory_namespace') or f'project.{project_id}',
             'status': data.get('status', 'active'),
             'north_star': data.get('north_star') or '',
+            # Per-project assistant config (#483, #362). Empty = "inherit the
+            # workspace default", which is what every existing project has, so
+            # nothing changes until a user (or the CTO) sets one.
+            'default_assistant': data.get('default_assistant') or '',
+            'default_model': data.get('default_model') or '',
+            'default_effort': data.get('default_effort') or '',
             'last_seen_at': data.get('last_seen_at'),
             'created_at': now,
             'updated_at': now,
@@ -8347,6 +8468,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         source = data.get('source') or None
         disable_memory_injection = bool(data.get('disable_memory_injection'))
         assistant = data.get('assistant') or None
+        # Optional per-build model / reasoning effort (#483, #362). Omitted →
+        # create_task falls back to the bound project's defaults, then the
+        # workspace ones; both are validated there, so a bad value degrades
+        # rather than 400-ing a build.
+        model = data.get('model') or None
+        effort = data.get('effort') or None
         parent_task_id = data.get('parent_task_id') or None
         # Explicit project binding (#533) — the CTO's dispatch tool passes the
         # thread's project so the build attributes to it regardless of workdir.
@@ -8372,6 +8499,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             source=source,
             disable_memory_injection=disable_memory_injection,
             assistant=assistant,
+            model=model,
+            effort=effort,
             parent_task_id=parent_task_id,
             auto_approve=auto_approve,
             project_id=project_id,
@@ -8647,14 +8776,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         message = (data.get('message') or '').strip()
-        assistant = ClaudeTaskManager.resolve_assistant(
-            data.get('assistant') or HYPERVISOR_DEFAULT_ASSISTANT)
-        # Per-thread model choice (#308) — validated against the assistant's
-        # allow-list; '' when the assistant offers no choice (adapter default).
-        model = ClaudeTaskManager.resolve_model(assistant, data.get('model'))
-        # Per-thread reasoning effort (#362) — validated against the canonical
-        # 5-stop axis; '' when the assistant has no effort knob (selector hidden).
-        effort = ClaudeTaskManager.resolve_effort(assistant, data.get('effort'))
         # AI CTO persona (#465): a 'cto' thread swaps in CTO_PREAMBLE + the
         # project's markdown brief (injected on turn 1 via the adapter's
         # preamble path) and binds a project_id. Any other/absent persona is a
@@ -8671,6 +8792,25 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if project_id and (not ProjectsManager.valid_id(project_id)
                            or ProjectsManager.get_project(project_id) is None):
             project_id = ''
+        # Per-project assistant configuration (#483). A CTO thread whose body
+        # omits assistant/model/effort inherits the bound project's defaults,
+        # then the workspace default — so every client is correct, including the
+        # MCP and cron paths that never send the fields. An explicit body value
+        # always wins, and everything still runs through resolve_* so a stale or
+        # disabled project default degrades gracefully instead of launching a
+        # dead provider. Resolved here (after the project binding) rather than at
+        # the top of the handler because the defaults hang off that project.
+        p_assistant, p_model, p_effort = ProjectsManager.defaults_for(project_id)
+        assistant = ClaudeTaskManager.resolve_assistant(
+            data.get('assistant') or p_assistant or HYPERVISOR_DEFAULT_ASSISTANT)
+        # Per-thread model choice (#308) — validated against the assistant's
+        # allow-list; '' when the assistant offers no choice (adapter default).
+        model = ClaudeTaskManager.resolve_model(
+            assistant, data.get('model') or p_model)
+        # Per-thread reasoning effort (#362) — validated against the canonical
+        # 5-stop axis; '' when the assistant has no effort knob (selector hidden).
+        effort = ClaudeTaskManager.resolve_effort(
+            assistant, data.get('effort') or p_effort)
         preamble = HYPERVISOR_PREAMBLE
         if persona == 'cto':
             preamble = CTO_PREAMBLE
