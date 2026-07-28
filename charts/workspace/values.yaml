@@ -248,6 +248,86 @@ controller:
   rbac:
     enabled: true
 
+# NetworkPolicy — what this workspace's pods may talk to.
+#
+# Ingress (templates/networkpolicy.yaml) is always rendered and not
+# configurable: only the ingress controller may reach the workspace/oauth2-proxy
+# pods. Egress (templates/networkpolicy-egress.yaml, #548) is configured here.
+#
+# WHY EGRESS IS RESTRICTED BY DEFAULT: a workspace pod runs agent-generated code
+# by design (npm lifecycle scripts, whatever an agent is told to run, anything a
+# prompt-injection reaches a shell with). With no egress policy that code can
+# `curl http://169.254.169.254/…` — the cloud metadata endpoint — which on every
+# managed Kubernetes provider serves node identity and cloud-init `user-data`.
+# On DOKS that payload carries the kubelet bootstrap token and the cluster CA;
+# GKE/EKS/AKS expose an equivalent. That is node-join credential material, i.e. a
+# cluster-integrity problem, not info disclosure. It can also dial other tenants'
+# pods directly. Neither is something a legitimate agent workload ever needs, so
+# unlike a domain allowlist (#355) this is safe to ship default-on.
+#
+# WHAT STAYS OPEN: everything else. The policy allows 0.0.0.0/0 minus the denied
+# ranges, so GitHub, npm, PyPI, registries and model providers are unaffected —
+# and DNS, the kube-apiserver (Triggers + the task API need it) and the
+# controller's self-serve port are punched back through explicitly.
+networkPolicy:
+  egress:
+    enabled: true
+    # Which policy object to render:
+    #   auto           — CiliumNetworkPolicy if the cluster registers cilium.io/v2,
+    #                    otherwise the portable NetworkPolicy. (default)
+    #   networkpolicy  — always the portable networking.k8s.io/v1 NetworkPolicy.
+    #   cilium         — always the CiliumNetworkPolicy (requires the CRD).
+    # Note `helm template` has no cluster to interrogate, so `auto` renders the
+    # portable form there; `helm install/upgrade` against a Cilium cluster picks
+    # the Cilium form. Pin the flavor if you diff rendered manifests in CI.
+    flavor: auto
+    # Ranges the workspace pod may NOT reach. THESE ARE CLUSTER-SPECIFIC — the
+    # defaults below are link-local plus this project's own DOKS pod/service
+    # CIDRs. Check yours before relying on the last two:
+    #   pod CIDR:     kubectl cluster-info dump | grep -m1 -- --cluster-cidr
+    #   service CIDR: kubectl cluster-info dump | grep -m1 -- --service-cluster-ip-range
+    # A range that doesn't exist on your cluster is a harmless no-op (it fails
+    # open, not closed) — but you get no cross-tenant protection until these
+    # match reality. 169.254.0.0/16 is universal; never remove it.
+    deniedCIDRs:
+      - "169.254.0.0/16"   # link-local: cloud metadata (169.254.169.254) on every provider
+      - "10.244.0.0/16"    # pod CIDR — other tenants' pods
+      - "10.245.0.0/16"    # service CIDR — in-cluster services
+    # Extra allows punched back through the denies, as plain CIDRs. Use for a
+    # NodeLocal DNSCache at 169.254.20.10/32, an in-cluster service you actually
+    # need, or "::/0" on a dual-stack cluster (the deny rule above is IPv4-only,
+    # so IPv6 egress is otherwise dropped once the policy is on).
+    allowCIDRs: []
+    # DNS. kube-dns' ClusterIP normally sits INSIDE the denied service CIDR, so
+    # without this rule the policy would kill name resolution and with it all
+    # outbound internet. Allowed two ways because CNIs differ on whether egress
+    # policy sees the ClusterIP or the already-translated backend pod IP:
+    # by ClusterIP, and by the kube-dns pods' own labels. Both are port 53 only.
+    dns:
+      enabled: true
+      serviceIPs:
+        - "10.245.0.10/32"  # `kubectl -n kube-system get svc kube-dns`
+      namespace: kube-system
+      podLabels:
+        k8s-app: kube-dns   # CoreDNS keeps this label on GKE/EKS/AKS/DOKS alike
+    # kube-apiserver. In scope to PRESERVE, deliberately: the workspace SA is
+    # already RBAC-scoped to its own namespace and legitimately uses the
+    # apiserver (Triggers, the Claude task API). Its ClusterIP is the first
+    # address of the service CIDR, so it too must be carved back out.
+    # Portable flavor only — the Cilium flavor uses the kube-apiserver entity,
+    # which also covers clusters whose apiserver lives outside the cluster.
+    apiServerIPs:
+      - "10.245.0.1/32"     # $KUBERNETES_SERVICE_HOST inside any pod
+    # Cilium flavor only. CIDR rules in Cilium do NOT match the host or other
+    # nodes (they carry `host`/`remote-node` identity, not a CIDR one), and the
+    # apiserver carries `kube-apiserver` — so these must be named as entities or
+    # node-local DNS, NodePorts and the apiserver break. Trim only if you know
+    # your cluster doesn't route any of that through a node address.
+    entities:
+      - kube-apiserver
+      - host
+      - remote-node
+
 # Build configuration.
 #
 #   mode: kaniko    (default, recommended)

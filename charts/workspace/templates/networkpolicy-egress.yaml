@@ -1,0 +1,213 @@
+{{/*
+NetworkPolicy: restrict this workspace pod's EGRESS (#548).
+
+Companion to networkpolicy.yaml (which handles ingress). A workspace pod runs
+agent-generated code by design, and with no egress policy that code can reach:
+
+  * 169.254.169.254 — the cloud metadata endpoint. Verified reachable (HTTP 200,
+    ~28ms) from an unprivileged shell in a workspace pod on this cluster. On
+    DOKS the cloud-init `user-data` it serves carries `k8saas_bootstrap_token`
+    (a kubelet TLS bootstrap token) and `k8saas_ca_cert` — node-join credential
+    material, unauthenticated, one curl away. GKE/EKS/AKS expose an equivalent
+    at the same link-local address, so this is deliberately not DO-specific.
+  * the pod/service CIDRs — other tenants' pods and in-cluster services.
+
+Everything else stays open: the first rule is 0.0.0.0/0 minus the denied
+ranges, so GitHub, npm, PyPI, registries and model providers are untouched.
+This is the cheap, default-safe half of egress hardening; the expensive,
+opt-in domain-allowlist half is #355.
+
+The carve-outs matter as much as the denies. kube-dns AND the kube-apiserver
+both live inside the service CIDR, so a blunt service-CIDR deny would kill name
+resolution (and with it all outbound internet by name) and break Triggers + the
+Claude task API. NetworkPolicy rules are additive — `except` subtracts only
+within its own ipBlock — so the narrower DNS/apiserver/controller rules below
+put exactly those destinations back.
+
+SELECTOR SCOPE: the workspace pod only (`app: ws-<user>`), NOT oauth2-proxy.
+oauth2-proxy's whole job is to proxy INTO the workspace pod, whose IP is in the
+denied pod CIDR; it also runs no user code, so it is not part of this threat
+model. The workspace pod's sidecars (dind, ssh-server) share the pod's network
+namespace and are covered automatically — including containers dind runs, whose
+traffic is masqueraded to the pod IP before it leaves that namespace.
+
+NOT COVERED: one-shot Kaniko build Jobs (build.mode=kaniko), which run the
+user's Dockerfile in their own pod. They carry no stable label to select on
+(base-infrastructure's kaniko-wrapper emits a bare Job), so bringing them under
+this policy needs a labelling change to that wrapper — a follow-up, not a
+regression: they are exactly as exposed as they were before this policy.
+
+FLAVOR: portable networking.k8s.io/v1 by default, CiliumNetworkPolicy when the
+cluster has the CRD (see .Values.networkPolicy.egress.flavor). The two cannot be
+layered — NetworkPolicy is allow-list based, so a second policy allowing a
+superset (Cilium's `world` entity includes link-local) would silently re-open
+the very hole this closes. Exactly one object is rendered.
+*/}}
+{{- $ne := .Values.networkPolicy.egress }}
+{{- if $ne.enabled }}
+{{- if not (has $ne.flavor (list "auto" "networkpolicy" "cilium")) }}
+{{- fail (printf "networkPolicy.egress.flavor must be one of auto|networkpolicy|cilium, got %q" $ne.flavor) }}
+{{- end }}
+{{- $cilium := or (eq $ne.flavor "cilium") (and (eq $ne.flavor "auto") (.Capabilities.APIVersions.Has "cilium.io/v2")) }}
+{{- if $cilium }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ws-{{ .Values.user.name }}-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ws-{{ .Values.user.name }}
+  egress:
+  # The internet, minus the denied ranges. `toCIDRSet.except` is Cilium's
+  # equivalent of ipBlock.except and is what actually blocks the metadata
+  # endpoint; entity rules below are additive and must not include `world`.
+  - toCIDRSet:
+    - cidr: 0.0.0.0/0
+      {{- if $ne.deniedCIDRs }}
+      except:
+      {{- range $ne.deniedCIDRs }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- end }}
+  {{- if $ne.allowCIDRs }}
+  # Operator carve-outs (node-local DNS, a needed in-cluster service, ::/0, …).
+  - toCIDR:
+    {{- range $ne.allowCIDRs }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if $ne.entities }}
+  # Cilium assigns nodes and the apiserver their own identities, which CIDR
+  # rules do not select — without this the apiserver, node-local DNS and
+  # NodePorts would be denied even though their addresses are not in a
+  # denied range. `world` is deliberately absent (it would re-allow 169.254/16).
+  - toEntities:
+    {{- range $ne.entities }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if $ne.dns.enabled }}
+  # DNS by pod identity — Cilium translates service IPs before policy is
+  # evaluated, so selecting the kube-dns endpoints is the form that holds.
+  - toEndpoints:
+    - matchLabels:
+        io.kubernetes.pod.namespace: {{ $ne.dns.namespace }}
+        {{- with $ne.dns.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      - port: "53"
+        protocol: TCP
+  {{- end }}
+  {{- if .Values.update.selfServeSecretName }}
+  # Self-serve version updates: the workspace brokers them to the controller's
+  # token-gated listener (deployment.yaml CONTROLLER_SELF_SERVE_URL). That pod
+  # is in the denied pod CIDR, so allow it back — on 8081 only, never the
+  # admin port 8080.
+  - toEndpoints:
+    - matchLabels:
+        io.kubernetes.pod.namespace: {{ .Values.update.controllerNamespace | default "coder" }}
+        app: workspace-controller
+    toPorts:
+    - ports:
+      - port: "8081"
+        protocol: TCP
+  {{- end }}
+{{- else }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ws-{{ .Values.user.name }}-egress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ws-{{ .Values.user.name }}
+  policyTypes:
+  - Egress
+  egress:
+  # The internet, minus the denied ranges. This single `except` list is the
+  # control: adding policyTypes:Egress makes everything default-deny, and this
+  # rule then re-allows all of it apart from link-local + the cluster ranges.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        {{- if $ne.deniedCIDRs }}
+        except:
+        {{- range $ne.deniedCIDRs }}
+        - {{ . | quote }}
+        {{- end }}
+        {{- end }}
+  {{- if $ne.allowCIDRs }}
+  # Operator carve-outs (node-local DNS, a needed in-cluster service, ::/0, …).
+  - to:
+    {{- range $ne.allowCIDRs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if $ne.dns.enabled }}
+  # DNS, port 53 only. Allowed both by kube-dns' ClusterIP and by the kube-dns
+  # pods' labels: CNIs disagree on whether egress policy is evaluated before or
+  # after service translation, and only one of the two forms matches in each
+  # case. Both are needed for this to be portable.
+  - to:
+    {{- range $ne.dns.serviceIPs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+    {{- if and $ne.dns.namespace $ne.dns.podLabels }}
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ $ne.dns.namespace }}
+      podSelector:
+        matchLabels:
+          {{- toYaml $ne.dns.podLabels | nindent 10 }}
+    {{- end }}
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  {{- end }}
+  {{- if $ne.apiServerIPs }}
+  # kube-apiserver: kept reachable on purpose (Triggers, the Claude task API).
+  # Its ClusterIP is the first address of the denied service CIDR. Clusters
+  # whose apiserver endpoint is outside both denied ranges are already covered
+  # by the 0.0.0.0/0 rule above.
+  - to:
+    {{- range $ne.apiServerIPs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+    ports:
+    - protocol: TCP
+      port: 443
+  {{- end }}
+  {{- if .Values.update.selfServeSecretName }}
+  # Self-serve version updates: the workspace brokers them to the controller's
+  # token-gated listener (deployment.yaml CONTROLLER_SELF_SERVE_URL). That pod
+  # is in the denied pod CIDR, so allow it back — on 8081 only, never the
+  # admin port 8080.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.update.controllerNamespace | default "coder" }}
+      podSelector:
+        matchLabels:
+          app: workspace-controller
+    ports:
+    - protocol: TCP
+      port: 8081
+  {{- end }}
+{{- end }}
+{{- end }}

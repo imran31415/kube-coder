@@ -1,0 +1,249 @@
+suite: workspace egress NetworkPolicy (#548)
+templates:
+  - templates/networkpolicy-egress.yaml
+set:
+  user.name: alice
+  namespace: ws-alice
+tests:
+  - it: renders one portable NetworkPolicy by default (no Cilium CRD present)
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: apiVersion
+          value: networking.k8s.io/v1
+      - equal:
+          path: metadata.name
+          value: ws-alice-egress
+      - equal:
+          path: metadata.namespace
+          value: ws-alice
+      - equal:
+          path: spec.policyTypes
+          value:
+            - Egress
+
+  # oauth2-proxy proxies INTO the workspace pod, whose IP is in the denied pod
+  # CIDR — selecting it here would break the login path for no security gain.
+  - it: selects the workspace pod only, never oauth2-proxy
+    set:
+      ingress.auth.type: oauth2
+    asserts:
+      - equal:
+          path: spec.podSelector.matchLabels.app
+          value: ws-alice
+
+  # The point of the whole issue: an unprivileged shell in the pod must not be
+  # able to curl the metadata endpoint for the node's kubelet bootstrap token.
+  - it: denies link-local (cloud metadata) and the cluster pod/service CIDRs
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].ipBlock.cidr
+          value: 0.0.0.0/0
+      - contains:
+          path: spec.egress[0].to[0].ipBlock.except
+          content: 169.254.0.0/16
+      - contains:
+          path: spec.egress[0].to[0].ipBlock.except
+          content: 10.244.0.0/16
+      - contains:
+          path: spec.egress[0].to[0].ipBlock.except
+          content: 10.245.0.0/16
+      # …while leaving GitHub / npm / PyPI / registries / model providers open.
+      - lengthEqual:
+          path: spec.egress[0].to
+          count: 1
+
+  - it: keeps DNS reachable both by ClusterIP and by kube-dns pod labels
+    asserts:
+      - contains:
+          path: spec.egress[1].to
+          content:
+            ipBlock:
+              cidr: 10.245.0.10/32
+      - contains:
+          path: spec.egress[1].to
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: kube-system
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+      - contains:
+          path: spec.egress[1].ports
+          content:
+            protocol: UDP
+            port: 53
+      - contains:
+          path: spec.egress[1].ports
+          content:
+            protocol: TCP
+            port: 53
+
+  # Blocking the apiserver is explicitly out of scope: Triggers and the Claude
+  # task API use it, and the workspace SA is already namespace-scoped.
+  - it: keeps the kube-apiserver ClusterIP reachable on 443
+    asserts:
+      - contains:
+          path: spec.egress[2].to
+          content:
+            ipBlock:
+              cidr: 10.245.0.1/32
+      - contains:
+          path: spec.egress[2].ports
+          content:
+            protocol: TCP
+            port: 443
+
+  - it: does not open the controller self-serve port by default
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 3
+
+  - it: allows the controller self-serve listener (8081 only) when enabled
+    set:
+      update.selfServeSecretName: kc-self-serve
+      update.controllerNamespace: coder
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 4
+      - contains:
+          path: spec.egress[3].to
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: coder
+            podSelector:
+              matchLabels:
+                app: workspace-controller
+      - contains:
+          path: spec.egress[3].ports
+          content:
+            protocol: TCP
+            port: 8081
+      # never the admin port
+      - lengthEqual:
+          path: spec.egress[3].ports
+          count: 1
+
+  - it: honours cluster-specific denied ranges instead of the DOKS defaults
+    set:
+      networkPolicy.egress.deniedCIDRs:
+        - 169.254.0.0/16
+        - 172.20.0.0/16
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].ipBlock.except
+          value:
+            - 169.254.0.0/16
+            - 172.20.0.0/16
+
+  # Escape hatch for node-local DNSCache (169.254.20.10), an in-cluster service
+  # a deployment genuinely needs, or ::/0 on a dual-stack cluster.
+  - it: punches operator allowCIDRs back through the denies
+    set:
+      networkPolicy.egress.allowCIDRs:
+        - 169.254.20.10/32
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 4
+      - contains:
+          path: spec.egress[1].to
+          content:
+            ipBlock:
+              cidr: 169.254.20.10/32
+
+  - it: drops the DNS carve-out when the operator turns it off
+    set:
+      networkPolicy.egress.dns.enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 2
+
+  # The disable path: clusters where the metadata endpoint is load-bearing.
+  - it: renders nothing when egress hardening is disabled
+    set:
+      networkPolicy.egress.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders a CiliumNetworkPolicy when the cluster registers cilium.io/v2
+    capabilities:
+      apiVersions:
+        - cilium.io/v2
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: CiliumNetworkPolicy
+      - equal:
+          path: apiVersion
+          value: cilium.io/v2
+      - equal:
+          path: spec.endpointSelector.matchLabels.app
+          value: ws-alice
+      - equal:
+          path: spec.egress[0].toCIDRSet[0].cidr
+          value: 0.0.0.0/0
+      - contains:
+          path: spec.egress[0].toCIDRSet[0].except
+          content: 169.254.0.0/16
+
+  # CIDR rules in Cilium don't select node or apiserver identities, so those
+  # have to be named as entities — and `world` must never appear here, since it
+  # would re-allow the link-local range the first rule just excluded.
+  - it: names the apiserver/node entities in the Cilium flavor, never world
+    set:
+      networkPolicy.egress.flavor: cilium
+    asserts:
+      - equal:
+          path: spec.egress[1].toEntities
+          value:
+            - kube-apiserver
+            - host
+            - remote-node
+      - notContains:
+          path: spec.egress[1].toEntities
+          content: world
+
+  - it: selects kube-dns by endpoint labels in the Cilium flavor
+    set:
+      networkPolicy.egress.flavor: cilium
+    asserts:
+      - contains:
+          path: spec.egress[2].toEndpoints
+          content:
+            matchLabels:
+              io.kubernetes.pod.namespace: kube-system
+              k8s-app: kube-dns
+      - contains:
+          path: spec.egress[2].toPorts[0].ports
+          content:
+            port: "53"
+            protocol: UDP
+
+  # Pinning the flavor keeps rendered-manifest diffs stable in GitOps setups.
+  - it: keeps the portable flavor when pinned, even on a Cilium cluster
+    capabilities:
+      apiVersions:
+        - cilium.io/v2
+    set:
+      networkPolicy.egress.flavor: networkpolicy
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+
+  - it: fails loudly on an unknown flavor rather than rendering nothing
+    set:
+      networkPolicy.egress.flavor: calico
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egress.flavor must be one of"
