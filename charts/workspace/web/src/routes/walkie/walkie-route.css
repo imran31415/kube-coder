@@ -15,10 +15,22 @@
 .route-walkie > .guide {
   margin: var(--size-3) var(--size-3) 0;
 }
+/* Center the device as a block (#504). `.wt` is a fixed-row grid whose middle
+   row absorbs every bit of slack, so stretching it to the full pane parked the
+   LINKED chip at the very top with a tall dead band underneath it. Sizing the
+   device to its content and centering it spreads that space evenly above and
+   below; max-height keeps the grid bounded, so a long reply still scrolls
+   inside the response card (#409) instead of overflowing the pane. */
 .route-walkie-body {
   flex: 1;
   min-height: 0;
   display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.route-walkie-body > .wt {
+  height: auto;
+  max-height: 100%;
 }
 @supports not (height: 100dvh) {
   .route-walkie {

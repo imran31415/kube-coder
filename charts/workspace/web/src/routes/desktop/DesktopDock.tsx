@@ -15,13 +15,28 @@ import { MutatorOnly } from '../../components/MutatorOnly';
  * suppressed (same rule as the old grid).
  */
 
+/** Status emoji that only ever mean "done". The dock's identity is monochrome
+ *  line-work (#507), so these render as the line `check` glyph tinted with
+ *  --success instead of a full-colour emoji that ignores the theme. */
+const CHECK_EMOJI = new Set(['✅', '✔️', '✔', '☑️', '☑', '✓']);
+
 /** Render either an emoji/text icon or a named lucide-style line icon
  *  via the SPA's built-in Icon component. Server stores "icon:NAME"
- *  for the latter; anything else renders as literal text. */
+ *  for the latter; anything else renders as literal text — normalized to the
+ *  dock's monochrome weight by .dt-dock-emoji (grayscale wash + neutral tile,
+ *  #507) so a user's emoji can't out-shout the line icons beside it. */
 function renderIconValue(icon: string) {
-  if (icon.startsWith('icon:')) {
-    const name = icon.slice(5) as IconName;
+  const raw = icon.trim();
+  if (raw.startsWith('icon:')) {
+    const name = raw.slice(5) as IconName;
     return <Icon name={name} size={22} />;
+  }
+  if (CHECK_EMOJI.has(raw)) {
+    return (
+      <span class="dt-dock-ok">
+        <Icon name="check" size={22} />
+      </span>
+    );
   }
   return <span class="dt-dock-emoji">{icon}</span>;
 }

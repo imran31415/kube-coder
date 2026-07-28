@@ -147,6 +147,13 @@ export function WalkieTalkie() {
   // narration + turn-ownership bookkeeping instead of bleeding into the new
   // conversation.
   const liveThreadRef = useRef<string | null | undefined>(undefined);
+  // The thread this surface was showing when its own in-flight send left (#524).
+  // The gateway only mints `default_thread_id` AFTER the first dispatch, so the
+  // first message on a freshly-linked identity (and every "new chat") rotates
+  // the live thread id inside the refresh() that follows our own send. That
+  // rotation is ours — the reset below must not treat it as an external re-bind
+  // and cancel the THINKING state for the turn we just started.
+  const sentFromThreadRef = useRef<string | null | undefined>(undefined);
 
   const speakOn = speakReplies.value;
   const handsFreeOn = handsFree.value;
@@ -202,8 +209,19 @@ export function WalkieTalkie() {
   // conversation that isn't even the one on screen anymore.
   useEffect(() => {
     const tid = state?.thread_id ?? null;
-    if (liveThreadRef.current === tid) return;
+    const prev = liveThreadRef.current;
+    if (prev === tid) return;
+    // …but a rotation our OWN in-flight send caused is not a re-bind (#524):
+    // the first message of a new conversation creates the thread it lands in,
+    // so the id flips null → new (or old → new for a "new chat") while we are
+    // legitimately waiting on that very turn. Adopt the new id and keep the
+    // narration watermark, the pending turn and the watchdog intact.
+    const ownRotation = pendingTurn.current !== null && sentFromThreadRef.current === prev;
     liveThreadRef.current = tid;
+    if (ownRotation) {
+      sentFromThreadRef.current = tid; // later rotations are someone else's
+      return;
+    }
     narratedSeq.current = null;
     pendingTurn.current = null;
     clearBusyWatchdog();
@@ -552,6 +570,9 @@ export function WalkieTalkie() {
       // Own this turn (#474) — the busy-mirror effect only shows THINKING…
       // while we're waiting on OUR OWN reply, using this as the watermark.
       pendingTurn.current = { sinceCursor: res.cursor };
+      // Remember which thread we sent from, so the rotation this send may
+      // create is recognised as ours and not as a re-bind (#524).
+      sentFromThreadRef.current = liveThreadRef.current;
       armBusyWatchdog();
       dispatch('sent');
       await refresh();
@@ -573,6 +594,7 @@ export function WalkieTalkie() {
       const res = await sendPreview(button ? '' : text, button);
       // Own this turn (#474) — see sendVoice above for why.
       pendingTurn.current = { sinceCursor: res.cursor };
+      sentFromThreadRef.current = liveThreadRef.current; // #524, as above
       armBusyWatchdog();
       if (!button) setDraft('');
       await refresh();

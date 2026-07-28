@@ -1,5 +1,5 @@
 /* Mission Control — kanban board unifying builds, chats and sub-agents
-   (issue #425). Board layout: 4 columns with hairline separators on
+   (issue #425). Board layout: 3 columns with hairline separators on
    desktop; stacked swimlanes in priority order on mobile. */
 
 /* The board wants width — opt out of the centered route container
@@ -84,9 +84,12 @@
 }
 
 /* ---- board / columns ---- */
+/* One track per rendered column — COLUMNS in index.tsx is Waiting/Running/Done.
+   The old `repeat(4, …)` left a phantom empty track on the right of every
+   desktop board (#504); keep this in step if a column is ever added. */
 .mission-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(250px, 1fr));
+  grid-template-columns: repeat(3, minmax(250px, 1fr));
   gap: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);

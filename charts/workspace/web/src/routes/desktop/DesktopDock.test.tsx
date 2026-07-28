@@ -82,6 +82,34 @@ describe('DesktopDock', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  // #507 — the dock's identity is monochrome line-work. A user's emoji still
+  // works, it's just normalized (grayscale wash + neutral tile, via
+  // .dt-dock-emoji) so it can't out-weigh the Icon glyphs beside it.
+  it('renders a named icon as a line glyph and a user emoji through the normalizing wrapper', () => {
+    const h = noopHandlers();
+    const { container } = render(<DesktopDock items={items} {...h} />);
+    const [named, emoji] = Array.from(container.querySelectorAll('.dt-dock-glyph'));
+    expect(named.querySelector('svg')).not.toBeNull();
+    expect(named.querySelector('.dt-dock-emoji')).toBeNull();
+    const wash = emoji.querySelector('.dt-dock-emoji');
+    expect(wash).not.toBeNull();
+    expect(wash!.textContent).toBe('📚');
+    // Still a working launcher — normalization is presentational only.
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Docs' }));
+    expect(h.onLaunch).toHaveBeenCalledWith(items[1]);
+  });
+
+  it('swaps a ✅ status emoji for the line check tinted with --success', () => {
+    const h = noopHandlers();
+    const ok: DesktopItem[] = [
+      { id: 'c', label: 'Deploy', icon: '✅', action: { type: 'shell', command: 'make deploy' } },
+    ];
+    const { container } = render(<DesktopDock items={ok} {...h} />);
+    const glyph = container.querySelector('.dt-dock-glyph')!;
+    expect(glyph.querySelector('.dt-dock-ok svg')).not.toBeNull();
+    expect(glyph.textContent).not.toContain('✅');
+  });
+
   it('hides entirely for read-only visitors with an empty dock', () => {
     serverMode.value = { readOnly: true, authed: false, authMode: 'none' };
     const h = noopHandlers();
