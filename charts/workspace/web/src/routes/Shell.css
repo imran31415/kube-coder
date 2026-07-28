@@ -30,16 +30,16 @@
   .app-main { padding-bottom: var(--bottomnav-total); }
 }
 
-[data-density="compact"] .app-main { font-size: 12.5px; }
+[data-density="compact"] .app-main { font-size: var(--text-md); }
 
 /* Suspense fallback while a lazily-loaded route chunk is fetched (issue #101).
    Reserves the main area and shows a subtle pulse so route switches don't
    flash blank. Local chunks resolve in a few ms, so this is rarely seen. */
 .route-loading {
   min-height: 40vh;
-  border-radius: var(--radius, 8px);
+  border-radius: var(--radius);
   margin: 16px;
-  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+  background: var(--surface-2);
   animation: route-loading-pulse 1.1s ease-in-out infinite;
 }
 @keyframes route-loading-pulse {

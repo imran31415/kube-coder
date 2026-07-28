@@ -7,6 +7,10 @@
   height: var(--topbar-total);
   padding: 0 var(--size-3);
   padding-top: var(--safe-top);
+  /* In landscape the inset moves to the sides — add it to the horizontal
+     padding so the brand and the action buttons clear the notch. */
+  padding-left: calc(var(--size-3) + var(--safe-left));
+  padding-right: calc(var(--size-3) + var(--safe-right));
   display: flex; align-items: center; gap: var(--size-3);
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   backdrop-filter: blur(8px);
@@ -20,7 +24,13 @@
 .topbar-search { min-width: 0; }
 .topbar-actions { flex-shrink: 0; }
 @media (max-width: 720px) {
-  .topbar { gap: var(--size-2); padding: 0 var(--size-2); }
+  /* Longhands, not the `padding` shorthand: the shorthand reset padding-top
+     to 0 and so dropped --safe-top on exactly the phones that have a notch. */
+  .topbar {
+    gap: var(--size-2);
+    padding-left: calc(var(--size-2) + var(--safe-left));
+    padding-right: calc(var(--size-2) + var(--safe-right));
+  }
   .brand-tag { display: none; }
   .brand-name { display: none; }
 }
@@ -44,21 +54,21 @@
 }
 .brand-mark {
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--accent); color: var(--on-accent);
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0;
 }
 .brand-name {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   letter-spacing: -0.01em;
 }
 .brand-tag {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--text-subtle);
   padding: 1px 6px;
   border: 1px solid var(--border-2);
@@ -77,7 +87,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text-subtle);
-  font-size: 12.5px;
+  font-size: var(--text-md);
   text-align: left;
   cursor: pointer;
   transition: border-color var(--motion-fast), background var(--motion-fast);
@@ -87,11 +97,11 @@
 
 .topbar-kbd {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--text-xs);
   color: var(--text-subtle);
   border: 1px solid var(--border-2);
   border-bottom-width: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   padding: 1px 5px;
   background: var(--surface);
 }
@@ -102,8 +112,8 @@
    rendered when serverMode.readOnly is true (see MutatorOnly.tsx). */
 .readonly-pill {
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--accent);
@@ -131,7 +141,7 @@
   outline-offset: 2px;
 }
 @media (max-width: 480px) {
-  .readonly-pill { font-size: 9.5px; padding: 1px 6px; }
+  .readonly-pill { font-size: var(--text-2xs); padding: 1px 6px; }
 }
 /* Narrow phones — the pill label is long ("Demo · Deploy your own ↗");
    swap to a short "Deploy ↗" so it fits next to the WaitingBadge. */
@@ -139,13 +149,13 @@
   .readonly-pill-link { font-size: 0; padding: 2px 8px; }
   .readonly-pill-link::before {
     content: "Deploy ↗";
-    font-size: 10.5px;
+    font-size: var(--text-xs);
   }
 }
 
 .topbar-link {
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   color: var(--text-muted);
   padding: 5px 10px;
   border-radius: var(--radius-sm);
@@ -174,7 +184,7 @@
 }
 @media (max-width: 720px) {
   .topbar-kbd { display: none; }
-  .topbar-search > span { font-size: 12px; }
+  .topbar-search > span { font-size: var(--text-sm); }
   /* Phones: hide MetricsBar + VS Code + New terminal from the topbar entirely.
      They're all accessible via the BottomNav → More sheet, and stacking 5+
      buttons in the topbar clipped them on narrow screens. Theme toggle stays
@@ -185,5 +195,5 @@
 @media (max-width: 480px) {
   /* Even tighter: drop the brand-tag entirely (already hidden) and tighten
      the search padding so the topbar doesn't feel cramped. */
-  .topbar-search { padding: 4px 8px; font-size: 12px; }
+  .topbar-search { padding: 4px 8px; font-size: var(--text-sm); }
 }

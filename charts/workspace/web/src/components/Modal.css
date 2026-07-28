@@ -10,9 +10,9 @@
 }
 .modal-dialog {
   background: var(--surface);
-  color: var(--text, #e6e6ea);
-  border: 1px solid var(--border, #2a2a31);
-  border-radius: 10px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
   padding: 20px 22px 18px;
   width: 100%;
   /* max-width is supplied inline via the `width` prop. */

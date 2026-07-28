@@ -17,6 +17,9 @@
   transition: transform var(--motion-base);
   display: flex; flex-direction: column;
   padding-top: var(--safe-top);
+  /* Right-anchored, so in landscape it is the RIGHT inset that would
+     otherwise slide its content under the notch / rounded corner. */
+  padding-right: var(--safe-right);
 }
 .drawer-open { transform: translateX(0); }
 
@@ -29,7 +32,7 @@
   top: 0;
   z-index: 1;
 }
-.drawer-title { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.drawer-title { font-size: var(--text-lg); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
 .drawer-header .btn-icon {
   /* Larger hit target + stronger contrast so the close affordance is obvious. */
   width: 36px;

@@ -24,8 +24,8 @@
 }
 .route-title {
   font-family: var(--font-mono);
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0;
   display: inline-flex;
   align-items: baseline;
@@ -34,9 +34,9 @@
 .route-title::before {
   content: '$';
   color: var(--text-subtle);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
-.route-subtitle { font-size: 13px; }
+.route-subtitle { font-size: var(--text-md); }
 
 .route-header-with-action {
   flex-direction: row;

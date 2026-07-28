@@ -3,7 +3,7 @@ body {
   /* Reading-comfort sizing — bumped from 14px / 1.5 toward Kindle-ish
      parameters so long sessions on the dashboard feel like reading a
      well-set page rather than scanning UI chrome. */
-  font-size: 15px;
+  font-size: var(--text-xl);
   line-height: 1.65;
   background: var(--bg);
   color: var(--text);
@@ -15,10 +15,10 @@ body {
 }
 
 @media (pointer: coarse) {
-  body { font-size: 16px; }
+  body { font-size: var(--text-2xl); }
 }
 
-code, kbd, pre, samp { font-family: var(--font-mono); font-size: 13px; }
+code, kbd, pre, samp { font-family: var(--font-mono); font-size: var(--text-md); }
 
 ::selection { background: var(--accent-soft); color: var(--text); }
 

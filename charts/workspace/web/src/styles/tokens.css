@@ -21,6 +21,11 @@
   --surface-3:   #2f2f34;
   --border:      #2c2c30;
   --border-2:    #424248;
+  /* Alias for --border-2, kept because ~6 hover rules across the SPA ask
+     for "the stronger border" by name. It was referenced long before it
+     was ever defined, so those hovers silently fell back to the flat
+     --border and the hover never read as a state change (#501). */
+  --border-strong: var(--border-2);
   --text:        #ededee;
   --text-muted:  #aeaeb2;
   /* Lightened from #82828a so subtle text keeps ≥4.5:1 contrast even on the
@@ -44,10 +49,13 @@
   --warning-text: var(--warn);
 
   /* Flatter / more "materialistic" than the prior 4/6/10 — corners barely
-     round at all so panels read as flat sheets rather than chips. */
+     round at all so panels read as flat sheets rather than chips.
+     --radius-xl is the one deliberately-round step, reserved for floating
+     overlays (modals, dialogs) that need to read as lifted sheets. */
   --radius-sm: 2px;
   --radius:    3px;
   --radius-lg: 5px;
+  --radius-xl: 10px;
   --radius-pill: 999px;
 
   --motion-fast: 150ms ease;
@@ -64,6 +72,40 @@
   --font-sans: 'Geist', 'Geist Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
+  /* Type scale. Derived from the sizes the SPA already used (21 distinct
+     values, including seven half-pixels) collapsed onto 10 steps. The
+     bottom half is 1px-granular on purpose: 11/12/13 are genuinely
+     distinct rungs in dense chrome (rails, badges, meta rows) and merging
+     them would visibly reflow the app. Half-pixels are gone — they only
+     ever rendered as a rounded whole pixel anyway, and which way they
+     rounded depended on the device pixel ratio.
+
+     Two steps are load-bearing beyond taste:
+       --text-xl  (15px) is the body base set in globals.css
+       --text-2xl (16px) is the iOS "don't zoom the viewport on focus"
+                  floor — every mobile text input must be >= this. */
+  --text-2xs: 10px;
+  --text-xs:  11px;
+  --text-sm:  12px;
+  --text-md:  13px;
+  --text-lg:  14px;
+  --text-xl:  15px;
+  --text-2xl: 16px;
+  --text-3xl: 18px;
+  --text-4xl: 20px;
+  --text-5xl: 28px;
+
+  /* Weight ramp. Geist is loaded from Google Fonts as STATIC faces at
+     400/500/600/700 (see index.html) — not the variable font — so the
+     550/650/800 weights the SPA used never rendered as themselves: CSS
+     font matching snapped 550->600, 650->700, 800->700. These four steps
+     are the ones that actually exist. If the variable face is ever
+     bundled, widen the ramp here rather than at call sites. */
+  --weight-normal:   400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
   --size-1: 4px;
   --size-2: 8px;
   --size-3: 12px;
@@ -78,6 +120,12 @@
 
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top:    env(safe-area-inset-top, 0px);
+  /* Landscape insets. On a notched phone held sideways the notch and the
+     rounded corners eat into the LEFT/RIGHT edges instead of top/bottom,
+     so fixed chrome (topbar, bottom nav, drawer, sheets, toasts) has to
+     pad horizontally too or its first/last control lands under the notch. */
+  --safe-left:   env(safe-area-inset-left, 0px);
+  --safe-right:  env(safe-area-inset-right, 0px);
 
   /* True on-screen height of the fixed chrome, notch/home-indicator included.
      The bars GROW by the safe-area inset (they don't let padding eat into

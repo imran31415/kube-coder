@@ -17,17 +17,17 @@
 @keyframes ob-rise { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 .ob-header { display: flex; align-items: center; justify-content: space-between; }
-.ob-step { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+.ob-step { font-size: var(--text-xs); letter-spacing: 0.04em; text-transform: uppercase; }
 .ob-skip {
-  font-size: 11.5px; color: var(--text-subtle);
+  font-size: var(--text-sm); color: var(--text-subtle);
   padding: 4px 8px; border-radius: var(--radius-sm);
 }
 .ob-skip:hover { color: var(--text); background: var(--surface-2); }
-.ob-title { font-size: 20px; font-weight: 600; letter-spacing: -0.015em; }
-.ob-body { display: flex; flex-direction: column; gap: var(--size-3); font-size: 13.5px; }
+.ob-title { font-size: var(--text-4xl); font-weight: var(--weight-semibold); letter-spacing: -0.015em; }
+.ob-body { display: flex; flex-direction: column; gap: var(--size-3); font-size: var(--text-lg); }
 .ob-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--size-2); }
 @media (max-width: 600px) { .ob-row { grid-template-columns: 1fr; } }
-.ob-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.ob-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); color: var(--text-muted); }
 .ob-textarea {
   font: inherit;
   background: var(--surface-2);
@@ -41,12 +41,12 @@
 .ob-textarea:focus { outline: none; border-color: var(--accent); background: var(--surface); }
 .ob-footer { display: flex; align-items: center; justify-content: flex-end; gap: var(--size-2); }
 /* Left-aligned hint that shares the footer with a single action button. */
-.ob-note { margin-right: auto; font-size: 12px; }
+.ob-note { margin-right: auto; font-size: var(--text-sm); }
 .ob-warn {
-  font-size: 12.5px;
-  color: var(--warn, var(--text));
-  background: color-mix(in srgb, var(--warn, var(--accent)) 12%, var(--surface-2));
-  border: 1px solid color-mix(in srgb, var(--warn, var(--accent)) 30%, transparent);
+  font-size: var(--text-md);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
   padding: 8px 10px; border-radius: var(--radius-sm);
 }
 .ob-progress { display: flex; gap: 6px; justify-content: center; padding-top: var(--size-2); }

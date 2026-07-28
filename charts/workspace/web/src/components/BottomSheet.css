@@ -21,6 +21,8 @@
      and content isn't hidden behind the home indicator. */
   padding-top: var(--safe-top);
   padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
   max-height: 92vh;
 }
 .sheet-open { transform: translateY(0); }
@@ -46,7 +48,7 @@
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.sheet-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.sheet-title { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: -0.01em; }
 
 /* Folded handle+close row used when there's no title — saves ~50px of
    vertical space on mobile by avoiding a stacked handle + header.
