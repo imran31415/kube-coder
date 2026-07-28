@@ -527,3 +527,107 @@ export interface FeedItem {
   waiting: boolean;
   read: boolean;
 }
+
+// ---- Triggers: webhooks + crons (#250) -------------------------------------
+// Mirrors charts/workspace/web/src/api/triggers.ts and the backend's
+// WebhookManager/CronManager public views (server.py). Secret material is never
+// returned by the list endpoints — only `*_set` booleans — except once at
+// create time (`hmac_secret_once` / `fire_token_once`).
+
+export type TriggerKind = 'webhook' | 'cron';
+
+export interface WebhookRecord {
+  id: string;
+  prompt_template: string;
+  workdir?: string;
+  interpolate_mode?: 'attach' | 'interpolate';
+  provider?: string;
+  signature_header?: string;
+  signature_algo?: string;
+  created_at?: number;
+  /** True when an HMAC secret is configured. */
+  hmac_secret_set?: boolean;
+  /** True when NO secret is configured — the server then fails closed. */
+  unsigned?: boolean;
+  /** Returned once, on create, so the secret can be copied to the sender. */
+  hmac_secret_once?: string;
+  receive_url?: string;
+}
+
+export interface CronRecord {
+  id: string;
+  schedule: string;
+  prompt_template: string;
+  workdir?: string;
+  timezone?: string;
+  suspended?: boolean;
+  created_at?: number;
+  fire_token_set?: boolean;
+  /** kubectl-derived status, decorated by the server (best-effort). */
+  last_schedule_time?: string;
+  active?: number;
+}
+
+/** Webhooks and crons folded into one list, the way both UIs present them. */
+export interface Trigger {
+  kind: TriggerKind;
+  id: string;
+  prompt: string;
+  workdir?: string;
+  created_at?: number;
+  /** cron only */
+  schedule?: string;
+  timezone?: string;
+  suspended?: boolean;
+  /** webhook only */
+  unsigned?: boolean;
+  receive_url?: string;
+}
+
+export interface CreateWebhookInput {
+  id: string;
+  prompt_template: string;
+  workdir?: string;
+}
+
+export interface CreateCronInput {
+  id: string;
+  schedule: string;
+  prompt_template: string;
+  workdir?: string;
+  timezone?: string;
+}
+
+// ---- Docs (in-app documentation site, #250) --------------------------------
+// Mirrors charts/workspace/web/src/api/docs.ts and the server's DocsManager:
+// a manifest of sections → pages, and markdown fetched per page.
+
+export interface DocsPageMeta {
+  id: string;
+  title: string;
+  file: string;
+  summary?: string;
+}
+
+export interface DocsSection {
+  id: string;
+  title: string;
+  pages: DocsPageMeta[];
+}
+
+export interface DocsManifest {
+  version: number;
+  sections: DocsSection[];
+}
+
+export interface DocsPage {
+  id: string;
+  title: string;
+  summary?: string;
+  section_id: string;
+  section_title: string;
+  file: string;
+  /** mtime of the source markdown file, epoch seconds. */
+  edited_at: number;
+  markdown: string;
+}

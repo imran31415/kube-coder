@@ -29,12 +29,15 @@ import FeedScreen from './src/screens/FeedScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
+import TriggersScreen from './src/screens/TriggersScreen';
+import DocsScreen from './src/screens/DocsScreen';
+import DocsArticleScreen from './src/screens/DocsArticleScreen';
 import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ControllerScreen from './src/screens/ControllerScreen';
 import { NavDrawer } from './src/components/NavDrawer';
 import { MenuButton } from './src/components/ui';
-import type { AppsStackParams, TasksStackParams } from './src/navigation';
+import type { AppsStackParams, DocsStackParams, TasksStackParams } from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
 import { useConfig } from './src/store/useConfig';
@@ -101,6 +104,16 @@ function AppsStack() {
   );
 }
 
+const DocsStackNav = createNativeStackNavigator<DocsStackParams>();
+function DocsStack() {
+  return (
+    <DocsStackNav.Navigator screenOptions={stackScreenOptions}>
+      <DocsStackNav.Screen name="DocsList" component={DocsScreen} options={{ headerShown: false }} />
+      <DocsStackNav.Screen name="DocsArticle" component={DocsArticleScreen} options={{ title: 'Docs' }} />
+    </DocsStackNav.Navigator>
+  );
+}
+
 const Tab = createBottomTabNavigator();
 
 function MainTabs() {
@@ -137,6 +150,8 @@ function MainTabs() {
         <Tab.Screen name="Memory" component={MemoryScreen} />
         <Tab.Screen name="Files" component={FilesScreen} />
         <Tab.Screen name="Skills" component={SkillsScreen} />
+        <Tab.Screen name="Triggers" component={TriggersScreen} />
+        <Tab.Screen name="Docs" component={DocsStack} />
         <Tab.Screen name="Metrics" component={MetricsScreen} />
         {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
         <Tab.Screen name="Settings" component={SettingsScreen} />

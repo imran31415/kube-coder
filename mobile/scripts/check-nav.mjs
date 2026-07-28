@@ -84,10 +84,16 @@ async function assertEscape(page, tag, shotName) {
   return { hasMenu, hasBack };
 }
 
+// Drawer entries carry an aria-label ("Go to Docs") distinct from their visible
+// text, so they can't collide with the same word rendered by a screen below —
+// and the list scrolls now that it's longer than a short phone screen, so the
+// target is scrolled in before the topmost hit-test.
 async function openDrawerAndGo(page, item) {
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(450);
-  await clickVisible(page.getByText(item, { exact: true }), `drawer item ${item}`);
+  const entry = page.getByLabel(`Go to ${item}`);
+  await entry.first().scrollIntoViewIfNeeded();
+  await clickVisible(entry, `drawer item ${item}`);
   await sleep(900);
 }
 
@@ -145,7 +151,7 @@ async function openDrawerAndGo(page, item) {
   const page = await freshPage();
   // Drawer labels from src/navGroups.ts (#267): Mission Control is now the
   // section header; its screen entry is "Overview", and Hypervisor is "Chat".
-  for (const item of ['Overview', 'Chat', 'Walkie-Talkie', 'Builds', 'Apps', 'Memory', 'Files', 'Skills', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
+  for (const item of ['Overview', 'Chat', 'Walkie-Talkie', 'Builds', 'Triggers', 'Apps', 'Memory', 'Files', 'Skills', 'Docs', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
     await openDrawerAndGo(page, item);
     await assertEscape(page, `Top-level: ${item}`, `05-top-${item.toLowerCase()}.png`);
   }
@@ -174,6 +180,16 @@ async function openDrawerAndGo(page, item) {
   await clickVisible(page.getByText('storefront', { exact: true }), 'app row');
   await sleep(1100);
   await assertEscape(page, 'AppView via Apps list', '08-app-view.png');
+
+  // Docs → article (#250): the article is a stack screen, so its escape is the
+  // header back button, not the drawer. Step out of AppView first — a detail
+  // screen has no ☰ to open the drawer from.
+  await clickVisible(page.getByLabel(/back/i), 'back from app view');
+  await sleep(700);
+  await openDrawerAndGo(page, 'Docs');
+  await clickVisible(page.getByLabel('Open Getting started'), 'docs row');
+  await sleep(1000);
+  await assertEscape(page, 'DocsArticle via Docs list', '09-docs-article.png');
   await page.close();
 }
 

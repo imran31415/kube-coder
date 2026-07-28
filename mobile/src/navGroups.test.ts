@@ -12,6 +12,7 @@ describe('NAV_GROUPS (#267)', () => {
         'Controller',
         'Cto',
         'Desktop',
+        'Docs',
         'Feed',
         'Files',
         'Hypervisor',
@@ -21,6 +22,7 @@ describe('NAV_GROUPS (#267)', () => {
         'Settings',
         'Skills',
         'Tasks',
+        'Triggers',
         'Walkie',
       ].sort(),
     );
@@ -43,6 +45,13 @@ describe('NAV_GROUPS (#267)', () => {
     expect(byName.MissionControl).toBe('Overview');
     expect(byName.Cto).toBe('AI CTO');
     expect(byName.Feed).toBe('Feed');
+  });
+
+  it('files Triggers under Mission Control and Docs under Knowledge, like the web rail (#250)', () => {
+    const groupOf = (name: string) =>
+      NAV_GROUPS.find((g) => g.items.some((i) => i.name === name))?.title;
+    expect(groupOf('Triggers')).toBe('Mission Control');
+    expect(groupOf('Docs')).toBe('Knowledge');
   });
 
   it('keeps drawer labels unique so Playwright label navigation stays unambiguous', () => {

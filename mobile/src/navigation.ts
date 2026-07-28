@@ -16,3 +16,12 @@ export type AppsStackParams = {
 };
 
 export type AppsNav = NativeStackNavigationProp<AppsStackParams>;
+
+/** Stack routes for the Docs tab (#250). The list passes the manifest title
+ *  through so the article header is right before the body has loaded. */
+export type DocsStackParams = {
+  DocsList: undefined;
+  DocsArticle: { id: string; title: string };
+};
+
+export type DocsNav = NativeStackNavigationProp<DocsStackParams>;

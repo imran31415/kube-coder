@@ -8,9 +8,10 @@
  *   Knowledge       — what the workspace knows (Memory, Skills)
  *   (untitled tail) — Controller + Settings, standalone like the web rail
  *
- * Mobile-only deltas vs the web: no Triggers/Docs screens here; Metrics and
- * Controller exist only here (Metrics is machine health → Workspace; the
- * conditional Controller entry stays ungrouped next to Settings).
+ * Mobile-only deltas vs the web: Metrics and Controller exist only here
+ * (Metrics is machine health → Workspace; the conditional Controller entry
+ * stays ungrouped next to Settings). Triggers and Docs landed in #250 and sit
+ * in the same groups the web rail files them under.
  *
  * Pure data — no react-native imports — so the node-side vitest suite can
  * assert the IA without rendering. `icon` values are Ionicons glyph names;
@@ -45,6 +46,9 @@ export const NAV_GROUPS: NavGroupDef[] = [
       { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' },
       { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
       { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },
+      // Triggers fire builds — agent ops, not workspace plumbing (same
+      // reasoning as the web rail, which files /triggers under Mission Control).
+      { name: 'Triggers', label: 'Triggers', icon: 'flash-outline' },
     ],
   },
   {
@@ -61,6 +65,7 @@ export const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { name: 'Memory', label: 'Memory', icon: 'bookmark-outline' },
       { name: 'Skills', label: 'Skills', icon: 'sparkles-outline' },
+      { name: 'Docs', label: 'Docs', icon: 'book-outline' },
     ],
   },
   {

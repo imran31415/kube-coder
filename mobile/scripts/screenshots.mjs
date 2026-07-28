@@ -87,11 +87,15 @@ async function clickVisible(loc, what) {
   await el.click();
 }
 
-/** Open the drawer and jump to a top-level destination by its drawer label. */
+/** Open the drawer and jump to a top-level destination by its drawer label.
+ *  Entries expose an aria-label ("Go to Memory") and the list scrolls, so the
+ *  target is scrolled in before it's clicked (mirrors scripts/check-nav.mjs). */
 async function go(page, label) {
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(450);
-  await clickVisible(page.getByText(label, { exact: true }), `drawer item ${label}`);
+  const entry = page.getByLabel(`Go to ${label}`);
+  await entry.first().scrollIntoViewIfNeeded();
+  await clickVisible(entry, `drawer item ${label}`);
   await sleep(900);
 }
 
