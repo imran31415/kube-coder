@@ -33,6 +33,10 @@ data:
     TOKEN_FILE = os.path.join(CREDENTIALS_DIR, ".github-token")
     ENV_FILE = os.path.join(CREDENTIALS_DIR, ".github-env")
     AUTH_MODE_FILE = os.path.join(CREDENTIALS_DIR, ".github-auth-mode")
+    # `credential.helper store` writes here; ~/.git-credentials symlinks onto it.
+    GIT_STORE_FILE = os.path.join(CREDENTIALS_DIR, ".git-credentials")
+    # git config key for the github.com-scoped helper chain.
+    HOST_HELPER_KEY = "credential.https://github.com.helper"
     REFRESH_INTERVAL = 3000  # 50 minutes in seconds
 
 
@@ -141,20 +145,68 @@ data:
             pass
 
 
+    def purge_stored_github_credentials():
+        """Drop github.com lines from the persistent `store` credentials file.
+
+        `credential.helper store` writes a point-in-time password into
+        ~/.git-credentials, which is symlinked onto the PVC and therefore
+        OUTLIVES the 1-hour App token that may have been captured in it. A
+        stale `ghs_…` line there then answers every github.com prompt with a
+        dead token (401) until someone deletes it by hand (issue #454). In app
+        mode github.com auth is always brokered by the helper installed below,
+        so a stored github.com line can never be useful — only harmful.
+        CLAUDE.md documents `store` as the opt-in path for NON-GitHub hosts;
+        those lines are preserved.
+        """
+        try:
+            with open(GIT_STORE_FILE) as f:
+                lines = f.readlines()
+        except OSError:
+            return
+        kept = [ln for ln in lines if "github.com" not in ln]
+        if len(kept) == len(lines):
+            return
+        try:
+            with open(GIT_STORE_FILE, "w") as f:
+                f.writelines(kept)
+            os.chmod(GIT_STORE_FILE, 0o600)
+            print("[github-app-token] Purged %d stale github.com line(s) from "
+                  "%s" % (len(lines) - len(kept), GIT_STORE_FILE))
+        except OSError:
+            pass
+
+
     def configure_git(token: str, mode: str):
         """Point git's credential helper at the identity for the current mode.
 
-        app:      install a helper that always cats the fresh App token.
-        personal: remove that global App helper and let the user's own gh login
+        app:      install a helper that always cats the fresh App token, and
+                  make it the ONLY helper git consults for github.com.
+        personal: remove that App helper and let the user's own gh login
                   drive git (best-effort `gh auth setup-git`), so a personal
                   `gh auth login` actually takes effect for `git push` (#256).
         """
+        helper = (
+            "!f() { "
+            'echo "protocol=https"; '
+            'echo "host=github.com"; '
+            'echo "username=x-access-token"; '
+            'echo "password=$(cat /home/dev/.credentials/.github-token)"; '
+            "}; f"
+        )
         if mode == "personal":
             # Drop only the top-level (App-owned) credential.helper. Per-host
             # helpers a user set for non-GitHub hosts live under
             # credential.<url>.helper and are left untouched.
             subprocess.run(
                 ["git", "config", "--global", "--unset-all", "credential.helper"],
+                capture_output=True,
+            )
+            # Withdraw the App-owned github.com helper too — value-pattern, so
+            # this call only ever removes OUR entry. `gh auth setup-git` below
+            # then rewrites the chain for the personal login.
+            subprocess.run(
+                ["git", "config", "--global", "--unset-all",
+                 HOST_HELPER_KEY, "github-token"],
                 capture_output=True,
             )
             # Let gh serve as the github.com credential helper for the personal
@@ -164,18 +216,38 @@ data:
                 capture_output=True,
             )
             return
-        helper = (
-            "!f() { "
-            'echo "protocol=https"; '
-            'echo "host=github.com"; '
-            'echo "username=x-access-token"; '
-            'echo "password=$(cat /home/dev/.credentials/.github-token)"; '
-            "}; f"
-        )
         subprocess.run(
             ["git", "config", "--global", "--replace-all", "credential.helper", helper],
             check=True,
         )
+        # …and make that helper the effective one for github.com specifically
+        # (issue #454). `gh auth setup-git` — run by `gh auth login`, or by a
+        # previous stint in personal mode — writes:
+        #
+        #   [credential "https://github.com"]
+        #       helper =                                 <- EMPTY value: RESETS
+        #       helper = !/usr/bin/gh auth git-credential
+        #
+        # git accumulates helpers in file order and an empty value CLEARS the
+        # list, so that host-scoped reset silently discards the self-refreshing
+        # top-level helper above — for github.com, the one host it exists for.
+        # What answers instead is `gh`, which prefers the GH_TOKEN env var: any
+        # long-lived shell (tmux pane, agent session) still exports the
+        # PRE-rotation token, so every push 401s an hour into the session.
+        # Rewrite the whole host-scoped chain to: reset, then our file reader.
+        # The reset is kept deliberately — it also drops anything else (a stale
+        # gh entry, a repo-agnostic `store`) that would otherwise be tried
+        # first. `gh` CLI auth is unaffected: it reads GH_TOKEN / hosts.yml,
+        # not git's credential helpers.
+        subprocess.run(
+            ["git", "config", "--global", "--replace-all", HOST_HELPER_KEY, ""],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "--global", "--add", HOST_HELPER_KEY, helper],
+            capture_output=True,
+        )
+        purge_stored_github_credentials()
 
 
     def refresh_token(app_id: str, installation_id: str, private_key: str):
