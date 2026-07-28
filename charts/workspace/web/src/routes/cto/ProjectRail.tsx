@@ -16,6 +16,38 @@ import type { Project } from '../../api/projects';
 interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  /** Render as a narrow icon strip instead of the full card list (#530). */
+  collapsed?: boolean;
+  /** Supplied on desktop only — mobile stacks the rail and never collapses it. */
+  onToggleCollapse?: () => void;
+}
+
+/** Up to two letters for a collapsed rail avatar: the initials of the first two
+ *  words ("kube-coder" → "KC"), or the first two letters of a single word. */
+export function projectInitials(name: string): string {
+  const parts = (name || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+/** The rail's collapse/expand chevron — labelled for both states so a screen
+ *  reader hears what the control does, not just where it is. */
+function RailToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? 'Expand projects rail' : 'Collapse projects rail';
+  return (
+    <button
+      type="button"
+      class="cto-rail-toggle"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-controls="cto-project-rail"
+      aria-label={label}
+      title={label}
+    >
+      <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={14} />
+    </button>
+  );
 }
 
 function pulseSummary(p: Project): string {
@@ -101,17 +133,66 @@ function SkeletonCard() {
   );
 }
 
-export function ProjectRail({ selectedId, onSelect }: Props) {
+export function ProjectRail({ selectedId, onSelect, collapsed = false, onToggleCollapse }: Props) {
   const list = projects.value.filter((p) => p.status !== 'archived');
   const loading = projectsLoading.value && projects.value.length === 0;
   // Archive is confirmed (design review #2) — it's the only way to undo a wrong
   // discovery guess, so a stray tap shouldn't silently drop a project.
   const [pendingArchive, setPendingArchive] = useState<Project | null>(null);
 
+  // Collapsed (#530): an icon strip of initials with tooltips. Selecting still
+  // works; archiving doesn't — that lives in the expanded card's overflow.
+  if (collapsed) {
+    return (
+      <nav id="cto-project-rail" class="cto-rail cto-rail-collapsed" aria-label="Projects">
+        <div class="cto-rail-head">
+          {onToggleCollapse && <RailToggle collapsed onToggle={onToggleCollapse} />}
+        </div>
+        <div class="cto-rail-list">
+          <button
+            type="button"
+            class={`cto-icon-card ${selectedId === null ? 'cto-icon-card-selected' : ''}`}
+            onClick={() => onSelect(null)}
+            aria-label="Workspace"
+            aria-current={selectedId === null ? 'true' : undefined}
+            title="Workspace — everything in your workspace"
+          >
+            <Icon name="desktop" size={15} />
+          </button>
+          {list.map((p) => {
+            const running = p.pulse?.running ?? 0;
+            const waiting = p.pulse?.waiting ?? 0;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                class={`cto-icon-card ${selectedId === p.id ? 'cto-icon-card-selected' : ''}`}
+                onClick={() => onSelect(p.id)}
+                aria-label={p.name}
+                aria-current={selectedId === p.id ? 'true' : undefined}
+                title={p.name}
+              >
+                <span class="cto-icon-initials" aria-hidden="true">
+                  {projectInitials(p.name)}
+                </span>
+                {(running > 0 || waiting > 0) && (
+                  <span class="cto-icon-pulse" aria-hidden="true">
+                    <span class={`cto-dot ${running > 0 ? 'cto-dot-running' : 'cto-dot-waiting'}`} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+    );
+  }
+
   return (
-    <nav class="cto-rail" aria-label="Projects">
+    <nav id="cto-project-rail" class="cto-rail" aria-label="Projects">
       <div class="cto-rail-head">
         <span class="cto-eyebrow">Projects</span>
+        {onToggleCollapse && <RailToggle collapsed={false} onToggle={onToggleCollapse} />}
       </div>
 
       <div class="cto-rail-list">

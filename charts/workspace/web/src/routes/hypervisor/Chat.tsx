@@ -671,32 +671,56 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
     return () => cancelAnimationFrame(raf);
   }, [draft]);
 
-  // The pin write below dispatches a real `scroll` event; this flag keeps
-  // onTranscriptScroll from re-measuring off that echo — mid-composer-resize
-  // it read a stale clientHeight and closed the jiggle feedback loop (#348).
-  const programmaticScrollRef = useRef(false);
+  // The pin write below dispatches a real `scroll` event; remembering the exact
+  // offset we wrote lets onTranscriptScroll tell that echo apart from a user
+  // gesture — mid-composer-resize it re-measured a stale clientHeight and
+  // closed the jiggle feedback loop (#348).
+  const programmaticTopRef = useRef<number | null>(null);
+  const pinRafRef = useRef(0);
 
-  useEffect(() => {
+  /** One scroll write: park the viewport on the newest message. */
+  function writeBottom() {
     const el = scrollRef.current;
-    if (!el || !pinnedRef.current) return;
+    if (!el) return;
     const before = el.scrollTop;
     el.scrollTop = el.scrollHeight;
-    // Only arm the guard when the viewport actually moved — an unmoved
-    // scrollTop fires no event, and a stale flag would swallow the user's
-    // next real scroll.
-    if (el.scrollTop !== before) programmaticScrollRef.current = true;
-  }, [turns]);
+    // Only remember the offset when the viewport actually moved — an unmoved
+    // scrollTop fires no event to swallow.
+    if (el.scrollTop !== before) programmaticTopRef.current = el.scrollTop;
+  }
+
+  /** Pin to the newest message, now *and* on the next frame — content laid out
+   *  after this tick would otherwise leave the view short of the bottom (#530):
+   *  the "Working…" placeholder that appears once a send is in flight, the
+   *  composer's rAF auto-grow/collapse (#348), late-measured markdown or media. */
+  function pinToBottom() {
+    writeBottom();
+    if (typeof requestAnimationFrame !== 'function') return;
+    cancelAnimationFrame(pinRafRef.current);
+    pinRafRef.current = requestAnimationFrame(writeBottom);
+  }
+
+  useEffect(() => () => cancelAnimationFrame(pinRafRef.current), []);
 
   // Track pin state: pinned when within ~80px of the bottom. Scrolling up
   // unpins (so polls stop yanking down); scrolling back to the bottom re-pins.
   function onTranscriptScroll() {
-    if (programmaticScrollRef.current) {
-      programmaticScrollRef.current = false;
-      return;
-    }
     const el = scrollRef.current;
     if (!el) return;
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+      pinnedRef.current = true;
+      return;
+    }
+    // Not at the bottom, yet sitting exactly where we last pinned: this is the
+    // echo of our own write measured against a stale mid-resize clientHeight,
+    // not the user scrolling away (#348). Leave the pin as it is.
+    if (
+      programmaticTopRef.current !== null &&
+      Math.abs(el.scrollTop - programmaticTopRef.current) <= 1
+    ) {
+      return;
+    }
+    pinnedRef.current = false;
   }
 
   // A freshly opened thread starts pinned to the bottom, and re-windowed to the
@@ -717,6 +741,7 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
     if (blocked) return;
     stopMic(); // sending finalizes dictation — don't keep transcribing into the next draft
     pinnedRef.current = true; // sending your own message re-pins to the bottom
+    pinToBottom();
     const value = (text ?? draft).trim();
     // Append each uploaded image's absolute path on its own line — Claude Code
     // reads the image by path (same as the Build tab composer).
@@ -746,6 +771,29 @@ export function Chat({ hideEmptyState = false }: { hideEmptyState?: boolean } = 
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
+
+  // New events re-pin, and so does the thinking placeholder appearing or being
+  // replaced by the real turn — it is rendered outside `turns`, so on its own
+  // the transcript effect below would leave the newest message off-screen by
+  // exactly the placeholder's height right after a send (#530).
+  useEffect(() => {
+    if (pinnedRef.current) pinToBottom();
+  }, [turns, thinking]);
+
+  // Content that resizes without a new event — images finishing load, the
+  // composer growing under the transcript, a CTO side pane collapsing (#530) —
+  // must not strand a pinned reader above the newest message either.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (pinnedRef.current) writeBottom();
+    });
+    ro.observe(el); // the viewport (composer resize shrinks/grows it)
+    const flow = el.firstElementChild;
+    if (flow) ro.observe(flow); // the content (streaming text, media)
+    return () => ro.disconnect();
+  }, [empty]);
 
   // ── Spoken replies (issue #396, tier 0) ────────────────────────────────────
   // When the topbar "speak replies" toggle is on, read the agent's prose aloud

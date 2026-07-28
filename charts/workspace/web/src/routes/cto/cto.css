@@ -12,6 +12,13 @@
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
+  /* Collapsing a side pane hands its width to the chat (#530) — glide, don't
+     jump. Dragging the splitter must stay 1:1 with the pointer. */
+  transition: grid-template-columns var(--motion-base);
+}
+.route-cto.cto-split-dragging { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .route-cto { transition: none; }
 }
 @supports not (height: 100dvh) {
   .route-cto { height: calc(100vh - var(--topbar-total)); }
@@ -42,8 +49,30 @@
   border-right: 1px solid var(--border);
 }
 .cto-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
   padding: var(--size-3) var(--size-3) var(--size-2);
 }
+/* Collapse/expand chevron — same weight as the card overflow button. */
+.cto-rail-toggle,
+.cto-brief-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--text-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--motion-fast), background var(--motion-fast);
+}
+.cto-rail-toggle:hover,
+.cto-brief-collapse:hover { color: var(--text); background: var(--surface-2); }
 .cto-rail-list {
   flex: 1;
   min-height: 0;
@@ -197,6 +226,43 @@
   .cto-skel { animation: none; opacity: 0.5; }
 }
 
+/* ── Collapsed rail (#530): icon strip of project initials ───────────── */
+.cto-rail-collapsed .cto-rail-head {
+  justify-content: center;
+  padding: var(--size-3) 0 var(--size-2);
+}
+.cto-rail-collapsed .cto-rail-list {
+  align-items: center;
+  padding: 0 0 var(--size-2);
+}
+.cto-icon-card {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    color var(--motion-fast);
+}
+.cto-icon-card:hover { border-color: var(--border-2); color: var(--text); }
+.cto-icon-card-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.cto-icon-pulse { position: absolute; top: -3px; right: -3px; line-height: 0; }
+.cto-icon-pulse .cto-dot { box-shadow: 0 0 0 2px var(--bg); }
+
 /* ── Split handle (mirrors the Hypervisor's) ─────────────────────────── */
 .cto-split-handle {
   cursor: col-resize;
@@ -347,7 +413,54 @@
   flex-direction: column;
   gap: var(--size-4);
 }
+/* Collapse control sits flush with the panel's top edge; the negative margin
+   cancels the column gap so it doesn't push the brief down a whole step. */
+.cto-brief-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: calc(-1 * var(--size-3));
+}
 .cto-brief-top { display: flex; flex-direction: column; gap: 3px; }
+
+/* ── Collapsed brief (#530): thin vertical edge tab ──────────────────── */
+.cto-brief-tab {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: var(--size-3);
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  overflow: hidden;
+}
+.cto-brief-tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 4px 10px;
+  border: none;
+  background: none;
+  color: var(--text-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--motion-fast), background var(--motion-fast);
+}
+.cto-brief-tab-btn:hover { color: var(--text); background: var(--surface-2); }
+.cto-brief-tab-label {
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+/* Brief-changed signal — the delta the expanded panel would have shown. */
+.cto-brief-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: none;
+}
 .cto-brief-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .cto-brief-repo { font-size: 11px; color: var(--text-subtle); font-family: var(--font-mono); }
 .cto-brief-section { display: flex; flex-direction: column; gap: 7px; }

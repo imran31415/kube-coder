@@ -35,14 +35,21 @@ import { justOnboarded } from '../../store/onboarding';
 import { claudeReady, refreshClaudeReady } from '../../store/claude';
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
-import { BriefPanel } from './BriefPanel';
+import { BriefPanel, BriefTab } from './BriefPanel';
 import {
   clampCtoRailW,
   initialCtoRailW,
+  ctoGridTemplate,
+  readPaneCollapsed,
+  writePaneCollapsed,
+  resolvePaneCollapsed,
   CTO_RAIL_W_KEY,
   CTO_RAIL_W_DEFAULT,
   CTO_RAIL_W_MIN,
   CTO_RAIL_W_MAX,
+  CTO_RAIL_COLLAPSED_KEY,
+  CTO_BRIEF_COLLAPSED_KEY,
+  CTO_AUTO_COLLAPSE_MAX,
 } from './railSplit';
 import './cto.css';
 
@@ -70,11 +77,23 @@ const FIRST_WIN_CHIPS = [
   'Landing page',
 ];
 
+/** Read a persisted pane-collapse choice, tolerating a blocked localStorage. */
+function readPane(key: string): boolean | null {
+  try {
+    return readPaneCollapsed(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
 export function CtoRoute() {
   // The 3-pane layout collapses to stacked (rail strip + chat + brief sheet)
   // at 860px — the SAME threshold as cto.css, so the split handle + desktop
   // brief aside never render in the cramped 721–860px band (design review #1).
   const narrow = useMediaQuery('(max-width: 860px)');
+  // Auto-collapse band (#530): wide enough to render all three panes, too
+  // narrow for the chat to be comfortable between them.
+  const cramped = useMediaQuery(`(max-width: ${CTO_AUTO_COLLAPSE_MAX}px)`);
   const disabled = serverMode.value.ctoEnabled === false;
   // First-win landing (#487): a user routed here straight from onboarding gets
   // a warm build-first opener. Capture the transient flag at mount and clear
@@ -95,6 +114,15 @@ export function CtoRoute() {
   const [dragging, setDragging] = useState(false);
   const railWRef = useRef(railW);
   railWRef.current = railW;
+
+  // Collapsible side panes (#530). `null` = the user has never toggled this
+  // pane, so the heuristics decide; an explicit choice is persisted and wins
+  // from then on.
+  const [railChoice, setRailChoice] = useState<boolean | null>(() => readPane(CTO_RAIL_COLLAPSED_KEY));
+  const [briefChoice, setBriefChoice] = useState<boolean | null>(() => readPane(CTO_BRIEF_COLLAPSED_KEY));
+  // Set once a message goes out: the conversation is now the focus, so the
+  // brief steps aside until the user asks for it back.
+  const [briefStoodAside, setBriefStoodAside] = useState(false);
   // A "Discuss with CTO" handoff from the Feed (#470): its context prefix is
   // queued here and sent once the target project's thread is ready.
   const pendingHandoff = useRef<string | null>(null);
@@ -108,6 +136,14 @@ export function CtoRoute() {
   function persistRailW(px: number) {
     try {
       localStorage.setItem(CTO_RAIL_W_KEY, String(Math.round(px)));
+    } catch {
+      /* noop */
+    }
+  }
+
+  function persistPane(key: string, collapsed: boolean) {
+    try {
+      localStorage.setItem(key, writePaneCollapsed(collapsed));
     } catch {
       /* noop */
     }
@@ -193,6 +229,34 @@ export function CtoRoute() {
     void sendMessage(text);
   }
 
+  // Once a message is on its way the chat is what matters — stand the brief
+  // aside (heuristic only; an explicit toggle below still wins).
+  const isSending = sending.value;
+  useEffect(() => {
+    if (isSending) setBriefStoodAside(true);
+  }, [isSending]);
+
+  // Stacked/mobile keeps its own layout: the rail is a horizontal strip and the
+  // brief is a bottom sheet, so neither collapses there.
+  const railCollapsed = !narrow && resolvePaneCollapsed(railChoice, cramped);
+  const briefCollapsed =
+    !narrow && resolvePaneCollapsed(briefChoice, cramped || briefStoodAside);
+
+  function toggleRail() {
+    const next = !railCollapsed;
+    setRailChoice(next);
+    persistPane(CTO_RAIL_COLLAPSED_KEY, next);
+  }
+
+  function toggleBrief() {
+    const next = !briefCollapsed;
+    setBriefChoice(next);
+    persistPane(CTO_BRIEF_COLLAPSED_KEY, next);
+    // Re-opening clears the stood-aside flag too, so the next send doesn't have
+    // to fight a choice the user just made.
+    if (!next) setBriefStoodAside(false);
+  }
+
   const chips = firstWin ? FIRST_WIN_CHIPS : starterChips(projectName);
   const welcomeLead = firstWin
     ? "Welcome aboard — I'm your AI CTO. Tell me in one sentence what you'd like to build, and I'll get started right away."
@@ -227,13 +291,18 @@ export function CtoRoute() {
       class={`route route-cto ${dragging ? 'cto-split-dragging' : ''}`}
       style={
         !narrow
-          ? { gridTemplateColumns: `${railW}px 6px minmax(0, 1fr) 320px` }
+          ? { gridTemplateColumns: ctoGridTemplate({ railW, railCollapsed, briefCollapsed }) }
           : undefined
       }
     >
-      <ProjectRail selectedId={selId} onSelect={(id) => void selectProject(id)} />
+      <ProjectRail
+        selectedId={selId}
+        onSelect={(id) => void selectProject(id)}
+        collapsed={railCollapsed}
+        onToggleCollapse={narrow ? undefined : toggleRail}
+      />
 
-      {!narrow && (
+      {!narrow && !railCollapsed && (
         <div
           class="cto-split-handle"
           role="separator"
@@ -365,7 +434,12 @@ export function CtoRoute() {
         <Chat hideEmptyState />
       </section>
 
-      {!narrow && <BriefPanel />}
+      {!narrow &&
+        (briefCollapsed ? (
+          <BriefTab onExpand={toggleBrief} delta={showDelta} />
+        ) : (
+          <BriefPanel onCollapse={toggleBrief} />
+        ))}
 
       {narrow && (
         <BottomSheet open={briefOpen} onClose={() => setBriefOpen(false)} title="Project brief" initialSnap="full">
