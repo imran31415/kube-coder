@@ -10,10 +10,33 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { closeDrawer, navigateTo, useActiveTab, useDrawerOpen } from '../store/nav';
 import { hasController } from '../store/config';
 import { useConfig } from '../store/useConfig';
-import { NAV_GROUPS } from '../navGroups';
+import { splitNavGroups } from '../navGroups';
+import type { NavItemDef } from '../navGroups';
 import { colors, font, gradients, radius, space } from '../theme';
 
 const WIDTH = Math.min(320, Math.round(Dimensions.get('window').width * 0.82));
+
+/** One destination row. Shared by the scrolling list and the pinned tail so
+ *  both keep the same hit area, active styling and accessibility label. */
+function DrawerItem({ item, active }: { item: NavItemDef; active: string }) {
+  const on = item.name === active;
+  const icon = (on ? item.icon.replace('-outline', '') : item.icon) as keyof typeof Ionicons.glyphMap;
+  return (
+    <Pressable
+      onPress={() => navigateTo(item.name)}
+      accessibilityRole="button"
+      // Distinct from the label text so screen readers (and the nav guard) can
+      // target the drawer entry unambiguously, even when a screen underneath
+      // renders the same word.
+      accessibilityLabel={`Go to ${item.label}`}
+      accessibilityState={{ selected: on }}
+      style={({ pressed }) => [styles.item, on && styles.itemActive, pressed && styles.itemPressed]}
+    >
+      <Ionicons name={icon} size={20} color={on ? colors.accent : colors.textMuted} />
+      <Text style={[styles.itemLabel, on && styles.itemLabelActive]}>{item.label}</Text>
+    </Pressable>
+  );
+}
 
 export function NavDrawer() {
   const open = useDrawerOpen();
@@ -38,11 +61,10 @@ export function NavDrawer() {
   if (!mounted) return null;
 
   // Same categorized IA as the web dashboard (#267); a group whose items are
-  // all filtered out (Controller unconfigured) drops entirely.
-  const groups = NAV_GROUPS.map((g) => ({
-    ...g,
-    items: g.items.filter((i) => !i.controller || hasController(cfg)),
-  })).filter((g) => g.items.length > 0);
+  // all filtered out (Controller unconfigured) drops entirely. The untitled
+  // tail (Controller + Settings) comes back separately so it can be pinned in
+  // view rather than scrolled off the bottom (#549).
+  const { scrolling, pinned } = splitNavGroups({ controller: hasController(cfg) });
   const host = (cfg.controllerHost || cfg.host || '').replace(/^https?:\/\//, '');
 
   const translateX = slide.interpolate({ inputRange: [0, 1], outputRange: [-WIDTH, 0] });
@@ -72,42 +94,37 @@ export function NavDrawer() {
 
           {/* Scrollable: the destination list outgrew a short phone screen
               once Triggers + Docs landed (#250), and a plain View silently
-              clipped the tail (Docs / Controller / Settings) off the bottom. */}
-          <ScrollView
-            style={styles.items}
-            contentContainerStyle={styles.itemsInner}
-            showsVerticalScrollIndicator={false}
-          >
-            {groups.map((g, gi) => (
-              <View key={g.title ?? 'tail'} style={[styles.group, gi > 0 && styles.groupGap]}>
+              clipped the tail (Docs / Controller / Settings) off the bottom —
+              on iOS it did worse than clip, drawing rows outside the parent
+              frame where hitTest: never reaches them (#549). The scroll
+              indicator stays on: at 14 entries against a ~580pt viewport,
+              something is always below the fold and needs to say so. */}
+          <ScrollView style={styles.items} contentContainerStyle={styles.itemsInner}>
+            {scrolling.map((g, gi) => (
+              <View key={g.title ?? `group-${gi}`} style={[styles.group, gi > 0 && styles.groupGap]}>
                 {g.title ? (
                   <Text style={styles.groupTitle}>{g.title}</Text>
                 ) : (
                   <View style={styles.groupDivider} />
                 )}
-                {g.items.map((it) => {
-                  const on = it.name === active;
-                  const icon = (on ? it.icon.replace('-outline', '') : it.icon) as keyof typeof Ionicons.glyphMap;
-                  return (
-                    <Pressable
-                      key={it.name}
-                      onPress={() => navigateTo(it.name)}
-                      accessibilityRole="button"
-                      // Distinct from the label text so screen readers (and the
-                      // nav guard) can target the drawer entry unambiguously,
-                      // even when a screen underneath renders the same word.
-                      accessibilityLabel={`Go to ${it.label}`}
-                      accessibilityState={{ selected: on }}
-                      style={({ pressed }) => [styles.item, on && styles.itemActive, pressed && styles.itemPressed]}
-                    >
-                      <Ionicons name={icon} size={20} color={on ? colors.accent : colors.textMuted} />
-                      <Text style={[styles.itemLabel, on && styles.itemLabelActive]}>{it.label}</Text>
-                    </Pressable>
-                  );
-                })}
+                {g.items.map((it) => (
+                  <DrawerItem key={it.name} item={it} active={active} />
+                ))}
               </View>
             ))}
           </ScrollView>
+
+          {/* Pinned tail (#549) — Controller + Settings sit outside the
+              scroller so they are always on screen, whatever the list above
+              grows to. This is the reported bug: Settings was the last of 16
+              entries and never reachable on an iPhone. */}
+          {pinned ? (
+            <View style={styles.pinned}>
+              {pinned.items.map((it) => (
+                <DrawerItem key={it.name} item={it} active={active} />
+              ))}
+            </View>
+          ) : null}
 
           <Text style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>kube-coder mobile</Text>
         </Animated.View>
@@ -128,6 +145,12 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderRightColor: colors.border,
     paddingHorizontal: space.md,
+    // Clip, don't spill. RN's default is `overflow: 'visible'`, and on iOS a
+    // subview drawn outside its parent's frame is painted but never hit-tested
+    // — which is how the drawer shipped a Settings row you could see and not
+    // tap (#549). Clipping turns any future overflow into an obvious, both-
+    // platform layout bug instead of a silent iOS-only dead control.
+    overflow: 'hidden',
   },
   brandRow: {
     flexDirection: 'row',
@@ -145,6 +168,18 @@ const styles = StyleSheet.create({
 
   items: { marginTop: space.md, flex: 1 },
   itemsInner: { paddingBottom: space.md },
+  // Auto-height (no flex) so the scroller above absorbs every leftover point
+  // and this block keeps its natural size at the bottom of the panel. The
+  // full-bleed rule (same treatment as the brand row) is what stops it reading
+  // as the tail of whichever section the scroller happens to be cut off in.
+  pinned: {
+    gap: 2,
+    paddingTop: space.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    marginHorizontal: -space.md,
+    paddingHorizontal: space.md,
+  },
   group: { gap: 2 },
   groupGap: { marginTop: space.md },
   groupTitle: {
