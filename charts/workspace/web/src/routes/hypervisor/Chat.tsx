@@ -21,7 +21,14 @@ import type { HypervisorCommand } from '../../api/hypervisor';
 import { supportsSlash, slashToken, matchCommands } from './slashPicker';
 import { WorkspaceContext } from './WorkspaceContext';
 import { ActivityPanel } from './ActivityPanel';
-import { buildTurns, renderMarkdown, turnCopyText, type Block } from './transcript';
+import {
+  buildTurns,
+  groupActivity,
+  renderMarkdown,
+  turnCopyText,
+  type ActivityBlock,
+  type Block,
+} from './transcript';
 import { turnWindow, TURN_WINDOW, TURN_WINDOW_STEP } from './transcriptWindow';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
@@ -90,6 +97,53 @@ function ActivityChip({ label, detail, error, ok }: { label: string; detail: str
         <Icon name="chevron-down" size={13} class="hv-activity-caret" />
       </button>
       {open && detail && <pre class="hv-activity-detail">{detail}</pre>}
+    </div>
+  );
+}
+
+/** A run of consecutive tool calls, collapsed into one chip (#546) — a turn
+ *  with 20 chips buried the actual answer. Expanding renders the very same
+ *  ActivityChip per call, so per-call detail and ✓/✗ behaviour is unchanged.
+ *  A run containing a failure starts expanded (initial state only, so the user
+ *  can still collapse it), and while the agent is working the trailing group
+ *  shows its newest child so "what is it doing right now" survives the fold. */
+function ActivityGroup({
+  label,
+  items,
+  errors,
+  live,
+}: {
+  label: string;
+  items: ActivityBlock[];
+  errors: number;
+  live?: boolean;
+}) {
+  const [open, setOpen] = useState(errors > 0);
+  const hint = !open && live ? items[items.length - 1]?.label : '';
+  return (
+    <div class={`hv-activity hv-activity-group ${open ? 'is-open' : ''} ${errors ? 'is-error' : ''}`}>
+      <button
+        type="button"
+        class="hv-activity-head"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span class="hv-activity-icon">
+          <Icon name={errors ? 'close' : 'terminal'} size={12} />
+        </span>
+        <span class="hv-activity-label">
+          {label}
+          {hint && <span class="hv-activity-hint"> · {hint}…</span>}
+        </span>
+        <Icon name="chevron-down" size={13} class="hv-activity-caret" />
+      </button>
+      {open && (
+        <div class="hv-activity-group-body">
+          {items.map((b, i) => (
+            <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} ok={b.ok} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -338,15 +392,20 @@ function LazyBlock({ minHeight, children }: { minHeight: number; children: Compo
 function AgentBlocks({
   blocks,
   interactive,
+  live,
   onChoose,
 }: {
   blocks: Block[];
   interactive: boolean;
+  /** This is the last turn and the agent is still working — lets the trailing
+   *  activity group surface the tool it is running right now. */
+  live?: boolean;
   onChoose: (text: string) => void;
 }) {
+  const rendered = useMemo(() => groupActivity(blocks), [blocks]);
   return (
     <>
-      {blocks.map((b, i) => {
+      {rendered.map((b, i) => {
         switch (b.kind) {
           case 'prose':
             return (
@@ -389,6 +448,16 @@ function AgentBlocks({
                 options={b.options}
                 interactive={interactive}
                 onChoose={onChoose}
+              />
+            );
+          case 'activity_group':
+            return (
+              <ActivityGroup
+                key={i}
+                label={b.label}
+                items={b.items}
+                errors={b.errors}
+                live={live && i === rendered.length - 1}
               />
             );
           default:
@@ -999,6 +1068,7 @@ export function Chat({
                     <AgentBlocks
                       blocks={t.blocks}
                       interactive={i === turns.length - 1 && !working}
+                      live={i === turns.length - 1 && thinking}
                       onChoose={submit}
                     />
                   </div>

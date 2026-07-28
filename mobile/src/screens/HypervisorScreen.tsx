@@ -55,12 +55,15 @@ import { Markdown } from '../components/Markdown';
 import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource, WorkdirOption } from '../api/types';
 import {
   buildTurns,
+  groupActivity,
   sameTranscript,
   turnCopyText,
   turnWindow,
   TURN_WINDOW,
   TURN_WINDOW_STEP,
+  type HvActivityBlock,
   type HvBlock,
+  type HvRenderBlock,
 } from '../util/hvTranscript';
 import {
   readSpeakPref,
@@ -769,7 +772,7 @@ export default function HypervisorScreen() {
                       </Pressable>
                     ) : null}
                   </View>
-                  {turn.blocks.map((b, j) => (
+                  {groupActivity(turn.blocks).map((b, j, all) => (
                     <Block
                       key={j}
                       block={b}
@@ -777,6 +780,7 @@ export default function HypervisorScreen() {
                       expanded={expanded}
                       setExpanded={setExpanded}
                       interactive={i === turns.length - 1 && !working}
+                      live={working && i === turns.length - 1 && j === all.length - 1}
                       onChoose={(t) => void send(t)}
                     />
                   ))}
@@ -1228,15 +1232,29 @@ function Block({
   expanded,
   setExpanded,
   interactive,
+  live,
   onChoose,
 }: {
-  block: HvBlock;
+  block: HvRenderBlock;
   id: string;
   expanded: Set<string>;
   setExpanded: (s: Set<string>) => void;
   interactive: boolean;
+  /** Trailing block of the last turn while the agent is working. */
+  live?: boolean;
   onChoose: (text: string) => void;
 }) {
+  if (block.kind === 'activity_group') {
+    return (
+      <ActivityGroup
+        block={block}
+        id={id}
+        expanded={expanded}
+        setExpanded={setExpanded}
+        live={live}
+      />
+    );
+  }
   if (block.kind === 'prose') {
     return <Markdown text={block.text} />;
   }
@@ -1252,6 +1270,21 @@ function Block({
   if (block.kind === 'choice') {
     return <ChoiceBlock question={block.question} options={block.options} interactive={interactive} onChoose={onChoose} />;
   }
+  return <ActivityRow block={block} id={id} expanded={expanded} setExpanded={setExpanded} />;
+}
+
+/** One tool/command run — collapsed to its label, tap to see the raw detail. */
+function ActivityRow({
+  block,
+  id,
+  expanded,
+  setExpanded,
+}: {
+  block: HvActivityBlock;
+  id: string;
+  expanded: Set<string>;
+  setExpanded: (s: Set<string>) => void;
+}) {
   const open = expanded.has(id);
   const toggle = () => {
     const next = new Set(expanded);
@@ -1260,7 +1293,12 @@ function Block({
   };
   return (
     <View style={[styles.activity, block.error && styles.activityErr]}>
-      <Pressable onPress={toggle} style={styles.activityHead}>
+      <Pressable
+        onPress={toggle}
+        style={styles.activityHead}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+      >
         <Ionicons name="terminal-outline" size={13} color={block.error ? colors.danger : colors.textMuted} />
         <Text style={[styles.activityLabel, block.error && { color: colors.danger }]} numberOfLines={1}>
           {block.label}
@@ -1268,6 +1306,59 @@ function Block({
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={colors.textFaint} />
       </Pressable>
       {open && block.detail ? <Text style={styles.activityDetail}>{block.detail}</Text> : null}
+    </View>
+  );
+}
+
+/** A run of consecutive tool calls folded into one row (#546) — a turn with 20
+ *  full-width chips was several screens of scrolling before the reply. Expands
+ *  to the same ActivityRow per call, so per-call detail is unchanged. A run
+ *  containing a failure starts expanded; the shared `expanded` Set holds the
+ *  *flip* of that default, so tapping still collapses it. */
+function ActivityGroup({
+  block,
+  id,
+  expanded,
+  setExpanded,
+  live,
+}: {
+  block: Extract<HvRenderBlock, { kind: 'activity_group' }>;
+  id: string;
+  expanded: Set<string>;
+  setExpanded: (s: Set<string>) => void;
+  live?: boolean;
+}) {
+  const flipped = expanded.has(id);
+  const failed = block.errors > 0;
+  const open = failed ? !flipped : flipped;
+  const toggle = () => {
+    const next = new Set(expanded);
+    flipped ? next.delete(id) : next.add(id);
+    setExpanded(next);
+  };
+  const hint = !open && live ? block.items[block.items.length - 1]?.label : '';
+  return (
+    <View style={[styles.activity, failed && styles.activityErr]}>
+      <Pressable
+        onPress={toggle}
+        style={styles.activityHead}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+      >
+        <Ionicons name="terminal-outline" size={13} color={failed ? colors.danger : colors.textMuted} />
+        <Text style={[styles.activityLabel, failed && { color: colors.danger }]} numberOfLines={1}>
+          {block.label}
+          {hint ? <Text style={styles.activityHint}> · {hint}…</Text> : null}
+        </Text>
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={colors.textFaint} />
+      </Pressable>
+      {open ? (
+        <View style={styles.activityGroupBody}>
+          {block.items.map((b, k) => (
+            <ActivityRow key={k} block={b} id={`${id}:${k}`} expanded={expanded} setExpanded={setExpanded} />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1721,6 +1812,17 @@ const styles = StyleSheet.create({
     padding: space.sm,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  activityHint: { color: colors.textFaint, fontWeight: '400' },
+  // Expanded group: an indent rail so the nested runs read as children.
+  activityGroupBody: {
+    gap: space.xs,
+    padding: space.sm,
+    marginLeft: space.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border,
   },
   asstRow: {
     maxHeight: 44,

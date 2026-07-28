@@ -882,11 +882,13 @@
 .hv-activity.is-error {
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
 }
-.hv-activity.is-error .hv-activity-icon,
-.hv-activity.is-error .hv-activity-label { color: var(--danger); }
+/* Scoped to the chip's own head: an errored *group* must not paint its
+   successful children red (#546). */
+.hv-activity.is-error > .hv-activity-head > .hv-activity-icon,
+.hv-activity.is-error > .hv-activity-head > .hv-activity-label { color: var(--danger); }
 /* A resolved (successful) tool run — a quiet success accent on the icon only,
    so the chip reads as "done" without shouting over the prose around it. */
-.hv-activity.is-ok:not(.is-error) .hv-activity-icon { color: var(--success); }
+.hv-activity.is-ok:not(.is-error) > .hv-activity-head > .hv-activity-icon { color: var(--success); }
 .hv-activity-detail {
   margin: 0;
   padding: 9px 11px;
@@ -901,6 +903,26 @@
   overflow: auto;
   background: var(--surface-2);
 }
+
+/* A run of consecutive tool calls folded into one chip (#546). Reuses the
+   .hv-activity tokens above (incl. .is-error) — only the expanded body, which
+   nests real chips behind an indent rail, is new. */
+.hv-activity-group.is-open { background: var(--surface-2); }
+/* The live "what is it doing right now" hint on a collapsed trailing group. */
+.hv-activity-hint {
+  font-weight: var(--weight-normal);
+  color: var(--text-subtle);
+}
+.hv-activity-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px 12px;
+  border-top: 1px solid var(--border);
+  border-left: 2px solid var(--border);
+  margin-left: 14px;
+}
+.hv-activity-group-body .hv-activity { background: var(--surface); }
 
 /* ── Workspace context strip — live "entity" chips above the transcript. ── */
 .hv-context {

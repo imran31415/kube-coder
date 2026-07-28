@@ -19,6 +19,84 @@ export type HvTurn =
   | { role: 'user'; text: string }
   | { role: 'agent'; blocks: HvBlock[] };
 
+/* ── Render-time activity grouping (#546) ────────────────────────────────────
+ * The mobile port of the web transcript.ts groupActivity(): same names, same
+ * threshold, same wording. Purely a render concern applied on top of
+ * buildTurns(), so turnCopyText() and every other consumer keeps seeing the
+ * flat block list. (HvBlock's activity has no `ok` flag — grouping only needs
+ * `error`.) */
+
+export type HvActivityBlock = Extract<HvBlock, { kind: 'activity' }>;
+export type HvActivityGroupBlock = {
+  kind: 'activity_group';
+  /** Summary line, e.g. "Ran 6 commands" (plus " · 1 failed" when any errored). */
+  label: string;
+  items: HvActivityBlock[];
+  errors: number;
+};
+export type HvRenderBlock = HvBlock | HvActivityGroupBlock;
+
+/** Runs shorter than this render exactly as before — collapsing one or two
+ *  rows would add a tap for no gain. */
+export const GROUP_MIN = 3;
+
+/** Plural summaries for the labels toolLabel() knows about. Anything else (MCP
+ *  tools arrive as e.g. "show app preview") falls back to "<label> ×N". */
+const GROUP_LABEL: Record<string, (n: number) => string> = {
+  'Ran command': (n) => `Ran ${n} commands`,
+  'Read file': (n) => `Read ${n} files`,
+  'Wrote file': (n) => `Wrote ${n} files`,
+  'Edited file': (n) => `Edited ${n} files`,
+  Searched: (n) => `Searched ${n} times`,
+  'Searched files': (n) => `Searched ${n} times`,
+  'Searched the web': (n) => `Searched the web ${n} times`,
+  'Ran a task': (n) => `Ran ${n} tasks`,
+  'Fetched a page': (n) => `Fetched ${n} pages`,
+  Error: (n) => `${n} errors`,
+  Result: (n) => `${n} results`,
+};
+
+function groupLabel(items: HvActivityBlock[], errors: number): string {
+  const n = items.length;
+  const same = items.every((b) => b.label === items[0].label);
+  const only = items[0].label;
+  const base = !same
+    ? `Ran ${n} tools`
+    : GROUP_LABEL[only]
+      ? GROUP_LABEL[only](n)
+      : `${only} ×${n}`;
+  // Failures are never hidden behind a bland count.
+  return errors > 0 ? `${base} · ${errors} failed` : base;
+}
+
+/** Fold runs of >= GROUP_MIN consecutive activity blocks into one summary
+ *  block. Any other block (prose / embed / media / file / choice) breaks the
+ *  run, so a turn that interleaves narration with tool calls keeps its
+ *  narrative order. Order is otherwise preserved and nothing is dropped. */
+export function groupActivity(blocks: HvBlock[]): HvRenderBlock[] {
+  const out: HvRenderBlock[] = [];
+  let run: HvActivityBlock[] = [];
+  const flush = () => {
+    if (run.length >= GROUP_MIN) {
+      const errors = run.filter((b) => b.error).length;
+      out.push({ kind: 'activity_group', label: groupLabel(run, errors), items: run, errors });
+    } else {
+      out.push(...run);
+    }
+    run = [];
+  };
+  for (const b of blocks) {
+    if (b.kind === 'activity') {
+      run.push(b);
+      continue;
+    }
+    flush();
+    out.push(b);
+  }
+  flush();
+  return out;
+}
+
 /** The prose of an agent turn as plain markdown — what the per-turn copy
  *  button (issue #351) puts on the clipboard. Tool chips / embeds / media are
  *  activity, not the message, so only prose blocks count. Mirrors the web

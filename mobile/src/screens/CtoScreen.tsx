@@ -22,11 +22,12 @@ import { Markdown } from '../components/Markdown';
 import type { HvEvent, Project, ProjectBrief } from '../api/types';
 import {
   buildTurns,
+  groupActivity,
   sameTranscript,
   turnWindow,
   TURN_WINDOW,
   TURN_WINDOW_STEP,
-  type HvBlock,
+  type HvRenderBlock,
   type HvTurn,
 } from '../util/hvTranscript';
 import { colors, font, radius, space } from '../theme';
@@ -307,13 +308,14 @@ function Turn({ turn, onChoice }: { turn: HvTurn; onChoice: (opt: string) => voi
   }
   return (
     <View style={styles.agentTurn}>
-      {turn.blocks.map((b, i) => <Block key={i} block={b} onChoice={onChoice} />)}
+      {groupActivity(turn.blocks).map((b, i) => <Block key={i} block={b} onChoice={onChoice} />)}
     </View>
   );
 }
 
-function Block({ block, onChoice }: { block: HvBlock; onChoice: (opt: string) => void }) {
+function Block({ block, onChoice }: { block: HvRenderBlock; onChoice: (opt: string) => void }) {
   if (block.kind === 'prose') return <Markdown text={block.text} />;
+  if (block.kind === 'activity_group') return <ActivityGroup block={block} />;
   if (block.kind === 'activity') {
     return (
       <Text style={[styles.activity, block.error && { color: colors.error }]}>
@@ -335,6 +337,34 @@ function Block({ block, onChoice }: { block: HvBlock; onChoice: (opt: string) =>
   }
   // embed / media / file — surface as a compact activity note on mobile.
   return <Text style={styles.activity}>[{block.kind}]</Text>;
+}
+
+/** A run of consecutive tool calls as one tappable summary line (#546). This
+ *  screen has no chip UI, so expanding reveals the child *labels* only —
+ *  matching its density. A run with a failure starts open. */
+function ActivityGroup({ block }: { block: Extract<HvRenderBlock, { kind: 'activity_group' }> }) {
+  const failed = block.errors > 0;
+  const [open, setOpen] = useState(failed);
+  return (
+    <View>
+      <Pressable
+        onPress={() => setOpen((v) => !v)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+      >
+        <Text style={[styles.activity, failed && { color: colors.error }]}>
+          {open ? '▾' : '▸'} {block.label}
+        </Text>
+      </Pressable>
+      {open
+        ? block.items.map((b, i) => (
+            <Text key={i} style={[styles.activityChild, b.error && { color: colors.error }]}>
+              {b.label}
+            </Text>
+          ))
+        : null}
+    </View>
+  );
 }
 
 function BriefSheet({ open, brief, onClose, nav }: {
@@ -426,6 +456,7 @@ const styles = StyleSheet.create({
   userText: { color: colors.text, fontSize: font.size.sm, lineHeight: 20 },
   agentTurn: { gap: 6 },
   activity: { color: colors.textFaint, fontSize: font.size.xs, fontStyle: 'italic' },
+  activityChild: { color: colors.textFaint, fontSize: font.size.xs, fontStyle: 'italic', marginLeft: space.md },
   choices: { gap: 6, marginTop: 4 },
   choiceQ: { color: colors.textMuted, fontSize: font.size.sm },
   choice: { paddingVertical: 9, paddingHorizontal: 13, borderRadius: radius.md, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.accentSoft, alignSelf: 'flex-start' },
