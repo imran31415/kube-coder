@@ -11,6 +11,7 @@ import {
   restoreThread,
   renameThread,
   setThreadModel,
+  setThreadEffort,
   type HypervisorConfig,
   type HypervisorThread,
   type TranscriptSource,
@@ -80,6 +81,12 @@ export const selectedAssistant = signal<string>('');
  *  acts on that thread instead (setActiveThreadModel). */
 export const selectedModel = signal<string>('');
 
+/** The reasoning effort a NEW thread will use (#362) — the selected assistant's
+ *  default (its config `effort`) unless the user picks another. '' when the
+ *  assistant offers no effort choice. For an already-open thread the selector
+ *  acts on that thread instead (setActiveThreadEffort). */
+export const selectedEffort = signal<string>('');
+
 /** The folder a NEW thread starts in (#345) — seeded from config.workdir (the
  *  server's HYPERVISOR_WORKDIR) so the picker shows the real default. '' is
  *  passed as no workdir, letting the server default apply. A thread keeps the
@@ -100,6 +107,23 @@ export function assistantInfo(assistantId: string | null | undefined) {
   return (config.value?.assistants ?? []).find((x) => x.id === assistantId);
 }
 
+/** Selectable reasoning-effort levels for an assistant (#362), or [] when the
+ *  assistant has no effort knob (the selector stays hidden). */
+export function assistantEfforts(assistantId: string | null | undefined): string[] {
+  return assistantInfo(assistantId)?.efforts ?? [];
+}
+
+/** The assistant's default effort level ('' when it has no knob). */
+export function assistantEffortDefault(assistantId: string | null | undefined): string {
+  return assistantInfo(assistantId)?.effort ?? '';
+}
+
+/** The highest level the assistant honours natively ('' when unbounded/none) —
+ *  a pick above it is clamped, so the UI shows a "runs <cap>" hint. */
+export function assistantEffortCap(assistantId: string | null | undefined): string {
+  return assistantInfo(assistantId)?.effortCap ?? '';
+}
+
 /** True when the assistant is a free provider that may train on submitted data
  *  (Zen free models, #395) — drives the in-chat disclosure note. */
 export function assistantNeedsDisclosure(assistantId: string | null | undefined): boolean {
@@ -111,6 +135,9 @@ export function assistantNeedsDisclosure(assistantId: string | null | undefined)
 export function setSelectedAssistant(assistantId: string): void {
   selectedAssistant.value = assistantId;
   selectedModel.value = assistantModels(assistantId)[0] ?? '';
+  // Reset effort to the new assistant's default (#362) so the selector never
+  // shows a level the assistant doesn't offer.
+  selectedEffort.value = assistantEffortDefault(assistantId);
 }
 
 /** Live workspace "entities" surfaced as chips in the chat — currently the
@@ -140,6 +167,11 @@ export async function initHypervisor(): Promise<void> {
     // (and its per-assistant model lists) is loaded (#308).
     if (!selectedModel.value) {
       selectedModel.value = assistantModels(selectedAssistant.value)[0] ?? '';
+    }
+    // Seed the effort to the selected assistant's default now that the config
+    // (and its per-assistant effort lists) is loaded (#362).
+    if (!selectedEffort.value) {
+      selectedEffort.value = assistantEffortDefault(selectedAssistant.value);
     }
     if (!selectedWorkdir.value) {
       selectedWorkdir.value = cfg.workdir || '';
@@ -287,6 +319,7 @@ export async function sendMessage(text: string): Promise<void> {
         message: trimmed,
         assistant: selectedAssistant.value || undefined,
         model: selectedModel.value || undefined,
+        effort: selectedEffort.value || undefined,
         // A CTO thread omits the workdir so the server defaults it to the bound
         // project's first workdir; a plain chat sends the picker's folder. Sending
         // the picker's /home/dev default would defeat the server's project
@@ -373,6 +406,25 @@ export async function setActiveThreadModel(model: string): Promise<void> {
   threads.value = prev.map((t) => (t.id === id ? { ...t, model } : t));
   try {
     await setThreadModel(id, model);
+    await refreshThreads();
+  } catch {
+    threads.value = prev;
+  }
+}
+
+/** Switch the reasoning effort (#362), twin of setActiveThreadModel. With a
+ *  thread open, updates it server-side (takes effect next turn) and optimistically
+ *  patches the list; with no thread open, just updates the new-chat default. */
+export async function setActiveThreadEffort(effort: string): Promise<void> {
+  const id = activeThreadId.value;
+  if (!id) {
+    selectedEffort.value = effort;
+    return;
+  }
+  const prev = threads.value;
+  threads.value = prev.map((t) => (t.id === id ? { ...t, effort } : t));
+  try {
+    await setThreadEffort(id, effort);
     await refreshThreads();
   } catch {
     threads.value = prev;

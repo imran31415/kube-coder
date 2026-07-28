@@ -309,6 +309,10 @@ browser:
 # If apiKey is set, it takes precedence over OAuth.
 claude:
   apiKey: ""
+  # Default reasoning effort for Claude in the Hypervisor chat (#362): one of
+  # low/medium/high/xhigh/max. Blank => the built-in default (high). Users can
+  # still switch per-thread in the chat. `max` clamps to Claude Code's xhigh.
+  effort: ""
 
 # Hypervisor — the workspace-aware chat tab. A clean chat interface layered
 # over the user's existing CLI agents (claude, ante, opencode, …) plus a
@@ -434,6 +438,15 @@ assistant:
     model: "anthropic/claude-sonnet-4"
     providerId: "kube-coder-fallback"     # OpenCode provider id (free-form)
     providerName: "Kube-Coder Fallback"
+    # Default reasoning effort for the kc-harness assistant (#362): forwarded as
+    # the OpenAI-compatible `reasoning_effort`. Blank => built-in default (high);
+    # xhigh/max clamp to high (the harness endpoint's ceiling).
+    effort: ""                            # KC_HARNESS_EFFORT
+  # Codex (OpenAI) — ChatGPT-OAuth terminal agent, pre-installed. No key here.
+  codex:
+    # Default reasoning effort (#362): codex model_reasoning_effort. Blank =>
+    # built-in default (high); max clamps to codex's xhigh ceiling.
+    effort: ""                            # KC_CODEX_EFFORT
 
 # Persistent memory subsystem. SQLite-backed at /home/dev/.claude-memory/memory.db,
 # exposed to the dashboard at /api/memory and to claude via the `memory` MCP server.
