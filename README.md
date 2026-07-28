@@ -27,12 +27,18 @@ Each **kube-coder workspace** is an isolated pod with a persistent home director
 - **VS Code** in the browser (`code-server`)
 - a **persistent tmux terminal** that keeps running when you close the tab
 - an **in-pod Chrome** you can watch over VNC (for previewing web apps, or letting an agent drive a browser)
-- a **dashboard** that ties it together — and a **Hypervisor** chat that operates the pod *for* you
+- a **dashboard** that ties it together — plus **Chat** that operates the pod *for* you and an **AI CTO** that keeps track of your projects
 - **pluggable coding agents** — Claude Code, Codex, Gemini, Ante, OpenCode — that you can spawn, message, and fan out in parallel
 
 Because it's just Kubernetes underneath, a single chart deploys as many of these as your cluster can hold — each with its own namespace, ingress, TLS certificate, persistent volume, and OAuth allowlist. Onboarding a new teammate is a form in the admin console; their workspace resolves and issues its own TLS on first request.
 
 > **The short version:** it's a self-hosted, multi-tenant, AI-first replacement for "here's a laptop, spend two days setting it up." The environment survives restarts, an in-flight agent keeps working after you disconnect, and you can drive the whole thing from your phone.
+
+### Your laptop is a thin client
+
+The agent doesn't run on your machine. It runs on a pod in a cluster **you** operate — so the repo, the `.env`, the build cache and the model API calls all stay inside your perimeter. Close the lid mid-build and it keeps going.
+
+![How a kube-coder session actually runs](docs/diagrams/sequence.png)
 
 ---
 
@@ -100,11 +106,11 @@ Three screenshots that capture the whole idea — a workspace home you drive fro
 
 ---
 
-## The Hypervisor — talk to your workspace, and it acts
+## Chat — talk to your workspace, and it acts
 
 <img width="100%" alt="Hypervisor chat calling get_metrics and list_tasks" src="docs/screenshots/hypervisor-chat.png" />
 
-The **Hypervisor** is the feature that makes a kube-coder pod feel alive. It's a chat tab where you talk to the workspace in plain language and it *does the thing*:
+**Chat** is the feature that makes a kube-coder pod feel alive — internally the *Hypervisor*, which is the name you'll see in the code and specs. You talk to the workspace in plain language and it *does the thing*:
 
 > *"How many tasks are running and what's my CPU?"* · *"Spin up a build to run the tests."* · *"Remember that I deploy with `make ship`."* · *"Pin port 3000 to Apps."*
 
@@ -115,6 +121,18 @@ Under the hood it's not a screen-scraped terminal — each thread is a **structu
 - **agent-orchestrator** — spawn and coordinate sub-agents
 
 Destructive actions (`kill_task`, `delete_memory`) ask for confirmation right in the chat. It's fully mobile, works with whichever assistant you pick, and survives pod restarts (the Claude adapter `--resume`s its session). See [`docs/hypervisor-spec.md`](docs/hypervisor-spec.md) for the architecture.
+
+---
+
+## AI CTO & Feed — someone minding the whole thing
+
+**Chat** operates the pod. The **AI CTO** (`/cto`) works a level up: it holds a picture of your *projects*.
+
+Projects are discovered automatically — no forms. Each carries its own north star, decision log, goals and memory namespace, and the CTO answers from a live brief (running builds, recent activity, open threads) rather than from whatever happens to be in context. Ask it what to work on next and it argues from the actual state of the repo.
+
+The **Feed** (`/feed`) is the single stream of what changed and what needs you: build outcomes, decisions recorded, trigger fires, plus anything an agent judged worth surfacing. Anything in it can be handed straight to the CTO with **"Discuss with CTO."**
+
+Both are on the phone app too.
 
 ---
 
@@ -232,6 +250,8 @@ Full guide: [`docs/whatsapp-gateway.md`](docs/whatsapp-gateway.md).
 ## Pluggable AI assistants
 
 Every session — and every orchestrator sub-agent — picks its assistant at create-time, so you can mix them freely in one workspace. Keys live in `users-private/<name>/secrets/assistant.yaml` (gitignored); the public defaults are empty, so it ships Claude-only out of the box, and users can add their own provider keys self-service from **Settings**.
+
+Assistant, model and **reasoning effort** (`low → max`, translated to each CLI's native knob) can be set per turn, or saved as a **per-project default** so the CTO dispatches work with the right one without being told.
 
 | Assistant | Backend | Configure with |
 |---|---|---|
@@ -361,22 +381,21 @@ Full CLI walkthrough: [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING
 
 ## Architecture
 
-```
-   ┌──── browser ────┐
-   │                 │ ───► oauth2-proxy ───► nginx-ingress ───► ws-<user> Service
-   └────────────────┘                                                  │
-                                                                       ▼
-                                                        ┌── ws-<user> Pod ──┐
-                                                        │  server.py (8080) │
-                                                        │  code-server      │
-                                                        │  ttyd  (7681)     │
-                                                        │  novnc (6081)     │
-                                                        │  Chrome + Xvfb    │
-                                                        │  tmux sessions    │
-                                                        └───────────────────┘
-```
+![kube-coder workspace topology](docs/diagrams/topology.png)
 
 A per-user PVC mounted at `/home/dev` survives pod restarts; the tmux sessions attached to it survive too, so an in-flight agent build keeps running even after you close the tab. `oauth2-proxy` injects `X-Auth-Request-User` on every `/oauth/*` route; each workspace's proxy is pinned to exactly one GitHub login.
+
+### Isolation & security posture
+
+Each workspace is a tenant boundary, not a folder:
+
+- **Its own namespace** (`ws-<user>`) with a dedicated ServiceAccount, ResourceQuota and LimitRange — scoped so a workspace can read nothing outside itself.
+- **NetworkPolicy both ways** — ingress only from `ingress-nginx`; egress denied to the cloud metadata endpoint and to other tenants' pods, while normal internet (GitHub, npm, registries, model providers) stays open.
+- **No signing keys in the agent's container** — the GitHub App private key lives in its own sidecar, which hands the `ide` container only an hourly token.
+- **Agent-readable instruction files are scanned** for hidden-text prompt injection (zero-width and Unicode-tag characters in `CLAUDE.md`, `.cursorrules`, …) — the technique used by the 2026 TrapDoor supply-chain campaign.
+- **Provisioning is opt-in and constrained** — a ValidatingAdmissionPolicy pins the shape of the privileged Job, and chart refs must be immutable.
+
+Full policy, reporting process and hardening defaults: [`SECURITY.md`](SECURITY.md) · [`docs/SUPPLY_CHAIN.md`](docs/SUPPLY_CHAIN.md).
 
 ### Repository layout
 
@@ -388,7 +407,7 @@ charts/
     ├── hypervisor_session.py  # structured agent-session runner + per-CLI adapters
     ├── mcp_dashboard.py   # dashboard MCP server (read/act on the pod)
     └── web/               # Vite + Preact SPA (the dashboard at /)
-        ├── src/routes/    # desktop, hypervisor, tasks, memory, triggers, apps, skills, files, settings
+        ├── src/routes/    # desktop, cto, feed, hypervisor, mission, tasks, memory, triggers, apps, files, docs, skills, walkie, settings
         ├── src/store/     # signals: tasks, ui, metrics, router
         └── scripts/shoot.mjs   # playwright screenshots
 deployments/               # public sample per-user values.yaml + secrets

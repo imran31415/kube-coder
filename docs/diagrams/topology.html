@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>kube-coder topology</title>
+<style>
+  :root{
+    --bg:#0a0b0d; --panel:#111318; --panel2:#15181e; --line:#242830;
+    --ink:#e8eaed; --dim:#8b93a1; --faint:#5a616e;
+    --accent:#4ade80; --blue:#60a5fa; --violet:#a78bfa; --amber:#fbbf24; --red:#f87171;
+    --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;
+       width:1440px;padding:40px 44px 34px}
+  h1{font-size:23px;font-weight:650;letter-spacing:-.02em}
+  h1 .kc{color:var(--accent)}
+  .sub{color:var(--dim);font-size:13.5px;margin-top:5px}
+  .head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:22px}
+  .legend{display:flex;gap:16px;font-size:11.5px;color:var(--dim)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+  .cluster{border:1px solid var(--line);border-radius:14px;background:
+     linear-gradient(180deg,rgba(96,165,250,.04),transparent 42%);padding:16px 18px 18px}
+  .clabel{display:flex;align-items:center;gap:9px;font-family:var(--mono);
+          font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+  .clabel b{color:var(--blue);font-weight:600}
+
+  .row{display:flex;gap:16px;align-items:stretch}
+  .ns{flex:1;border:1px solid var(--line);border-radius:11px;background:var(--panel);padding:13px 14px 14px;position:relative}
+  .ns.ctrl{background:var(--panel2);border-color:#2b3038}
+  .nslabel{font-family:var(--mono);font-size:11px;color:var(--violet);margin-bottom:3px}
+  .nsnote{font-size:11px;color:var(--faint);margin-bottom:11px}
+
+  .pod{border:1px dashed #333944;border-radius:9px;padding:10px 11px 11px;background:#0d0f13}
+  .podlabel{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:9px;
+            display:flex;justify-content:space-between}
+  .podlabel span{color:var(--faint)}
+  .ctns{display:flex;flex-direction:column;gap:6px}
+  .ct{display:flex;align-items:center;gap:8px;background:#161a20;border:1px solid #232833;
+      border-radius:6px;padding:6px 9px;font-size:12px}
+  .ct .dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .ct .nm{font-family:var(--mono);font-size:11.5px}
+  .ct .ds{color:var(--faint);font-size:11px;margin-left:auto}
+  .ct.main{background:#12251a;border-color:#1f4d33}
+  .ct.main .nm{color:var(--accent)}
+
+  .pvc{margin-top:9px;display:flex;align-items:center;gap:8px;font-size:11.5px;
+       background:#1a1710;border:1px solid #3d3218;border-radius:6px;padding:6px 9px;color:#e6d5a8}
+  .pvc b{font-family:var(--mono);font-weight:500;font-size:11px;white-space:nowrap}
+
+  .np{margin-top:9px;border-radius:6px;padding:7px 9px;font-size:11px;line-height:1.45;
+      background:#1d1214;border:1px solid #4a2126;color:#f0b8bd}
+  .np b{color:#ff9aa2;font-weight:600}
+
+  .edge{display:flex;flex-direction:column;align-items:center;justify-content:center;
+        min-width:96px;color:var(--faint);font-size:10.5px;font-family:var(--mono);gap:5px}
+  .edge .arrow{color:var(--blue);font-size:19px;line-height:1}
+  .edge .lbl{text-align:center;letter-spacing:.02em}
+
+  .toprow{display:flex;gap:14px;align-items:center;margin-bottom:16px}
+  .ext{border:1px solid var(--line);border-radius:10px;background:var(--panel);
+       padding:11px 14px;text-align:center;min-width:150px}
+  .ext .t{font-size:13px;font-weight:600}
+  .ext .s{font-size:11px;color:var(--faint);margin-top:2px}
+  .gate{border:1px solid #2e3a2e;background:#101a12;border-radius:10px;padding:11px 14px;min-width:186px}
+  .gate .t{font-size:12.5px;font-weight:600;color:var(--accent)}
+  .gate .s{font-size:11px;color:#7d9a86;margin-top:3px;line-height:1.4}
+
+  .foot{display:flex;gap:26px;margin-top:16px;font-size:11.5px;color:var(--dim)}
+  .foot div{display:flex;gap:7px;align-items:flex-start}
+  .foot .k{color:var(--accent);font-weight:600;flex:none}
+  .brand{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:right}
+</style>
+<div class="head">
+  <div>
+    <h1><span class="kc">kube-coder</span> — workspace topology</h1>
+    <div class="sub">Every developer gets their own Kubernetes namespace, pod, and persistent volume. Nothing is shared.</div>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--accent)"></i>your code runs here</span>
+    <span><i style="background:var(--amber)"></i>persistent disk</span>
+    <span><i style="background:var(--red)"></i>enforced boundary</span>
+  </div>
+</div>
+
+<div class="toprow">
+  <div class="ext"><div class="t">Browser · Phone · SSH</div><div class="s">you, anywhere</div></div>
+  <div class="edge"><div class="arrow">→</div><div class="lbl">HTTPS</div></div>
+  <div class="gate">
+    <div class="t">ingress-nginx + cert-manager</div>
+    <div class="s">TLS termination · one hostname per workspace</div>
+  </div>
+  <div class="edge"><div class="arrow">→</div><div class="lbl">auth</div></div>
+  <div class="gate">
+    <div class="t">oauth2-proxy (per workspace)</div>
+    <div class="s">GitHub login, pinned to exactly one user<br>injects <span style="font-family:var(--mono)">X-Auth-Request-User</span></div>
+  </div>
+  <div class="edge"><div class="arrow">↘</div><div class="lbl">the only<br>way in</div></div>
+</div>
+
+<div class="cluster">
+  <div class="clabel"><b>YOUR</b> Kubernetes cluster — self-hosted, your cloud or on-prem</div>
+  <div class="row">
+
+    <div class="ns">
+      <div class="nslabel">namespace: ws-alice</div>
+      <div class="nsnote">Alice's workspace · own RBAC ServiceAccount, quota, LimitRange</div>
+      <div class="pod">
+        <div class="podlabel">Pod ws-alice <span>4 containers</span></div>
+        <div class="ctns">
+          <div class="ct main"><span class="dot" style="background:var(--accent)"></span><span class="nm">ide</span><span class="ds">agent · VS Code · terminal · API</span></div>
+          <div class="ct"><span class="dot" style="background:var(--blue)"></span><span class="nm">dind</span><span class="ds">docker builds</span></div>
+          <div class="ct"><span class="dot" style="background:var(--blue)"></span><span class="nm">ssh-server</span><span class="ds">git + ssh</span></div>
+          <div class="ct"><span class="dot" style="background:var(--violet)"></span><span class="nm">github-app-token</span><span class="ds">holds signing key</span></div>
+        </div>
+        <div class="pvc">💾 <b>PVC /home/dev</b> — repos, tmux sessions, memory DB survive restarts</div>
+        <div class="np"><b>NetworkPolicy</b> — ingress: only from ingress-nginx · egress: metadata endpoint + other tenants denied</div>
+      </div>
+    </div>
+
+    <div class="ns">
+      <div class="nslabel">namespace: ws-bob</div>
+      <div class="nsnote">Bob's workspace · identical shape, zero shared state</div>
+      <div class="pod">
+        <div class="podlabel">Pod ws-bob <span>4 containers</span></div>
+        <div class="ctns">
+          <div class="ct main"><span class="dot" style="background:var(--accent)"></span><span class="nm">ide</span><span class="ds">agent · VS Code · terminal · API</span></div>
+          <div class="ct"><span class="dot" style="background:var(--blue)"></span><span class="nm">dind</span><span class="ds">docker builds</span></div>
+          <div class="ct"><span class="dot" style="background:var(--blue)"></span><span class="nm">ssh-server</span><span class="ds">git + ssh</span></div>
+          <div class="ct"><span class="dot" style="background:var(--violet)"></span><span class="nm">github-app-token</span><span class="ds">holds signing key</span></div>
+        </div>
+        <div class="pvc">💾 <b>PVC /home/dev</b> — Bob's disk. Alice cannot reach it.</div>
+        <div class="np"><b>NetworkPolicy</b> — cross-workspace traffic denied in both directions</div>
+      </div>
+    </div>
+
+    <div class="ns ctrl">
+      <div class="nslabel" style="color:var(--blue)">namespace: coder</div>
+      <div class="nsnote">control plane · no user code ever runs here</div>
+      <div class="pod">
+        <div class="podlabel">workspace-controller <span>admin UI</span></div>
+        <div class="ctns">
+          <div class="ct"><span class="dot" style="background:var(--blue)"></span><span class="nm">controller</span><span class="ds">list · start · stop</span></div>
+          <div class="ct"><span class="dot" style="background:var(--amber)"></span><span class="nm">provisioner Job</span><span class="ds">short-lived, admission-pinned</span></div>
+        </div>
+        <div class="np" style="background:#101a24;border-color:#1e3a52;color:#9ec8ea">
+          <b style="color:#7cc0f0">Least privilege</b> — the controller can only <i>launch</i> a provisioning Job; it never holds cluster-wide write itself
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="foot">
+  <div><span class="k">Isolated</span><span>one namespace, ServiceAccount, PVC and quota per developer</span></div>
+  <div><span class="k">Persistent</span><span>close your laptop — the agent keeps working in tmux on the PVC</span></div>
+  <div><span class="k">Self-hosted</span><span>your source, secrets and customer data never leave your cluster</span></div>
+  <div class="brand" style="margin-left:auto">github.com/imran31415/kube-coder</div>
+</div>
+</html>
