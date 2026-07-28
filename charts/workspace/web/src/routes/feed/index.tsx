@@ -6,7 +6,8 @@ import {
   filteredFeed,
   feedKindFilter,
   feedProjectFilter,
-  feedLoading,
+  feedError,
+  feedLastFetch,
   setKindFilter,
   markRead,
   groupByDay,
@@ -27,6 +28,24 @@ const KIND_CHIPS: { value: FeedFilter; label: string }[] = [
   { value: 'decision', label: 'Decisions' },
 ];
 
+/** First-load placeholder (#510). The Feed used to print a bare "Loading…"
+ *  while its siblings (the CTO rail and brief) showed designed shimmer
+ *  skeletons; these mirror the shape of a real item — kind rule, meta line,
+ *  title, body — so the stream settles into place instead of popping. */
+function FeedSkeletons() {
+  return (
+    <div class="feed-day" aria-hidden="true">
+      {[0, 1, 2, 3].map((i) => (
+        <article key={i} class="feed-item feed-item-skeleton">
+          <span class="feed-skel feed-skel-meta" />
+          <span class="feed-skel feed-skel-title" />
+          <span class="feed-skel feed-skel-body" />
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export function FeedRoute() {
   const disabled = serverMode.value.ctoEnabled === false;
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -43,6 +62,11 @@ export function FeedRoute() {
 
   const items = filteredFeed.value;
   const groups = useMemo(() => groupByDay(items), [items]);
+  // Skeletons stand in until the first fetch lands. `feedLastFetch === null`
+  // (not just `feedLoading`) covers the tick before the mount effect fires, so
+  // the first paint is never the "Nothing yet" empty state; a failed fetch sets
+  // feedError, which releases the skeletons rather than shimmering forever.
+  const firstLoad = feedLastFetch.value === null && !feedError.value;
 
   // Mark items read as they enter the viewport (debounced by markRead's own
   // already-read guard). Re-observe whenever the rendered set changes.
@@ -116,7 +140,7 @@ export function FeedRoute() {
       <div class="feed-shell">
         <header class="feed-head">
           <div class="feed-title-row">
-            <h1 class="feed-masthead">Feed</h1>
+            <h1 class="route-title feed-masthead">Feed</h1>
             <span class="feed-sub">What changed · what matters</span>
           </div>
           <div class="feed-filters" role="tablist" aria-label="Filter feed">
@@ -180,11 +204,11 @@ export function FeedRoute() {
               <Icon name="chevron-up" size={12} /> {newCount} new
             </button>
           )}
-          {items.length === 0 ? (
+          {items.length === 0 && firstLoad ? (
+            <FeedSkeletons />
+          ) : items.length === 0 ? (
             <p class="feed-empty">
-              {feedLoading.value
-                ? 'Loading…'
-                : 'Nothing yet — your CTO and workspace will post here as things happen.'}
+              Nothing yet — your CTO and workspace will post here as things happen.
             </p>
           ) : (
             groups.map((g) => (

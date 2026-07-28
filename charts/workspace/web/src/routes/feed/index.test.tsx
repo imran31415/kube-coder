@@ -42,8 +42,23 @@ describe('FeedRoute', () => {
   it('shows the quiet empty state when there is nothing', async () => {
     feedItems.value = [];
     render(<FeedRoute />);
-    // Mount kicks off refreshFeed (Loading…); it resolves to the empty line.
+    // Mount kicks off refreshFeed (skeletons); it resolves to the empty line.
     expect(await screen.findByText(/Nothing yet/)).toBeTruthy();
+  });
+
+  it('wears the shared route masthead so CTO/Feed/Mission match (#510)', () => {
+    render(<FeedRoute />);
+    expect(screen.getByText('Feed').classList.contains('route-title')).toBe(true);
+  });
+
+  it('shimmers skeleton rows on first load instead of a bare "Loading…" (#510)', async () => {
+    feedItems.value = [];
+    const { container } = render(<FeedRoute />);
+    expect(container.querySelectorAll('.feed-item-skeleton').length).toBe(4);
+    expect(screen.queryByText('Loading…')).toBeNull();
+    // They give way to the real stream (here, the empty line) once it lands.
+    expect(await screen.findByText(/Nothing yet/)).toBeTruthy();
+    expect(container.querySelectorAll('.feed-item-skeleton').length).toBe(0);
   });
 
   it('renders day-grouped items', () => {

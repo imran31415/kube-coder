@@ -70,17 +70,29 @@ async function mockFeed(page) {
   await page.addInitScript(() => localStorage.setItem('kc.onboardingDone', 'true'));
 }
 
+/** Same mocks, but /api/feed never answers — the first-load skeletons (#510)
+ *  stay on screen for the shot instead of flashing past. */
+async function mockFeedStalled(page) {
+  await mockFeed(page);
+  await page.route(/\/api\/feed(\?.*)?$/, () => { /* hang */ });
+}
+
 const browser = await chromium.launch({ executablePath: CHROMIUM, headless: true });
 try {
   const shots = [
     { name: 'feed-desktop-dark', viewport: { width: 1280, height: 900 }, theme: 'dark' },
     { name: 'feed-desktop-light', viewport: { width: 1280, height: 900 }, theme: 'light' },
     { name: 'feed-mobile-dark', viewport: { width: 390, height: 844 }, theme: 'dark' },
+    { name: 'feed-mobile-light', viewport: { width: 390, height: 844 }, theme: 'light' },
+    { name: 'feed-loading-desktop-dark', viewport: { width: 1280, height: 900 }, theme: 'dark', stalled: true },
+    { name: 'feed-loading-desktop-light', viewport: { width: 1280, height: 900 }, theme: 'light', stalled: true },
+    { name: 'feed-loading-mobile-dark', viewport: { width: 390, height: 844 }, theme: 'dark', stalled: true },
   ];
   for (const s of shots) {
     const ctx = await browser.newContext({ viewport: s.viewport, deviceScaleFactor: 2, colorScheme: s.theme });
     const page = await ctx.newPage();
-    await mockFeed(page);
+    if (s.stalled) await mockFeedStalled(page);
+    else await mockFeed(page);
     await page.goto(`${BASE}/feed`, { waitUntil: 'load' });
     await page.waitForSelector('.route-feed', { timeout: 15000 });
     await page.evaluate((theme) => document.documentElement.setAttribute('data-theme', theme), s.theme);
