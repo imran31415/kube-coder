@@ -59,17 +59,25 @@ class InstructionScanApiTests(unittest.TestCase):
         server.BrowserHandler.check_app_proxy_auth = cls._auth_save
 
     def setUp(self):
-        # Scan roots must live under /home/dev for the confinement check to
-        # pass, so build the fixture tree there rather than in /tmp.
-        self.dir = tempfile.mkdtemp(prefix='kc-insscan-', dir='/home/dev')
+        # Point the confinement root at a tmpdir rather than building fixtures
+        # under /home/dev — CI runners are ubuntu-latest and have no such path,
+        # so a hardcoded fixture dir errors every test in this suite.
+        # realpath because macOS/CI /tmp is a symlink and the handler compares
+        # resolved paths.
+        self.confine = os.path.realpath(tempfile.mkdtemp(prefix='kc-insscan-'))
+        self._root_save = server.INSTRUCTION_SCAN_ROOT
+        server.INSTRUCTION_SCAN_ROOT = self.confine
+        self.dir = os.path.join(self.confine, 'tree')
+        os.makedirs(self.dir, exist_ok=True)
         self.emitted = []
         self._emit_save = server.FeedManager.emit
         server.FeedManager.emit = staticmethod(
             lambda kind, title, **kw: self.emitted.append((kind, title, kw)))
 
     def tearDown(self):
+        server.INSTRUCTION_SCAN_ROOT = self._root_save
         server.FeedManager.emit = self._emit_save
-        shutil.rmtree(self.dir, ignore_errors=True)
+        shutil.rmtree(self.confine, ignore_errors=True)
 
     def _write(self, rel, content):
         p = os.path.join(self.dir, rel)
@@ -128,23 +136,36 @@ class InstructionScanApiTests(unittest.TestCase):
 
     # --- confinement ---------------------------------------------------------
 
-    def test_root_outside_home_dev_is_rejected(self):
+    def test_root_outside_confinement_is_rejected(self):
         status, body = self._get('?root=/etc')
         self.assertEqual(status, 400)
-        self.assertIn('/home/dev', body.get('error', ''))
+        self.assertIn(self.confine, body.get('error', ''))
 
-    def test_traversal_out_of_home_dev_is_rejected(self):
-        status, _ = self._get('?root=/home/dev/../etc')
+    def test_traversal_out_of_confinement_is_rejected(self):
+        status, _ = self._get('?root=' + self.confine + '/../..')
         self.assertEqual(status, 400)
 
     def test_prefix_lookalike_is_rejected(self):
-        """/home/devil must not pass a naive startswith check."""
-        status, _ = self._get('?root=/home/devious')
-        self.assertEqual(status, 400)
+        """`<root>-evil` must not pass a naive startswith check."""
+        sibling = self.confine + '-evil'
+        os.makedirs(sibling, exist_ok=True)
+        try:
+            status, _ = self._get('?root=' + sibling)
+            self.assertEqual(status, 400)
+        finally:
+            shutil.rmtree(sibling, ignore_errors=True)
 
     def test_missing_directory_is_404(self):
-        status, _ = self._get('?root=/home/dev/definitely-not-here-559')
+        status, _ = self._get('?root=' + self.confine + '/definitely-not-here')
         self.assertEqual(status, 404)
+
+    def test_default_root_is_the_confinement_root(self):
+        """No ?root= must scan the configured root, not the process cwd."""
+        self._write('CLAUDE.md', '# fine\n')
+        status, body = self._get('')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['root'], self.confine)
+        self.assertEqual(body['files_scanned'], 1)
 
 
 if __name__ == '__main__':

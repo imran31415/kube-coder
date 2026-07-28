@@ -188,6 +188,11 @@ WORKSPACE_DEFAULT_ASSISTANT = os.environ.get('KC_DEFAULT_ASSISTANT') or 'claude'
 HYPERVISOR_DEFAULT_ASSISTANT = (
     os.environ.get('HYPERVISOR_DEFAULT_ASSISTANT') or WORKSPACE_DEFAULT_ASSISTANT)
 HYPERVISOR_WORKDIR = os.environ.get('HYPERVISOR_WORKDIR', '/home/dev')
+# Confinement root for the instruction-file scanner (#559). Every ?root= is
+# resolved and required to sit beneath this, so the endpoint can't become an
+# arbitrary directory read. A module constant rather than a literal so tests
+# can point it at a tmpdir — CI runners have no /home/dev.
+INSTRUCTION_SCAN_ROOT = HYPERVISOR_WORKDIR
 # AI CTO (#467) — the /cto page (project registry + CTO-persona chat + brief).
 # It rides the Hypervisor, so it's available only when BOTH this flag and the
 # Hypervisor are on. Off → the projects API 404s, the persona is ignored, and
@@ -12276,12 +12281,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'instruction_scan module unavailable'}, status=503)
             return
         qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
-        requested = (qs.get('root') or [HYPERVISOR_WORKDIR])[0]
+        confine = os.path.realpath(INSTRUCTION_SCAN_ROOT)
+        requested = (qs.get('root') or [confine])[0]
         # Confine the walk to the persistent volume. Without this, `root` is an
         # arbitrary-path directory read for anyone who can reach the endpoint.
+        # Compare realpaths and require a separator on the prefix, so neither
+        # `<root>/../etc` nor a lookalike sibling like `/home/devious` passes.
         root = os.path.realpath(requested)
-        if root != '/home/dev' and not root.startswith('/home/dev' + os.sep):
-            self.send_json({'error': 'root must be under /home/dev'}, status=400)
+        if root != confine and not root.startswith(confine + os.sep):
+            self.send_json(
+                {'error': 'root must be under {}'.format(confine)}, status=400)
             return
         if not os.path.isdir(root):
             self.send_json({'error': 'root is not a directory'}, status=404)
