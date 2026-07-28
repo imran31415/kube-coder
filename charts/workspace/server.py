@@ -1896,7 +1896,8 @@ class ClaudeTaskManager:
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,
                     source=None, disable_memory_injection=False, assistant=None,
-                    parent_task_id=None, system_preamble=None, auto_approve=False):
+                    parent_task_id=None, system_preamble=None, auto_approve=False,
+                    project_id=None):
         at_cap, _, _ = ClaudeTaskManager.at_capacity()
         if at_cap:
             return ClaudeTaskManager._capacity_rejection()
@@ -1909,6 +1910,17 @@ class ClaudeTaskManager:
 
         if workdir is None:
             workdir = '/home/dev'
+
+        # Bind the task to a project at birth (#533). An explicit id wins — the
+        # CTO stamps the project its thread is bound to, so a dispatched build
+        # counts even when it runs outside the project's tree — otherwise infer
+        # it from the workdir. Always recorded, so the field is never missing.
+        if project_id is None:
+            try:
+                project_id = ProjectsManager.project_for_workdir(workdir)
+            except Exception as e:  # attribution must never fail a task launch
+                print(f'[projects] workdir attribution failed: {e}', file=sys.stderr)
+                project_id = ''
 
         session_name = f'kube-coder-{task_id}'
 
@@ -1938,6 +1950,7 @@ class ClaudeTaskManager:
             'session_id': session_id,
             'prompt': prompt,
             'workdir': workdir,
+            'project_id': project_id or '',
             'status': 'running',
             'created_at': time.time(),
             'tmux_session': session_name,
@@ -2216,6 +2229,10 @@ class ClaudeTaskManager:
                     'source': meta.get('source'),
                     'kind': meta.get('kind', 'claude'),
                     'assistant': meta.get('assistant'),
+                    # Where it runs and who it belongs to — attribution is only
+                    # debuggable from the API if both are on the wire (#533).
+                    'workdir': meta.get('workdir'),
+                    'project_id': meta.get('project_id') or '',
                     'parent_task_id': task_parent,
                     'sub_task_ids': meta.get('sub_task_ids', []),
                     'memory_injected': meta.get('memory_injected', []),
@@ -3205,6 +3222,9 @@ class ProjectsManager:
     """
 
     PROJECTS_DIR = '/home/dev/.claude-projects'
+    # Every project workdir lives under this root (see _normalize). A constant
+    # so tests can point the whole registry at a tmpdir.
+    HOME_ROOT = '/home/dev'
     # Lowercase slug, starts alphanumeric — used unescaped as a filename, so no
     # dots (path-traversal) and no underscore (keeps _discover unambiguous).
     _ID_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
@@ -3219,6 +3239,15 @@ class ProjectsManager:
     _BRIEF_MEMORIES = 6
     _BRIEF_MEMORY_SCAN = 2000   # bound the memory-list scan
     _BRIEF_MARKDOWN_CAP = 6000  # hard char ceiling on the digest (~1.5k tokens)
+
+    # workdir -> (cached_at, main checkout when the workdir is a linked git
+    # worktree, '' otherwise). Filled by _attribution_paths; bounded so a
+    # long-lived server can't grow it without limit, and TTL'd so a worktree
+    # created after a lookup still attributes. Tests clear it between fixtures.
+    _WORKTREE_ROOTS = {}
+    _WORKTREE_CACHE_MAX = 512
+    _WORKTREE_CACHE_TTL = 300   # seconds
+    _WORKTREE_MAX_DEPTH = 8     # levels walked up looking for the checkout
 
     # ── storage primitives (WebhookManager pattern) ──────────────────────
 
@@ -3305,8 +3334,9 @@ class ProjectsManager:
             w = os.path.normpath(w.strip())
             if not w or w == '.':
                 continue
-            if not (w == '/home/dev' or w.startswith('/home/dev/')):
-                return 'workdirs must live under /home/dev'
+            home = ProjectsManager.HOME_ROOT
+            if not (w == home or w.startswith(home + os.sep)):
+                return f'workdirs must live under {home}'
             if w not in clean:
                 clean.append(w)
         cfg['workdirs'] = clean
@@ -3387,31 +3417,45 @@ class ProjectsManager:
     # ── git helpers (pure file reads — run on list endpoints) ────────────
 
     @staticmethod
+    def _git_common_dir(workdir):
+        """Absolute path of the .git dir a workdir reads its config from, ''
+        when it isn't a checkout. A linked worktree's `.git` is a *file* whose
+        `gitdir:` pointer + `commondir` lead back to the main repo's .git, so
+        worktrees resolve to the shared dir. Pure file reads (no subprocess)."""
+        if not workdir:
+            return ''
+        git_path = os.path.join(workdir, '.git')
+        if os.path.isdir(git_path):
+            return git_path
+        if not os.path.isfile(git_path):
+            return ''
+        try:
+            with open(git_path) as f:
+                first = f.readline().strip()
+        except OSError:
+            return ''
+        if not first.startswith('gitdir:'):
+            return ''
+        gitdir = first.split(':', 1)[1].strip()
+        if not os.path.isabs(gitdir):
+            gitdir = os.path.normpath(os.path.join(workdir, gitdir))
+        try:
+            with open(os.path.join(gitdir, 'commondir')) as f:
+                rel = f.read().strip()
+        except OSError:
+            return gitdir
+        return os.path.normpath(os.path.join(gitdir, rel))
+
+    @staticmethod
     def _git_remote(workdir):
         """owner/repo slug for a workdir's origin remote, '' when none. Reads
         .git/config directly (no subprocess). Resolves a linked-worktree .git
         pointer file to its common dir so worktrees find the shared config."""
-        if not workdir:
+        common = ProjectsManager._git_common_dir(workdir)
+        if not common:
             return ''
         try:
-            git_path = os.path.join(workdir, '.git')
-            if os.path.isfile(git_path):
-                with open(git_path) as f:
-                    first = f.readline().strip()
-                if not first.startswith('gitdir:'):
-                    return ''
-                gitdir = first.split(':', 1)[1].strip()
-                commondir = os.path.join(gitdir, 'commondir')
-                if os.path.isfile(commondir):
-                    with open(commondir) as f:
-                        rel = f.read().strip()
-                    cfg_dir = os.path.normpath(os.path.join(gitdir, rel))
-                else:
-                    cfg_dir = gitdir
-                config_path = os.path.join(cfg_dir, 'config')
-            else:
-                config_path = os.path.join(git_path, 'config')
-            with open(config_path) as f:
+            with open(os.path.join(common, 'config')) as f:
                 cfg_text = f.read()
         except OSError:
             return ''
@@ -3458,18 +3502,89 @@ class ProjectsManager:
         return metas
 
     @staticmethod
+    def _attribution_paths(workdir):
+        """Every path a workdir may attribute through: itself, plus the main
+        checkout when it's a linked git worktree. The kc-issue skill launches
+        every task in `/home/dev/.worktrees/<proj>/<branch>`, which no project
+        workdir prefixes — resolving it back to `/home/dev/<proj>` is what makes
+        those tasks countable at all (#533). Memoized: the mapping is a property
+        of the path, and the pulse scan asks tasks×projects times."""
+        if not workdir:
+            return []
+        wd = os.path.normpath(workdir)
+        cached = ProjectsManager._WORKTREE_ROOTS.get(wd)
+        now = time.time()
+        root = cached[1] if (
+            cached and now - cached[0] < ProjectsManager._WORKTREE_CACHE_TTL) else None
+        if root is None:
+            # Walk up to the nearest checkout — a task may run in a subdir of a
+            # worktree, not only at its root — then resolve that checkout's
+            # shared .git back to the main working copy.
+            cur, common = wd, ''
+            for _ in range(ProjectsManager._WORKTREE_MAX_DEPTH):
+                common = ProjectsManager._git_common_dir(cur)
+                if common:
+                    break
+                parent = os.path.dirname(cur)
+                if parent == cur:
+                    break
+                cur = parent
+            root = ''
+            if common and os.path.basename(common) == '.git':
+                main = os.path.normpath(os.path.dirname(common))
+                if main != wd:
+                    root = main
+            if (wd in ProjectsManager._WORKTREE_ROOTS
+                    or len(ProjectsManager._WORKTREE_ROOTS)
+                    < ProjectsManager._WORKTREE_CACHE_MAX):
+                ProjectsManager._WORKTREE_ROOTS[wd] = (now, root)
+        return [wd, root] if root else [wd]
+
+    @staticmethod
     def _task_matches(workdir, project_workdirs):
-        """True when a task/trigger workdir is a project workdir or under one.
-        Prefix-based (v1) — worktree paths outside a registered workdir won't
-        attribute; a project_id on task.json is the clean later upgrade."""
+        """True when a task/trigger workdir is a project workdir, under one, or
+        is a linked worktree of one."""
         if not workdir:
             return False
-        wd = os.path.normpath(workdir)
+        paths = ProjectsManager._attribution_paths(workdir)
         for pw in project_workdirs or []:
             pw = os.path.normpath(pw)
-            if wd == pw or wd.startswith(pw + os.sep):
-                return True
+            for wd in paths:
+                if wd == pw or wd.startswith(pw + os.sep):
+                    return True
         return False
+
+    @staticmethod
+    def _meta_matches(meta, project):
+        """True when a task meta belongs to a project. A `project_id` stamped at
+        creation attributes on its own (that's how a CTO-dispatched build stays
+        with its project no matter where it runs); path matching still applies
+        on top, so tasks created before #533 — and tasks merely living inside a
+        project's tree — keep attributing too."""
+        pid = (meta.get('project_id') or '').strip()
+        if pid and pid == project.get('id'):
+            return True
+        return ProjectsManager._task_matches(
+            meta.get('workdir'), project.get('workdirs'))
+
+    @staticmethod
+    def project_for_workdir(workdir):
+        """Registered project id owning a workdir ('' when none) — what gets
+        stamped onto a new task.json so attribution survives the workdir moving
+        (a worktree being pruned, a build cd-ing elsewhere). The most specific
+        workdir wins, so /home/dev/kube-coder beats a broader /home/dev entry."""
+        best, best_len = '', -1
+        try:
+            projects = ProjectsManager._load_all()
+        except Exception:
+            return ''
+        for p in projects:
+            for pw in p.get('workdirs') or []:
+                if not ProjectsManager._task_matches(workdir, [pw]):
+                    continue
+                if len(os.path.normpath(pw)) > best_len:
+                    best, best_len = p.get('id') or '', len(os.path.normpath(pw))
+        return best
 
     @staticmethod
     def _pulse_by_project(projects, metas=None):
@@ -3480,11 +3595,10 @@ class ProjectsManager:
         out = {p['id']: {'running': 0, 'waiting': 0, 'last_activity_at': None}
                for p in projects}
         for meta in metas:
-            wd = meta.get('workdir')
             status = meta.get('status')
             la = meta.get('last_activity_at') or meta.get('created_at')
             for p in projects:
-                if not ProjectsManager._task_matches(wd, p.get('workdirs')):
+                if not ProjectsManager._meta_matches(meta, p):
                     continue
                 pu = out[p['id']]
                 if status == 'running':
@@ -3517,7 +3631,7 @@ class ProjectsManager:
         """Infer a project id from a task workdir: the dir name directly under
         /home/dev, or the project segment of a .worktrees/<proj>/… path."""
         wd = os.path.normpath(workdir or '')
-        home = '/home/dev'
+        home = ProjectsManager.HOME_ROOT
         if not wd.startswith(home + os.sep):
             return ''
         parts = wd[len(home) + 1:].split(os.sep)
@@ -3530,6 +3644,30 @@ class ProjectsManager:
         else:
             base = parts[0]
         return ProjectsManager._slugify(base)
+
+    @staticmethod
+    def _implied_workdirs(project_id):
+        """Existing dirs a project id plausibly names, for backfilling projects
+        discovered from a memory namespace alone — those landed with
+        `workdirs: []`, which made them structurally uncountable (#533).
+
+        `/home/dev/<id>`, plus the dir a `home-dev-…` path slug came from (the
+        memory hook names a namespace after the cwd, so `/home/dev/kube-coder`
+        becomes `claude.home-dev-kube-coder`). `/home/dev` itself is never
+        implied: a workdir of the whole home dir would swallow every task in the
+        workspace, so a bare `home-dev` project stays deliberately
+        unattributable."""
+        home = ProjectsManager.HOME_ROOT
+        out = []
+        cands = [os.path.join(home, project_id)]
+        prefix = ProjectsManager._slugify(home) + '-'   # '/home/dev' → 'home-dev-'
+        if project_id.startswith(prefix):
+            cands.append(os.path.join(home, project_id[len(prefix):]))
+        for c in cands:
+            c = os.path.normpath(c)
+            if c != home and c not in out and os.path.isdir(c):
+                out.append(c)
+        return out
 
     @staticmethod
     def _discover_memory_namespaces():
@@ -3604,7 +3742,7 @@ class ProjectsManager:
             c['reasons'].append('memory-namespace')
 
         # 3. Task workdirs (attributes worktree tasks to their canonical root)
-        home = '/home/dev'
+        home = ProjectsManager.HOME_ROOT
         for meta in ProjectsManager._scan_task_metas():
             pid = ProjectsManager._workdir_project_id(meta.get('workdir'))
             if not pid or not ProjectsManager.valid_id(pid):
@@ -3617,7 +3755,14 @@ class ProjectsManager:
                 c['workdirs'].append(canonical)
 
         registered = []
+        backfilled = []
         for c in candidates.values():
+            # 4. Memory-only candidates have no path yet — imply one from the id
+            #    so they aren't born permanently unattributable (#533).
+            if not c['workdirs']:
+                c['workdirs'] = ProjectsManager._implied_workdirs(c['id'])
+                if c['workdirs']:
+                    c['reasons'].append('implied-workdir')
             c['confidence'] = 'high' if (
                 c['has_git_remote'] or c['has_task'] or c['has_memory']) else 'low'
             c['registered'] = c['id'] in existing_ids
@@ -3630,9 +3775,20 @@ class ProjectsManager:
                 if cfg and not err:
                     c['registered'] = True
                     registered.append(c['id'])
+            elif auto_provision and c['registered'] and c['workdirs']:
+                # Heal projects already registered with `workdirs: []` — they
+                # predate the backfill and would count 0 tasks forever. Only
+                # ever fills an empty list; a user-curated one is never touched.
+                stored = ProjectsManager.get_project(c['id'])
+                if stored is not None and not (stored.get('workdirs') or []):
+                    _, err = ProjectsManager.update(
+                        c['id'], {'workdirs': c['workdirs']})
+                    if not err:
+                        backfilled.append(c['id'])
         return {
             'candidates': sorted(candidates.values(), key=lambda x: x['id']),
             'registered': registered,
+            'backfilled': backfilled,
         }
 
     # ── brief aggregation (the heart of the feature) ─────────────────────
@@ -3705,9 +3861,9 @@ class ProjectsManager:
         workdirs = cfg.get('workdirs') or []
         namespace = cfg.get('memory_namespace') or f'project.{project_id}'
 
-        # Tasks (prefix-matched, recency-sorted)
+        # Tasks (project_id- or path-attributed, recency-sorted)
         proj_tasks = [m for m in ProjectsManager._scan_task_metas()
-                      if ProjectsManager._task_matches(m.get('workdir'), workdirs)]
+                      if ProjectsManager._meta_matches(m, cfg)]
         proj_tasks.sort(
             key=lambda m: (m.get('last_activity_at') or m.get('created_at') or 0),
             reverse=True)
@@ -3988,7 +4144,7 @@ class FeedManager:
             'activity',
             f'Task {verb}: {prompt[:80] or tid}',
             source='system:task',
-            project_id=FeedManager._project_for_workdir(meta.get('workdir')),
+            project_id=FeedManager._project_for_meta(meta),
             links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
             dedupe_key=f'task:{tid}:terminal',
         )
@@ -4004,7 +4160,7 @@ class FeedManager:
             'activity',
             f'Task waiting on you: {prompt[:80] or tid}',
             source='system:task',
-            project_id=FeedManager._project_for_workdir(meta.get('workdir')),
+            project_id=FeedManager._project_for_meta(meta),
             links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
             waiting=True,
             dedupe_key=f'task:{tid}:waiting',
@@ -4036,17 +4192,24 @@ class FeedManager:
 
     @staticmethod
     def _project_for_workdir(workdir):
-        """Best-effort project id whose workdir prefixes this one (reuses the
-        registry's matcher). '' when unattributed."""
+        """Best-effort project id owning this workdir (reuses the registry's
+        resolver, so worktrees attribute to their main repo). '' when
+        unattributed."""
         if not workdir:
             return ''
         try:
-            for p in ProjectsManager._load_all():
-                if ProjectsManager._task_matches(workdir, p.get('workdirs')):
-                    return p['id']
+            return ProjectsManager.project_for_workdir(workdir)
         except Exception:
-            pass
-        return ''
+            return ''
+
+    @staticmethod
+    def _project_for_meta(meta):
+        """Project id for a task meta — the id stamped at creation (#533) wins,
+        else fall back to resolving its workdir."""
+        pid = (meta.get('project_id') or '').strip()
+        if pid:
+            return pid
+        return FeedManager._project_for_workdir(meta.get('workdir'))
 
     @staticmethod
     def _project_for_namespace(namespace):
@@ -8081,6 +8244,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         disable_memory_injection = bool(data.get('disable_memory_injection'))
         assistant = data.get('assistant') or None
         parent_task_id = data.get('parent_task_id') or None
+        # Explicit project binding (#533) — the CTO's dispatch tool passes the
+        # thread's project so the build attributes to it regardless of workdir.
+        # Unknown ids fall through to workdir inference rather than 400-ing: a
+        # bad hint must not block a build.
+        project_id = (data.get('project_id') or '').strip() or None
+        if project_id and (not ProjectsManager.valid_id(project_id)
+                           or ProjectsManager.get_project(project_id) is None):
+            project_id = None
         # Skip-permissions default: honor an explicit body flag; otherwise let
         # the source decide — unattended sources auto-approve, the interactive
         # Build tab does not (issue #296).
@@ -8099,6 +8270,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             assistant=assistant,
             parent_task_id=parent_task_id,
             auto_approve=auto_approve,
+            project_id=project_id,
         )
         if task.get('status') == 'rejected':
             self.send_json({'error': task.get('error')}, 429)

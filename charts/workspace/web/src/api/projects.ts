@@ -93,6 +93,8 @@ export interface DiscoverCandidate {
 export interface DiscoverResult {
   candidates: DiscoverCandidate[];
   registered: string[];
+  /** Ids whose empty `workdirs` discovery healed, so their tasks attribute (#533). */
+  backfilled?: string[];
 }
 
 export const listProjects = () =>

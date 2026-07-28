@@ -85,6 +85,28 @@ describe('BriefPanel', () => {
     expect(screen.getByRole('button', { name: 'Collapse project brief' })).toBeTruthy();
   });
 
+  it('says "no tasks yet" instead of a row of zeros (#533)', () => {
+    selectedProjectId.value = 'kc';
+    brief.value = {
+      ...sample,
+      tasks: { running: 0, waiting: 0, total: 0, recent: [] },
+      counts: { ...sample.counts, tasks: 0 },
+    };
+    const { container } = render(<BriefPanel />);
+    expect(screen.getByText(/No tasks yet/)).toBeTruthy();
+    expect(container.querySelector('.cto-brief-stats')).toBeNull();
+  });
+
+  it('renders the Now stats once tasks are attributed (#533)', () => {
+    selectedProjectId.value = 'kc';
+    brief.value = sample;
+    const { container } = render(<BriefPanel />);
+    const stats = container.querySelector('.cto-brief-stats');
+    expect(stats).toBeTruthy();
+    expect(stats?.textContent).toContain('2');
+    expect(screen.queryByText(/No tasks yet/)).toBeNull();
+  });
+
   it('renders a date on each decision-log entry (#467 timeline)', () => {
     selectedProjectId.value = 'kc';
     brief.value = sample;
