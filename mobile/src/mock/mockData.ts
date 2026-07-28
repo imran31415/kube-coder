@@ -32,6 +32,10 @@ import type {
   ProjectBrief,
   FeedItem,
   HypervisorThread,
+  CronRecord,
+  DocsManifest,
+  DocsPage,
+  WebhookRecord,
 } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -807,4 +811,215 @@ export function mockFeed(): FeedItem[] {
       links: [{ label: 'View decision', ref: 'memory:project.kube-coder.decisions/sse' }], waiting: false, read: true,
     },
   ];
+}
+
+// ---- Triggers (#250) -------------------------------------------------------
+// Mutable, so the demo build's create/delete/pause actions actually do
+// something (same approach as mockDesktop).
+
+export const mockWebhooks: WebhookRecord[] = [
+  {
+    id: 'github-ci',
+    prompt_template: 'A GitHub workflow failed. Investigate the run and propose a fix.',
+    workdir: '/home/dev/kube-coder',
+    interpolate_mode: 'attach',
+    provider: 'github',
+    created_at: NOW - 86400 * 6,
+    hmac_secret_set: true,
+    unsigned: false,
+  },
+  {
+    id: 'deploy-hook',
+    prompt_template: 'Smoke-test the staging deploy and report anything red.',
+    workdir: '/home/dev',
+    interpolate_mode: 'attach',
+    provider: 'generic',
+    created_at: NOW - 86400 * 19,
+    hmac_secret_set: true,
+    unsigned: false,
+  },
+];
+
+export const mockCrons: CronRecord[] = [
+  {
+    id: 'dep-scout',
+    schedule: '0 9 * * *',
+    prompt_template: 'Scan the lockfiles for new advisories and post anything actionable to the feed.',
+    workdir: '/home/dev/kube-coder',
+    timezone: 'America/Los_Angeles',
+    suspended: false,
+    created_at: NOW - 86400 * 11,
+    fire_token_set: true,
+  },
+  {
+    id: 'nightly-tests',
+    schedule: '30 2 * * *',
+    prompt_template: 'Run the full test suite and open an issue for any new failure.',
+    workdir: '/home/dev/kube-coder',
+    timezone: 'UTC',
+    suspended: true,
+    created_at: NOW - 86400 * 31,
+    fire_token_set: true,
+  },
+];
+
+// ---- Docs (#250) -----------------------------------------------------------
+// A trimmed stand-in for docs/_manifest.json plus a couple of real-ish pages,
+// so the demo build renders a browsable docs surface with no workspace.
+
+export const mockDocsManifest: DocsManifest = {
+  version: 1,
+  sections: [
+    {
+      id: 'overview',
+      title: 'Overview',
+      pages: [
+        {
+          id: 'getting-started',
+          title: 'Getting started',
+          file: 'in-app/getting-started.md',
+          summary: 'Connect the app to your workspace, land in the AI CTO, and ship your first build.',
+        },
+      ],
+    },
+    {
+      id: 'tasks',
+      title: 'Tasks',
+      pages: [
+        {
+          id: 'tasks-concepts',
+          title: 'Concepts',
+          file: 'in-app/tasks-concepts.md',
+          summary: 'What a build is, its lifecycle states, tmux sessions, and attaching to one.',
+        },
+        {
+          id: 'tasks-api',
+          title: 'HTTP API',
+          file: 'claude-task-api.md',
+          summary: 'The Claude Task API reference — curl recipes and the endpoint matrix.',
+        },
+      ],
+    },
+    {
+      id: 'triggers',
+      title: 'Triggers',
+      pages: [
+        {
+          id: 'triggers-webhooks',
+          title: 'Webhooks',
+          file: 'in-app/triggers-webhooks.md',
+          summary: 'Signed webhooks, payload templating, response URLs, and replay protection.',
+        },
+      ],
+    },
+    {
+      id: 'memory',
+      title: 'Memory',
+      pages: [
+        {
+          id: 'memory-concepts',
+          title: 'Concepts',
+          file: 'in-app/memory-concepts.md',
+          summary: 'Namespaces, importance, tags, and how the agent reads memory back.',
+        },
+      ],
+    },
+  ],
+};
+
+const MOCK_DOC_BODIES: Record<string, string> = {
+  'getting-started': `# Getting started
+
+Your workspace is a container in Kubernetes with a persistent volume. This app
+talks to it over the same HTTP API the dashboard uses.
+
+## Connect
+
+1. Open **Settings → Connection** on the workspace dashboard.
+2. Copy the workspace URL and API token.
+3. Paste both into the app's onboarding screen.
+
+> The token is stored in the device keychain, never in plain storage.
+
+## Your first build
+
+Type one sentence into the composer on the **Desktop** home — "add a /healthz
+endpoint and a unit test" — and hit build. The agent runs in a tmux session on
+the pod, so closing the app never kills the work.
+
+\`\`\`bash
+curl -H "Authorization: Bearer $TOKEN" \\
+  https://your-workspace.example.com/api/claude/tasks
+\`\`\`
+`,
+  'tasks-concepts': `# Concepts
+
+A **build** is one Claude Code session running in its own tmux window.
+
+- **running** — the agent is working.
+- **waiting** — it asked you something and is blocked.
+- **done** — the session exited cleanly.
+- **error** — the session exited non-zero.
+
+Attach from a terminal with \`tmux attach -t claude-<id>\`. State lives under
+\`~/.claude-tasks/\`, on the persistent volume, so a pod restart never loses it.
+`,
+  'tasks-api': `# HTTP API
+
+All endpoints take \`Authorization: Bearer <token>\`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | /api/claude/tasks | Create a task |
+| GET | /api/claude/tasks | List tasks |
+| GET | /api/claude/tasks/{id} | Task detail + output |
+| DELETE | /api/claude/tasks/{id} | Kill a task |
+`,
+  'triggers-webhooks': `# Webhooks
+
+A webhook turns an inbound HTTP POST into a build.
+
+## Signing
+
+Every webhook is created with an HMAC secret. Unsigned requests are rejected —
+the receiver *fails closed*, so a secret-less webhook accepts nothing at all.
+
+1. Copy the secret shown once at create time.
+2. Paste it into the sending service (GitHub, Stripe, …).
+3. The sender signs each body; the workspace verifies before spawning anything.
+
+## Templating
+
+The request body is attached to the prompt by default. Switch to
+**interpolate** mode to substitute \`{{ fields }}\` into the prompt instead.
+`,
+  'memory-concepts': `# Memory concepts
+
+Memory is a SQLite store on the persistent volume, exposed to agents over MCP.
+
+- **namespace** — \`user.*\` for personal facts, \`project.<repo>.*\` for project facts.
+- **importance** — 0 to 1; higher entries win a slot in the prompt injection.
+- **tags** — tag an entry \`secret\` to keep it out of the auto-injected block.
+
+Ask the agent to "remember" something and it lands here; the Memory tab is a
+browsable view of the same table.
+`,
+};
+
+export function mockDocsPage(id: string): DocsPage | null {
+  for (const section of mockDocsManifest.sections) {
+    const page = section.pages.find((p) => p.id === id);
+    if (!page) continue;
+    return {
+      id: page.id,
+      title: page.title,
+      summary: page.summary,
+      section_id: section.id,
+      section_title: section.title,
+      file: page.file,
+      edited_at: NOW - 86400 * 3,
+      markdown: MOCK_DOC_BODIES[id] ?? `# ${page.title}\n\n${page.summary ?? ''}\n`,
+    };
+  }
+  return null;
 }

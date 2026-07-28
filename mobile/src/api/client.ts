@@ -35,6 +35,10 @@ import {
   mockProjectBrief,
   mockCtoThreads,
   mockFeed,
+  mockWebhooks,
+  mockCrons,
+  mockDocsManifest,
+  mockDocsPage,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -68,6 +72,12 @@ import type {
   ProjectBrief,
   FeedItem,
   FeedKind,
+  CreateCronInput,
+  CreateWebhookInput,
+  CronRecord,
+  DocsManifest,
+  DocsPage,
+  WebhookRecord,
 } from './types';
 
 export class ApiError extends Error {
@@ -1285,4 +1295,140 @@ export async function markFeedRead(id: string): Promise<void> {
 export async function dismissFeedItem(id: string): Promise<void> {
   if (getConfig().mock) return;
   await request(`/api/feed/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+}
+
+// ---- Triggers: webhooks + crons (#250) -------------------------------------
+// Same endpoints as the dashboard's Triggers route. Both kinds are listed
+// separately by the server and folded into one stream client-side
+// (src/util/triggers.ts mergeTriggers).
+
+export async function listWebhooks(): Promise<WebhookRecord[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    return [...mockWebhooks];
+  }
+  const d = await request<{ webhooks?: WebhookRecord[] }>('/api/webhooks');
+  return d.webhooks ?? [];
+}
+
+export async function listCrons(): Promise<CronRecord[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    return [...mockCrons];
+  }
+  const d = await request<{ crons?: CronRecord[] }>('/api/crons');
+  return d.crons ?? [];
+}
+
+/**
+ * Create or replace a webhook. The server upserts on id, and re-mints the HMAC
+ * secret whenever the request omits one — so an "edit" hands back a fresh
+ * `hmac_secret_once` that the sender must be updated with. The screen says so
+ * before saving.
+ */
+export async function saveWebhook(input: CreateWebhookInput): Promise<WebhookRecord> {
+  if (getConfig().mock) {
+    await delay(150);
+    const rec: WebhookRecord = {
+      id: input.id,
+      prompt_template: input.prompt_template,
+      workdir: input.workdir || '/home/dev',
+      interpolate_mode: 'attach',
+      provider: 'generic',
+      created_at: Math.floor(Date.now() / 1000),
+      hmac_secret_set: true,
+      unsigned: false,
+      hmac_secret_once: 'demo-secret-not-a-real-key',
+      receive_url: `https://demo.kube-coder.dev/api/webhooks/${input.id}`,
+    };
+    const i = mockWebhooks.findIndex((w) => w.id === input.id);
+    if (i >= 0) mockWebhooks[i] = rec;
+    else mockWebhooks.unshift(rec);
+    return rec;
+  }
+  return request<WebhookRecord>('/api/webhooks', { method: 'POST', body: input });
+}
+
+export async function deleteWebhook(id: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(100);
+    const i = mockWebhooks.findIndex((w) => w.id === id);
+    if (i >= 0) mockWebhooks.splice(i, 1);
+    return;
+  }
+  await request(`/api/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Fire a webhook from inside the workspace, as if an external sender had
+ *  posted to it — the dashboard's "Fire now". */
+export async function testWebhook(id: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(200);
+    return;
+  }
+  await request(`/api/webhooks/${encodeURIComponent(id)}/test`, { method: 'POST', body: {} });
+}
+
+/** Create or replace a cron. The server also applies the k8s CronJob; a 202
+ *  carries a `warning` when the config saved but kubectl apply failed. */
+export async function saveCron(input: CreateCronInput): Promise<CronRecord & { warning?: string }> {
+  if (getConfig().mock) {
+    await delay(150);
+    const rec: CronRecord = {
+      id: input.id,
+      schedule: input.schedule,
+      prompt_template: input.prompt_template,
+      workdir: input.workdir || '/home/dev',
+      timezone: input.timezone || 'UTC',
+      suspended: false,
+      created_at: Math.floor(Date.now() / 1000),
+      fire_token_set: true,
+    };
+    const i = mockCrons.findIndex((c) => c.id === input.id);
+    if (i >= 0) mockCrons[i] = rec;
+    else mockCrons.unshift(rec);
+    return rec;
+  }
+  return request<CronRecord & { warning?: string }>('/api/crons', { method: 'POST', body: input });
+}
+
+export async function deleteCron(id: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(100);
+    const i = mockCrons.findIndex((c) => c.id === id);
+    if (i >= 0) mockCrons.splice(i, 1);
+    return;
+  }
+  await request(`/api/crons/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** suspend | resume | run — the cron row's pause/resume and "Fire now". */
+export async function cronAction(id: string, action: 'suspend' | 'resume' | 'run'): Promise<void> {
+  if (getConfig().mock) {
+    await delay(150);
+    const c = mockCrons.find((x) => x.id === id);
+    if (c && action !== 'run') c.suspended = action === 'suspend';
+    return;
+  }
+  await request(`/api/crons/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: {} });
+}
+
+// ---- Docs (in-app documentation site, #250) --------------------------------
+
+export async function getDocsManifest(): Promise<DocsManifest> {
+  if (getConfig().mock) {
+    await delay(100);
+    return mockDocsManifest;
+  }
+  return request<DocsManifest>('/api/docs');
+}
+
+export async function getDocsPage(id: string): Promise<DocsPage> {
+  if (getConfig().mock) {
+    await delay(120);
+    const page = mockDocsPage(id);
+    if (!page) throw new ApiError(`Unknown doc page: ${id}`, 404);
+    return page;
+  }
+  return request<DocsPage>(`/api/docs/${encodeURIComponent(id)}`);
 }

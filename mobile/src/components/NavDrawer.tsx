@@ -5,7 +5,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useRef } from 'react';
-import { Animated, Dimensions, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { closeDrawer, navigateTo, useActiveTab, useDrawerOpen } from '../store/nav';
 import { hasController } from '../store/config';
@@ -70,7 +70,14 @@ export function NavDrawer() {
             </View>
           </View>
 
-          <View style={styles.items}>
+          {/* Scrollable: the destination list outgrew a short phone screen
+              once Triggers + Docs landed (#250), and a plain View silently
+              clipped the tail (Docs / Controller / Settings) off the bottom. */}
+          <ScrollView
+            style={styles.items}
+            contentContainerStyle={styles.itemsInner}
+            showsVerticalScrollIndicator={false}
+          >
             {groups.map((g, gi) => (
               <View key={g.title ?? 'tail'} style={[styles.group, gi > 0 && styles.groupGap]}>
                 {g.title ? (
@@ -86,6 +93,10 @@ export function NavDrawer() {
                       key={it.name}
                       onPress={() => navigateTo(it.name)}
                       accessibilityRole="button"
+                      // Distinct from the label text so screen readers (and the
+                      // nav guard) can target the drawer entry unambiguously,
+                      // even when a screen underneath renders the same word.
+                      accessibilityLabel={`Go to ${it.label}`}
                       accessibilityState={{ selected: on }}
                       style={({ pressed }) => [styles.item, on && styles.itemActive, pressed && styles.itemPressed]}
                     >
@@ -96,7 +107,7 @@ export function NavDrawer() {
                 })}
               </View>
             ))}
-          </View>
+          </ScrollView>
 
           <Text style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>kube-coder mobile</Text>
         </Animated.View>
@@ -133,6 +144,7 @@ const styles = StyleSheet.create({
   brandHost: { color: colors.textFaint, fontSize: font.size.xs, marginTop: 1 },
 
   items: { marginTop: space.md, flex: 1 },
+  itemsInner: { paddingBottom: space.md },
   group: { gap: 2 },
   groupGap: { marginTop: space.md },
   groupTitle: {
