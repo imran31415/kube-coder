@@ -38,6 +38,14 @@ workspaces. The security boundaries we care about:
 - **Secret exposure** — the operator's GitHub App private key, OAuth2
   client secret, registry pull secret, and SSH authorized_keys all live
   in Kubernetes Secrets accessible from the workspace.
+  - The GitHub App private key is mounted **only** on the
+    `github-app-token` sidecar, never on the `ide` container where the
+    agent runs (issue #558). Everything in `ide` — including every
+    process the agent spawns, which inherits its environment — sees only
+    the installation token, which expires in an hour. Treat any change
+    that puts a long-lived credential back into the `ide` environment as
+    a regression: an agent can be induced to read its own environment by
+    an injected instruction file or a package lifecycle hook.
 
 Out of scope:
 

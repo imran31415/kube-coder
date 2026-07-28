@@ -13,9 +13,31 @@ data:
     Generates a JWT signed with RS256 (via openssl), exchanges it for a
     short-lived installation access token, and configures git/gh CLI auth.
 
+    SPLIT ACROSS TWO CONTAINERS (issue #558)
+    ----------------------------------------
+    GITHUB_APP_PRIVATE_KEY used to be an env var on the `ide` container — the
+    container the agent and everything it spawns runs in — so any child process
+    (`npm` postinstall hook, an agent following an injected instruction file)
+    could read a key that mints installation tokens *indefinitely*. It now lives
+    ONLY in the `github-app-token` sidecar. This one script therefore runs in
+    two roles:
+
+      sidecar (holds the key)      mints tokens onto the shared PVC
+      ide     (holds no key)       reads those tokens, owns git's config
+
     Modes:
-      --once    Run once and exit (for pod startup)
-      --daemon  Run in a loop, refreshing every 50 minutes
+      --once                  Mint once and exit. In the sidecar that mints
+                              directly; in the ide container (no key) it
+                              delegates to the sidecar via the request file
+                              below, so the documented re-mint command keeps
+                              working unchanged.
+      --daemon                Sidecar: mint, then refresh every 50 minutes and
+                              on demand whenever a request nonce appears.
+      --request               Ask the sidecar to mint and block until it acks
+                              (bounded). Used by start.sh at boot.
+      --configure-git         ide: point git's credential config at the identity
+                              for the current auth mode, then exit.
+      --configure-git-daemon  ide: same, then re-assert it every 50 minutes.
     """
 
     import base64
@@ -35,9 +57,27 @@ data:
     AUTH_MODE_FILE = os.path.join(CREDENTIALS_DIR, ".github-auth-mode")
     # `credential.helper store` writes here; ~/.git-credentials symlinks onto it.
     GIT_STORE_FILE = os.path.join(CREDENTIALS_DIR, ".git-credentials")
+    # Cross-container mint handshake (#558). The ide container cannot sign a JWT
+    # any more, so it writes a nonce to REQUEST_FILE; the sidecar mints and
+    # echoes the same nonce into ACK_FILE. Both live on the shared PVC and hold
+    # nothing secret — only a pid/timestamp string.
+    REQUEST_FILE = os.path.join(CREDENTIALS_DIR, ".github-token-request")
+    ACK_FILE = os.path.join(CREDENTIALS_DIR, ".github-token-ack")
+    # Per-shell env hook: BASH_ENV and the ~/.bashrc/~/.profile blocks source it.
+    # Not under CREDENTIALS_DIR — start.sh's bootstrap_rc points at this path.
+    PROFILE_HOOK = "/home/dev/.profile.d-github-env"
     # git config key for the github.com-scoped helper chain.
     HOST_HELPER_KEY = "credential.https://github.com.helper"
     REFRESH_INTERVAL = 3000  # 50 minutes in seconds
+    RETRY_INTERVAL = 60      # after a failed refresh, retry this soon
+    POLL_INTERVAL = 2        # how often the sidecar looks for a mint request
+    # How long a requester (start.sh at boot, or a manual `--once`) waits for
+    # the sidecar's ack before giving up and saying so loudly. Both containers
+    # run the same already-pulled image, so a healthy sidecar answers in a few
+    # seconds; this only ever elapses when it is genuinely broken, and it has
+    # to stay well inside the ide container's liveness budget (60s initial
+    # delay + 6 x 30s) so a sick sidecar cannot crash-loop the workspace.
+    REQUEST_TIMEOUT = int(os.environ.get("KC_GITHUB_TOKEN_WAIT", "60"))
 
 
     def get_auth_mode() -> str:
@@ -102,7 +142,11 @@ data:
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
-        with urllib.request.urlopen(req) as resp:
+        # Bounded: an un-timed-out call here would wedge the sidecar's refresh
+        # loop indefinitely, and the loop is now the only thing in the pod that
+        # can mint. A timeout surfaces as a failed refresh, which retries in
+        # RETRY_INTERVAL.
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode())
         return data["token"]
 
@@ -129,7 +173,6 @@ data:
         # so a personal `gh auth login` (hosts.yml) is no longer shadowed by the
         # App GH_TOKEN — and switching modes takes effect for NEW shells with no
         # need to rewrite ~/.bashrc. See issue #256.
-        profile_hook = "/home/dev/.profile.d-github-env"
         hook_content = (
             "# github-app token (managed by the refresh daemon; self-guards on auth mode)\n"
             'if [ "$(cat /home/dev/.credentials/.github-auth-mode 2>/dev/null || echo app)" = "app" ]; then\n'
@@ -138,9 +181,9 @@ data:
             "fi\n"
         )
         try:
-            with open(profile_hook, "w") as f:
+            with open(PROFILE_HOOK, "w") as f:
                 f.write(hook_content)
-            os.chmod(profile_hook, 0o600)
+            os.chmod(PROFILE_HOOK, 0o600)
         except OSError:
             pass
 
@@ -176,7 +219,7 @@ data:
             pass
 
 
-    def configure_git(token: str, mode: str):
+    def configure_git(mode: str):
         """Point git's credential helper at the identity for the current mode.
 
         app:      install a helper that always cats the fresh App token, and
@@ -184,6 +227,13 @@ data:
         personal: remove that App helper and let the user's own gh login
                   drive git (best-effort `gh auth setup-git`), so a personal
                   `gh auth login` actually takes effect for `git push` (#256).
+
+        Runs in the IDE container, not the sidecar (#558): it writes git's
+        *global* config and shells out to `gh`, both of which resolve against
+        $HOME — and each container has its own ephemeral /home/ubuntu. It needs
+        no private key and never touches the token itself; the helper it
+        installs re-reads TOKEN_FILE on every git operation, which is exactly
+        what keeps long-lived shells immune to the hourly rotation.
         """
         helper = (
             "!f() { "
@@ -251,7 +301,12 @@ data:
 
 
     def refresh_token(app_id: str, installation_id: str, private_key: str):
-        """Generate and install a fresh installation token."""
+        """Generate and install a fresh installation token.
+
+        Sidecar-only — this is the sole code path that touches the private key.
+        Deliberately does NOT configure git: that is $HOME-dependent and belongs
+        to the ide container (see configure_git).
+        """
         print(f"[github-app-token] Generating JWT for app {app_id}...")
         jwt = generate_jwt(app_id, private_key)
 
@@ -259,36 +314,179 @@ data:
         token = get_installation_token(jwt, installation_id)
 
         write_credentials(token)
-        configure_git(token, get_auth_mode())
 
         print(f"[github-app-token] Token refreshed successfully.")
 
 
+    # ── Cross-container mint handshake (#558) ────────────────────────────────
+
+    def take_request():
+        """Claim a pending mint request, returning its nonce, or None if there
+        is no request.
+
+        The request file is removed BEFORE minting so a request that lands
+        while a mint is in flight is serviced on the next tick rather than
+        swallowed. An empty file (a bare `touch`) still triggers a mint; it
+        just gets no ack, since there is no nonce to echo.
+        """
+        try:
+            with open(REQUEST_FILE) as f:
+                nonce = f.read().strip()
+        except OSError:
+            return None
+        try:
+            os.unlink(REQUEST_FILE)
+        except OSError:
+            pass
+        return nonce
+
+
+    def write_ack(nonce: str):
+        """Echo a serviced request's nonce back to the requester."""
+        try:
+            os.makedirs(CREDENTIALS_DIR, exist_ok=True)
+            with open(ACK_FILE, "w") as f:
+                f.write(nonce + "\n")
+            os.chmod(ACK_FILE, 0o600)
+        except OSError as e:
+            print(f"[github-app-token] Could not write ack: {e}", file=sys.stderr)
+
+
+    def request_refresh(timeout: int = REQUEST_TIMEOUT) -> bool:
+        """Ask the sidecar for a fresh token and block until it acks.
+
+        This is what the ide container runs instead of minting: it holds no
+        private key. Bounded and loud — a silent fall-through here would leave
+        git/gh with no credential, which is the failure this whole handshake
+        exists to prevent.
+        """
+        nonce = "%d-%d" % (os.getpid(), int(time.time() * 1000))
+        try:
+            os.makedirs(CREDENTIALS_DIR, exist_ok=True)
+            with open(REQUEST_FILE, "w") as f:
+                f.write(nonce + "\n")
+            os.chmod(REQUEST_FILE, 0o600)
+        except OSError as e:
+            print(f"[github-app-token] Could not write mint request: {e}",
+                  file=sys.stderr)
+            return False
+
+        print("[github-app-token] Requested a token from the github-app-token "
+              f"sidecar; waiting up to {timeout}s...")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(ACK_FILE) as f:
+                    if f.read().strip() == nonce:
+                        print("[github-app-token] Sidecar minted a fresh token.")
+                        return True
+            except OSError:
+                pass
+            time.sleep(1)
+
+        print("[github-app-token] TIMED OUT waiting for the github-app-token "
+              "sidecar to mint a token. Check that container's logs "
+              "(kubectl logs <pod> -c github-app-token).", file=sys.stderr)
+        return False
+
+
+    def serve(app_id: str, installation_id: str, private_key: str):
+        """Sidecar loop: mint at once, then refresh on schedule and on demand
+        whenever a request nonce appears. The on-demand path is the
+        cross-container replacement for running `--once` by hand after a
+        GitHub App permissions change.
+
+        The first mint happens INSIDE the loop so a transient GitHub failure
+        at boot retries here instead of killing the process: the ide container
+        is blocking on the handshake, and kubelet's crash-restart backoff
+        (which grows to minutes) would outlast its bounded wait.
+        """
+        print(f"[github-app-token] Daemon mode: refreshing every "
+              f"{REFRESH_INTERVAL}s, and on demand via {REQUEST_FILE}")
+        last = time.time() - REFRESH_INTERVAL   # due immediately
+        while True:
+            time.sleep(POLL_INTERVAL)
+            nonce = take_request()
+            if nonce is None and (time.time() - last) < REFRESH_INTERVAL:
+                continue
+            try:
+                refresh_token(app_id, installation_id, private_key)
+                last = time.time()
+                if nonce:
+                    write_ack(nonce)
+            except Exception as e:
+                # Retry well before the scheduled interval: the live token
+                # expires in an hour, so a failure at the 50-minute mark must
+                # not wait another 50 minutes to try again.
+                last = time.time() - REFRESH_INTERVAL + RETRY_INTERVAL
+                print(f"[github-app-token] Refresh failed: {e}", file=sys.stderr)
+
+
+    MODES = ("--once", "--daemon", "--request",
+             "--configure-git", "--configure-git-daemon")
+
+
     def main():
-        if len(sys.argv) != 2 or sys.argv[1] not in ("--once", "--daemon"):
-            print(f"Usage: {sys.argv[0]} --once|--daemon", file=sys.stderr)
+        if len(sys.argv) != 2 or sys.argv[1] not in MODES:
+            print(f"Usage: {sys.argv[0]} {'|'.join(MODES)}", file=sys.stderr)
             sys.exit(1)
+
+        mode = sys.argv[1]
+
+        # ide-container modes — no private key involved.
+        if mode in ("--configure-git", "--configure-git-daemon"):
+            configure_git(get_auth_mode())
+            if mode == "--configure-git-daemon":
+                # Re-assert periodically: `gh auth login` runs `gh auth
+                # setup-git`, which resets the github.com helper chain and
+                # would otherwise leave app mode broken until the next boot
+                # (issue #454). The old in-ide refresh daemon got this for
+                # free by calling configure_git on every mint.
+                while True:
+                    time.sleep(REFRESH_INTERVAL)
+                    try:
+                        configure_git(get_auth_mode())
+                    except Exception as e:
+                        print(f"[github-app-token] git config refresh failed: {e}",
+                              file=sys.stderr)
+            return
+
+        if mode == "--request":
+            sys.exit(0 if request_refresh() else 1)
 
         app_id = os.environ.get("GITHUB_APP_ID", "")
         installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID", "")
         private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY", "")
 
-        if not all([app_id, installation_id, private_key]):
+        if not private_key:
+            # No key here means we are NOT the sidecar (#558). `--once` is a
+            # documented entry point with two distinct uses: re-mint after a
+            # GitHub App permissions change (docs/claude-task-api.md), and
+            # re-assert git's helper chain after `gh auth setup-git` clobbered
+            # it (the kc-ship-pr skill, issue #454). It used to do both,
+            # because minting also configured git. Keep doing both — ask the
+            # sidecar to mint, then configure git here — so the documented
+            # command means the same thing it always did.
+            if mode == "--once":
+                print("[github-app-token] No App private key in this container "
+                      "(it lives in the github-app-token sidecar) — asking the "
+                      "sidecar to re-mint instead.")
+                ok = request_refresh()
+                configure_git(get_auth_mode())
+                sys.exit(0 if ok else 1)
+            print("[github-app-token] GITHUB_APP_PRIVATE_KEY is not set — "
+                  "--daemon only runs in the github-app-token sidecar.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        if not all([app_id, installation_id]):
             print("[github-app-token] Missing required env vars, skipping.", file=sys.stderr)
             sys.exit(1)
 
-        mode = sys.argv[1]
-
-        refresh_token(app_id, installation_id, private_key)
-
         if mode == "--daemon":
-            print(f"[github-app-token] Daemon mode: refreshing every {REFRESH_INTERVAL}s")
-            while True:
-                time.sleep(REFRESH_INTERVAL)
-                try:
-                    refresh_token(app_id, installation_id, private_key)
-                except Exception as e:
-                    print(f"[github-app-token] Refresh failed: {e}", file=sys.stderr)
+            serve(app_id, installation_id, private_key)   # mints on entry
+        else:
+            refresh_token(app_id, installation_id, private_key)
 
 
     if __name__ == "__main__":

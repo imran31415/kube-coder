@@ -129,7 +129,19 @@ Workspace pods can authenticate with GitHub using a GitHub App, enabling automat
    make deploy USER=<name>
    ```
 
-The token refresh daemon runs as a background process in the pod. New shells (including tmux sessions) automatically pick up the token via `.bashrc` hooks.
+The token refresh daemon runs in its **own `github-app-token` sidecar
+container**, not in the `ide` container the agent runs in (issue #558). That
+sidecar is the only place `GITHUB_APP_PRIVATE_KEY` is mounted; it writes the
+installation token — which expires in an hour — to
+`/home/dev/.credentials/.github-token` on the shared PVC. The `ide` container
+therefore never sees the signing key, only a short-lived token, so anything
+that reads its environment (an `npm` postinstall hook, an agent following an
+injected instruction file) steals at most an hour of access rather than the
+ability to mint tokens indefinitely.
+
+New shells (including tmux sessions) automatically pick up the token via
+`.bashrc` hooks; `git` and the `gh` shim re-read the token file on every
+invocation, so long-lived processes survive the hourly rotation.
 
 ## Task API Authentication
 
@@ -530,7 +542,7 @@ The file `charts/workspace/templates/ingress-claude-api.yaml` creates a dedicate
 | `charts/workspace/templates/deployment.yaml` | Pod spec with entrypoint, env vars, and volume mounts. |
 | `charts/workspace/templates/terminal-entry-configmap.yaml` | Wrapper script for ttyd enabling one-click tmux attach. |
 | `charts/workspace/templates/github-app-secret.yaml` | Kubernetes Secret for GitHub App credentials. |
-| `charts/workspace/templates/github-app-token-refresh.yaml` | ConfigMap with Python script for GitHub App token refresh. |
+| `charts/workspace/templates/github-app-token-refresh.yaml` | ConfigMap with the Python script for GitHub App token refresh. Runs `--daemon` in the `github-app-token` sidecar (the only holder of the private key) and `--request` / `--configure-git` in the `ide` container. |
 | `charts/workspace/templates/claude-secret.yaml` | Kubernetes Secret for `ANTHROPIC_API_KEY`. |
 | `charts/workspace/templates/ingress-claude-api.yaml` | Ingress for external API access (bypasses OAuth2). |
 | `charts/workspace/templates/ingress-oauth2.yaml` | Ingress for browser-based access (includes OAuth2 proxy). |
@@ -722,6 +734,11 @@ Multiple tasks can run simultaneously -- each runs in its own tmux session. Ther
 
 - Verify GitHub App credentials are configured: check for `GITHUB_APP_ID` env var in the pod.
 - Run the token refresh manually: `python3 /github-app/github-app-token.py --once`.
+  This still works from a workspace shell after a permissions change, but it no
+  longer mints locally — the `ide` container has no private key. It drops a
+  request on the PVC, the `github-app-token` sidecar mints, and the command
+  blocks until it acks (or reports a timeout). If it times out, read the
+  sidecar's log: `kubectl logs <pod> -n <ns> -c github-app-token`.
 - Check that the GitHub App has the correct repository permissions.
 
 **OAuth token expired**
