@@ -38,9 +38,12 @@ There is no user-level `gh auth login` and no SSH key here, so do **not** sugges
 >    writes an empty `helper =` under `[credential "https://github.com"]`, which
 >    *clears* the chain and drops the self-refreshing reader; `gh auth
 >    git-credential` then answers with the **stale `GH_TOKEN`** your long-lived
->    shell captured before the last rotation. The refresh daemon now owns that
->    section, so this self-heals within 50 min of boot — if you hit it in an old
->    pod, re-run `python3 /github-app/github-app-token.py --once`.
+>    shell captured before the last rotation. The workspace re-asserts that
+>    section every 50 min, so this self-heals — to fix it now, run
+>    `python3 /github-app/github-app-token.py --configure-git` (or `--once`,
+>    which also asks the `github-app-token` sidecar for a fresh token; the
+>    private key lives only in that sidecar since #558, so nothing in your
+>    shell can mint one).
 > 3. A **stale `github.com` line in `~/.git-credentials`** (persistent on the
 >    PVC, so a captured `ghs_…` outlives its 1-hour validity). The daemon purges
 >    these in app mode; delete by hand if you're ahead of it.

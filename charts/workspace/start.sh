@@ -326,11 +326,47 @@ PY
 fi
 
 if [ -n "$GITHUB_APP_ID" ]; then
-  log_stage "minting initial GitHub App token and starting refresh daemon"
-  python3 /github-app/github-app-token.py --once
-  # shellcheck disable=SC1091
-  source /home/dev/.credentials/.github-env
-  # NOTE: the --once run above already wrote /home/dev/.profile.d-github-env as a
+  # This container no longer holds GITHUB_APP_PRIVATE_KEY (issue #558) — the
+  # key that mints installation tokens *indefinitely* lived in the same
+  # environment as the agent and every process it spawns. Minting now happens
+  # in the `github-app-token` sidecar, which writes the hourly token to
+  # /home/dev/.credentials/.github-token on the shared PVC. All this container
+  # does is (a) ask for the first token and WAIT for it, and (b) own git's
+  # credential configuration, which is $HOME-dependent and therefore can't move.
+  #
+  # The wait is deliberate and bounded. The old `--once` call was synchronous,
+  # so a token was guaranteed present before the git/gh setup below; dropping
+  # that guarantee would trade a security bug for a flaky-boot bug. The
+  # handshake also proves *freshness* — a token file left on the PVC by the
+  # previous pod may already be expired, so "the file exists" is not enough.
+  _gh_mode="$(cat /home/dev/.credentials/.github-auth-mode 2>/dev/null || echo app)"
+  if [ "$_gh_mode" = personal ]; then
+    # In personal mode the user's own `gh auth login` drives git/gh and the App
+    # token is deliberately not used, so there is nothing to block on. The
+    # sidecar keeps minting in the background for an instant switch back.
+    log_stage "GitHub auth mode is 'personal' — not waiting on the App token"
+  else
+    log_stage "requesting the initial GitHub App token from the github-app-token sidecar"
+    if python3 /github-app/github-app-token.py --request; then
+      log_stage "GitHub App token minted by the sidecar"
+    else
+      log_stage "WARNING: no GitHub App token from the github-app-token sidecar in time — git/gh may be unauthenticated until it recovers; check that container's logs"
+    fi
+  fi
+
+  # Apply git's credential config for the current mode (installs the helper
+  # that cats the live token in app mode; hands github.com to the user's gh
+  # login in personal mode). Runs here, not in the sidecar: it writes the
+  # global gitconfig and shells out to gh, both $HOME-relative.
+  python3 /github-app/github-app-token.py --configure-git
+
+  # Guarded: the sidecar writes .github-env, so on a cold first boot where it
+  # has not landed yet this must not abort the entrypoint with "no such file".
+  if [ -f /home/dev/.credentials/.github-env ]; then
+    # shellcheck disable=SC1091
+    source /home/dev/.credentials/.github-env
+  fi
+  # NOTE: the sidecar's mint already wrote /home/dev/.profile.d-github-env as a
   # mode-guarded hook (exports the App token only in "app" mode). Do NOT clobber
   # it with a raw copy of .github-env, or a "personal" login would be shadowed
   # again (issue #256).
@@ -356,7 +392,13 @@ if [ -n "$GITHUB_APP_ID" ]; then
     '# github-app token (rewritten in place by the refresh daemon)
 [ -f /home/dev/.profile.d-github-env ] && . /home/dev/.profile.d-github-env'
 
-  python3 /github-app/github-app-token.py --daemon &
+  # The minting daemon runs in the sidecar now. What still has to run HERE is
+  # the periodic re-assert of git's credential config: `gh auth login` invokes
+  # `gh auth setup-git`, which resets the github.com-scoped helper chain and
+  # silently breaks app-mode pushes (issue #454). The old in-container daemon
+  # self-healed that on every mint; this keeps the same 50-minute cadence
+  # without needing the private key.
+  python3 /github-app/github-app-token.py --configure-git-daemon &
 
   # gh CLI wrapper: always read the live token the refresh daemon keeps fresh.
   # BASH_ENV + the ~/.profile hook above re-export GH_TOKEN for NEW shells, but a

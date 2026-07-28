@@ -42,9 +42,23 @@ tests:
       - matchRegex:
           path: data["github-app-token.py"]
           pattern: 'setup-git'
+      # git config is applied from the mode, in the ide container (#558) —
+      # minting in the sidecar no longer does it (that work is $HOME-relative).
       - matchRegex:
           path: data["github-app-token.py"]
-          pattern: 'configure_git\(token, get_auth_mode\(\)\)'
+          pattern: 'configure_git\(get_auth_mode\(\)\)'
+
+  - it: start.sh does not block on the App token in personal mode
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # A personal login drives git/gh, so a slow/broken sidecar must not stall
+      # boot for users who aren't using the App at all (#558).
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'if \[ "\$_gh_mode" = personal \]'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "not waiting on the App token"
 
   - it: start.sh scrubs a stale baked extraheader before the boot kube-coder pull
     template: templates/workspace-entrypoint-configmap.yaml

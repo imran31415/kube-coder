@@ -1,0 +1,276 @@
+suite: GitHub App private key lives only on its sidecar (#558)
+# GITHUB_APP_PRIVATE_KEY used to be an env var on the `ide` container — the one
+# the agent runs in — so every process it spawned (an npm postinstall hook, an
+# agent following an injected instruction file) inherited a key that mints
+# installation tokens indefinitely. Theft of the hourly token is bounded;
+# theft of the key is permanent. Minting now runs in a dedicated sidecar and
+# the ide container only ever sees the expiring token.
+templates:
+  - templates/deployment.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/github-app-token-refresh.yaml
+  # deployment.yaml checksums these into pod annotations, so they must be in
+  # scope for it to render at all.
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+set:
+  github.app.appId: "123"
+  github.app.installationId: "456"
+  github.app.privateKey: "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----"
+  # Every sidecar on, so container indices are the full-pod ones and stable:
+  # 0 ide, 1 dind, 2 ssh-server, 3 github-app-token (appended last precisely so
+  # enabling this feature doesn't renumber the containers other suites assert on).
+  ssh.enabled: true
+tests:
+  # ── The acceptance criterion, both halves ────────────────────────────────
+
+  - it: the ide container never receives the App private key
+    template: templates/deployment.yaml
+    asserts:
+      # any:true = subset match per element, so a name-only content detects the
+      # var whatever its value/valueFrom shape.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: GITHUB_APP_PRIVATE_KEY
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: ide
+
+  - it: the ide container keeps the non-secret identifiers it actually uses
+    template: templates/deployment.yaml
+    asserts:
+      # start.sh gates its whole GitHub block on GITHUB_APP_ID, and server.py's
+      # GitHubManager.app_available() reads it to decide whether the UI offers
+      # switching back to "app" mode. Neither id authorizes anything without
+      # the signing key.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GITHUB_APP_ID
+            valueFrom:
+              secretKeyRef:
+                name: github-app-secrets-testuser
+                key: app-id
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GITHUB_APP_INSTALLATION_ID
+            valueFrom:
+              secretKeyRef:
+                name: github-app-secrets-testuser
+                key: installation-id
+
+  - it: the sidecar is the only container holding the private key
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[3].env
+          content:
+            name: GITHUB_APP_PRIVATE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: github-app-secrets-testuser
+                key: private-key
+      - equal:
+          path: spec.template.spec.containers[3].name
+          value: github-app-token
+      - equal:
+          path: spec.template.spec.containers[3].command
+          value: ["python3", "/github-app/github-app-token.py", "--daemon"]
+
+  - it: no other sidecar receives the key either
+    template: templates/deployment.yaml
+    asserts:
+      # dind (index 1) and ssh-server (index 2) get no GitHub env at all.
+      - notContains:
+          path: spec.template.spec.containers[1].env
+          any: true
+          content:
+            name: GITHUB_APP_PRIVATE_KEY
+      - notExists:
+          path: spec.template.spec.containers[2].env
+
+  - it: honours an existing Secret for the sidecar's key too
+    template: templates/deployment.yaml
+    set:
+      github.app.existingSecretName: byo-github-app
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[3].env
+          content:
+            name: GITHUB_APP_PRIVATE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: byo-github-app
+                key: private-key
+
+  # ── The sidecar must be able to produce files the ide can read ───────────
+
+  - it: the sidecar mounts the same PVC and runs as uid/gid 1000
+    template: templates/deployment.yaml
+    asserts:
+      # Writes /home/dev/.credentials/.github-token; the ide container (uid
+      # 1000) has to be able to read it, so — unlike dind and ssh-server —
+      # this sidecar must NOT opt out of the pod's runAsNonRoot.
+      - contains:
+          path: spec.template.spec.containers[3].volumeMounts
+          content:
+            name: home
+            mountPath: /home/dev
+      - contains:
+          path: spec.template.spec.containers[3].volumeMounts
+          content:
+            name: github-app-script
+            mountPath: /github-app
+      - equal:
+          path: spec.template.spec.containers[3].securityContext.runAsUser
+          value: 1000
+      - equal:
+          path: spec.template.spec.containers[3].securityContext.runAsGroup
+          value: 1000
+      - equal:
+          path: spec.template.spec.containers[3].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[3].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[3].securityContext.capabilities.drop
+          content: ALL
+
+  - it: the sidecar is bounded so it cannot starve the workspace
+    template: templates/deployment.yaml
+    asserts:
+      - exists:
+          path: spec.template.spec.containers[3].resources.requests.cpu
+      - exists:
+          path: spec.template.spec.containers[3].resources.limits.memory
+
+  - it: no sidecar and no key anywhere when the App is not configured
+    template: templates/deployment.yaml
+    set:
+      github.app.appId: ""
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers
+          any: true
+          content:
+            name: github-app-token
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: GITHUB_APP_ID
+
+  # ── First-boot ordering: no window where git/gh has no token ─────────────
+
+  - it: start.sh waits for the sidecar's first token instead of racing it
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # The old `--once` ran synchronously, so a token was guaranteed present
+      # before git/gh setup. The wait preserves that guarantee — and proves
+      # freshness, which "the file exists" would not (a token left on the PVC
+      # by the previous pod may already be expired).
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'github-app-token\.py --request'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'WARNING: no GitHub App token from the github-app-token sidecar in time'
+      # …and it must NOT try to mint locally any more.
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: 'github-app-token\.py --once'
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: 'github-app-token\.py --daemon'
+
+  - it: start.sh tolerates the env file not existing yet
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # A cold first boot where the sidecar has not landed must not abort the
+      # entrypoint on `source: no such file`.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'if \[ -f /home/dev/\.credentials/\.github-env \]; then'
+
+  - it: start.sh keeps owning git config, including the periodic re-assert
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # Configuring git writes the global gitconfig and shells out to gh — both
+      # $HOME-relative, and each container has its own ephemeral /home/ubuntu.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'github-app-token\.py --configure-git\n'
+      # `gh auth login` runs `gh auth setup-git`, which resets the github.com
+      # helper chain and breaks app-mode pushes (#454). The old in-ide mint
+      # daemon self-healed that on every refresh; keep the same cadence.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'github-app-token\.py --configure-git-daemon &'
+
+  - it: the gh shim still reads the live token from disk (no frozen GH_TOKEN)
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # Long-lived processes freeze whatever GH_TOKEN they started with; the
+      # shim re-reads the file the sidecar now rewrites. Unchanged by #558 —
+      # asserted here so the split cannot regress it.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: '_tokfile=/home/dev/\.credentials/\.github-token'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'GH_TOKEN="\$\(cat "\$_tokfile"\)"'
+
+  # ── The `--once` re-mint entry point still works ─────────────────────────
+
+  - it: the script keeps --once usable from a container with no key
+    template: templates/github-app-token-refresh.yaml
+    asserts:
+      # Documented as the way to re-mint after a GitHub App permissions change
+      # (docs/claude-task-api.md, the kc-ship-pr skill). With the key gone it
+      # delegates to the sidecar over the request file instead of failing.
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'REQUEST_FILE = os\.path\.join\(CREDENTIALS_DIR, "\.github-token-request"\)'
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'ACK_FILE = os\.path\.join\(CREDENTIALS_DIR, "\.github-token-ack"\)'
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'def request_refresh'
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'No App private key in this container'
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'sys\.exit\(0 if request_refresh\(\) else 1\)'
+
+  - it: the sidecar services on-demand requests as well as the schedule
+    template: templates/github-app-token-refresh.yaml
+    asserts:
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'def take_request'
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'def serve'
+      # A failed mint retries in RETRY_INTERVAL, not a full REFRESH_INTERVAL —
+      # the live token expires in 60 minutes and the schedule is 50.
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'last = time\.time\(\) - REFRESH_INTERVAL \+ RETRY_INTERVAL'
+
+  - it: minting stays free of git/gh so it can run in the sidecar's own $HOME
+    template: templates/github-app-token-refresh.yaml
+    asserts:
+      # refresh_token must write files only; configure_git is the ide's job.
+      - matchRegex:
+          path: data["github-app-token.py"]
+          pattern: 'write_credentials\(token\)\n\n    print'

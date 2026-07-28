@@ -196,6 +196,19 @@ spec:
         {{- end }}
         {{- end }}
         {{- if .Values.github.app.appId }}
+        # GITHUB_APP_PRIVATE_KEY is deliberately NOT here (issue #558). The
+        # agent runs in this container and every process it spawns inherits
+        # this environment, so a key that mints installation tokens forever
+        # was one `env` away from an npm postinstall hook or an injected
+        # instruction file. It lives only on the github-app-token sidecar
+        # below; this container reads the hourly token that sidecar writes to
+        # /home/dev/.credentials/.github-token.
+        #
+        # The two identifiers stay: they are not secrets (an App id and an
+        # installation id authorize nothing without the signing key), start.sh
+        # gates the whole GitHub block on GITHUB_APP_ID, and server.py's
+        # GitHubManager.app_available() reads it to decide whether switching
+        # back to "app" mode is offered in the UI.
         - name: GITHUB_APP_ID
           valueFrom:
             secretKeyRef:
@@ -206,11 +219,6 @@ spec:
             secretKeyRef:
               name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
               key: installation-id
-        - name: GITHUB_APP_PRIVATE_KEY
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
-              key: private-key
         {{- end }}
         # Read-only public demo gate. server.py reads READONLY_MODE at the
         # request layer and refuses every POST/DELETE/PUT with 403. AUTH_MODE
@@ -481,6 +489,67 @@ spec:
           limits:
             cpu: 200m
             memory: 256Mi
+      {{- end }}
+      {{- if .Values.github.app.appId }}
+      # GitHub App token refresher (issue #558). Sole holder of
+      # GITHUB_APP_PRIVATE_KEY in this pod. It signs a JWT, exchanges it for an
+      # installation token that expires in an hour, and writes that token to
+      # /home/dev/.credentials/.github-token on the shared PVC — the path the
+      # ide container, the gh shim and git's credential helper already read.
+      # Stealing what the ide container can see now buys at most an hour;
+      # stealing the signing key would have been permanent.
+      #
+      # Appended AFTER dind/ssh-server on purpose: container order is part of
+      # the rendered manifest and existing tests index into it.
+      - name: github-app-token
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["python3", "/github-app/github-app-token.py", "--daemon"]
+        env:
+        - name: GITHUB_APP_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
+              key: app-id
+        - name: GITHUB_APP_INSTALLATION_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
+              key: installation-id
+        - name: GITHUB_APP_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.github.app.existingSecretName | default (printf "github-app-secrets-%s" .Values.user.name) }}
+              key: private-key
+        volumeMounts:
+        # Same PVC as the ide container: the token files it writes must land
+        # where the workspace already looks for them.
+        - name: home
+          mountPath: /home/dev
+        - name: github-app-script
+          mountPath: /github-app
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        securityContext:
+          # Unlike dind and ssh-server, this sidecar does NOT opt out of the
+          # pod's runAsNonRoot — it must write as uid/gid 1000 or the ide
+          # container cannot read the token it produces. Stated explicitly
+          # rather than inherited, because the ownership of these files is the
+          # contract between the two containers.
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          seccompProfile:
+            type: RuntimeDefault
       {{- end }}
       volumes:
       - name: home
