@@ -189,17 +189,25 @@ export function BriefPanel({ onCollapse }: { onCollapse?: () => void } = {}) {
 
       {!isFresh && (
       <Section title="Now">
-        <div class="cto-brief-stats">
-          <span class="cto-stat">
-            <strong>{b.tasks.running}</strong> running
-          </span>
-          <span class="cto-stat cto-stat-waiting">
-            <strong>{b.tasks.waiting}</strong> waiting
-          </span>
-          <span class="cto-stat">
-            <strong>{b.tasks.total}</strong> tasks
-          </span>
-        </div>
+        {b.tasks.total === 0 ? (
+          // A row of zeros reads as broken (it was, for a while — #533). Say
+          // plainly that nothing is attributed to this project yet.
+          <p class="cto-brief-fresh">
+            No tasks yet — dispatch one from the chat and it'll show up here.
+          </p>
+        ) : (
+          <div class="cto-brief-stats">
+            <span class="cto-stat">
+              <strong>{b.tasks.running}</strong> running
+            </span>
+            <span class="cto-stat cto-stat-waiting">
+              <strong>{b.tasks.waiting}</strong> waiting
+            </span>
+            <span class="cto-stat">
+              <strong>{b.tasks.total}</strong> tasks
+            </span>
+          </div>
+        )}
       </Section>
       )}
 

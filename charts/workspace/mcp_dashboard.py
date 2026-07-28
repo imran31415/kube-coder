@@ -443,6 +443,11 @@ def _t_create_task(a):
     auto_approve = a.get('auto_approve')
     body = {'prompt': prompt, 'source': 'hypervisor-tool',
             'auto_approve': True if auto_approve is None else bool(auto_approve)}
+    # Bind the build to the CTO thread's project so it counts in that project's
+    # brief no matter which workdir it runs in (#533).
+    project_id = _project_id_env()
+    if project_id:
+        body['project_id'] = project_id
     if a.get('workdir'):
         body['workdir'] = a['workdir']
     if a.get('assistant'):

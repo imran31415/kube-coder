@@ -76,6 +76,8 @@ class CreateTaskPreviewTest(unittest.TestCase):
         m._api = fake_api
         self._orig_thread = os.environ.get('KC_HYPERVISOR_THREAD_ID')
         os.environ['KC_HYPERVISOR_THREAD_ID'] = 'thread-xyz'
+        self._orig_project = os.environ.get('KC_PROJECT_ID')
+        os.environ.pop('KC_PROJECT_ID', None)
 
     def tearDown(self):
         m._api = self._orig_api
@@ -83,6 +85,10 @@ class CreateTaskPreviewTest(unittest.TestCase):
             os.environ.pop('KC_HYPERVISOR_THREAD_ID', None)
         else:
             os.environ['KC_HYPERVISOR_THREAD_ID'] = self._orig_thread
+        if self._orig_project is None:
+            os.environ.pop('KC_PROJECT_ID', None)
+        else:
+            os.environ['KC_PROJECT_ID'] = self._orig_project
 
     def _task_body(self):
         return next(b for meth, p, b in self.calls if p == '/api/claude/tasks')
@@ -119,6 +125,17 @@ class CreateTaskPreviewTest(unittest.TestCase):
         # surface a preview in, so no watcher is armed.
         self.assertIn('Build-preview contract', self._task_body()['prompt'])
         self.assertEqual(self._watcher_posts(), [])
+
+    def test_binds_the_ctos_project_to_the_task(self):
+        # A CTO turn exports its bound project; the dispatched build carries it
+        # so the project's brief counts it wherever it runs (#533).
+        os.environ['KC_PROJECT_ID'] = 'kube-coder'
+        m._t_create_task({'prompt': 'ship the thing'})
+        self.assertEqual(self._task_body()['project_id'], 'kube-coder')
+
+    def test_no_project_context_sends_no_binding(self):
+        m._t_create_task({'prompt': 'ship the thing'})
+        self.assertNotIn('project_id', self._task_body())
 
     def test_task_creation_failure_returns_error_and_arms_nothing(self):
         def failing_api(method, path, body=None, query=None):

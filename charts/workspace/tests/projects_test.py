@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -55,23 +56,29 @@ class ProjectsManagerBase(unittest.TestCase):
         self._orig_taskdir = server.ClaudeTaskManager.TASKS_DIR
         server.ProjectsManager.PROJECTS_DIR = self.projdir
         server.ClaudeTaskManager.TASKS_DIR = self.taskdir
+        server.ProjectsManager._WORKTREE_ROOTS.clear()
 
     def tearDown(self):
         server.ProjectsManager.PROJECTS_DIR = self._orig_projdir
         server.ClaudeTaskManager.TASKS_DIR = self._orig_taskdir
+        server.ProjectsManager._WORKTREE_ROOTS.clear()
         shutil.rmtree(self.projdir, ignore_errors=True)
         shutil.rmtree(self.taskdir, ignore_errors=True)
 
     def _write_task(self, task_id, workdir, status='completed',
-                    last_activity_at=100.0, prompt='do the thing'):
+                    last_activity_at=100.0, prompt='do the thing',
+                    project_id=None):
         d = os.path.join(self.taskdir, task_id)
         os.makedirs(d, exist_ok=True)
+        meta = {
+            'task_id': task_id, 'workdir': workdir, 'status': status,
+            'created_at': 50.0, 'last_activity_at': last_activity_at,
+            'prompt': prompt, 'assistant': 'claude',
+        }
+        if project_id is not None:
+            meta['project_id'] = project_id
         with open(os.path.join(d, 'task.json'), 'w') as f:
-            json.dump({
-                'task_id': task_id, 'workdir': workdir, 'status': status,
-                'created_at': 50.0, 'last_activity_at': last_activity_at,
-                'prompt': prompt, 'assistant': 'claude',
-            }, f)
+            json.dump(meta, f)
 
 
 # ─────────────────────────── id / slug / validation ───────────────────────
@@ -327,6 +334,203 @@ class DiscoveryTests(ProjectsManagerBase):
             'kube-coder')
         self.assertEqual(PM._workdir_project_id('/home/dev/.claude-tasks/x'), '')
         self.assertEqual(PM._workdir_project_id('/tmp/elsewhere'), '')
+
+
+# ───────────────── task→project attribution (#533 regression) ─────────────
+
+class AttributionTests(ProjectsManagerBase):
+    """The AI CTO brief's "Now" row read 0 running / 0 waiting forever: every
+    task is launched by the kc-issue skill into /home/dev/.worktrees/<proj>/…,
+    which no project workdir prefixes, and memory-discovered projects carried
+    `workdirs: []` so they could never match anything. These cover the three
+    attribution paths — worktree→main-repo resolution, a stamped project_id,
+    and workdir backfill — against a fake home laid out in a tmpdir."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = tempfile.mkdtemp(prefix='kctest-home-')
+        self._orig_home = server.ProjectsManager.HOME_ROOT
+        server.ProjectsManager.HOME_ROOT = self.home
+        self.repo = os.path.join(self.home, 'kube-coder')
+        os.makedirs(os.path.join(self.repo, '.git'))
+
+    def tearDown(self):
+        server.ProjectsManager.HOME_ROOT = self._orig_home
+        shutil.rmtree(self.home, ignore_errors=True)
+        super().tearDown()
+
+    def _worktree(self, name):
+        """Lay out a linked git worktree of self.repo exactly as `git worktree
+        add` does: a `.git` FILE pointing at <repo>/.git/worktrees/<name>, whose
+        commondir walks back to the main .git."""
+        wt = os.path.join(self.home, '.worktrees', 'kube-coder', name)
+        os.makedirs(wt)
+        gitdir = os.path.join(self.repo, '.git', 'worktrees', name)
+        os.makedirs(gitdir)
+        with open(os.path.join(gitdir, 'commondir'), 'w') as f:
+            f.write('../..\n')
+        with open(os.path.join(wt, '.git'), 'w') as f:
+            f.write(f'gitdir: {gitdir}\n')
+        return wt
+
+    # ── worktree → main repo ─────────────────────────────────────────────
+
+    def test_task_matches_resolves_worktree_to_main_repo(self):
+        wt = self._worktree('issue-533')
+        self.assertTrue(PM._task_matches(wt, [self.repo]))
+        # …and a path under the worktree, not just its root.
+        self.assertTrue(PM._task_matches(os.path.join(wt, 'charts'), [self.repo]))
+        # A plain directory that merely looks like one still doesn't match.
+        plain = os.path.join(self.home, '.worktrees', 'other', 'x')
+        os.makedirs(plain)
+        self.assertFalse(PM._task_matches(plain, [self.repo]))
+
+    def test_attribution_cache_expires(self):
+        """A worktree created after a miss must still attribute once the cached
+        answer ages out — the server runs for weeks."""
+        wt = os.path.join(self.home, '.worktrees', 'kube-coder', 'issue-9')
+        os.makedirs(wt)
+        self.assertFalse(PM._task_matches(wt, [self.repo]))
+        shutil.rmtree(wt)
+        self._worktree('issue-9')
+        self.assertFalse(PM._task_matches(wt, [self.repo]))   # still cached
+        with mock.patch.object(server.time, 'time',
+                               return_value=time.time() + PM._WORKTREE_CACHE_TTL + 1):
+            self.assertTrue(PM._task_matches(wt, [self.repo]))
+
+    def test_brief_counts_running_and_waiting_tasks_in_worktrees(self):
+        PM.create({'id': 'kube-coder', 'workdirs': [self.repo]})
+        self._write_task('t1', self._worktree('issue-1'), status='running',
+                         last_activity_at=200.0)
+        self._write_task('t2', self._worktree('issue-2'),
+                         status='waiting-for-input')
+        self._write_task('t3', self._worktree('issue-3'), status='completed')
+        self._write_task('t4', os.path.join(self.home, 'elsewhere'),
+                         status='running')
+        with mock.patch.object(server, 'MemoryManager', _FakeMemory([])):
+            brief = PM.brief('kube-coder')
+        self.assertEqual(brief['tasks']['running'], 1)
+        self.assertEqual(brief['tasks']['waiting'], 1)
+        self.assertEqual(brief['tasks']['total'], 3)
+        self.assertEqual([t['task_id'] for t in brief['tasks']['recent']][0], 't1')
+
+    def test_pulse_counts_worktree_tasks(self):
+        PM.create({'id': 'kube-coder', 'workdirs': [self.repo]})
+        self._write_task('t1', self._worktree('issue-1'), status='running')
+        self._write_task('t2', self._worktree('issue-2'),
+                         status='waiting-for-input')
+        pulse = PM.list_projects()[0]['pulse']
+        self.assertEqual(pulse['running'], 1)
+        self.assertEqual(pulse['waiting'], 1)
+
+    # ── stamped project_id ───────────────────────────────────────────────
+
+    def test_brief_counts_task_stamped_with_project_id(self):
+        """A CTO-dispatched build can run anywhere; its stamped project_id is
+        what keeps it attributed."""
+        PM.create({'id': 'kube-coder', 'workdirs': [self.repo]})
+        self._write_task('t1', os.path.join(self.home, 'scratch'),
+                         status='running', project_id='kube-coder')
+        self._write_task('t2', os.path.join(self.home, 'scratch'),
+                         status='running', project_id='other')
+        with mock.patch.object(server, 'MemoryManager', _FakeMemory([])):
+            brief = PM.brief('kube-coder')
+        self.assertEqual(brief['tasks']['running'], 1)
+        self.assertEqual(brief['tasks']['total'], 1)
+
+    def test_meta_matches_falls_back_to_path_for_unstamped_tasks(self):
+        proj = {'id': 'kube-coder', 'workdirs': [self.repo]}
+        self.assertTrue(PM._meta_matches({'workdir': self.repo}, proj))
+        self.assertTrue(
+            PM._meta_matches({'workdir': self.repo, 'project_id': ''}, proj))
+        # A task stamped elsewhere but living in the tree still counts — one
+        # workdir can legitimately host more than one project's work.
+        self.assertTrue(PM._meta_matches(
+            {'workdir': self.repo, 'project_id': 'other'}, proj))
+        self.assertFalse(PM._meta_matches(
+            {'workdir': os.path.join(self.home, 'nope')}, proj))
+
+    def test_project_for_workdir_prefers_most_specific(self):
+        PM.create({'id': 'kube-coder', 'workdirs': [self.repo]})
+        PM.create({'id': 'everything', 'workdirs': [self.home]})
+        self.assertEqual(
+            PM.project_for_workdir(os.path.join(self.repo, 'charts')),
+            'kube-coder')
+        self.assertEqual(PM.project_for_workdir(self._worktree('issue-7')),
+                         'kube-coder')
+        self.assertEqual(PM.project_for_workdir(os.path.join(self.home, 'x')),
+                         'everything')
+        self.assertEqual(PM.project_for_workdir('/tmp/outside'), '')
+
+    def test_create_task_stamps_inferred_project_id(self):
+        PM.create({'id': 'kube-coder', 'workdirs': [self.repo]})
+        wt = self._worktree('issue-533')
+        with mock.patch.object(server.subprocess, 'run',
+                               return_value=mock.Mock(returncode=0, stdout='',
+                                                      stderr='')):
+            task = server.ClaudeTaskManager.create_task('go', workdir=wt)
+        self.assertEqual(task['project_id'], 'kube-coder')
+        with open(os.path.join(self.taskdir, task['task_id'], 'task.json')) as f:
+            self.assertEqual(json.load(f)['project_id'], 'kube-coder')
+
+    def test_create_task_explicit_project_id_wins(self):
+        PM.create({'id': 'kube-coder', 'workdirs': [self.repo]})
+        with mock.patch.object(server.subprocess, 'run',
+                               return_value=mock.Mock(returncode=0, stdout='',
+                                                      stderr='')):
+            task = server.ClaudeTaskManager.create_task(
+                'go', workdir=os.path.join(self.home, 'scratch'),
+                project_id='kube-coder')
+        self.assertEqual(task['project_id'], 'kube-coder')
+
+    # ── workdir backfill for memory-discovered projects ──────────────────
+
+    def test_implied_workdirs_from_id_and_path_slug(self):
+        self.assertEqual(PM._implied_workdirs('kube-coder'), [self.repo])
+        # `claude.home-<slug>` namespaces name the cwd they were written from.
+        slug = PM._slugify(self.home) + '-kube-coder'
+        self.assertEqual(PM._implied_workdirs(slug), [self.repo])
+        self.assertEqual(PM._implied_workdirs('ghost'), [])
+        # Never the home root itself — it would swallow every task.
+        self.assertEqual(PM._implied_workdirs(PM._slugify(self.home)), [])
+
+    def test_discover_backfills_workdirs_for_memory_only_project(self):
+        rows = [_mem('claude.kube-coder', 'k', 'v', tags=[])]
+        with mock.patch.object(server.WorkspaceManager, 'list_dirs',
+                               return_value=[]), \
+             mock.patch.object(server, 'MemoryManager', _FakeMemory(rows)):
+            PM.discover(auto_provision=True)
+        self.assertEqual(PM.get_project('kube-coder')['workdirs'], [self.repo])
+
+    def test_discover_heals_registered_project_with_empty_workdirs(self):
+        PM.create({'id': 'kube-coder', 'workdirs': [],
+                   'memory_namespace': 'claude.kube-coder'})
+        self._write_task('t1', self._worktree('issue-1'), status='running')
+        rows = [_mem('claude.kube-coder', 'k', 'v', tags=[])]
+        with mock.patch.object(server.WorkspaceManager, 'list_dirs',
+                               return_value=[]), \
+             mock.patch.object(server, 'MemoryManager', _FakeMemory(rows)):
+            result = PM.discover(auto_provision=True)
+        self.assertIn('kube-coder', result['backfilled'])
+        self.assertEqual(PM.get_project('kube-coder')['workdirs'], [self.repo])
+        # …and the worktree task now actually counts.
+        with mock.patch.object(server, 'MemoryManager', _FakeMemory([])):
+            brief = PM.brief('kube-coder')
+        self.assertEqual(brief['tasks']['running'], 1)
+
+    def test_discover_leaves_curated_workdirs_alone(self):
+        os.makedirs(os.path.join(self.home, 'curated'))
+        PM.create({'id': 'kube-coder',
+                   'workdirs': [os.path.join(self.home, 'curated')],
+                   'memory_namespace': 'claude.kube-coder'})
+        rows = [_mem('claude.kube-coder', 'k', 'v', tags=[])]
+        with mock.patch.object(server.WorkspaceManager, 'list_dirs',
+                               return_value=[]), \
+             mock.patch.object(server, 'MemoryManager', _FakeMemory(rows)):
+            result = PM.discover(auto_provision=True)
+        self.assertEqual(result['backfilled'], [])
+        self.assertEqual(PM.get_project('kube-coder')['workdirs'],
+                         [os.path.join(self.home, 'curated')])
 
 
 # ─────────────────── HTTP handler methods (auth / events) ─────────────────
