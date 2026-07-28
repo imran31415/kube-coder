@@ -1,21 +1,23 @@
-import { currentPath, navigate, matchRoute } from '../store/router';
+import { currentPath, navigate, matchRoute, navLabel } from '../store/router';
 import { sheetOpen } from '../store/ui';
 import { Icon, type IconName } from './Icon';
 import './BottomNav.css';
 
 interface Slot {
   path: string;
-  title: string;
   icon: IconName;
 }
 
+// Labels come from navLabel() so the bottom bar, the rail and the command
+// palette can't drift apart (#346 — this bar said "Chat" while the router
+// still called the same route "Hypervisor").
 const SLOTS: Slot[] = [
   // Desktop is the default landing on the SPA — give it the first slot
   // here too so primary nav is consistent across the rail + bottom bar.
-  { path: '/desktop', title: 'Desktop', icon: 'desktop' },
-  { path: '/hypervisor', title: 'Chat', icon: 'hypervisor' },
-  { path: '/tasks', title: 'Build', icon: 'tasks' },
-  { path: '/memory', title: 'Memory', icon: 'memory' },
+  { path: '/desktop', icon: 'desktop' },
+  { path: '/hypervisor', icon: 'hypervisor' },
+  { path: '/tasks', icon: 'tasks' },
+  { path: '/memory', icon: 'memory' },
 ];
 
 // "More" sheet absorbs anything not in SLOTS — apps, triggers, files,
@@ -34,7 +36,7 @@ export function BottomNav() {
           aria-current={active === s.path ? 'page' : undefined}
         >
           <Icon name={s.icon} size={20} />
-          <span class="bn-label">{s.title}</span>
+          <span class="bn-label">{navLabel(s.path)}</span>
         </button>
       ))}
       <button

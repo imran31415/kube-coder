@@ -215,7 +215,7 @@ export function HypervisorRoute() {
       <div class="route route-hypervisor">
         <EmptyState
           icon={<Icon name="hypervisor" size={26} />}
-          title="Hypervisor is disabled"
+          title="Chat is disabled"
           description={
             <>
               Enable it in the workspace chart (<code>hypervisor.enabled</code>).
@@ -661,9 +661,9 @@ export function HypervisorRoute() {
         {configError.value && <div class="hv-banner hv-banner-error">{configError.value}</div>}
 
         <GuidePanel
-          title="How the Hypervisor works"
+          title="How Chat works"
           storageKey="kc.guide.hypervisor"
-          intro="The Hypervisor is a chat layer over your workspace's coding agents. Every chat is a real agent session (Claude, OpenCode, …) that reads your live workspace and acts on it through the same tools you use — not a sandboxed toy."
+          intro="Chat is a conversation layer over your workspace's coding agents (internally: the Hypervisor). Every chat is a real agent session (Claude, OpenCode, …) that reads your live workspace and acts on it through the same tools you use — not a sandboxed toy. Use Chat when you want to talk something through; use Builds when you want to hand off a job and walk away."
           steps={[
             {
               title: 'Pick an agent, then New',
