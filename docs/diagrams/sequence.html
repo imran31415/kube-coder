@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>kube-coder — where the work happens</title>
+<style>
+  :root{
+    --bg:#0a0b0d; --panel:#111318; --line:#242830; --ink:#e8eaed;
+    --dim:#8b93a1; --faint:#5a616e;
+    --accent:#4ade80; --blue:#60a5fa; --violet:#a78bfa; --amber:#fbbf24; --red:#f87171;
+    --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;
+       width:1440px;padding:40px 44px 32px}
+  h1{font-size:23px;font-weight:650;letter-spacing:-.02em}
+  h1 .kc{color:var(--accent)}
+  .sub{color:var(--dim);font-size:13.5px;margin-top:5px}
+  .head{margin-bottom:24px}
+
+  .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:0 14px;align-items:center;
+        position:relative}
+  .lifelines{position:absolute;inset:74px 0 96px 0;pointer-events:none;z-index:0}
+  .lifelines i{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed #22262e}
+  .grid > *:not(.lifelines){position:relative;z-index:1}
+
+  .actor{border:1px solid var(--line);border-radius:10px;background:var(--panel);
+         padding:10px 12px;text-align:center;margin-bottom:6px}
+  .actor .t{font-size:12.5px;font-weight:650}
+  .actor .s{font-size:10.5px;color:var(--faint);margin-top:2px;font-family:var(--mono)}
+  .actor.you{border-color:#2b3a4d;background:#0e141c}
+  .actor.you .t{color:var(--blue)}
+  .actor.pod{border-color:#1f4d33;background:#0f1c14}
+  .actor.pod .t{color:var(--accent)}
+  .actor.ext{border-color:#3d3218;background:#161208}
+  .actor.ext .t{color:var(--amber)}
+
+  .lanewrap{grid-column:1/-1;position:relative;height:0}
+  .step{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,1fr);gap:0 14px;
+        align-items:center;position:relative;padding:7px 0}
+  .step:nth-child(even of .step){background:rgba(255,255,255,.012)}
+
+  .msg{border-radius:7px;padding:8px 12px;font-size:12px;position:relative;
+       border:1px solid #2a303a;background:#14171d;display:flex;align-items:center;gap:9px}
+  .msg .n{font-family:var(--mono);font-size:10px;color:var(--faint);flex:none;
+          border:1px solid #2a303a;border-radius:4px;padding:1px 5px}
+  .msg .arrow{position:absolute;right:-11px;top:50%;transform:translateY(-50%);
+              color:#4b5563;font-size:16px;line-height:1}
+  .msg.back .arrow{right:auto;left:-11px}
+  .msg b{font-weight:600}
+
+  .msg.go{border-color:#2f4a63;background:#0f1a24}
+  .msg.go b{color:var(--blue)}
+  .msg.work{border-color:#1f4d33;background:#0f1c14}
+  .msg.work b{color:var(--accent)}
+  .msg.deny{border-color:#4a2126;background:#1d1214;color:#f0b8bd}
+  .msg.deny b{color:#ff9aa2}
+  .msg.out{border-color:#3d3218;background:#161208;color:#e6d5a8}
+  .msg.out b{color:var(--amber)}
+  .msg .note{color:var(--faint);font-size:11px;margin-left:auto;font-family:var(--mono)}
+
+  .rule{grid-column:1/-1;height:1px;background:var(--line);margin:9px 0;opacity:.55}
+  .phase{grid-column:1/-1;font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+         text-transform:uppercase;color:var(--faint);margin:11px 0 4px}
+
+  .foot{margin-top:20px;display:flex;gap:14px}
+  .card{flex:1;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:12px 14px}
+  .card .t{font-size:12.5px;font-weight:650;color:var(--accent);margin-bottom:4px}
+  .card .s{font-size:11.5px;color:var(--dim);line-height:1.5}
+  .brand{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:right;margin-top:12px}
+</style>
+
+<div class="head">
+  <h1><span class="kc">kube-coder</span> — where the work actually happens</h1>
+  <div class="sub">Your laptop is a thin client. The agent runs on a remote pod inside your cluster — code, secrets and builds never touch your machine.</div>
+</div>
+
+<div class="grid">
+  <div class="lifelines">
+    <i style="left:10%"></i><i style="left:30%"></i><i style="left:50%"></i>
+    <i style="left:70%"></i><i style="left:90%"></i>
+  </div>
+  <div class="actor you"><div class="t">You</div><div class="s">browser · phone</div></div>
+  <div class="actor"><div class="t">Ingress + OAuth2</div><div class="s">TLS · GitHub SSO</div></div>
+  <div class="actor pod"><div class="t">ws-&lt;you&gt; pod</div><div class="s">ide container</div></div>
+  <div class="actor pod"><div class="t">PVC /home/dev</div><div class="s">your disk</div></div>
+  <div class="actor ext"><div class="t">Outside world</div><div class="s">github · npm · model API</div></div>
+
+  <div class="phase">— you ask for something —</div>
+
+  <div class="step">
+    <div class="msg go" style="grid-column:1/3"><span class="n">1</span><span>“<b>Add OAuth to the login page</b>” — typed in chat, or from the phone app</span><span class="arrow">▶</span></div>
+  </div>
+  <div class="step">
+    <div class="msg go" style="grid-column:2/4"><span class="n">2</span><span>Identity checked — <b>pinned to one GitHub login</b></span><span class="note">X-Auth-Request-User</span><span class="arrow">▶</span></div>
+  </div>
+
+  <div class="phase">— the agent works, remotely —</div>
+
+  <div class="step">
+    <div class="msg work" style="grid-column:3/4"><span class="n">3</span><span><b>Agent starts in tmux</b></span></div>
+  </div>
+  <div class="step">
+    <div class="msg work" style="grid-column:3/5"><span class="n">4</span><span>Reads the repo, edits files, runs tests — <b>all on the pod's disk</b></span><span class="arrow">▶</span></div>
+  </div>
+  <div class="step">
+    <div class="msg work" style="grid-column:3/4"><span class="n">5</span><span><b>docker build</b> — in-pod DinD</span></div>
+  </div>
+  <div class="step">
+    <div class="msg out" style="grid-column:3/6"><span class="n">6</span><span>Allowed egress: <b>git push, npm install, model API calls</b></span><span class="arrow">▶</span></div>
+  </div>
+  <div class="step">
+    <div class="msg deny" style="grid-column:3/6"><span class="n">7</span><span><b>Blocked:</b> cloud metadata endpoint · other tenants' pods · cross-workspace traffic</span><span class="note">NetworkPolicy</span></div>
+  </div>
+
+  <div class="phase">— you watch, or you don't —</div>
+
+  <div class="step">
+    <div class="msg go back" style="grid-column:1/4"><span class="n">8</span><span class="arrow">◀</span><span>Output streams back live over <b>SSE</b> — diffs, test results, a preview URL</span></div>
+  </div>
+  <div class="step">
+    <div class="msg work" style="grid-column:3/4"><span class="n">9</span><span><b>Laptop closed.</b> Still running.</span></div>
+  </div>
+  <div class="step">
+    <div class="msg go back" style="grid-column:1/4"><span class="n">10</span><span class="arrow">◀</span><span>Reconnect from anywhere — <b>same session, full scrollback</b>, still running</span></div>
+  </div>
+</div>
+
+<div class="foot">
+  <div class="card">
+    <div class="t">Nothing lands on your laptop</div>
+    <div class="s">No clone, no node_modules, no <span style="font-family:var(--mono)">.env</span>. Source and secrets stay inside the cluster you already operate.</div>
+  </div>
+  <div class="card">
+    <div class="t">Survives disconnects</div>
+    <div class="s">tmux sessions live on the PVC. Shut the lid mid-build, reopen on your phone, pick up the same scrollback.</div>
+  </div>
+  <div class="card">
+    <div class="t">Broad authority, bounded blast radius</div>
+    <div class="s">The agent gets real power <i>inside its pod</i> — and a namespace, RBAC ServiceAccount and NetworkPolicy it cannot argue with.</div>
+  </div>
+</div>
+<div class="brand">github.com/imran31415/kube-coder</div>
+</html>
