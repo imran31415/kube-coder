@@ -18,12 +18,38 @@ There is no user-level `gh auth login` and no SSH key here, so do **not** sugges
 `gh auth login` or a fork — the App token pushes to `origin` directly.
 
 > **If `git push` is wedged** — `remote: Invalid username or token` or
-> `could not read Username` — the cause is almost always a **stale baked
-> `http.<host>.extraheader`** in `.git/config` (a point-in-time token from an
-> old workaround; git sends it verbatim and it shadows the good helper).
-> Fix it, then push normally:
+> `could not read Username` — something is shadowing that helper with a
+> point-in-time token. The token file itself is almost never the problem
+> (`curl -H "Authorization: token $(cat /home/dev/.credentials/.github-token)"
+> https://api.github.com/user` proves it in one line). Diagnose in this order:
+>
 > ```bash
-> git config --unset-all http.https://github.com/.extraheader
+> git config --show-origin --get-all credential.helper
+> git config --show-origin --get-all credential.https://github.com.helper
+> printf 'protocol=https\nhost=github.com\n\n' | git credential fill  # vs. the token file
+> grep github.com ~/.git-credentials
+> ```
+>
+> Three known causes, all "a token frozen an hour ago":
+> 1. A **stale baked `http.<host>.extraheader`** in `.git/config` — git sends it
+>    verbatim and it shadows the helper: `git config --unset-all
+>    http.https://github.com/.extraheader`.
+> 2. A **host-scoped helper chain reset** (issue #454) — `gh auth setup-git`
+>    writes an empty `helper =` under `[credential "https://github.com"]`, which
+>    *clears* the chain and drops the self-refreshing reader; `gh auth
+>    git-credential` then answers with the **stale `GH_TOKEN`** your long-lived
+>    shell captured before the last rotation. The refresh daemon now owns that
+>    section, so this self-heals within 50 min of boot — if you hit it in an old
+>    pod, re-run `python3 /github-app/github-app-token.py --once`.
+> 3. A **stale `github.com` line in `~/.git-credentials`** (persistent on the
+>    PVC, so a captured `ghs_…` outlives its 1-hour validity). The daemon purges
+>    these in app mode; delete by hand if you're ahead of it.
+>
+> One-shot escape hatch that bypasses all three:
+> ```bash
+> git -c credential.helper= \
+>     -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$(cat /home/dev/.credentials/.github-token)"; }; f' \
+>     push -u origin <branch>
 > ```
 > Only if push is *still* broken after that, fall back to the Git Data API
 > (§3b). See your `github-auth` memory for the full background.
