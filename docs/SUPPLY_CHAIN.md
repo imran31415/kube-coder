@@ -28,7 +28,7 @@ mismatch** (download → verify → install; no `curl | bash`, no `curl | tar`):
 
 | Artifact | Image | Verification source |
 |----------|-------|---------------------|
-| Node.js / npm repo | `devlaptop` | NodeSource **GPG keyring** + `signed-by=` apt source (no `curl \| bash`) |
+| Node.js / npm | `devlaptop` | **digest-pinned `node:20-bookworm-slim`** — `node`/`npm`/`corepack` are `COPY --from` the same pinned image the SPA builder uses (content-addressed; no third-party apt repo). Replaced the NodeSource GPG keyring + `signed-by=` apt source, which was sound but left `deb.nodesource.com` in every uncached build's critical path (it began 403-ing repo-wide on 2026-07-27) |
 | code-server `.deb` | `devlaptop` | per-arch `sha256` pinned as `CODE_SERVER_SHA256_{AMD64,ARM64}` (from the GitHub release API `digest`) |
 | ttyd | `devlaptop` | release `SHA256SUMS` |
 | sqlite-vec | `devlaptop` | release `checksums.txt` (reversed `<file> <hash>` layout) |

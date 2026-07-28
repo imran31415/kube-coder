@@ -23,6 +23,13 @@ RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install;
 COPY charts/workspace/web/ ./
 RUN yarn build
 
+# The runtime's Node.js comes from this same digest-pinned official image (see
+# the Node section in the runtime stage for the why). Deliberately NO
+# `--platform` here — unlike dashboard-builder, whose output is
+# architecture-independent, these are real binaries and must match the TARGET
+# arch. The digest names a multi-arch index, so it resolves per-platform.
+FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS node-dist
+
 FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -38,14 +45,23 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20.x via NodeSource
-# SUPPLY-CHAIN (finding 7, resolved): the previous `curl … setup_20.x | bash -`
-# piped a rolling, unchecksummable script straight into a root shell. Replaced
-# with the keyring + sources.list.d form the setup script itself installs: we
-# fetch NodeSource's long-lived GPG key to /usr/share/keyrings, register the
-# `signed-by=`-pinned apt source, and let apt install nodejs — so every package
-# is GPG-verified against that key and no code is piped to bash. Nothing here is
-# fetched-then-executed unverified anymore.
+# Install Node.js 20.x from the digest-pinned official image (no apt repo)
+# SUPPLY-CHAIN (finding 7, resolved; hardened again 2026-07-27): this started as
+# `curl … setup_20.x | bash -` — a rolling, unchecksummable script piped straight
+# into a root shell — and was replaced by NodeSource's keyring + `signed-by=`-
+# pinned apt source, so packages were GPG-verified and nothing was piped to bash.
+# That was sound, but it still put a third-party host in the critical path of
+# every uncached build: on 2026-07-27 deb.nodesource.com began returning 403 for
+# every request (GPG key, index, and packages alike), breaking CI's security-scan
+# image build outright.
+# We already pull the digest-pinned `node:20-bookworm-slim` for the SPA builder,
+# so the runtime now takes its Node from that same pinned image (the `node-dist`
+# stage above). One less third-party network dependency, and the bits are
+# content-addressed by digest rather than trusted at fetch time. Only node + npm
+# + corepack are copied — the official image's bundled yarn is skipped in favour
+# of the pinned one installed below — and the /usr/local/bin symlinks are the
+# same ones that image ships. Node's own runtime libs (libstdc++/libgcc) come
+# from the Ubuntu base, which is newer than the bookworm it was built against.
 # npm bundled with Node 20 (10.8.x) vendors old tar/minimatch/glob/cross-spawn
 # that Trivy flags (HIGH). Upgrade the global npm first so it ships patched
 # vendored deps (npm 11.x: tar>=7.5, minimatch>=10.2, glob>=13, cross-spawn
@@ -58,15 +74,16 @@ ARG NPM_VERSION=11.18.0
 # package integrity/signature against the registry on install.
 # renovate: datasource=npm depName=yarn
 ARG YARN_VERSION=1.22.22
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-      | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-      > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update \
-    && apt-get install -y nodejs \
+COPY --from=node-dist /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-dist /usr/local/include/node /usr/local/include/node
+COPY --from=node-dist /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+COPY --from=node-dist /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
     && npm install -g npm@${NPM_VERSION} \
     && npm install -g yarn@${YARN_VERSION} \
-    && rm -rf /var/lib/apt/lists/*
+    && node --version && npm --version && yarn --version
 
 # Install Docker CLI and Docker Compose
 RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
