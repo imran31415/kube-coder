@@ -66,22 +66,30 @@ function CapacityView() {
 }
 
 const PAGE_SIZE = 10;
-type StateFilter = 'all' | 'running' | 'stopped';
+type StateFilter = 'running' | 'stopped' | 'all';
 type NsFilter = 'all' | 'isolated' | 'shared';
+
+const STATE_LABEL: Record<StateFilter, string> = { running: 'Running', stopped: 'Stopped', all: 'All' };
+
+// "running" groups every active state (running/transitioning/degraded) — the
+// useful split for an operator is active-vs-stopped, not the exact pill.
+const isActive = (w: Workspace) => w.state !== 'stopped';
 
 function WorkspaceList() {
   const rows = workspaces.value;
   const [query, setQuery] = useState('');
-  const [stateF, setStateF] = useState<StateFilter>('all');
+  // Running-only by default (#547). A cluster accumulates stopped workspaces
+  // that are pure noise for the common case — see who's up, stop what's idle.
+  // Nothing is hidden silently: the chips carry counts, and the empty state
+  // offers a one-click way back to everything.
+  const [stateF, setStateF] = useState<StateFilter>('running');
   const [nsF, setNsF] = useState<NsFilter>('all');
   const [page, setPage] = useState(0);
 
   const q = query.trim().toLowerCase();
-  const filtered = rows.filter((w) => {
-    // "running" groups every active state (running/transitioning/degraded) —
-    // the useful split for an operator is active-vs-stopped, not the exact pill.
-    if (stateF === 'running' && w.state === 'stopped') return false;
-    if (stateF === 'stopped' && w.state !== 'stopped') return false;
+  // Faceted counts: the search box and namespace chips narrow the base set, the
+  // state chips do not — so "Stopped (7)" is exactly what switching would show.
+  const base = rows.filter((w) => {
     if (nsF === 'isolated' && !w.isolated) return false;
     if (nsF === 'shared' && w.isolated) return false;
     if (!q) return true;
@@ -91,6 +99,16 @@ function WorkspaceList() {
       (w.version ?? '').toLowerCase().includes(q)
     );
   });
+  const activeCount = base.filter(isActive).length;
+  const counts: Record<StateFilter, number> = {
+    running: activeCount,
+    stopped: base.length - activeCount,
+    all: base.length,
+  };
+  const filtered = stateF === 'all' ? base : base.filter((w) => isActive(w) === (stateF === 'running'));
+  // Workspaces the state chip alone is holding back — drives the empty state's
+  // "your workspace didn't vanish, it's just filtered" escape hatch.
+  const hiddenByState = base.length - filtered.length;
 
   // Clamp the page against the current filtered length so shrinking the result
   // set (typing, or a workspace disappearing on poll) can't strand an empty page.
@@ -104,7 +122,7 @@ function WorkspaceList() {
     setPage(0);
   };
 
-  const stateChips: StateFilter[] = ['all', 'running', 'stopped'];
+  const stateChips: StateFilter[] = ['running', 'stopped', 'all'];
   const nsChips: NsFilter[] = ['all', 'isolated', 'shared'];
 
   return (
@@ -148,14 +166,24 @@ function WorkspaceList() {
         />
         <div class="filter-group" role="group" aria-label="Filter by state">
           {stateChips.map((s) => (
-            <button key={s} class={`chip ${stateF === s ? 'on' : ''}`} onClick={() => withReset(setStateF, s)}>
-              {s === 'all' ? 'All' : s[0].toUpperCase() + s.slice(1)}
+            <button
+              key={s}
+              class={`chip ${stateF === s ? 'on' : ''}`}
+              aria-pressed={stateF === s}
+              onClick={() => withReset(setStateF, s)}
+            >
+              {STATE_LABEL[s]} ({counts[s]})
             </button>
           ))}
         </div>
         <div class="filter-group" role="group" aria-label="Filter by namespace isolation">
           {nsChips.map((s) => (
-            <button key={s} class={`chip ${nsF === s ? 'on' : ''}`} onClick={() => withReset(setNsF, s)}>
+            <button
+              key={s}
+              class={`chip ${nsF === s ? 'on' : ''}`}
+              aria-pressed={nsF === s}
+              onClick={() => withReset(setNsF, s)}
+            >
               {s === 'all' ? 'Any ns' : s[0].toUpperCase() + s.slice(1)}
             </button>
           ))}
@@ -170,7 +198,18 @@ function WorkspaceList() {
       ) : loaded.value && rows.length === 0 && !error.value ? (
         <div class="empty">No workspaces found.</div>
       ) : filtered.length === 0 ? (
-        <div class="empty">No workspaces match your search or filters.</div>
+        <div class="empty">
+          {hiddenByState > 0 ? (
+            <>
+              <div>No {stateF} workspaces{q || nsF !== 'all' ? ' match your search or filters' : ''}.</div>
+              <button class="btn ghost empty-cta" onClick={() => withReset(setStateF, 'all')}>
+                Show all {base.length} workspaces
+              </button>
+            </>
+          ) : (
+            'No workspaces match your search or filters.'
+          )}
+        </div>
       ) : (
         <>
           <ul class="list" aria-label="Workspaces">

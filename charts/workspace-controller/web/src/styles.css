@@ -268,6 +268,12 @@ body {
   gap: 0.6rem;
 }
 
+/* Escape hatch out of the running-only default (#547) — a stopped workspace is
+   filtered, never gone, so the empty state always offers the way back. */
+.empty-cta {
+  margin-top: 0.9rem;
+}
+
 .spinner {
   display: inline-block;
   width: 1rem;
