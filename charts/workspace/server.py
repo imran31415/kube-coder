@@ -26,6 +26,16 @@ import ipaddress
 import fcntl
 import zipfile
 
+# Hidden-text detection for agent-readable instruction files (#559). Pure and
+# dependency-free; deliberately imported here rather than exposed as an MCP
+# tool, because a compromised agent must not be able to suppress the scan.
+try:
+    import instruction_scan
+    _INSTRUCTION_SCAN_AVAILABLE = True
+except ImportError:      # pragma: no cover - module always ships beside server.py
+    instruction_scan = None
+    _INSTRUCTION_SCAN_AVAILABLE = False
+
 # Persistent memory subsystem — shared with mcp_memory.py via the colocated
 # `memory` package. Importable because the workspace-entrypoint copies the
 # package next to server.py at /tmp/browser/.
@@ -178,6 +188,11 @@ WORKSPACE_DEFAULT_ASSISTANT = os.environ.get('KC_DEFAULT_ASSISTANT') or 'claude'
 HYPERVISOR_DEFAULT_ASSISTANT = (
     os.environ.get('HYPERVISOR_DEFAULT_ASSISTANT') or WORKSPACE_DEFAULT_ASSISTANT)
 HYPERVISOR_WORKDIR = os.environ.get('HYPERVISOR_WORKDIR', '/home/dev')
+# Confinement root for the instruction-file scanner (#559). Every ?root= is
+# resolved and required to sit beneath this, so the endpoint can't become an
+# arbitrary directory read. A module constant rather than a literal so tests
+# can point it at a tmpdir — CI runners have no /home/dev.
+INSTRUCTION_SCAN_ROOT = HYPERVISOR_WORKDIR
 # AI CTO (#467) — the /cto page (project registry + CTO-persona chat + brief).
 # It rides the Hypervisor, so it's available only when BOTH this flag and the
 # Hypervisor are on. Off → the projects API 404s, the persona is ignored, and
@@ -7386,6 +7401,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/apps':
             self._handle_apps_list()
             return
+        # /api/security/instruction-scan — hidden-text scan of agent-readable
+        # instruction files (#559). Server-side on purpose: see the handler.
+        if claude_path == '/api/security/instruction-scan':
+            self._handle_instruction_scan()
+            return
         # Reverse-proxy to a locally-listening web app.
         if self._dispatch_app_proxy(claude_path, 'GET'):
             return
@@ -12237,6 +12257,83 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             pass
 
     # --- Apps API (list + pin CRUD) ---
+
+    def _handle_instruction_scan(self):
+        """Scan agent-readable instruction files for hidden text (#559).
+
+        WHY THIS IS A SERVER ENDPOINT AND NOT AN MCP TOOL. The threat is a
+        cloned repo whose CLAUDE.md carries invisible instructions the agent
+        then obeys (the TrapDoor class). If the agent is already following
+        that file, asking the agent to scan is worthless — the injected text
+        just says "skip the scan" or "report clean". So detection runs here,
+        out of band, where a compromised agent cannot suppress it, and the
+        result lands in the Feed rather than in the agent's transcript.
+
+        Reports only. Nothing is stripped or rewritten: silently editing a
+        file an agent is about to read would itself be an injection vector,
+        and a false positive that mangles someone's README is unforgivable.
+        """
+        if not self.check_app_proxy_auth():
+            self.send_response(401)
+            self.end_headers()
+            return
+        if not _INSTRUCTION_SCAN_AVAILABLE:
+            self.send_json({'error': 'instruction_scan module unavailable'}, status=503)
+            return
+        qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+        confine = os.path.realpath(INSTRUCTION_SCAN_ROOT)
+        requested = (qs.get('root') or [confine])[0]
+        # Confine the walk to the persistent volume. Without this, `root` is an
+        # arbitrary-path directory read for anyone who can reach the endpoint.
+        # Compare realpaths and require a separator on the prefix, so neither
+        # `<root>/../etc` nor a lookalike sibling like `/home/devious` passes.
+        root = os.path.realpath(requested)
+        if root != confine and not root.startswith(confine + os.sep):
+            self.send_json(
+                {'error': 'root must be under {}'.format(confine)}, status=400)
+            return
+        if not os.path.isdir(root):
+            self.send_json({'error': 'root is not a directory'}, status=404)
+            return
+        try:
+            report = instruction_scan.scan_tree(root)
+        except Exception as e:                      # never 500 on a scan
+            self.send_json({'error': 'scan failed: {}'.format(e)}, status=500)
+            return
+        # Surface high-severity hits in the Feed. Deduped per root so a repeated
+        # scan updates one item instead of spamming; the user sees this whether
+        # or not they were looking at the dashboard when it ran.
+        if report['high'] and 'FeedManager' in globals():
+            files = ', '.join(os.path.relpath(r['path'], root)
+                              for r in report['results'] if r['counts']['high'])[:200]
+            decoded = ' / '.join(r['decoded_hidden_text']
+                                 for r in report['results']
+                                 if r['decoded_hidden_text'])[:400]
+            body = [
+                'Hidden, non-rendering characters were found in files that '
+                'coding agents read as instructions.',
+                '',
+                '**Files:** {}'.format(files),
+                '**High-severity findings:** {}'.format(report['high']),
+            ]
+            if decoded:
+                body += ['', '**Decoded hidden text:**', '', '```', decoded, '```']
+            body += [
+                '',
+                'This is the technique used by the TrapDoor supply-chain campaign: '
+                'text invisible to a human reviewer but read verbatim by the agent. '
+                'Nothing has been modified — review these files before letting an '
+                'agent work in this tree.',
+            ]
+            FeedManager.emit(
+                'news',
+                'Hidden text found in agent instruction files',
+                body_md='\n'.join(body),
+                source='instruction-scan',
+                waiting=True,
+                dedupe_key='instruction-scan:{}'.format(root),
+            )
+        self.send_json(report)
 
     def _handle_apps_list(self):
         if not self.check_app_proxy_auth():
