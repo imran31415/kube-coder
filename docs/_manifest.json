@@ -6,7 +6,8 @@
       "id": "overview",
       "title": "Overview",
       "pages": [
-        { "id": "getting-started", "title": "Getting started", "file": "in-app/getting-started.md", "summary": "The AI-CTO-first first win — onboard and connect Claude, land in the AI CTO, build from one sentence, watch the live preview — plus a tour of every surface (Mission Control, Workspace, Knowledge) and how to run a build yourself." }
+        { "id": "getting-started", "title": "Getting started", "file": "in-app/getting-started.md", "summary": "The AI-CTO-first first win — onboard and connect Claude, land in the AI CTO, build from one sentence, watch the live preview — plus a tour of every surface (Mission Control, Workspace, Knowledge) and how to run a build yourself." },
+        { "id": "chat-vs-builds", "title": "Chat vs Builds", "file": "in-app/chat-vs-builds.md", "summary": "When to talk to an agent (Chat — interactive, threaded, steerable) and when to dispatch one (Builds — background jobs with a seeded first prompt and saved prompt templates), plus why the code still says \"Hypervisor\"." }
       ]
     },
     {

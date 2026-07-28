@@ -6,19 +6,31 @@ import { Input } from '../../components/primitives/Input';
 import { Icon } from '../../components/Icon';
 import { randomBuildName } from '../../util/randomName';
 import { navigate, currentPath } from '../../store/router';
-import { sheetOpen } from '../../store/ui';
+import { pushToast, sheetOpen } from '../../store/ui';
+import {
+  deleteTemplate,
+  promptTemplates,
+  saveTemplate,
+  suggestTemplateName,
+} from '../../store/promptTemplates';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import './new-task.css';
 
 /**
- * "New build" composer — intentionally minimal. The user gives the session a
- * memorable name (defaults to e.g. funny-kitty-37) and we drop them straight
- * into the live Claude/OpenCode terminal — they type their actual prompt
- * there. Server.py allows an empty prompt for exactly this flow.
+ * "New build" composer. The user names the session (defaults to e.g.
+ * funny-kitty-37) and can seed the first prompt right here — it's sent with
+ * the create call so the agent starts working immediately (#94). Leaving the
+ * prompt empty is still supported: server.py accepts an empty prompt and the
+ * assistant boots into an interactive REPL the user types into.
+ *
+ * Prompts worth reusing can be saved as templates — client-side, in
+ * localStorage (see store/promptTemplates.ts).
  */
 export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const isMobile = useIsMobile();
   const [name, setName] = useState(() => randomBuildName());
+  const [prompt, setPrompt] = useState('');
+  const [templateName, setTemplateName] = useState<string | null>(null);
   const [workdir, setWorkdir] = useState('/home/dev');
   const [assistant, setAssistant] = useState('');
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
@@ -39,13 +51,14 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    // Empty prompt — the assistant boots into an interactive REPL; the
-    // user's first message is whatever they type in the terminal.
+    // A non-empty prompt boots the session already working on it; an empty
+    // one drops the user into an interactive REPL and their first message is
+    // whatever they type in the terminal. Both are valid server-side.
     // createTask catches API errors internally and returns null.
     let task = null;
     try {
       task = await createTask({
-        prompt: '',
+        prompt: prompt.trim(),
         workdir,
         assistant: assistant || undefined,
         disable_memory_injection: false,
@@ -57,10 +70,16 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
       setError('Could not start the build — check the workspace server and try again.');
       return;
     }
-    // If the server accepted no name, leave as-is; otherwise rename in the
-    // background (best-effort — failure is OK, the random name still shows).
+    // The create endpoint takes no name, so the rename is a second call.
+    // Await it and say so when it fails — previously this was fire-and-forget
+    // and the user silently kept the random name (#94).
     if (name && name !== task.name) {
-      void renameTask(task.task_id, name).catch(() => undefined);
+      const renamed = await renameTask(task.task_id, name)
+        .then(() => true)
+        .catch(() => false);
+      if (!renamed) {
+        pushToast(`Build started, but couldn't rename it to "${name}".`, { kind: 'warn' });
+      }
     }
     // Drop the user straight into the new build's terminal:
     //   - if they're on a different route, navigate to /tasks first
@@ -78,6 +97,17 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
 
   function reroll() {
     setName(randomBuildName());
+  }
+
+  function beginSaveTemplate() {
+    setTemplateName(suggestTemplateName(prompt));
+  }
+
+  function commitTemplate(e: Event) {
+    // Nested inside the build <form>, so this is a plain button + handler:
+    // saving a template must never submit (and start) the build.
+    e.preventDefault();
+    if (saveTemplate(templateName ?? '', prompt)) setTemplateName(null);
   }
 
   // The currently-selected assistant (for the free/training-disclosure note),
@@ -159,9 +189,111 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         </label>
       </div>
 
+      <label class="ntf-field">
+        <span class="ntf-label">First prompt <span class="muted">(optional)</span></span>
+        <textarea
+          class="ntf-textarea"
+          value={prompt}
+          onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
+          placeholder="e.g. Run the test suite in ./api, fix whatever fails, and open a PR."
+          rows={5}
+          aria-label="First prompt"
+        />
+        <span class="ntf-hint muted">
+          Sent as the build's first message. Leave it empty to land in the terminal and type there.
+        </span>
+      </label>
+
+      <div class="ntf-templates">
+        <div class="ntf-templates-head">
+          <span class="ntf-label">Saved prompts</span>
+          {templateName === null ? (
+            <button
+              type="button"
+              class="ntf-tpl-save"
+              onClick={beginSaveTemplate}
+              disabled={!prompt.trim()}
+              title={
+                prompt.trim()
+                  ? 'Save this prompt for reuse'
+                  : 'Type a prompt above to save it as a template'
+              }
+            >
+              <Icon name="plus" size={12} /> Save as template
+            </button>
+          ) : (
+            <button type="button" class="ntf-tpl-save" onClick={() => setTemplateName(null)}>
+              Cancel
+            </button>
+          )}
+        </div>
+
+        {templateName !== null && (
+          <div class="ntf-tpl-namerow">
+            <Input
+              fullWidth
+              value={templateName}
+              onInput={(e) => setTemplateName((e.target as HTMLInputElement).value)}
+              placeholder="Template name"
+              aria-label="Template name"
+              maxLength={60}
+              autoFocus
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              type="button"
+              onClick={commitTemplate}
+              disabled={!templateName.trim()}
+            >
+              Save
+            </Button>
+          </div>
+        )}
+
+        {promptTemplates.value.length === 0 ? (
+          <span class="ntf-hint muted">
+            No templates yet — save a prompt you run often and it'll show up here.
+          </span>
+        ) : (
+          <ul class="ntf-tpl-list">
+            {promptTemplates.value.map((t) => (
+              <li key={t.id} class="ntf-tpl">
+                <button
+                  type="button"
+                  class="ntf-tpl-apply"
+                  onClick={() => setPrompt(t.prompt)}
+                  title={t.prompt}
+                >
+                  {t.name}
+                </button>
+                <button
+                  type="button"
+                  class="ntf-tpl-del"
+                  onClick={() => deleteTemplate(t.id)}
+                  aria-label={`Delete template ${t.name}`}
+                  title={`Delete template ${t.name}`}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       <p class="ntf-note muted">
-        You'll be dropped straight into a live <strong>{assistant || defaultAssistantLabel}</strong> terminal —
-        type your first prompt there.
+        {prompt.trim() ? (
+          <>
+            <strong>{assistant || defaultAssistantLabel}</strong> starts on this prompt right away —
+            you can watch and steer it from the build's terminal.
+          </>
+        ) : (
+          <>
+            You'll be dropped straight into a live <strong>{assistant || defaultAssistantLabel}</strong> terminal —
+            type your first prompt there.
+          </>
+        )}
       </p>
 
       {selectedAssistant?.trainingDisclosure && (

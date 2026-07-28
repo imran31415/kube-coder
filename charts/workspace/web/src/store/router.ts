@@ -79,7 +79,9 @@ export const ROUTES: RouteDef[] = [
   { path: '/mission', title: 'Mission Control' },
   { path: '/cto', title: 'AI CTO' },
   { path: '/feed', title: 'Feed' },
-  { path: '/hypervisor', title: 'Hypervisor' },
+  // "Chat" is the one user-facing name for this surface (#346); "Hypervisor"
+  // survives only as the internal term (route path, stores, server modules).
+  { path: '/hypervisor', title: 'Chat' },
   { path: '/walkie', title: 'Walkie-Talkie' },
   { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },

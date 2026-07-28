@@ -65,6 +65,61 @@
   color: var(--text);
 }
 
+/* Saved prompt templates (#94) — localStorage-backed chips under the prompt. */
+.ntf-templates { display: flex; flex-direction: column; gap: 8px; }
+.ntf-templates-head { display: flex; align-items: center; justify-content: space-between; gap: var(--size-2); }
+.ntf-tpl-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.ntf-tpl-save:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--border-2); }
+.ntf-tpl-save:disabled { opacity: 0.5; cursor: not-allowed; }
+.ntf-tpl-namerow { display: flex; align-items: center; gap: var(--size-2); }
+.ntf-tpl-list { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.ntf-tpl {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: var(--radius-pill, 999px);
+  overflow: hidden;
+  max-width: 100%;
+}
+.ntf-tpl:hover { border-color: var(--border-2); }
+.ntf-tpl-apply {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: 4px 4px 4px 10px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ntf-tpl-apply:hover { color: var(--accent); }
+.ntf-tpl-del {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  line-height: 1;
+  padding: 0 8px 0 4px;
+  cursor: pointer;
+}
+.ntf-tpl-del:hover { color: var(--danger); }
+
 .ntf-error {
   margin: 0;
   padding: 10px 12px;
