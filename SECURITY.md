@@ -58,6 +58,7 @@ responsibility for the corresponding risk:
 | `readOnly` | `false` (writable) | Set with `auth.type=none` only — server.py refuses otherwise. |
 | `ingress.auth.type` | `basic` | `none` exposes the dashboard to the internet (requires `readOnly: true`). |
 | `build.mode` | `kaniko` | `buildkit` adds a privileged DinD sidecar (container-escape surface). |
+| `networkPolicy.egress.enabled` | `true` (restricted) | `false` lets anything running in the pod reach the cloud metadata endpoint (`169.254.169.254`, which serves node bootstrap credentials) and other tenants' pod IPs. Set the denied ranges to your cluster's pod/service CIDRs rather than disabling. |
 | `ALLOW_INTERNAL_HOOKS` | `false` | Setting `true` lets task completion-hooks POST to RFC1918 / metadata IPs. |
 | `TRUSTED_PROXY` | `true` | Set `false` for any deploy where the ingress doesn't strip client-supplied auth headers. |
 

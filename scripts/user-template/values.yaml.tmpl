@@ -108,6 +108,19 @@ update:
 #   enabled: true
 #   replicas: 1
 
+# Egress hardening (#548). ON by default: the pod is denied link-local (the
+# cloud metadata endpoint, which serves node bootstrap credentials) and the
+# cluster pod/service CIDRs. Internet/DNS/apiserver egress is unaffected.
+# The chart's pod/service defaults are this cluster's — if yours differ, set
+# them here (see docs/deploy-on-kubernetes.md, Step 5) or the last two lines
+# are a harmless no-op that protects nothing.
+# networkPolicy:
+#   egress:
+#     deniedCIDRs: ["169.254.0.0/16", "<pod-cidr>", "<service-cidr>"]
+#     dns:
+#       serviceIPs: ["<kube-dns-clusterip>/32"]
+#     apiServerIPs: ["<kubernetes-clusterip>/32"]
+
 # GitHub App for repo access:
 #   Drop credentials in users-private/__USER__/secrets/github-app.yaml.
 #   Each workspace gets its OWN GitHub App, not a shared one — anyone with

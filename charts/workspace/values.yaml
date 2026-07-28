@@ -248,6 +248,126 @@ controller:
   rbac:
     enabled: true
 
+# NetworkPolicy — what this workspace's pods may talk to.
+#
+# Ingress (templates/networkpolicy.yaml) is always rendered and not
+# configurable: only the ingress controller may reach the workspace/oauth2-proxy
+# pods. Egress (templates/networkpolicy-egress.yaml, #548) is configured here.
+#
+# WHY EGRESS IS RESTRICTED BY DEFAULT: a workspace pod runs agent-generated code
+# by design (npm lifecycle scripts, whatever an agent is told to run, anything a
+# prompt-injection reaches a shell with). With no egress policy that code can
+# `curl http://169.254.169.254/…` — the cloud metadata endpoint — which on every
+# managed Kubernetes provider serves node identity and cloud-init `user-data`.
+# On DOKS that payload carries the kubelet bootstrap token and the cluster CA;
+# GKE/EKS/AKS expose an equivalent. That is node-join credential material, i.e. a
+# cluster-integrity problem, not info disclosure. It can also dial other tenants'
+# pods directly. Neither is something a legitimate agent workload ever needs, so
+# unlike a domain allowlist (#355) this is safe to ship default-on.
+#
+# WHAT STAYS OPEN: everything else. The policy allows 0.0.0.0/0 minus the denied
+# ranges, so GitHub, npm, PyPI, registries and model providers are unaffected —
+# and DNS, the kube-apiserver (Triggers + the task API need it) and the
+# controller's self-serve port are punched back through explicitly.
+networkPolicy:
+  egress:
+    enabled: true
+    # Which policy object to render:
+    #   auto           — CiliumNetworkPolicy if the cluster registers cilium.io/v2,
+    #                    otherwise the portable NetworkPolicy. (default)
+    #   networkpolicy  — always the portable networking.k8s.io/v1 NetworkPolicy.
+    #   cilium         — always the CiliumNetworkPolicy (requires the CRD, and
+    #                    Cilium >= 1.9 — that is when deny policies became
+    #                    available and enabled by default. An older agent would
+    #                    not enforce the egressDeny block this flavor leads with,
+    #                    leaving only the weaker `except` behind it.)
+    # Note `helm template` has no cluster to interrogate, so `auto` renders the
+    # portable form there; `helm install/upgrade` against a Cilium cluster picks
+    # the Cilium form. Pin the flavor if you diff rendered manifests in CI.
+    #
+    # THE FLAVORS ENFORCE DIFFERENTLY — see allowCIDRs below. The portable form
+    # is purely additive (deny = absence of an allow); the Cilium form leads
+    # with an explicit `egressDeny`, which per Cilium's docs outranks every
+    # allow rule in the cluster. That is deliberate: Cilium's identity for a
+    # link-local address is not stable across agent restarts (cilium/cilium
+    # #18644), so an `except` alone would be a control whose correctness depends
+    # on daemon startup order. The deny makes the question moot. Deny rules are
+    # L3/L4 only (no L7, no toFQDNs), which plain CIDRs don't need.
+    flavor: auto
+    # Ranges the workspace pod may NOT reach. THESE ARE CLUSTER-SPECIFIC — the
+    # defaults below are link-local plus this project's own DOKS pod/service
+    # CIDRs. Check yours before relying on the last two:
+    #   pod CIDR:     kubectl cluster-info dump | grep -m1 -- --cluster-cidr
+    #   service CIDR: kubectl cluster-info dump | grep -m1 -- --service-cluster-ip-range
+    # A range that doesn't exist on your cluster is a harmless no-op (it fails
+    # open, not closed) — but you get no cross-tenant protection until these
+    # match reality. 169.254.0.0/16 is universal; never remove it.
+    deniedCIDRs:
+      - "169.254.0.0/16"   # link-local: cloud metadata (169.254.169.254) on every provider
+      - "10.244.0.0/16"    # pod CIDR — other tenants' pods
+      - "10.245.0.0/16"    # service CIDR — in-cluster services
+    # Extra allows, as plain CIDRs — an in-cluster service you actually need, a
+    # NodeLocal DNSCache at 169.254.20.10/32, and so on.
+    #
+    # !! FLAVOR DIFFERENCE, and the one real footgun here !!
+    #   portable — additive. An entry here DOES punch back through a denied
+    #              range, because the deny is only the absence of an allow.
+    #   cilium   — deny wins. An entry inside a denied range is a SILENT NO-OP.
+    # To reach an address inside a denied range on either flavor, narrow
+    # deniedCIDRs instead of relying on this: e.g. to keep a NodeLocal DNSCache
+    # at 169.254.20.10 reachable while still blocking metadata, replace
+    # "169.254.0.0/16" with "169.254.128.0/17" (which still covers
+    # 169.254.169.254) or with "169.254.169.254/32". Narrowing works identically
+    # on both flavors, which is why it's the supported route.
+    allowCIDRs: []
+    # Dual-stack. An ipBlock/toCIDRSet is single-family, so the v4 allow above
+    # cannot carry v6 excepts — IPv6 needs its own ::/0 rule. Without one,
+    # policyTypes:Egress default-deny would drop ALL IPv6 egress the moment this
+    # policy is enabled: a silent product break, not a safe default. So the v6
+    # allow renders by default; on a v4-only cluster it is inert (there is no v6
+    # traffic to match). Set false only if your CNI objects to v6 rules.
+    allowIPv6: true
+    # v6 counterparts of deniedCIDRs. fe80::/10 is the link-local range (the
+    # direct analogue of 169.254.0.0/16); fd00:ec2::/32 covers AWS's IMDS-over-
+    # IPv6 endpoint (fd00:ec2::254). On a dual-stack cluster add your v6
+    # pod/service CIDRs here too — they are usually inside fd00::/8, so denying
+    # that whole range instead would take out far more than you intend.
+    deniedCIDRsV6:
+      - "fe80::/10"
+      - "fd00:ec2::/32"
+    # DNS. kube-dns' ClusterIP normally sits INSIDE the denied service CIDR, so
+    # without this rule the policy would kill name resolution and with it all
+    # outbound internet. Allowed two ways because CNIs differ on whether egress
+    # policy sees the ClusterIP or the already-translated backend pod IP:
+    # by ClusterIP, and by the kube-dns pods' own labels. Both are port 53 only.
+    dns:
+      enabled: true
+      serviceIPs:
+        - "10.245.0.10/32"  # `kubectl -n kube-system get svc kube-dns`
+      namespace: kube-system
+      podLabels:
+        k8s-app: kube-dns   # CoreDNS keeps this label on GKE/EKS/AKS/DOKS alike
+    # kube-apiserver. In scope to PRESERVE, deliberately: the workspace SA is
+    # already RBAC-scoped to its own namespace and legitimately uses the
+    # apiserver (Triggers, the Claude task API). Its ClusterIP is the first
+    # address of the service CIDR, so it too must be carved back out.
+    # Portable flavor only — the Cilium flavor uses the kube-apiserver entity,
+    # which also covers clusters whose apiserver lives outside the cluster.
+    apiServerIPs:
+      - "10.245.0.1/32"     # $KUBERNETES_SERVICE_HOST inside any pod
+    # Cilium flavor only. CIDR rules in Cilium do NOT match the host or other
+    # nodes (they carry `host`/`remote-node` identity, not a CIDR one), and the
+    # apiserver carries `kube-apiserver` — so these must be named as entities or
+    # node-local DNS, NodePorts and the apiserver break. The egressDeny block
+    # outranks these, so they cannot re-open a denied range. The one exception
+    # is an address Cilium maps host-ward, where CIDR matching is skipped
+    # entirely (cilium/cilium#18644): drop `host` here if nothing on your
+    # cluster is legitimately reachable at a node address.
+    entities:
+      - kube-apiserver
+      - host
+      - remote-node
+
 # Build configuration.
 #
 #   mode: kaniko    (default, recommended)

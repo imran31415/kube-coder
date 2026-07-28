@@ -18,11 +18,13 @@ Each workspace's pods only need to reach the outside world (GitHub,
 registries, model providers) and their own sidecars on localhost —
 neither is affected by this policy.
 
-Egress is intentionally NOT restricted here. Tightening egress requires
-a per-cluster allowlist (kube-dns, kube-apiserver, registries, model
-providers, GitHub) and is best layered in a follow-up once traffic
-patterns are confirmed in prod. CNI is Cilium so adding egress rules
-later is straightforward.
+Egress lives in networkpolicy-egress.yaml (#548): the workspace pod is
+denied link-local (the cloud metadata endpoint) and the cluster
+pod/service CIDRs, with DNS, the kube-apiserver and the controller's
+self-serve port carved back out. General internet egress stays open —
+a domain allowlist is the separate, opt-in half (#355). That policy
+selects the workspace pod alone, so oauth2-proxy (which must reach the
+workspace pod IP inside the denied pod CIDR) is unaffected.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
