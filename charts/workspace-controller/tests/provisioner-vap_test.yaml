@@ -176,6 +176,45 @@ tests:
           path: spec.validations[1].expression
           pattern: "ephemeralContainers"
 
+  # #422 item 1: the provisioning script is baked into the provisioner image as
+  # its ENTRYPOINT, so a legitimate Job supplies env only. Denying command/args
+  # is what stops manifest control from becoming arbitrary code execution under
+  # the cluster-privileged provisioner SA — every other rule pins the workload's
+  # shape, and `command: [bash, -c, …]` satisfied all of them. It is also the
+  # precondition for #421's immutable Job template.
+  - it: forbids the container overriding the baked entrypoint (no command/args)
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[7].expression
+          pattern: "!has\\(c.command\\)"
+      - matchRegex:
+          path: spec.validations[7].expression
+          pattern: "!has\\(c.args\\)"
+      - matchRegex:
+          path: spec.validations[7].message
+          pattern: "must not override the image entrypoint"
+
+  - it: keeps the no-command rule even when the digest rule is off
+    # Unconditional: it is a code-execution control, not a pinning preference,
+    # so an operator turning off requireDigest must not lose it.
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.test.io
+      provision.gitops.repo: github.com/x/y.git
+      provision.gitToken: xxx
+      provision.admissionPolicy.requireDigest: false
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.validations[7].expression
+          pattern: "!has\\(c.command\\)"
+
   - it: requires the image be pinned by digest (finding 7) by default
     set:
       provision.enabled: true
@@ -184,12 +223,13 @@ tests:
       provision.gitToken: xxx
     documentIndex: 0
     asserts:
-      # Appended last, so it is validations[7] after the seven finding-4 rules.
+      # The only conditional rule, kept last: index 8, after the seven finding-4
+      # rules (0..6) and the #422 no-command rule (7).
       - matchRegex:
-          path: spec.validations[7].expression
+          path: spec.validations[8].expression
           pattern: "contains\\('@sha256:'\\)"
       - matchRegex:
-          path: spec.validations[7].message
+          path: spec.validations[8].message
           pattern: "pinned by digest"
 
   - it: omits the digest rule when requireDigest is disabled
@@ -201,9 +241,9 @@ tests:
       provision.admissionPolicy.requireDigest: false
     documentIndex: 0
     asserts:
-      # Only the seven finding-4 validations remain (indices 0..6); no 8th rule.
+      # Only the eight unconditional validations remain (0..7); no 9th rule.
       - notExists:
-          path: spec.validations[7]
+          path: spec.validations[8]
 
   - it: binds the policy in Deny mode scoped to the control-plane namespace
     set:

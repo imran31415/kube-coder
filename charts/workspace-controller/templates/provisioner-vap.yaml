@@ -1,9 +1,10 @@
 {{- if and .Values.provision.enabled .Values.provision.admissionPolicy.enabled }}
 {{- $sa := .Values.provision.serviceAccount }}
-{{- /* Approved provisioner image. If provision.image pins a full ref, require
-       that exact prefix; otherwise require the controller image repository the
-       controller reuses as the default Job image (build_job_manifest in
-       controller.py sets CONTROLLER_IMAGE = repository:tag). */ -}}
+{{- /* Approved provisioner image: the prefix provision.image pins. Since #422
+       provision.image is required — the controller fails closed without it,
+       because the Job supplies no command and must run the entrypoint baked
+       into the provisioner image — so the controller.image fallback below is
+       only a rendering default for a chart that could never provision anyway. */ -}}
 {{- $allowedImage := .Values.provision.image | default .Values.controller.image.repository }}
 # ValidatingAdmissionPolicy — constrain Jobs that run as the workspace-provisioner
 # ServiceAccount (security review July 2026, finding 4).
@@ -16,7 +17,9 @@
 # manifest. This policy pins the shape of any Job that runs as the provisioner
 # SA to exactly what the legitimate provisioner Job looks like
 # (controller.py build_job_manifest), so a tampered manifest cannot run an
-# attacker-controlled workload under that identity.
+# attacker-controlled workload under that identity — including, since #422, the
+# rule that the container may supply no command/args at all, because the program
+# it runs is baked into the signed image rather than injected by the caller.
 #
 # Requires Kubernetes >= 1.30 (admissionregistration.k8s.io/v1 GA). Guarded
 # behind provision.admissionPolicy.enabled for clusters that cannot serve it.
@@ -91,14 +94,28 @@ spec:
       !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) &&
       !(has(variables.podSpec.hostIPC) && variables.podSpec.hostIPC)
     message: "provisioner Job must not use hostNetwork, hostPID, or hostIPC"
+  # No caller-supplied program (#422). The provisioning script is baked into the
+  # provisioner image as its ENTRYPOINT (provisioner/provision.sh), so a
+  # legitimate Job supplies env only. Every rule above pins the *shape* of the
+  # workload; without this one the shape was still free to carry arbitrary code —
+  # `command: [bash, -c, <anything>]` passed all of them and ran as the
+  # cluster-privileged provisioner SA. Denying command/args is what reduces a
+  # controller compromise from "run any program at provisioner privilege" to
+  # "choose the inputs of one fixed, signed program", and it is the precondition
+  # for the #421 broker to stamp Jobs from a genuinely immutable template.
+  # NB upgrade order: this rejects Jobs from a pre-#422 controller, which still
+  # set `command`. Chart and controller ship together, so roll them together.
+  - expression: >-
+      variables.containers.all(c, !has(c.command) && !has(c.args))
+    message: "provisioner Job container must not override the image entrypoint — no command/args (the provisioning script is baked into the provisioner image)"
   {{- if .Values.provision.admissionPolicy.requireDigest }}
   # Immutable by digest (supply-chain finding 7): reject tag-only refs so the
   # provisioner always runs the exact, signed image bytes the chart pinned — a
   # mutable tag (e.g. :latest) could be repointed after admission review. CEL
   # cannot verify a cosign signature (no crypto/network), so signature checking
   # is delegated to the opt-in policy in provisioner-image-policy.yaml; this rule
-  # enforces the digest half, which admission CAN see. Appended last so the other
-  # validations keep their fixed indices.
+  # enforces the digest half, which admission CAN see. This is the only
+  # conditional rule, kept last so the unconditional ones hold fixed indices.
   - expression: >-
       variables.containers.all(c, c.image.contains('@sha256:'))
     message: "provisioner Job container image must be pinned by digest (repo@sha256:...), not a mutable tag"

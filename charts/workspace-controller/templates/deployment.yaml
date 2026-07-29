@@ -77,8 +77,12 @@ spec:
           value: {{ .Values.controller.metrics.cost.memGbHour | quote }}
         - name: COST_STORAGE_GB_MONTH
           value: {{ .Values.controller.metrics.cost.storageGbMonth | quote }}
-        # The controller's own image ref, reused as the default provisioner Job
-        # image (it already carries kubectl/git/make/curl).
+        # The controller's own image ref. NO LONGER the provisioner Job's default
+        # image (#422): the Job supplies no command and runs the script baked into
+        # the dedicated provisioner image, so falling back here would run the
+        # controller image's own entrypoint. provision.image is required instead
+        # and the controller fails closed without it. Kept as an informational
+        # self-reference for logs/diagnostics.
         - name: CONTROLLER_IMAGE
           value: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
         # --- Workspace version updates (see values.yaml `controller.update`) ---

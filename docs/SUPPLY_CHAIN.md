@@ -207,9 +207,21 @@ Notes:
 
 ## Software Bill of Materials (SBOM)
 
-CI generates an SPDX-JSON SBOM of the built image with Syft
-(`anchore/sbom-action`) and uploads it as the `kube-coder-sbom.spdx.json`
-artifact on every run.
+CI generates SPDX-JSON SBOMs with Syft (`anchore/sbom-action`) and uploads them
+as artifacts on every run — **both** images, so the privileged path is covered
+too (#422 item 4):
+
+| Image | Artifact |
+|---|---|
+| `devlaptop` (workspace/controller) | `kube-coder-sbom.spdx.json` |
+| `provisioner` (helm/kubectl/git/make toolchain) | `kube-coder-provisioner-sbom.spdx.json` |
+
+Released images additionally carry a **BuildKit-native SBOM attestation** in
+the registry (`sbom: true` in [`release.yml`](../.github/workflows/release.yml),
+applied to both matrix entries) — retrievable with `cosign download sbom`. That
+attestation always covered the provisioner; what #422 added is the per-PR CI
+artifact, so a toolchain change on the privileged path is visible at review
+time rather than only after a release.
 
 ## Image signing + provenance (releases)
 
@@ -244,6 +256,19 @@ That is now closed:
   so provisioning performs **no runtime tool downloads** — only the approved
   GitOps `git clone`s. The Job **fails closed** if a tool is missing instead of
   fetching it.
+- **The script is baked in too** *(#422)* — [`provisioner/provision.sh`](../provisioner/provision.sh)
+  is `COPY`d in as the image's `ENTRYPOINT`. It used to be a Python string in
+  the controller, injected as the Job's `command`, which meant whoever could
+  shape the Job manifest chose the code that ran under the cluster-privileged
+  provisioner SA. Now the image carries the code and the Job carries only env,
+  the ValidatingAdmissionPolicy **denies `command`/`args`** on any Job under
+  that SA, and the controller **fails closed** if `provision.image` is unset
+  (there is no controller-image fallback — a Job with no command on another
+  image would run *that* image's entrypoint). Two consequences: controller
+  compromise no longer yields arbitrary code execution at provisioner
+  privilege, and the Job template is finally immutable enough for the
+  constrained broker in
+  [#421](https://github.com/imran31415/kube-coder/issues/421) to stamp.
 - **Signed + attested** — built, keyless-cosign **signed**, and SBOM/SLSA-
   provenance **attested** by the release workflow, exactly like `devlaptop`.
 - **Pinned by digest** — set `provision.image` to a `repo@sha256:…` ref. The CEL
