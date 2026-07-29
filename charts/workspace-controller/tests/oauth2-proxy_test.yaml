@@ -48,3 +48,152 @@ tests:
       - equal:
           path: spec.selector.matchLabels.app
           value: workspace-controller-oauth2
+
+  # ---- version pin (issue #567) ----
+  # 7.5.0 sat inside the affected range of two CVSS 9.1 auth bypasses. This
+  # surface runs --reverse-proxy, which is one of the two preconditions for
+  # GHSA-7x63-xv5r-3p2x (X-Forwarded-Uri spoofing).
+  #
+  # NOTE ON SCOPE: rendering tests prove the manifest is well-formed. They prove
+  # NOTHING about whether authentication actually works — that needs a real
+  # login against the deployed console.
+  - it: pins oauth2-proxy to the fixed version by digest
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+
+  - it: pins the auth gate by digest, not a mutable tag
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "@sha256:[a-f0-9]{64}$"
+
+  # ---- --trusted-proxy-ip (new in 7.15.2) ----
+  # Without it, --reverse-proxy trusts X-Forwarded-* from ANY direct caller
+  # (upstream defaults to 0.0.0.0/0 + ::/0 for backwards compatibility).
+  - it: restricts which peers may set X-Forwarded-* headers
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --reverse-proxy=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=10.0.0.0/8
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=172.16.0.0/12
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=192.168.0.0/16
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=100.64.0.0/10
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=fc00::/7
+
+  # The default is deliberately broad (in-cluster space) so the upgrade does not
+  # break unknown clusters; operators who know their pod CIDR should narrow it.
+  - it: allows narrowing the trusted proxy range to a real pod CIDR
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      oauth2.trustedProxyIPs:
+        - "10.244.0.0/16"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=10.244.0.0/16
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=10.0.0.0/8
+
+  # ---- the whole auth surface, asserted exactly ----
+  # This is the guard the issue actually asks for: any flag silently added,
+  # removed or renamed on the auth boundary fails here, including a
+  # --skip-auth-route/--skip-auth-regex rule (which together with the
+  # --reverse-proxy above is the precondition pair for GHSA-7x63-xv5r-3p2x).
+  #
+  # UPDATING THIS LIST SHOULD BE A DELIBERATE ACT. If a change breaks it, that
+  # is the test working — confirm the new flag set against the pinned
+  # oauth2-proxy version's docs before editing.
+  - it: renders exactly the expected auth flags and nothing more
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --provider=github
+            - "--email-domain=*"
+            - --upstream=http://workspace-controller:8080/
+            - --http-address=0.0.0.0:4180
+            - --reverse-proxy=true
+            - --trusted-proxy-ip=10.0.0.0/8
+            - --trusted-proxy-ip=172.16.0.0/12
+            - --trusted-proxy-ip=192.168.0.0/16
+            - --trusted-proxy-ip=100.64.0.0/10
+            - --trusted-proxy-ip=fc00::/7
+            - --cookie-secure=true
+            - --cookie-domain=controller.test.example.com
+            - --cookie-path=/
+            - --cookie-expire=720h0m0s
+            - --cookie-refresh=0
+            - --whitelist-domain=controller.test.example.com
+            - --redirect-url=https://controller.test.example.com/oauth2/callback
+            - --github-user=alice,bob
+            - --skip-provider-button=true
+            - --pass-access-token=true
+            - --pass-user-headers=true
+            - --set-xauthrequest=true
+
+  # ---- the allowlist (a regression here silently opens the console) ----
+  - it: renders every GitHub allowlist flag when configured
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      oauth2.githubUsers: "alice,bob"
+      oauth2.githubOrg: "acme"
+      oauth2.githubTeam: "platform"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-user=alice,bob
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-org=acme
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-team=platform
+
+  # All verified to still exist under these names in v7.15.3 (issue #567).
+  - it: keeps the session and header flags the console depends on
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --provider=github
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-secure=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --pass-user-headers=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --set-xauthrequest=true

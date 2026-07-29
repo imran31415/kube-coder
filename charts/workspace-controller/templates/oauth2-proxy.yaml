@@ -55,7 +55,13 @@ spec:
           type: RuntimeDefault
       containers:
       - name: oauth2-proxy
-        image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.0
+        # v7.15.3 — pinned by digest (multi-arch OCI index: amd64 + arm64).
+        # 7.5.0 sat inside the range of two CVSS 9.1 auth bypasses
+        # (GHSA-5hvv-m4w4-gf6v health-check User-Agent, GHSA-7x63-xv5r-3p2x
+        # X-Forwarded-Uri spoofing), both fixed in 7.15.2. This surface runs
+        # --reverse-proxy, which is one of the two preconditions for the
+        # X-Forwarded-Uri bypass. See issue #567 and docs/SUPPLY_CHAIN.md.
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -68,6 +74,26 @@ spec:
         - --upstream=http://workspace-controller:8080/
         - --http-address=0.0.0.0:4180
         - --reverse-proxy=true
+        # --trusted-proxy-ip (new in 7.15.2) is the hardening that accompanies
+        # the GHSA-7x63-xv5r-3p2x fix: with --reverse-proxy alone, ANY direct
+        # caller may set X-Forwarded-* and oauth2-proxy will treat it as
+        # canonical. Upstream defaults the trusted set to 0.0.0.0/0 + ::/0 when
+        # this is unset (backwards compatibility) and logs a WARNING.
+        #
+        # The check is against the DIRECT TCP PEER (req.RemoteAddr), not any
+        # header — see RequestScope.CanTrustForwardedHeaders(). In this topology
+        # the only legitimate peer is an ingress-nginx controller pod, so the
+        # correct value is the range those pods draw addresses from. Pod IPs are
+        # dynamic, so this is a CIDR, and the tightest correct value is
+        # cluster-specific — hence a value, not a hardcoded constant.
+        #
+        # This is the L7 complement to a control we already enforce at L3: the
+        # NetworkPolicy in networkpolicy.yaml already admits port 4180 only from
+        # the ingress-nginx namespace. This layer still holds if that policy is
+        # removed or the CNI does not enforce it.
+        {{- range .Values.oauth2.trustedProxyIPs }}
+        - --trusted-proxy-ip={{ . }}
+        {{- end }}
         - --cookie-secure=true
         - --cookie-domain={{ .Values.controller.host }}
         - --cookie-path=/

@@ -1,0 +1,138 @@
+suite: workspace oauth2-proxy — version pin and auth-gate flags
+# This proxy is the authentication boundary for the workspace. It runs as
+# nginx's auth_request backend (see ingress-oauth2.yaml). These tests exist so
+# that a silent downgrade, a dropped allowlist flag, or an accidentally
+# introduced skip-auth rule fails CI rather than shipping.
+#
+# NOTE ON SCOPE: rendering tests prove the manifest is well-formed. They prove
+# NOTHING about whether authentication actually works — that needs a real login.
+# See issue #567.
+templates:
+  - templates/oauth2-proxy.yaml
+values:
+  - test-values.yaml
+set:
+  ingress.auth.type: oauth2
+  oauth2.cookieSecret: "abcdefghijklmnopqrstuvwxyz123456"
+  oauth2.clientId: test-client-id
+  oauth2.clientSecret: test-client-secret
+tests:
+  # ---- version pin (issue #567) ----
+  # 7.5.0 sat inside the affected range of two CVSS 9.1 auth bypasses.
+  - it: pins oauth2-proxy to the fixed version by digest
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+
+  - it: pins the auth gate by digest, not a mutable tag
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "@sha256:[a-f0-9]{64}$"
+
+  # ---- the allowlist (acceptance criterion: a regression here silently opens it) ----
+  - it: renders every GitHub allowlist flag when configured
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      oauth2.githubUsers: "alice,bob"
+      oauth2.githubOrg: "acme"
+      oauth2.githubTeam: "platform"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-user=alice,bob
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-org=acme
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-team=platform
+
+  # ---- CVE-2026-40575 preconditions must both stay absent here ----
+  # The bypass needs --reverse-proxy AND a skip-auth rule. This chart has
+  # neither; this keeps it that way. Fixed in 7.15.2, but the flag combination
+  # is still not something to introduce casually.
+  #
+  # --trusted-proxy-ip is deliberately absent too: it is only consulted when
+  # --reverse-proxy is set, so here it would be dead config implying a
+  # protection it does not provide.
+  - it: does not run in reverse-proxy mode (this is an auth_request backend)
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --reverse-proxy=true
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --trusted-proxy-ip=10.0.0.0/8
+
+  # ---- the whole auth surface, asserted exactly ----
+  # This is the guard the issue actually asks for: any flag silently added,
+  # removed or renamed on the auth boundary fails here — including a
+  # --skip-auth-route/--skip-auth-regex rule, a stray --reverse-proxy, or a
+  # dropped --github-* allowlist flag.
+  #
+  # UPDATING THIS LIST SHOULD BE A DELIBERATE ACT. If a change breaks it, that
+  # is the test working — confirm the new flag set against the pinned
+  # oauth2-proxy version's docs before editing.
+  - it: renders exactly the expected auth flags and nothing more
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --provider=github
+            - "--email-domain=*"
+            - --upstream=http://ws-testuser:8080/
+            - --http-address=0.0.0.0:4180
+            - --cookie-secure=true
+            - --cookie-domain=test.example.com
+            - --cookie-path=/
+            - --cookie-expire=720h0m0s
+            - --cookie-refresh=0
+            - --cookie-samesite=lax
+            - --whitelist-domain=test.example.com
+            - --redirect-url=https://test.example.com/oauth2/callback
+            - --skip-provider-button=true
+            - --pass-access-token=true
+            - --pass-user-headers=true
+            - --set-xauthrequest=true
+
+  # ---- flags whose absence/rename would change auth behaviour ----
+  # All verified to still exist under these names in v7.15.3 (issue #567).
+  - it: keeps the auth_request response headers and session flags
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --set-xauthrequest=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --pass-user-headers=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --pass-access-token=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-secure=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-samesite=lax
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --provider=github
