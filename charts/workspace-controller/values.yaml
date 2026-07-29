@@ -127,6 +127,34 @@ oauth2:
   cookieExpire: "720h0m0s"  # 30 days
   cookieRefresh: "0"        # disabled — GitHub has no refresh token
 
+  # Which direct callers may set X-Forwarded-* (oauth2-proxy --trusted-proxy-ip,
+  # new in 7.15.2). This proxy runs --reverse-proxy, so without this upstream
+  # trusts EVERY caller's forwarded headers (0.0.0.0/0 + ::/0) for backwards
+  # compatibility — that is the exposure GHSA-7x63-xv5r-3p2x turned into an auth
+  # bypass. Matched against the direct TCP peer (req.RemoteAddr), NOT a header.
+  #
+  # In this topology the only legitimate peer is an ingress-nginx controller
+  # pod, so this wants to be the range those pods draw from. The default below
+  # is the private/in-cluster space — every realistic Kubernetes pod, node and
+  # CGNAT range — which narrows trust from "the whole internet" to "in-cluster"
+  # without needing to know your CNI's layout.
+  #
+  # TIGHTEN THIS if you can: the actual pod CIDR is strictly better. Find it with
+  #   kubectl cluster-info dump | grep -m1 -- --cluster-cidr
+  # e.g. trustedProxyIPs: ["10.244.0.0/16"].
+  #
+  # FAILURE MODE IS CLOSED, AND LOUD: if none of these match your ingress
+  # controller's real source IP (e.g. hostNetwork ingress on nodes with public
+  # IPs), forwarded headers are ignored and login breaks visibly rather than
+  # silently opening. Set your node/pod range here, or ["0.0.0.0/0", "::/0"] to
+  # restore pre-7.15.2 behaviour.
+  trustedProxyIPs:
+    - "10.0.0.0/8"        # RFC1918 — most pod/service/node CIDRs
+    - "172.16.0.0/12"     # RFC1918 — Docker/EKS-style ranges
+    - "192.168.0.0/16"    # RFC1918 — kind/minikube/on-prem
+    - "100.64.0.0/10"     # CGNAT — GKE/EKS secondary pod ranges
+    - "fc00::/7"          # IPv6 unique-local — dual-stack clusters
+
 # Self-service provisioning: an admin types a GitHub username in the console and
 # the controller (1) registers a GitHub App for them via the manifest flow, (2)
 # pushes rendered values+secrets to a private GitOps repo, and (3) launches a

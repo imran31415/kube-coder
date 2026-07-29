@@ -13,6 +13,7 @@ Tracks issue [#104](https://github.com/imran31415/kube-coder/issues/104).
 |----------|-------|-----|
 | Base images (`node`, `ubuntu`) | `devlaptop/Dockerfile`, `provisioner/Dockerfile` `FROM` | tag + digest (Renovate `pinDigests`) |
 | Kaniko builder image | `charts/*/values.yaml`, `controller.py` | `gcr.io/kaniko-project/executor:v1.24.0` (+digest) |
+| **oauth2-proxy** (the auth gate) | `charts/*/templates/oauth2-proxy.yaml` | `v7.15.3` **+ digest** — see [below](#oauth2-proxy-the-authentication-gate) |
 | docker-compose | `devlaptop/Dockerfile` `COMPOSE_VERSION` | release tag (was `releases/latest`) |
 | code-server, ttyd, sqlite-vec, librefang | `devlaptop/Dockerfile` `*_VERSION` | release tag **+ checksum-verified** (see below) |
 | helm, kubectl (provisioner) | `provisioner/Dockerfile` `HELM_VERSION`/`KUBECTL_VERSION` | version + published-checksum-verified |
@@ -83,6 +84,90 @@ and variables → Actions → New repository secret** named `RENOVATE_TOKEN`, or
 ```bash
 gh secret set RENOVATE_TOKEN --repo imran31415/kube-coder   # paste the PAT when prompted
 ```
+
+## oauth2-proxy — the authentication gate
+
+**Pinned to `quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743…`** in
+both `charts/workspace/templates/oauth2-proxy.yaml` and
+`charts/workspace-controller/templates/oauth2-proxy.yaml`. The digest is a
+multi-arch OCI index (linux/amd64 + linux/arm64); the tag is kept alongside it
+for humans. Tracked by its own Renovate manager and labelled `security` so a
+bump is reviewed as a security change, not as dependency noise.
+
+This is the one pin that gates *everything* — every workspace and the admin
+console — so it gets its own section.
+
+### Why 7.15.3
+
+The charts previously pinned **7.5.0**, which sits inside the affected range of
+two CVSS 9.1 authentication bypasses ([issue #567](https://github.com/imran31415/kube-coder/issues/567)):
+
+| Advisory | Issue | Fixed in | Were we exposed? |
+|---|---|---|---|
+| [GHSA-5hvv-m4w4-gf6v](https://github.com/oauth2-proxy/oauth2-proxy/security/advisories/GHSA-5hvv-m4w4-gf6v) | health-check `User-Agent` bypass in auth_request deployments | 7.15.2 | No — requires `--ping-user-agent` or `--gcp-healthchecks`; we set neither |
+| [GHSA-7x63-xv5r-3p2x](https://github.com/oauth2-proxy/oauth2-proxy/security/advisories/GHSA-7x63-xv5r-3p2x) | `X-Forwarded-Uri` spoofing | 7.15.2 | No — requires `--reverse-proxy` **and** a skip-auth rule; the controller sets the former, neither chart sets the latter |
+
+We were not vulnerable to either, but in both cases only because of a flag we
+happen not to set — not because of our version. 7.15.3 additionally carries a
+Go 1.26 upgrade and a batch of dependency CVE fixes.
+
+### The two deployment modes differ, deliberately
+
+- **workspace chart** — runs as nginx's `auth_request` backend. It does **not**
+  set `--reverse-proxy`, so client-supplied `X-Forwarded-*` is never treated as
+  canonical.
+- **workspace-controller chart** — runs as a real reverse proxy
+  (`--reverse-proxy=true`), forwarding to the controller via `--upstream`.
+
+### `--trusted-proxy-ip` (controller only)
+
+New in 7.15.2 and the hardening that accompanies the `X-Forwarded-Uri` fix.
+With `--reverse-proxy` alone, oauth2-proxy trusts forwarded headers from *any*
+direct caller — upstream defaults the trusted set to `0.0.0.0/0` + `::/0` for
+backwards compatibility and logs a warning.
+
+The check is against the **direct TCP peer** (`req.RemoteAddr`), not a header,
+so the correct value is the range the ingress-nginx controller pods draw
+addresses from. Pod IPs are dynamic, so it is a CIDR; the tightest correct value
+is cluster-specific, hence `oauth2.trustedProxyIPs` in
+`charts/workspace-controller/values.yaml` rather than a hardcoded constant. The
+default is the private/in-cluster space (RFC1918 + CGNAT + IPv6 ULA), which
+narrows trust from "the whole internet" to "in-cluster" without needing to know
+your CNI's layout. **Narrow it to your real pod CIDR if you know it.**
+
+This is the L7 complement to a control already enforced at L3: the controller
+NetworkPolicy admits port 4180 only from the `ingress-nginx` namespace. The flag
+still holds if that policy is removed or the CNI does not enforce it.
+
+It is deliberately **not** set on the workspace chart: `CanTrustForwardedHeaders`
+returns false outright when `--reverse-proxy` is unset, so it would be dead
+config implying a protection it does not provide.
+
+### Do not add a skip-auth rule to the controller
+
+`--skip-auth-route` / `--skip-auth-regex` combined with `--reverse-proxy` was the
+precondition pair for GHSA-7x63-xv5r-3p2x. That specific bypass is fixed, but the
+combination is not one to reintroduce casually. Helm tests in both charts assert
+the complete `args` list, so adding one fails CI.
+
+### Upgrading is not a pure version bump
+
+Ten releases of config churn sit between 7.5.0 and 7.15.3. All 20 flags we pass
+still exist under the same names, but two behaviours changed:
+
+- **The GitHub OAuth scope widened.** `githubDefaultScope` went from
+  `user:email` to `user:email read:org`, and org/team enumeration now runs on
+  *every* login rather than only when `--github-org`/`--github-team` are set.
+  Users may see a fresh GitHub consent screen on first login after the upgrade.
+- **CSRF cookie expiry** now uses `--cookie-csrf-expire` (default 15m) instead of
+  `--cookie-expire` (7.15.0). A login left idle on the GitHub consent screen for
+  more than 15 minutes must be restarted.
+
+**Verifying an oauth2-proxy bump requires a real login on both surfaces.** Helm
+rendering proves the manifest is well-formed; it proves nothing about whether
+authentication works. A broken config either fails closed (nobody can log in) or
+fails open (the allowlist stops being enforced). Plan for a pod restart and a
+manual login test against both the workspace and the controller console.
 
 ## Manual-bump exceptions
 

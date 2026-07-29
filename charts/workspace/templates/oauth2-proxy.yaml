@@ -42,7 +42,12 @@ spec:
           type: RuntimeDefault
       containers:
       - name: oauth2-proxy
-        image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.0
+        # v7.15.3 — pinned by digest (multi-arch OCI index: amd64 + arm64).
+        # 7.5.0 sat inside the range of two CVSS 9.1 auth bypasses
+        # (GHSA-5hvv-m4w4-gf6v health-check User-Agent, GHSA-7x63-xv5r-3p2x
+        # X-Forwarded-Uri spoofing), both fixed in 7.15.2. See issue #567 and
+        # docs/SUPPLY_CHAIN.md. Digest is what's enforced; the tag is for humans.
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -54,6 +59,15 @@ spec:
         - --email-domain=*
         - --upstream=http://ws-{{ .Values.user.name }}:8080/
         - --http-address=0.0.0.0:4180
+        # Deliberately NO --reverse-proxy here: this proxy is nginx's
+        # auth_request backend, not a forwarding proxy, so it must not treat
+        # client-supplied X-Forwarded-* as canonical. That also makes
+        # --trusted-proxy-ip (new in 7.15.2) a no-op on this chart —
+        # RequestScope.CanTrustForwardedHeaders() returns false outright when
+        # ReverseProxy is unset, so the trusted-proxy CIDR set is never
+        # consulted. Adding it here would be dead config implying a protection
+        # it does not provide; the controller chart, which does set
+        # --reverse-proxy, sets it for real. See issue #567.
         - --cookie-secure=true
         - --cookie-domain={{ .Values.user.host }}
         - --cookie-path=/
