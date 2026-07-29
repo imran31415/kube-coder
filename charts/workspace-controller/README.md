@@ -150,7 +150,7 @@ block to add to your controller values plus the remaining manual steps:
 | `provision.gitToken` / `.stateSecret` | Runtime creds — set via the gitignored secrets overlay |
 | `provision.existingSecretName` | Use a Secret you manage instead of chart-rendering one |
 | `provision.serviceAccount` | SA the privileged Job runs as |
-| `provision.image` | Job image (empty = controller image; installs helm on the fly) |
+| `provision.image` | **Required** when provisioning is on: the dedicated provisioner image pinned by digest (`ghcr.io/imran31415/kube-coder/provisioner@sha256:…`). It bakes helm/kubectl/git/make *and* the provisioning script itself as its entrypoint (#422), so the Job supplies env only. Empty fails closed — there is no controller-image fallback |
 | `provision.admissionPolicy.enabled` | Ship the provisioner-Job ValidatingAdmissionPolicy (default on; needs k8s ≥ 1.30) |
 
 ### Provisioning privilege model
@@ -181,6 +181,15 @@ Guardrails shipped here (defense-in-depth):
   tampered manifest therefore cannot run an attacker-controlled workload under the
   provisioner identity. Requires k8s ≥ 1.30; disable via
   `provision.admissionPolicy.enabled=false` on older clusters.
+- **No caller-supplied program** (#422). The provisioning script is baked into
+  the signed provisioner image as its entrypoint (`provisioner/provision.sh`);
+  the Job carries env and no `command`, and the policy above **denies
+  `command`/`args`** outright. This is the rule that closes the gap the others
+  left: pinning the workload's *shape* still allowed `command: [bash, -c, …]`,
+  so manifest control was arbitrary code execution at provisioner privilege.
+  Now it buys an attacker the *inputs* to one fixed, signed program.
+  Upgrade note: the policy rejects Jobs from a pre-#422 controller, which still
+  sets `command` — roll the chart and the controller image together.
 - **No cluster-wide namespace `delete`** on the provisioner ClusterRole — normal
   provisioning only creates+labels namespaces; teardown is a manual admin runbook.
 - **`automountServiceAccountToken: false`** on oauth2-proxy (it never calls the

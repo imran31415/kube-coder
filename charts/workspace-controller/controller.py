@@ -1489,11 +1489,12 @@ ALLOW_MUTABLE_CHART_REF = os.environ.get('ALLOW_MUTABLE_CHART_REF', '').strip().
     '1', 'true', 'yes', 'on')
 _CHART_REF_SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
 _CHART_REF_TAG_RE = re.compile(r'^v\d+\.\d+\.\d+$')
-# Image the provisioner Job runs. Should be the dedicated, signed provisioner
-# image (provisioner/Dockerfile) pinned BY DIGEST via provision.image — it bakes
-# helm+kubectl+git+make so nothing is downloaded at runtime (finding 7). Falls
-# back to the controller's own image only if unset; the Job then fails closed if
-# that image lacks helm rather than fetching it over the network.
+# Image the provisioner Job runs. MUST be the dedicated, signed provisioner image
+# (provisioner/Dockerfile) pinned BY DIGEST via provision.image — it bakes
+# helm+kubectl+git+make so nothing is downloaded at runtime (finding 7) AND it
+# carries the provisioning script as its entrypoint (#422). There is no fallback:
+# build_job_manifest fails closed when this is empty, because a Job with no
+# command on some other image would run that image's entrypoint instead.
 PROVISIONER_IMAGE = os.environ.get('PROVISIONER_IMAGE', '').strip()
 PROVISIONER_SA = os.environ.get('PROVISIONER_SERVICE_ACCOUNT', 'workspace-provisioner').strip()
 PROVISIONER_PULL_SECRET = os.environ.get('PROVISIONER_PULL_SECRET', '').strip()
@@ -1841,10 +1842,13 @@ def _git(args):
 
 
 # The Job clones the chart repo + the private config repo, assembles the
-# users-private dir the Makefile expects, ensures helm is on PATH, then runs the
-# same `make deploy` an operator would. The controller itself holds no
-# cluster-wide write verbs — only namespaced `create jobs` (see
-# serviceaccount.yaml). But state the real blast radius honestly: because the
+# users-private dir the Makefile expects, then runs the same `make deploy` an
+# operator would — all of it from the script baked into the provisioner image
+# (provisioner/provision.sh), not from anything sent in the manifest.
+#
+# The controller itself holds no cluster-wide write verbs — only namespaced
+# `create jobs` (see serviceaccount.yaml). But state the real blast radius
+# honestly: because the
 # Job it creates selects the `workspace-provisioner` ServiceAccount, and in
 # Kubernetes a principal that can create a workload AND choose another SA in the
 # same namespace inherits that SA's identity, a controller compromise (RCE,
@@ -1855,50 +1859,28 @@ def _git(args):
 # Job in its own namespace; and a ValidatingAdmissionPolicy
 # (templates/provisioner-vap.yaml) pins the shape of any Job that runs as the
 # provisioner SA (exact SA, approved image, single expected container, no
-# privileged securityContext / hostPath / hostNetwork), so a tampered manifest
-# cannot smuggle an attacker-controlled workload in under the provisioner
-# identity. Endgame: move the provisioner to a separate namespace behind a
-# constrained broker that stamps Jobs from an immutable template (see PR notes).
-# Helm version the privileged provisioner runs. This is no longer downloaded at
-# runtime (finding 7): helm — like kubectl/git/make — is baked into the dedicated
-# provisioner image (provisioner/Dockerfile), checksum-verified at BUILD time and
-# pinned by digest via provision.image, then verified at admission. This constant
-# stays as the single declared expected version (asserted in the unit tests and
-# echoed for provenance); keep it in lockstep with provisioner/Dockerfile's
-# HELM_VERSION ARG.
-PROVISION_HELM_VERSION = 'v3.14.4'
-
-PROVISION_JOB_SCRIPT = (r"""
-set -euo pipefail
-export HOME=/tmp
-export PATH="/tmp/bin:$PATH"
-# Supply-chain (finding 7): helm + kubectl + git + make are baked into the
-# dedicated, checksum-verified provisioner image and pinned by digest. This
-# privileged path performs NO runtime tool downloads — the only network it does
-# is the approved GitOps git clones below. Fail closed if the image is missing a
-# tool (e.g. provision.image was pointed at the old fat image) rather than
-# silently fetching binaries from the internet under the cluster-privileged
-# provisioner ServiceAccount.
-for tool in helm kubectl git make; do
-  command -v "$tool" >/dev/null 2>&1 || {
-    echo "FATAL: '$tool' not found in provisioner image — provisioning requires the dedicated provisioner image (provisioner/Dockerfile); refusing to download tools at runtime under the provisioner SA" >&2
-    exit 1
-  }
-done
-echo "provisioner: baked-in helm $(helm version --short 2>/dev/null || echo '?') (expected __HELM_VERSION__), kubectl present — no runtime tool download"
-git clone --depth 1 -b "$CHART_REF" "$CHART_REPO" /tmp/kc
-# Provenance: record the exact commit the privileged deploy actually runs from.
-echo "provisioner: chart ref ${CHART_REF} resolved to commit $(git -C /tmp/kc rev-parse HEAD)"
-git clone --depth 1 -b "$GITOPS_BRANCH" "https://x-access-token:${GITOPS_TOKEN}@${GITOPS_REPO}" /tmp/cfg
-mkdir -p /tmp/kc/users-private
-cp -r "/tmp/cfg/users-private/${SLUG}" "/tmp/kc/users-private/${SLUG}"
-cd /tmp/kc
-# Per-workspace namespace (#103): deploy into ws-<slug>, and copy the regcred
-# image-pull Secret from the control-plane namespace into it. `make deploy`
-# creates+labels the namespace and replicates regcred (see REGCRED_SRC_NAMESPACE).
-make deploy USER="${SLUG}" NAMESPACE="${WS_NAMESPACE}" REGCRED_SRC_NAMESPACE="${NAMESPACE}"
-"""
-                        .replace('__HELM_VERSION__', PROVISION_HELM_VERSION))
+# command/args override, no privileged securityContext / hostPath / hostNetwork),
+# so a tampered manifest cannot smuggle an attacker-controlled workload in under
+# the provisioner identity. Since #422 that includes the code itself: with the
+# script baked into the image and command/args denied at admission, manifest
+# control buys an attacker the inputs to one fixed signed program, not a shell.
+# Endgame: move the provisioner to a separate namespace behind a constrained
+# broker that stamps Jobs from an immutable template (#421).
+#
+# The provisioning script itself is NOT here any more (#422 item 1). It is baked
+# into the dedicated provisioner image as its ENTRYPOINT — provisioner/provision.sh,
+# installed to /usr/local/bin/provision.sh by provisioner/Dockerfile. The Job this
+# module builds therefore carries DATA (env) and no code: it supplies no `command`,
+# and the ValidatingAdmissionPolicy (templates/provisioner-vap.yaml) rejects any
+# Job under the provisioner SA that tries to set one. Two things follow:
+#   * controller compromise no longer means arbitrary code execution at
+#     provisioner privilege — the attacker can pick the inputs, not the program;
+#   * a Job template with no caller-supplied command is genuinely immutable, which
+#     is the precondition the #421 broker rearchitecture needs.
+# Helm's version also lives solely in the image now (provisioner/Dockerfile's
+# HELM_VERSION ARG, baked to /etc/provisioner/helm-version and read back by
+# provision.sh), so there is no second copy here to drift out of lockstep.
+# Whatever changes in provision.sh, keep the env contract below in sync with it.
 
 
 def build_job_manifest(slug):
@@ -1910,7 +1892,22 @@ def build_job_manifest(slug):
         f'[controller] provisioning {slug}: chart repo={CHART_REPO} ref={CHART_REF} '
         f'({ref_kind}) allowMutableRef={ALLOW_MUTABLE_CHART_REF}\n')
     name = f'provision-{slug}-{int(time.time())}'[:63]
-    image = PROVISIONER_IMAGE or f'{os.environ.get("CONTROLLER_IMAGE", "")}' or ''
+    # The provisioner image is now mandatory, and there is no fallback to the
+    # controller's own image (#422). That fallback only ever "worked" because the
+    # injected script probed for helm and exited 1; with the script baked into
+    # the provisioner image, a Job on any other image runs THAT image's
+    # entrypoint instead — for the controller image, ubuntu's default shell,
+    # which exits 0 and reports a Job that provisioned nothing. Refusing here
+    # keeps the failure loud and keeps it at manifest-build time.
+    image = PROVISIONER_IMAGE
+    if not image:
+        raise ProvisionError(
+            'refusing to provision: provision.image is not set. The Job runs the '
+            'provisioning script baked into the dedicated provisioner image '
+            '(provisioner/Dockerfile) as its entrypoint and supplies no command, so '
+            'there is no longer a usable fallback to the controller image. Set '
+            'provision.image to the signed provisioner image pinned by digest '
+            '(ghcr.io/imran31415/kube-coder/provisioner@sha256:...).')
     env = [
         {'name': 'SLUG', 'value': slug},
         # NAMESPACE = the control-plane namespace the Job runs in (regcred source);
@@ -1926,7 +1923,10 @@ def build_job_manifest(slug):
     container = {
         'name': 'provision',
         'image': image,
-        'command': ['bash', '-c', PROVISION_JOB_SCRIPT],
+        # Deliberately NO 'command'/'args': the image's baked ENTRYPOINT is the
+        # program (#422 item 1). Admission enforces the absence — do not add one
+        # back without also relaxing provisioner-vap.yaml, which would undo the
+        # immutable-template guarantee #421 depends on.
         'env': env,
         'resources': {'requests': {'cpu': '100m', 'memory': '256Mi'},
                       'limits': {'cpu': '1', 'memory': '1Gi'}},
@@ -2372,6 +2372,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(provision_status(slug))
             except KubectlError as exc:
                 self.send_json({'error': str(exc)}, 502)
+            except ProvisionError as exc:
+                # build_job_manifest fails closed on a mutable chart ref or an
+                # unset provision.image (#422) — a misconfiguration, so 400 with
+                # the reason rather than an unhandled 500 from the handler.
+                self.send_json({'error': str(exc)}, 400)
             return
         rm = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/resources$', path)
         if rm:

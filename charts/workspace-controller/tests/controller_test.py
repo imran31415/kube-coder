@@ -397,6 +397,11 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertEqual(pod['containers'][0]['name'], 'provision')
         self.assertNotIn('initContainers', pod)
         self.assertNotIn('ephemeralContainers', pod)
+        # No command/args override — the image's baked entrypoint is the program
+        # (#422). The VAP denies these outright, so the controller's own Job must
+        # not set them or it would reject itself.
+        self.assertNotIn('command', pod['containers'][0])
+        self.assertNotIn('args', pod['containers'][0])
         # Approved image repository.
         self.assertTrue(pod['containers'][0]['image'].startswith('test-registry/coder'))
         # No privileged securityContext, no host namespaces, no hostPath volumes.
@@ -502,24 +507,41 @@ class ChartRefSupplyChainTest(unittest.TestCase):
         self.assertIn('(mutable)', out)
 
 
+# Repo root, for the provisioner image sources the Job now runs FROM rather than
+# being handed. tests/ -> workspace-controller/ -> charts/ -> repo root.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+PROVISION_SH = os.path.join(REPO_ROOT, 'provisioner', 'provision.sh')
+PROVISIONER_DOCKERFILE = os.path.join(REPO_ROOT, 'provisioner', 'Dockerfile')
+
+
+def _read(path):
+    with open(path, encoding='utf-8') as fh:
+        return fh.read()
+
+
 class ProvisionNoRuntimeToolDownloadTest(unittest.TestCase):
     """Finding 7: the privileged provisioner must NOT download tools at runtime.
     helm/kubectl/git/make are baked into the dedicated, checksum-verified
     provisioner image; the Job fails closed if any is missing rather than
-    reaching out to the internet under the cluster-privileged provisioner SA."""
+    reaching out to the internet under the cluster-privileged provisioner SA.
+
+    The script moved out of this module into the image (#422 item 1), so these
+    now assert against provisioner/provision.sh — the file that is COPYed in as
+    the entrypoint. Same invariants, new home."""
 
     def test_script_does_not_download_helm_at_runtime(self):
-        script = controller.PROVISION_JOB_SCRIPT
+        script = _read(PROVISION_SH)
         # The old runtime install is gone: no fetch from get.helm.sh, no tarball
         # unpack/install of helm inside the privileged Job.
         self.assertNotIn('get.helm.sh', script)
         self.assertNotIn('helm.tgz', script)
         self.assertNotIn('curl', script)
-        # No unfilled template placeholders leaked into the shipped script.
+        # No unfilled template placeholders survived the move into the image.
         self.assertNotIn('__HELM', script)
 
     def test_script_fails_closed_when_tools_missing(self):
-        script = controller.PROVISION_JOB_SCRIPT
+        script = _read(PROVISION_SH)
         # Presence check for every baked-in tool, failing closed (exit 1).
         for tool in ('helm', 'kubectl', 'git', 'make'):
             self.assertIn(tool, script)
@@ -527,17 +549,102 @@ class ProvisionNoRuntimeToolDownloadTest(unittest.TestCase):
         self.assertIn('exit 1', script)
         self.assertIn('refusing to download tools at runtime', script)
 
-    def test_expected_helm_version_still_declared(self):
-        # The version stays declared centrally (echoed for provenance) and must
-        # match provisioner/Dockerfile's HELM_VERSION ARG.
-        self.assertEqual(controller.PROVISION_HELM_VERSION, 'v3.14.4')
-        self.assertIn(controller.PROVISION_HELM_VERSION, controller.PROVISION_JOB_SCRIPT)
+    def test_helm_version_has_exactly_one_source_of_truth(self):
+        """#422: the controller used to carry PROVISION_HELM_VERSION and string-
+        substitute it into the script, mirroring provisioner/Dockerfile's ARG —
+        two declarations that could drift, policed by a test that only ever
+        checked the controller side. With the script in the image the ARG is the
+        sole declaration: it is baked to /etc/provisioner/helm-version at build
+        time and read back at run time, so there is nothing left to keep in sync.
+        Assert the drift cannot be reintroduced."""
+        self.assertFalse(hasattr(controller, 'PROVISION_HELM_VERSION'),
+                         'helm version belongs to provisioner/Dockerfile alone now; a copy '
+                         'in the controller reintroduces the drift #422 removed')
         self.assertFalse(hasattr(controller, 'PROVISION_HELM_SHA256'),
                          'runtime helm sha256 is obsolete once helm is baked into the image')
+        dockerfile = _read(PROVISIONER_DOCKERFILE)
+        # Renovate owns the bump; it must stay attached to the ARG it annotates.
+        self.assertIn('# renovate: datasource=github-releases depName=helm/helm', dockerfile)
+        self.assertRegex(dockerfile, r'ARG HELM_VERSION=v\d+\.\d+\.\d+')
+        # Build-time bake + run-time read: the two halves of the single source.
+        self.assertIn('/etc/provisioner/helm-version', dockerfile)
+        self.assertIn('/etc/provisioner/helm-version', _read(PROVISION_SH))
 
     def test_script_logs_resolved_commit(self):
         # Provenance inside the Job: the exact commit the privileged deploy runs.
-        self.assertIn('rev-parse HEAD', controller.PROVISION_JOB_SCRIPT)
+        self.assertIn('rev-parse HEAD', _read(PROVISION_SH))
+
+
+class ProvisionScriptIsBakedIntoImageTest(unittest.TestCase):
+    """#422 item 1 — the provisioning script is the IMAGE's, not the manifest's.
+
+    The Job used to carry `command: [bash, -c, <the whole script>]`, so anything
+    that could shape the manifest chose the code running under the cluster-
+    privileged provisioner SA. Now the image's ENTRYPOINT is the program and the
+    Job passes env only; admission (provisioner-vap.yaml) denies command/args.
+    That is what lets #421 treat the Job template as immutable."""
+
+    def test_dockerfile_bakes_the_script_as_entrypoint(self):
+        dockerfile = _read(PROVISIONER_DOCKERFILE)
+        self.assertIn('COPY --chmod=0755 provisioner/provision.sh /usr/local/bin/provision.sh',
+                      dockerfile)
+        self.assertIn('ENTRYPOINT ["/usr/local/bin/provision.sh"]', dockerfile)
+
+    def test_script_file_is_executable_and_a_bash_script(self):
+        self.assertTrue(os.access(PROVISION_SH, os.X_OK),
+                        'provision.sh must be committed executable')
+        self.assertTrue(_read(PROVISION_SH).startswith('#!/usr/bin/env bash'))
+
+    def test_controller_no_longer_carries_the_script(self):
+        self.assertFalse(hasattr(controller, 'PROVISION_JOB_SCRIPT'),
+                         'the script lives in provisioner/provision.sh; a copy here is code '
+                         'the Job manifest could inject again')
+
+    def test_job_container_supplies_no_command_or_args(self):
+        controller.PROVISIONER_IMAGE = 'example/provisioner@sha256:abc'
+        controller.PROVISIONER_SA = 'workspace-provisioner'
+        controller.NAMESPACE = 'coder'
+        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
+        controller.CHART_REF = 'v1.40.1'
+        container = controller.build_job_manifest('octo')['spec']['template']['spec']['containers'][0]
+        self.assertNotIn('command', container)
+        self.assertNotIn('args', container)
+
+    def test_job_still_passes_the_full_env_contract(self):
+        """Env is the whole input surface now, so it must stay complete — the
+        script fails closed on any empty one."""
+        controller.PROVISIONER_IMAGE = 'example/provisioner@sha256:abc'
+        controller.PROVISIONER_SA = 'workspace-provisioner'
+        controller.NAMESPACE = 'coder'
+        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
+        self.addCleanup(setattr, controller, 'GITOPS_REPO', controller.GITOPS_REPO)
+        self.addCleanup(setattr, controller, 'GITOPS_TOKEN', controller.GITOPS_TOKEN)
+        controller.CHART_REF = 'v1.40.1'
+        controller.GITOPS_REPO = 'github.com/x/y.git'
+        controller.GITOPS_TOKEN = 'tok'
+        container = controller.build_job_manifest('octo')['spec']['template']['spec']['containers'][0]
+        names = {e['name'] for e in container['env']}
+        required = {'SLUG', 'NAMESPACE', 'WS_NAMESPACE', 'CHART_REPO', 'CHART_REF',
+                    'GITOPS_REPO', 'GITOPS_BRANCH', 'GITOPS_TOKEN'}
+        self.assertEqual(required, names & required)
+        # …and the script validates exactly that set, so neither side can drop
+        # one silently.
+        script = _read(PROVISION_SH)
+        for var in required:
+            self.assertIn(var, script)
+
+    def test_provisioning_fails_closed_without_a_provisioner_image(self):
+        """No fallback to the controller image any more. With the script baked
+        in, a Job with no command on the controller image would run ubuntu's
+        default shell — exit 0, nothing provisioned. Refuse at build time."""
+        self.addCleanup(setattr, controller, 'PROVISIONER_IMAGE',
+                        controller.PROVISIONER_IMAGE)
+        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
+        controller.CHART_REF = 'v1.40.1'
+        controller.PROVISIONER_IMAGE = ''
+        with self.assertRaises(controller.ProvisionError) as ctx:
+            controller.build_job_manifest('octo')
+        self.assertIn('provision.image', str(ctx.exception))
 
 
 class ResourceLimitTest(unittest.TestCase):

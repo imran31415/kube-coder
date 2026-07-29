@@ -5,6 +5,13 @@
 # (charts/workspace-controller/controller.py :: build_job_manifest). Supply-chain
 # hardening, security review July 2026, finding 7.
 #
+# It also carries the Job's CODE: provision.sh is baked in as the ENTRYPOINT
+# (#422 item 1). The controller no longer injects a `command` — the Job supplies
+# only env — so the manifest carries data, not code, and admission
+# (provisioner-vap.yaml) can reject any Job under the provisioner SA that tries
+# to override the entrypoint. That is the precondition for the #421 broker to
+# stamp Jobs from a genuinely immutable template.
+#
 # Why a separate image at all: the provisioner Job runs `make deploy` under the
 # cluster-privileged `workspace-provisioner` ServiceAccount. It previously reused
 # the fat general-workspace image AND installed Helm at runtime with a `curl`
@@ -17,9 +24,11 @@
 #     by .github/workflows/release.yml and pinned BY DIGEST in the controller
 #     chart (provision.image), then verified at admission.
 #
-# Keep the pins here in lockstep with the constants they mirror in controller.py
-# (PROVISION_HELM_VERSION) and devlaptop/Dockerfile (KUBECTL_VERSION) — CI and the
-# controller unit tests assert the helm version matches.
+# HELM_VERSION below is now the SINGLE source of truth for the helm the
+# privileged path runs: it is baked into /etc/provisioner/helm-version at build
+# time and read back by provision.sh, so there is no second copy in controller.py
+# to drift from (the old PROVISION_HELM_VERSION constant is gone — #422). Keep
+# KUBECTL_VERSION in lockstep with devlaptop/Dockerfile as before.
 
 # Reuse the same Ubuntu base already pinned + Renovate-tracked for devlaptop, so
 # there is one vetted base digest across the repo rather than a second one to
@@ -39,8 +48,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # Helm — baked in, checksum-verified. The published per-release .sha256sum
 # (which already carries the `<hash>  <file>` line format) is fetched from the
 # same release path and `sha256sum -c`'d before the tarball is unpacked, so a
-# tampered/MITM'd helm fails the BUILD (not silently at provision time). Keep
-# HELM_VERSION == controller.py PROVISION_HELM_VERSION (asserted in tests).
+# tampered/MITM'd helm fails the BUILD (not silently at provision time). This ARG
+# is the only declaration of the version (see the header); Renovate bumps it here.
 # renovate: datasource=github-releases depName=helm/helm
 ARG HELM_VERSION=v3.14.4
 RUN ARCH=$(dpkg --print-architecture) \
@@ -53,7 +62,13 @@ RUN ARCH=$(dpkg --print-architecture) \
     && tar -xzf "/tmp/${TARBALL}" -C /tmp \
     && install -m 0755 "/tmp/linux-${ARCH}/helm" /usr/local/bin/helm \
     && rm -rf "/tmp/${TARBALL}" "/tmp/${TARBALL}.sha256sum" "/tmp/linux-${ARCH}" \
-    && helm version --short
+    && helm version --short \
+    # Bake the expected version where the entrypoint can read it back for its
+    # provenance line. A file, not ENV: env is the Job's caller-supplied input
+    # surface, and what the image says about itself must not be overridable from
+    # the manifest. Root-owned, world-readable, outside the 1777 /tmp the Job works in.
+    && mkdir -p /etc/provisioner \
+    && printf '%s\n' "${HELM_VERSION}" > /etc/provisioner/helm-version
 
 # kubectl — same pinned version + published-checksum pattern as devlaptop.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
@@ -66,6 +81,12 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm -f kubectl kubectl.sha256 \
     && kubectl version --client=true --output=yaml >/dev/null
 
+# The Job's code (#422 item 1). Root-owned and 0755: the unprivileged uid the
+# Job runs as can execute it but cannot rewrite it, so a foothold inside the
+# container cannot repoint the next provision. Build context is the repo root
+# (.github/workflows/release.yml sets `context: .`), hence the path prefix.
+COPY --chmod=0755 provisioner/provision.sh /usr/local/bin/provision.sh
+
 # Run as a non-root user. The Job exports HOME=/tmp and clones/deploys entirely
 # under /tmp (1777), so an unprivileged uid is sufficient — and it keeps this
 # image inside the provisioner ValidatingAdmissionPolicy's non-root expectation.
@@ -73,3 +94,8 @@ RUN useradd -u 65532 -m -s /usr/sbin/nologin provisioner
 USER 65532
 ENV HOME=/tmp
 WORKDIR /tmp
+
+# The provisioning script IS the image. The Job supplies env only and no
+# `command` — see build_job_manifest() in controller.py and the no-command
+# validation in charts/workspace-controller/templates/provisioner-vap.yaml.
+ENTRYPOINT ["/usr/local/bin/provision.sh"]

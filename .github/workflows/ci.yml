@@ -93,6 +93,13 @@ jobs:
       - name: Run server.py tests
         run: make python-tests
 
+      - name: Run controller.py tests
+        # controller.py has had its own stdlib-unittest suite for a long time but
+        # nothing in CI ran it — including the supply-chain assertions on the
+        # provisioner Job manifest (finding 7, #422). Both suites are pure
+        # stdlib, no cluster, no network; this is seconds.
+        run: make controller-python-tests
+
   web-tests:
     name: Dashboard SPA Tests
     runs-on: ubuntu-latest
@@ -198,6 +205,39 @@ jobs:
           # before deploy.
           target: runtime
 
+      - name: Build provisioner image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: provisioner/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: kube-coder-provisioner:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Until #422 the provisioner image was built ONLY by the release
+          # workflow, so a break in it surfaced at release time — on the one
+          # image that runs under a cluster-privileged ServiceAccount. It now
+          # also carries the Job's entrypoint script (provisioner/provision.sh),
+          # which makes a silent break considerably worse: this builds it on
+          # every PR, verifying the checksum-gated helm/kubectl fetches and the
+          # COPY of the entrypoint. Small image, mostly cache hits.
+
+      - name: Verify the provisioner entrypoint is baked in
+        # The whole point of #422 item 1: the Job supplies no `command`, so the
+        # image's ENTRYPOINT is the only thing that runs. Assert the built image
+        # actually declares it and that the script is present + executable —
+        # a Dockerfile edit that drops the COPY or the ENTRYPOINT would
+        # otherwise produce an image whose Jobs exit 0 having done nothing.
+        run: |
+          set -euo pipefail
+          entrypoint=$(docker inspect -f '{{ json .Config.Entrypoint }}' kube-coder-provisioner:ci-test)
+          echo "provisioner ENTRYPOINT: ${entrypoint}"
+          test "${entrypoint}" = '["/usr/local/bin/provision.sh"]'
+          docker run --rm --entrypoint /bin/bash kube-coder-provisioner:ci-test \
+            -c 'test -x /usr/local/bin/provision.sh && bash -n /usr/local/bin/provision.sh && test -s /etc/provisioner/helm-version'
+
   security-scan:
     name: Security Scanning
     runs-on: ubuntu-latest
@@ -280,6 +320,34 @@ jobs:
           format: spdx-json
           output-file: kube-coder-sbom.spdx.json
           artifact-name: kube-coder-sbom.spdx.json
+
+      - name: Build provisioner image for SBOM
+        id: scan-provisioner
+        # #422 item 4: the CI SBOM covered only the workspace image, so the
+        # toolchain on the *privileged* path — helm, kubectl, git, make — was
+        # the one thing without a checked-in bill of materials. (Released
+        # provisioner images always carried a BuildKit-native SBOM attestation
+        # via release.yml; this closes the per-PR artifact gap.) Layers are hot
+        # from docker-build's cache-to, so this is seconds.
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        if: success() || failure()
+        with:
+          context: .
+          file: provisioner/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: kube-coder-provisioner-ci:latest
+          cache-from: type=gha
+
+      - name: Generate SBOM (Syft) — provisioner
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        if: (success() || failure()) && steps.scan-provisioner.outcome == 'success'
+        with:
+          image: kube-coder-provisioner-ci:latest
+          format: spdx-json
+          output-file: kube-coder-provisioner-sbom.spdx.json
+          artifact-name: kube-coder-provisioner-sbom.spdx.json
 
       - name: SCA Scanning (SPA dependencies)
         # yarn-classic advisories via audit-ci (blocking). Gates on high+
