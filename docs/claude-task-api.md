@@ -311,11 +311,64 @@ curl https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID \
   "created_at": 1707000000.123,
   "finished_at": 1707000045.678,
   "tmux_session": "claude-1707000000-a1b2c3d4",
-  "recent_output": "..."
+  "recent_output": "...",
+  "usage": {
+    "input": 2,
+    "cache_read": 20628,
+    "cache_write": 7911,
+    "output": 4,
+    "legacy_input_combined": 0,
+    "priceable_total": 28545,
+    "total": 28545,
+    "records": 1,
+    "by_model": {
+      "claude-opus-5": {
+        "input": 2, "cache_read": 20628, "cache_write": 7911,
+        "output": 4, "records": 1
+      }
+    },
+    "schema": 2,
+    "source": "claude_transcript",
+    "coverage": "measured",
+    "transcript_found": true,
+    "warnings": [],
+    "updated_at": 1707000045
+  }
 }
 ```
 
 The `recent_output` field contains the last 50 lines captured from the tmux pane (for running sessions) or is empty (for completed sessions where the tmux session has ended).
+
+#### Token usage
+
+`usage` reports the task's token spend, read from Claude Code's on-disk session
+transcript (the task is launched with a pinned `--session-id`, so the transcript
+is located deterministically). It also appears on each row of the task **list**
+response.
+
+The four token classes are kept **separate** because they bill at very different
+rates: `input` is fresh (uncached) input, `cache_read` is prompt-cache hits,
+`cache_write` is cache creation, and `output` is generated tokens. `records`
+counts API responses, not transcript lines — one response is written to the JSONL
+as several lines that all repeat the same usage, so counting lines would
+overstate spend.
+
+`coverage` says how much to trust a zero:
+
+| `coverage` | Meaning |
+|---|---|
+| `measured` | Instrumented and read — a `0` here means it really spent nothing. |
+| `not_instrumented` | The assistant reports no usage at all (everything except Claude Code, plus `kind: "terminal"` rows). A `0` is *unknown*, not zero. |
+| `no_session_id` | A Claude Build with no pinned session id (created before this was recorded), so its transcript can't be identified. Deliberately **not** guessed from the newest log in the directory — that would attribute another session's spend. |
+
+`legacy_input_combined` holds tokens recorded before the classes were split
+apart, when the three input classes were summed into one figure. They count
+toward `total` but not toward `priceable_total`, because their class mix can't be
+recovered. `schema` versions this object.
+
+Aggregate figures across all tasks and chat threads — including the same
+class split, per-model breakdown and coverage counts — are on `/metrics` under
+`product.tokens`.
 
 ---
 

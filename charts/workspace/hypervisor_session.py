@@ -64,6 +64,11 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
+# Token accounting (#574) — shared with server.py's Build ingestion so both paths
+# speak one vocabulary (four priceable classes, per-model breakdown, coverage
+# marker, schema version). Colocated module, same delivery as this file.
+import token_usage as tu
+
 # ───────────────────────────────────────────────────────────────────────────
 # Paths / constants
 # ───────────────────────────────────────────────────────────────────────────
@@ -481,6 +486,9 @@ class ClaudeAdapter(Adapter):
         ctx.pop('_turn_bg_watchers', None)
         ctx.pop('_turn_wf_calls', None)
         ctx.pop('_turn_workflows', None)
+        # The model is read fresh from this turn's own assistant events (#574) —
+        # a stale one would misattribute usage after an in-chat model switch.
+        ctx.pop('_turn_model', None)
         argv = [
             'claude', '-p', text,
             '--output-format', 'stream-json',
@@ -553,6 +561,13 @@ class ClaudeAdapter(Adapter):
                 ctx['claude_session_id'] = o['session_id']
             return []
         if t == 'assistant':
+            # Remember the serving model (#574). The terminal `result` event's
+            # `modelUsage` normally names it per model, but when only the
+            # top-level `usage` is present this is the sole per-turn model
+            # signal — and pricing is per-model.
+            msg_model = (o.get('message', {}) or {}).get('model')
+            if isinstance(msg_model, str) and msg_model.strip():
+                ctx['_turn_model'] = msg_model.strip()
             # Shared with the session-log parser so the live stream and the
             # durable log normalize to byte-identical canonical events.
             events = _claude_assistant_events(
@@ -572,16 +587,18 @@ class ClaudeAdapter(Adapter):
             # runner's finalize can fold it into the thread's running total —
             # this is the ONLY place token usage is exposed, and it's per-turn
             # cumulative (not per-chunk), so no double counting. Any adapter may
-            # set ctx['_turn_usage'] = {'input': int, 'output': int}; only Claude
-            # reports it today, others simply contribute 0.
-            usage = o.get('usage')
-            if isinstance(usage, dict):
-                ctx['_turn_usage'] = {
-                    'input': (int(usage.get('input_tokens') or 0)
-                              + int(usage.get('cache_read_input_tokens') or 0)
-                              + int(usage.get('cache_creation_input_tokens') or 0)),
-                    'output': int(usage.get('output_tokens') or 0),
-                }
+            # set ctx['_turn_usage'] to a token_usage v2 dict; only Claude
+            # reports it today, others simply contribute 0 (which is why the
+            # coverage marker exists — see token_usage.assistant_coverage).
+            #
+            # #574: the four token classes are kept APART here (fresh input,
+            # cache read, cache write, output) because they bill at very
+            # different rates, and the per-model breakdown rides along —
+            # `modelUsage` is preferred over the top-level `usage`, which covers
+            # only the primary model and omits side-calls.
+            usage = tu.usage_from_stream_result(o, ctx.get('_turn_model') or '')
+            if usage is not None:
+                ctx['_turn_usage'] = usage
             if o.get('subtype') not in (None, 'success'):
                 raw = _stringify(o.get('result') or o.get('subtype'))
                 out.append({'role': 'system', 'type': 'error',
@@ -1617,9 +1634,20 @@ class HypervisorSession:
         _RUNNING registry, via is_turn_live), not meta['status'] which can stick
         at 'running' after a crash. tokens.per_session_avg divides by the number
         of threads that reported any usage, so adapters that report none don't
-        dilute the average."""
+        dilute the average.
+
+        Token shape (#574): `total` / `input` / `output` / `per_session_avg` keep
+        their pre-#574 meanings exactly — `input` is still every input-side token
+        combined — so nothing downstream shifts under its readers. The
+        class-separated figures Phase 2 needs live in `tokens.threads` (the four
+        priceable classes apart, plus the un-splittable v1 residue and a
+        per-model breakdown), and `tokens.coverage` says how many threads are
+        measurable at all, so a 0 from an uninstrumented assistant is never
+        mistaken for a measured zero."""
         total = active = 0
-        tok_input = tok_output = token_sessions = 0
+        token_sessions = 0
+        measured = not_instrumented = 0
+        agg = tu.empty_usage(source=tu.SOURCE_STREAM)
         skills: Dict[str, int] = {}
         if os.path.isdir(HYPERVISOR_DIR):
             for tid in os.listdir(HYPERVISOR_DIR):
@@ -1632,22 +1660,35 @@ class HypervisorSession:
                 total += 1
                 if cls.is_turn_live(tid):
                     active += 1
+                if tu.is_instrumented(m.get('assistant')):
+                    measured += 1
+                else:
+                    not_instrumented += 1
                 prod = m.get('product') or {}
-                tok = prod.get('tokens') or {}
-                ti = int(tok.get('input', 0) or 0)
-                to = int(tok.get('output', 0) or 0)
-                if ti or to:
-                    tok_input += ti
-                    tok_output += to
+                # Read-only migration: a pre-#574 thread.json is interpreted as
+                # v1 here without being rewritten (the next turn persists v2).
+                tok = tu.migrate(prod.get('tokens'))
+                if tu.classes_total(tok):
+                    tu.add_usage(agg, tok)
                     token_sessions += 1
                 for name, count in (prod.get('skills') or {}).items():
                     skills[name] = skills.get(name, 0) + int(count or 0)
-        tok_total = tok_input + tok_output
+        threads = tu.public_block(agg, sessions=token_sessions)
+        tok_total = threads['total']
+        # Pre-#574 meanings, preserved: `input` is fresh + cache read + cache
+        # write + the un-splittable v1 residue, i.e. all input-side tokens.
+        tok_input = tok_total - threads['output']
         per_session_avg = int(round(tok_total / token_sessions)) if token_sessions else 0
         return {
             'chats': {'total': total, 'active': active},
             'tokens': {'total': tok_total, 'input': tok_input,
-                       'output': tok_output, 'per_session_avg': per_session_avg},
+                       'output': threads['output'],
+                       'per_session_avg': per_session_avg,
+                       'schema': tu.SCHEMA_VERSION,
+                       'threads': threads,
+                       'coverage': tu.coverage_summary(
+                           measured=measured,
+                           not_instrumented=not_instrumented)},
             'skills': {'invocations_by_name': skills},
         }
 
@@ -2236,15 +2277,24 @@ class HypervisorSession:
             m = self.read_meta() or meta
             # Product metrics (#363): fold this turn's token usage into the
             # thread's running total before persisting. The adapter stashes a
-            # per-turn cumulative {'input','output'} on ctx (Claude only, today);
-            # `turns` counts only turns that actually reported usage, so the
-            # per-session average isn't diluted by adapters that report none.
+            # per-turn cumulative token_usage v2 dict on ctx (Claude only,
+            # today); `turns` counts only turns that actually reported usage, so
+            # the per-session average isn't diluted by adapters that report none.
+            #
+            # #574: migrate the persisted total before adding to it. A pre-#574
+            # thread.json holds v1 — one collapsed `input` that mixed fresh,
+            # cache-read and cache-write — so migrate() moves it to
+            # `legacy_input_combined` rather than silently re-labelling it as
+            # fresh input (which would overstate cost by ~10x once priced). It
+            # still counts toward the token TOTAL, so no figure jumps.
             usage = ctx.pop('_turn_usage', None)
+            ctx.pop('_turn_model', None)
             if isinstance(usage, dict):
                 prod = m.setdefault('product', {})
-                tok = prod.setdefault('tokens', {'input': 0, 'output': 0})
-                tok['input'] = int(tok.get('input', 0)) + int(usage.get('input', 0))
-                tok['output'] = int(tok.get('output', 0)) + int(usage.get('output', 0))
+                tok = tu.migrate(prod.get('tokens'))
+                tok.setdefault('source', tu.SOURCE_STREAM)
+                tok['coverage'] = tu.assistant_coverage(m.get('assistant'))
+                prod['tokens'] = tu.add_usage(tok, usage)
                 prod['turns'] = int(prod.get('turns', 0)) + 1
             m['adapter'] = ctx  # persist any session id the adapter captured
             m['status'] = 'idle'

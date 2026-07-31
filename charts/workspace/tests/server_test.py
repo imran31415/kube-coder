@@ -2042,11 +2042,19 @@ class ProductMetricsCollectorTest(unittest.TestCase):
                     'last_accessed_at': 1}]
         with mock.patch.object(server.HypervisorSession, 'product_totals',
                                return_value=totals), \
+             mock.patch.object(server.ClaudeTaskManager, 'build_token_totals',
+                               return_value=(server.tu.public_block(None,
+                                                                    tasks=0),
+                                             server.tu.coverage_summary())), \
              mock.patch.object(server.MemoryManager, 'recall_counts',
                                return_value=recalls):
             p = server.ProductMetricsCollector.get_product_metrics()
         self.assertEqual(p['chats'], totals['chats'])
-        self.assertEqual(p['tokens'], totals['tokens'])
+        # The pre-#574 token keys pass through untouched (Build figures and the
+        # per-class split are added alongside — see tests/build_usage_test.py).
+        for k, v in totals['tokens'].items():
+            self.assertEqual(p['tokens'][k], v, k)
+        self.assertIn('coverage', p['tokens'])
         self.assertEqual(p['skills'], totals['skills'])
         self.assertEqual(p['memory'], {'recall_count_by_key': recalls})
 
