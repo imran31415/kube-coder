@@ -39,10 +39,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Base OS packages: apt GPG-verifies every one. `apt-get upgrade` picks up base
 # CVE fixes on rebuild (mirrors devlaptop). git+make+bash+coreutils are what
-# `make deploy` and the provisioner scripts shell out to; curl+ca-certificates
+# `make deploy` and the provisioner scripts shell out to; python3 is a RUNTIME
+# dep too — scripts/ensure-workspace-namespace.sh uses it to strip server-managed
+# metadata off the copied regcred Secret and to derive the self-serve token HMAC
+# (json/hashlib/hmac, stdlib only). Before #422 the Job ran under the controller
+# image, which has python3; the dedicated provisioner image must ship it itself
+# or `make deploy` fails with `python3: command not found`. curl+ca-certificates
 # are only used at BUILD time to fetch the verified helm/kubectl tarballs below.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    ca-certificates curl git make bash coreutils \
+    ca-certificates curl git make bash coreutils python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Helm — baked in, checksum-verified. The published per-release .sha256sum
