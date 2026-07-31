@@ -237,6 +237,19 @@ jobs:
           test "${entrypoint}" = '["/usr/local/bin/provision.sh"]'
           docker run --rm --entrypoint /bin/bash kube-coder-provisioner:ci-test \
             -c 'test -x /usr/local/bin/provision.sh && bash -n /usr/local/bin/provision.sh && test -s /etc/provisioner/helm-version'
+          # Every tool the `make deploy` path shells out to must be baked in — the
+          # Job runs in THIS image, not the controller image. A missing one (e.g.
+          # python3, used by ensure-workspace-namespace.sh to reshape the regcred
+          # Secret and derive the self-serve HMAC) otherwise only surfaces on a
+          # live provisioning run as `<tool>: command not found`. Guard it here.
+          docker run --rm --entrypoint /bin/bash kube-coder-provisioner:ci-test -c '
+            set -euo pipefail
+            for t in helm kubectl git make bash python3; do
+              command -v "$t" >/dev/null || { echo "provisioner image missing required tool: $t" >&2; exit 1; }
+            done
+            # the exact stdlib modules the provisioner scripts import
+            python3 -c "import json, hashlib, hmac, os, sys"
+            echo "provisioner runtime tools OK: helm kubectl git make bash python3(+json/hashlib/hmac)"'
 
   security-scan:
     name: Security Scanning
