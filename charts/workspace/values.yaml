@@ -589,11 +589,18 @@ memory:
     existingSecretName: ""
     baseUrl: ""             # openai-compatible endpoint (self-hosted / proxy)
   # Auto-injection: prefix new task prompts with the top-K relevant memories.
+  # Auto-injection budget. These are the single source of truth: the chart
+  # projects them as KC_MEMORY_INJECT_* and the UserPromptSubmit hook reads
+  # them (it used to hardcode its own, drifted, copies — #359).
   inject:
     enabled: true
     topK: 8
     minScore: 0.30
+    # Whole-block ceiling. Entries are shrunk to fit rather than dropped.
     maxChars: 4096
+    # Per-entry ceiling. Long memories are summarized at write time, so this
+    # is a backstop — and it now trims on a word boundary, never mid-word.
+    maxEntryChars: 280
   # Background consolidation (dedupe + decay). Phase 3 activates this thread.
   consolidation:
     enabled: false
