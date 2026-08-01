@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -109,6 +109,19 @@ clean: ## Clean up local Docker images
 # =============================================================================
 # Deployment
 # =============================================================================
+
+# Operator preflight — the FIRST step of an Option B (cloud / multi-tenant)
+# install, run BEFORE any user or workspace exists. READ-ONLY: it checks the
+# documented cloud prerequisites (kubectl/helm versions, nginx-ingress, cert-
+# manager + a ClusterIssuer, wildcard DNS, regcred, the GitOps repo), reports
+# EVERY failure at once with a remediation, and exits non-zero if any FAILed.
+# Supply DOMAIN to enable the wildcard-DNS check; NAMESPACE targets the control-
+# plane namespace where regcred lives (default $(NAMESPACE)).
+#   make doctor
+#   DOMAIN=dev.example.io make doctor
+#   NAMESPACE=coder DOMAIN=dev.example.io make doctor
+doctor: ## Operator preflight for Option B — check cloud prerequisites, read-only (DOMAIN=<domain> to check wildcard DNS)
+	@NAMESPACE=$(NAMESPACE) DOMAIN=$(DOMAIN) USERS_REPO=$(USERS_REPO) ./scripts/doctor.sh
 
 deploy-base: ## Deploy base infrastructure
 	@echo "Deploying base infrastructure..."

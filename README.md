@@ -332,9 +332,12 @@ make local-forward                                            # keep running in 
 **Prerequisites:** Kubernetes 1.19+, Helm 3.0+, an nginx-ingress controller, **wildcard DNS** (`*.<your-domain>` → the ingress IP), a GitHub OAuth App for the controller console, a private GitHub repo as the GitOps config store, and a `regcred` image-pull secret.
 
 ```bash
+DOMAIN=<your-domain> make doctor  # preflight: check ALL of the above at once (read-only)
 make deploy-base                  # base infra: nginx-ingress, oauth2-proxy, cert-manager
 make ship-controller-config       # the admin console (workspace-controller)
 ```
+
+Run `make doctor` **first**. It's a read-only preflight that verifies every prerequisite above — kubectl/helm versions, the ingress controller and its external IP, cert-manager plus a ClusterIssuer, that `*.<your-domain>` actually resolves **to your ingress IP** (the failure that otherwise only surfaces as a dead workspace later), the `regcred` secret, and GitOps-repo reachability — reporting all failures at once with a fix for each. Pass `DOMAIN=<your-domain>` to include the wildcard-DNS check (skipped otherwise).
 
 Two things make self-service onboarding work; you set them once:
 
