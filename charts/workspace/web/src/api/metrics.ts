@@ -47,11 +47,52 @@ export interface ChatMetrics {
   active: number;
 }
 
-export interface TokenMetrics {
+/**
+ * Per-model token counts, split by billing class (#574). Kept apart because the
+ * classes price very differently — cache reads are far cheaper than fresh input,
+ * cache writes carry a premium, output bills several times input.
+ */
+export interface TokenClassCounts {
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+  /** Pre-#574 tokens whose input classes were stored collapsed — counted, but
+   *  not attributable to a class, so never priceable. */
+  legacy_input_combined: number;
+  /** input + cache_read + cache_write + output. */
+  priceable_total: number;
+  /** priceable_total + legacy_input_combined — every token counted. */
   total: number;
+  records: number;
+  by_model: Record<string, { input: number; cache_read: number; cache_write: number; output: number; records: number }>;
+  sessions?: number;
+  tasks?: number;
+}
+
+/** How much of the workspace's spend is measurable at all (#574) — a 0 from an
+ *  uninstrumented assistant is not the same claim as a measured 0. */
+export interface TokenCoverage {
+  measured_assistants: string[];
+  threads: { measured: number; not_instrumented: number; no_session_id: number };
+  builds: { measured: number; not_instrumented: number; no_session_id: number };
+}
+
+export interface TokenMetrics {
+  /** Hypervisor threads only, unchanged since #363: every token counted. */
+  total: number;
+  /** Hypervisor threads only: all input-side tokens combined. Use
+   *  `threads.input` / `.cache_read` / `.cache_write` for the split. */
   input: number;
   output: number;
   per_session_avg: number;
+  /** #574 — additive; absent on an older pod. */
+  schema?: number;
+  threads?: TokenClassCounts;
+  builds?: TokenClassCounts;
+  /** Threads + Builds: the first figure that includes autonomous Build spend. */
+  all?: TokenClassCounts;
+  coverage?: TokenCoverage;
 }
 
 export interface SkillMetrics {

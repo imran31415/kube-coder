@@ -66,6 +66,11 @@ try:
         hypervisor_health as hv_health, WATCHERS as hv_watchers,
         HYPERVISOR_DIR,
         reconcile_stale_running_threads as hv_reconcile_stale_running,
+        # Claude Code session-log resolvers, reused verbatim for Build token
+        # accounting (#574) — the slugified project dir and the exact
+        # <session_id>.jsonl lookup.
+        claude_project_dir as hv_claude_project_dir,
+        locate_claude_session_log as hv_locate_session_log,
     )
     _HYPERVISOR_AVAILABLE = True
 except Exception as _hv_import_err:  # broken install shouldn't crash the server
@@ -74,9 +79,23 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
     hv_health = None  # type: ignore
     hv_watchers = None  # type: ignore
     hv_reconcile_stale_running = None  # type: ignore
+    hv_claude_project_dir = None  # type: ignore
+    hv_locate_session_log = None  # type: ignore
     HYPERVISOR_DIR = ''  # type: ignore
     _HYPERVISOR_AVAILABLE = False
     print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
+
+# token_usage: token accounting shared with hypervisor_session (#574). Builds run
+# an interactive CLI in a tmux pane with no structured stream, so their spend is
+# recovered by reading Claude Code's on-disk session JSONL. Guarded like every
+# other colocated module: measurement must never be able to break a Build.
+try:
+    import token_usage as tu
+    _TOKEN_USAGE_AVAILABLE = True
+except Exception as _tu_import_err:
+    tu = None  # type: ignore
+    _TOKEN_USAGE_AVAILABLE = False
+    print(f'[token-usage] import failed: {_tu_import_err}', file=sys.stderr)
 
 # gateway: the Conversation Gateway (issue #306) — chat with the Hypervisor from
 # outside the app over a channel (WhatsApp first). Channel-agnostic core here;
@@ -1011,6 +1030,39 @@ class ProductMetricsCollector:
     RECALL_TOP_N = 10
 
     @staticmethod
+    def _with_build_tokens(tokens):
+        """Fold Build spend into the product token block (#574).
+
+        Additive by design: every pre-#574 key keeps its exact meaning and its
+        thread-only scope, and the new figures sit alongside under `threads` /
+        `builds` / `all` — so no reader of `tokens.total` silently starts seeing
+        a different number under the same name."""
+        threads = tokens.get('threads')
+        if not isinstance(threads, dict):
+            # An older/absent hypervisor: no thread figures, but Builds still
+            # count — and the shape must stay uniform for its readers.
+            threads = tu.public_block(None, sessions=0)
+        thread_cov = tokens.get('coverage') or tu.coverage_summary()
+        builds, build_cov = ClaudeTaskManager.build_token_totals()
+        combined = tu.empty_usage()
+        tu.add_usage(combined, threads)
+        tu.add_usage(combined, builds)
+        return {
+            **tokens,
+            'schema': tu.SCHEMA_VERSION,
+            'threads': threads,
+            'builds': builds,
+            'all': tu.public_block(combined,
+                                   sessions=threads.get('sessions', 0),
+                                   tasks=builds.get('tasks', 0)),
+            'coverage': {
+                'measured_assistants': sorted(tu.INSTRUMENTED_ASSISTANTS),
+                'threads': thread_cov,
+                'builds': build_cov,
+            },
+        }
+
+    @staticmethod
     def get_product_metrics():
         # chats / tokens / skills are aggregated from the hypervisor thread
         # metadata (cheap thread.json reads); memory recalls come from the
@@ -1026,6 +1078,17 @@ class ProductMetricsCollector:
                 skills = totals.get('skills', skills)
             except Exception as e:  # never let one section 500 the endpoint
                 chats = {**chats, 'error': str(e)}
+        # Builds (#574). `total` / `input` / `output` / `per_session_avg` above
+        # keep their pre-#574 meanings — Hypervisor threads only — because
+        # existing readers depend on them. The complete, class-separated picture
+        # lands beside them: `threads`, `builds`, and `all` (threads + builds,
+        # the figure that finally includes the workspace's biggest spenders),
+        # each with the four priceable classes apart and a per-model breakdown.
+        if _TOKEN_USAGE_AVAILABLE:
+            try:
+                tokens = ProductMetricsCollector._with_build_tokens(tokens)
+            except Exception as e:
+                tokens = {**tokens, 'error': str(e)}
         memory = {'recall_count_by_key': []}
         if MemoryManager is not None:
             try:
@@ -1937,8 +2000,40 @@ class ClaudeTaskManager:
             return bool(explicit)
         return ClaudeTaskManager._is_unattended_source(source)
 
+    # Memoized `claude --help` probe for --session-id support (see
+    # _claude_supports_session_id). None = not probed yet.
+    _CLAUDE_SESSION_ID_SUPPORTED = None
+
     @staticmethod
-    def assistant_command(assistant, auto_approve=False, model='', effort=''):
+    def _claude_supports_session_id():
+        """Whether this pod's Claude Code accepts `--session-id` (#574).
+
+        Pinning the session id is what makes a Build's spend measurable, but an
+        unrecognised flag would make the CLI refuse to start — measurement
+        killing the thing it measures, which is exactly the failure this feature
+        must not have. So probe `--help` once per server process (~340ms) and
+        cache it; anything unexpected reads as unsupported, costing only the
+        measurement."""
+        cached = ClaudeTaskManager._CLAUDE_SESSION_ID_SUPPORTED
+        if cached is not None:
+            return cached
+        supported = False
+        try:
+            r = subprocess.run(['claude', '--help'], capture_output=True,
+                               text=True, timeout=20)
+            supported = '--session-id' in (r.stdout or '')
+        except Exception as e:
+            print(f'[token-usage] claude --session-id probe failed: {e}',
+                  file=sys.stderr)
+        if not supported:
+            print('[token-usage] claude does not advertise --session-id; Build '
+                  'token usage will report as not-measured', file=sys.stderr)
+        ClaudeTaskManager._CLAUDE_SESSION_ID_SUPPORTED = supported
+        return supported
+
+    @staticmethod
+    def assistant_command(assistant, auto_approve=False, model='', effort='',
+                          session_id=''):
         # `model` / `effort` are the caller's per-launch choices (already run
         # through resolve_model / resolve_effort). Both are optional and both
         # fall back to the workspace env default when empty, so every existing
@@ -2034,6 +2129,18 @@ class ClaudeTaskManager:
             parts.append('--dangerously-skip-permissions')
         if model and model != 'default':
             parts.append(f'--model {_shell_quote(model)}')
+        # Pin the Claude session id (#574) so the Build's transcript lands at a
+        # path we KNOW: ~/.claude/projects/<escaped-cwd>/<session_id>.jsonl. That
+        # is what makes a Build's token usage readable at all — and it removes the
+        # "most recently modified .jsonl in this project dir" guess, which is
+        # ambiguous the moment a Build and a Hypervisor thread share a workdir.
+        # Verified end-to-end on a live pod: interactive `claude --session-id
+        # <uuid>` writes exactly <uuid>.jsonl. Only a well-formed uuid is passed
+        # through — Claude Code rejects anything else and would refuse to launch —
+        # and only when this CLI advertises the flag at all.
+        if (_valid_uuid(session_id)
+                and ClaudeTaskManager._claude_supports_session_id()):
+            parts.append(f'--session-id {_shell_quote(session_id)}')
         return ' '.join(parts)
 
     # Soft ceiling on concurrently-live tasks created through this manager
@@ -2112,6 +2219,15 @@ class ClaudeTaskManager:
 
         session_name = f'kube-coder-{task_id}'
 
+        # Token accounting (#574): record the Claude session id ONLY when we can
+        # actually pin the CLI to it — otherwise the transcript lands under an id
+        # we don't know, and claiming one would turn "unmeasurable" into a
+        # confident, wrong zero. Same condition assistant_command applies.
+        claude_session_id = (
+            session_id if (assistant == 'claude'
+                           and ClaudeTaskManager._claude_supports_session_id())
+            else '')
+
         # ── Memory auto-injection (opt-in, OFF by default) ────────────────
         # Optionally compute a <workspace_memories> block from top-K relevant
         # memories and prepend it to the pasted prompt. This is now OFF by
@@ -2141,6 +2257,12 @@ class ClaudeTaskManager:
         meta = {
             'task_id': task_id,
             'session_id': session_id,
+            # The Claude Code session id this Build's CLI was launched with
+            # (#574) — recorded at birth so its transcript, and therefore its
+            # token spend, is locatable deterministically instead of guessed
+            # from the most-recently-modified log in the project dir. Empty for
+            # every other assistant: none of them writes a readable transcript.
+            'claude_session_id': claude_session_id,
             'prompt': prompt,
             'workdir': workdir,
             'project_id': project_id or '',
@@ -2221,7 +2343,8 @@ class ClaudeTaskManager:
                 reject_api_key=ClaudeTaskManager._api_key_to_reject())
 
         cli_cmd = ClaudeTaskManager.assistant_command(
-            assistant, auto_approve=auto_approve, model=model, effort=effort)
+            assistant, auto_approve=auto_approve, model=model, effort=effort,
+            session_id=session_id)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
         # Overlay any user-set provider keys onto the new session's env, so a key
         # set in Settings (no redeploy) reaches the CLI subprocess. Store wins
@@ -2442,6 +2565,9 @@ class ClaudeTaskManager:
                     'memory_injected': meta.get('memory_injected', []),
                     'memory_injection_disabled':
                         bool(meta.get('memory_injection_disabled')),
+                    # Token spend for this Build (#574) — zero-but-marked when
+                    # the assistant isn't instrumented.
+                    'usage': ClaudeTaskManager.usage_view(meta),
                 })
             except (json.JSONDecodeError, OSError):
                 continue
@@ -2496,6 +2622,13 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
         ClaudeTaskManager._reconcile_status(meta, task_dir)
+
+        # Token spend (#574): the public ledger replaces the stored one, and the
+        # private resume state (byte offsets, dedupe ring) never goes on the wire.
+        meta.pop('usage_ingest', None)
+        usage_view = ClaudeTaskManager.usage_view(meta)
+        if usage_view is not None:
+            meta['usage'] = usage_view
 
         # Get recent output from live tmux pane or fallback to log file
         recent_output = ''
@@ -3213,11 +3346,192 @@ class ClaudeTaskManager:
         ).start()
         return True, 'redelivery started'
 
+    # ── Build token accounting (#574) ────────────────────────────────────
+    # Builds run an interactive CLI in a tmux pane: no structured stream, so no
+    # Build had ever reported a token. Claude Code does write a durable JSONL
+    # transcript per session, and its assistant records carry per-message `model`
+    # + `usage` — so a Build's spend is recoverable by reading that file. The
+    # transcript path is deterministic because create_task pins the CLI's session
+    # id (see assistant_command).
+    #
+    # Seconds between transcript re-scans for one task. Scans are incremental
+    # (resume offset per file), but /metrics and the task list poll often enough
+    # that a floor is worth having.
+    USAGE_SCAN_INTERVAL = float(os.environ.get('KC_USAGE_SCAN_INTERVAL', '15'))
+
+    @staticmethod
+    def _usage_unavailable(meta, coverage):
+        """A zero ledger stamped with WHY it is zero — the difference between
+        'this Build spent nothing' and 'nothing here can be measured'."""
+        u = tu.empty_usage(source=tu.SOURCE_TRANSCRIPT, coverage=coverage)
+        u['assistant'] = meta.get('assistant') or ''
+        return u
+
+    #: Task statuses that mean the CLI is gone — nothing more will be appended
+    #: to the transcript, so one final scan settles the figure for good.
+    _LIVE_STATUSES = ('running', 'waiting-for-input')
+
+    @staticmethod
+    def ingest_usage(meta, task_dir, force=False):
+        """Fold this Build's transcript usage into task.json, and return it.
+
+        Idempotent: `token_usage.ingest` keeps a per-file cumulative ledger plus
+        a resume offset, and the totals are recomputed as the sum over files — so
+        re-scanning an unchanged transcript adds nothing, and even a full rescan
+        after losing the resume state converges to the same figure instead of
+        doubling it. There is also no overlap with the Hypervisor's own
+        accounting: a thread's usage comes from its live stream, and a Build
+        reads only the one transcript whose session id it launched with, so two
+        sessions sharing a workdir can no longer be attributed to each other.
+
+        Never raises, and never mutates status — measuring a Build must not be
+        able to affect it. Returns the usage dict, or None when nothing was done.
+        """
+        if not (_TOKEN_USAGE_AVAILABLE and _HYPERVISOR_AVAILABLE):
+            return None
+        try:
+            existing = meta.get('usage') if isinstance(meta.get('usage'), dict) else {}
+            assistant = meta.get('assistant') or ''
+            if not tu.is_instrumented(assistant):
+                # Codex / Antigravity / Ante / OpenCode / LibreFang / kc-harness
+                # (and `kind: terminal` rows, which run no assistant at all)
+                # report nothing. Stamp the marker once so a reader can tell
+                # this 0 apart from a measured one, then stop.
+                if existing.get('coverage') == tu.COVERAGE_NOT_INSTRUMENTED:
+                    return existing
+                return ClaudeTaskManager._store_usage(
+                    meta, task_dir,
+                    ClaudeTaskManager._usage_unavailable(
+                        meta, tu.COVERAGE_NOT_INSTRUMENTED), None)
+            session_id = meta.get('claude_session_id') or ''
+            if not _valid_uuid(session_id):
+                # A Build created before #574 (or by a path that didn't pin the
+                # id). We deliberately do NOT fall back to "most recently
+                # modified .jsonl in this project dir": that guess silently
+                # attributes another session's spend the moment two sessions
+                # share a workdir. An honest unknown beats a wrong number.
+                if existing.get('coverage') == tu.COVERAGE_NO_SESSION:
+                    return existing
+                return ClaudeTaskManager._store_usage(
+                    meta, task_dir,
+                    ClaudeTaskManager._usage_unavailable(
+                        meta, tu.COVERAGE_NO_SESSION), None)
+
+            state = meta.get('usage_ingest') if isinstance(
+                meta.get('usage_ingest'), dict) else {}
+            live = meta.get('status') in ClaudeTaskManager._LIVE_STATUSES
+            if not live and state.get('final'):
+                # The CLI is gone and the settling scan already ran: the figure
+                # can't change again, so stop re-reading (and re-writing) it.
+                return existing or None
+            if live and not force:
+                last = state.get('scanned_at')
+                if (isinstance(last, (int, float))
+                        and time.time() - last < ClaudeTaskManager.USAGE_SCAN_INTERVAL):
+                    return existing or None
+
+            workdir = meta.get('workdir') or '/home/dev'
+            # The existing resolvers: exact <session_id>.jsonl, plus the
+            # slugified project dir for this session's subagent transcripts
+            # (their spend appears ONLY there).
+            main = hv_locate_session_log(workdir, session_id)
+            paths = [main] if main else []
+            paths += tu.subagent_transcripts(
+                hv_claude_project_dir(workdir), session_id)
+
+            usage, new_state = tu.ingest(paths, state,
+                                         coverage=tu.COVERAGE_MEASURED)
+            usage['assistant'] = assistant
+            usage['session_id'] = session_id
+            usage['transcript_found'] = bool(paths)
+            new_state['final'] = not live
+            return ClaudeTaskManager._store_usage(meta, task_dir, usage, new_state)
+        except Exception as e:
+            # Ingestion is measurement; a failure here must cost the Build
+            # nothing. Log and move on.
+            print(f'[token-usage] build ingest failed for '
+                  f'{meta.get("task_id")}: {type(e).__name__}: {e}',
+                  file=sys.stderr)
+            return None
+
+    @staticmethod
+    def build_token_totals():
+        """`(usage, coverage)` aggregated over every Build (#574).
+
+        Read-only: sums what ingest_usage already persisted and never touches a
+        transcript, so /metrics stays cheap enough to poll. `coverage` counts how
+        many Builds are measurable at all, which is what stops a pile of
+        uninstrumented zeros from reading as a real total."""
+        agg = tu.empty_usage(source=tu.SOURCE_TRANSCRIPT)
+        tasks = measured = not_instrumented = no_session = 0
+        for m in ProjectsManager._scan_task_metas():
+            if not isinstance(m, dict):
+                continue
+            u = m.get('usage') if isinstance(m.get('usage'), dict) else {}
+            cov = u.get('coverage') or tu.assistant_coverage(m.get('assistant'))
+            if cov == tu.COVERAGE_NOT_INSTRUMENTED:
+                not_instrumented += 1
+            elif cov == tu.COVERAGE_NO_SESSION:
+                no_session += 1
+            else:
+                measured += 1
+            if tu.classes_total(u):
+                tu.add_usage(agg, tu.migrate(u))
+                tasks += 1
+        return (tu.public_block(agg, tasks=tasks),
+                tu.coverage_summary(measured=measured,
+                                    not_instrumented=not_instrumented,
+                                    no_session_id=no_session))
+
+    @staticmethod
+    def usage_view(meta):
+        """A Build's token ledger for the API: the four priceable classes apart,
+        the per-model breakdown, and the coverage marker — never the private
+        resume state. Always present, so a client can always tell 'measured 0'
+        from 'not instrumented' (#574)."""
+        if not _TOKEN_USAGE_AVAILABLE:
+            return None
+        u = meta.get('usage') if isinstance(meta.get('usage'), dict) else {}
+        return tu.public_block(
+            u,
+            schema=tu.SCHEMA_VERSION,
+            source=u.get('source') or tu.SOURCE_TRANSCRIPT,
+            coverage=u.get('coverage') or tu.assistant_coverage(meta.get('assistant')),
+            transcript_found=bool(u.get('transcript_found')),
+            warnings=list(u.get('warnings') or []),
+            updated_at=u.get('updated_at'),
+        )
+
+    @staticmethod
+    def _store_usage(meta, task_dir, usage, ingest_state):
+        """Persist a Build's usage ledger under task.json's `usage`, with the
+        resume state alongside in `usage_ingest` (private — stripped from API
+        responses). One locked read-modify-write, so it can't race the status
+        reconciler."""
+        def mutate(m):
+            m['usage'] = usage
+            if ingest_state is None:
+                m.pop('usage_ingest', None)
+            else:
+                m['usage_ingest'] = ingest_state
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        # Keep the caller's in-memory copy consistent with what was written.
+        meta['usage'] = usage
+        if ingest_state is None:
+            meta.pop('usage_ingest', None)
+        else:
+            meta['usage_ingest'] = ingest_state
+        return (updated or meta).get('usage')
+
     @staticmethod
     def _reconcile_status(meta, task_dir):
         """If task.json says running but tmux session is gone, update status.
         Also check for waiting-for-input patterns in running tasks."""
         current_status = meta.get('status', 'unknown')
+        # Token accounting (#574) — best-effort, never blocking. Throttled while
+        # the Build is live; runs once unthrottled after it goes terminal so the
+        # final figure includes the last turn, then stops for good.
+        ClaudeTaskManager.ingest_usage(meta, task_dir)
         
         # If task is already finished, no need to check further
         if current_status not in ('running', 'waiting-for-input'):
@@ -3261,6 +3575,10 @@ class ClaudeTaskManager:
                 meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
                 meta.pop('waiting_for_input', None)
                 meta.pop('last_input_prompt', None)
+                # The CLI is gone: settle the token figure now (#574) rather than
+                # waiting for the next poll. Separate locked write, so it can't
+                # disturb the status transition above.
+                ClaudeTaskManager.ingest_usage(meta, task_dir)
                 if fire_hook:
                     ClaudeTaskManager._fire_completion_hook(updated)
                 EventBroker.publish('task.status', {
@@ -3338,6 +3656,20 @@ def _shell_quote(s):
     """Quote a string for safe use in a shell command."""
     import shlex
     return shlex.quote(s)
+
+
+_UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+                      r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+
+def _valid_uuid(s):
+    """True for a canonical 8-4-4-4-12 uuid string (#574).
+
+    Gate for anything derived from a task's `session_id`: it becomes a
+    `--session-id` CLI argument and a transcript filename, and Claude Code
+    refuses to launch on a malformed one — so a legacy or hand-edited task.json
+    must degrade to "no session id", never to a dead Build or a path escape."""
+    return bool(isinstance(s, str) and _UUID_RE.match(s.strip()))
 
 
 def _dedup_keep_order(items):

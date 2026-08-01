@@ -366,8 +366,14 @@ class DispatchedBuildDefaultsTest(unittest.TestCase):
     def _create(self, project_defaults, **kwargs):
         seen = {}
 
-        def fake_command(assistant, auto_approve=False, model='', effort=''):
-            seen.update(assistant=assistant, model=model, effort=effort)
+        # session_id: create_task pins the Claude CLI's session id for token
+        # accounting (#574). Stubbed here (along with the `claude --help`
+        # capability probe below) so this test's subprocess.run assertions see
+        # only the tmux launch.
+        def fake_command(assistant, auto_approve=False, model='', effort='',
+                         session_id=''):
+            seen.update(assistant=assistant, model=model, effort=effort,
+                        session_id=session_id)
             return 'true'
 
         def fake_resolve_assistant(req):
@@ -398,6 +404,8 @@ class DispatchedBuildDefaultsTest(unittest.TestCase):
                                return_value=(False, 0, 12)), \
              mock.patch.object(server.ClaudeTaskManager, 'assistant_command',
                                side_effect=fake_command), \
+             mock.patch.object(server.ClaudeTaskManager,
+                               '_CLAUDE_SESSION_ID_SUPPORTED', True), \
              mock.patch('os.makedirs'), \
              mock.patch('builtins.open', mock.mock_open()), \
              mock.patch('subprocess.run') as run, \

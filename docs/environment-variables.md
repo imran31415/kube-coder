@@ -88,6 +88,7 @@ This document describes all environment variables used by kube-coder components.
 | `KC_MAX_SUBAGENTS` | `8` | Maximum number of concurrent subagents. |
 | `KC_MAX_SPAWN_DEPTH` | `3` | Maximum agent spawning depth (to prevent infinite recursion). |
 | `KC_AGENT_DEPTH` | `0` | **Automatically set.** Current agent depth (incremented for subagents). |
+| `KC_USAGE_SCAN_INTERVAL` | `15` | Seconds between token-usage re-scans of a live Build's Claude Code session transcript. Scans are incremental (a resume offset per file), so this is just a floor on how often a polled task re-reads its log. |
 
 ### Dashboard & UI
 | Variable | Default | Description |

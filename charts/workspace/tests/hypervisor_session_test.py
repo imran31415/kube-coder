@@ -1746,9 +1746,10 @@ class SlashCommandNameTest(unittest.TestCase):
 
 class ClaudeAdapterUsageCaptureTest(unittest.TestCase):
     """The terminal `result` event's usage is stashed on ctx for the runner to
-    fold into the thread's token total (#363)."""
+    fold into the thread's token total (#363), with the four billing classes kept
+    apart and the serving model recorded (#574)."""
 
-    def test_result_usage_captured_on_ctx(self):
+    def test_result_usage_captured_on_ctx_split_by_class(self):
         a = hs.ClaudeAdapter()
         ctx = {}
         line = json.dumps({'type': 'result', 'subtype': 'success',
@@ -1756,7 +1757,48 @@ class ClaudeAdapterUsageCaptureTest(unittest.TestCase):
                                      'cache_read_input_tokens': 5,
                                      'cache_creation_input_tokens': 2}})
         a.parse(ctx, line)
-        self.assertEqual(ctx['_turn_usage'], {'input': 17, 'output': 7})
+        u = ctx['_turn_usage']
+        self.assertEqual([u['input'], u['cache_read'], u['cache_write'], u['output']],
+                         [10, 5, 2, 7])
+        self.assertEqual(u['schema'], 2)
+        self.assertEqual(u['source'], 'claude_stream')
+        # All four still add up to the pre-#574 collapsed figure, so no count moves.
+        self.assertEqual(u['input'] + u['cache_read'] + u['cache_write'], 17)
+
+    def test_model_usage_is_preferred_over_top_level_usage(self):
+        """`modelUsage` is per-model AND more complete — the top-level `usage`
+        covers only the primary model (verified against a live run)."""
+        a = hs.ClaudeAdapter()
+        ctx = {}
+        a.parse(ctx, json.dumps({'type': 'result', 'subtype': 'success',
+                                 'usage': {'input_tokens': 2, 'output_tokens': 4},
+                                 'modelUsage': {
+                                     'claude-opus-5[1m]': {'inputTokens': 2,
+                                                           'outputTokens': 4},
+                                     'claude-haiku-4-5': {'inputTokens': 521,
+                                                          'outputTokens': 12}}}))
+        u = ctx['_turn_usage']
+        self.assertEqual(u['input'], 523)
+        self.assertEqual(u['output'], 16)
+        self.assertEqual(set(u['by_model']),
+                         {'claude-opus-5[1m]', 'claude-haiku-4-5'})
+
+    def test_turn_model_from_assistant_event_attributes_the_fallback(self):
+        a = hs.ClaudeAdapter()
+        ctx = {}
+        a.parse(ctx, json.dumps({'type': 'assistant', 'message': {
+            'model': 'claude-fable-5',
+            'content': [{'type': 'text', 'text': 'hi'}]}}))
+        self.assertEqual(ctx['_turn_model'], 'claude-fable-5')
+        a.parse(ctx, json.dumps({'type': 'result', 'subtype': 'success',
+                                 'usage': {'input_tokens': 3, 'output_tokens': 1}}))
+        self.assertEqual(list(ctx['_turn_usage']['by_model']), ['claude-fable-5'])
+
+    def test_build_clears_a_stale_turn_model(self):
+        a = hs.ClaudeAdapter()
+        ctx = {'_turn_model': 'claude-opus-4-8'}
+        a.build(ctx, 'hello', first=True)
+        self.assertNotIn('_turn_model', ctx)
 
     def test_result_without_usage_sets_nothing(self):
         a = hs.ClaudeAdapter()
@@ -1820,6 +1862,81 @@ class ProductTotalsTest(unittest.TestCase):
             t = hs.HypervisorSession.product_totals()
         self._running_patch.start()  # keep tearDown symmetric
         self.assertEqual(t['chats'], {'total': 2, 'active': 1})
+
+    # ── #574: per-class figures alongside the unchanged legacy contract ──
+
+    def test_legacy_v1_metas_are_migrated_on_read_without_rewriting(self):
+        """A pre-#574 thread.json holds one collapsed `input`. It must keep
+        counting toward the total, but never be presented as fresh input — the
+        class split can't be recovered, and guessing it would misprice by ~10x."""
+        self._thread('t1', {'id': 't1', 'assistant': 'claude',
+                            'product': {'tokens': {'input': 150, 'output': 50}}})
+        t = hs.HypervisorSession.product_totals()
+        th = t['tokens']['threads']
+        self.assertEqual(t['tokens']['total'], 200)      # unchanged figure
+        self.assertEqual(t['tokens']['input'], 150)      # unchanged meaning
+        self.assertEqual(t['tokens']['output'], 50)
+        self.assertEqual(th['legacy_input_combined'], 150)
+        self.assertEqual([th['input'], th['cache_read'], th['cache_write']], [0, 0, 0])
+        self.assertEqual(th['priceable_total'], 50)
+        # Read-only: the on-disk meta is untouched until the next turn writes it.
+        with open(os.path.join(self.tmp, 't1', 'thread.json')) as f:
+            self.assertEqual(json.load(f)['product']['tokens'],
+                             {'input': 150, 'output': 50})
+
+    def test_v2_metas_aggregate_per_class_and_per_model(self):
+        self._thread('t1', {'id': 't1', 'assistant': 'claude', 'product': {
+            'tokens': {'schema': 2, 'input': 1, 'cache_read': 10,
+                       'cache_write': 100, 'output': 1000, 'records': 2,
+                       'by_model': {'claude-opus-5': {
+                           'input': 1, 'cache_read': 10, 'cache_write': 100,
+                           'output': 1000, 'records': 2}}}}})
+        self._thread('t2', {'id': 't2', 'assistant': 'claude', 'product': {
+            'tokens': {'schema': 2, 'input': 2, 'cache_read': 0,
+                       'cache_write': 0, 'output': 3, 'records': 1,
+                       'by_model': {'claude-fable-5': {
+                           'input': 2, 'output': 3, 'records': 1}}}}})
+        th = hs.HypervisorSession.product_totals()['tokens']['threads']
+        self.assertEqual([th['input'], th['cache_read'], th['cache_write'],
+                          th['output']], [3, 10, 100, 1003])
+        self.assertEqual(th['total'], 1116)
+        self.assertEqual(th['sessions'], 2)
+        self.assertEqual(set(th['by_model']), {'claude-opus-5', 'claude-fable-5'})
+        self.assertEqual(th['by_model']['claude-opus-5']['cache_write'], 100)
+
+    def test_mixed_v1_and_v2_totals_are_consistent(self):
+        self._thread('t1', {'id': 't1', 'assistant': 'claude',
+                            'product': {'tokens': {'input': 100, 'output': 10}}})
+        self._thread('t2', {'id': 't2', 'assistant': 'claude', 'product': {
+            'tokens': {'schema': 2, 'input': 1, 'cache_read': 2,
+                       'cache_write': 3, 'output': 4}}})
+        tok = hs.HypervisorSession.product_totals()['tokens']
+        self.assertEqual(tok['total'], 120)
+        self.assertEqual(tok['output'], 14)
+        self.assertEqual(tok['input'], 106)   # 100 legacy + 1 + 2 + 3
+        # Priceable = t1's output (10) + all four of t2's classes (10); t1's
+        # collapsed input is counted but not priceable.
+        self.assertEqual(tok['threads']['priceable_total'], 20)
+        self.assertEqual(tok['threads']['legacy_input_combined'], 100)
+
+    def test_coverage_distinguishes_uninstrumented_threads_from_zero(self):
+        self._thread('t1', {'id': 't1', 'assistant': 'claude'})
+        self._thread('t2', {'id': 't2', 'assistant': 'codex'})
+        self._thread('t3', {'id': 't3', 'assistant': 'ante'})
+        cov = hs.HypervisorSession.product_totals()['tokens']['coverage']
+        self.assertEqual(cov['measured'], 1)
+        self.assertEqual(cov['not_instrumented'], 2)
+        self.assertEqual(cov['measured_assistants'], ['claude'])
+
+    def test_corrupt_token_dict_degrades_to_zero(self):
+        self._thread('t1', {'id': 't1', 'assistant': 'claude',
+                            'product': {'tokens': 'not a dict'}})
+        self._thread('t2', {'id': 't2', 'assistant': 'claude',
+                            'product': {'tokens': {'input': None,
+                                                   'output': 'lots'}}})
+        tok = hs.HypervisorSession.product_totals()['tokens']
+        self.assertEqual(tok['total'], 0)
+        self.assertEqual(tok['per_session_avg'], 0)
 
 
 if __name__ == '__main__':
