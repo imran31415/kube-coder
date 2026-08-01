@@ -274,7 +274,7 @@ provision:
   # image, a Job on any other image would run THAT image's entrypoint and could
   # exit 0 having provisioned nothing. The controller fails closed instead, with
   # an error naming this setting.
-  image: ""
+  image: "ghcr.io/imran31415/kube-coder/provisioner@sha256:e5cdbfcce29c805b654454ae7444c259031b2464707d5ccd6fd69b2a43480805"  # v1.54.0 cosign-signed provisioner (bakes python3 #576; RBAC cilium #577)
 
   # Fallback image tag for new workspaces (chart prefixes it with `devlaptop-`).
   # New workspaces default to the latest published release; this is used only
