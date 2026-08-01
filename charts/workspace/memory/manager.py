@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from . import store as _store
 from .store import MemoryStore, DB_PATH
+from .summarize import summarize as _summarize
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -69,6 +70,36 @@ def _require(cond: bool, msg: str) -> None:
         raise ValidationError(msg)
 
 
+# ── Namespace scoping (#359) ────────────────────────────────────────────────
+# Injection used to retrieve from the whole workspace DB, so a `project.foo`
+# memory could surface inside a `project.bar` chat whenever it out-scored the
+# local ones — the token-inefficiency this fixes. A *scope* is a namespace root:
+# it matches the root itself plus everything nested under it, anchored on the
+# '.' separator so `project.foo` matches `project.foo` and `project.foo.goals`
+# but NOT `project.foobar`.
+_LIKE_ESCAPE = '\\'
+
+
+def _like_escape(s: str) -> str:
+    """Escape LIKE metacharacters. Namespaces admit `_` and `%` is possible via
+    the API surface; unescaped, `project.foo_bar` would also match
+    `project.fooXbar`. Paired with an explicit ESCAPE clause in the SQL."""
+    return (s.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+             .replace('%', _LIKE_ESCAPE + '%')
+             .replace('_', _LIKE_ESCAPE + '_'))
+
+
+def _ns_scope_clause(scope: str, col: str = 'namespace'):
+    """(sql_clause, params) restricting `col` to a namespace scope root, or
+    (None, []) when no scope is given (global retrieval — the default, so
+    unscoped callers keep today's behaviour exactly)."""
+    scope = (scope or '').strip()
+    if not scope:
+        return None, []
+    return (f'({col} = ? OR {col} LIKE ? ESCAPE ?)',
+            [scope, _like_escape(scope) + '.%', _LIKE_ESCAPE])
+
+
 def _validate_ns_key(namespace: str, key: str) -> None:
     _require(isinstance(namespace, str) and _NS_KEY_RE.match(namespace),
              'namespace must match [a-zA-Z0-9._-]{1,128}')
@@ -113,6 +144,22 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     if 'tags' in d and isinstance(d['tags'], str):
         d['tags_list'] = [t for t in (s.strip() for s in d['tags'].split(',')) if t]
     return d
+
+
+def _row_summary(row: Any) -> Optional[str]:
+    """The derived summary on a row, or None. Tolerates rows read before the
+    v3 migration added the column (#359) — sqlite3.Row raises on unknown keys."""
+    try:
+        return row['summary']
+    except (IndexError, KeyError):
+        return None
+
+
+def injection_text(entry: Dict[str, Any]) -> str:
+    """The text to inject for a memory: its write-time summary when one exists,
+    else the full value (#359). Short memories have no summary and are injected
+    verbatim — only long ones were ever the problem."""
+    return (entry.get('summary') or entry.get('value') or '').strip()
 
 
 def _normalize_tags(tags: Optional[str]) -> str:
@@ -172,6 +219,13 @@ class MemoryManager:
         confidence = _clamp01(confidence, name='confidence')
         tags = _normalize_tags(tags)
         now = time.time()
+        # Write-time summarization (#359): condense long values ONCE here so
+        # injection has something short to show, instead of hard-cutting the
+        # value mid-sentence on every prompt. `value` itself is stored
+        # untouched — this is a derived column. Best-effort by construction:
+        # summarize() swallows failures and returns None, and NULL simply means
+        # readers fall back to the full value.
+        summary = _summarize(value)
 
         with cls.store().tx() as c:
             existing = c.execute(
@@ -182,11 +236,11 @@ class MemoryManager:
             if existing is None:
                 cur = c.execute(
                     'INSERT INTO memories ('
-                    '  namespace, key, value, kind, tags, importance, confidence,'
-                    '  source, created_at, updated_at, version, expires_at'
-                    ') VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                    (namespace, key, value, kind, tags, importance, confidence,
-                     source or '', now, now, 1, expires_at),
+                    '  namespace, key, value, summary, kind, tags, importance,'
+                    '  confidence, source, created_at, updated_at, version, expires_at'
+                    ') VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (namespace, key, value, summary, kind, tags, importance,
+                     confidence, source or '', now, now, 1, expires_at),
                 )
                 mem_id = cur.lastrowid
                 version = 1
@@ -194,13 +248,15 @@ class MemoryManager:
             else:
                 mem_id = existing['id']
                 version = int(existing['version']) + 1
+                # summary is recomputed from the new value every time, so it can
+                # never go stale relative to the text it describes.
                 c.execute(
                     'UPDATE memories SET'
-                    '  value=?, kind=?, tags=?, importance=?, confidence=?,'
+                    '  value=?, summary=?, kind=?, tags=?, importance=?, confidence=?,'
                     '  source=?, updated_at=?, version=?, expires_at=?,'
                     '  deleted_at=NULL'
                     ' WHERE id=?',
-                    (value, kind, tags, importance, confidence,
+                    (value, summary, kind, tags, importance, confidence,
                      source or '', now, version, expires_at, mem_id),
                 )
                 op = 'update'
@@ -268,13 +324,17 @@ class MemoryManager:
             new_conf = confidence if confidence is not None else row['confidence']
             new_exp = expires_at if expires_at is not None else row['expires_at']
             version = int(row['version']) + 1
+            # Recompute the derived summary whenever the value changes (#359);
+            # leave it untouched on metadata-only edits so we don't churn it.
+            new_summary = (_summarize(new_value) if value is not None
+                           else _row_summary(row))
 
             c.execute(
                 'UPDATE memories SET'
-                '  value=?, kind=?, tags=?, importance=?, confidence=?,'
+                '  value=?, summary=?, kind=?, tags=?, importance=?, confidence=?,'
                 '  source=?, updated_at=?, version=?, expires_at=?'
                 ' WHERE id=?',
-                (new_value, new_kind, new_tags, new_imp, new_conf,
+                (new_value, new_summary, new_kind, new_tags, new_imp, new_conf,
                  source or row['source'], now, version, new_exp, row['id']),
             )
             c.execute(
@@ -358,11 +418,13 @@ class MemoryManager:
         q: Optional[str] = None,
         limit: int = 500,
         include_deleted: bool = False,
+        namespace_scope: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit), 100000))
         if q:
             return cls.search(q=q, namespaces=[namespace] if namespace else None,
-                              kinds=[kind] if kind else None, limit=limit)
+                              kinds=[kind] if kind else None, limit=limit,
+                              namespace_scope=namespace_scope)
         clauses = []
         params: List[Any] = []
         if not include_deleted:
@@ -372,6 +434,10 @@ class MemoryManager:
         if namespace:
             clauses.append('namespace=?')
             params.append(namespace)
+        scope_clause, scope_params = _ns_scope_clause(namespace_scope)
+        if scope_clause:
+            clauses.append(scope_clause)
+            params.extend(scope_params)
         if kind:
             clauses.append('kind=?')
             params.append(kind)
@@ -455,6 +521,7 @@ class MemoryManager:
         q: str,
         kinds: Optional[Iterable[str]] = None,
         namespaces: Optional[Iterable[str]] = None,
+        namespace_scope: Optional[str] = None,
         limit: int = 25,
     ) -> List[Dict[str, Any]]:
         """Hybrid keyword + semantic search.
@@ -465,6 +532,12 @@ class MemoryManager:
         fusion (RRF). When any of those is missing the method degrades to the
         Phase-1 FTS-only ranking with identical output — so behavior is
         unchanged on deployments without embeddings configured.
+
+        `namespaces` is an exact-match allow-list; `namespace_scope` (#359) is a
+        namespace ROOT that also matches everything nested under it. Both are
+        applied on every retrieval path — FTS, the LIKE degradation, and the
+        vector-only hits loaded by _fetch_by_ids — so a high-scoring
+        out-of-scope memory can never be fused back in.
         """
         limit = max(1, min(int(limit), 200))
         if not q or not q.strip():
@@ -477,12 +550,16 @@ class MemoryManager:
         namespaces = [n for n in (namespaces or []) if n]
         if namespaces:
             clauses.append('m.namespace IN (' + ','.join('?' * len(namespaces)) + ')')
+        scope_clause, scope_params = _ns_scope_clause(namespace_scope, 'm.namespace')
+        if scope_clause:
+            clauses.append(scope_clause)
         if kinds:
             clauses.append('m.kind IN (' + ','.join('?' * len(kinds)) + ')')
         where = ' AND '.join(clauses)
 
-        # Param order matches the SQL: MATCH ?, expires-at-now, namespaces, kinds, LIMIT.
-        params: List[Any] = [fts_q, now, *namespaces, *kinds, limit * 4]
+        # Param order matches the SQL/clause order above: MATCH ?, expires-at-now,
+        # namespaces, scope, kinds, LIMIT.
+        params: List[Any] = [fts_q, now, *namespaces, *scope_params, *kinds, limit * 4]
 
         sql = f"""
             SELECT m.*, bm25(memories_fts) AS fts_rank
@@ -497,7 +574,8 @@ class MemoryManager:
             except sqlite3.OperationalError as e:
                 # Malformed FTS query (e.g. stray operator) — degrade to LIKE.
                 if 'malformed MATCH' in str(e) or 'fts5' in str(e).lower():
-                    rows = cls._search_like(c, q, namespaces, kinds, limit * 4)
+                    rows = cls._search_like(c, q, namespaces, kinds, limit * 4,
+                                            namespace_scope=namespace_scope)
                 else:
                     raise
 
@@ -516,7 +594,8 @@ class MemoryManager:
             by_id: Dict[int, Dict[str, Any]] = {int(r['id']): r for r in fts_dicts}
             if vec_ids:
                 missing = [mid for mid in vec_ids if mid not in by_id]
-                for r in cls._fetch_by_ids(c, missing, namespaces, kinds, now):
+                for r in cls._fetch_by_ids(c, missing, namespaces, kinds, now,
+                                           namespace_scope=namespace_scope):
                     by_id[int(r['id'])] = r
 
         if not vec_ids:
@@ -604,10 +683,13 @@ class MemoryManager:
         return ordered
 
     @staticmethod
-    def _fetch_by_ids(c, ids: List[int], namespaces, kinds, now: float
+    def _fetch_by_ids(c, ids: List[int], namespaces, kinds, now: float,
+                      *, namespace_scope: Optional[str] = None
                       ) -> List[Dict[str, Any]]:
-        """Load live memory rows by id, honoring the same ns/kind/expiry gate
-        as the FTS query so vector-only hits can't smuggle in filtered rows."""
+        """Load live memory rows by id, honoring the same ns/scope/kind/expiry
+        gate as the FTS query so vector-only hits can't smuggle in filtered
+        rows. _vector_search itself does an unfiltered KNN, so this gate is what
+        actually keeps out-of-scope memories out of the fused result (#359)."""
         if not ids:
             return []
         clauses = ['id IN (' + ','.join('?' * len(ids)) + ')',
@@ -617,6 +699,10 @@ class MemoryManager:
         if namespaces:
             clauses.append('namespace IN (' + ','.join('?' * len(namespaces)) + ')')
             params.extend(namespaces)
+        scope_clause, scope_params = _ns_scope_clause(namespace_scope)
+        if scope_clause:
+            clauses.append(scope_clause)
+            params.extend(scope_params)
         if kinds:
             clauses.append('kind IN (' + ','.join('?' * len(kinds)) + ')')
             params.extend(kinds)
@@ -641,7 +727,8 @@ class MemoryManager:
         return 0.55 * rrf_norm + 0.27 * importance + 0.18 * recency
 
     @staticmethod
-    def _search_like(c, q, namespaces, kinds, limit):
+    def _search_like(c, q, namespaces, kinds, limit, *,
+                     namespace_scope: Optional[str] = None):
         params: List[Any] = [time.time()]
         clauses = ['deleted_at IS NULL',
                    '(expires_at IS NULL OR expires_at > ?)']
@@ -651,6 +738,10 @@ class MemoryManager:
         if namespaces:
             clauses.append('namespace IN (' + ','.join('?' * len(namespaces)) + ')')
             params.extend(namespaces)
+        scope_clause, scope_params = _ns_scope_clause(namespace_scope)
+        if scope_clause:
+            clauses.append(scope_clause)
+            params.extend(scope_params)
         if kinds:
             clauses.append('kind IN (' + ','.join('?' * len(kinds)) + ')')
             params.extend(kinds)
@@ -688,29 +779,40 @@ class MemoryManager:
         min_score: float = 0.30,
         max_chars: int = 4096,
         exclude_secret_tag: bool = True,
+        namespace_scope: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Pick the top-K memories relevant to a free-form prompt.
 
         Phase 1: keyword-extracted FTS query, re-ranked with importance +
         recency, secret-tagged entries optionally excluded. Phase 2 will
         union this with vector top-K via reciprocal-rank fusion.
+
+        `namespace_scope` (#359) confines retrieval to one namespace root and
+        everything under it — e.g. `project.foo` for a project-bound chat, so a
+        `project.bar` memory can't be injected into it. None = the previous
+        workspace-global behaviour.
         """
         terms = _extract_terms(prompt)
         if not terms:
             # Empty / stopword-only prompt — fall back to most-important
-            # recently-updated preferences/procedurals.
+            # recently-updated preferences/procedurals. Scope applies here too,
+            # otherwise a scoped chat with a stopword-only prompt would still
+            # pull the whole workspace.
+            scope_clause, scope_params = _ns_scope_clause(namespace_scope)
+            extra = f' AND {scope_clause}' if scope_clause else ''
             with cls.store().conn() as c:
                 rows = c.execute(
                     "SELECT * FROM memories WHERE deleted_at IS NULL "
                     " AND (expires_at IS NULL OR expires_at > ?) "
-                    " AND kind IN ('preference','procedural') "
+                    " AND kind IN ('preference','procedural')"
+                    f"{extra}"
                     " ORDER BY importance DESC, updated_at DESC LIMIT ?",
-                    (time.time(), k * 2),
+                    (time.time(), *scope_params, k * 2),
                 ).fetchall()
             results = [_row_to_dict(r) for r in rows]
         else:
             q = ' OR '.join(terms)
-            results = cls.search(q=q, limit=k * 3)
+            results = cls.search(q=q, limit=k * 3, namespace_scope=namespace_scope)
 
         out: List[Dict[str, Any]] = []
         budget = max_chars
@@ -736,8 +838,10 @@ class MemoryManager:
         for m in memories:
             tags = m.get('tags') or ''
             tag_part = f' (tags: {tags})' if tags else ''
+            # Inject the write-time summary when the entry has one (#359) so a
+            # long memory arrives condensed rather than sliced mid-sentence.
             lines.append(
-                f"- [{m['namespace']}.{m['key']}] {m['value']}{tag_part}"
+                f"- [{m['namespace']}.{m['key']}] {injection_text(m)}{tag_part}"
             )
         return (
             "<workspace_memories>\n"

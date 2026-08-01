@@ -2126,7 +2126,12 @@ class ClaudeTaskManager:
         injection_block = ''
         if _MEMORY_AVAILABLE and _preinject and not disable_memory_injection:
             try:
-                injected_memories = MemoryManager.top_for_prompt(prompt or '')
+                # Scope retrieval to the task's project (#359) so a build for
+                # one project can't be primed with another's memories. No
+                # project => workspace-global, exactly as before.
+                _scope = f'project.{project_id}' if project_id else None
+                injected_memories = MemoryManager.top_for_prompt(
+                    prompt or '', namespace_scope=_scope)
                 injection_block = MemoryManager.format_injection_block(injected_memories)
             except Exception as e:  # never fail task creation on memory errors
                 print(f'[memory] auto-inject failed: {e}', file=sys.stderr)
@@ -10331,6 +10336,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 kind=(query.get('kind') or [None])[0],
                 q=(query.get('q') or [None])[0],
                 limit=int((query.get('limit') or ['500'])[0]),
+                # Namespace-scoped retrieval (#359): confines results to one
+                # namespace root and everything nested under it, so a
+                # project-bound caller (the inject hook) never sees a sibling
+                # project's memories. Absent => workspace-global, as before.
+                namespace_scope=(query.get('namespace_scope') or [None])[0],
             )
         except Exception as e:
             self._memory_error(e); return

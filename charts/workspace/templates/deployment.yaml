@@ -195,6 +195,26 @@ spec:
           value: {{ . | quote }}
         {{- end }}
         {{- end }}
+        {{- /* Memory auto-injection budget (#359). These make memory.inject.*
+               the single source of truth: the UserPromptSubmit hook reads them
+               instead of hardcoding its own limits (which had drifted from the
+               chart — 4000 in code vs 4096 here). */}}
+        {{- with (.Values.memory.inject).topK }}
+        - name: KC_MEMORY_INJECT_TOPK
+          value: {{ . | quote }}
+        {{- end }}
+        {{- with (.Values.memory.inject).maxChars }}
+        - name: KC_MEMORY_INJECT_MAX_CHARS
+          value: {{ . | quote }}
+        {{- end }}
+        {{- with (.Values.memory.inject).minScore }}
+        - name: KC_MEMORY_INJECT_MIN_SCORE
+          value: {{ . | quote }}
+        {{- end }}
+        {{- with (.Values.memory.inject).maxEntryChars }}
+        - name: KC_MEMORY_INJECT_MAX_ENTRY_CHARS
+          value: {{ . | quote }}
+        {{- end }}
         {{- if .Values.github.app.appId }}
         # GITHUB_APP_PRIVATE_KEY is deliberately NOT here (issue #558). The
         # agent runs in this container and every process it spawns inherits

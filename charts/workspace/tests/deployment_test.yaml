@@ -615,3 +615,41 @@ tests:
           any: true
           content:
             name: KC_HARNESS_EFFORT
+
+  # ── Memory auto-injection budget (#359) ────────────────────────────────────
+
+  - it: projects memory.inject.* so the hook and the chart share one source of truth
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_MEMORY_INJECT_TOPK
+            value: "8"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_MEMORY_INJECT_MAX_CHARS
+            value: "4096"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_MEMORY_INJECT_MAX_ENTRY_CHARS
+            value: "280"
+
+  - it: honours an overridden injection budget
+    template: templates/deployment.yaml
+    set:
+      memory.inject.topK: 4
+      memory.inject.maxChars: 2048
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_MEMORY_INJECT_TOPK
+            value: "4"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_MEMORY_INJECT_MAX_CHARS
+            value: "2048"

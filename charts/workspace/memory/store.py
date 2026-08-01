@@ -22,7 +22,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 DB_PATH = '/home/dev/.claude-memory/memory.db'
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Width of the vec_memories FLOAT[N] column. Embedding providers must emit
 # (or reduce to) this many dimensions — see memory/embeddings.py. A provider
@@ -118,6 +118,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "INSERT INTO _meta(key, value) VALUES('schema_version', '2')"
             " ON CONFLICT(key) DO UPDATE SET value=excluded.value"
         )
+
+    if current < 3:
+        _migration_003(conn)
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES('schema_version', '3')"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+
+
+def _migration_003(conn: sqlite3.Connection) -> None:
+    """Add the derived `summary` column (#359).
+
+    Long memories were hard-cut mid-sentence at 280 chars every time they were
+    injected. We instead compute a short summary at WRITE time and inject that,
+    while `value` keeps the user's full content — so recall/search/export are
+    unaffected and nothing is ever lost. NULL means "not summarized" (every
+    pre-existing row, and any row short enough not to need one); readers fall
+    back to `value`, so the column is purely additive.
+
+    Deliberately NOT added to the FTS index: search must keep matching the full
+    text, not a lossy digest.
+    """
+    cols = {r[1] for r in conn.execute('PRAGMA table_info(memories)').fetchall()}
+    if 'summary' not in cols:      # idempotent: safe to re-run
+        conn.execute('ALTER TABLE memories ADD COLUMN summary TEXT')
 
 
 def _migration_002(conn: sqlite3.Connection) -> None:

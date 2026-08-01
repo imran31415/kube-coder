@@ -33,12 +33,44 @@ import urllib.request
 API_BASE = 'http://localhost:6080/api/memory'
 TOKEN_FILE = '/home/dev/.claude-tasks/.api-token'
 TIMEOUT = 3.0
-MAX_ENTRIES = 8
-MAX_CHARS = 4000
-# Match the documented relevance floor (see values.yaml memory.inject.minScore
-# and MemoryManager.top_for_prompt). Below this the auto-inject prepends
-# noise; the dashboard's create_task path enforces the same floor.
-MIN_SCORE = 0.30
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or '').strip() or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float((os.environ.get(name) or '').strip() or default)
+    except ValueError:
+        return default
+
+
+# Injection budget. These now come from the chart (memory.inject.* ->
+# KC_MEMORY_INJECT_* in deployment.yaml) so the values and the code are ONE
+# source of truth — previously the hook hardcoded 4000 while values.yaml said
+# 4096 and nothing read it (#359).
+MAX_ENTRIES = _env_int('KC_MEMORY_INJECT_TOPK', 8)
+MAX_CHARS = _env_int('KC_MEMORY_INJECT_MAX_CHARS', 4096)
+# Relevance floor (values.yaml memory.inject.minScore / top_for_prompt). Below
+# this the auto-inject prepends noise; create_task enforces the same floor.
+MIN_SCORE = _env_float('KC_MEMORY_INJECT_MIN_SCORE', 0.30)
+
+# Per-entry ceiling, and the floor we shrink to when the block budget is tight.
+# An entry is never cut mid-word (see _shorten); when the budget runs low we
+# shrink the remaining entries down to MIN_ENTRY_CHARS instead of dropping them
+# outright, so later memories degrade rather than silently vanishing.
+MAX_ENTRY_CHARS = _env_int('KC_MEMORY_INJECT_MAX_ENTRY_CHARS', 280)
+MIN_ENTRY_CHARS = 80
+
+# Namespace scope (#359). A project-bound session exports KC_PROJECT_ID, whose
+# memories live under `project.<id>`; we confine retrieval to that root so a
+# sibling project's memories are never injected here. Unset (a plain terminal
+# session) => no scope => the previous workspace-global behaviour, unchanged.
+PROJECT_NS_PREFIX = 'project.'
 
 
 def _read_token() -> str:
@@ -71,11 +103,30 @@ def _read_prompt() -> str:
     return raw
 
 
+def _namespace_scope() -> str:
+    """The namespace root this session's memories should come from, or '' for
+    workspace-global retrieval (#359).
+
+    KC_PROJECT_ID is exported into every project-bound turn, so a project chat
+    scopes to `project.<id>` (which also covers `project.<id>.decisions`,
+    `.goals`, … — the server anchors the prefix on the '.' separator).
+    KC_MEMORY_NS_SCOPE overrides it for callers that aren't project-bound.
+    """
+    explicit = (os.environ.get('KC_MEMORY_NS_SCOPE') or '').strip()
+    if explicit:
+        return explicit
+    project = (os.environ.get('KC_PROJECT_ID') or '').strip()
+    return f'{PROJECT_NS_PREFIX}{project}' if project else ''
+
+
 def _query_memories(prompt: str, token: str) -> list:
     if not prompt or not token:
         return []
     q = urllib.parse.quote(prompt[:512])
     url = f'{API_BASE}?q={q}&limit={MAX_ENTRIES}'
+    scope = _namespace_scope()
+    if scope:
+        url += f'&namespace_scope={urllib.parse.quote(scope)}'
     req = urllib.request.Request(url, headers={'Authorization': f'Bearer {token}'})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
@@ -93,6 +144,31 @@ def _query_memories(prompt: str, token: str) -> list:
     return [m for m in memories if _keep(m)]
 
 
+def _shorten(text: str, limit: int) -> str:
+    """Shorten to `limit` chars on a WORD boundary, marking the elision.
+
+    Replaces the old fixed `value[:280]` slice, which cut mid-word and gave the
+    model a fragment with no signal that anything was removed (#359).
+    """
+    text = ' '.join((text or '').split())
+    if limit <= 0 or len(text) <= limit:
+        return text
+    cut = text[:max(0, limit - 1)]
+    space = cut.rfind(' ')
+    if space > limit * 0.6:      # keep a usable boundary; a single huge token has none
+        cut = cut[:space]
+    return cut.rstrip(' ,;:.') + '…'
+
+
+def _entry_text(m: dict) -> str:
+    """Prefer the write-time summary over the raw value (#359): long memories
+    are condensed once at write time, so injection shows a whole-sentence digest
+    rather than an arbitrary slice. Short entries have no summary and are shown
+    verbatim."""
+    return ((m.get('summary') or m.get('value') or '')
+            .replace('\n', ' ').strip())
+
+
 def _format_block(memories: list) -> str:
     if not memories:
         return ''
@@ -101,23 +177,33 @@ def _format_block(memories: list) -> str:
              'prior context; consult before saying you do not know. '
              'When in doubt about facts the user may have told you, '
              'call the `memory_search` tool instead of guessing.']
-    budget = MAX_CHARS
-    used = 0
+    # Only entries that survive the secret filter compete for the budget.
+    entries = []
     for m in memories:
         tags = (m.get('tags') or '').split(',')
         if 'secret' in (t.strip() for t in tags):
             continue
-        ns = m.get('namespace') or ''
-        key = m.get('key') or ''
-        value = (m.get('value') or '').replace('\n', ' ').strip()
-        # Trim individual values so one long entry can't dominate.
-        if len(value) > 280:
-            value = value[:280].rstrip() + '…'
-        line = f'- [{ns}.{key}] {value}'
-        if used + len(line) > budget:
+        text = _entry_text(m)
+        if not text:
+            continue
+        entries.append((f"{m.get('namespace') or ''}.{m.get('key') or ''}", text))
+
+    remaining = MAX_CHARS
+    for i, (label, text) in enumerate(entries):
+        prefix = f'- [{label}] '
+        left = len(entries) - i
+        # Share what's left of the budget with the entries still to come, so a
+        # long early memory can't starve the rest. Each entry gets at least
+        # MIN_ENTRY_CHARS: past the point where even that won't fit, we stop —
+        # but entries shrink long before they're dropped, which is the whole
+        # point (the old code just `break`-ed and lost them).
+        fair = max(MIN_ENTRY_CHARS, (remaining - len(prefix) * left) // max(1, left))
+        allowance = min(MAX_ENTRY_CHARS, fair)
+        line = prefix + _shorten(text, allowance)
+        if len(line) + 1 > remaining:
             break
         lines.append(line)
-        used += len(line) + 1
+        remaining -= len(line) + 1
     lines.append('</workspace_memories>')
     return '\n'.join(lines)
 
