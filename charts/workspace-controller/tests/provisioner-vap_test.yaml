@@ -73,12 +73,13 @@ tests:
           path: spec.matchConditions[0].expression
           pattern: 'serviceAccountName == "workspace-provisioner"'
 
-  - it: pins the approved image repository
+  - it: falls back to the controller image repository when provision.image is empty
     set:
       provision.enabled: true
       provision.workspaceDomain: dev.test.io
       provision.gitops.repo: github.com/x/y.git
       provision.gitToken: xxx
+      provision.image: ""   # empty => VAP approves the controller.image repo (rendering-only default; the controller itself fails closed on empty provision.image)
     documentIndex: 0
     asserts:
       - matchRegex:

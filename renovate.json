@@ -50,6 +50,17 @@
         "(?<depName>quay\\.io/oauth2-proxy/oauth2-proxy):(?<currentValue>[^\\s@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "The cosign-signed provisioner image the cluster-privileged provisioning Job runs (#571/#422), pinned tag+digest in the controller chart values. The digest is what the ValidatingAdmissionPolicy enforces, so without tracking it the pin rots as new provisioner images ship each release.",
+      "managerFilePatterns": [
+        "charts/workspace-controller/values.yaml"
+      ],
+      "matchStrings": [
+        "(?<depName>ghcr\\.io/imran31415/kube-coder/provisioner):(?<currentValue>[^\\s@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -67,6 +78,12 @@
       "description": "oauth2-proxy — the auth boundary. Never batch it with anything else, and label it security so it is reviewed as such, not as routine dependency noise.",
       "matchDepNames": ["quay.io/oauth2-proxy/oauth2-proxy"],
       "groupName": "oauth2-proxy (auth gate)",
+      "addLabels": ["security"]
+    },
+    {
+      "description": "Provisioner image — runs under the cluster-privileged provisioner SA and is admission-pinned by digest. Keep it on its own and label security so bumps are reviewed as supply-chain changes, not routine noise.",
+      "matchDepNames": ["ghcr.io/imran31415/kube-coder/provisioner"],
+      "groupName": "provisioner image (privileged path)",
       "addLabels": ["security"]
     },
     {

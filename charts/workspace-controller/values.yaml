@@ -273,8 +273,11 @@ provision:
   # Empty no longer falls back to the controller image: with the script in the
   # image, a Job on any other image would run THAT image's entrypoint and could
   # exit 0 having provisioned nothing. The controller fails closed instead, with
-  # an error naming this setting.
-  image: ""
+  # an error naming this setting. Renovate keeps the tag+digest fresh (see
+  # renovate.json — tracked like the oauth2-proxy pin), so it does not rot as new
+  # provisioner images are released. Pinned tag+digest: the digest is what admission
+  # enforces; the tag is what Renovate follows.
+  image: "ghcr.io/imran31415/kube-coder/provisioner:1.54.0@sha256:e5cdbfcce29c805b654454ae7444c259031b2464707d5ccd6fd69b2a43480805"  # cosign-signed provisioner (bakes python3 #576; RBAC cilium #577)
 
   # Fallback image tag for new workspaces (chart prefixes it with `devlaptop-`).
   # New workspaces default to the latest published release; this is used only
