@@ -18,6 +18,11 @@ import {
   memoryExporting,
   memoryImporting,
 } from '../../store/memory';
+import {
+  activeProject,
+  defaultMemoryNamespace,
+  refreshProjects,
+} from '../../store/projects';
 import { sheetOpen, drawerOpen, type DrawerKey } from '../../store/ui';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { Button } from '../../components/primitives/Button';
@@ -60,11 +65,27 @@ export function MemoryRoute() {
 
   useEffect(() => {
     startMemoryPolling(30000);
+    // The registry backs the new-memory namespace default (#358) — this tab has
+    // its own bootstrap, so it can't rely on the CTO page having loaded it.
+    void refreshProjects();
     return () => stopMemoryPolling();
   }, []);
 
+  // The project a new memory is filed under, if any — also drives the hint on
+  // the New-memory button so the default namespace isn't a surprise.
+  const project = activeProject();
+
   function onNew() {
-    setEditing({ namespace: 'user.', key: '', value: '', kind: 'semantic', importance: 0.6 });
+    setEditing({
+      // Default to the active project's namespace (#358); `user.` outside one.
+      // What a memory is written under is what a later project chat can recall,
+      // because injection is namespace-scoped (#359).
+      namespace: defaultMemoryNamespace(),
+      key: '',
+      value: '',
+      kind: 'semantic',
+      importance: 0.6,
+    });
     drawerOpen.value = 'memory-edit' as DrawerKey;
   }
   function onEdit(m: MemoryRecord) {
@@ -93,6 +114,14 @@ export function MemoryRoute() {
           <h1 class="route-title">Memory</h1>
           <p class="route-subtitle muted">
             Facts that persist across sessions — {memories.value.length} entries, filterable by namespace and content.
+            {project && (
+              <>
+                {' '}
+                New entries default to{' '}
+                <span class="mono">{project.memory_namespace}</span> — the{' '}
+                {project.name} project's namespace.
+              </>
+            )}
           </p>
         </div>
         <div class="mem-header-actions">
@@ -115,7 +144,14 @@ export function MemoryRoute() {
             </Button>
           </MutatorOnly>
           <MutatorOnly>
-            <Button variant="secondary" size="sm" onClick={onNew}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onNew}
+              title={`New memory under ${defaultMemoryNamespace()}${
+                project ? ` (${project.name})` : ''
+              } — editable before saving`}
+            >
               <Icon name="plus" size={12} /> New memory
             </Button>
           </MutatorOnly>

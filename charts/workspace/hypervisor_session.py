@@ -1833,6 +1833,21 @@ class HypervisorSession:
         self._write_meta(meta, touch=False)
         return self.summary(meta)
 
+    def set_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """(Re)bind the thread to a project, or clear the binding with '' (#358).
+
+        Stored on the thread meta, which _run_turn re-reads every turn, so the
+        next turn exports the new KC_PROJECT_ID — and with it the project's
+        memory namespace scope (#359). Like set_model/set_effort this leaves
+        updated_at alone so re-filing a chat doesn't reorder the chat list.
+        Returns the updated summary, or None if the thread is gone."""
+        meta = self.read_meta()
+        if meta is None:
+            return None
+        meta['project_id'] = (project_id or '').strip()
+        self._write_meta(meta, touch=False)
+        return self.summary(meta)
+
     def summary(self, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         m = meta or self.read_meta() or {}
         return {
@@ -1849,8 +1864,10 @@ class HypervisorSession:
             'created_at': m.get('created_at'),
             'updated_at': m.get('updated_at'),
             # Persona binding (#465) — '' for a plain Hypervisor thread, 'cto'
-            # for an AI-CTO thread; project_id present only when bound. Surfaced
-            # so the thread list can filter CTO vs. Chat and badge them.
+            # for an AI-CTO thread. Surfaced so the thread list can filter CTO
+            # vs. Chat and badge them. project_id is set on any thread bound to
+            # a project — CTO threads bind at creation, plain chats can be filed
+            # into one at any time (#358) — and '' when unbound.
             'persona': m.get('persona') or '',
             'project_id': m.get('project_id') or '',
             # Present (unix seconds) only on soft-deleted threads — lets the UI
@@ -2185,9 +2202,11 @@ class HypervisorSession:
             # servers), so the dashboard MCP's `watch` tool can arm a cross-turn
             # watcher on THIS thread without any explicit id plumbing (#402).
             env['KC_HYPERVISOR_THREAD_ID'] = self.id
-            # CTO threads (#465) also export their bound project so the
-            # dashboard MCP's project tools (get_project_brief / update_project)
-            # know which project this turn is about without explicit plumbing.
+            # A project-bound thread (#465 for CTO, #358 for a plain chat)
+            # exports its project so the dashboard MCP's project tools
+            # (get_project_brief / update_project) know which project this turn
+            # is about without explicit plumbing — and so memory injection
+            # scopes retrieval to that project's namespace (#359).
             project_id = meta.get('project_id')
             if project_id:
                 env['KC_PROJECT_ID'] = project_id

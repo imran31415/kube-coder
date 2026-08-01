@@ -12,6 +12,7 @@ import {
   renameThread,
   setThreadModel,
   setThreadEffort,
+  setThreadProject,
   type HypervisorConfig,
   type HypervisorThread,
   type TranscriptSource,
@@ -98,6 +99,14 @@ export const selectedEffort = signal<string>('');
 export const ctoAssistant = signal<string>('');
 export const ctoModel = signal<string>('');
 export const ctoEffort = signal<string>('');
+
+/** The project a NEW chat on the Chat tab is filed into (#358) — '' for none,
+ *  which stays the default so a workspace with no projects is unchanged. The
+ *  CTO surface has its own binding (chatProjectId, set by the CTO page), so the
+ *  two never borrow each other's — same split as assistant/model/effort (#483).
+ *  For an already-open chat the picker re-files that chat instead
+ *  (setActiveThreadProject). */
+export const selectedProject = signal<string>('');
 
 /** The folder a NEW thread starts in (#345) — seeded from config.workdir (the
  *  server's HYPERVISOR_WORKDIR) so the picker shows the real default. '' is
@@ -209,6 +218,12 @@ export function surfaceModel(): string {
 
 export function surfaceEffort(): string {
   return isCtoSurface() ? ctoEffort.value : selectedEffort.value;
+}
+
+/** The project a NEW chat on the CURRENT surface is filed into (#358): the CTO
+ *  page's selected project, or the Chat tab's own picker. */
+export function surfaceProjectId(): string {
+  return (isCtoSurface() ? chatProjectId.value : selectedProject.value) || '';
 }
 
 /** Live workspace "entities" surfaced as chips in the chat — currently the
@@ -404,10 +419,12 @@ export async function sendMessage(text: string): Promise<void> {
           chatPersona.value === 'cto'
             ? undefined
             : selectedWorkdir.value || undefined,
-        // AI CTO (#465): bind new threads to the CTO persona + project when the
-        // CTO page set that context; undefined (a plain chat) otherwise.
+        // AI CTO (#465): bind new threads to the CTO persona when the CTO page
+        // set that context; undefined (a plain chat) otherwise.
         persona: chatPersona.value || undefined,
-        project_id: chatProjectId.value || undefined,
+        // The project binding is surface-scoped (#358): the CTO page's project,
+        // or the Chat tab's own picker — undefined when neither is set.
+        project_id: surfaceProjectId() || undefined,
       });
       await refreshThreads();
       await openThread(thread.id);
@@ -507,6 +524,32 @@ export async function setActiveThreadEffort(effort: string): Promise<void> {
     await refreshThreads();
   } catch {
     threads.value = prev;
+  }
+}
+
+/**
+ * File a chat into a project (#358), twin of setActiveThreadModel. With a chat
+ * open it re-files that chat server-side (the binding takes effect on its next
+ * turn) and optimistically patches the list so the sidebar regroups at once;
+ * with no chat open it just moves the new-chat default for this surface.
+ * '' clears the binding.
+ */
+export async function setActiveThreadProject(projectId: string): Promise<void> {
+  const id = activeThreadId.value;
+  if (!id) {
+    // Never move the CTO's project from here — that selection belongs to the
+    // CTO page's rail (#483's split, applied to the project binding).
+    if (!isCtoSurface()) selectedProject.value = projectId;
+    return;
+  }
+  const prev = threads.value;
+  threads.value = prev.map((t) => (t.id === id ? { ...t, project_id: projectId } : t));
+  try {
+    await setThreadProject(id, projectId);
+    await refreshThreads();
+  } catch (e) {
+    threads.value = prev;
+    chatError.value = e instanceof Error ? e.message : 'Failed to set project';
   }
 }
 

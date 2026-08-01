@@ -182,7 +182,9 @@ class CreateThreadPersonaTest(unittest.TestCase):
         cap, _ = self._run({'message': 'hi', 'persona': 'wizard',
                             'project_id': 'kc'})
         self.assertEqual(cap['persona'], '')
-        self.assertEqual(cap['project_id'], '')  # dropped for non-cto
+        # A plain chat may carry a project (#358), but this one names a project
+        # the registry doesn't have (get_project → None), so it's dropped.
+        self.assertEqual(cap['project_id'], '')
         self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
 
     def test_cto_drops_unknown_project_binding(self):
@@ -342,8 +344,11 @@ class CreateThreadProjectDefaultsTest(unittest.TestCase):
         self.assertEqual(req['effort'], '')
 
     def test_plain_chat_never_reads_a_project_default(self):
-        # No persona → no project binding → the Chat tab is untouched by #483.
-        _, req = self._run({'message': 'hi'}, project=self._CONFIGURED)
+        # Not even one filed into a project (#358): a project's assistant config
+        # is what its CTO threads and dispatched builds run on, and the Chat tab
+        # sends its own picker values — so #483 still never touches it.
+        _, req = self._run({'message': 'hi', 'project_id': 'kc'},
+                           project=self._CONFIGURED)
         self.assertEqual(req['assistant'], 'ante')
         self.assertEqual(req['model'], '')
 

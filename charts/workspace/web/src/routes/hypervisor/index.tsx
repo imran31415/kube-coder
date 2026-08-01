@@ -16,6 +16,7 @@ import {
   selectedAssistant,
   selectedModel,
   selectedEffort,
+  selectedProject,
   selectedWorkdir,
   assistantModels,
   assistantEfforts,
@@ -25,6 +26,7 @@ import {
   setSelectedAssistant,
   setActiveThreadModel,
   setActiveThreadEffort,
+  setActiveThreadProject,
   initHypervisor,
   openThread,
   newChat,
@@ -38,9 +40,11 @@ import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
+import { projects, refreshProjects } from '../../store/projects';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
+import { groupByProject, isUngrouped } from './projectGroups';
 import {
   SIDEBAR_W_DEFAULT,
   SIDEBAR_W_KEY,
@@ -141,6 +145,10 @@ export function HypervisorRoute() {
       if (id) navigate(`/hypervisor/${encodeURIComponent(id)}`, true);
     });
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
+    // Projects back the chat↔project binding (#358): the picker's options and
+    // the sidebar's group labels. Cheap and cached; a workspace with none just
+    // keeps both hidden.
+    void refreshProjects();
     return () => {
       cancelled = true;
       closeThread();
@@ -196,6 +204,17 @@ export function HypervisorRoute() {
   );
   const shown = chatTab === 'active' ? activeThreads : pastThreads;
 
+  // Project binding (#358). The picker offers the registry's projects (hidden
+  // entirely when there are none, so an unprojected workspace is unchanged);
+  // with a chat open it re-files THAT chat, otherwise it sets what the next new
+  // chat is filed into — same two-mode behaviour as the model/effort pickers.
+  const projectList = projects.value;
+  const currentProject = active ? activeThread?.project_id ?? '' : selectedProject.value;
+  // Sub-group the visible tab by project so chats from different projects don't
+  // interleave. Headers are dropped when nothing is filed (single empty group).
+  const groups = groupByProject(shown, projectList);
+  const flatList = isUngrouped(groups);
+
   // If there's nothing to show under Active but there is history, land the user
   // on Past so the list isn't misleadingly empty. Only nudges while sitting on
   // an empty Active tab, so a deliberate switch back isn't fought.
@@ -247,6 +266,78 @@ export function HypervisorRoute() {
     const next = draftTitle.trim();
     if (next) void renameThreadTitle(id, next);
     cancelRename();
+  }
+
+  function renderThread(t: HypervisorThread) {
+    return renamingId === t.id ? (
+      <div
+        key={t.id}
+        class={`hv-thread hv-thread-renaming ${active === t.id ? 'hv-thread-active' : ''}`}
+      >
+        <input
+          class="hv-thread-rename-input"
+          value={draftTitle}
+          autoFocus
+          maxLength={80}
+          aria-label="Chat name"
+          onInput={(e) => setDraftTitle((e.target as HTMLInputElement).value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename(t.id);
+            else if (e.key === 'Escape') cancelRename();
+          }}
+          onBlur={() => commitRename(t.id)}
+        />
+        <button
+          type="button"
+          class="hv-thread-rename-save"
+          title="Save name"
+          aria-label="Save name"
+          // mousedown fires before the input's blur, so the click isn't
+          // swallowed by the blur-commit teardown.
+          onMouseDown={(e) => {
+            e.preventDefault();
+            commitRename(t.id);
+          }}
+        >
+          <Icon name="check" size={12} />
+        </button>
+      </div>
+    ) : (
+      <div key={t.id} class={`hv-thread ${active === t.id ? 'hv-thread-active' : ''}`}>
+        <button
+          type="button"
+          class="hv-thread-open"
+          onClick={() => pick(t.id)}
+          onDblClick={() => startRename(t.id, t.title)}
+          title={t.title}
+        >
+          <span class={`hv-dot hv-dot-${t.status}`} aria-hidden="true" />
+          <span class="hv-thread-body">
+            <span class="hv-thread-title">{t.title || 'New chat'}</span>
+            <span class="hv-thread-agent">{t.assistant}</span>
+            <span class="sr-only">{t.status}</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          class="hv-thread-rename"
+          title="Rename chat"
+          aria-label="Rename chat"
+          onClick={() => startRename(t.id, t.title)}
+        >
+          <Icon name="pencil" size={12} />
+        </button>
+        <button
+          type="button"
+          class="hv-thread-del"
+          title="Delete chat"
+          aria-label="Delete chat"
+          onClick={() => setPendingDelete(t)}
+        >
+          <Icon name="close" size={12} />
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -381,74 +472,18 @@ export function HypervisorRoute() {
               {chatTab === 'active' ? 'No active chats — start one with New.' : 'No past chats.'}
             </p>
           )}
-          {shown.map((t) =>
-            renamingId === t.id ? (
-              <div key={t.id} class={`hv-thread hv-thread-renaming ${active === t.id ? 'hv-thread-active' : ''}`}>
-                <input
-                  class="hv-thread-rename-input"
-                  value={draftTitle}
-                  autoFocus
-                  maxLength={80}
-                  aria-label="Chat name"
-                  onInput={(e) => setDraftTitle((e.target as HTMLInputElement).value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(t.id);
-                    else if (e.key === 'Escape') cancelRename();
-                  }}
-                  onBlur={() => commitRename(t.id)}
-                />
-                <button
-                  type="button"
-                  class="hv-thread-rename-save"
-                  title="Save name"
-                  aria-label="Save name"
-                  // mousedown fires before the input's blur, so the click isn't
-                  // swallowed by the blur-commit teardown.
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    commitRename(t.id);
-                  }}
-                >
-                  <Icon name="check" size={12} />
-                </button>
-              </div>
-            ) : (
-              <div key={t.id} class={`hv-thread ${active === t.id ? 'hv-thread-active' : ''}`}>
-                <button
-                  type="button"
-                  class="hv-thread-open"
-                  onClick={() => pick(t.id)}
-                  onDblClick={() => startRename(t.id, t.title)}
-                  title={t.title}
-                >
-                  <span class={`hv-dot hv-dot-${t.status}`} aria-hidden="true" />
-                  <span class="hv-thread-body">
-                    <span class="hv-thread-title">{t.title || 'New chat'}</span>
-                    <span class="hv-thread-agent">{t.assistant}</span>
-                    <span class="sr-only">{t.status}</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="hv-thread-rename"
-                  title="Rename chat"
-                  aria-label="Rename chat"
-                  onClick={() => startRename(t.id, t.title)}
-                >
-                  <Icon name="pencil" size={12} />
-                </button>
-                <button
-                  type="button"
-                  class="hv-thread-del"
-                  title="Delete chat"
-                  aria-label="Delete chat"
-                  onClick={() => setPendingDelete(t)}
-                >
-                  <Icon name="close" size={12} />
-                </button>
-              </div>
-            ),
-          )}
+          {flatList
+            ? shown.map(renderThread)
+            : groups.map((g) => (
+                <section key={g.id || '_none'} class="hv-thread-group">
+                  <h3 class="hv-thread-group-head">
+                    <Icon name={g.id ? 'cto' : 'chat'} size={11} />
+                    <span class="hv-thread-group-name">{g.label}</span>
+                    <span class="hv-tab-count">{g.threads.length}</span>
+                  </h3>
+                  {g.threads.map(renderThread)}
+                </section>
+              ))}
         </div>
 
         {/* Recently deleted — a collapsible trash so an accidental delete is
@@ -645,6 +680,44 @@ export function HypervisorRoute() {
                     → {effortCap}
                   </span>
                 )}
+              </label>
+            )}
+            {/* Project binding (#358) — files the open chat into a project (or
+                sets what the next new chat is filed into). The chat's turns
+                then carry KC_PROJECT_ID, so its memories and the project tools
+                land in that project rather than the workspace at large. Hidden
+                when the registry is empty. */}
+            {projectList.length > 0 && (
+              <label
+                class="hv-model-picker"
+                title={
+                  active
+                    ? 'Project this chat belongs to — applies from the next turn'
+                    : 'Project the next new chat is filed into'
+                }
+              >
+                <span class="hv-model-label">Project</span>
+                <select
+                  class="hv-model-select"
+                  value={currentProject}
+                  onChange={(e) =>
+                    void setActiveThreadProject((e.target as HTMLSelectElement).value)
+                  }
+                  aria-label="Project for this chat"
+                >
+                  <option value="">No project</option>
+                  {/* Keep an unknown binding (archived/deleted project) shown
+                      rather than silently snapping the select to "No project". */}
+                  {currentProject &&
+                    !projectList.some((p) => p.id === currentProject) && (
+                      <option value={currentProject}>{currentProject}</option>
+                    )}
+                  {projectList.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name || p.id}
+                    </option>
+                  ))}
+                </select>
               </label>
             )}
             {active && status && (
