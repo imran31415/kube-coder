@@ -43,6 +43,12 @@ def _load_pending_batch(c, batch: int) -> List[Dict[str, Any]]:
     carrying every pending row id so the whole backlog for that memory drains
     in one shot. Soft-deleted memories surface too (deleted_at set) so we can
     drop their stale queue entries without embedding them.
+
+    The fold stays load-bearing after #597 made the queue UNIQUE per memory:
+    rows written before a workspace upgrades still sit in the table until
+    migration 004 collapses them at the next boot, and this is what lets that
+    migration be lazy — a worker running against a not-yet-migrated database
+    drains duplicates correctly instead of embedding the same memory N times.
     """
     rows = c.execute(
         'SELECT p.id AS pid, p.memory_id, p.attempts, '

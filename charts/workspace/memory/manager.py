@@ -235,6 +235,50 @@ def _normalize_tags(tags: Optional[str]) -> str:
     return ','.join(out)
 
 
+def _enqueue_embedding(c: sqlite3.Connection, memory_id: int, now: float) -> None:
+    """Mark a memory as needing (re-)embedding. Idempotent per memory (#597).
+
+    THIS FUNCTION IS THE BOUND. The queue is a boolean per memory, not a log of
+    edits — a memory edited 20 times needs embedding once. Previously every
+    write inserted a new row, and since the worker only runs when an embedding
+    provider is configured (the non-default), nothing drained them on most
+    workspaces and the table grew forever on the PVC.
+
+    Enforced here in code rather than by a UNIQUE(memory_id) constraint, on
+    purpose: the constraint would be a one-way door that breaks older code on
+    an image rollback (see `store._migration_004` for the full reasoning). The
+    cost of keeping it in code is that this is the single place the invariant
+    lives, so both call sites must go through it — hence one helper, not two
+    inlined statements.
+
+    Safe without the constraint because every caller runs inside
+    `MemoryStore.tx()`, i.e. BEGIN IMMEDIATE, which SQLite grants to exactly
+    one writer at a time. No other writer can insert a row for this memory
+    between the UPDATE and the INSERT.
+
+    Where duplicates already exist — a not-yet-migrated DB, or rows written by
+    an older image during a rollback window — the UPDATE matches all of them,
+    so the queue stops GROWING. It does not collapse them: that is migration
+    004's job, and `_load_pending_batch` folds them meanwhile.
+
+    `attempts`/`last_error` reset on re-enqueue: a fresh edit is a fresh
+    attempt, and carrying a stale error forward would count against
+    MAX_ATTEMPTS and suppress a retry that deserves to happen.
+    """
+    cur = c.execute(
+        'UPDATE embeddings_pending '
+        '   SET enqueued_at=?, attempts=0, last_error=NULL '
+        ' WHERE memory_id=?',
+        (now, memory_id),
+    )
+    if cur.rowcount == 0:
+        c.execute(
+            'INSERT INTO embeddings_pending (memory_id, enqueued_at) '
+            'VALUES (?, ?)',
+            (memory_id, now),
+        )
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # MemoryManager
 # ───────────────────────────────────────────────────────────────────────────
@@ -329,10 +373,7 @@ class MemoryManager:
             )
 
             # Enqueue an embedding refresh; harmless in Phase 1 (worker absent).
-            c.execute(
-                'INSERT INTO embeddings_pending (memory_id, enqueued_at) VALUES (?, ?)',
-                (mem_id, now),
-            )
+            _enqueue_embedding(c, mem_id, now)
 
             cls._prune_history(c, mem_id)
             row = c.execute('SELECT * FROM memories WHERE id=?', (mem_id,)).fetchone()
@@ -404,10 +445,7 @@ class MemoryManager:
                  now, source or 'unknown', 'update'),
             )
             if value is not None or tags is not None:
-                c.execute(
-                    'INSERT INTO embeddings_pending (memory_id, enqueued_at) VALUES (?, ?)',
-                    (row['id'], now),
-                )
+                _enqueue_embedding(c, row['id'], now)
             cls._prune_history(c, row['id'])
             updated = c.execute('SELECT * FROM memories WHERE id=?', (row['id'],)).fetchone()
         return _row_to_dict(updated)

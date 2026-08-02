@@ -69,7 +69,13 @@ seeder only manages the keys above and leaves your additions alone.
 - `embeddings` / `vec_memories` / `embeddings_pending` — semantic-search
   tables. A background worker drains `embeddings_pending` into the
   `vec_memories` vec0 table whenever an embedding provider is configured;
-  with `provider: none` they stay empty (FTS5-only).
+  with `provider: none` they stay empty (FTS5-only). `embeddings_pending`
+  holds one row per memory needing (re-)embedding, not one per write, so it
+  stays bounded by the memory count even on the common workspace where no
+  provider is set and nothing ever drains it. That bound is enforced when
+  enqueueing rather than by a `UNIQUE` constraint, deliberately: a
+  constraint would make an image rollback break every memory update, since
+  older code inserts unconditionally.
 
 Migrations run idempotently on every server boot.
 
