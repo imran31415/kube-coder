@@ -18,9 +18,36 @@ import struct
 import threading
 import time
 from contextlib import contextmanager
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import Iterator, List, Mapping, Optional, Sequence, Tuple
 
-DB_PATH = '/home/dev/.claude-memory/memory.db'
+# The deployment path. MUST stay exactly this string: every workspace's
+# memories already live here, so a typo hands every user a silently-empty
+# store — a worse failure than the one KC_MEMORY_DB exists to prevent.
+DEFAULT_DB_PATH = '/home/dev/.claude-memory/memory.db'
+
+
+def _resolve_db_path(env: Optional[Mapping[str, str]] = None) -> str:
+    """`$KC_MEMORY_DB`, or the deployment default when unset/blank.
+
+    Blank-means-default matches the KC_MEMORY_INJECT_* knobs in
+    memory_inject_hook.py: an empty variable is an unset one, never a request
+    to open '' as a database.
+    """
+    src = os.environ if env is None else env
+    return ((src.get('KC_MEMORY_DB') or '').strip()) or DEFAULT_DB_PATH
+
+
+# Where this process's memory database lives.
+#
+# KC_MEMORY_DB exists so schema/migration work and ad-hoc scripts can point at
+# a throwaway COPY rather than the live file (#599: a migration run against the
+# live DB left memory half-broken workspace-wide — new memories saved, updates
+# failed). Get a copy with `scripts/memory-db-copy.sh`.
+#
+# Resolved once at import, so a process picks its database at start-up and
+# every module that did `from .store import DB_PATH` agrees on the same file
+# for its lifetime. Set the variable before launching the process, not after.
+DB_PATH = _resolve_db_path()
 
 SCHEMA_VERSION = 4
 

@@ -79,6 +79,7 @@ This document describes all environment variables used by kube-coder components.
 ### Memory System
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `KC_MEMORY_DB` | `/home/dev/.claude-memory/memory.db` | Which SQLite file the memory subsystem opens. Read once at import, so set it *before* launching a process. Meant for schema/migration work and ad-hoc scripts against a throwaway copy (`scripts/memory-db-copy.sh` / `make memory-db-copy`) — leave it unset in every deployment, or that workspace gets a different, empty store. |
 | `KC_MEMORY_PREINJECT` | `false` | When `true` or `1`, pre-inject relevant memories into new task prompts (legacy behavior). |
 | `KC_TASK_ID` | - | **Automatically set.** Task identifier passed to spawned tmux sessions for memory provenance. |
 

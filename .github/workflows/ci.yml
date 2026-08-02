@@ -110,6 +110,11 @@ jobs:
       - name: Syntax-check doctor.sh
         run: bash -n scripts/doctor.sh
 
+      - name: Syntax-check memory-db-copy.sh
+        # Behaviour is covered by tests.memory_db_path_test (it runs the script
+        # against a throwaway DB); this just fails fast with a clear message.
+        run: bash -n scripts/memory-db-copy.sh
+
       - name: doctor.sh operator-preflight tests (#580)
         # scripts/doctor.sh reaches the cluster only through read-only CLIs, so
         # the suite shims kubectl/helm/dig/git on PATH and drives each check's

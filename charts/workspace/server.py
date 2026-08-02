@@ -14848,8 +14848,8 @@ if __name__ == "__main__":
     # /api/memory* returns 503 until the import error is fixed.
     if _MEMORY_AVAILABLE:
         try:
-            MemoryManager.store()
-            print(f'[memory] initialized at /home/dev/.claude-memory/memory.db')
+            _mem_store = MemoryManager.store()
+            print(f'[memory] initialized at {_mem_store.db_path}')
         except Exception as e:
             print(f'[memory] init failed: {e}', file=sys.stderr)
         # Start background sync of Claude Code's native auto-memory files

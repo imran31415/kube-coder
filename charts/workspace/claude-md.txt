@@ -202,6 +202,28 @@ This workspace ships a persistent memory store backed by SQLite at
 Entries survive across tasks, browser tabs, and pod restarts, and are
 shared with the dashboard's Memory tab — the user can view and edit them.
 
+### These paths are LIVE shared state — never a test fixture
+
+`/home/dev/.claude-memory/memory.db` (memory), `/home/dev/.claude-tasks/`
+(Build metadata and transcripts) and `/home/dev/.credentials/` (SSH keys,
+tokens, per-tool logins) are written **right now** by the dashboard, the MCP
+servers and every other agent in this pod. An isolated git worktree does NOT
+isolate them.
+
+**Never open them read-write for schema, migration, or ad-hoc script work,
+and never point a test at them.** A migration run against the live
+`memory.db` once left a workspace where new memories saved but every update
+failed silently. Work on a throwaway copy instead:
+
+```bash
+export KC_MEMORY_DB="$(/home/dev/kube-coder/scripts/memory-db-copy.sh)"
+```
+
+Reading and writing memories through the MCP tools below is normal use and
+is always fine — this warning is about the files underneath them.
+(`unset KC_MEMORY_DB` when the schema work is done: anything you launch from
+that shell inherits it.)
+
 ### Default behavior: ALWAYS check memory before saying "I don't know"
 
 A `<workspace_memories>` block is automatically prepended to every user
