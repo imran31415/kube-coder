@@ -24,6 +24,7 @@ import http.client
 import socket
 import ipaddress
 import fcntl
+import signal
 import zipfile
 
 # Hidden-text detection for agent-readable instruction files (#559). Pure and
@@ -35,6 +36,17 @@ try:
 except ImportError:      # pragma: no cover - module always ships beside server.py
     instruction_scan = None
     _INSTRUCTION_SCAN_AVAILABLE = False
+
+# devcontainer.json reader (#594). Pure — it parses, normalizes and classifies
+# but never executes; DevcontainerManager below owns everything that touches
+# the workspace. Kept out of server.py because the JSONC parser wants ~40 unit
+# tests that must not boot an HTTP server, same precedent as instruction_scan.
+try:
+    import devcontainer
+    _DEVCONTAINER_AVAILABLE = True
+except ImportError:      # pragma: no cover - module always ships beside server.py
+    devcontainer = None
+    _DEVCONTAINER_AVAILABLE = False
 
 # Persistent memory subsystem — shared with mcp_memory.py via the colocated
 # `memory` package. Importable because the workspace-entrypoint copies the
@@ -2350,6 +2362,22 @@ class ClaudeTaskManager:
         # set in Settings (no redeploy) reaches the CLI subprocess. Store wins
         # over the pod env; when unset the pod/helm default carries through.
         provider_env = []
+        # containerEnv/remoteEnv from an APPLIED devcontainer.json (#594), so a
+        # repo's NODE_ENV reaches the agent that works in it. Precedence is
+        # pod < devcontainer < provider keys < effort, enforced here by
+        # DROPPING any devcontainer key that a later layer also sets rather
+        # than by relying on tmux `-e` ordering. devcontainer.py already refuses
+        # ANTHROPIC_*/GH_*/PATH/LD_* outright; this is the second line, so that
+        # even a denylist gap cannot let a repo win over a real provider key.
+        _dc_env = {}
+        if _DEVCONTAINER_AVAILABLE:
+            _dc_env = DevcontainerManager.env_for_workdir(workdir)
+        _later_keys = set(ProviderKeysManager.env_overlay().keys()) | \
+            set(ClaudeTaskManager.effort_env(assistant, effort).keys())
+        for k, v in _dc_env.items():
+            if k in _later_keys:
+                continue
+            provider_env += ['-e', f'{k}={v}']
         for k, v in ProviderKeysManager.env_overlay().items():
             provider_env += ['-e', f'{k}={v}']
         # Reasoning effort for the CLIs that read it from the environment (#362) —
@@ -3692,9 +3720,17 @@ class WorkspaceManager:
     .claude-tasks, etc.) and obvious non-projects (node_modules, vendor)."""
 
     HOME_DIR = '/home/dev'
+    # NOT cosmetic: this tuple feeds ProjectsManager.discover()'s auto-provision
+    # as well as the new-task picker, so adding an entry makes previously
+    # invisible directories register themselves. The devcontainer entries are
+    # deliberate (#594) — a devcontainer.json is an explicit human declaration
+    # that a directory is a project, which is stronger evidence than a stray
+    # Makefile. The slash-bearing entry works because the check below is
+    # os.path.exists(os.path.join(path, m)), not a listdir membership test.
     PROJECT_MARKERS = (
         'package.json', 'pyproject.toml', 'Cargo.toml',
         'go.mod', 'Gemfile', 'Makefile', 'requirements.txt',
+        os.path.join('.devcontainer', 'devcontainer.json'), '.devcontainer.json',
     )
     SKIP_NAMES = {'node_modules', 'vendor', 'target', 'dist', 'build', '__pycache__'}
 
@@ -3722,11 +3758,16 @@ class WorkspaceManager:
                 os.path.exists(os.path.join(path, m))
                 for m in WorkspaceManager.PROJECT_MARKERS
             )
+            has_devcontainer = (
+                os.path.exists(os.path.join(path, '.devcontainer',
+                                            'devcontainer.json'))
+                or os.path.exists(os.path.join(path, '.devcontainer.json')))
             results.append({
                 'path': path,
                 'label': name,
                 'is_git_repo': is_git,
                 'is_project': is_git or has_project_marker,
+                'has_devcontainer': has_devcontainer,
                 'mtime': mtime,
             })
         results.sort(key=lambda d: d['mtime'], reverse=True)
@@ -4288,7 +4329,8 @@ class ProjectsManager:
                 c = {
                     'id': pid, 'name': name or pid, 'workdirs': [], 'repo': '',
                     'memory_namespace': f'project.{pid}', 'reasons': [],
-                    'has_git_remote': False, 'has_task': False, 'has_memory': False,
+                    'has_git_remote': False, 'has_task': False,
+                    'has_memory': False, 'has_devcontainer': False,
                 }
                 candidates[pid] = c
             return c
@@ -4304,6 +4346,18 @@ class ProjectsManager:
             if d['path'] not in c['workdirs']:
                 c['workdirs'].append(d['path'])
             c['reasons'].append('workspace-dir')
+            if d.get('has_devcontainer'):
+                # A devcontainer.json is a human saying "this is a project" in
+                # so many words (#594) — stronger than a marker file, so it
+                # counts toward `high` confidence. Its `name`, when set, also
+                # beats the bare directory label for a candidate nobody has
+                # named yet; a user-chosen name is never overwritten because
+                # discover() only ever *creates* records.
+                c['has_devcontainer'] = True
+                c['reasons'].append('devcontainer')
+                dc_name = ProjectsManager._devcontainer_name(d['path'])
+                if dc_name and c['name'] == d['label']:
+                    c['name'] = dc_name
             if d.get('is_git_repo'):
                 remote = ProjectsManager._git_remote(d['path'])
                 if remote:
@@ -4341,7 +4395,8 @@ class ProjectsManager:
                 if c['workdirs']:
                     c['reasons'].append('implied-workdir')
             c['confidence'] = 'high' if (
-                c['has_git_remote'] or c['has_task'] or c['has_memory']) else 'low'
+                c['has_git_remote'] or c['has_task'] or c['has_memory']
+                or c.get('has_devcontainer')) else 'low'
             c['registered'] = c['id'] in existing_ids
             c['reasons'] = sorted(set(c['reasons']))
             if auto_provision and c['confidence'] == 'high' and not c['registered']:
@@ -4367,6 +4422,37 @@ class ProjectsManager:
             'registered': registered,
             'backfilled': backfilled,
         }
+
+    @staticmethod
+    def _devcontainer_name(workdir):
+        """`name` from a devcontainer.json, '' for anything else. Best-effort:
+        discovery must never fail because a repo shipped broken JSON."""
+        if not _DEVCONTAINER_AVAILABLE:
+            return ''
+        try:
+            summary = devcontainer.summarize(workdir)
+        except Exception:
+            return ''
+        return summary.get('name') or '' if summary.get('found') else ''
+
+    @staticmethod
+    def _devcontainer_brief(workdirs):
+        """Read-through devcontainer summary per workdir, same discipline as the
+        `git` field: pure file reads, no subprocess, nothing cached. Wrapped so
+        an unparseable file yields an `error` row instead of breaking the whole
+        brief."""
+        if not _DEVCONTAINER_AVAILABLE:
+            return []
+        out = []
+        for wd in workdirs:
+            try:
+                summary = devcontainer.summarize(wd)
+            except Exception as e:
+                summary = {'found': True, 'error': str(e)[:200]}
+            if summary.get('found'):
+                summary['workdir'] = wd
+                out.append(summary)
+        return out
 
     # ── brief aggregation (the heart of the feature) ─────────────────────
 
@@ -4468,6 +4554,7 @@ class ProjectsManager:
             'decisions': decisions_all[:ProjectsManager._BRIEF_DECISIONS],
             'memories': others_all[:ProjectsManager._BRIEF_MEMORIES],
             'git': git,
+            'devcontainer': ProjectsManager._devcontainer_brief(workdirs),
             'triggers': ProjectsManager._project_triggers(workdirs),
             'counts': {'goals': len(goals_all), 'decisions': len(decisions_all),
                        'memories': len(others_all), 'tasks': len(proj_tasks)},
@@ -4529,6 +4616,34 @@ class ProjectsManager:
             L.append("## Triggers")
             for tr in brief['triggers']:
                 L.append(f"- {tr['kind']}: {tr.get('id')}")
+
+        # Dev container LAST and capped at 3 workdirs (#594). _BRIEF_MARKDOWN_CAP
+        # truncates from the END, so anything appended here is what gets cut
+        # first — which is the correct order of sacrifice: losing the goals or
+        # the decision log to make room for a port list would be a regression.
+        if brief.get('devcontainer'):
+            L.append("")
+            L.append("## Dev container")
+            for d in brief['devcontainer'][:3]:
+                if d.get('error'):
+                    L.append(f"- `{d.get('workdir')}` — unreadable: "
+                             f"{ProjectsManager._one_line(d['error'], 100)}")
+                    continue
+                bits = []
+                if d.get('ports'):
+                    bits.append(f"{d['ports']} ports")
+                if d.get('extensions'):
+                    bits.append(f"{d['extensions']} extensions")
+                hooks = ', '.join(sorted((d.get('hooks') or {}).keys()))
+                if hooks:
+                    bits.append(hooks)
+                label = d.get('name') or d.get('path') or 'devcontainer.json'
+                L.append(f"- {label}" + (f" — {' · '.join(bits)}" if bits else ""))
+                if d.get('blocking'):
+                    L.append(f"  - ⚠ cannot be applied here: "
+                             f"{', '.join(d.get('blocking_keys') or [])}")
+            if len(brief['devcontainer']) > 3:
+                L.append(f"- _(+{len(brief['devcontainer']) - 3} more)_")
 
         md = '\n'.join(L)
         if len(md) > ProjectsManager._BRIEF_MARKDOWN_CAP:
@@ -7046,6 +7161,652 @@ class AppsManager:
         return True, ''
 
 
+class DevcontainerManager:
+    """The impure half of devcontainer.json support (#594).
+
+    devcontainer.py locates, parses, normalizes and classifies — and imports no
+    subprocess. Everything that TOUCHES the workspace lives here, because it
+    needs AppsManager, EventBroker and READONLY_MODE, and a pure module that
+    imported `server` for them would be a cycle. Same split as skills
+    (pure model + impure syncer).
+
+    THE SAFETY CONTRACT, in one table, because it is the whole feature:
+
+        discover() / brief() / any GET       never executes anything
+        POST /apply with hooks: []           appliers only, no execution
+        POST /apply with hooks               executes, and only after the
+                                             caller echoes back the config
+                                             hash it was shown
+        boot pass                            postStart only, and only with a
+                                             per-workdir opt-in AND an
+                                             unchanged hash AND the chart flag
+
+    The hash echo is a compare-and-swap, not decoration. Without it, a
+    `git pull` between the confirm dialog rendering the command text and the
+    user clicking OK means they authorized command A and command B ran. A
+    `postStartCommand` that rewrites its own devcontainer.json is the same
+    attack from inside.
+
+    Boot never runs postCreate even when it is pending: a ten-minute `npm ci`
+    would delay every pod start, and a user restarting to escape a broken
+    state would re-trigger exactly what broke it.
+    """
+
+    ENABLED = os.environ.get('DEVCONTAINER_ENABLED', 'true').lower() == 'true'
+    AUTO_APPLY = os.environ.get('DEVCONTAINER_AUTO_APPLY', 'true').lower() == 'true'
+    try:
+        TIMEOUT = max(30, int(os.environ.get('DEVCONTAINER_TIMEOUT', '900')))
+    except (TypeError, ValueError):
+        TIMEOUT = 900
+
+    HOME_DEV = '/home/dev'
+    # Lifecycle commands run with HOME=/home/dev, NOT the /home/ubuntu that
+    # interactive shells use (start.sh). server.py's own HOME is already
+    # /home/dev (devlaptop/Dockerfile sets USER dev / WORKDIR /home/dev and the
+    # deployment never overrides it), so this is belt-and-braces — but it is
+    # what makes `nvm`/`pip --user` land on the PVC and survive a restart.
+    HOOK_HOME = '/home/dev'
+    CODE_SERVER_USER_DIR = '/home/dev/.local/share/code-server/User'
+    CODE_SERVER_DATA_DIR = '/home/dev/.local/share/code-server'
+    CODE_SERVER_EXT_DIR = '/home/dev/.local/share/code-server/extensions'
+    SETTINGS_PATH = os.path.join(CODE_SERVER_USER_DIR, 'settings.json')
+    EXTENSION_TIMEOUT = 180
+    LOG_CAP_BYTES = 1024 * 1024
+    LOG_TAIL_BYTES = 8192
+    POLL_SECONDS = 0.25
+
+    # One run per workdir. A second POST while a hook is running gets 409
+    # rather than a second `npm ci` racing the first over node_modules.
+    _lock = threading.Lock()
+    _running = {}
+
+    # ── availability / validation ────────────────────────────────────────
+
+    @classmethod
+    def available(cls):
+        """Gated on its own flag, NOT on cto_available(). Reading the file a
+        repo already carries is a workspace capability; the CTO gate is about
+        the /cto page and a deployment can reasonably have one without the
+        other."""
+        return bool(cls.ENABLED and _DEVCONTAINER_AVAILABLE)
+
+    @classmethod
+    def resolve_workdir(cls, raw):
+        """(abs_path, error). Confined to /home/dev — realpath-compared with a
+        separator on the prefix, so neither `/home/dev/../etc` nor a lookalike
+        sibling like `/home/devious` passes. Same idiom as
+        _resolve_under_home_dev."""
+        if not raw or not isinstance(raw, str):
+            return '', 'workdir is required'
+        confine = os.path.realpath(cls.HOME_DEV)
+        path = os.path.realpath(raw)
+        if path != confine and not path.startswith(confine + os.sep):
+            return '', f'workdir must be under {confine}'
+        if not os.path.isdir(path):
+            return '', 'workdir is not a directory'
+        return path, ''
+
+    # ── read side ────────────────────────────────────────────────────────
+
+    @classmethod
+    def describe(cls, workdir):
+        """Everything the UI needs for one workdir: the parsed file, what we
+        have already done, and the derived per-hook status."""
+        parsed = devcontainer.parse(workdir)
+        record = devcontainer.get_record(workdir)
+        out = dict(parsed)
+        out['applied'] = {
+            'ports_pinned': record.get('ports_pinned') or [],
+            'extensions_installed': record.get('extensions_installed') or [],
+            'settings_written': record.get('settings_written') or {},
+            'env': record.get('env') or {},
+            'applied_at': record.get('applied_at'),
+            'auto_apply': bool(record.get('auto_apply')),
+            'consented_hash': record.get('consented_hash', ''),
+        }
+        out['lifecycle_status'] = devcontainer.lifecycle_status(parsed, record) \
+            if not parsed.get('error') else {}
+        out['busy'] = workdir in cls._running
+        return out
+
+    @classmethod
+    def scan(cls):
+        """One pass over the workspace dirs, so the SPA never fans out N
+        requests to find out which projects even have a devcontainer."""
+        out = []
+        for d in WorkspaceManager.list_dirs():
+            try:
+                summary = devcontainer.summarize(d['path'])
+            except Exception:          # a bad file must not break the list
+                continue
+            if not summary.get('found'):
+                continue
+            summary['workdir'] = d['path']
+            summary['label'] = d['label']
+            out.append(summary)
+        return out
+
+    # ── appliers (no execution) ──────────────────────────────────────────
+
+    @classmethod
+    def apply_ports(cls, parsed, record):
+        """Pin declared ports on the Applications page.
+
+        AppsManager already merges discovered LISTENs with declared pins, which
+        is exactly forwardPorts semantics — a port stays listed with its label
+        whether or not the process happens to be up.
+
+        Never clobbers: a port the user already named by hand keeps that name
+        and is reported as a conflict. Two repos both forwarding 3000 is the
+        common case and the second one silently renaming the first would be a
+        bug you would never trace back to here.
+        """
+        pinned, conflicts = [], []
+        already = set(record.get('ports_pinned') or [])
+        for entry in parsed.get('ports') or []:
+            port, label = entry['port'], entry['label']
+            existing = AppsManager.get_pin(port)
+            if existing and port not in already:
+                conflicts.append({
+                    'port': port, 'label': label,
+                    'existing': existing.get('name', ''),
+                    'reason': 'already pinned under another name — left alone'})
+                continue
+            try:
+                AppsManager.add_pin(port, label)
+                pinned.append(port)
+            except ValueError as e:
+                conflicts.append({'port': port, 'label': label,
+                                  'existing': '', 'reason': str(e)})
+        return pinned, conflicts
+
+    @classmethod
+    def _read_settings(cls):
+        try:
+            with open(cls.SETTINGS_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    @classmethod
+    def apply_settings(cls, parsed, record):
+        """Merge customizations.vscode.settings into code-server's settings.json.
+
+        NEVER CLOBBERS A HAND EDIT. A key is written only when it is absent, or
+        when its current value is exactly what we last wrote for it. start.sh
+        seeds this file on first run only, and users edit it — silently
+        reverting someone's editor preference because a repo disagreed is the
+        kind of bug that gets a feature switched off.
+        """
+        want = parsed.get('settings') or {}
+        if not want:
+            return {}, []
+        previous = record.get('settings_written') or {}
+        current = cls._read_settings()
+        written, skipped = {}, []
+        merged = dict(current)
+        for key, value in want.items():
+            if key in current and current[key] != previous.get(key, object()):
+                skipped.append({'key': key,
+                                'reason': 'edited in the workspace — left alone'})
+                continue
+            if current.get(key, object()) == value:
+                written[key] = value      # already correct; still record it
+                continue
+            merged[key] = value
+            written[key] = value
+        if not written:
+            return {}, skipped
+        os.makedirs(cls.CODE_SERVER_USER_DIR, exist_ok=True)
+        tmp = f'{cls.SETTINGS_PATH}.tmp.{os.getpid()}'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(merged, f, indent=2, sort_keys=True)
+        os.replace(tmp, cls.SETTINGS_PATH)
+        return written, skipped
+
+    @classmethod
+    def _installed_extensions(cls):
+        try:
+            names = os.listdir(cls.CODE_SERVER_EXT_DIR)
+        except OSError:
+            return set()
+        out = set()
+        for n in names:
+            # Directories are `<publisher>.<name>-<version>`; strip the version.
+            out.add(re.sub(r'-\d[\w.\-]*$', '', n).lower())
+        return out
+
+    @classmethod
+    def apply_extensions(cls, parsed, record):
+        """Install declared extensions into the PVC-backed extensions dir.
+
+        argv list, shell=False, always. code-server's --install-extension also
+        accepts a FILESYSTEM PATH, so a shell string built from a repo-supplied
+        value is arbitrary editor code execution out of the cloned tree. The id
+        regex in devcontainer.py is the first guard; this is the second.
+
+        One failure does not abort the rest — a marketplace hiccup on extension
+        three should not lose extensions four and five.
+        """
+        want = parsed.get('extensions') or []
+        if not want:
+            return [], []
+        installed_now = cls._installed_extensions()
+        done = list(record.get('extensions_installed') or [])
+        installed, failed = [], []
+        for ext in want:
+            base = ext.split('@', 1)[0].lower()
+            if base in installed_now or ext in done:
+                installed.append(ext)
+                continue
+            argv = ['code-server', '--install-extension', ext,
+                    '--extensions-dir', cls.CODE_SERVER_EXT_DIR,
+                    '--user-data-dir', cls.CODE_SERVER_DATA_DIR]
+            try:
+                proc = subprocess.run(argv, capture_output=True, text=True,
+                                      timeout=cls.EXTENSION_TIMEOUT)
+            except (OSError, subprocess.SubprocessError) as e:
+                failed.append({'id': ext, 'reason': str(e)[:200]})
+                continue
+            if proc.returncode == 0:
+                installed.append(ext)
+            else:
+                failed.append({
+                    'id': ext,
+                    'reason': (proc.stderr or proc.stdout or
+                               f'exit {proc.returncode}').strip()[:200]})
+        return installed, failed
+
+    @classmethod
+    def env_for_workdir(cls, workdir):
+        """containerEnv/remoteEnv for a task launched in this workdir.
+
+        Read-through from the file — not from state — so removing a variable
+        from devcontainer.json takes effect immediately rather than lingering
+        until someone re-applies. Returns {} for everything that is not an
+        applied devcontainer, and never raises: a task launch must not fail
+        because a repo shipped a broken JSON file.
+        """
+        if not cls.available():
+            return {}
+        try:
+            wd, err = cls.resolve_workdir(workdir)
+            if err:
+                return {}
+            record = devcontainer.get_record(wd)
+            if not record.get('applied_at'):
+                return {}
+            parsed = devcontainer.parse(wd)
+            if parsed.get('error'):
+                return {}
+            return dict(parsed.get('env') or {})
+        except Exception as e:
+            print(f'[devcontainer] env lookup failed for {workdir}: {e}',
+                  file=sys.stderr)
+            return {}
+
+    # ── lifecycle execution ──────────────────────────────────────────────
+
+    @classmethod
+    def _spawn(cls, entry, cwd, env, log_file):
+        """One command as its own process GROUP.
+
+        start_new_session=True is not a nicety: without it a runaway
+        `npm install` that spawns children outlives the SIGTERM we send on
+        timeout, and the workspace keeps burning CPU with nothing tracking it.
+
+        String -> ['bash', '-lc', s] per the spec. Array -> exec'd directly with
+        shell=False. The two are never mixed: concatenating an argv list into a
+        shell string would re-introduce quoting bugs the array form exists to
+        avoid.
+        """
+        if entry['kind'] == 'argv':
+            argv = list(entry['command'])
+        else:
+            argv = ['bash', '-lc', entry['command']]
+        return subprocess.Popen(
+            argv, cwd=cwd, env=env,
+            stdout=log_file, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True)
+
+    @classmethod
+    def _kill_group(cls, proc):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (OSError, AttributeError):
+            proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, AttributeError):
+                proc.kill()
+
+    @classmethod
+    def _await(cls, proc, log_path, started):
+        """Wait for one command, enforcing BOTH the timeout and the log cap.
+
+        Returns (exit_code, reason) where reason is '' | 'timeout' | 'log_cap'.
+
+        Polling rather than a plain proc.wait(timeout=): the log is the other
+        way this can hurt the workspace. `npm install` with a verbose
+        postinstall can emit hundreds of MB, and /home/dev is the PVC every
+        other feature depends on — a full volume breaks memory, tasks and the
+        project registry, not just this run. A wait() that only watches the
+        clock would let that happen for the full 15 minutes.
+
+        The cap is a CONTAINMENT bound, not a byte-exact one: the child writes
+        to the file directly, so overshoot is (write rate × POLL_SECONDS). A
+        pathological writer can exceed the cap several-fold in one interval.
+        The alternative — piping every byte through a Python reader thread —
+        would make this process the throughput bottleneck for every legitimate
+        build, which is a worse trade for a mechanism whose job is to stop a
+        runaway, not to trim a log.
+        """
+        deadline = started + cls.TIMEOUT
+        while True:
+            try:
+                code = proc.wait(timeout=cls.POLL_SECONDS)
+                return code, ''
+            except subprocess.TimeoutExpired:
+                pass
+            if time.time() >= deadline:
+                cls._kill_group(proc)
+                return -1, 'timeout'
+            try:
+                if os.path.getsize(log_path) > cls.LOG_CAP_BYTES:
+                    cls._kill_group(proc)
+                    return -1, 'log_cap'
+            except OSError:
+                pass
+
+    @classmethod
+    def _tail(cls, path):
+        try:
+            size = os.path.getsize(path)
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                if size > cls.LOG_TAIL_BYTES:
+                    f.seek(size - cls.LOG_TAIL_BYTES)
+                return f.read()[-cls.LOG_TAIL_BYTES:]
+        except OSError:
+            return ''
+
+    @classmethod
+    def run_hook(cls, workdir, hook, parsed, base_env=None):
+        """Run every command in one hook, in order. Returns the state record.
+
+        Non-zero exit stops the chain, per the spec: `npm ci` failing means
+        `npm run build` is going to fail too, and running it anyway buries the
+        real error under a second one.
+        """
+        cmds = (parsed.get('lifecycle') or {}).get(hook) or []
+        if not cmds:
+            return {'status': 'none'}
+        devcontainer.ensure_dirs()
+        log_path = devcontainer.log_path_for(workdir, hook)
+        cwd = parsed.get('workspace_folder') or workdir
+        if not os.path.isdir(cwd):
+            cwd = workdir
+        env = dict(os.environ)
+        env.update(base_env or {})
+        env.update(parsed.get('env') or {})
+        env['HOME'] = cls.HOOK_HOME
+        env['DEVCONTAINER'] = 'true'
+        env['REMOTE_CONTAINERS'] = 'true'
+
+        started = time.time()
+        result = {'status': 'ok', 'exit_code': 0, 'ran_at': started,
+                  'log_path': log_path,
+                  'hook_hash': (parsed.get('hook_hashes') or {}).get(hook, ''),
+                  'boot_id': devcontainer.boot_id()}
+        with open(log_path, 'w', encoding='utf-8') as log_file:
+            for entry in cmds:
+                log_file.write(f'\n$ {entry["display"]}\n')
+                log_file.flush()
+                try:
+                    proc = cls._spawn(entry, cwd, env, log_file)
+                except (OSError, ValueError) as e:
+                    result.update({'status': 'failed', 'exit_code': -1})
+                    log_file.write(f'\n[devcontainer] could not start: {e}\n')
+                    break
+                code, why = cls._await(proc, log_path, started)
+                if why == 'timeout':
+                    log_file.write(
+                        f'\n[devcontainer] timed out after {cls.TIMEOUT}s '
+                        '— killed the whole process group\n')
+                    result.update({'status': 'timed_out', 'exit_code': -1})
+                    break
+                if why == 'log_cap':
+                    log_file.write(
+                        f'\n[devcontainer] log exceeded {cls.LOG_CAP_BYTES} '
+                        'bytes — killed the whole process group\n')
+                    result.update({'status': 'failed', 'exit_code': -1})
+                    break
+                if code != 0:
+                    log_file.write(f'\n[devcontainer] exited {code}; '
+                                   'stopping the remaining commands\n')
+                    result.update({'status': 'failed', 'exit_code': code})
+                    break
+        result['finished_at'] = time.time()
+        result['log_tail'] = cls._tail(log_path)
+        return result
+
+    @classmethod
+    def _run_hooks_async(cls, workdir, hooks, parsed):
+        def _worker():
+            try:
+                for hook in devcontainer.HOOKS:
+                    if hook not in hooks:
+                        continue
+                    record = devcontainer.get_record(workdir)
+                    life = dict(record.get('lifecycle') or {})
+                    life[hook] = {'status': 'running',
+                                  'ran_at': time.time(),
+                                  'hook_hash': (parsed.get('hook_hashes')
+                                                or {}).get(hook, '')}
+                    record['lifecycle'] = life
+                    devcontainer.put_record(workdir, record)
+                    cls._publish(workdir, hook, 'running')
+
+                    result = cls.run_hook(workdir, hook, parsed)
+
+                    record = devcontainer.get_record(workdir)
+                    life = dict(record.get('lifecycle') or {})
+                    life[hook] = result
+                    record['lifecycle'] = life
+                    devcontainer.put_record(workdir, record)
+                    cls._publish(workdir, hook, result.get('status'))
+                    if result.get('status') not in ('ok', 'none'):
+                        break
+            except Exception as e:      # a worker crash must not wedge the lock
+                print(f'[devcontainer] hook run failed for {workdir}: {e}',
+                      file=sys.stderr)
+            finally:
+                with cls._lock:
+                    cls._running.pop(workdir, None)
+                cls._publish(workdir, '', 'idle')
+
+        thread = threading.Thread(target=_worker, daemon=True,
+                                  name=f'devcontainer-{os.path.basename(workdir)}')
+        thread.start()
+        return thread
+
+    @staticmethod
+    def _publish(workdir, hook, status):
+        try:
+            EventBroker.publish('devcontainer.changed',
+                                {'workdir': workdir, 'hook': hook,
+                                 'status': status})
+        except Exception:
+            pass
+
+    # ── apply ────────────────────────────────────────────────────────────
+
+    @classmethod
+    def apply(cls, workdir, hooks=None, config_hash=None, auto_apply=None):
+        """Apply a devcontainer.json to this workspace. Returns (result, error).
+
+        Appliers run synchronously — they are fast, deterministic, and their
+        outcome is what the user wants to see immediately. Hooks start in a
+        daemon thread and the caller gets 202: a ten-minute `npm ci` inside the
+        request handler blocks a ThreadingHTTPServer worker until the browser
+        gives up, and the user then retries and runs the install twice.
+        """
+        hooks = [h for h in (hooks or []) if h in devcontainer.HOOKS]
+        parsed = devcontainer.parse(workdir)
+        if not parsed.get('found'):
+            return None, ('not_found', 'no devcontainer.json in this directory')
+        if parsed.get('error'):
+            return None, ('invalid', parsed['error'])
+
+        if hooks:
+            # Compare-and-swap on the file the user was actually shown.
+            if not config_hash:
+                return None, ('hash_required',
+                              'config_hash is required when running commands')
+            if config_hash != parsed['config_hash']:
+                return None, ('hash_mismatch',
+                              'devcontainer.json changed since it was shown — '
+                              'reload and confirm the new commands')
+            with cls._lock:
+                if workdir in cls._running:
+                    return None, ('busy', 'a devcontainer run is already in '
+                                          'progress for this directory')
+                cls._running[workdir] = time.time()
+
+        record = devcontainer.get_record(workdir)
+        try:
+            pinned, port_conflicts = cls.apply_ports(parsed, record)
+            settings_written, settings_skipped = cls.apply_settings(parsed, record)
+            extensions, extension_failures = cls.apply_extensions(parsed, record)
+        except Exception as e:
+            with cls._lock:
+                cls._running.pop(workdir, None)
+            return None, ('apply_failed', str(e))
+
+        record['config_hash'] = parsed['config_hash']
+        record['consented_hash'] = config_hash or record.get('consented_hash', '')
+        if auto_apply is not None:
+            record['auto_apply'] = bool(auto_apply)
+        record['ports_pinned'] = sorted(
+            set(record.get('ports_pinned') or []) | set(pinned))
+        record['extensions_installed'] = sorted(
+            set(record.get('extensions_installed') or []) | set(extensions))
+        merged_settings = dict(record.get('settings_written') or {})
+        merged_settings.update(settings_written)
+        record['settings_written'] = merged_settings
+        record['env'] = dict(parsed.get('env') or {})
+        record['applied_at'] = time.time()
+        record.setdefault('lifecycle', {})
+        devcontainer.put_record(workdir, record)
+        cls._publish(workdir, '', 'applied')
+
+        result = {
+            'workdir': workdir,
+            'config_hash': parsed['config_hash'],
+            'ports_pinned': pinned, 'port_conflicts': port_conflicts,
+            'settings_written': sorted(settings_written.keys()),
+            'settings_skipped': settings_skipped,
+            'extensions_installed': extensions,
+            'extension_failures': extension_failures,
+            'env': sorted((parsed.get('env') or {}).keys()),
+            'hooks_started': hooks,
+            'unsupported': parsed.get('unsupported') or [],
+        }
+        if hooks:
+            cls._run_hooks_async(workdir, hooks, parsed)
+        return result, None
+
+    @classmethod
+    def reset(cls, workdir, unpin_ports=False):
+        """Forget that we applied anything here, so the next apply starts clean.
+
+        Settings and extensions are NOT rolled back. Silently uninstalling an
+        extension the user now relies on, or reverting an editor setting they
+        have since come to expect, is worse than leaving them — and the user
+        can remove either by hand. Ports are opt-in because those we did create
+        under a name from the repo.
+        """
+        record = devcontainer.get_record(workdir)
+        unpinned = []
+        if unpin_ports:
+            for port in record.get('ports_pinned') or []:
+                try:
+                    if AppsManager.remove_pin(port):
+                        unpinned.append(port)
+                except ValueError:
+                    pass
+        existed = devcontainer.drop_record(workdir)
+        cls._publish(workdir, '', 'reset')
+        return {'workdir': workdir, 'cleared': existed, 'unpinned': unpinned}
+
+    # ── boot pass ────────────────────────────────────────────────────────
+
+    @classmethod
+    def boot_pass(cls):
+        """Re-run postStart once per pod boot, for workdirs that opted in.
+
+        Three independent conditions, all required: the chart flag, a
+        per-workdir `auto_apply` the user set explicitly, and a config hash
+        still equal to the one they consented to. Anything less and a pod
+        restart becomes a way to run whatever the repo last committed.
+        """
+        if not cls.available() or not cls.AUTO_APPLY or READONLY_MODE:
+            return {'ran': [], 'skipped': 'disabled'}
+        ran, skipped = [], []
+        state = devcontainer.read_state()
+        for workdir, record in (state.get('workdirs') or {}).items():
+            if not record.get('auto_apply'):
+                continue
+            wd, err = cls.resolve_workdir(workdir)
+            if err:
+                skipped.append({'workdir': workdir, 'reason': err})
+                continue
+            parsed = devcontainer.parse(wd)
+            if not parsed.get('found') or parsed.get('error'):
+                skipped.append({'workdir': workdir, 'reason': 'missing or invalid'})
+                continue
+            if parsed['config_hash'] != record.get('consented_hash'):
+                skipped.append({'workdir': workdir,
+                                'reason': 'devcontainer.json changed since consent'})
+                continue
+            status = devcontainer.lifecycle_status(parsed, record)
+            if status.get('postStart', {}).get('status') != 'pending':
+                continue
+            with cls._lock:
+                if wd in cls._running:
+                    continue
+                cls._running[wd] = time.time()
+            cls._run_hooks_async(wd, ['postStart'], parsed)
+            ran.append(wd)
+        return {'ran': ran, 'skipped': skipped}
+
+    @classmethod
+    def start_boot_pass(cls, delay_seconds=20):
+        """Fire boot_pass once, off the request path, after the workspace has
+        settled. A daemon thread rather than a separate python3 invocation from
+        start.sh, so it shares this process's state and cannot outlive it."""
+        if not cls.available() or not cls.AUTO_APPLY:
+            return False
+
+        def _later():
+            time.sleep(delay_seconds)
+            try:
+                out = cls.boot_pass()
+                if out.get('ran'):
+                    print(f'[devcontainer] boot pass ran postStart for '
+                          f'{len(out["ran"])} workdir(s)')
+            except Exception as e:
+                print(f'[devcontainer] boot pass failed: {e}', file=sys.stderr)
+
+        threading.Thread(target=_later, daemon=True,
+                         name='devcontainer-boot').start()
+        return True
+
+
 # ── Mission Control (issue #425) ─────────────────────────────────────────────
 # Normalizes builds (~/.claude-tasks tasks), hypervisor chats and orchestrator
 # sub-agents into one card list grouped by what needs the human:
@@ -7732,6 +8493,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 # AI CTO gate (#467) — boot-loaded so the SPA can hide the /cto
                 # nav item before the route mounts. Rides the Hypervisor.
                 'ctoEnabled': cto_available(),
+                # devcontainer.json support (#594). Independent of ctoEnabled:
+                # reading the file a repo already carries is a workspace
+                # capability, not part of the CTO page.
+                'devcontainerEnabled': DevcontainerManager.available(),
             })
             return
         # /api/apps — Applications page list endpoint.
@@ -7742,6 +8507,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # instruction files (#559). Server-side on purpose: see the handler.
         if claude_path == '/api/security/instruction-scan':
             self._handle_instruction_scan()
+            return
+        # /api/devcontainer[/scan] — read a repo's own devcontainer.json (#594).
+        # Parse only; nothing here ever executes a lifecycle command.
+        if claude_path == '/api/devcontainer':
+            self._handle_devcontainer_get()
+            return
+        if claude_path == '/api/devcontainer/scan':
+            self._handle_devcontainer_scan()
             return
         # Reverse-proxy to a locally-listening web app.
         if self._dispatch_app_proxy(claude_path, 'GET'):
@@ -12722,6 +13495,124 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             )
         self.send_json(report)
 
+    # ── devcontainer.json (#594) ─────────────────────────────────────────
+
+    def _devcontainer_gate(self):
+        """(ok, workdir_or_empty). 401 unauthenticated, 404 when the feature is
+        off. Deliberately NOT behind _require_cto: a deployment can run without
+        the CTO page and still want a repo's own environment read."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return False
+        if not DevcontainerManager.available():
+            self.send_json({'error': 'devcontainer support is disabled'}, 404)
+            return False
+        return True
+
+    def _devcontainer_workdir(self, raw):
+        workdir, err = DevcontainerManager.resolve_workdir(raw)
+        if err:
+            self.send_json({'error': err}, 400)
+            return ''
+        return workdir
+
+    def _handle_devcontainer_get(self):
+        """GET /api/devcontainer?workdir=<abs> — parsed config + what we did.
+
+        A directory with no devcontainer.json answers 200 with found:false, not
+        404. "There is no devcontainer here" is a normal, useful answer; a 404
+        is indistinguishable from "the feature is disabled" and the SPA would
+        have to guess which it got.
+        """
+        if not self._devcontainer_gate():
+            return
+        qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+        workdir = self._devcontainer_workdir((qs.get('workdir') or [''])[0])
+        if not workdir:
+            return
+        try:
+            self.send_json(DevcontainerManager.describe(workdir))
+        except Exception as e:
+            self.send_json({'error': f'read failed: {e}'}, 500)
+
+    def _handle_devcontainer_scan(self):
+        """GET /api/devcontainer/scan — every workspace dir that has one."""
+        if not self._devcontainer_gate():
+            return
+        try:
+            rows = DevcontainerManager.scan()
+        except Exception as e:
+            self.send_json({'error': f'scan failed: {e}'}, 500)
+            return
+        self.send_json({'devcontainers': rows, 'count': len(rows)})
+
+    def _handle_devcontainer_apply(self):
+        """POST /api/devcontainer/apply — the only executing route.
+
+        Body: {workdir, hooks: [], config_hash, auto_apply}. `hooks` empty means
+        appliers only (ports, settings, extensions, env) and nothing runs.
+        `config_hash` is REQUIRED whenever hooks is non-empty and must equal the
+        file's current hash — see DevcontainerManager.apply.
+        """
+        if not self._devcontainer_gate():
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            body = json.loads(self.rfile.read(length) or b'{}') if length else {}
+        except (ValueError, TypeError):
+            self.send_json({'error': 'invalid JSON body'}, 400)
+            return
+        if not isinstance(body, dict):
+            self.send_json({'error': 'body must be a JSON object'}, 400)
+            return
+        workdir = self._devcontainer_workdir(body.get('workdir'))
+        if not workdir:
+            return
+        hooks = body.get('hooks') or []
+        if not isinstance(hooks, list) or any(not isinstance(h, str) for h in hooks):
+            self.send_json({'error': 'hooks must be an array of strings'}, 400)
+            return
+        unknown = [h for h in hooks if h not in devcontainer.HOOKS]
+        if unknown:
+            self.send_json({'error': f'unknown hooks: {", ".join(unknown)}',
+                            'allowed': list(devcontainer.HOOKS)}, 400)
+            return
+        auto = body.get('auto_apply')
+        result, err = DevcontainerManager.apply(
+            workdir, hooks=hooks, config_hash=body.get('config_hash'),
+            auto_apply=None if auto is None else bool(auto))
+        if err:
+            code, message = err
+            status = {'not_found': 404, 'invalid': 422, 'hash_required': 400,
+                      'hash_mismatch': 409, 'busy': 409}.get(code, 500)
+            self.send_json({'error': message, 'code': code}, status)
+            return
+        # 202: appliers already ran synchronously, hooks (if any) are running in
+        # a daemon thread and the caller follows them via devcontainer.changed.
+        self.send_json(result, 202)
+
+    def _handle_devcontainer_reset(self):
+        """POST /api/devcontainer/reset — forget that we applied here."""
+        if not self._devcontainer_gate():
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            body = json.loads(self.rfile.read(length) or b'{}') if length else {}
+        except (ValueError, TypeError):
+            self.send_json({'error': 'invalid JSON body'}, 400)
+            return
+        if not isinstance(body, dict):
+            self.send_json({'error': 'body must be a JSON object'}, 400)
+            return
+        workdir = self._devcontainer_workdir(body.get('workdir'))
+        if not workdir:
+            return
+        try:
+            self.send_json(DevcontainerManager.reset(
+                workdir, unpin_ports=bool(body.get('unpin_ports'))))
+        except Exception as e:
+            self.send_json({'error': f'reset failed: {e}'}, 500)
+
     def _handle_apps_list(self):
         if not self.check_app_proxy_auth():
             self.send_response(401)
@@ -13080,6 +13971,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_project_create()
             elif path == "/api/projects/_discover":
                 self.handle_project_discover()
+            # devcontainer.json (#594). /apply is the ONLY route in the whole
+            # server that can run a command out of a cloned repo, and it does so
+            # only against a config hash the caller echoes back.
+            elif path == "/api/devcontainer/apply":
+                self._handle_devcontainer_apply()
+            elif path == "/api/devcontainer/reset":
+                self._handle_devcontainer_reset()
             # Feed (#469)
             elif path == "/api/feed":
                 self.handle_feed_create()
@@ -14140,6 +15038,20 @@ if __name__ == "__main__":
         print(f'[tasks] background reconciler started ({_reconcile_interval}s)')
     except Exception as e:
         print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
+
+    # devcontainer postStart pass (#594). A daemon thread from here rather than
+    # a separate python3 invocation in start.sh, so it shares this process's
+    # lock and state and cannot outlive it. Runs postStart ONLY, and only for
+    # workdirs whose owner opted in with a config hash that has not changed —
+    # a pod restart must never become a way to execute whatever a repo last
+    # committed. Deliberately never runs postCreate: a ten-minute `npm ci`
+    # would delay every boot, and restarting to escape a broken state would
+    # just re-trigger what broke it.
+    try:
+        if DevcontainerManager.start_boot_pass():
+            print('[devcontainer] postStart boot pass scheduled')
+    except Exception as e:
+        print(f'[devcontainer] boot pass schedule failed: {e}', file=sys.stderr)
 
     print("Starting Browser API Server on port 6080...")
     print("Available endpoints:")

@@ -96,6 +96,13 @@ This document describes all environment variables used by kube-coder components.
 | `DASHBOARD_DIST_DIR` | `/opt/dashboard-dist` | Directory containing compiled dashboard assets. |
 | `DISPLAY` | `:99` | X11 display for browser/VNC sessions. |
 
+### devcontainer.json (#594)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEVCONTAINER_ENABLED` | `true` | Read a repo's own `devcontainer.json`. `false` hides the Dev container card and 404s `/api/devcontainer*`. Set from `devcontainer.enabled`. |
+| `DEVCONTAINER_AUTO_APPLY` | `true` | Allow the once-per-boot `postStartCommand` pass. Still requires a per-workdir opt-in AND an unchanged config hash. `false` makes every command execution require an explicit click. Set from `devcontainer.autoApplyOnBoot`. |
+| `DEVCONTAINER_TIMEOUT` | `900` | Seconds one lifecycle command may run before its whole process group is killed. Set from `devcontainer.commandTimeoutSeconds`. |
+
 ## Workspace Controller (`controller.py`)
 
 ### Core Configuration

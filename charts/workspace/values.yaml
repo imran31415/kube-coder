@@ -458,6 +458,28 @@ hypervisor:
 cto:
   enabled: true
 
+# devcontainer.json support (#594) — read the environment file a repo already
+# carries (Codespaces / Coder / Ona / DevPod all use it) and apply the parts
+# that work inside this pod: forwarded ports land on the Apps page, VS Code
+# extensions and settings reach code-server, containerEnv/remoteEnv reach the
+# agent. Detection and reporting are read-only and never execute anything.
+#
+# WHAT IT DELIBERATELY CANNOT DO. `features`, `image`, `build` and
+# `dockerComposeFile` are reported with a reason instead of being silently
+# ignored: the pod runs as UID 1000 with allowPrivilegeEscalation=false and
+# build.mode defaults to kaniko, so there is no root and no Docker daemon.
+# That boundary is a documented product decision, not a TODO.
+devcontainer:
+  enabled: true
+  # Re-run postStartCommand once per pod boot. Requires BOTH this flag and a
+  # per-workdir opt-in the user set from the dashboard, AND a devcontainer.json
+  # whose hash still matches what they consented to. Set false to make command
+  # execution require an explicit click, always.
+  autoApplyOnBoot: true       # DEVCONTAINER_AUTO_APPLY
+  # Wall-clock ceiling for one lifecycle command. The whole process GROUP is
+  # killed on expiry, so a runaway `npm install` cannot outlive it.
+  commandTimeoutSeconds: 900  # DEVCONTAINER_TIMEOUT
+
 # Conversation Gateway — chat with this workspace's agent over WhatsApp
 # (issue #325). OFF by default: with `enabled: false` the /api/gateway/*
 # config surface is inert AND templates/ingress-gateway.yaml (the public,

@@ -67,6 +67,27 @@ export interface BriefTrigger {
   schedule?: string;
 }
 
+/** Per-workdir devcontainer.json summary, read through on every brief (#594).
+ *  Counts only — the full record comes from /api/devcontainer. */
+export interface BriefDevcontainer {
+  workdir: string;
+  found: true;
+  path?: string;
+  name?: string;
+  config_hash?: string;
+  ports?: number;
+  extensions?: number;
+  settings?: number;
+  env?: number;
+  hooks?: Record<string, number>;
+  unsupported?: number;
+  blocking?: number;
+  blocking_keys?: string[];
+  needs_root?: boolean;
+  /** Set instead of the counts when the file exists but could not be parsed. */
+  error?: string;
+}
+
 export interface ProjectBrief {
   project: Project;
   tasks: {
@@ -79,6 +100,7 @@ export interface ProjectBrief {
   decisions: BriefMemory[];
   memories: BriefMemory[];
   git: BriefGit[];
+  devcontainer?: BriefDevcontainer[];
   triggers: BriefTrigger[];
   counts: { goals: number; decisions: number; memories: number; tasks: number };
   brief_markdown: string;

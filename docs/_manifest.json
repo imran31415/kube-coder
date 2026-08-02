@@ -46,7 +46,8 @@
       "title": "Workspace",
       "pages": [
         { "id": "files", "title": "Files", "file": "in-app/files.md", "summary": "Files tab tour, upload limits, where data lives, the persistence model." },
-        { "id": "browser", "title": "Browser & VNC", "file": "in-app/browser.md", "summary": "Headless Firefox/Chrome on the virtual display, the VNC viewer, kiosk mode." }
+        { "id": "browser", "title": "Browser & VNC", "file": "in-app/browser.md", "summary": "Headless Firefox/Chrome on the virtual display, the VNC viewer, kiosk mode." },
+        { "id": "devcontainer", "title": "devcontainer.json", "file": "devcontainer.md", "summary": "Read the environment file your repo already carries — ports, extensions, settings, env and lifecycle commands applied inside the workspace pod, plus an honest account of what features/image/build cannot do here and why." }
       ]
     },
     {

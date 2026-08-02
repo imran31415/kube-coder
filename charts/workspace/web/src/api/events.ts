@@ -36,6 +36,7 @@ const EVENT_TYPES = [
   'gateway.preview',
   'projects.changed',
   'feed.item',
+  'devcontainer.changed',
 ];
 
 let es: EventSource | null = null;

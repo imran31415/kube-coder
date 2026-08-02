@@ -662,6 +662,170 @@ class HandlerTests(ProjectsManagerBase):
         disc.assert_called_once_with(auto_provision=True)
 
 
+# ──────────────────── devcontainer.json integration (#594) ────────────────
+
+class DevcontainerIntegrationTests(ProjectsManagerBase):
+    """The four places devcontainer.json touches the project registry.
+
+    PROJECT_MARKERS is the one that carries risk: it feeds discover()'s
+    auto-provision as well as the new-task picker, so adding entries makes
+    directories that were previously invisible register themselves. That is
+    intended (#594) and therefore asserted rather than left to be discovered
+    in production.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix='kctest-dc-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # These tests need REAL files on disk, so the registry's /home/dev
+        # confinement (_normalize) has to point at the tempdir — otherwise
+        # create() rejects every workdir and nothing auto-provisions.
+        self._orig_home_root = PM.HOME_ROOT
+        PM.HOME_ROOT = self.tmp
+        self.addCleanup(lambda: setattr(PM, 'HOME_ROOT', self._orig_home_root))
+
+    def _patch_memory(self, rows):
+        return mock.patch.object(server, 'MemoryManager', _FakeMemory(rows))
+
+    def _make(self, name, config=None, dotfile=False):
+        path = os.path.join(self.tmp, name)
+        os.makedirs(path, exist_ok=True)
+        if config is None:
+            return path
+        if dotfile:
+            target = os.path.join(path, '.devcontainer.json')
+        else:
+            os.makedirs(os.path.join(path, '.devcontainer'), exist_ok=True)
+            target = os.path.join(path, '.devcontainer', 'devcontainer.json')
+        with open(target, 'w', encoding='utf-8') as f:
+            f.write(config if isinstance(config, str) else json.dumps(config))
+        return path
+
+    # ── markers ──────────────────────────────────────────────────────────
+
+    def test_devcontainer_alone_makes_a_directory_a_project(self):
+        """The slash-bearing marker entry is the non-obvious part: it works
+        because list_dirs does os.path.exists(join(path, m)), not a listdir
+        membership test."""
+        self._make('folder-form', {'name': 'A'})
+        self._make('dotfile-form', {'name': 'B'}, dotfile=True)
+        self._make('nothing')
+        with mock.patch.object(server.WorkspaceManager, 'HOME_DIR', self.tmp):
+            dirs = {d['label']: d for d in server.WorkspaceManager.list_dirs()}
+        self.assertTrue(dirs['folder-form']['is_project'])
+        self.assertTrue(dirs['folder-form']['has_devcontainer'])
+        self.assertTrue(dirs['dotfile-form']['is_project'])
+        self.assertTrue(dirs['dotfile-form']['has_devcontainer'])
+        self.assertFalse(dirs['nothing']['is_project'])
+        self.assertFalse(dirs['nothing']['has_devcontainer'])
+
+    # ── discovery ────────────────────────────────────────────────────────
+
+    def test_discover_treats_a_devcontainer_as_high_confidence(self):
+        """An explicit human declaration beats a stray Makefile — so a bare
+        devcontainer dir auto-provisions where a bare marker dir does not."""
+        self._make('api', {'name': 'Payments API'})
+        fake_dirs = [{'path': os.path.join(self.tmp, 'api'), 'label': 'api',
+                      'is_git_repo': False, 'is_project': True,
+                      'has_devcontainer': True, 'mtime': 5}]
+        with mock.patch.object(server.WorkspaceManager, 'list_dirs',
+                               return_value=fake_dirs), \
+             mock.patch.object(server, 'MemoryManager', _FakeMemory([])):
+            result = PM.discover(auto_provision=True)
+        candidate = result['candidates'][0]
+        self.assertEqual(candidate['confidence'], 'high')
+        self.assertTrue(candidate['registered'])
+        self.assertIn('devcontainer', candidate['reasons'])
+        # The config `name` beats the bare directory label for an unnamed
+        # candidate.
+        self.assertEqual(candidate['name'], 'Payments API')
+
+    def test_discover_does_not_rename_when_the_config_has_no_name(self):
+        self._make('api', {'forwardPorts': [3000]})
+        fake_dirs = [{'path': os.path.join(self.tmp, 'api'), 'label': 'api',
+                      'is_git_repo': False, 'is_project': True,
+                      'has_devcontainer': True, 'mtime': 5}]
+        with mock.patch.object(server.WorkspaceManager, 'list_dirs',
+                               return_value=fake_dirs), \
+             mock.patch.object(server, 'MemoryManager', _FakeMemory([])):
+            result = PM.discover(auto_provision=True)
+        self.assertEqual(result['candidates'][0]['name'], 'api')
+
+    def test_discover_survives_an_unparseable_config(self):
+        self._make('api', '{ broken')
+        fake_dirs = [{'path': os.path.join(self.tmp, 'api'), 'label': 'api',
+                      'is_git_repo': False, 'is_project': True,
+                      'has_devcontainer': True, 'mtime': 5}]
+        with mock.patch.object(server.WorkspaceManager, 'list_dirs',
+                               return_value=fake_dirs), \
+             mock.patch.object(server, 'MemoryManager', _FakeMemory([])):
+            result = PM.discover(auto_provision=True)
+        self.assertEqual(result['candidates'][0]['name'], 'api')
+        self.assertEqual(result['candidates'][0]['confidence'], 'high')
+
+    # ── brief ────────────────────────────────────────────────────────────
+
+    def test_brief_carries_the_read_through_summary(self):
+        wd = self._make('kc', {'name': 'KC dev', 'forwardPorts': [3000],
+                               'postCreateCommand': 'npm ci',
+                               'features': {'ghcr.io/x/node:1': {}}})
+        PM.create({'id': 'kc', 'workdirs': [wd]})
+        with self._patch_memory([]):
+            brief = PM.brief('kc')
+        self.assertEqual(len(brief['devcontainer']), 1)
+        entry = brief['devcontainer'][0]
+        self.assertEqual(entry['name'], 'KC dev')
+        self.assertEqual(entry['ports'], 1)
+        self.assertEqual(entry['blocking_keys'], ['features'])
+        md = brief['brief_markdown']
+        self.assertIn('## Dev container', md)
+        self.assertIn('KC dev', md)
+        self.assertIn('features', md)
+
+    def test_brief_omits_the_section_when_no_workdir_has_one(self):
+        wd = self._make('kc')
+        PM.create({'id': 'kc', 'workdirs': [wd]})
+        with self._patch_memory([]):
+            brief = PM.brief('kc')
+        self.assertEqual(brief['devcontainer'], [])
+        self.assertNotIn('## Dev container', brief['brief_markdown'])
+
+    def test_brief_survives_an_unparseable_config(self):
+        wd = self._make('kc', '{ broken')
+        PM.create({'id': 'kc', 'workdirs': [wd]})
+        with self._patch_memory([]):
+            brief = PM.brief('kc')
+        self.assertTrue(brief['devcontainer'][0]['error'])
+        self.assertIn('unreadable', brief['brief_markdown'])
+        # The rest of the brief is intact — a broken repo file must not take
+        # the whole digest down.
+        self.assertIn('## Tasks', brief['brief_markdown'])
+
+    def test_brief_markdown_section_is_last_and_capped_at_three(self):
+        workdirs = [self._make(f'w{i}', {'name': f'env {i}'}) for i in range(5)]
+        PM.create({'id': 'kc', 'workdirs': workdirs})
+        with self._patch_memory([_mem('project.kc', 'g', 'a goal',
+                                      tags=['goal'])]):
+            brief = PM.brief('kc')
+        md = brief['brief_markdown']
+        self.assertEqual(len(brief['devcontainer']), 5)
+        self.assertIn('env 0', md)
+        self.assertNotIn('env 3', md)
+        self.assertIn('+2 more', md)
+        # LAST, because _BRIEF_MARKDOWN_CAP truncates from the end: losing the
+        # goals to make room for a port list would be a regression.
+        self.assertGreater(md.index('## Dev container'), md.index('## Goals'))
+
+    def test_brief_is_unaffected_when_the_module_is_missing(self):
+        wd = self._make('kc', {'name': 'KC dev'})
+        PM.create({'id': 'kc', 'workdirs': [wd]})
+        with mock.patch.object(server, '_DEVCONTAINER_AVAILABLE', False), \
+                self._patch_memory([]):
+            brief = PM.brief('kc')
+        self.assertEqual(brief['devcontainer'], [])
+
+
 class ReadonlyChokepointTest(unittest.TestCase):
     """Project mutations live in do_POST/do_PUT/do_DELETE, each of which calls
     _readonly_block() first; verify that chokepoint blocks when READONLY_MODE."""
