@@ -435,6 +435,18 @@ mobile-clean: ## Remove mobile build artifacts and deps
 		$(MOBILE_DIR)/vendor $(MOBILE_DIR)/.bundle $(MOBILE_DIR)/fastlane/screenshots \
 		$(MOBILE_DIR)/fastlane/metadata/android/en-US/images
 
+# =============================================================================
+# Memory database — developer utilities
+# =============================================================================
+# /home/dev/.claude-memory/memory.db is LIVE shared state inside a workspace:
+# the dashboard's Memory tab, the MCP server and every concurrent agent write
+# it. Schema/migration work belongs on a throwaway copy, never on that file
+# (#599). This target makes the copy; memory/store.py reads $KC_MEMORY_DB, so
+# pointing your work at it is one export.
+
+memory-db-copy: ## Copy the live memory DB to a throwaway path (DEST=<path> optional); source opened read-only
+	@./scripts/memory-db-copy.sh $(DEST)
+
 python-tests: ## Run server.py unit + integration tests
 	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v
 

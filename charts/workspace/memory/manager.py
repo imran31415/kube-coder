@@ -1209,11 +1209,7 @@ class MemoryManager:
             history = c.execute('SELECT COUNT(*) FROM memory_history').fetchone()[0]
             refs = c.execute('SELECT COUNT(*) FROM memory_refs').fetchone()[0]
             vec_available = _store.vectors_available(c)
-        db_size = 0
-        try:
-            db_size = os.path.getsize(DB_PATH)
-        except OSError:
-            pass
+        db_size = cls._db_size()
         provider = cls.embedding_provider()
         return {
             'total': total,
@@ -1306,10 +1302,16 @@ class MemoryManager:
         with cls.store().conn() as c:
             c.execute('VACUUM')
 
-    @staticmethod
-    def _db_size() -> int:
+    @classmethod
+    def _db_size(cls) -> int:
+        """Size of the database this manager is actually using.
+
+        Reads `store().db_path`, not the module default, so a process pointed
+        at a copy via $KC_MEMORY_DB — or a test with an injected store —
+        reports the file it is really writing (#599).
+        """
         try:
-            return os.path.getsize(DB_PATH)
+            return os.path.getsize(cls.store().db_path)
         except OSError:
             return 0
 

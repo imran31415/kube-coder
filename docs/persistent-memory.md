@@ -36,7 +36,7 @@ retries keep concurrent writes safe.
 
 | Path | What it is |
 |---|---|
-| `/home/dev/.claude-memory/memory.db` | The SQLite store. WAL-mode, future-proofed schema. |
+| `/home/dev/.claude-memory/memory.db` | The SQLite store. WAL-mode, future-proofed schema. Live shared state — point schema/migration work at a copy with `$KC_MEMORY_DB` (see [Working on a copy](#working-on-a-copy-schema--migration-work)). |
 | `/home/dev/.claude-memory/mcp_memory.py` | Stdio MCP server invoked by `claude` per-session. |
 | `/home/dev/.claude-memory/memory_inject_hook.py` | A `UserPromptSubmit` hook script that *can* prepend a `<workspace_memories>` block. It ships but is **not wired into `settings.json` by default** — memory is on-demand via MCP (see "How Claude reads memory" below). |
 | `/home/dev/.claude-memory/memory/` | Python package the MCP server imports (mirrors `/tmp/browser/memory/`). |
@@ -258,6 +258,38 @@ Every memory row records a `source`:
 
 The same value lands in `memory_history.updated_by` for every revision
 and in `memory_refs` for every read/write access.
+
+---
+
+## Working on a copy (schema + migration work)
+
+`memory.db` is **live shared state**: the dashboard's Memory tab, the MCP
+server and every concurrent agent write it. A git worktree isolates your
+branch, not the PVC — so schema changes, migration dry-runs and ad-hoc
+scripts must never open the live file read-write. One botched migration
+left a workspace where new memories saved but every *update* failed with
+`UNIQUE constraint failed: embeddings_pending.memory_id`, and nothing
+surfaced it until something important didn't save (#599).
+
+Take a throwaway copy first. The source is opened read-only and duplicated
+with SQLite's online backup API, so it is safe while the server is writing —
+unlike `cp`, which can tear a WAL database:
+
+```bash
+export KC_MEMORY_DB="$(scripts/memory-db-copy.sh)"
+# or, with an explicit destination:
+scripts/memory-db-copy.sh /tmp/scratch/memory.db
+# from a repo checkout: make memory-db-copy [DEST=/tmp/scratch/memory.db]
+```
+
+`memory/store.py` resolves `$KC_MEMORY_DB` **once at import**, so export it
+before you start the process (server, MCP server, test, or script) — every
+module then agrees on the same file. Unset it and everything falls back to
+`/home/dev/.claude-memory/memory.db`; that default is what every deployed
+workspace uses and is never set in the chart.
+
+Normal use — reading and writing memories through the MCP tools or
+`/api/memory*` — needs none of this. The rule is about the file underneath.
 
 ---
 
