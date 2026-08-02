@@ -6,6 +6,9 @@ import {
   refreshProjects,
   selectProject,
   mostActive,
+  activeProject,
+  defaultMemoryNamespace,
+  USER_NAMESPACE,
   _onDashboardEventForTest as onEvent,
   _resetProjectsForTest,
 } from './projects';
@@ -144,5 +147,65 @@ describe('store/projects', () => {
     await pa;
     expect(selectedProjectId.value).toBe('b');
     expect(brief.value?.project.id).toBe('b'); // a's late brief was dropped
+  });
+});
+
+/**
+ * The namespace a new memory defaults to (#358). Load-bearing, not cosmetic:
+ * retrieval is namespace-scoped (#359), so an entry written under `user.` while
+ * working in a project is one that project's own chats will never be shown.
+ */
+describe('active project → default memory namespace', () => {
+  afterEach(() => localStorage.clear());
+
+  it('falls back to user. with no project selected', () => {
+    projects.value = [project({ id: 'kc', memory_namespace: 'project.kc' })];
+    expect(activeProject()).toBeNull();
+    expect(defaultMemoryNamespace()).toBe(USER_NAMESPACE);
+  });
+
+  it("uses the selected project's memory_namespace", async () => {
+    mockFetch(() => ({}));
+    projects.value = [project({ id: 'kc', memory_namespace: 'project.kc' })];
+    await selectProject('kc');
+    expect(activeProject()?.id).toBe('kc');
+    expect(defaultMemoryNamespace()).toBe('project.kc');
+  });
+
+  it('honours a custom namespace rather than assuming project.<id>', async () => {
+    mockFetch(() => ({}));
+    projects.value = [project({ id: 'kc', memory_namespace: 'work.kubecoder' })];
+    await selectProject('kc');
+    expect(defaultMemoryNamespace()).toBe('work.kubecoder');
+  });
+
+  it('remembers the project across tabs that never ran the CTO bootstrap', () => {
+    // The Memory tab has its own mount; selectedProjectId is still null there,
+    // so the last-selected id (persisted by the rail) is what makes the default
+    // follow the user between tabs.
+    localStorage.setItem('kc.cto.lastProject', 'kc');
+    projects.value = [project({ id: 'kc', memory_namespace: 'project.kc' })];
+    expect(selectedProjectId.value).toBeNull();
+    expect(defaultMemoryNamespace()).toBe('project.kc');
+  });
+
+  it('ignores a remembered project that is no longer in the registry', () => {
+    localStorage.setItem('kc.cto.lastProject', 'deleted');
+    projects.value = [project({ id: 'kc' })];
+    expect(activeProject()).toBeNull();
+    expect(defaultMemoryNamespace()).toBe(USER_NAMESPACE);
+  });
+
+  it('falls back to user. when the registry has not loaded yet', () => {
+    localStorage.setItem('kc.cto.lastProject', 'kc');
+    expect(defaultMemoryNamespace()).toBe(USER_NAMESPACE);
+  });
+
+  it('returns to user. once the Workspace scope is selected', async () => {
+    mockFetch(() => ({}));
+    projects.value = [project({ id: 'kc', memory_namespace: 'project.kc' })];
+    await selectProject('kc');
+    await selectProject(null);
+    expect(defaultMemoryNamespace()).toBe(USER_NAMESPACE);
   });
 });

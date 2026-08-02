@@ -220,6 +220,16 @@ export const setThreadEffort = (id: string, effort: string) =>
     { effort },
   ).then((r) => r.thread);
 
+/** File a chat into a project, or clear the binding with '' (#358). Takes
+ *  effect on the next turn (the turn env's KC_PROJECT_ID, and with it the
+ *  project's memory namespace scope). Rejected for a CTO thread, whose project
+ *  is fixed at creation. */
+export const setThreadProject = (id: string, projectId: string) =>
+  apiPost<{ thread: HypervisorThread }>(
+    `/api/hypervisor/threads/${encodeURIComponent(id)}/project`,
+    { project_id: projectId },
+  ).then((r) => r.thread);
+
 export const stopThread = (id: string) =>
   apiPost<{ ok: boolean; stopped: boolean }>(
     `/api/hypervisor/threads/${encodeURIComponent(id)}/stop`,

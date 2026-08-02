@@ -9142,9 +9142,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # otherwise the thread degrades to a plain Hypervisor chat.
         if persona != 'cto' or not cto_available():
             persona = ''
-        project_id = (data.get('project_id') or '').strip() if persona == 'cto' else ''
+        # A project binding is no longer CTO-only (#358): an ordinary chat can be
+        # filed into a project too, which is what makes the chat list groupable
+        # and gives the turn a project memory namespace to work in.
+        project_id = (data.get('project_id') or '').strip()
         # Drop an unknown/invalid binding so we never export a KC_PROJECT_ID that
-        # 404s every project tool — the thread just becomes a Workspace-scope CTO
+        # 404s every project tool — the thread just becomes a Workspace-scope
         # chat (#465, review L5).
         if project_id and (not ProjectsManager.valid_id(project_id)
                            or ProjectsManager.get_project(project_id) is None):
@@ -9157,7 +9160,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # disabled project default degrades gracefully instead of launching a
         # dead provider. Resolved here (after the project binding) rather than at
         # the top of the handler because the defaults hang off that project.
-        p_assistant, p_model, p_effort = ProjectsManager.defaults_for(project_id)
+        # Deliberately still CTO-only: a project's assistant defaults are the
+        # ones its CTO threads and dispatched builds run on, and the Chat tab
+        # always sends its own explicit picker values — so a plain chat filed
+        # into a project (#358) keeps whatever agent the user chose for it.
+        p_assistant, p_model, p_effort = ProjectsManager.defaults_for(
+            project_id if persona == 'cto' else '')
         assistant = ClaudeTaskManager.resolve_assistant(
             data.get('assistant') or p_assistant or HYPERVISOR_DEFAULT_ASSISTANT)
         # Per-thread model choice (#308) — validated against the assistant's
@@ -9384,6 +9392,43 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         effort = ClaudeTaskManager.resolve_effort(
             meta.get('assistant') or '', data.get('effort'))
         summary = session.set_effort(effort)
+        if summary is None:
+            self.send_json({'error': 'not found'}, 404)
+            return
+        self.send_json({'thread': summary})
+
+    def handle_hypervisor_set_project(self, thread_id):
+        """File a chat into a project, or clear the binding with '' (#358).
+
+        Takes effect on the next turn: _run_turn re-reads the thread meta each
+        turn, so the new project rides KC_PROJECT_ID (and with it the project's
+        memory namespace scope, #359) from then on. An unknown project id is a
+        400 rather than a silent drop — this is an explicit user action, and
+        pretending it worked would leave the chat filed nowhere. A CTO thread is
+        refused: its project brief is baked into the preamble at creation, so
+        re-binding one would leave the two disagreeing (#465)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        session = self._hv_session_or_404(thread_id)
+        if session is None:
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        meta = session.read_meta() or {}
+        if (meta.get('persona') or '') == 'cto':
+            self.send_json(
+                {'error': "a CTO chat's project is fixed at creation"}, 400)
+            return
+        project_id = (data.get('project_id') or '').strip()
+        if project_id and (not ProjectsManager.valid_id(project_id)
+                           or ProjectsManager.get_project(project_id) is None):
+            self.send_json({'error': f'unknown project: {project_id}'}, 400)
+            return
+        summary = session.set_project(project_id)
         if summary is None:
             self.send_json({'error': 'not found'}, 404)
             return
@@ -13117,6 +13162,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/effort$', path)
                 if m:
                     self.handle_hypervisor_set_effort(m.group(1))
+                    return
+                # /api/hypervisor/threads/{id}/project — file the chat into a
+                # project, or clear the binding (#358)
+                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/project$', path)
+                if m:
+                    self.handle_hypervisor_set_project(m.group(1))
                     return
                 # /api/skills/{name}/sync — cross-harness install (PR2).
                 # Stricter name charset than the GET route: only the

@@ -191,6 +191,33 @@
   gap: 2px;
 }
 
+/* Project grouping (#358). Rendered only once at least one chat is filed into
+   a project — an unprojected workspace keeps the flat list it always had. */
+.hv-thread-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hv-thread-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: var(--size-2) 0 2px;
+  padding: 0 var(--size-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.hv-thread-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hv-thread-empty {
   padding: var(--size-3);
   font-size: var(--text-sm);

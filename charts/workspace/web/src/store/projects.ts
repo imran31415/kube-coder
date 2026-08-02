@@ -116,6 +116,38 @@ async function stampLastSeen(id: string): Promise<void> {
   }
 }
 
+/** The fallback namespace for a memory created outside any project — the
+ *  workspace-global `user.` root the Memory tab has always defaulted to. */
+export const USER_NAMESPACE = 'user.';
+
+/**
+ * The project the whole app should treat as active (#358): the live selection,
+ * else the last one selected in this browser. The fallback is what lets a
+ * surface that never runs the CTO page's bootstrap — the Memory tab — still
+ * know where the user is working. Always resolved against the loaded registry,
+ * so a remembered id whose project was archived or deleted is ignored, and it
+ * is null until the registry loads (callers should refreshProjects() on mount).
+ */
+export function activeProject(): Project | null {
+  const id = selectedProjectId.value ?? recallLastProject();
+  if (!id) return null;
+  return projects.value.find((p) => p.id === id) ?? null;
+}
+
+/**
+ * The namespace a NEW memory should default to (#358): the active project's
+ * `memory_namespace`, falling back to `user.` outside a project.
+ *
+ * Not cosmetic — namespace-scoped retrieval (#359) confines a project-bound
+ * session to its own `project.<id>` root, so the namespace an entry is written
+ * under decides which chats can ever recall it. Defaulting to `user.` inside a
+ * project quietly filed every hand-written memory where that project's own
+ * chats would never look.
+ */
+export function defaultMemoryNamespace(): string {
+  return activeProject()?.memory_namespace || USER_NAMESPACE;
+}
+
 /** The most-active project (highest pulse.last_activity_at), or the first. */
 export function mostActive(list: Project[]): Project | null {
   if (list.length === 0) return null;
