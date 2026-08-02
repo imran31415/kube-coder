@@ -308,6 +308,13 @@ class ProjectChatMemoryScopeTest(unittest.TestCase):
         self._orig_dir = hs.HYPERVISOR_DIR
         hs.HYPERVISOR_DIR = self.tmp
         self.addCleanup(self._restore_dir)
+        # The project registry the write side reads its default namespace from.
+        self.projdir = tempfile.mkdtemp(prefix='kctest-proj-')
+        self._orig_projdir = server.ProjectsManager.PROJECTS_DIR
+        server.ProjectsManager.PROJECTS_DIR = self.projdir
+        self.addCleanup(self._restore_projdir)
+        for pid in ('alpha', 'beta'):
+            server.ProjectsManager.create({'id': pid, 'name': pid})
 
     def _restore_store(self):
         MemoryManager._store = self._orig_store
@@ -315,6 +322,9 @@ class ProjectChatMemoryScopeTest(unittest.TestCase):
 
     def _restore_dir(self):
         hs.HYPERVISOR_DIR = self._orig_dir
+
+    def _restore_projdir(self):
+        server.ProjectsManager.PROJECTS_DIR = self._orig_projdir
 
     def _turn_env(self, project_id):
         """The env a chat filed into `project_id` runs its turns with."""
@@ -338,27 +348,86 @@ class ProjectChatMemoryScopeTest(unittest.TestCase):
                 pass
         return captured['env']
 
+    def _scope(self, env):
+        """The scope the injection hook derives inside that turn env."""
+        with mock.patch.dict(os.environ, env, clear=True):
+            return inject._namespace_scope()
+
     def _recalled(self, env):
         """Namespaces the injection hook would retrieve from inside that env."""
-        with mock.patch.dict(os.environ, env, clear=True):
-            scope = inject._namespace_scope()
-        rows = MemoryManager.search(q='deployment', namespace_scope=scope or None)
+        rows = MemoryManager.search(q='deployment',
+                                    namespace_scope=self._scope(env) or None)
         return sorted(r['namespace'] for r in rows)
 
-    def test_a_project_chat_recalls_only_its_own_project(self):
+    def _injected(self, env, prompt='deployment pipeline'):
+        """Namespaces the auto-inject block would actually carry — the same
+        retrieval as _recalled but through top_for_prompt, which is the entry
+        point create_task and the /api/memory hook path really use."""
+        rows = MemoryManager.top_for_prompt(
+            prompt, namespace_scope=self._scope(env) or None)
+        return [r['namespace'] for r in rows]
+
+    def test_a_project_chat_recalls_its_own_project(self):
         recalled = self._recalled(self._turn_env('alpha'))
-        self.assertEqual(recalled, ['project.alpha', 'project.alpha.decisions'])
-        self.assertNotIn('project.beta', recalled)
+        self.assertIn('project.alpha', recalled)
+        self.assertIn('project.alpha.decisions', recalled)
+
+    def test_a_project_chat_still_recalls_user_memories(self):
+        """#593: scoping was single-rooted, so filing a chat into a project
+        silently cost it the user's own name, preferences and working style —
+        facts that are true in EVERY project."""
+        self.assertIn('user.preferences', self._recalled(self._turn_env('alpha')))
+
+    def test_a_project_chat_never_sees_a_sibling_project(self):
+        # The #359 guarantee survives the widening: `user.` came back, the
+        # neighbouring project did not.
+        self.assertNotIn('project.beta', self._recalled(self._turn_env('alpha')))
 
     def test_a_sibling_project_chat_never_sees_the_other(self):
         self.assertEqual(self._recalled(self._turn_env('beta')),
-                         ['project.beta'])
+                         ['project.beta', 'user.preferences'])
 
     def test_an_unfiled_chat_still_retrieves_workspace_wide(self):
         # No binding → no scope → exactly the pre-#358 behaviour.
         recalled = self._recalled(self._turn_env(''))
         self.assertEqual(recalled, ['project.alpha', 'project.alpha.decisions',
                                     'project.beta', 'user.preferences'])
+
+    def test_the_injected_block_carries_both_roots(self):
+        # search() is one retrieval path; top_for_prompt is the one injection
+        # actually calls, and it must widen with it.
+        injected = self._injected(self._turn_env('alpha'))
+        self.assertIn('user.preferences', injected)
+        self.assertIn('project.alpha', injected)
+        self.assertNotIn('project.beta', injected)
+
+    def test_a_stopword_only_prompt_leads_with_the_project(self):
+        """The no-query-terms fallback ranks by importance alone, so once
+        `user.*` is back in scope it could crowd project facts out of the
+        injection budget. The chat's own project leads there (#593)."""
+        MemoryManager.upsert(namespace='user.preferences', key='editor',
+                             value='prefers vim', kind='preference',
+                             importance=0.9)
+        MemoryManager.upsert(namespace='project.alpha', key='pref',
+                             value='deploys on fridays', kind='preference',
+                             importance=0.2)
+        injected = self._injected(self._turn_env('alpha'), prompt='the and of')
+        self.assertEqual(injected[0], 'project.alpha')
+        self.assertIn('user.preferences', injected)
+
+    def test_a_project_chats_writes_still_land_in_the_project(self):
+        """Read-side widening only (#593): a memory written from a project chat
+        still goes to that project's namespace — NOT `user.` — so it stays
+        invisible to a sibling project's chat."""
+        ns = server.ProjectsManager.get_project('alpha')['memory_namespace']
+        self.assertEqual(ns, 'project.alpha')
+        MemoryManager.upsert(namespace=ns, key='new',
+                             value='deployment runbook lives in ops/')
+        row = MemoryManager.get(namespace=ns, key='new')
+        self.assertEqual(row['namespace'], 'project.alpha')
+        self.assertIn('project.alpha', self._recalled(self._turn_env('alpha')))
+        self.assertNotIn('project.alpha',
+                         self._recalled(self._turn_env('beta')))
 
 
 if __name__ == '__main__':  # pragma: no cover

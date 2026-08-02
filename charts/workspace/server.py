@@ -2255,8 +2255,10 @@ class ClaudeTaskManager:
         if _MEMORY_AVAILABLE and _preinject and not disable_memory_injection:
             try:
                 # Scope retrieval to the task's project (#359) so a build for
-                # one project can't be primed with another's memories. No
-                # project => workspace-global, exactly as before.
+                # one project can't be primed with another's memories — the
+                # manager widens it to `user.*` too (#593) so the build still
+                # knows the user's preferences. No project => workspace-global,
+                # exactly as before.
                 _scope = f'project.{project_id}' if project_id else None
                 injected_memories = MemoryManager.top_for_prompt(
                     prompt or '', namespace_scope=_scope)
@@ -11489,7 +11491,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 # Namespace-scoped retrieval (#359): confines results to one
                 # namespace root and everything nested under it, so a
                 # project-bound caller (the inject hook) never sees a sibling
-                # project's memories. Absent => workspace-global, as before.
+                # project's memories — plus `user.*`, which a scoped read always
+                # includes (#593). Absent => workspace-global, as before.
                 namespace_scope=(query.get('namespace_scope') or [None])[0],
             )
         except Exception as e:

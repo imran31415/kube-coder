@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import store as _store
 from .store import MemoryStore, DB_PATH
@@ -70,14 +70,25 @@ def _require(cond: bool, msg: str) -> None:
         raise ValidationError(msg)
 
 
-# ── Namespace scoping (#359) ────────────────────────────────────────────────
+# ── Namespace scoping (#359, widened in #593) ───────────────────────────────
 # Injection used to retrieve from the whole workspace DB, so a `project.foo`
 # memory could surface inside a `project.bar` chat whenever it out-scored the
-# local ones — the token-inefficiency this fixes. A *scope* is a namespace root:
-# it matches the root itself plus everything nested under it, anchored on the
-# '.' separator so `project.foo` matches `project.foo` and `project.foo.goals`
-# but NOT `project.foobar`.
+# local ones — the token-inefficiency this fixes. A *root* matches itself plus
+# everything nested under it, anchored on the '.' separator so `project.foo`
+# matches `project.foo` and `project.foo.goals` but NOT `project.foobar`.
+#
+# A scope is a LIST of roots, not one (#593). Single-rooted scoping meant a chat
+# filed into a project could no longer recall `user.*` — its own user's name,
+# editor, working style — which #358 turned from a CTO-only quirk into everyday
+# behaviour. Nothing errored; the agent was just quietly less informed.
 _LIKE_ESCAPE = '\\'
+
+# Roots every scoped retrieval reads from IN ADDITION to the caller's scope.
+# `user` is the one namespace whose contents are true in every project by
+# definition, so it is the only exception (#593). Read-side only: writes still
+# default to the caller's own namespace (#358), so a project chat's new
+# memories still land under `project.<id>`.
+ALWAYS_IN_SCOPE_ROOTS: Tuple[str, ...] = ('user',)
 
 
 def _like_escape(s: str) -> str:
@@ -89,15 +100,62 @@ def _like_escape(s: str) -> str:
              .replace('_', _LIKE_ESCAPE + '_'))
 
 
-def _ns_scope_clause(scope: str, col: str = 'namespace'):
-    """(sql_clause, params) restricting `col` to a namespace scope root, or
-    (None, []) when no scope is given (global retrieval — the default, so
-    unscoped callers keep today's behaviour exactly)."""
-    scope = (scope or '').strip()
-    if not scope:
+def _ns_root_clause(root: str, col: str = 'namespace'):
+    """(sql_clause, params) matching ONE namespace root — the root itself plus
+    everything nested under it. (None, []) for an empty root."""
+    root = (root or '').strip()
+    if not root:
         return None, []
     return (f'({col} = ? OR {col} LIKE ? ESCAPE ?)',
-            [scope, _like_escape(scope) + '.%', _LIKE_ESCAPE])
+            [root, _like_escape(root) + '.%', _LIKE_ESCAPE])
+
+
+def _scope_roots(scope: str) -> List[str]:
+    """The namespace roots a scoped retrieval reads from: the caller's own scope
+    first, then ALWAYS_IN_SCOPE_ROOTS (#593). [] when unscoped, so unscoped
+    callers keep workspace-global retrieval exactly as before."""
+    scope = (scope or '').strip()
+    if not scope:
+        return []
+    roots = [scope]
+    for extra in ALWAYS_IN_SCOPE_ROOTS:
+        # Skip a root the scope already covers, in either direction: scoping to
+        # `user` or `user.preferences` must not OR in a redundant clause, and
+        # must never WIDEN a deliberately narrow scope back out to all of
+        # `user.*`.
+        if (extra == scope or scope.startswith(extra + '.')
+                or extra.startswith(scope + '.')):
+            continue
+        roots.append(extra)
+    return roots
+
+
+def _ns_scope_clause(scope: str, col: str = 'namespace'):
+    """(sql_clause, params) restricting `col` to a namespace scope, or
+    (None, []) when no scope is given (global retrieval — the default).
+
+    Every retrieval path funnels through here — FTS, the LIKE degradation,
+    _fetch_by_ids for vector-only hits, list, and top_for_prompt's
+    stopword-only fallback — so they widen together and none can be left
+    behind on the single-rooted rule (#593)."""
+    roots = _scope_roots(scope)
+    if not roots:
+        return None, []
+    parts: List[str] = []
+    params: List[Any] = []
+    for root in roots:
+        clause, p = _ns_root_clause(root, col)
+        parts.append(clause)
+        params.extend(p)
+    return '(' + ' OR '.join(parts) + ')', params
+
+
+def _in_ns_root(namespace: str, root: str) -> bool:
+    """Python mirror of _ns_root_clause, for ranking decisions taken on rows
+    already loaded (see search's tiebreak)."""
+    root = (root or '').strip()
+    ns = namespace or ''
+    return bool(root) and (ns == root or ns.startswith(root + '.'))
 
 
 def _validate_ns_key(namespace: str, key: str) -> None:
@@ -534,10 +592,13 @@ class MemoryManager:
         unchanged on deployments without embeddings configured.
 
         `namespaces` is an exact-match allow-list; `namespace_scope` (#359) is a
-        namespace ROOT that also matches everything nested under it. Both are
-        applied on every retrieval path — FTS, the LIKE degradation, and the
-        vector-only hits loaded by _fetch_by_ids — so a high-scoring
-        out-of-scope memory can never be fused back in.
+        namespace ROOT that also matches everything nested under it, plus
+        ALWAYS_IN_SCOPE_ROOTS (#593). Both are applied on every retrieval path —
+        FTS, the LIKE degradation, and the vector-only hits loaded by
+        _fetch_by_ids — so a high-scoring out-of-scope memory can never be fused
+        back in. Relevance still leads the ranking (a project chat asking "what
+        did I say my name was" must be able to reach `user.name`); the caller's
+        own scope only wins TIES against the always-included roots.
         """
         limit = max(1, min(int(limit), 200))
         if not q or not q.strip():
@@ -598,10 +659,18 @@ class MemoryManager:
                                            namespace_scope=namespace_scope):
                     by_id[int(r['id'])] = r
 
+        # Ties go to the caller's own scope rather than to the always-included
+        # roots (#593), so a project fact and a generic user preference of equal
+        # score don't fight over an injection slot at insertion-order's whim.
+        # Constant (and therefore a no-op) for unscoped retrieval.
+        def _tiebreak(row):
+            return 0 if _in_ns_root(row.get('namespace'),
+                                    (namespace_scope or '').strip()) else 1
+
         if not vec_ids:
             # Phase-1 path, unchanged: weighted FTS + importance + recency.
             scored = [(cls._rerank_score(r, now), r) for r in fts_dicts]
-            scored.sort(key=lambda t: -t[0])
+            scored.sort(key=lambda t: (-t[0], _tiebreak(t[1])))
             out = []
             for score, r in scored[:limit]:
                 r['_score'] = round(score, 4)
@@ -620,7 +689,7 @@ class MemoryManager:
         for mid, row in by_id.items():
             rrf_norm = (rrf.get(mid, 0.0) / rrf_max) if rrf_max else 0.0
             scored.append((cls._fused_score(row, rrf_norm, now), row))
-        scored.sort(key=lambda t: -t[0])
+        scored.sort(key=lambda t: (-t[0], _tiebreak(t[1])))
         out = []
         for score, r in scored[:limit]:
             r['_score'] = round(score, 4)
@@ -789,8 +858,8 @@ class MemoryManager:
 
         `namespace_scope` (#359) confines retrieval to one namespace root and
         everything under it — e.g. `project.foo` for a project-bound chat, so a
-        `project.bar` memory can't be injected into it. None = the previous
-        workspace-global behaviour.
+        `project.bar` memory can't be injected into it — plus the always-included
+        `user.*` roots (#593). None = the previous workspace-global behaviour.
         """
         terms = _extract_terms(prompt)
         if not terms:
@@ -800,14 +869,22 @@ class MemoryManager:
             # pull the whole workspace.
             scope_clause, scope_params = _ns_scope_clause(namespace_scope)
             extra = f' AND {scope_clause}' if scope_clause else ''
+            # This path has NO relevance signal, so ordering by importance alone
+            # would let generic `user.*` preferences crowd project facts out of
+            # the k slots the moment #593 put them back in scope. With nothing
+            # to weigh them by, the caller's own scope leads outright; the
+            # always-included roots fill whatever is left.
+            own_clause, own_params = _ns_root_clause(namespace_scope)
+            rank = (f'CASE WHEN {own_clause} THEN 0 ELSE 1 END, '
+                    if own_clause else '')
             with cls.store().conn() as c:
                 rows = c.execute(
                     "SELECT * FROM memories WHERE deleted_at IS NULL "
                     " AND (expires_at IS NULL OR expires_at > ?) "
                     " AND kind IN ('preference','procedural')"
                     f"{extra}"
-                    " ORDER BY importance DESC, updated_at DESC LIMIT ?",
-                    (time.time(), *scope_params, k * 2),
+                    f" ORDER BY {rank}importance DESC, updated_at DESC LIMIT ?",
+                    (time.time(), *scope_params, *own_params, k * 2),
                 ).fetchall()
             results = [_row_to_dict(r) for r in rows]
         else:

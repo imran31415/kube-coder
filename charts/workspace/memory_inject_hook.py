@@ -70,6 +70,9 @@ MIN_ENTRY_CHARS = 80
 # memories live under `project.<id>`; we confine retrieval to that root so a
 # sibling project's memories are never injected here. Unset (a plain terminal
 # session) => no scope => the previous workspace-global behaviour, unchanged.
+# The scope we send is just this session's own root: the server widens every
+# scoped read to `user.*` as well (#593), so filing a chat into a project never
+# costs it the user's name, preferences or working style.
 PROJECT_NS_PREFIX = 'project.'
 
 
@@ -109,7 +112,8 @@ def _namespace_scope() -> str:
 
     KC_PROJECT_ID is exported into every project-bound turn, so a project chat
     scopes to `project.<id>` (which also covers `project.<id>.decisions`,
-    `.goals`, … — the server anchors the prefix on the '.' separator).
+    `.goals`, … — the server anchors the prefix on the '.' separator, and adds
+    `user.*` to every scoped read, #593).
     KC_MEMORY_NS_SCOPE overrides it for callers that aren't project-bound.
     """
     explicit = (os.environ.get('KC_MEMORY_NS_SCOPE') or '').strip()
