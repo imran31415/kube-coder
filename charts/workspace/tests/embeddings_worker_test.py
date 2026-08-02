@@ -184,12 +184,34 @@ class RunOnceTests(WorkerTestCase):
 
 class LoadBatchTests(WorkerTestCase):
     def test_folds_multiple_pending_rows_per_memory(self):
-        MemoryManager.upsert(namespace='user', key='k', value='v1')
-        MemoryManager.upsert(namespace='user', key='k', value='v2')  # 2nd enqueue
+        # New writes can no longer produce duplicates (#597), but a workspace
+        # that hasn't rebooted into migration 004 yet still has legacy ones, so
+        # the fold has to keep working. Insert them the way the old code did.
+        row = MemoryManager.upsert(namespace='user', key='k', value='v1')
+        with self._store.tx() as c:
+            c.execute('INSERT INTO embeddings_pending (memory_id, enqueued_at) '
+                      'VALUES (?, ?)', (row['id'], 1.0))
         with self._store.conn() as c:
+            self.assertEqual(
+                c.execute('SELECT COUNT(*) FROM embeddings_pending').fetchone()[0], 2)
             items = _load_pending_batch(c, 32)
         self.assertEqual(len(items), 1)          # one work item
         self.assertEqual(len(items[0]['pids']), 2)  # both pending rows folded in
+
+    def test_legacy_duplicates_drain_in_one_shot(self):
+        # End to end: a pre-migration backlog embeds the memory once and
+        # removes every one of its queue rows.
+        row = MemoryManager.upsert(namespace='user', key='k', value='v1')
+        with self._store.tx() as c:
+            for i in range(4):
+                c.execute('INSERT INTO embeddings_pending (memory_id, enqueued_at) '
+                          'VALUES (?, ?)', (row['id'], float(i)))
+        res = EmbeddingWorker.run_once(FakeProvider(), self._store)
+        self.assertEqual(res['embedded'], 1)
+        self.assertEqual(res['remaining'], 0)
+        with self._store.conn() as c:
+            self.assertEqual(
+                c.execute('SELECT COUNT(*) FROM embeddings').fetchone()[0], 1)
 
     def test_batch_cap_limits_distinct_memories(self):
         for i in range(5):

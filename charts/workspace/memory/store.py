@@ -22,13 +22,19 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 DB_PATH = '/home/dev/.claude-memory/memory.db'
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Width of the vec_memories FLOAT[N] column. Embedding providers must emit
 # (or reduce to) this many dimensions — see memory/embeddings.py. A provider
 # whose dim differs would have every insert rejected by vec0, so the worker
 # warns loudly at startup instead of silently poison-dropping the queue.
 VEC_DIM = 1024
+
+# Lookup index on the embedding queue (#597). Deliberately NOT UNIQUE so a
+# rolled-back image, whose code still does a plain INSERT, keeps working —
+# see _migration_004. The one-row-per-memory bound lives in
+# manager._enqueue_embedding instead.
+_PENDING_MEMORY_INDEX = 'idx_embeddings_pending_memory'
 
 # sqlite-vec extension paths to try in order. The Dockerfile (v1.8.0+)
 # installs the .so at /usr/local/lib/vec0.so via a symlink; the unpacked
@@ -89,9 +95,56 @@ def initialize(db_path: str = DB_PATH) -> None:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=NORMAL')
             _migrate(conn)
+            _ensure_pending_index_shape(conn)
         finally:
             conn.close()
         _INITIALIZED = True
+
+
+def _ensure_pending_index_shape(conn: sqlite3.Connection) -> None:
+    """Guarantee the embeddings_pending memory_id index exists and is NOT UNIQUE.
+
+    Deliberately UNCONDITIONAL — checked on every open, like the
+    CREATE TABLE IF NOT EXISTS schema setup, rather than from inside a numbered
+    migration (#597). Version-gating this would not work: a database left by an
+    intermediate build is already at schema_version 4, so `_migration_004` is
+    skipped and a UNIQUE index there would survive forever. That database is
+    exactly the one that needs healing — under a UNIQUE index every memory
+    UPDATE from older code fails, so a stuck workspace would stay stuck.
+
+    Making it a property re-asserted at open, not a one-time step, means the
+    invariant holds no matter what version a DB claims to be or how it got
+    there. See `_migration_004` for why the index must not be unique.
+
+    Costs one PRAGMA read in the common case, where the index is already the
+    right shape and nothing is written.
+    """
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='embeddings_pending'").fetchone():
+        return                      # pre-migration DB; _migrate creates it
+    shapes = {r[1]: r[2] for r in            # name -> unique flag
+              conn.execute("PRAGMA index_list('embeddings_pending')").fetchall()}
+    unique = shapes.get(_PENDING_MEMORY_INDEX)
+    if unique == 0:
+        return                      # already correct — the overwhelming case
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if unique:
+            # CREATE INDEX IF NOT EXISTS is a silent no-op while a UNIQUE index
+            # holds the name, so the door stays shut unless we drop it first.
+            conn.execute(f'DROP INDEX {_PENDING_MEMORY_INDEX}')
+        conn.execute(
+            f'CREATE INDEX IF NOT EXISTS {_PENDING_MEMORY_INDEX}'
+            '  ON embeddings_pending(memory_id)'
+        )
+    except Exception:
+        try:
+            conn.execute('ROLLBACK')
+        except sqlite3.OperationalError:
+            pass
+        raise
+    conn.execute('COMMIT')
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -125,6 +178,74 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "INSERT INTO _meta(key, value) VALUES('schema_version', '3')"
             " ON CONFLICT(key) DO UPDATE SET value=excluded.value"
         )
+
+    if current < 4:
+        _migration_004(conn)
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES('schema_version', '4')"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+
+
+def _migration_004(conn: sqlite3.Connection) -> None:
+    """Collapse duplicate `embeddings_pending` rows (#597).
+
+    The queue only ever needed to say "this memory needs re-embedding" — one
+    bit per memory — but every write inserted a fresh row. The worker folds
+    duplicates by memory_id so they cost nothing *once it runs*, and it only
+    runs when an embedding provider is configured, which most workspaces never
+    do. So the table grew one row per memory write, forever, on the PVC.
+
+    Keep the newest row per memory_id (MAX(id) — rowids are monotonic, so this
+    is the last enqueue and never ties) and drop the rest. That is all this
+    migration does: a one-time data cleanup, correctly version-gated so it runs
+    once. The memory_id INDEX is not created here — its shape is re-asserted on
+    every open by `_ensure_pending_index_shape`, because a version-gated check
+    cannot heal a database that is already at 4 with the wrong index.
+
+    The index is deliberately NOT UNIQUE, and that is the whole design.
+    A UNIQUE index is a ONE-WAY DOOR: this migration bumps the DB to schema 4
+    on first boot, but an operator who then ROLLS BACK the workspace image gets
+    older code doing a plain `INSERT INTO embeddings_pending`, which the
+    constraint rejects — so every memory UPDATE fails workspace-wide with
+    IntegrityError while creates still succeed. kube-coder pins per-workspace
+    image versions and ships a Restart-and-update path, so rollback is a real
+    operation, not a hypothetical. The failure modes are wildly asymmetric:
+
+        UNIQUE + rollback  ->  memory updates fail across the workspace
+        no UNIQUE          ->  a few duplicate queue rows come back, which is
+                               the nuisance we are already fixing and which
+                               `_load_pending_batch` already folds away
+
+    So the bound lives in code instead — see `manager._enqueue_embedding`,
+    which UPDATEs an existing row or INSERTs when there is none. Old code
+    running against this schema still works; new code keeps the table at one
+    row per memory. A plain index stays for the lookup that helper does.
+
+    We deliberately do NOT carry the older rows' `attempts` forward onto the
+    survivor: the newest row is the most recent edit, and under the new
+    semantics a fresh edit is a fresh attempt. Worst case a memory that was
+    failing to embed gets a few extra retries.
+
+    Only `embeddings_pending` is touched — never `memories`. Takes the write
+    lock up front with BEGIN IMMEDIATE so a concurrent writer waits rather than
+    interleaving, and so an interrupted run leaves the table exactly as it was.
+    Idempotent: on a second run the DELETE matches nothing.
+    """
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        conn.execute(
+            'DELETE FROM embeddings_pending WHERE id NOT IN ('
+            '  SELECT MAX(id) FROM embeddings_pending GROUP BY memory_id'
+            ')'
+        )
+    except Exception:
+        try:
+            conn.execute('ROLLBACK')
+        except sqlite3.OperationalError:
+            pass
+        raise
+    conn.execute('COMMIT')
 
 
 def _migration_003(conn: sqlite3.Connection) -> None:
@@ -226,6 +347,9 @@ def _migration_001(conn: sqlite3.Connection) -> None:
             UNIQUE(memory_id, model)
         );
 
+        -- One row per memory that needs (re-)embedding. Migration 004 collapses
+        -- legacy duplicates and indexes memory_id; the bound itself is enforced
+        -- in manager._enqueue_embedding, NOT by a constraint (#597).
         CREATE TABLE IF NOT EXISTS embeddings_pending (
             id          INTEGER PRIMARY KEY,
             memory_id   INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
