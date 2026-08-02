@@ -79,6 +79,15 @@ seeder only manages the keys above and leaves your additions alone.
 
 Migrations run idempotently on every server boot.
 
+Migrations must also be **rollback-compatible**: a workspace can be rolled
+back to an older image at any time, and there is no down-migration, so older
+code will run against the newer schema. Adding tables, defaulted columns and
+non-unique indexes is free; adding a `UNIQUE` index, a `NOT NULL` column with
+no default, or a `CHECK` constraint is a one-way door. The rule, the two
+non-obvious traps and the test harness that proves it
+(`tests/rollback_compat.py`) are in
+[CONTRIBUTING.md → Schema migrations must be rollback-compatible](../CONTRIBUTING.md#schema-migrations-must-be-rollback-compatible).
+
 ### Enabling semantic (vector) search
 
 By default search is FTS5 keyword-only. To turn on Phase-2 hybrid
