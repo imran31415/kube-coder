@@ -254,6 +254,61 @@ def _t_list_triggers(a):
     return _ok(_pretty({'webhooks': webhooks, 'crons': crons}))
 
 
+# ── devcontainer.json (#594) ───────────────────────────────────────────────
+# READ ONLY, deliberately. /api/devcontainer/apply is the one route in the
+# whole server that can execute a command out of a cloned repo, and the
+# consent it requires is a human reading the verbatim command text in a
+# dialog. Exposing it as an MCP tool would hand that consent to an agent —
+# and the agent's judgement is exactly what a malicious devcontainer.json is
+# trying to capture. The tools below let the CTO SEE and EXPLAIN a repo's
+# environment; a human still clicks Apply.
+
+def _t_list_devcontainers(a):
+    return _call('GET', '/api/devcontainer/scan')
+
+
+def _t_get_devcontainer(a):
+    workdir = (a.get('workdir') or '').strip()
+    if not workdir:
+        return _err('workdir is required (absolute path under /home/dev)')
+    status, payload = _api(
+        'GET', '/api/devcontainer?workdir=' + urllib.parse.quote(workdir))
+    if status == 404:
+        return _err('devcontainer support is disabled on this workspace')
+    if status != 200 or not isinstance(payload, dict):
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        return _err(f'dashboard API GET /api/devcontainer returned HTTP '
+                    f'{status}: {detail}')
+    if not payload.get('found'):
+        return _ok(_pretty({'workdir': workdir, 'found': False}))
+    if payload.get('error'):
+        return _ok(_pretty({'workdir': workdir, 'found': True,
+                            'error': payload['error']}))
+    # Trim to what the model reasons over. The full record carries per-command
+    # objects and rejection lists that are useful in the UI and just token
+    # weight here.
+    return _ok(_pretty({
+        'workdir': workdir,
+        'path': payload.get('rel_path'),
+        'name': payload.get('name'),
+        'ports': payload.get('ports'),
+        'extensions': payload.get('extensions'),
+        'env': sorted((payload.get('env') or {}).keys()),
+        'commands': {hook: [c.get('display') for c in cmds]
+                     for hook, cmds in (payload.get('lifecycle') or {}).items()
+                     if cmds},
+        'status': {hook: entry.get('status') for hook, entry
+                   in (payload.get('lifecycle_status') or {}).items()
+                   if entry.get('status') != 'none'},
+        'needs_root': payload.get('needs_root'),
+        'not_applicable_here': [
+            {'key': u.get('key'), 'severity': u.get('severity'),
+             'reason': u.get('reason'), 'remedy': u.get('remedy')}
+            for u in (payload.get('unsupported') or [])],
+        'caveats': payload.get('caveats'),
+    }))
+
+
 # ── AI CTO project tools (#465) ────────────────────────────────────────────
 
 def _project_id_env() -> str:
@@ -672,6 +727,27 @@ TOOLS: Dict[str, Any] = {
         'list_triggers',
         'List configured webhooks and cron schedules (the Triggers tab).',
         _t_list_triggers),
+
+    # ── devcontainer.json (#594) — read only; see the note above the handlers
+    'list_devcontainers': _tool(
+        'list_devcontainers',
+        'List workspace directories that carry a devcontainer.json, with a '
+        'count of what each declares and how many properties cannot be applied '
+        'in this pod.', _t_list_devcontainers),
+    'get_devcontainer': _tool(
+        'get_devcontainer',
+        "Read one directory's devcontainer.json: declared ports, extensions, "
+        'environment, lifecycle commands, what has already run, and — '
+        'importantly — `not_applicable_here`, the properties this workspace '
+        'cannot honour (features/image/build need root or a Docker daemon) '
+        'with the reason and a remedy. Use it to explain to the user why their '
+        'environment is or is not set up. You CANNOT apply it: running commands '
+        'from a repo needs a human to read them and click Apply.',
+        _t_get_devcontainer,
+        properties={'workdir': {
+            'type': 'string',
+            'description': 'Absolute path under /home/dev.'}},
+        required=['workdir']),
 
     # ── AI CTO projects (#465) ──────────────────────────────────────────────
     'list_projects': _tool(

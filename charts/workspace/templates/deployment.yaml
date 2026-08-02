@@ -277,6 +277,15 @@ spec:
         # boolean false as empty and would fall through to true.
         - name: CTO_ENABLED
           value: {{ dig "enabled" true (.Values.cto | default dict) | quote }}
+        # devcontainer.json support (#594). Same `dig`-not-`default` rule as
+        # above — `default` treats boolean false as empty, so an explicit
+        # `enabled: false` here would silently re-enable the feature.
+        - name: DEVCONTAINER_ENABLED
+          value: {{ dig "enabled" true (.Values.devcontainer | default dict) | quote }}
+        - name: DEVCONTAINER_AUTO_APPLY
+          value: {{ dig "autoApplyOnBoot" true (.Values.devcontainer | default dict) | quote }}
+        - name: DEVCONTAINER_TIMEOUT
+          value: {{ dig "commandTimeoutSeconds" 900 (.Values.devcontainer | default dict) | quote }}
         {{- if (.Values.gateway).enabled }}
         {{- if (.Values.gateway).allowUnsigned }}
         {{- /*

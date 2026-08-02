@@ -22,6 +22,10 @@ export interface ServerMode {
    *  are shown; false hides them (deployment set `cto.enabled: false`, or the
    *  Hypervisor it rides is off). */
   ctoEnabled?: boolean;
+  /** devcontainer.json support (#594). Independent of ctoEnabled — reading a
+   *  repo's own environment file is a workspace capability, not part of the
+   *  CTO page. False hides the Dev container card and 404s /api/devcontainer*. */
+  devcontainerEnabled?: boolean;
 }
 
 export const getMode = () => apiGet<ServerMode>('/api/mode');

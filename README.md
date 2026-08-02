@@ -136,6 +136,16 @@ Both are on the phone app too.
 
 ---
 
+## Bring your own environment — `devcontainer.json`
+
+If a repo already carries a `.devcontainer/devcontainer.json` — because it came from Codespaces, Coder, Ona or DevPod — kube-coder reads it. Forwarded ports land on the **Apps** page with their labels, VS Code extensions and settings reach code-server, `containerEnv`/`remoteEnv` reach the agents you dispatch, and the lifecycle commands are shown to you *verbatim* so you can run them with one click. Moving a project across stops being "rebuild your environment by hand" and becomes "point it at the repo."
+
+It interprets the file inside the workspace pod rather than building a container, so `features`, `image`, `build` and `dockerComposeFile` **cannot** be honoured — the pod runs as UID 1000 with no privilege escalation and there is no Docker daemon. Those come back named, with the reason and a remedy, instead of being silently dropped: a workspace that *looks* configured and isn't is the worst outcome for something whose whole job is migration.
+
+Nothing from a cloned repo ever runs on discovery. Consent is pinned to the file's hash, so if `devcontainer.json` changes between the dialog and your click the server refuses rather than running text you never read. See [`docs/devcontainer.md`](docs/devcontainer.md).
+
+---
+
 ## Build sessions & parallel agents
 
 A **build session** is an interactive Claude / Codex / Ante / OpenCode tmux session inside the pod. Start one from the dashboard, the phone app, or the API; it survives restarts, and its output is mirrored to a log you can tail from anywhere.

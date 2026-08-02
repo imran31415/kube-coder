@@ -1,6 +1,8 @@
 import { Icon } from '../../components/Icon';
 import { navigate } from '../../store/router';
 import { brief, briefLoading, selectedProjectId } from '../../store/projects';
+import { serverMode } from '../../store/server-mode';
+import { DevcontainerPanel } from './DevcontainerPanel';
 import type { BriefMemory } from '../../api/projects';
 
 /**
@@ -277,6 +279,17 @@ export function BriefPanel({ onCollapse }: { onCollapse?: () => void } = {}) {
           </ul>
         </Section>
       )}
+
+      {/* Dev container (#594), last and only for workdirs that actually have
+          one. The brief tells us WHICH workdirs carry a devcontainer.json (a
+          read-through summary computed server-side); the panel then fetches
+          the full record for each. Gated on the server flag so a deployment
+          with devcontainer.enabled=false renders nothing rather than a card
+          that 404s on load. */}
+      {serverMode.value.devcontainerEnabled !== false &&
+        (b.devcontainer ?? []).map((d) => (
+          <DevcontainerPanel key={d.workdir} workdir={d.workdir} />
+        ))}
     </aside>
   );
 }

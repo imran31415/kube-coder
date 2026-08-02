@@ -653,3 +653,115 @@
     min-height: 44px;
   }
 }
+
+/* ── Dev container card (#594) ──────────────────────────────────────────────
+   Lives in the brief rail under Git. The unsupported block is deliberately
+   loud: a `features:` entry that renders as quiet grey text is a workspace
+   that looks configured and isn't. */
+.dc-section { gap: 8px; }
+.dc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-md);
+  color: var(--text);
+}
+.dc-name { font-weight: var(--weight-semibold); }
+.dc-facts { color: var(--text-muted); font-size: var(--text-xs); }
+.dc-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dc-hooks { gap: 4px; }
+.dc-hook { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dc-hook-name { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
+.dc-exit { font-size: var(--text-xs); color: var(--danger); font-family: var(--font-mono); }
+.dc-pill {
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dc-pill-done { color: var(--ok, #3fb950); }
+.dc-pill-running { color: var(--accent); }
+.dc-pill-stale,
+.dc-pill-pending { color: var(--warn); }
+.dc-pill-failed,
+.dc-pill-timed_out { color: var(--danger); }
+
+.dc-unsupported {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  border-radius: var(--radius-sm, 6px);
+}
+.dc-unsupported-blocking {
+  border-left: 2px solid var(--warn);
+  padding: 6px 0 6px 8px;
+  background: var(--surface-2);
+}
+.dc-unsupported-head { color: var(--warn); font-weight: var(--weight-semibold); }
+.dc-unsupported-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.dc-unsupported-list li { display: flex; flex-direction: column; gap: 2px; }
+.dc-unsupported-list code { font-family: var(--font-mono); color: var(--text); }
+.dc-reason { line-height: 1.4; }
+.dc-remedy { color: var(--text-subtle); line-height: 1.4; }
+.dc-caveats {
+  list-style: none;
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dc-error { font-size: var(--text-xs); color: var(--danger); line-height: 1.4; }
+.dc-readonly { font-size: var(--text-xs); color: var(--text-subtle); }
+.dc-apply-btn {
+  align-self: flex-start;
+  font-size: var(--text-xs);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.dc-apply-btn:hover:not(:disabled) { background: var(--surface-3, var(--surface-2)); }
+.dc-apply-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Apply dialog ─────────────────────────────────────────────────────────
+   The command text is rendered verbatim and must stay readable — it is what
+   the user is actually consenting to, so it wraps rather than truncating. */
+.dc-dialog-title { font-size: var(--text-lg); color: var(--text); }
+.dc-dialog-sub { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-subtle); margin-bottom: 10px; }
+.dc-dialog-block { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.dc-dialog-h { font-size: var(--text-md); font-weight: var(--weight-semibold); color: var(--text); }
+.dc-dialog-list { list-style: none; font-size: var(--text-xs); color: var(--text-muted); display: flex; flex-direction: column; gap: 3px; }
+.dc-dialog-warn { font-size: var(--text-xs); color: var(--warn); line-height: 1.45; }
+.dc-hook-block { border-top: 1px solid var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.dc-hook-label { display: flex; align-items: center; gap: 6px; font-size: var(--text-md); color: var(--text); cursor: pointer; }
+.dc-hook-label code { font-family: var(--font-mono); }
+.dc-hook-count { font-size: var(--text-xs); color: var(--text-subtle); }
+.dc-auto { border-top: 1px solid var(--border); padding-top: 8px; }
+.dc-cmd { display: flex; flex-direction: column; gap: 3px; }
+.dc-cmd-name { font-size: var(--text-xs); color: var(--text-subtle); font-family: var(--font-mono); }
+.dc-cmd-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text);
+  background: var(--surface-2);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 6px);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.dc-cmd-root { font-size: var(--text-xs); color: var(--warn); line-height: 1.4; }
+.dc-cmd-caveat { font-size: var(--text-xs); color: var(--text-subtle); line-height: 1.4; }
+.dc-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }

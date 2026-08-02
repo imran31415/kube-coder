@@ -1,0 +1,111 @@
+suite: devcontainer.json support (#594) — env wiring and the dig guard
+# deployment.yaml `include`s the configmaps for its checksum annotations, so
+# they have to be rendered alongside it — same list as deployment_test.yaml.
+templates:
+  - templates/deployment.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: renders the defaults from values.yaml
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_AUTO_APPLY
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_TIMEOUT
+            value: "900"
+
+  # THE POINT OF THIS FILE. sprig's `default` treats boolean false as empty, so
+  # `default true` on an explicit `enabled: false` renders "true" and silently
+  # re-enables a feature an operator turned off. `dig` does not. Both flags are
+  # checked because both are booleans defaulting to true.
+  - it: honours an explicit enabled=false (dig, not default)
+    template: templates/deployment.yaml
+    set:
+      devcontainer.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_ENABLED
+            value: "false"
+
+  - it: honours an explicit autoApplyOnBoot=false
+    template: templates/deployment.yaml
+    set:
+      devcontainer.autoApplyOnBoot: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_AUTO_APPLY
+            value: "false"
+      # Turning off the boot pass must not turn off the whole feature — the
+      # read/report surface stays available.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_ENABLED
+            value: "true"
+
+  - it: honours a command timeout override
+    template: templates/deployment.yaml
+    set:
+      devcontainer.commandTimeoutSeconds: 120
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_TIMEOUT
+            value: "120"
+
+  # `| default dict` guard: a values file that predates this chart version has
+  # no `devcontainer:` key at all, and `dig` on a nil map is a template error.
+  - it: renders when the whole devcontainer section is absent
+    template: templates/deployment.yaml
+    set:
+      devcontainer: null
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEVCONTAINER_TIMEOUT
+            value: "900"
+
+  # The feature adds no container — it is a module beside server.py, not a
+  # sidecar. deployment_test.yaml asserts against containers[0] by INDEX
+  # throughout, so an extra container inserted here would silently invalidate
+  # every one of those assertions instead of failing loudly. Two is the count
+  # under test-values.yaml (ide + dind, because it sets build.mode=buildkit).
+  - it: adds no container to the pod
+    template: templates/deployment.yaml
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 2
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: ide
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: dind
