@@ -37,10 +37,12 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
 
 import memory.store as _store_mod  # noqa: E402
 from memory.store import MemoryStore  # noqa: E402
 from memory.manager import MemoryManager  # noqa: E402
+from rollback_compat import assert_rollback_compatible  # noqa: E402
 
 
 class QueueTestCase(unittest.TestCase):
@@ -416,6 +418,52 @@ class Migration004Tests(unittest.TestCase):
         conn.close()
         self._open()
         self.assertEqual(self._rows('embeddings_pending'), [])
+
+    def test_migration_004_passes_the_shared_rollback_check(self):
+        """The same property as the two hand-written tests above, stated
+        through the reusable harness (#600).
+
+        Kept alongside them rather than replacing them: those two spell out the
+        exact statement and the exact operator sequence, which is what stops
+        someone "fixing" them by adding a constraint. This one is what a NEW
+        migration copies. The full per-migration audit lives in
+        tests/memory_rollback_compat_test.py.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'v3.db')
+            self.assertNotEqual(path, _store_mod.DEFAULT_DB_PATH)   # see #599
+            report = assert_rollback_compatible(
+                path,
+                # Verbatim pre-#597: one plain INSERT per memory write.
+                (('INSERT INTO embeddings_pending (memory_id, enqueued_at)'
+                  ' VALUES (?, ?)',
+                  lambda c, run: (c.execute(
+                      'SELECT id FROM memories ORDER BY id').fetchone()[0], 1.0)),),
+                build_previous=self._build_v3_at,
+                migrate=self._migrate_to_4,
+                label='_migration_004',
+            )
+            self.assertEqual(report['schema_version_before'], 3)
+            self.assertEqual(report['schema_version_after'], 4)
+            self.assertEqual(report['constraints_added'], [])
+
+    def _build_v3_at(self, db_path):
+        """`_build_v3` against an arbitrary path, for the shared harness."""
+        real, self.db = self.db, db_path
+        try:
+            self._build_v3()
+        finally:
+            self.db = real
+
+    @staticmethod
+    def _migrate_to_4(db_path):
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            _store_mod._migration_004(conn)
+            conn.execute("INSERT INTO _meta(key, value) VALUES('schema_version','4')"
+                         " ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        finally:
+            conn.close()
 
 
 if __name__ == '__main__':
