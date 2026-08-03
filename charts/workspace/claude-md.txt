@@ -68,8 +68,14 @@ Claude Task API token (see below):
 TOKEN=$(cat /home/dev/.claude-tasks/.api-token)
 curl localhost:6080/health            # service health (VS Code, terminal, browser) — no auth
 curl -H "Authorization: Bearer $TOKEN" localhost:6080/metrics           # CPU, memory, disk usage (JSON)
+curl -H "Authorization: Bearer $TOKEN" localhost:6080/metrics/prometheus # platform metrics, Prometheus exposition
 curl -H "Authorization: Bearer $TOKEN" localhost:6080/api/github/status # git config and GitHub auth status
 ```
+
+`/metrics` (JSON) is the dashboard's feed; `/metrics/prometheus` is the scrape
+target — agent token spend by model and class, task counts by status, hook
+deliveries, embedding-queue depth. See `docs/prometheus-metrics.md` for the
+metric list, what each label means and why nearly all of them are gauges.
 
 ## Claude Task API
 

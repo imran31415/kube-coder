@@ -1,0 +1,60 @@
+{
+  "fixture": {
+    "cpu": {
+      "usage_percent": 12.5,
+      "cores": 4
+    },
+    "memory": {
+      "total_mb": 4096.0,
+      "used_mb": 1024.5,
+      "available_mb": 3071.5,
+      "percent": 25.0
+    },
+    "disk": {
+      "total_gb": 50.0,
+      "used_gb": 12.25,
+      "available_gb": 37.75,
+      "percent": 24.5,
+      "path": "/home/dev"
+    },
+    "alerts": [
+      {
+        "type": "warning",
+        "resource": "disk",
+        "message": "Disk usage at 24.5% \u2014 \"quoted\", back\\slash,\nnewline, \u00e9"
+      }
+    ],
+    "timestamp": 1754179200.5,
+    "product": {
+      "chats": {
+        "total": 3,
+        "active": 1
+      },
+      "tokens": {
+        "total": 100,
+        "input": 70,
+        "output": 30,
+        "per_session_avg": 50,
+        "nothing": null,
+        "flag": true,
+        "empty_list": [],
+        "empty_obj": {}
+      },
+      "skills": {
+        "invocations_by_name": {
+          "kc-preflight": 2
+        }
+      },
+      "memory": {
+        "recall_count_by_key": []
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "cache_control": "no-cache, no-store, must-revalidate",
+    "body_latin1": "{\"cpu\": {\"usage_percent\": 12.5, \"cores\": 4}, \"memory\": {\"total_mb\": 4096.0, \"used_mb\": 1024.5, \"available_mb\": 3071.5, \"percent\": 25.0}, \"disk\": {\"total_gb\": 50.0, \"used_gb\": 12.25, \"available_gb\": 37.75, \"percent\": 24.5, \"path\": \"/home/dev\"}, \"alerts\": [{\"type\": \"warning\", \"resource\": \"disk\", \"message\": \"Disk usage at 24.5% \\u2014 \\\"quoted\\\", back\\\\slash,\\nnewline, \\u00e9\"}], \"timestamp\": 1754179200.5, \"product\": {\"chats\": {\"total\": 3, \"active\": 1}, \"tokens\": {\"total\": 100, \"input\": 70, \"output\": 30, \"per_session_avg\": 50, \"nothing\": null, \"flag\": true, \"empty_list\": [], \"empty_obj\": {}}, \"skills\": {\"invocations_by_name\": {\"kc-preflight\": 2}}, \"memory\": {\"recall_count_by_key\": []}}}",
+    "body_len": 692
+  }
+}

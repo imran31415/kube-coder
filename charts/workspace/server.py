@@ -48,6 +48,18 @@ except ImportError:      # pragma: no cover - module always ships beside server.
     devcontainer = None
     _DEVCONTAINER_AVAILABLE = False
 
+# Prometheus text exposition format (#105). Pure and dependency-free — it
+# renders names/labels/values into bytes and knows nothing about kube-coder.
+# Kept out of server.py for the same reason as the two above: the format needs
+# a lot of small tests that must not boot an HTTP server, and a malformed
+# exposition costs the whole scrape rather than one metric.
+try:
+    import prometheus_exposition as prom
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:      # pragma: no cover - module always ships beside server.py
+    prom = None
+    _PROMETHEUS_AVAILABLE = False
+
 # Persistent memory subsystem — shared with mcp_memory.py via the colocated
 # `memory` package. Importable because the workspace-entrypoint copies the
 # package next to server.py at /tmp/browser/.
@@ -1042,20 +1054,26 @@ class ProductMetricsCollector:
     RECALL_TOP_N = 10
 
     @staticmethod
-    def _with_build_tokens(tokens):
+    def _with_build_tokens(tokens, task_metas=None):
         """Fold Build spend into the product token block (#574).
 
         Additive by design: every pre-#574 key keeps its exact meaning and its
         thread-only scope, and the new figures sit alongside under `threads` /
         `builds` / `all` — so no reader of `tokens.total` silently starts seeing
-        a different number under the same name."""
+        a different number under the same name.
+
+        `task_metas` is an already-scanned task.json list; passing it lets a
+        caller that needs the metas for its own reasons (the Prometheus
+        exposition, #105) share one walk of the tasks directory instead of
+        provoking a second. `None` means "scan", i.e. exactly the old
+        behaviour."""
         threads = tokens.get('threads')
         if not isinstance(threads, dict):
             # An older/absent hypervisor: no thread figures, but Builds still
             # count — and the shape must stay uniform for its readers.
             threads = tu.public_block(None, sessions=0)
         thread_cov = tokens.get('coverage') or tu.coverage_summary()
-        builds, build_cov = ClaudeTaskManager.build_token_totals()
+        builds, build_cov = ClaudeTaskManager.build_token_totals(task_metas)
         combined = tu.empty_usage()
         tu.add_usage(combined, threads)
         tu.add_usage(combined, builds)
@@ -1075,7 +1093,7 @@ class ProductMetricsCollector:
         }
 
     @staticmethod
-    def get_product_metrics():
+    def get_product_metrics(task_metas=None):
         # chats / tokens / skills are aggregated from the hypervisor thread
         # metadata (cheap thread.json reads); memory recalls come from the
         # memory store's maintained access counters.
@@ -1098,7 +1116,7 @@ class ProductMetricsCollector:
         # each with the four priceable classes apart and a per-model breakdown.
         if _TOKEN_USAGE_AVAILABLE:
             try:
-                tokens = ProductMetricsCollector._with_build_tokens(tokens)
+                tokens = ProductMetricsCollector._with_build_tokens(tokens, task_metas)
             except Exception as e:
                 tokens = {**tokens, 'error': str(e)}
         memory = {'recall_count_by_key': []}
@@ -1114,6 +1132,338 @@ class ProductMetricsCollector:
             'skills': skills,
             'memory': memory,
         }
+
+
+class ProcessCounters:
+    """Monotonic-by-construction counters for the life of this process (#105).
+
+    THE POINT OF THIS CLASS is that almost nothing else on this endpoint is
+    allowed to be a Prometheus counter. Every other figure the exposition
+    reports is recomputed from files on disk, and those files get pruned — so
+    the number can fall. Prometheus reads a fall as a counter *reset* and
+    credits the whole post-fall value as fresh increase, which turns a deleted
+    task into a spike in `rate()` that never happened. Anything recomputed from
+    disk is therefore a gauge; only what is incremented here, in memory, as the
+    event happens, is a counter.
+
+    A process restart zeroing these is fine and expected: that is the one
+    decrease Prometheus models correctly.
+
+    Thread-safe because completion hooks are delivered from daemon threads;
+    `d[k] += 1` is several bytecodes and two of them can interleave.
+    """
+
+    _lock = threading.Lock()
+    _values = {}
+
+    @classmethod
+    def inc(cls, name, labels=None, amount=1):
+        key = (name, tuple(sorted((labels or {}).items())))
+        with cls._lock:
+            cls._values[key] = cls._values.get(key, 0) + amount
+
+    @classmethod
+    def get(cls, name):
+        """`{labels_tuple: value}` for one counter — a snapshot, safe to read."""
+        with cls._lock:
+            return {k[1]: v for k, v in cls._values.items() if k[0] == name}
+
+    @classmethod
+    def value(cls, name, labels=None):
+        return cls.get(name).get(tuple(sorted((labels or {}).items())), 0)
+
+    # There is deliberately no reset(). A counter that anything can zero is not
+    # a counter, and a test that zeroes a process-wide registry races every
+    # other suite's in-flight delivery threads — tests assert on deltas.
+
+
+class PrometheusMetricsCollector:
+    """The platform's own metrics, in Prometheus text exposition format (#105).
+
+    Served at **/metrics/prometheus**, deliberately NOT by content-negotiating
+    the existing JSON `/metrics`. The dashboard SPA polls that endpoint and one
+    misread `Accept` header would blank the Metrics page silently; sharing a URL
+    between two representations also needs `Vary: Accept` to survive the ingress
+    and oauth2-proxy in front of this server, and getting that wrong caches one
+    consumer's body for the other. A distinct path has no cache key to get
+    wrong, and `metrics_path` is a one-line field in any scrape config.
+
+    ── COUNTER vs GAUGE ──────────────────────────────────────────────────────
+    Only `ProcessCounters`-backed figures are counters. Everything else here is
+    derived from task.json / thread.json / SQLite and *falls* when a task,
+    thread or memory is deleted, so it is a gauge — see ProcessCounters for why
+    typing those as counters would manufacture spikes.
+
+    ── CARDINALITY ───────────────────────────────────────────────────────────
+    Every label here is drawn from a fixed, small vocabulary: scope (2), token
+    class (4), coverage (3), task status (6), hook outcome (2), section (4).
+    The one label with values from data rather than code is `model`, and it is
+    capped at MAX_MODELS with the tail folded into `model="other"`. Nothing is
+    ever labelled by task id, thread id, session id, workdir, project or URL:
+    each distinct value of those is a permanent time series, and that is the
+    standard way to take a Prometheus down.
+
+    ── SCRAPE COST ───────────────────────────────────────────────────────────
+    One `os.listdir` + one `json.load` per task.json, one `read_meta()` per
+    hypervisor thread, and one indexed `COUNT(*)` on the embedding queue. That
+    is the same work the JSON `/metrics` already does on every dashboard poll,
+    and the task scan is shared between the token and task sections rather than
+    run twice. Deliberately excluded: CPU utilisation (`get_cpu_usage` sleeps
+    500 ms to difference /proc/stat — unacceptable in a scrape) and RAM/disk
+    (kubelet and cAdvisor already export both, per container and per PVC).
+    Also excluded: memory recall counts and skill invocations, whose natural
+    label is a key/skill name — unbounded.
+    """
+
+    PREFIX = 'kubecoder_'
+
+    #: Terminal + live statuses ClaudeTaskManager writes. Anything else is
+    #: folded into `unknown` so a stray value can't mint a new series.
+    TASK_STATUSES = ('running', 'waiting-for-input', 'completed', 'error', 'killed')
+    UNKNOWN_STATUS = 'unknown'
+
+    #: Where agent spend happened. Summing over this gives the workspace total;
+    #: `all` is deliberately NOT exposed, because a consumer summing scopes and
+    #: then adding `all` would double-count.
+    SCOPES = ('threads', 'builds')
+
+    HOOK_OUTCOMES = ('delivered', 'failed')
+    HOOK_COUNTER = 'hook_deliveries'
+
+    #: Distinct `model` label values kept per scope before the tail is folded
+    #: into `other`. Model ids come out of a transcript we do not control, so
+    #: the cap is what makes this label bounded rather than merely small.
+    MAX_MODELS = 20
+    MODEL_UNKNOWN = 'unknown'
+    MODEL_OTHER = 'other'
+    #: Tokens a ledger counted but attributed to no model. Emitted always, even
+    #: at zero, so `sum by (class) (kubecoder_agent_tokens)` is exactly the
+    #: ledger's own class total rather than "whatever the breakdown happened to
+    #: cover".
+    MODEL_UNATTRIBUTED = 'unattributed'
+
+    SECTIONS = ('tokens', 'tasks', 'hooks', 'memory')
+
+    @staticmethod
+    def _int(value):
+        """Any value → a non-negative int. The ledgers are already sanitized;
+        this is for the degraded shapes (`{'error': ...}`) the JSON collector
+        substitutes when a subsystem is broken."""
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _task_metas():
+        """Every task.json, or `[]`. Never raises — one unreadable tasks dir
+        must not cost the scrape its other sections."""
+        try:
+            return ProjectsManager._scan_task_metas()
+        except Exception as e:
+            print(f'[prom-metrics] task scan failed: {e}', file=sys.stderr)
+            return []
+
+    @classmethod
+    def render(cls):
+        """The whole exposition as text. Each section is isolated: a failure
+        drops that section's families and reports itself through
+        `kubecoder_metrics_collector_up`, so a zero is never mistaken for a
+        measurement."""
+        exp = prom.Exposition()
+        metas = cls._task_metas()
+        up = {}
+        for section in cls.SECTIONS:
+            fn = getattr(cls, '_add_' + section)
+            try:
+                up[section] = 1 if fn(exp, metas) else 0
+            except Exception as e:
+                up[section] = 0
+                print(f'[prom-metrics] section {section} failed: '
+                      f'{type(e).__name__}: {e}', file=sys.stderr)
+        exp.gauge(
+            cls.PREFIX + 'metrics_collector_up',
+            '1 when this section of the exposition was collected successfully, '
+            '0 when its source was unavailable or errored — a 0 here means the '
+            "section's other metrics are missing, not that they are zero.",
+            [({'section': s}, up.get(s, 0)) for s in cls.SECTIONS])
+        return exp.render()
+
+    # ── tokens (#574 classes, the figures #581 is blocked on) ─────────────
+
+    @classmethod
+    def _model_samples(cls, scope, block):
+        """`[(labels, value)]` for one scope's per-model token breakdown.
+
+        Two properties this has to hold, both of which are the point:
+
+        * the sum over `model` equals the ledger's own top-level class total.
+          The breakdown is reconciled against it and any difference is emitted
+          as `model="unattributed"` rather than silently dropped, so a partial
+          `by_model` under-reports nothing.
+        * the number of `model` values is bounded. The tail beyond MAX_MODELS
+          (ranked by tokens, so the cap sheds the least interesting) is folded
+          into `other`, which keeps the sum property above intact.
+        """
+        by_model = block.get('by_model')
+        per_model = {}
+        for raw, entry in (by_model if isinstance(by_model, dict) else {}).items():
+            if not isinstance(entry, dict):
+                continue
+            name = str(raw).strip() or cls.MODEL_UNKNOWN
+            tgt = per_model.setdefault(name, {c: 0 for c in tu.CLASSES})
+            for c in tu.CLASSES:
+                tgt[c] += cls._int(entry.get(c))
+
+        ranked = sorted(per_model.items(),
+                        key=lambda kv: (-sum(kv[1].values()), kv[0]))
+        kept = {name: dict(counts) for name, counts in ranked[:cls.MAX_MODELS]}
+        for _, counts in ranked[cls.MAX_MODELS:]:
+            tail = kept.setdefault(cls.MODEL_OTHER, {c: 0 for c in tu.CLASSES})
+            for c in tu.CLASSES:
+                tail[c] += counts[c]
+
+        attributed = {c: sum(v[c] for v in per_model.values()) for c in tu.CLASSES}
+        # setdefault + add, not assignment: a model genuinely called
+        # "unattributed" must be merged with the residual rather than replaced
+        # by it, or the sum-equals-total property quietly breaks.
+        residual = kept.setdefault(cls.MODEL_UNATTRIBUTED,
+                                   {c: 0 for c in tu.CLASSES})
+        for c in tu.CLASSES:
+            # clamp: a breakdown that somehow exceeds its own total must not
+            # emit a negative token count.
+            residual[c] += max(0, cls._int(block.get(c)) - attributed[c])
+        return [({'scope': scope, 'model': name, 'class': c}, counts[c])
+                for name, counts in kept.items() for c in tu.CLASSES]
+
+    @classmethod
+    def _add_tokens(cls, exp, metas):
+        if not _TOKEN_USAGE_AVAILABLE:
+            return False
+        product = ProductMetricsCollector.get_product_metrics(task_metas=metas)
+        tokens = product.get('tokens') if isinstance(product, dict) else {}
+        tokens = tokens if isinstance(tokens, dict) else {}
+
+        samples, residue = [], []
+        for scope in cls.SCOPES:
+            block = tokens.get(scope)
+            block = block if isinstance(block, dict) else {}
+            samples.extend(cls._model_samples(scope, block))
+            residue.append(({'scope': scope},
+                            cls._int(block.get('legacy_input_combined'))))
+
+        exp.gauge(
+            cls.PREFIX + 'agent_tokens',
+            'Agent tokens recorded by the ledgers currently on disk, split by '
+            'the four priceable classes (#574). A GAUGE, not a counter: '
+            'deleting a task or thread removes its ledger and this figure '
+            'falls, which a counter would report as a reset and re-credit as '
+            'a spike.',
+            samples)
+        exp.gauge(
+            cls.PREFIX + 'agent_tokens_unclassified',
+            'Tokens from pre-#574 ledgers whose input classes were summed '
+            'before being recorded and cannot be split apart again. Counted '
+            'but never priceable — kept out of kubecoder_agent_tokens so that '
+            'summing that metric can never over-price a cache read as fresh '
+            'input.',
+            residue)
+
+        coverage = tokens.get('coverage')
+        coverage = coverage if isinstance(coverage, dict) else {}
+        runs = []
+        for scope in cls.SCOPES:
+            block = coverage.get(scope)
+            block = block if isinstance(block, dict) else {}
+            for state in (tu.COVERAGE_MEASURED, tu.COVERAGE_NOT_INSTRUMENTED,
+                          tu.COVERAGE_NO_SESSION):
+                runs.append(({'scope': scope, 'coverage': state},
+                             cls._int(block.get(state))))
+        exp.gauge(
+            cls.PREFIX + 'agent_runs',
+            'Agent runs (hypervisor threads / Build tasks) by how measurable '
+            'their token spend is. THE ZERO-DISAMBIGUATOR: only '
+            'coverage="measured" runs can report spend at all, so a fleet '
+            'total is only as complete as this metric says it is — an '
+            'uninstrumented assistant contributes a 0 that means "unknown", '
+            'not "spent nothing".',
+            runs)
+        return True
+
+    # ── tasks ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _add_tasks(cls, exp, metas):
+        counts = {s: 0 for s in cls.TASK_STATUSES + (cls.UNKNOWN_STATUS,)}
+        for m in metas:
+            status = m.get('status') if isinstance(m, dict) else None
+            counts[status if status in counts else cls.UNKNOWN_STATUS] += 1
+        exp.gauge(
+            cls.PREFIX + 'tasks',
+            'Tasks on this workspace by status. Status is read straight from '
+            'task.json; the background reconciler keeps it ~10s fresh, so this '
+            'costs no tmux calls. Statuses outside the known set fold into '
+            '"unknown" rather than minting a series.',
+            [({'status': s}, n) for s, n in counts.items()])
+        return True
+
+    # ── completion hooks ──────────────────────────────────────────────────
+
+    @classmethod
+    def _add_hooks(cls, exp, metas):
+        snapshot = ProcessCounters.get(cls.HOOK_COUNTER)
+        exp.counter(
+            cls.PREFIX + 'hook_deliveries_total',
+            'Completion hooks that reached a terminal outcome since this '
+            'process started — delivered, or failed after exhausting retries. '
+            'One increment per hook, not per attempt, so a flaky endpoint does '
+            'not inflate the failure rate. A genuine counter: incremented in '
+            'process as the event happens, so it only resets on restart, which '
+            'Prometheus models.',
+            [({'outcome': outcome},
+              snapshot.get((('outcome', outcome),), 0))
+             for outcome in cls.HOOK_OUTCOMES])
+
+        dead = 0
+        for m in metas:
+            delivery = m.get('hook_delivery') if isinstance(m, dict) else None
+            if isinstance(delivery, dict) and delivery.get('state') == 'failed':
+                dead += 1
+        exp.gauge(
+            cls.PREFIX + 'hook_dead_letters',
+            'Tasks whose completion hook exhausted its retries and is waiting '
+            'to be redelivered. A gauge read from task.json, so unlike the '
+            'counter above it survives a restart — and it falls when a hook is '
+            'redelivered or its task is pruned, which is exactly why it is not '
+            'a counter.',
+            [({}, dead)])
+        return True
+
+    # ── memory subsystem ──────────────────────────────────────────────────
+
+    @classmethod
+    def _add_memory(cls, exp, metas):
+        if MemoryManager is None:
+            return False
+        exp.gauge(
+            cls.PREFIX + 'memory_embeddings_pending',
+            'Memories written but not yet vectorised. One indexed COUNT(*) on '
+            'a table #597 bounds at one row per memory.',
+            [({}, MemoryManager.pending_embeddings())])
+        running = False
+        if EmbeddingWorker is not None:
+            try:
+                running = bool((EmbeddingWorker.status() or {}).get('running'))
+            except Exception:
+                running = False
+        exp.gauge(
+            cls.PREFIX + 'memory_embeddings_worker_up',
+            '1 when the embedding worker thread is alive. Without it the queue '
+            'depth above is unactionable: a queue that only grows is normal on '
+            'a workspace with no embedding provider configured, and a problem '
+            'on one that has.',
+            [({}, 1 if running else 0)])
+        return True
 
 
 class GitHubManager:
@@ -3313,6 +3663,12 @@ class ClaudeTaskManager:
                     'state': 'delivered', 'attempts': attempt,
                     'status': status, 'delivered_at': time.time(),
                 })
+                # Counted here rather than derived from task.json (#105): a
+                # pruned task takes its delivery record with it, and a total
+                # that can fall is not a counter. NB outcome, not task_id —
+                # per-task labels are unbounded cardinality.
+                ProcessCounters.inc(PrometheusMetricsCollector.HOOK_COUNTER,
+                                    {'outcome': 'delivered'})
                 print(f'[completion-hook] task={task_id} -> {url} ({status}) attempt {attempt}')
                 return
             except urllib.error.HTTPError as e:
@@ -3327,6 +3683,8 @@ class ClaudeTaskManager:
             'state': 'failed', 'attempts': attempts,
             'last_error': last_err, 'last_attempt_at': time.time(),
         })
+        ProcessCounters.inc(PrometheusMetricsCollector.HOOK_COUNTER,
+                            {'outcome': 'failed'})
         print(f'[completion-hook] task={task_id} -> {url} FAILED after {attempts}: {last_err}',
               file=sys.stderr)
 
@@ -3485,16 +3843,22 @@ class ClaudeTaskManager:
             return None
 
     @staticmethod
-    def build_token_totals():
+    def build_token_totals(task_metas=None):
         """`(usage, coverage)` aggregated over every Build (#574).
 
         Read-only: sums what ingest_usage already persisted and never touches a
         transcript, so /metrics stays cheap enough to poll. `coverage` counts how
         many Builds are measurable at all, which is what stops a pile of
-        uninstrumented zeros from reading as a real total."""
+        uninstrumented zeros from reading as a real total.
+
+        `task_metas` lets a caller hand in a task.json list it already scanned
+        (#105) so one walk of the tasks directory serves both; `None` scans, as
+        before."""
         agg = tu.empty_usage(source=tu.SOURCE_TRANSCRIPT)
         tasks = measured = not_instrumented = no_session = 0
-        for m in ProjectsManager._scan_task_metas():
+        metas = (ProjectsManager._scan_task_metas()
+                 if task_metas is None else task_metas)
+        for m in metas:
             if not isinstance(m, dict):
                 continue
             u = m.get('usage') if isinstance(m.get('usage'), dict) else {}
@@ -8445,6 +8809,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         elif self.path == "/metrics":
             self.send_metrics()
+            return
+        # Matched on normalized_path (not raw self.path like /metrics above) so
+        # a query string or the SPA's /oauth prefix still reaches the scrape
+        # endpoint. Ordering note: 'metrics' is not in SPA_TOP_LEVEL, so the
+        # SPA catch-all earlier in this chain does not swallow it — there is a
+        # test that fails if that ever changes.
+        elif normalized_path == "/metrics/prometheus":
+            self.send_prometheus_metrics()
             return
         # These /api/* reads match on normalized_path (the /oauth- and
         # /browser-stripped path) rather than raw self.path: the SPA prefixes
@@ -14277,6 +14649,48 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(json.dumps(metrics).encode())
+
+    def send_prometheus_metrics(self):
+        """GET /metrics/prometheus — the platform's own metrics in Prometheus
+        text exposition format (#105).
+
+        A SEPARATE PATH from the JSON /metrics above, on purpose. That endpoint
+        is what the dashboard SPA's Metrics page reads; content-negotiating the
+        two off one URL would put the Metrics page one `Accept`-header change
+        away from rendering nothing, and would need a correct `Vary: Accept`
+        to survive the ingress and oauth2-proxy in front of this server. A
+        scraper's `metrics_path` is a one-line config field, so the separate
+        path costs nothing and cannot break the SPA. See
+        PrometheusMetricsCollector for what is exposed and why.
+
+        Same auth gate as the JSON endpoint — it reports the same underlying
+        facts, so anything that could read it there can read it here. A
+        Prometheus scrape authenticates with the workspace's Claude Task API
+        token as a Bearer credential (`authorization` / `bearerTokenSecret` in
+        a ServiceMonitor).
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not _PROMETHEUS_AVAILABLE:
+            self.send_json({'error': 'prometheus exposition unavailable'}, 503)
+            return
+        try:
+            body = PrometheusMetricsCollector.render().encode('utf-8')
+        except Exception as e:
+            # render() already isolates each section, so reaching here means the
+            # document itself could not be built — serve nothing rather than a
+            # half-formed exposition Prometheus would reject wholesale anyway.
+            print(f'[prom-metrics] render failed: {type(e).__name__}: {e}',
+                  file=sys.stderr)
+            self.send_json({'error': 'metrics unavailable'}, 500)
+            return
+        self.send_response(200)
+        self.send_header('Content-type', prom.CONTENT_TYPE)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_github_status(self):
         """Send combined GitHub status as JSON.
