@@ -368,7 +368,10 @@ recovered. `schema` versions this object.
 
 Aggregate figures across all tasks and chat threads — including the same
 class split, per-model breakdown and coverage counts — are on `/metrics` under
-`product.tokens`.
+`product.tokens`, and on `/metrics/prometheus` as `kubecoder_agent_tokens`
+(labelled by `scope`, `model` and `class`) alongside `kubecoder_agent_runs`,
+which carries the same coverage counts. See
+[`docs/prometheus-metrics.md`](prometheus-metrics.md).
 
 ---
 

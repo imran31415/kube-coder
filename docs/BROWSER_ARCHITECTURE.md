@@ -134,6 +134,7 @@ This document describes the comprehensive architecture for the remote browser fu
 - `GET /health/terminal` - Terminal health check
 - `GET /health/browser` - VNC/browser health check
 - `GET /metrics` - System metrics (CPU, memory, disk) as JSON
+- `GET /metrics/prometheus` - Platform metrics in Prometheus text exposition format (see `docs/prometheus-metrics.md`)
 - `GET /api/github/status` - GitHub auth status (SSH, CLI, git config)
 - `POST /api/launch-chrome` - Launch browser
 - `POST /api/test-chrome` - Test installation

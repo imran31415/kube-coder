@@ -1182,6 +1182,25 @@ class MemoryManager:
     # ── Stats ─────────────────────────────────────────────────────────────
 
     @classmethod
+    def pending_embeddings(cls) -> int:
+        """Depth of the embedding queue: memories written but not yet vectorised.
+
+        Exists so the Prometheus exposition (#105) can report queue depth on
+        every scrape without paying for `stats()`, which runs seven counts —
+        two of them full scans of `memory_history` and `memory_refs`. This is
+        one count over `embeddings_pending`, which #597 bounds at one row per
+        memory, so it stays cheap however many times a memory is rewritten.
+
+        Deliberately does NOT swallow `sqlite3.Error`: a gauge that reports 0
+        when it could not read the queue is indistinguishable from a drained
+        queue, which is the one reading that would stop someone investigating.
+        The caller marks the section unavailable instead.
+        """
+        with cls.store().conn() as c:
+            return int(c.execute(
+                'SELECT COUNT(*) FROM embeddings_pending').fetchone()[0])
+
+    @classmethod
     def stats(cls) -> Dict[str, Any]:
         with cls.store().conn() as c:
             total = c.execute(
