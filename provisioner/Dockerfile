@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # provisioner/Dockerfile
 #
 # Dedicated, minimal image for the privileged workspace-provisioner Job
@@ -56,7 +56,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # tampered/MITM'd helm fails the BUILD (not silently at provision time). This ARG
 # is the only declaration of the version (see the header); Renovate bumps it here.
 # renovate: datasource=github-releases depName=helm/helm
-ARG HELM_VERSION=v3.14.4
+ARG HELM_VERSION=v3.21.3
 RUN ARCH=$(dpkg --print-architecture) \
     && TARBALL="helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
     && curl -fsSL "https://get.helm.sh/${TARBALL}" -o "/tmp/${TARBALL}" \
@@ -77,7 +77,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 
 # kubectl — same pinned version + published-checksum pattern as devlaptop.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.31.4
+ARG KUBECTL_VERSION=v1.36.3
 RUN ARCH=$(dpkg --print-architecture) \
     && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
     && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
