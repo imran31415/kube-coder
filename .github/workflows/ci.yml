@@ -284,7 +284,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Secret Scanning
-        uses: trufflesecurity/trufflehog@82df476e759c1448517fac6bfb3677685cdcd78a # main
+        uses: trufflesecurity/trufflehog@a7082b69f5bc6167bbe27ebab82bf6707f267bf6 # main
         with:
           extra_args: --only-verified
 
@@ -313,7 +313,7 @@ jobs:
           target: runtime
 
       - name: Docker Image Vulnerability Scanning
-        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # master
         with:
           image-ref: 'kube-coder-ci:latest'
           format: 'sarif'
@@ -330,7 +330,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Upload Trivy Scan Results
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         # Upload whenever the SARIF exists, even if an earlier step failed —
         # but skip (don't error) when it's absent, e.g. the image build or
         # Trivy itself failed and produced no report. `always()` alone made
