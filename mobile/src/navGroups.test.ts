@@ -9,6 +9,7 @@ describe('NAV_GROUPS (#267)', () => {
     expect([...names].sort()).toEqual(
       [
         'Apps',
+        'Board',
         'Controller',
         'Cto',
         'Desktop',

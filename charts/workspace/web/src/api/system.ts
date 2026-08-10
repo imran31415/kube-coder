@@ -26,6 +26,10 @@ export interface ServerMode {
    *  repo's own environment file is a workspace capability, not part of the
    *  CTO page. False hides the Dev container card and 404s /api/devcontainer*. */
   devcontainerEnabled?: boolean;
+  /** Board Processor (#588/#589). Independent of ctoEnabled — working an
+   *  external tracker and running an AI CTO over our own projects are separate
+   *  capabilities. False hides the /board nav item and route. */
+  boardEnabled?: boolean;
 }
 
 export const getMode = () => apiGet<ServerMode>('/api/mode');

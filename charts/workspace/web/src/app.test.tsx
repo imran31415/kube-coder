@@ -28,6 +28,15 @@ describe('App shell', () => {
   });
 
   it('navigates between routes via the rail buttons', async () => {
+    // Resolve the lazy route's chunk BEFORE the click. Routes are lazy-loaded
+    // (issue #101), so the assertion below would otherwise be racing Vitest's
+    // on-demand transform of the memory module — a cost that has nothing to do
+    // with what this test checks and that grows with total suite load, which is
+    // how it came to fail only in a full run. Same specifier as Shell.tsx uses,
+    // so this populates the very module-registry entry `lazy` awaits; the
+    // component still mounts through lazy + Suspense, it just no longer waits
+    // on the bundler to do it.
+    await import('./routes/memory/index');
     const { container } = render(<App />);
     // The bottom nav is also rendered in the DOM (hidden via CSS in real
     // life), so pick the rail-specific button. Resolved by text rather
@@ -40,10 +49,10 @@ describe('App shell', () => {
     expect(railMemory, 'rail has a Memory entry').toBeTruthy();
     railMemory!.click();
     expect(currentPath.value).toBe('/memory');
-    // Heading swaps to the new route. Routes are now lazy-loaded (issue #101),
-    // so allow extra time for the dynamic import chunk to resolve through
-    // Suspense before the heading appears.
-    await screen.findByRole('heading', { level: 1, name: 'Memory' }, { timeout: 5000 });
+    // Heading swaps to the new route. The chunk is already resolved above, so
+    // this is waiting only on Suspense to swap the fallback for the component —
+    // a couple of microtasks, not a module load.
+    await screen.findByRole('heading', { level: 1, name: 'Memory' });
   });
 
   it('opens the command palette when the topbar search is clicked', async () => {

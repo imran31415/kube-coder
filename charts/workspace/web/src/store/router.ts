@@ -78,6 +78,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/desktop', title: 'Desktop' },
   { path: '/mission', title: 'Mission Control' },
   { path: '/cto', title: 'AI CTO' },
+  { path: '/board', title: 'Board' },
   { path: '/feed', title: 'Feed' },
   // "Chat" is the one user-facing name for this surface (#346); "Hypervisor"
   // survives only as the internal term (route path, stores, server modules).
@@ -124,6 +125,9 @@ export const NAV_GROUPS: NavGroup[] = [
     landing: '/mission',
     items: [
       { path: '/cto', label: 'AI CTO' },
+      // The Board Processor works someone ELSE's backlog, so it belongs beside
+      // the AI CTO (which reasons over ours) rather than under Workspace.
+      { path: '/board', label: 'Board' },
       { path: '/feed', label: 'Feed' },
       { path: '/hypervisor', label: 'Chat' },
       { path: '/tasks', label: 'Builds' },
@@ -145,20 +149,29 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 /**
- * NAV_GROUPS with capability-gated items removed. Currently only `/cto`, hidden
- * when the AI CTO feature is disabled server-side (#467). Pure — callers pass
- * the flags (from serverMode) so this module stays free of store imports.
+ * NAV_GROUPS with capability-gated items removed. Pure — callers pass the flags
+ * (from serverMode) so this module stays free of store imports.
+ *
+ * `/cto` hides when the AI CTO feature is off (#467); `/board` hides when the
+ * Board Processor is off (#588/#589). They are INDEPENDENT gates: a workspace
+ * can work an external board without running an AI CTO, and vice versa.
  */
-export function visibleNavGroups(caps: { ctoEnabled?: boolean }): NavGroup[] {
+export function visibleNavGroups(caps: {
+  ctoEnabled?: boolean;
+  boardEnabled?: boolean;
+}): NavGroup[] {
+  const hidden = new Set<string>();
   if (caps.ctoEnabled === false) {
     // The Feed rides the AI CTO, so both hide together (#467/#470).
-    const hidden = new Set(['/cto', '/feed']);
-    return NAV_GROUPS.map((g) => ({
-      ...g,
-      items: g.items.filter((i) => !hidden.has(i.path)),
-    }));
+    hidden.add('/cto');
+    hidden.add('/feed');
   }
-  return NAV_GROUPS;
+  if (caps.boardEnabled === false) hidden.add('/board');
+  if (hidden.size === 0) return NAV_GROUPS;
+  return NAV_GROUPS.map((g) => ({
+    ...g,
+    items: g.items.filter((i) => !hidden.has(i.path)),
+  }));
 }
 
 /** The nav group containing `path` (as landing or item), if any. */

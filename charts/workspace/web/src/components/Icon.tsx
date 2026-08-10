@@ -48,6 +48,7 @@ export type IconName =
   | 'desktop'
   | 'mission'
   | 'cto'
+  | 'board'
   | 'feed'
   | 'chevron-up';
 
@@ -306,6 +307,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <circle cx="10" cy="10" r="7.5" />
       <path d="M13 7l-1.8 4.2L7 13l1.8-4.2L13 7z" />
+    </>
+  ),
+  // Kanban columns — an external board someone else is tracking.
+  board: (
+    <>
+      <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
+      <path d="M7.5 3.5v13M12.5 3.5v13" />
     </>
   ),
   // Circled "i" — a lightweight help/info affordance.

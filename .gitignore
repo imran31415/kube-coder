@@ -24,6 +24,12 @@ secrets/
 *.secret
 *.key
 
+# Local real-board test credentials (#588). charts/workspace/.env.local holds
+# a GitHub PAT and a Jira API token for testing the Board Processor against
+# real accounts; .env.local.example is the committed, valueless template.
+.env.local
+!*.env.local.example
+
 # Private per-user workspaces (chart values + secrets for workspaces that
 # don't need to be exposed in the public repo). Each subdir mirrors the
 # `deployments/<user>/` + `secrets/<user>/` shape but everything stays out
@@ -56,3 +62,6 @@ charts/workspace/web/coverage/
 # graphify skill output (knowledge-graph HTML/JSON/audit) — regenerable
 # artifacts written by `/graphify`, not source.
 graphify-out/
+
+# Local dev board state (charts/workspace/web/dev_server.py, KC_LOCAL_HOME).
+charts/workspace/.devdata/

@@ -37,6 +37,9 @@ const EVENT_TYPES = [
   'projects.changed',
   'feed.item',
   'devcontainer.changed',
+  'boards.changed',
+  'boards.run',
+  'boards.review',
 ];
 
 let es: EventSource | null = null;

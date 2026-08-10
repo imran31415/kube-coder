@@ -24,6 +24,7 @@ const ICONS: Record<string, IconName> = {
   '/desktop': 'desktop',
   '/mission': 'mission',
   '/cto': 'cto',
+  '/board': 'board',
   '/feed': 'feed',
   '/hypervisor': 'hypervisor',
   '/walkie': 'walkie',
@@ -118,7 +119,10 @@ export function Rail() {
   const active = matchRoute(currentPath.value).path;
   const collapsed = railCollapsed.value;
   // Hide capability-gated items (AI CTO when disabled server-side, #467).
-  const groups = visibleNavGroups({ ctoEnabled: serverMode.value.ctoEnabled });
+  const groups = visibleNavGroups({
+    ctoEnabled: serverMode.value.ctoEnabled,
+    boardEnabled: serverMode.value.boardEnabled,
+  });
 
   // Auto-expand the group containing the active route (never auto-collapse
   // others) so palette/bottom-nav jumps always land on a visible item.

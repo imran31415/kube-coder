@@ -43,6 +43,10 @@ export const NAV_GROUPS: NavGroupDef[] = [
       { name: 'MissionControl', label: 'Overview', icon: 'file-tray-full-outline' },
       { name: 'Cto', label: 'AI CTO', icon: 'compass-outline' },
       { name: 'Feed', label: 'Feed', icon: 'newspaper-outline' },
+      // Board review (#588). Mission Control, beside Feed: both answer
+      // "what needs me?" — Feed for this workspace, Board for someone
+      // else's tracker.
+      { name: 'Board', label: 'Board', icon: 'clipboard-outline' },
       { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' },
       { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
       { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },

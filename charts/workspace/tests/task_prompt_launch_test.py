@@ -295,6 +295,28 @@ class WaitForPaneReadyTests(unittest.TestCase):
                 CTM._wait_for_pane_ready('sess', floor=0, ceiling=5, interval=0))
 
 
+    def test_default_ceiling_outlasts_a_slow_cold_start(self):
+        """A cold Claude Code start was measured at 33s in a container (large
+        binary + MCP spawn). The old 12s ceiling expired first, so the prompt
+        was pasted into a TUI not yet accepting input: it RENDERED but Enter
+        was ignored, and the task idled with its prompt sitting unsent.
+
+        Passing ceiling=None must take the configurable default, and that
+        default must comfortably exceed a slow start."""
+        self.assertGreaterEqual(CTM.PANE_READY_TIMEOUT, 40)
+
+        # composer appears at t=30s, past the old 12s ceiling
+        frames = ['starting'] * 30 + [COMPOSER_READY]
+        captures = iter(frames)
+        clock = iter(range(0, 200))
+        with mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=lambda: next(clock)):
+            self.assertTrue(
+                CTM._wait_for_pane_ready('sess', floor=0, ceiling=None,
+                                         interval=0, expect_composer=True))
+
+
 class DeliverPromptTests(unittest.TestCase):
     """The core issue #288 fix: verify the paste landed and re-PASTE (not just
     re-Enter) when it didn't."""

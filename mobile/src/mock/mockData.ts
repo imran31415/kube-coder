@@ -36,6 +36,8 @@ import type {
   DocsManifest,
   DocsPage,
   WebhookRecord,
+  BoardSummary,
+  BoardReviewItem,
 } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -1022,4 +1024,85 @@ export function mockDocsPage(id: string): DocsPage | null {
     };
   }
   return null;
+}
+
+// ---- Board Processor review (#588 Phase 6) ---------------------------------
+// EXPO_PUBLIC_MOCK=1 powers the screenshot and web-export flows, and every
+// client function short-circuits on getConfig().mock — so a screen with no
+// mock data renders empty in every screenshot. Writes must MUTATE these
+// module-level arrays, or approving in mock mode looks like a no-op.
+
+export const mockBoards: BoardSummary[] = [
+  { id: 'acme-jira', display_name: 'Acme — Support', vendor: 'jira', credential_set: true },
+  { id: 'kube-coder-gh', display_name: 'kube-coder issues', vendor: 'github', credential_set: true },
+];
+
+export const mockBoardReview: BoardReviewItem[] = [
+  {
+    board_id: 'acme-jira',
+    item_id: '812',
+    item_key: 'SUP-812',
+    item_title: 'Refund not received',
+    item_url: 'https://acme.atlassian.net/browse/SUP-812',
+    content_hash: 'ab12cd34',
+    state: 'pending',
+    disposition: 'needs_review',
+    reason: 'matched refund txn 8821 in Stripe; no further action needed',
+    evidence: { tool_calls: 3, tokens: '12k' },
+    actions: [],
+    pending_actions: [
+      {
+        id: 'a1',
+        action: 'comment',
+        params: { body: 'Hi Dana — I confirmed the refund was issued on the 3rd.' },
+        preview: 'Hi Dana — I confirmed the refund was issued on the 3rd.',
+        writes: 1,
+        state: 'pending',
+      },
+      {
+        id: 'a2',
+        action: 'set_status',
+        params: { status: 'Done' },
+        preview: 'IN_PROGRESS → CLOSED',
+        writes: 1,
+        state: 'pending',
+      },
+    ],
+    open: true,
+    decided_by: '',
+    created_at: NOW - 3600 * 3,
+    updated_at: NOW - 3600 * 3,
+  },
+  {
+    board_id: 'acme-jira',
+    item_id: '815',
+    item_key: 'SUP-815',
+    item_title: 'Cannot log in after password reset',
+    item_url: 'https://acme.atlassian.net/browse/SUP-815',
+    content_hash: 'ef56ab78',
+    state: 'pending',
+    disposition: 'needs_rescoping',
+    reason: 'two accounts share this email; which one should be reset?',
+    evidence: { tool_calls: 5 },
+    actions: [],
+    pending_actions: [],
+    open: true,
+    decided_by: '',
+    created_at: NOW - 3600 * 9,
+    updated_at: NOW - 3600 * 9,
+  },
+];
+
+/** Mock write: mutate in place so the screen actually changes. */
+export function mockDecideBoardItem(itemId: string, state: BoardReviewItem['state']): void {
+  const item = mockBoardReview.find((i) => i.item_id === itemId);
+  if (!item) return;
+  item.state = state;
+  item.open = false;
+  item.decided_by = 'dashboard:you@example.com';
+  for (const action of item.pending_actions) {
+    action.state = state === 'approved' ? 'done' : 'discarded';
+  }
+  item.actions = item.pending_actions;
+  item.pending_actions = [];
 }

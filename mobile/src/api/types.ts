@@ -631,3 +631,54 @@ export interface DocsPage {
   edited_at: number;
   markdown: string;
 }
+
+// ---- Board Processor review (#588 Phase 6) ---------------------------------
+
+/** A write an agent WANTS to make, held until a human approves it. */
+export interface BoardStagedAction {
+  id: string;
+  action: string;
+  params: Record<string, unknown>;
+  /** What the reviewer reads. Rendered as plain text, never as markup. */
+  preview: string;
+  writes: number;
+  state: 'pending' | 'done' | 'failed' | 'discarded';
+  edited?: boolean;
+}
+
+/** One item awaiting a decision, with everything needed to decide it on one
+ *  screen — proposed writes, reason, evidence, deep link. If a decision needs
+ *  the agent's full log, the agent did not summarise well enough. */
+export interface BoardReviewItem {
+  board_id: string;
+  item_id: string;
+  item_key: string;
+  item_title: string;
+  item_url: string;
+  /** Echoed back on approve: an approver holding a stale card cannot approve
+   *  the newer thing that replaced it. */
+  content_hash: string;
+  state: 'pending' | 'approved' | 'rejected' | 'sent_back' | 'partial';
+  disposition: string | null;
+  reason: string;
+  evidence: Record<string, unknown>;
+  actions: BoardStagedAction[];
+  pending_actions: BoardStagedAction[];
+  open: boolean;
+  decided_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BoardReviewGroup {
+  disposition: string;
+  count: number;
+  items: BoardReviewItem[];
+}
+
+export interface BoardSummary {
+  id: string;
+  display_name: string;
+  vendor: string;
+  credential_set?: boolean;
+}

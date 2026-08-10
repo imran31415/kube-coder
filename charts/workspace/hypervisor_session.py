@@ -1848,6 +1848,22 @@ class HypervisorSession:
         self._write_meta(meta, touch=False)
         return self.summary(meta)
 
+    def set_board(self, board_id: str, item_id: str = '') -> Optional[Dict[str, Any]]:
+        """(Re)bind the thread to one item on an external board (#588/#589).
+
+        Same mechanism and same reasoning as set_project: stored on the thread
+        meta, which _run_turn re-reads each turn, so the next turn exports
+        KC_BOARD_ID / KC_BOARD_ITEM_ID. touch=False so binding an item doesn't
+        reorder the chat list. Returns the updated summary, or None if the
+        thread is gone."""
+        meta = self.read_meta()
+        if meta is None:
+            return None
+        meta['board_id'] = (board_id or '').strip()
+        meta['board_item_id'] = (str(item_id) or '').strip()
+        self._write_meta(meta, touch=False)
+        return self.summary(meta)
+
     def summary(self, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         m = meta or self.read_meta() or {}
         return {
@@ -1870,6 +1886,11 @@ class HypervisorSession:
             # into one at any time (#358) — and '' when unbound.
             'persona': m.get('persona') or '',
             'project_id': m.get('project_id') or '',
+            # Board binding (#588/#589) — '' unless this thread is working one
+            # item on an external board, which is what lets /board render a
+            # per-item chat without a second thread store.
+            'board_id': m.get('board_id') or '',
+            'board_item_id': m.get('board_item_id') or '',
             # Present (unix seconds) only on soft-deleted threads — lets the UI
             # render/sort the "Recently deleted" section.
             'deleted_at': m.get('deleted_at'),
@@ -2210,6 +2231,17 @@ class HypervisorSession:
             project_id = meta.get('project_id')
             if project_id:
                 env['KC_PROJECT_ID'] = project_id
+            # A board-bound thread (#588/#589) exports the board and item it is
+            # working, so the dashboard MCP's board tools resolve them with no
+            # explicit plumbing — exactly as KC_PROJECT_ID does above. The item
+            # id is the board's GLOBAL id, so it stays unambiguous across
+            # projects on the same tracker.
+            board_id = meta.get('board_id')
+            if board_id:
+                env['KC_BOARD_ID'] = board_id
+            board_item_id = meta.get('board_item_id')
+            if board_item_id:
+                env['KC_BOARD_ITEM_ID'] = str(board_item_id)
             proc = subprocess.Popen(
                 spec['argv'],
                 cwd=spec.get('cwd') or WORKSPACE_HOME,

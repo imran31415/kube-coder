@@ -35,6 +35,13 @@
       ]
     },
     {
+      "id": "boards",
+      "title": "Boards",
+      "pages": [
+        { "id": "board-processor", "title": "Board Processor", "file": "boards.md", "summary": "Work items from a tracker this workspace does not own — Jira, GitHub, Linear, Zendesk — through a connector that is data, not code. Covers the canonical item shape, why every fetch carries an honest `complete` flag, multi-step actions and the write allowlist, parallel runs that never work an item twice, dispositions and staged writes held for human approval, the staleness and replay guards, credentials by reference, and reviewing from a phone." }
+      ]
+    },
+    {
       "id": "messaging",
       "title": "Messaging",
       "pages": [

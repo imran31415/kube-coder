@@ -34,6 +34,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+import safe_http  # noqa: E402
 import server  # noqa: E402
 
 CTM = server.ClaudeTaskManager
@@ -142,9 +143,13 @@ class SSRFTestBase(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def _patch_conn(self, response, https=False):
+        # The pinned-connection classes live in safe_http (server.py keeps
+        # aliases for them), and safe_http's handlers resolve them from their
+        # own module namespace — so the patch has to target safe_http to take
+        # effect. Behaviour under test is unchanged.
         _FakeConn.response = response
-        target = '_PinnedHTTPSConnection' if https else '_PinnedHTTPConnection'
-        p = mock.patch.object(server, target, _FakeConn)
+        target = 'PinnedHTTPSConnection' if https else 'PinnedHTTPConnection'
+        p = mock.patch.object(safe_http, target, _FakeConn)
         p.start()
         self.addCleanup(p.stop)
 
