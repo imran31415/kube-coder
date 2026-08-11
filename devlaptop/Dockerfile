@@ -30,7 +30,7 @@ RUN yarn build
 # arch. The digest names a multi-arch index, so it resolves per-platform.
 FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS node-dist
 
-FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS runtime
+FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # `apt-get upgrade` patches base-image OS packages that ship with known CVEs
