@@ -428,6 +428,12 @@ COPY charts/workspace/*.py /opt/browser-src/
 COPY charts/workspace/memory /opt/browser-src/memory
 COPY charts/workspace/skills /opt/browser-src/skills
 COPY charts/workspace/adapters /opt/browser-src/adapters
+# `*.py` above is top-level only, so every PACKAGE needs its own COPY. Missing
+# one fails quietly rather than loudly: server.py guards these imports so a
+# broken install degrades one surface instead of taking the dashboard down —
+# which means a forgotten line here ships a workspace where /board simply is
+# not there (#588).
+COPY charts/workspace/boards /opt/browser-src/boards
 RUN find /opt/browser-src -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null; \
     find /opt/browser-src -name '*.pyc' -delete 2>/dev/null; true
 

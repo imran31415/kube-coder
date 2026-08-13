@@ -39,6 +39,9 @@ import {
   mockCrons,
   mockDocsManifest,
   mockDocsPage,
+  mockBoards,
+  mockBoardReview,
+  mockDecideBoardItem,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -77,6 +80,9 @@ import type {
   CronRecord,
   DocsManifest,
   DocsPage,
+  BoardSummary,
+  BoardReviewGroup,
+  BoardReviewItem,
   WebhookRecord,
 } from './types';
 
@@ -1431,4 +1437,86 @@ export async function getDocsPage(id: string): Promise<DocsPage> {
     return page;
   }
   return request<DocsPage>(`/api/docs/${encodeURIComponent(id)}`);
+}
+
+// ---- Board Processor review (#588 Phase 6) ---------------------------------
+// Mobile LEADS the review design: approving five staged replies from a phone
+// is the realistic workflow; running a board from a phone is not. So the phone
+// gets the review queue and the decisions, and nothing else.
+
+export async function listBoards(): Promise<BoardSummary[]> {
+  if (getConfig().mock) {
+    await delay(120);
+    return mockBoards;
+  }
+  const d = await request<{ boards?: BoardSummary[] }>('/api/boards');
+  return d.boards ?? [];
+}
+
+/** Items awaiting a human on one board, grouped by disposition (needs_review
+ *  first — the group you opened the screen for). */
+export async function getBoardReview(
+  boardId: string,
+  openOnly = true,
+): Promise<BoardReviewGroup[]> {
+  if (getConfig().mock) {
+    await delay(150);
+    const items = mockBoardReview.filter((i) => !openOnly || i.open);
+    const byDisposition = new Map<string, BoardReviewItem[]>();
+    for (const item of items) {
+      const key = item.disposition ?? 'unreported';
+      byDisposition.set(key, [...(byDisposition.get(key) ?? []), item]);
+    }
+    return [...byDisposition.entries()].map(([disposition, group]) => ({
+      disposition,
+      count: group.length,
+      items: group,
+    }));
+  }
+  const d = await request<{ groups?: BoardReviewGroup[] }>(
+    `/api/boards/${encodeURIComponent(boardId)}/review`,
+    { query: openOnly ? { open: '1' } : undefined },
+  );
+  return d.groups ?? [];
+}
+
+/**
+ * Send one decision. Returns the HTTP status rather than throwing on a 4xx,
+ * because the OFFLINE QUEUE needs the status to decide whether to retry: a 409
+ * is terminal (the human must look again), a 503 is not.
+ */
+export async function decideBoardItem(
+  boardId: string,
+  itemId: string,
+  decision: 'approve' | 'reject' | 'send-back',
+  // `note` is what send-back sends and the server REQUIRES it — the agent is
+  // about to work the item again and this is the only thing telling it what to
+  // change. `reason` stays for reject, where it really is a reason and is
+  // optional.
+  body: {
+    approval_id: string;
+    content_hash?: string;
+    reason?: string;
+    note?: string;
+  },
+): Promise<{ status: number; error?: string }> {
+  if (getConfig().mock) {
+    await delay(200);
+    mockDecideBoardItem(
+      itemId,
+      decision === 'approve' ? 'approved'
+        : decision === 'reject' ? 'rejected' : 'sent_back',
+    );
+    return { status: 200 };
+  }
+  try {
+    await request(
+      `/api/boards/${encodeURIComponent(boardId)}/staged/${encodeURIComponent(itemId)}/${decision}`,
+      { method: 'POST', body },
+    );
+    return { status: 200 };
+  } catch (e) {
+    if (e instanceof ApiError) return { status: e.status, error: e.message };
+    throw e;
+  }
 }

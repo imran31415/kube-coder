@@ -22,6 +22,15 @@ function openLink(link: FeedLink): void {
   if (kind === 'task') navigate(`/tasks/${encodeURIComponent(rest)}`);
   else if (kind === 'thread') navigate('/cto');
   else if (kind === 'memory') navigate('/memory');
+  else if (kind === 'board') {
+    // `board:<board_id>:<item_id>` — an item awaiting review (#588 Phase 5).
+    // Item ids can contain colons (GraphQL global ids), so only the board id
+    // is split off; the rest is the item id verbatim.
+    const [boardId, itemId] = rest.split(/:(.*)/s);
+    navigate(
+      `/board?board=${encodeURIComponent(boardId)}&review=${encodeURIComponent(itemId ?? '')}`,
+    );
+  }
 }
 
 /** Short human label for the item's source (system:task → "system", agent:… → "CTO"). */

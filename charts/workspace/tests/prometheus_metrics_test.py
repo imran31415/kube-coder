@@ -666,9 +666,16 @@ class MetricTypeTests(unittest.TestCase):
     #: these fall when the underlying record is deleted, and Prometheus reads a
     #: fall as a counter reset — crediting the post-fall value as fresh
     #: increase. They are gauges for that reason, not for tidiness.
+    #: The board families (#588 Phase 7) are gauges for the same reason plus
+    #: one of their own: the decision ledger ROTATES, so an old decision ageing
+    #: out lowers a total. That is a deliberate ceiling on unbounded disk
+    #: growth, and a counter that can fall is exactly what Prometheus
+    #: misreads as a reset.
     DISK_DERIVED = ('agent_tokens', 'agent_tokens_unclassified', 'agent_runs',
                     'tasks', 'hook_dead_letters', 'memory_embeddings_pending',
-                    'memory_embeddings_worker_up', 'metrics_collector_up')
+                    'memory_embeddings_worker_up', 'metrics_collector_up',
+                    'board_dispositions', 'board_decisions',
+                    'board_approval_rate', 'board_review_open')
 
     #: Incremented in memory as the event happens, so monotonic for the life of
     #: the process. A restart resets it, which Prometheus models correctly.

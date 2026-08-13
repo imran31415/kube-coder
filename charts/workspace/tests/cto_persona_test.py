@@ -376,9 +376,10 @@ class DispatchedBuildDefaultsTest(unittest.TestCase):
         # capability probe below) so this test's subprocess.run assertions see
         # only the tmux launch.
         def fake_command(assistant, auto_approve=False, model='', effort='',
-                         session_id=''):
+                         session_id='', resume_session_id=''):
             seen.update(assistant=assistant, model=model, effort=effort,
-                        session_id=session_id)
+                        session_id=session_id,
+                        resume_session_id=resume_session_id)
             return 'true'
 
         def fake_resolve_assistant(req):
@@ -428,6 +429,15 @@ class DispatchedBuildDefaultsTest(unittest.TestCase):
         self.assertEqual(seen['requested_effort'], 'xhigh')
         self.assertEqual(meta['model'], 'opus')
         self.assertEqual(meta['effort'], 'xhigh')
+
+    def test_an_ordinary_dispatch_resumes_NOTHING(self):
+        """`--resume` exists for the board round trip (#588 Phase 6) only. A
+        CTO dispatch that quietly reopened someone else's session would put two
+        builds on one transcript and double-count its spend."""
+        seen, meta, _ = self._create(('claude', 'opus', 'high'))
+        self.assertEqual(seen['resume_session_id'], '')
+        self.assertEqual(meta['resumed_session_id'], '')
+        self.assertTrue(meta['claude_session_id'])
 
     def test_explicit_assistant_beats_the_project_default(self):
         seen, _, _ = self._create(('codex', 'opus', 'xhigh'),

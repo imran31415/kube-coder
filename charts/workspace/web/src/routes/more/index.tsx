@@ -21,6 +21,7 @@ interface MoreSection {
 
 const ROUTE_ICONS: Record<string, IconName> = {
   '/mission': 'mission',
+  '/board': 'board',
   '/hypervisor': 'hypervisor',
   '/tasks': 'tasks',
   '/walkie': 'walkie',
@@ -35,6 +36,7 @@ const ROUTE_ICONS: Record<string, IconName> = {
 
 const ROUTE_HINTS: Record<string, string> = {
   '/mission': 'Every agent — builds, chats, sub-agents — on one board',
+  '/board': 'Work items from a tracker this workspace does not own',
   '/walkie': 'Chat with your workspace over the internal loopback preview',
   '/apps': 'Locally-listening services on this workspace',
   '/triggers': 'Webhooks + crons that fire builds',
@@ -101,7 +103,10 @@ export function MoreSheet() {
   // have BottomNav slots) so the sheet doubles as a complete site map.
   const sections: MoreSection[] = [
     { title: 'Quick actions', entries: quickActions },
-    ...visibleNavGroups({ ctoEnabled: serverMode.value.ctoEnabled }).map((g) => ({
+    ...visibleNavGroups({
+      ctoEnabled: serverMode.value.ctoEnabled,
+      boardEnabled: serverMode.value.boardEnabled,
+    }).map((g) => ({
       title: g.title,
       entries: [
         ...(g.landing ? [routeEntry(g.landing, 'Overview')] : []),

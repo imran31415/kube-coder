@@ -77,6 +77,14 @@ export interface PromptDialogProps {
   placeholder?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** Render a textarea instead of a single-line input. Added for board review
+   *  (#588): the value being edited is a comment about to be posted to a
+   *  customer's ticket, and a one-line box makes it impossible to read what
+   *  you are approving. */
+  multiline?: boolean;
+  /** Allow an empty value. Off by default — most prompts name a thing. A
+   *  rejection reason is optional, so the reject dialog turns it on. */
+  allowEmpty?: boolean;
   onConfirm: (value: string) => void;
   onCancel: () => void;
 }
@@ -93,11 +101,13 @@ export function PromptDialog({
   placeholder,
   confirmLabel = 'Save',
   cancelLabel = 'Cancel',
+  multiline = false,
+  allowEmpty = false,
   onConfirm,
   onCancel,
 }: PromptDialogProps) {
   const [value, setValue] = useState(initial);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
   useEscape(open, onCancel);
   useScrollLock(open);
@@ -119,22 +129,46 @@ export function PromptDialog({
           aria-modal="true"
           aria-labelledby="pd-title"
           onClick={(e) => e.stopPropagation()}
-          onSubmit={(e) => { e.preventDefault(); onConfirm(value.trim()); }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            // Only single-line values are trimmed. A staged comment's leading
+            // blank line may be deliberate, and silently reformatting text a
+            // human just approved for a customer is not this dialog's job.
+            onConfirm(multiline ? value : value.trim());
+          }}
         >
           <h2 id="pd-title" class="cd-title">{title}</h2>
           {body && <p class="cd-body">{body}</p>}
-          <input
-            ref={inputRef}
-            class="cd-input"
-            type="text"
-            value={value}
-            placeholder={placeholder}
-            aria-label={title}
-            onInput={(e) => setValue((e.target as HTMLInputElement).value)}
-          />
+          {multiline ? (
+            <textarea
+              ref={inputRef as { current: HTMLTextAreaElement | null }}
+              class="cd-input cd-input-multiline"
+              rows={8}
+              value={value}
+              placeholder={placeholder}
+              aria-label={title}
+              onInput={(e) => setValue((e.target as HTMLTextAreaElement).value)}
+            />
+          ) : (
+            <input
+              ref={inputRef as { current: HTMLInputElement | null }}
+              class="cd-input"
+              type="text"
+              value={value}
+              placeholder={placeholder}
+              aria-label={title}
+              onInput={(e) => setValue((e.target as HTMLInputElement).value)}
+            />
+          )}
           <div class="cd-actions">
             <Button variant="secondary" type="button" onClick={onCancel}>{cancelLabel}</Button>
-            <Button variant="primary" type="submit" disabled={!value.trim()}>{confirmLabel}</Button>
+            <Button
+              variant="primary"
+              type="submit"
+              disabled={!allowEmpty && !value.trim()}
+            >
+              {confirmLabel}
+            </Button>
           </div>
         </form>
       </div>
