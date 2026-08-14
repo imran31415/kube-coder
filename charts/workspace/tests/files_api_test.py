@@ -31,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -695,6 +696,221 @@ class PublicDemoPredicateTests(unittest.TestCase):
             self.assertFalse(H._path_has_hidden_segment('/home/dev'))
         finally:
             server.BrowserHandler.HOME_DEV = save
+
+
+class UploadSizeParsingTests(unittest.TestCase):
+    """The chart hands these bounds over as k8s-style strings (#556)."""
+
+    def test_plain_bytes_and_suffixes(self):
+        cases = {
+            '1024': 1024,
+            '2Gi': 2 * 1024 ** 3,
+            '2GiB': 2 * 1024 ** 3,
+            '500Mi': 500 * 1024 ** 2,
+            '1G': 10 ** 9,
+            '1.5Gi': int(1.5 * 1024 ** 3),
+            '512B': 512,
+        }
+        for text, want in cases.items():
+            self.assertEqual(server.parse_size_bytes(text, -1), want, text)
+
+    def test_zero_disables_rather_than_defaulting(self):
+        # "0" must survive as 0 — that is how an operator turns a guard off.
+        self.assertEqual(server.parse_size_bytes('0', 999), 0)
+
+    def test_missing_falls_back_to_default(self):
+        self.assertEqual(server.parse_size_bytes(None, 7), 7)
+        self.assertEqual(server.parse_size_bytes('  ', 7), 7)
+
+    def test_garbage_falls_back_rather_than_raising(self):
+        # A typo'd chart value must not take the dashboard down at import.
+        with mock.patch.object(server.sys, 'stderr', io.StringIO()):
+            self.assertEqual(server.parse_size_bytes('two gigs', 7), 7)
+            self.assertEqual(server.parse_size_bytes('-5Gi', 7), 7)
+            self.assertEqual(server.parse_size_bytes('10Xi', 7), 7)
+
+
+class ManagedUploadDirTests(unittest.TestCase):
+    """Which destinations the quota governs (#556). A project file the user
+    deliberately uploaded is NOT upload storage."""
+
+    HOME = '/home/dev'
+
+    def test_managed_destinations(self):
+        for rel in ('uploads', 'uploads/t-1', 'uploads/t-1/deep/er',
+                    '.claude-tasks/t-1/attachments',
+                    '.claude-tasks/t-1/attachments/img-2026'):
+            self.assertTrue(
+                server.is_managed_upload_dir(self.HOME, os.path.join(self.HOME, rel)), rel)
+
+    def test_unmanaged_destinations(self):
+        for rel in ('', 'myproject', 'myproject/data', 'screenshots',
+                    '.claude-tasks', '.claude-tasks/t-1',
+                    # task state/transcripts are not upload storage
+                    '.claude-tasks/t-1/logs', 'uploads-elsewhere'):
+            self.assertFalse(
+                server.is_managed_upload_dir(self.HOME, os.path.join(self.HOME, rel)), rel)
+
+    def test_outside_home_is_not_managed(self):
+        self.assertFalse(server.is_managed_upload_dir(self.HOME, '/etc'))
+
+    def test_usage_counts_only_managed_dirs(self):
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix='kc-quota-'))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        os.makedirs(os.path.join(tmp, 'uploads', 't-1'))
+        with open(os.path.join(tmp, 'uploads', 't-1', 'a.bin'), 'wb') as f:
+            f.write(b'x' * 100)
+        os.makedirs(os.path.join(tmp, '.claude-tasks', 't-2', 'attachments'))
+        with open(os.path.join(tmp, '.claude-tasks', 't-2', 'attachments', 'b.png'), 'wb') as f:
+            f.write(b'y' * 50)
+        # Not counted: a task's own transcript, and an ordinary project file.
+        with open(os.path.join(tmp, '.claude-tasks', 't-2', 'task.json'), 'wb') as f:
+            f.write(b'z' * 10000)
+        os.makedirs(os.path.join(tmp, 'myproject'))
+        with open(os.path.join(tmp, 'myproject', 'big.bin'), 'wb') as f:
+            f.write(b'w' * 10000)
+
+        usage = server.upload_storage_usage(tmp, 1000)
+        self.assertEqual(usage['used_bytes'], 150)
+        self.assertEqual(usage['quota_bytes'], 1000)
+        self.assertEqual(usage['available_bytes'], 850)
+        self.assertEqual(usage['percent'], 15.0)
+        self.assertEqual(usage['dir_count'], 2)
+
+    def test_unlimited_quota_reports_no_percentage(self):
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix='kc-quota-'))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        usage = server.upload_storage_usage(tmp, 0)
+        self.assertEqual(usage['used_bytes'], 0)
+        self.assertEqual(usage['percent'], 0)
+        self.assertIsNone(usage['available_bytes'])
+
+    def test_symlinked_dir_is_not_followed(self):
+        # An `uploads/escape -> /` symlink must not make the walk (or the
+        # bill) cover the whole volume.
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix='kc-quota-'))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        outside = os.path.join(tmp, 'outside')
+        os.makedirs(outside)
+        with open(os.path.join(outside, 'huge.bin'), 'wb') as f:
+            f.write(b'x' * 5000)
+        os.makedirs(os.path.join(tmp, 'uploads'))
+        os.symlink(outside, os.path.join(tmp, 'uploads', 'escape'))
+        self.assertLess(server.upload_storage_usage(tmp, 0)['used_bytes'], 5000)
+
+
+class FilesApiUploadQuotaTests(_Base):
+    """The at-cap and under-cap upload paths (#556).
+
+    The bound REJECTS; nothing is evicted, so an at-cap upload must leave the
+    existing files exactly where the agent that was told about them expects."""
+
+    def setUp(self):
+        self._quota = server.UPLOAD_QUOTA_BYTES
+        self._minfree = server.UPLOAD_MIN_FREE_BYTES
+        # Off unless a test opts in, so the free-space floor of the machine
+        # actually running the suite can't sway the quota cases.
+        server.UPLOAD_MIN_FREE_BYTES = 0
+        server.UPLOAD_QUOTA_BYTES = 1000
+        for rel in ('uploads', '.claude-tasks/t-1/attachments'):
+            shutil.rmtree(os.path.join(self.tmpdir, rel), ignore_errors=True)
+
+    def tearDown(self):
+        server.UPLOAD_QUOTA_BYTES = self._quota
+        server.UPLOAD_MIN_FREE_BYTES = self._minfree
+
+    def test_under_cap_upload_is_stored(self):
+        status, body = self._upload('uploads/t-1', 'small.bin', b'a' * 400)
+        self.assertEqual(status, 201)
+        self.assertTrue(body['ok'])
+        self.assertEqual(
+            os.path.getsize(os.path.join(self.tmpdir, 'uploads', 't-1', 'small.bin')), 400)
+
+    def test_at_cap_upload_is_refused_with_an_actionable_error(self):
+        self.assertEqual(self._upload('uploads/t-1', 'first.bin', b'a' * 800)[0], 201)
+        status, body = self._upload('uploads/t-1', 'second.bin', b'b' * 400)
+        self.assertEqual(status, 507)
+        self.assertEqual(body['code'], 'upload_quota_exceeded')
+        self.assertEqual(body['used_bytes'], 800)
+        self.assertEqual(body['quota_bytes'], 1000)
+        # Actionable: says what is full, how full, and what to do about it.
+        self.assertIn('upload storage is full', body['error'])
+        self.assertIn('files.uploadQuota', body['error'])
+        # Rejected, never evicted — and no half-written file left behind.
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, 'uploads', 't-1', 'first.bin')))
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'uploads', 't-1', 'second.bin')))
+
+    def test_attachments_count_towards_the_same_cap(self):
+        self.assertEqual(
+            self._upload('.claude-tasks/t-1/attachments', 'shot.png', b'a' * 900)[0], 201)
+        status, body = self._upload('uploads/t-2', 'more.bin', b'b' * 200)
+        self.assertEqual(status, 507)
+        self.assertEqual(body['used_bytes'], 900)
+
+    def test_refused_upload_does_not_create_the_destination_dir(self):
+        status, _ = self._upload('uploads/brand-new', 'big.bin', b'a' * 1200)
+        self.assertEqual(status, 507)
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'uploads', 'brand-new')))
+
+    def test_project_uploads_are_not_charged_to_the_quota(self):
+        # A file the user deliberately put in a project dir is a project file.
+        status, _ = self._upload('myproject', 'dataset.bin', b'a' * 5000)
+        self.assertEqual(status, 201)
+        self.assertEqual(self._upload('uploads/t-1', 'small.bin', b'b' * 900)[0], 201)
+
+    def test_disabled_quota_lets_everything_through(self):
+        server.UPLOAD_QUOTA_BYTES = 0
+        self.assertEqual(self._upload('uploads/t-1', 'huge.bin', b'a' * 5000)[0], 201)
+
+    def test_zip_expansion_is_charged_against_the_remaining_cap(self):
+        # The compressed body fits; what it expands to does not. Checking only
+        # Content-Length would sail straight through the cap.
+        body = self._zip_bytes([('big.txt', 'x' * 4000)])
+        self.assertLess(len(body), 1000)
+        status, out = self._upload('uploads/t-1', 'bundle.zip', body, extract='zip')
+        self.assertEqual(status, 507)
+        self.assertEqual(out['code'], 'upload_quota_exceeded')
+        self.assertIn('expands to', out['error'])
+        # The staged archive is always cleaned up.
+        self.assertFalse(os.path.exists(
+            os.path.join(self.tmpdir, 'uploads', 't-1', 'bundle.zip.uploading')))
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'uploads', 't-1', 'big.txt')))
+
+    def test_zip_that_fits_still_extracts(self):
+        body = self._zip_bytes([('ok.txt', 'x' * 300)])
+        status, out = self._upload('uploads/t-1', 'bundle.zip', body, extract='zip')
+        self.assertEqual(status, 201)
+        self.assertEqual(out['extracted'], 1)
+
+    def test_free_space_floor_refuses_uploads_anywhere(self):
+        # Applies wherever the file lands — including outside the managed dirs,
+        # which is the case that actually fills a PVC.
+        server.UPLOAD_QUOTA_BYTES = 0
+        server.UPLOAD_MIN_FREE_BYTES = 1024 ** 3
+        fake = os.statvfs(self.tmpdir)
+
+        class _Stat:
+            f_bavail = 1000
+            f_frsize = 1024
+            f_blocks = fake.f_blocks
+        with mock.patch.object(server.os, 'statvfs', return_value=_Stat()):
+            status, body = self._upload('myproject', 'dataset.bin', b'a' * 400)
+        self.assertEqual(status, 507)
+        self.assertEqual(body['code'], 'insufficient_disk_space')
+        self.assertIn('files.minFreeSpace', body['error'])
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, 'myproject', 'dataset.bin')))
+
+    def test_metrics_expose_current_usage(self):
+        self.assertEqual(self._upload('uploads/t-1', 'a.bin', b'a' * 900)[0], 201)
+        usage = server.MetricsCollector.get_upload_usage()
+        self.assertEqual(usage['used_bytes'], 900)
+        self.assertEqual(usage['quota_bytes'], 1000)
+        self.assertEqual(usage['percent'], 90.0)
+        alerts = server.MetricsCollector.get_alerts(
+            {'usage_percent': 0}, {'percent': 0}, {'percent': 0}, usage)
+        uploads = [a for a in alerts if a['resource'] == 'uploads']
+        self.assertEqual(uploads[0]['type'], 'critical')
+        self.assertIn('Upload storage at 90.0%', uploads[0]['message'])
 
 
 if __name__ == '__main__':

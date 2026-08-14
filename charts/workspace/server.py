@@ -214,7 +214,11 @@ except Exception as _mcp_reg_import_err:  # broken install shouldn't crash the s
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
     'memory': {'warning': 80, 'critical': 95},
-    'disk': {'warning': 80, 'critical': 90}
+    'disk': {'warning': 80, 'critical': 90},
+    # Managed upload storage against its own cap (#556) — separate from
+    # 'disk', which is the whole volume. Uploads can hit their cap while the
+    # PVC is mostly empty, and that is exactly the case a user needs told.
+    'uploads': {'warning': 80, 'critical': 90},
 }
 
 # Public-demo / read-only mode. Set from helm values via env vars on the
@@ -722,6 +726,164 @@ ALLOW_INTERNAL_HOOKS = os.environ.get('ALLOW_INTERNAL_HOOKS', 'false').lower() =
 HOOK_MAX_RESPONSE_BYTES = int(os.environ.get('KC_HOOK_MAX_RESPONSE_BYTES', str(64 * 1024)))
 
 
+# ── Upload storage bounds (issue #556) ────────────────────────────────────
+# /api/files/upload writes straight to the PVC and nothing used to bound how
+# much it could write: no quota, no TTL, no GC. Agents upload too, so this was
+# never purely user-driven. Two independent guards, and BOTH REJECT — we
+# deliberately do not evict. An uploaded file's absolute path is handed to an
+# agent as prompt text ("I uploaded a file to your workspace: /home/dev/…"),
+# so deleting it behind the agent's back converts a full disk into a
+# mysteriously-missing file, which is strictly harder to debug than the 507
+# this returns instead.
+#
+#   UPLOAD_QUOTA    — ceiling on the bytes held by the *managed* upload dirs:
+#                     uploads/<task-id>/ and .claude-tasks/<task-id>/
+#                     attachments/, the ones the dashboard and agents write
+#                     into without anyone picking a location. A file the user
+#                     deliberately uploads into a project directory from the
+#                     Files tab is a project file, not "upload storage", and
+#                     is not counted against this.
+#   UPLOAD_MIN_FREE — floor on the free space left on the volume after a
+#                     write, applied to EVERY upload wherever it lands. This
+#                     is the guard that stops a full PVC, which is what
+#                     actually breaks a workspace in confusing ways (builds
+#                     fail, the memory DB can't write, git operations break).
+#
+# Both accept k8s-style sizes ("2Gi", "500M", "1073741824"); "0" disables that
+# guard. Chart values: files.uploadQuota / files.minFreeSpace.
+_SIZE_MULTIPLIERS = {
+    '': 1, 'k': 10 ** 3, 'm': 10 ** 6, 'g': 10 ** 9, 't': 10 ** 12,
+    'ki': 1024, 'mi': 1024 ** 2, 'gi': 1024 ** 3, 'ti': 1024 ** 4,
+}
+
+
+def parse_size_bytes(value, default, name=''):
+    """A k8s-style size string → bytes. Empty/None → `default`; "0" → 0 (the
+    caller reads that as "guard disabled"). Anything unparseable falls back to
+    `default` and says so on stderr rather than failing the boot — a typo in a
+    chart value must not take the dashboard down."""
+    raw = str(value if value is not None else '').strip()
+    if not raw:
+        return default
+    text = raw.lower()
+    if text.endswith('b') and text not in ('b',):
+        text = text[:-1]  # "2GiB" == "2Gi", "512B" == "512"
+    digits = text
+    suffix = ''
+    for i, ch in enumerate(text):
+        if not (ch.isdigit() or ch == '.'):
+            digits, suffix = text[:i], text[i:]
+            break
+    mult = _SIZE_MULTIPLIERS.get(suffix)
+    try:
+        number = float(digits)
+    except ValueError:
+        number = -1.0
+    if mult is None or number < 0:
+        print(f'[uploads] ignoring unparseable size {name or "value"}={raw!r}; '
+              f'using {default} bytes', file=sys.stderr)
+        return default
+    return int(number * mult)
+
+
+UPLOAD_QUOTA_BYTES = parse_size_bytes(
+    os.environ.get('UPLOAD_QUOTA'), 2 * 1024 ** 3, 'UPLOAD_QUOTA')
+UPLOAD_MIN_FREE_BYTES = parse_size_bytes(
+    os.environ.get('UPLOAD_MIN_FREE'), 1024 ** 3, 'UPLOAD_MIN_FREE')
+
+
+class UploadCapacityError(ValueError):
+    """A write was refused because it would breach an upload storage bound —
+    as opposed to the malformed/unsafe input the plain ValueErrors on this
+    path signal. Subclasses ValueError so existing `except ValueError` guards
+    still catch it; handlers that care answer 507 instead of 400."""
+
+
+def human_bytes(n):
+    """Bytes → a short human string for an error a user has to act on.
+    Binary units, because that is what the chart values and `df` speak."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return '0 B'
+    for unit in ('B', 'KiB', 'MiB', 'GiB'):
+        if abs(n) < 1024 or unit == 'GiB':
+            return f'{n:.0f} {unit}' if unit == 'B' else f'{n:.1f} {unit}'
+        n /= 1024
+    return f'{n:.1f} GiB'
+
+
+def is_managed_upload_dir(home, path):
+    """True when `path` sits inside a directory the upload quota governs —
+    `uploads/…` or `.claude-tasks/<task-id>/attachments/…`. Pattern-matched
+    rather than listed, so a destination that does not exist yet (the common
+    case: the first attachment of a new task) is still recognised."""
+    try:
+        rel = os.path.relpath(path, home)
+    except ValueError:
+        return False
+    if rel in ('', '.') or rel.startswith('..'):
+        return False
+    parts = rel.split(os.sep)
+    if parts[0] == 'uploads':
+        return True
+    return len(parts) >= 3 and parts[0] == '.claude-tasks' and parts[2] == 'attachments'
+
+
+def managed_upload_dirs(home):
+    """The managed upload directories that exist right now, for sizing.
+    `.claude-tasks/<id>/attachments` only — the rest of a task's directory is
+    its transcript and state, which is not upload storage and must not be
+    charged to a user's upload quota."""
+    dirs = []
+    top = os.path.join(home, 'uploads')
+    if os.path.isdir(top):
+        dirs.append(top)
+    try:
+        with os.scandir(os.path.join(home, '.claude-tasks')) as it:
+            for entry in it:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                attachments = os.path.join(entry.path, 'attachments')
+                if os.path.isdir(attachments):
+                    dirs.append(attachments)
+    except OSError:
+        pass  # no tasks dir yet, or unreadable — 0 bytes either way
+    return sorted(dirs)
+
+
+def _tree_size_bytes(path):
+    """Bytes held by a directory tree. Symlinks are never followed and are
+    counted as the link itself: an `uploads/big` symlink to `/` must not make
+    this walk the whole volume, nor bill the user for the target."""
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass  # raced with a delete — it is 0 bytes to us now
+    return total
+
+
+def upload_storage_usage(home, quota=None):
+    """Snapshot of managed upload storage: what it holds, what it may hold.
+    `quota` of 0/None means unbounded, and `percent` is then 0."""
+    if quota is None:
+        quota = UPLOAD_QUOTA_BYTES
+    dirs = managed_upload_dirs(home)
+    used = sum(_tree_size_bytes(d) for d in dirs)
+    quota = max(0, int(quota or 0))
+    return {
+        'used_bytes': used,
+        'used_mb': round(used / (1024 ** 2), 1),
+        'quota_bytes': quota,
+        'available_bytes': max(0, quota - used) if quota else None,
+        'percent': round(used / quota * 100, 1) if quota else 0,
+        'dir_count': len(dirs),
+    }
+
+
 # The SSRF guard now lives in safe_http.py so the Board Processor can reuse it:
 # the completion hook posts to ONE operator-supplied URL, but a board connector
 # supplies many (the list request, every pagination `next`, every action step),
@@ -1052,7 +1214,18 @@ class MetricsCollector:
             return {'total_gb': 0, 'used_gb': 0, 'available_gb': 0, 'percent': 0, 'path': '/home/dev', 'error': str(e)}
 
     @staticmethod
-    def get_alerts(cpu, memory, disk):
+    def get_upload_usage():
+        """Managed upload storage vs its cap (#556). Reads BrowserHandler's
+        HOME_DEV at call time so a pinned test root is honoured here too."""
+        try:
+            return upload_storage_usage(BrowserHandler.HOME_DEV, UPLOAD_QUOTA_BYTES)
+        except Exception as e:
+            return {'used_bytes': 0, 'used_mb': 0, 'quota_bytes': UPLOAD_QUOTA_BYTES,
+                    'available_bytes': None, 'percent': 0, 'dir_count': 0,
+                    'error': str(e)}
+
+    @staticmethod
+    def get_alerts(cpu, memory, disk, uploads=None):
         """Generate alerts based on current metrics"""
         alerts = []
 
@@ -1071,6 +1244,18 @@ class MetricsCollector:
         elif disk.get('percent', 0) >= ALERT_THRESHOLDS['disk']['warning']:
             alerts.append({'type': 'warning', 'resource': 'disk', 'message': f"Disk usage at {disk['percent']}%"})
 
+        # Uploads only alert when a cap is actually set; unbounded storage has
+        # no percentage to be alarmed about.
+        if uploads and uploads.get('quota_bytes'):
+            pct = uploads.get('percent', 0)
+            cap = human_bytes(uploads['quota_bytes'])
+            if pct >= ALERT_THRESHOLDS['uploads']['critical']:
+                alerts.append({'type': 'critical', 'resource': 'uploads',
+                               'message': f'Upload storage at {pct}% of the {cap} cap'})
+            elif pct >= ALERT_THRESHOLDS['uploads']['warning']:
+                alerts.append({'type': 'warning', 'resource': 'uploads',
+                               'message': f'Upload storage at {pct}% of the {cap} cap'})
+
         return alerts
 
     @staticmethod
@@ -1079,12 +1264,16 @@ class MetricsCollector:
         cpu = MetricsCollector.get_cpu_usage()
         memory = MetricsCollector.get_memory_usage()
         disk = MetricsCollector.get_disk_usage()
-        alerts = MetricsCollector.get_alerts(cpu, memory, disk)
+        uploads = MetricsCollector.get_upload_usage()
+        alerts = MetricsCollector.get_alerts(cpu, memory, disk, uploads)
 
         return {
             'cpu': cpu,
             'memory': memory,
             'disk': disk,
+            # Managed upload storage and its cap (#556). Distinct from 'disk':
+            # that is the whole PVC, this is the slice uploads may occupy.
+            'uploads': uploads,
             'alerts': alerts,
             'timestamp': time.time(),
             # Product-usage metrics (#363) — a SEPARATE section from the system
@@ -15762,10 +15951,63 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     # with millions of tiny members.
     MAX_ZIP_MEMBERS = 10000
 
-    def _extract_zip_upload(self, zip_path: str, dest_dir: str) -> int:
+    def _upload_capacity(self, dest_dir: str):
+        """How many more bytes may be written into `dest_dir`, and the error
+        to answer with when a write does not fit.
+
+        Returns `(headroom_bytes, error_dict)`, or `(None, None)` when nothing
+        bounds this destination. Both guards reject rather than evict (see the
+        UPLOAD_QUOTA note at the top of this file); whichever is tighter wins,
+        so the message names the bound the user actually has to act on."""
+        limits = []
+        quota = UPLOAD_QUOTA_BYTES
+        if quota > 0 and is_managed_upload_dir(self.HOME_DEV, dest_dir):
+            used = upload_storage_usage(self.HOME_DEV, quota)['used_bytes']
+            limits.append((max(0, quota - used), {
+                'error': (
+                    f'upload storage is full: attachments and session uploads hold '
+                    f'{human_bytes(used)} of the {human_bytes(quota)} cap. Delete '
+                    f'files under ~/uploads or ~/.claude-tasks/<task>/attachments '
+                    f'from the Files tab, or raise files.uploadQuota in the chart '
+                    f'values.'),
+                'code': 'upload_quota_exceeded',
+                'used_bytes': used,
+                'quota_bytes': quota,
+            }))
+        floor = UPLOAD_MIN_FREE_BYTES
+        if floor > 0:
+            try:
+                st = os.statvfs(self.HOME_DEV)
+                free = st.f_bavail * st.f_frsize
+            except OSError:
+                free = None
+            if free is not None:
+                limits.append((max(0, free - floor), {
+                    'error': (
+                        f'not enough free space: /home/dev has {human_bytes(free)} '
+                        f'free and the workspace keeps {human_bytes(floor)} in '
+                        f'reserve so builds, git and the memory database keep '
+                        f'working. Free up space from the Files tab, or lower '
+                        f'files.minFreeSpace in the chart values.'),
+                    'code': 'insufficient_disk_space',
+                    'free_bytes': free,
+                    'min_free_bytes': floor,
+                }))
+        if not limits:
+            return None, None
+        return min(limits, key=lambda pair: pair[0])
+
+    def _extract_zip_upload(self, zip_path: str, dest_dir: str, budget=None) -> int:
         """Extract an uploaded .zip into dest_dir. Returns the number of files
-        written. Raises ValueError for unsafe or oversized archives and
-        zipfile.BadZipFile for non-zip bytes.
+        written. Raises ValueError for unsafe or oversized archives,
+        UploadCapacityError when the expansion would breach an upload storage
+        bound, and zipfile.BadZipFile for non-zip bytes.
+
+        `budget` is the uncompressed bytes this extraction may add (None =
+        unbounded). Checking it here rather than at the caller is the point:
+        the archive's compressed size says nothing about what it expands to,
+        so a 10 MiB zip could otherwise blow straight through a quota that the
+        Content-Length check passed.
 
         Zip-slip: member names with an absolute path, a `..` segment, or a
         backslash are rejected outright (the whole upload fails, rather than
@@ -15780,6 +16022,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             if total > self.MAX_UPLOAD_BYTES:
                 raise ValueError(
                     f'zip expands to {total} bytes (max {self.MAX_UPLOAD_BYTES})')
+            if budget is not None and total > budget:
+                raise UploadCapacityError(
+                    f'zip expands to {human_bytes(total)}, and only '
+                    f'{human_bytes(budget)} of upload storage is available')
             real_dest = os.path.realpath(dest_dir)
             for info in infos:
                 name = info.filename
@@ -15834,6 +16080,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if content_length > self.MAX_UPLOAD_BYTES:
             self.send_json({'error': f'file too large (max {self.MAX_UPLOAD_BYTES} bytes)'}, 413)
             return
+        # Storage bounds (#556). 507 Insufficient Storage, not the 413 above:
+        # the file is a fine size, there is simply nowhere to put it, and the
+        # two need to be distinguishable by anything reacting to the failure.
+        # Checked before makedirs so a refused upload leaves no empty dir.
+        headroom, capacity_error = self._upload_capacity(dest_dir)
+        if headroom is not None and content_length > headroom:
+            self.send_json(capacity_error, 507)
+            return
         try:
             os.makedirs(dest_dir, exist_ok=True)
         except OSError as e:
@@ -15858,10 +16112,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': f'write failed: {e}'}, 500)
             return
         if extract:
+            # The staged archive is still on disk while we unpack, so the peak
+            # is (archive + expansion): charge both against the headroom.
+            budget = None if headroom is None else max(0, headroom - content_length)
             try:
-                count = self._extract_zip_upload(write_path, dest_dir)
+                count = self._extract_zip_upload(write_path, dest_dir, budget=budget)
             except zipfile.BadZipFile:
                 self.send_json({'error': 'not a valid zip archive'}, 400)
+                return
+            except UploadCapacityError as e:
+                payload = dict(capacity_error or {})
+                payload['error'] = str(e)
+                payload.setdefault('code', 'upload_quota_exceeded')
+                self.send_json(payload, 507)
                 return
             except ValueError as e:
                 self.send_json({'error': str(e)}, 400)

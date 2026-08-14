@@ -29,6 +29,13 @@ function tone(percent: number): 'success' | 'warn' | 'danger' {
   return 'success';
 }
 
+/** MB → "873 MB" / "2.0 GB". Upload storage spans both scales (a handful of
+ *  screenshots vs a multi-gigabyte cap), so one fixed unit reads badly. */
+function fmtMb(mb: number): string {
+  if (!Number.isFinite(mb)) return '0 MB';
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+}
+
 function MeterRow({ label, percent, hint }: { label: string; percent: number; hint: string }) {
   const t = tone(percent);
   return (
@@ -329,6 +336,15 @@ export function MetricsSection() {
               percent={m.disk.percent}
               hint={`${m.disk.used_gb.toFixed(1)} / ${m.disk.total_gb.toFixed(1)} GB used · ${m.disk.available_gb.toFixed(1)} GB free (${m.disk.path})`}
             />
+            {/* Uploads (#556) — only meaningful when a cap is configured, and
+                absent entirely on pods older than that build. */}
+            {m.uploads && m.uploads.quota_bytes > 0 && (
+              <MeterRow
+                label="Uploads"
+                percent={m.uploads.percent}
+                hint={`${fmtMb(m.uploads.used_mb)} of ${fmtMb(m.uploads.quota_bytes / (1024 * 1024))} cap used by chat attachments and session uploads`}
+              />
+            )}
           </div>
         </>
       )}

@@ -30,9 +30,26 @@ export interface DiskMetrics {
   error?: string;
 }
 
+/**
+ * Managed upload storage vs its cap (#556) — the `uploads/` and
+ * `.claude-tasks/<task>/attachments/` dirs the dashboard and agents write into
+ * on their own. Distinct from `DiskMetrics`, which is the whole PVC: uploads
+ * can hit their cap on a mostly-empty volume. `quota_bytes: 0` means the cap
+ * is disabled, and `percent` is then meaningless (0).
+ */
+export interface UploadMetrics {
+  used_bytes: number;
+  used_mb: number;
+  quota_bytes: number;
+  available_bytes: number | null;
+  percent: number;
+  dir_count: number;
+  error?: string;
+}
+
 export interface MetricsAlert {
   type: 'critical' | 'warning';
-  resource: 'cpu' | 'memory' | 'disk';
+  resource: 'cpu' | 'memory' | 'disk' | 'uploads';
   message: string;
 }
 
@@ -121,6 +138,8 @@ export interface SystemMetrics {
   cpu: CpuMetrics;
   memory: MemoryMetrics;
   disk: DiskMetrics;
+  // Present on pods running the #556 build; older pods omit it.
+  uploads?: UploadMetrics;
   alerts: MetricsAlert[];
   timestamp: number;
   // Present on pods running the #363 build; older pods omit it.

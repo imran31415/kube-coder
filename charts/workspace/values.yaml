@@ -146,6 +146,25 @@ publicDemo:
   # warning server.py prints when public mode is active without acknowledgement.
   acknowledged: false
 
+# Bounds on what /api/files/upload may write to the PVC (issue #556). Both
+# take k8s-style sizes ("2Gi", "500Mi", "1073741824"); "0" disables that guard.
+# Both REJECT at the bound — nothing is ever evicted, because an uploaded
+# file's absolute path is handed to an agent as prompt text and deleting it
+# behind the agent's back is harder to debug than a refused upload.
+files:
+  # Ceiling on the MANAGED upload dirs — uploads/<task-id>/ and
+  # .claude-tasks/<task-id>/attachments/ — the ones the dashboard and agents
+  # write into with nobody choosing a location, and which nothing previously
+  # bounded. A file the user deliberately uploads into a project directory
+  # from the Files tab is a project file, not upload storage, and is NOT
+  # counted here (it is still subject to minFreeSpace below).
+  uploadQuota: "2Gi"
+  # Free space kept in reserve on /home/dev. EVERY upload is refused when it
+  # would eat into this, wherever it lands. This is what stops a full volume,
+  # which otherwise breaks builds, git and the memory database with nothing
+  # pointing at the cause. Raise it on workspaces with a larger PVC.
+  minFreeSpace: "1Gi"
+
 # Public-demo hint: when true, the read-only SPA shows ALL persistent
 # memories on the Memory tab (including auto-imported `claude.*` notes)
 # instead of just the curated demo set. The server still enforces

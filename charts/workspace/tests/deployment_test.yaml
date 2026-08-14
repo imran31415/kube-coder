@@ -177,6 +177,40 @@ tests:
             name: EXPO_PUBLIC_KUBE_CODER
             value: "1"
 
+  # #556 — uploads used to be able to fill the PVC. The bounds are chart
+  # values, so a chart that stops shipping them silently unbounds them again.
+  - it: always bounds upload storage
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_QUOTA
+            value: "2Gi"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_MIN_FREE
+            value: "1Gi"
+
+  - it: honours operator overrides of the upload bounds
+    template: templates/deployment.yaml
+    set:
+      files:
+        uploadQuota: "10Gi"
+        minFreeSpace: "0"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_QUOTA
+            value: "10Gi"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_MIN_FREE
+            value: "0"
+
   - it: open-source defaults inject no assistant env vars
     template: templates/deployment.yaml
     asserts:

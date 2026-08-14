@@ -272,8 +272,11 @@ class JsonMetricsShapeTests(unittest.TestCase):
             return server.MetricsCollector.get_all_metrics()
 
     def test_top_level_sections_are_unchanged(self):
+        # 'uploads' joined in #556: managed upload storage against its cap,
+        # which cAdvisor's per-PVC disk figures cannot express.
         self.assertEqual(set(self._metrics()),
-                         {'cpu', 'memory', 'disk', 'alerts', 'timestamp', 'product'})
+                         {'cpu', 'memory', 'disk', 'uploads', 'alerts', 'timestamp',
+                          'product'})
 
     def test_product_sections_are_unchanged(self):
         self.assertEqual(set(self._metrics()['product']),

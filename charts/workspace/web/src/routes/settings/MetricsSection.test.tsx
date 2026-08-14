@@ -175,3 +175,42 @@ describe('MetricsSection — Product usage card (#363)', () => {
     expect(screen.getByText('No memory recalls yet.')).toBeInTheDocument();
   });
 });
+
+describe('MetricsSection — upload storage meter (#556)', () => {
+  beforeEach(() => {
+    apps = [];
+    tasks.value = [];
+    health.value = null;
+    serverMode.value = { readOnly: false, authed: true, authMode: 'basic', demoShowAll: false };
+  });
+
+  it('shows usage against the cap so the wall is visible before it is hit', () => {
+    metrics.value = sys({
+      uploads: {
+        used_bytes: 1610612736, used_mb: 1536, quota_bytes: 2147483648,
+        available_bytes: 536870912, percent: 75, dir_count: 3,
+      },
+    }) as never;
+    render(<MetricsSection />);
+    expect(screen.getByText('Uploads')).toBeInTheDocument();
+    expect(screen.getByText(/1\.5 GB of 2\.0 GB cap/)).toBeInTheDocument();
+  });
+
+  it('is absent when the pod omits uploads (backward compatible)', () => {
+    metrics.value = sys() as never;
+    render(<MetricsSection />);
+    expect(screen.queryByText('Uploads')).not.toBeInTheDocument();
+    expect(screen.getByText('Disk')).toBeInTheDocument();
+  });
+
+  it('is absent when the cap is disabled — 0% of nothing means nothing', () => {
+    metrics.value = sys({
+      uploads: {
+        used_bytes: 500, used_mb: 0, quota_bytes: 0,
+        available_bytes: null, percent: 0, dir_count: 1,
+      },
+    }) as never;
+    render(<MetricsSection />);
+    expect(screen.queryByText('Uploads')).not.toBeInTheDocument();
+  });
+});

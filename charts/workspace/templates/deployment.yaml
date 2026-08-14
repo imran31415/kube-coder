@@ -354,6 +354,16 @@ spec:
         {{- end }}
         - name: PUBLIC_DEMO_ACK
           value: {{ (.Values.publicDemo).acknowledged | default false | quote }}
+        # Upload storage bounds (#556). UPLOAD_QUOTA caps the managed upload
+        # dirs (uploads/, .claude-tasks/*/attachments); UPLOAD_MIN_FREE is the
+        # free space every upload must leave on the PVC. Both reject at the
+        # bound — nothing is evicted. "0" disables a guard.
+        # `dig`, not `default`: an operator disabling a guard writes 0, and
+        # `default` treats that as unset and would silently re-enable it.
+        - name: UPLOAD_QUOTA
+          value: {{ dig "uploadQuota" "2Gi" (.Values.files | default dict) | quote }}
+        - name: UPLOAD_MIN_FREE
+          value: {{ dig "minFreeSpace" "1Gi" (.Values.files | default dict) | quote }}
         # kube-coder environment marker — always set so anything running in
         # the workspace (dev servers, build scripts, the user's own app) can
         # detect it's inside a kube-coder pod. KUBE_CODER is visible to every
