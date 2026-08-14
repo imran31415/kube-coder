@@ -6,6 +6,7 @@ import {
   refreshReview,
   reviewFocusItemId,
   selectBoard,
+  selectedItemId,
   startBoardsEvents,
   stopBoardsEvents,
 } from '../../store/boards';
@@ -90,8 +91,22 @@ export function BoardRoute() {
 
   const pending = openReviewCount.value;
 
+  // The detail column only earns its width once something is in it. With no
+  // item selected — and on every tab other than Items, which has no detail
+  // column at all — it collapses so the list gets the space back instead of
+  // reserving 340px of "Select an item to see it in full."
+  const detailOpen = tab === 'items' && !!selectedItemId.value;
+
   return (
-    <div class={`route route-board ${railCollapsed ? 'board-rail-is-collapsed' : ''}`}>
+    <div
+      class={[
+        'route route-board',
+        railCollapsed ? 'board-rail-is-collapsed' : '',
+        detailOpen ? '' : 'board-detail-is-collapsed',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       {!narrow && (
         <BoardRail
           collapsed={railCollapsed}

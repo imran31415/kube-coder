@@ -10,6 +10,7 @@ import {
   selectItem,
 } from '../../store/boards';
 import { truncationLabel, type BoardItem } from '../../api/boards';
+import { QueueShape } from './QueueShape';
 
 /** Middle column: the items on the selected board. */
 export function ItemList() {
@@ -59,6 +60,10 @@ export function ItemList() {
       )}
 
       {error && <p class="board-error">{error}</p>}
+
+      {/* The shape of what you are looking at, before the list itself. Renders
+          nothing when there is nothing to shape. */}
+      {!error && <QueueShape />}
 
       {!error && !loading && items.length === 0 && (
         <p class="board-items-empty">
