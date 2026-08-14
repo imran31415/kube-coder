@@ -3,9 +3,16 @@
    (boards | items | one item), stacking at the shared 860px breakpoint that
    index.tsx also reads via useMediaQuery. */
 
+/* Columns scale with the viewport instead of being pinned. The detail column
+   holds the densest content on the page (metadata table + body copy), so on a
+   wide screen it is the one that most needs the extra width — pinning it at
+   340px left it wrapping every line while the list beside it ran ~70% empty. */
 .route-board {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr) 340px;
+  grid-template-columns:
+    clamp(216px, 15vw, 288px)
+    minmax(0, 1fr)
+    clamp(340px, 25vw, 560px);
   height: calc(100dvh - var(--topbar-total));
   min-height: 0;
   overflow: hidden;
@@ -13,7 +20,20 @@
   transition: grid-template-columns var(--motion-base);
 }
 .route-board.board-rail-is-collapsed {
-  grid-template-columns: 56px minmax(0, 1fr) 340px;
+  grid-template-columns: 56px minmax(0, 1fr) clamp(340px, 25vw, 560px);
+}
+/* Nothing selected (or a tab with no detail column): give the width back to
+   the list rather than reserving it for a placeholder sentence. */
+.route-board.board-detail-is-collapsed {
+  grid-template-columns: clamp(216px, 15vw, 288px) minmax(0, 1fr) 0;
+}
+.route-board.board-detail-is-collapsed.board-rail-is-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr) 0;
+}
+.route-board.board-detail-is-collapsed > .board-detail {
+  border-left: 0;
+  padding: 0;
+  overflow: hidden;
 }
 @media (prefers-reduced-motion: reduce) {
   .route-board { transition: none; }
@@ -236,6 +256,15 @@
 .board-item:hover { background: var(--surface-2); }
 .board-item.is-active { border-color: var(--text); background: var(--surface-2); }
 .board-item-top { display: flex; gap: var(--size-2); align-items: center; }
+
+/* From 1500px the card stops being a three-row stack and becomes one row:
+   key + status | title | tags. Same information, roughly half the height, and
+   the title uses the width instead of ending a third of the way across.
+
+   1500 rather than something lower on purpose: the row only pays off once the
+   centre column is wide enough for a full title. Tried at 1180 and titles
+   truncated at 1440 ("Refund not received a…"), which trades one bad layout
+   for another. Below this the stacked card above still applies and reads fine. */
 .board-item-key {
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
@@ -249,6 +278,47 @@
   border-radius: var(--radius-sm);
   padding: 0 var(--size-1);
   color: var(--text-subtle);
+}
+
+@media (min-width: 1500px) {
+  /* Flex, not grid. Grid track sizing kept handing surplus width to the tag
+     track (a `1fr` title does not outrank a content-sized track), so the title
+     ellipsed while empty space sat to its right. Flex states the intent
+     directly: the title takes everything left over, the tags keep their size
+     and only shrink when there is genuinely nothing to spare. */
+  .board-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--size-3);
+    padding: var(--size-2) var(--size-3);
+  }
+  /* Fixed basis so every row's title starts at the same x. Content-sized would
+     let an "IN PROGRESS" row push its title further right than an "OPEN" one,
+     since each card is its own formatting context. */
+  .board-item-top { flex: 0 0 9.5rem; }
+  .board-item-title {
+    /* Takes all surplus width. One line, ellipsed only when it genuinely runs
+       out — the full text is one click away in the detail panel, and a
+       wrapping title would reintroduce the variable row height this layout
+       exists to remove. */
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Tags neither shrink nor wrap. Letting them shrink clipped them mid-word
+     ("illing", "ebhooks") because they are right-aligned, and half a word is
+     worse than an ellipsis: the title degrades legibly, a clipped tag just
+     looks broken. So the title absorbs the squeeze instead, and its full text
+     is one click away in the detail panel. */
+  .board-item-tags {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+  }
+  .board-item-list li { margin-bottom: var(--size-1); }
 }
 .board-items-foot {
   margin-top: var(--size-3);
