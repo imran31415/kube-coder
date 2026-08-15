@@ -33,7 +33,21 @@
     // owner: security@kube-coder | review: 2026-10-01 | dev-only (vitest test UI)
     "GHSA-5xrq-8626-4rwp", // vitest  <=3.2.5  UI server arbitrary file read/exec — needs vitest v4
     // owner: security@kube-coder | review: 2026-10-01 | dev-only (vite via vitest)
-    "GHSA-fx2h-pf6j-xcff"  // vite    <=6.4.2  server.fs.deny bypass (Windows) — cleared by vitest v4
+    "GHSA-fx2h-pf6j-xcff", // vite    <=6.4.2  server.fs.deny bypass (Windows) — cleared by vitest v4
+    // owner: security@kube-coder | review: 2026-10-01 | build-only (Metro bundler)
+    //
+    // image-size, reached only through metro — the bundler that produces the JS
+    // bundle at build time. It reads image dimensions while bundling and is not
+    // part of the artifact installed on a device, so it is not reachable from
+    // app code or from the network on a user's phone.
+    //
+    // These two are allowlisted rather than fixed because THERE IS NO FIXED
+    // VERSION: both advisories cover `<=2.0.2` and 2.0.2 is the latest release.
+    // npm's own `fixAvailable` points at `expo@53` / `react-native@0.72`, which
+    // are DOWNGRADES from the SDK this app is on — not a fix. Nothing here is
+    // waiting on us; prune both entries once metro ships a patched image-size.
+    "GHSA-5p2g-fcmc-qvqq", // image-size <=2.0.2  ReDoS  — no patched release
+    "GHSA-w3rx-r6r6-pgpr"  // image-size <=2.0.2  DoS    — no patched release
   ],
   "report-type": "summary"
 }

@@ -46,7 +46,8 @@
   "resolutions": {
     "esbuild": "0.25.12",
     "minimatch": "^10.2.5",
-    "brace-expansion": "^5.0.8"
+    "brace-expansion": "^5.0.8",
+    "nanoid": "^3.3.18"
   },
   "engines": {
     "node": ">=20"
