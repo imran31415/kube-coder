@@ -29,7 +29,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v3.21.3
+          version: v3.21.4
 
       - name: Lint base-infrastructure chart
         run: helm lint charts/base-infrastructure/
@@ -67,7 +67,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v3.21.3
+          version: v3.21.4
 
       - name: Install helm-unittest plugin
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v0.5.2
@@ -284,7 +284,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Secret Scanning
-        uses: trufflesecurity/trufflehog@a7082b69f5bc6167bbe27ebab82bf6707f267bf6 # main
+        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318 # main
         with:
           extra_args: --only-verified
 
@@ -313,7 +313,7 @@ jobs:
           target: runtime
 
       - name: Docker Image Vulnerability Scanning
-        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # master
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
         with:
           image-ref: 'kube-coder-ci:latest'
           format: 'sarif'
@@ -330,7 +330,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Upload Trivy Scan Results
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
         # Upload whenever the SARIF exists, even if an earlier step failed —
         # but skip (don't error) when it's absent, e.g. the image build or
         # Trivy itself failed and produced no report. `always()` alone made
