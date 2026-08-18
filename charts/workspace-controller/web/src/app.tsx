@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
-import { type Workspace, type WorkspaceState } from './api/workspaces';
+import { type Workspace, type WorkspaceState, isAutoPaused } from './api/workspaces';
 import {
   workspaces,
   namespace,
@@ -269,6 +269,14 @@ function Row({ ws }: { ws: Workspace }) {
             )}
             <Pill state={ws.state} />
             <IsolationPill isolated={ws.isolated} namespace={ws.namespace} />
+            {isAutoPaused(ws) && (
+              <span
+                class="pill pill-autopaused"
+                title="Paused automatically after being idle. Data is preserved — press Start to wake it."
+              >
+                auto-paused
+              </span>
+            )}
             {ws.updateAvailable && (
               <span class="pill pill-update" title={`Update available: ${ws.version} → latest`}>
                 update
