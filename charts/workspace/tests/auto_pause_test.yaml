@@ -1,0 +1,101 @@
+suite: auto-pause opt-in + PVC preservation (#612)
+templates:
+  - templates/deployment.yaml
+  - templates/serviceaccount.yaml
+  - templates/pvc.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: is off by default — upgrading the chart must never start pausing a tenant
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["kube-coder.io/auto-pause"]
+          value: "false"
+
+  - it: carries the default idle threshold, distinct from the 6h advisory window
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["kube-coder.io/auto-pause-idle-minutes"]
+          value: "120"
+
+  - it: renders the opt-in and a custom threshold
+    template: templates/deployment.yaml
+    set:
+      autoPause.enabled: true
+      autoPause.idleMinutes: 45
+    asserts:
+      - equal:
+          path: metadata.annotations["kube-coder.io/auto-pause"]
+          value: "true"
+      - equal:
+          path: metadata.annotations["kube-coder.io/auto-pause-idle-minutes"]
+          value: "45"
+
+  - it: keeps the opt-in off the pod template, so toggling never rolls the pod
+    # A policy change must not restart the workspace — that would interrupt the
+    # very work auto-pause exists to protect.
+    template: templates/deployment.yaml
+    set:
+      autoPause.enabled: true
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations["kube-coder.io/auto-pause"]
+
+  - it: tells the beacon which pod to annotate via the downward API
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+
+  - it: lets the workspace annotate its own pod, and nothing more
+    template: templates/serviceaccount.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: Role
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["patch"]
+
+  - it: never grants the workspace delete on pods
+    template: templates/serviceaccount.yaml
+    documentIndex: 1
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["delete"]
+
+  # --- Criterion 4: pausing preserves the PVC, asserted rather than assumed ---
+  - it: keeps the home volume even through a helm uninstall
+    template: templates/pvc.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+
+  - it: does not tie the home volume's life to the Deployment
+    # Pause scales the Deployment to 0. If the PVC were owned by the Deployment
+    # (or by anything garbage-collected with it), that would delete the user's
+    # home directory instead of parking it.
+    template: templates/pvc.yaml
+    asserts:
+      - notExists:
+          path: metadata.ownerReferences

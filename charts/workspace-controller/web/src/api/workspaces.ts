@@ -41,7 +41,26 @@ export interface Workspace {
   version: string | null;
   /** True when a newer release exists than this workspace's version. */
   updateAvailable: boolean;
+  /** Auto-pause opt-in and, when the controller paused it, when (#612). */
+  autoPause?: AutoPause;
 }
+
+export interface AutoPause {
+  /** Opted in to being paused automatically when idle. Off by default. */
+  enabled: boolean;
+  /** Minutes of no activity before the controller pauses it. */
+  idleMinutes: number;
+  /**
+   * Unix seconds when the controller paused it, or null. Set only by an
+   * automatic pause — a workspace someone stopped by hand leaves this null,
+   * which is how the console tells the two apart.
+   */
+  autoPausedAt: number | null;
+}
+
+/** True when this workspace is stopped *because* the controller paused it. */
+export const isAutoPaused = (w: Workspace) =>
+  w.state === 'stopped' && !!w.autoPause?.autoPausedAt;
 
 export interface WorkspacesResponse {
   namespace: string;
@@ -108,6 +127,21 @@ export const setWorkspaceResources = (user: string, limits: { cpu?: string; memo
   apiPost<{ ok: true; user: string; limits: { cpu?: string; memory?: string } }>(
     `/api/workspaces/${user}/resources`,
     limits,
+  );
+
+/**
+ * Turn auto-pause on/off for one workspace. Patches the live Deployment's
+ * annotations and, when GitOps is configured, persists it to the user's
+ * values.yaml so the next reconcile doesn't undo it.
+ */
+export const setWorkspaceAutoPause = (
+  user: string,
+  enabled: boolean,
+  idleMinutes?: number,
+) =>
+  apiPost<{ ok: true; user: string; autoPause: AutoPause; persisted: boolean; persistError: string | null }>(
+    `/api/workspaces/${user}/auto-pause`,
+    idleMinutes === undefined ? { enabled } : { enabled, idleMinutes },
   );
 
 export interface UpdateResult {
