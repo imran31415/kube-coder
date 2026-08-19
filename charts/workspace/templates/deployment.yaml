@@ -43,6 +43,21 @@ spec:
       imagePullSecrets:
       - name: {{ .Values.image.pullSecretName }}
       {{- end }}
+      {{- /*
+      Sandboxed container runtime (gVisor / Kata) — #613. Gated rather than
+      rendered with a default, because `runtimeClassName: ""` is NOT the same as
+      omitting it: the empty string is a real value the API server tries to
+      resolve to a RuntimeClass and fails on. Unset must render nothing at all.
+
+      Pod-level, so it applies to EVERY container here (ide, dind, ssh-server,
+      github-app-token) — there is no way to sandbox one and not the others.
+
+      A template comment, not a YAML one, so it documents the template without
+      being copied into every rendered manifest.
+      */}}
+      {{- if .Values.runtimeClassName }}
+      runtimeClassName: {{ .Values.runtimeClassName | quote }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

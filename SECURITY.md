@@ -71,3 +71,38 @@ responsibility for the corresponding risk:
 | `TRUSTED_PROXY` | `true` | Set `false` for any deploy where the ingress doesn't strip client-supplied auth headers. |
 
 See `charts/workspace/values.yaml` for full annotations.
+
+## Optional: sandboxed container runtimes (gVisor / Kata)
+
+The table above lists defaults you can loosen. `runtimeClassName` is the
+opposite — a default you can tighten, for operators who have already invested in
+sandboxed nodes:
+
+```yaml
+runtimeClassName: gvisor        # or kata-containers, or any RuntimeClass name
+```
+
+A container normally shares the host's kernel, and the isolation is namespaces
+and cgroups. gVisor intercepts syscalls in a user-space kernel; Kata runs the pod
+in a lightweight VM. Either bounds what a compromised agent reaches. Empty (the
+default) omits the field entirely and keeps today's behaviour exactly.
+
+**Prerequisite, and what happens without it.** The cluster must *already* have
+nodes running that runtime **and** a matching `RuntimeClass` object. Naming one
+that does not exist makes the workspace pod **unschedulable** — it sits `Pending`
+and the workspace never starts. kube-coder does not install runtimes or create
+RuntimeClass objects; whether your cloud offers such node pools is a question for
+your provider.
+
+**`build.mode: buildkit` and gVisor do not mix.** That mode adds a
+`privileged: true` DinD sidecar, and gVisor does not support privileged
+containers, so builds fail — at build time rather than at schedule time, which
+makes it awkward to diagnose. Kata is VM-backed and does not have this
+limitation. The default `kaniko` mode has no DinD sidecar and is unaffected.
+`runtimeClassName` is pod-level, so there is no way to sandbox the agent
+container and leave the build sidecar on the default runtime.
+
+**What this does not do.** It does not make kube-coder secure-by-default against
+a hostile agent, and it does nothing for prompt injection. It also does not
+separate a workspace's human from its agents: every agent in a pod shares the
+same kernel boundary regardless of which runtime that pod uses.

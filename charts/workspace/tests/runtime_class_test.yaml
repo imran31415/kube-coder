@@ -1,0 +1,90 @@
+suite: runtimeClassName passthrough (#613)
+templates:
+  - templates/deployment.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  # --- unset: the field must be ABSENT, not empty -------------------------
+  #
+  # `runtimeClassName: ""` is not the same as no runtimeClassName. The empty
+  # string is a real value the API server tries to resolve to a RuntimeClass
+  # object and fails on, which would make every workspace unschedulable on
+  # every cluster. These two cases are the whole point of the feature's tests.
+  - it: omits runtimeClassName entirely by default
+    template: templates/deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+
+  - it: omits it when explicitly set to the empty string
+    # What a half-filled values.yaml actually produces.
+    template: templates/deployment.yaml
+    set:
+      runtimeClassName: ""
+    asserts:
+      - notExists:
+          path: spec.template.spec.runtimeClassName
+
+  # --- set: passed through verbatim ---------------------------------------
+  - it: passes gvisor through to the pod spec
+    template: templates/deployment.yaml
+    set:
+      runtimeClassName: gvisor
+    asserts:
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: gvisor
+
+  - it: passes any RuntimeClass name through, not a fixed vocabulary
+    # The chart must not know or care which runtimes exist — that is the
+    # operator's cluster, and hard-coding a list would date immediately.
+    template: templates/deployment.yaml
+    set:
+      runtimeClassName: kata-containers
+    asserts:
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: kata-containers
+
+  # --- interactions --------------------------------------------------------
+  - it: does not alter the build path when set
+    # buildkit's DinD sidecar is `privileged: true` and gVisor does not support
+    # privileged containers. That is a documented operator caveat, NOT something
+    # the chart silently works around — asserting the sidecar is still rendered
+    # keeps it that way, so the failure stays visible instead of becoming a
+    # surprise change of build mode.
+    template: templates/deployment.yaml
+    set:
+      runtimeClassName: gvisor
+      build.mode: buildkit
+    asserts:
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: gvisor
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: dind
+      - equal:
+          path: spec.template.spec.containers[1].securityContext.privileged
+          value: true
+
+  - it: covers every container in the pod, being pod-level
+    # ide + dind + ssh-server: one field, no per-container opt-out. A workspace
+    # cannot sandbox its agent container and leave the privileged build sidecar
+    # on the default runtime.
+    template: templates/deployment.yaml
+    set:
+      runtimeClassName: gvisor
+      ssh.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: gvisor
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 3
