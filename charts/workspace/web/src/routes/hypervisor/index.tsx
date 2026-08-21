@@ -66,6 +66,11 @@ function statusLabel(s: string): string {
   return s || 'idle';
 }
 
+/** Abbreviate the workspace home for compact display: /home/dev/Umi → ~/Umi. */
+function shortDir(path: string): string {
+  return path.replace(/^\/home\/[^/]+/, '~');
+}
+
 export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -314,7 +319,10 @@ export function HypervisorRoute() {
           <span class={`hv-dot hv-dot-${t.status}`} aria-hidden="true" />
           <span class="hv-thread-body">
             <span class="hv-thread-title">{t.title || 'New chat'}</span>
-            <span class="hv-thread-agent">{t.assistant}</span>
+            <span class="hv-thread-agent">
+              {t.assistant}
+              {t.workdir ? ` · ${shortDir(t.workdir)}` : ''}
+            </span>
             <span class="sr-only">{t.status}</span>
           </span>
         </button>
@@ -432,10 +440,21 @@ export function HypervisorRoute() {
         {/* Where a NEW chat starts (#345). The backend has always accepted a
             per-thread workdir; this picker finally passes it, so starting an
             agent in a repo no longer burns a first message on `cd`. An open
-            thread keeps the folder it was created in. */}
+            thread keeps the folder it was created in — so while a chat is
+            open the control shows THAT chat's folder, read-only, instead of
+            silently showing the new-chat default (#637). Same open-thread
+            semantics as the Model and Effort pickers above. */}
         <label class="hv-agent-picker">
           <span class="hv-eyebrow">Folder</span>
-          {dirs.length > 0 ? (
+          {active && activeThread ? (
+            <input
+              class="hv-agent-select"
+              value={shortDir(activeThread.workdir || '') || '—'}
+              disabled
+              aria-label="This chat's folder"
+              title={`This chat runs in ${activeThread.workdir || 'its creation folder'}. Chats keep the folder they were created in — start a New chat to pick a different one.`}
+            />
+          ) : dirs.length > 0 ? (
             <select
               class="hv-agent-select"
               value={selectedWorkdir.value}

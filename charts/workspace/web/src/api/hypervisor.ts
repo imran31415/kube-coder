@@ -73,6 +73,10 @@ export interface HypervisorThread {
   // project_id present only when bound. Lets the CTO page filter its list.
   persona?: string;
   project_id?: string;
+  // The folder the thread was created in (#637) — fixed for the thread's
+  // lifetime. Shown in the sidebar and reflected by the Folder picker when
+  // the thread is open.
+  workdir?: string;
   // Present (unix seconds) only on soft-deleted threads in the trash view.
   deleted_at?: number | null;
 }
