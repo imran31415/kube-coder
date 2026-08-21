@@ -56,7 +56,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # tampered/MITM'd helm fails the BUILD (not silently at provision time). This ARG
 # is the only declaration of the version (see the header); Renovate bumps it here.
 # renovate: datasource=github-releases depName=helm/helm
-ARG HELM_VERSION=v3.21.3
+ARG HELM_VERSION=v3.21.4
 RUN ARCH=$(dpkg --print-architecture) \
     && TARBALL="helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
     && curl -fsSL "https://get.helm.sh/${TARBALL}" -o "/tmp/${TARBALL}" \
