@@ -1886,6 +1886,11 @@ class HypervisorSession:
             # into one at any time (#358) — and '' when unbound.
             'persona': m.get('persona') or '',
             'project_id': m.get('project_id') or '',
+            # The folder the thread was created in (#637) — fixed for the
+            # thread's lifetime. Surfaced so the sidebar can show it and the
+            # Folder picker can reflect the open thread instead of silently
+            # showing the new-chat default.
+            'workdir': m.get('workdir') or '',
             # Board binding (#588/#589) — '' unless this thread is working one
             # item on an external board, which is what lets /board render a
             # per-item chat without a second thread store.
