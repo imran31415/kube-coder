@@ -1,0 +1,52 @@
+# Build-context exclusions for the image builds in this repo (devlaptop,
+# provisioner, browser-dockerfile). All of them use the repo root as their
+# context — see the `build`/`push` targets in the Makefile and
+# scripts/buildx-push.sh — so this file governs every one of them.
+#
+# The important entry is node_modules. devlaptop/Dockerfile builds the
+# dashboard SPA by installing from the lockfile and THEN copying the source
+# tree over it:
+#
+#     RUN  yarn install --frozen-lockfile      # installs for linux/<target arch>
+#     COPY charts/workspace/web/ ./            # <-- used to bring the host's
+#                                              #     node_modules along too
+#
+# COPY merges into the existing directory, so a developer's local
+# node_modules would overwrite the freshly installed one file-by-file while
+# the container's platform binaries survived — leaving a tree whose halves
+# came from two different installs. That is not hypothetical: the v1.58.2
+# build failed with
+#
+#     Cannot start service: Host version "0.25.12" does not match binary
+#     version "0.28.2"
+#
+# after a Renovate bump moved the esbuild pin, because the host's stale
+# node_modules/esbuild landed on top of the container's @esbuild/linux-x64.
+# Excluding node_modules makes the dependency install depend only on
+# package.json + yarn.lock, which is what --frozen-lockfile is supposed to
+# guarantee.
+**/node_modules
+
+# Build output. The SPA dist/ that ships in the image is produced inside the
+# dashboard-builder stage and taken via `COPY --from=`; a host dist/ is never
+# read, and copying one in only risks masking a stale build.
+**/dist
+**/build
+
+# Never referenced by any COPY, and large enough to be worth not shipping to
+# the daemon on every build.
+.git
+mobile/
+docs/
+
+# Local gitops checkout of the private users repo (`make users-sync`). Nothing
+# in any image needs it, and it holds per-workspace deployment config that has
+# no business inside a build context.
+.users/
+
+# Local/editor noise.
+.DS_Store
+*.log
+.venv/
+__pycache__/
+*.pyc
