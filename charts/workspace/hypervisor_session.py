@@ -128,9 +128,13 @@ except ValueError:
 # tools frequently weren't ready before the turn finished and Claude fell back
 # to bash. Two lightweight stdio servers connect fast and reliably. Passed via
 # --mcp-config/--strict-mcp-config so it overrides ~/.claude.json for this run
-# only (the Build tab keeps the full set). The dashboard MCP reads the bearer
-# token from $HOME/.claude-tasks/.api-token, so HOME=/home/dev (forced below) is
-# what keeps its REST calls from 401-ing.
+# only (the Build tab keeps the full set).
+#
+# HOME=/home/dev is still forced below, but it is no longer what keeps the
+# dashboard MCP's REST calls from 401-ing: the MCP used to resolve its bearer
+# token from $HOME and now resolves it from the workspace home directly. That
+# difference is why this path worked while board workers — which never forced
+# HOME — failed on every board tool (#633).
 _HYPERVISOR_MCP_CONFIG = json.dumps({'mcpServers': {
     'dashboard': {'type': 'stdio', 'command': 'python3',
                   'args': ['/tmp/browser/mcp_dashboard.py']},

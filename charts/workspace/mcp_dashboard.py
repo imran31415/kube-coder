@@ -9,7 +9,8 @@ destructive actions (kill a task, delete a memory).
 
 Design: every tool is a thin wrapper over the dashboard's OWN local HTTP API
 (http://127.0.0.1:6080/...), authenticated with the workspace bearer token at
-~/.claude-tasks/.api-token. That reuses every existing request handler — its
+<workspace home>/.claude-tasks/.api-token — deliberately NOT `~`, see
+TOKEN_FILE. That reuses every existing request handler — its
 auth, validation, and business logic — so there is zero duplicated logic here
 and the tool surface can never drift from the REST surface it mirrors.
 
@@ -43,9 +44,20 @@ from typing import Any, Dict, Optional
 # Constants / config
 # ───────────────────────────────────────────────────────────────────────────
 _LOG = sys.stderr
-TOKEN_FILE = os.path.join(
-    os.environ.get('HOME', '/home/dev'), '.claude-tasks', '.api-token'
-)
+
+# The task-API token lives in the *workspace* home, which is not always `$HOME`.
+# A pod whose user is `ubuntu` has HOME=/home/ubuntu — ephemeral, not on the
+# PVC, and not where server.py reads. Deriving this from $HOME meant the MCP
+# read (and, worse, minted) a token somewhere the server had never heard of,
+# then 401'd on every call — which surfaces three layers away as a board
+# credential problem and cost the reporter of #633 several hours in GitHub App
+# scopes before they found it.
+#
+# This must stay in lockstep with `ClaudeTaskManager.TASKS_DIR` in server.py.
+# The bug was two constants silently disagreeing, so mcp_dashboard_test.py pins
+# them together rather than trusting this comment.
+WORKSPACE_HOME = os.environ.get('KC_WORKSPACE_HOME', '/home/dev')
+TOKEN_FILE = os.path.join(WORKSPACE_HOME, '.claude-tasks', '.api-token')
 BASE_URL = os.environ.get('KC_DASHBOARD_URL', 'http://127.0.0.1:6080').rstrip('/')
 HTTP_TIMEOUT = float(os.environ.get('KC_DASHBOARD_MCP_TIMEOUT', '30'))
 
@@ -189,8 +201,37 @@ def _call(method: str, path: str, ok_status=(200, 201, 202),
     status, payload = _api(method, path, body=body, query=query)
     if status in ok_status:
         return _ok(_pretty(payload))
+    if status == 401:
+        return _err(_unauthorized_help(method, path))
     detail = payload.get('error') if isinstance(payload, dict) else payload
     return _err(f'dashboard API {method} {path} returned HTTP {status}: {detail}')
+
+
+def _unauthorized_help(method: str, path: str) -> str:
+    """What a 401 from the *local* dashboard API actually means.
+
+    Every tool funnels through `_call`, so this is the one place worth spending
+    words. A bare "HTTP 401 Unauthorized" sends people to their board's
+    credentials, their GitHub App installation, their repo scopes — none of
+    which this API knows anything about. It is loopback, and the only thing it
+    checks is whether our bearer token matches the one on disk.
+
+    Naming the file, and saying which layer is *not* at fault, is the whole
+    difference between a five-minute fix and the several hours #633 cost.
+    """
+    missing = not os.path.exists(TOKEN_FILE)
+    why = (f'no token file at {TOKEN_FILE}' if missing
+           else f'the token at {TOKEN_FILE} is not the one the server accepts')
+    return (
+        f'dashboard API {method} {path} returned HTTP 401 (unauthorized) — '
+        f'{why}.\n\n'
+        f'This is a workspace configuration problem, NOT a problem with the '
+        f'board, its credentials, or any GitHub App scope. The dashboard API '
+        f'is loopback and only checks this one token.\n\n'
+        f'The server keeps it under its own home (/home/dev by default). If '
+        f'this workspace keeps the workspace home somewhere else, set '
+        f'KC_WORKSPACE_HOME to it for the MCP process. Retrying will not help.'
+    )
 
 
 # ───────────────────────────────────────────────────────────────────────────

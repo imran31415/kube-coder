@@ -101,6 +101,14 @@ class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = os.path.realpath(tempfile.mkdtemp(prefix='kc-runs-api-'))
+        # A run refuses to start when the dashboard MCP could not authenticate
+        # (#633), so these tests need a workspace that *is* configured. Writing
+        # the token into the temp PVC makes that explicit; without it the suite
+        # passes only on a machine that happens to have a real
+        # /home/dev/.claude-tasks/.api-token, and fails on every CI runner.
+        cls.token_file = os.path.join(cls.tmpdir, '.api-token')
+        with open(cls.token_file, 'w') as f:
+            f.write('test-api-token')
         cls._saved_home, BM.HOME_ROOT = BM.HOME_ROOT, cls.tmpdir
         cls._saved_cred, BCM.HOME_ROOT = BCM.HOME_ROOT, cls.tmpdir
         cls._auth_save = server.BrowserHandler.check_claude_auth
@@ -152,6 +160,9 @@ class _Base(unittest.TestCase):
         # KC_MAX_TASKS (or a dev harness that loads it from .env.local) fails
         # these tests for a reason that has nothing to do with the code.
         p = mock.patch.object(CTM, 'MAX_TASKS', 12)
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(CTM, 'TOKEN_FILE', self.token_file)
         p.start()
         self.addCleanup(p.stop)
         # Drivers are started explicitly per test; a background thread racing
@@ -224,6 +235,47 @@ class CreateTests(_Base):
             run, err = self._create_run(cfg)
         self.assertIsNone(run)
         self.assertIn('at its task limit', err)
+
+    def test_a_broken_mcp_token_refuses_the_run_before_dispatching_anyone(self):
+        """One accurate refusal beats N opaque per-item failures (#633).
+
+        Without this guard every worker independently hits 401 on every board
+        tool, spends a build reasoning about it, and reports it as a per-item
+        disposition — so a workspace misconfiguration arrives looking like a
+        board credential problem, once per item.
+        """
+        cfg = self._board()
+        with mock.patch.object(CTM, 'TOKEN_FILE', '/nonexistent/.api-token'):
+            run, err = self._create_run(cfg)
+        self.assertIsNone(run)
+        self.assertIn('cannot authenticate', err)
+        # It must point at the layer that IS at fault, and clear the board.
+        self.assertIn('workspace configuration problem', err)
+        self.assertIn('not a problem with the board', err)
+        # And nothing may have been dispatched.
+        self.assertEqual(self.tasks.created, [])
+
+    def test_an_empty_token_file_is_refused_too(self):
+        # A zero-byte token authenticates nothing but exists, so an
+        # exists() check alone would wave it through.
+        empty = os.path.join(self.tmpdir, '.empty-token')
+        with open(empty, 'w') as f:
+            f.write('   \n')
+        cfg = self._board()
+        with mock.patch.object(CTM, 'TOKEN_FILE', empty):
+            run, err = self._create_run(cfg)
+        self.assertIsNone(run)
+        self.assertIn('empty', err)
+
+    def test_the_token_is_checked_before_the_board_is_even_fetched(self):
+        # Cheapest check first: a local stat must not cost a vendor round trip.
+        # _stub_fetch raises if an unstubbed fetch happens, so no stub == proof.
+        cfg = self._board()
+        self._stub_fetch([])
+        with mock.patch.object(CTM, 'TOKEN_FILE', '/nonexistent/.api-token'):
+            run, err = self._create_run(cfg)
+        self.assertIsNone(run)
+        self.assertIn('cannot authenticate', err)
 
     def test_an_incomplete_listing_is_carried_on_the_run_not_swallowed(self):
         """'We worked every open ticket' and 'every one we could see' are

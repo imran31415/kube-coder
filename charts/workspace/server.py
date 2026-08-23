@@ -1989,8 +1989,14 @@ Host github.com
 class ClaudeTaskManager:
     """Manages Claude Code tasks running in tmux sessions"""
 
-    TASKS_DIR = '/home/dev/.claude-tasks'
-    TOKEN_FILE = '/home/dev/.claude-tasks/.api-token'
+    # The workspace home — the PVC — not `$HOME`, which on a pod whose user is
+    # `ubuntu` is an ephemeral /home/ubuntu. mcp_dashboard.py resolves the same
+    # variable with the same default so the two can never drift apart; they did
+    # once, and every board tool 401'd for it (#633). A knob that moved only one
+    # of them would just rebuild the same bug, so it moves both or neither.
+    WORKSPACE_HOME = os.environ.get('KC_WORKSPACE_HOME', '/home/dev')
+    TASKS_DIR = os.path.join(WORKSPACE_HOME, '.claude-tasks')
+    TOKEN_FILE = os.path.join(TASKS_DIR, '.api-token')
     # Claude Code's per-user config; we pre-accept folder-trust here so a freshly
     # launched interactive task doesn't block on the trust dialog (see
     # _ensure_claude_trust).
@@ -2021,6 +2027,26 @@ class ClaudeTaskManager:
         with open(ClaudeTaskManager.TOKEN_FILE, 'r') as f:
             stored = f.read().strip()
         return secrets.compare_digest(token, stored)
+
+    @staticmethod
+    def token_health():
+        """`(ok, reason)` for the bearer token agents will authenticate with.
+
+        Agents reach this API through mcp_dashboard.py, which reads the very
+        same file. Checking it once, up front, is what turns N opaque per-item
+        failures into one accurate refusal — see the call site in
+        `BoardRunsManager.create` and issue #633.
+        """
+        path = ClaudeTaskManager.TOKEN_FILE
+        if not os.path.exists(path):
+            return False, f'no API token at {path}'
+        try:
+            with open(path, 'r') as f:
+                if not f.read().strip():
+                    return False, f'the API token at {path} is empty'
+        except OSError as e:
+            return False, f'the API token at {path} is unreadable: {e}'
+        return True, ''
 
     # ── App-proxy sessions (mobile WebView) ──────────────────────────────
     # A native WebView can attach an Authorization header to its FIRST request
@@ -6632,6 +6658,21 @@ class BoardRunsManager:
                 boards.runs.BOARD_MAX_CONCURRENCY)))
         if effective == 0:
             return None, clamp_reason
+
+        # Every agent this run dispatches talks to the board through the
+        # dashboard MCP, which authenticates with the token on disk. When that
+        # is broken, each worker discovers it independently, spends a whole
+        # build reasoning about a 401, and reports it as a per-item
+        # disposition — so a workspace misconfiguration arrives looking like a
+        # board problem, N times over (#633). One local stat, before we spend
+        # even the listing fetch, replaces all of that.
+        token_ok, token_why = ClaudeTaskManager.token_health()
+        if not token_ok:
+            return None, (
+                f'the dashboard MCP cannot authenticate ({token_why}), so no '
+                f'agent would be able to read or update this board. This is a '
+                f'workspace configuration problem, not a problem with the '
+                f'board or its credentials. No agents were dispatched.')
 
         result, err = BoardsManager.fetch(cfg)
         if err:
