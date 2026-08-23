@@ -79,6 +79,13 @@ class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = os.path.realpath(tempfile.mkdtemp(prefix='kc-p7-'))
+        # A board run refuses to start without a usable task-API
+        # token (#633); model a configured workspace. See
+        # board_fixtures.workspace_token_patch.
+        _tok = fx.workspace_token_patch()
+        _tok.start()
+        cls.addClassCleanup(_tok.stop)
+
         cls._saved_home, BM.HOME_ROOT = BM.HOME_ROOT, cls.tmpdir
         cls._saved_cred, BCM.HOME_ROOT = BCM.HOME_ROOT, cls.tmpdir
         cls._auth_save = server.BrowserHandler.check_claude_auth

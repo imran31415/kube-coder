@@ -101,14 +101,12 @@ class _Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = os.path.realpath(tempfile.mkdtemp(prefix='kc-runs-api-'))
-        # A run refuses to start when the dashboard MCP could not authenticate
-        # (#633), so these tests need a workspace that *is* configured. Writing
-        # the token into the temp PVC makes that explicit; without it the suite
-        # passes only on a machine that happens to have a real
-        # /home/dev/.claude-tasks/.api-token, and fails on every CI runner.
-        cls.token_file = os.path.join(cls.tmpdir, '.api-token')
-        with open(cls.token_file, 'w') as f:
-            f.write('test-api-token')
+        # A board run refuses to start without a usable task-API token
+        # (#633); model a configured workspace. See
+        # board_fixtures.workspace_token_patch.
+        _tok = fx.workspace_token_patch()
+        _tok.start()
+        cls.addClassCleanup(_tok.stop)
         cls._saved_home, BM.HOME_ROOT = BM.HOME_ROOT, cls.tmpdir
         cls._saved_cred, BCM.HOME_ROOT = BCM.HOME_ROOT, cls.tmpdir
         cls._auth_save = server.BrowserHandler.check_claude_auth
@@ -160,9 +158,6 @@ class _Base(unittest.TestCase):
         # KC_MAX_TASKS (or a dev harness that loads it from .env.local) fails
         # these tests for a reason that has nothing to do with the code.
         p = mock.patch.object(CTM, 'MAX_TASKS', 12)
-        p.start()
-        self.addCleanup(p.stop)
-        p = mock.patch.object(CTM, 'TOKEN_FILE', self.token_file)
         p.start()
         self.addCleanup(p.stop)
         # Drivers are started explicitly per test; a background thread racing
