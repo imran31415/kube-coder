@@ -318,3 +318,50 @@ class FakeHTTP:
                 f'FakeHTTP ran out of responses at call {len(self.calls)}: '
                 f'{method} {url}')
         return self.responses.pop(0)
+
+
+# ── A workspace that is actually configured ────────────────────────────────
+#
+# A board run refuses to start when the dashboard MCP could not authenticate
+# (#633): otherwise every dispatched agent rediscovers the 401 on its own,
+# burns a build reasoning about it, and reports it as a per-item disposition.
+#
+# That guard means any suite which CREATES runs needs a workspace whose task
+# API token exists. Without it the suites pass only on a machine that happens
+# to have a real /home/dev/.claude-tasks/.api-token — and fail on every CI
+# runner. That is not hypothetical: the guard landed with only one of the four
+# board suites adjusted, and CI failed with 64 failures and 29 errors while the
+# same tests passed locally.
+#
+# It lives here, in the module all four suites already share, so the next board
+# suite inherits it instead of rediscovering this.
+
+import atexit as _atexit
+import os as _os
+import shutil as _shutil
+import tempfile as _tempfile
+from unittest import mock as _mock
+
+_TOKEN_DIR = None
+
+
+def workspace_token_patch():
+    """A patcher pinning `ClaudeTaskManager.TOKEN_FILE` at a real token file.
+
+    Use from `setUpClass`, which keeps it symmetric with the other class-scoped
+    patches these suites already do:
+
+        p = fx.workspace_token_patch()
+        p.start()
+        cls.addClassCleanup(p.stop)
+    """
+    global _TOKEN_DIR
+    import server
+
+    if _TOKEN_DIR is None:
+        _TOKEN_DIR = _tempfile.mkdtemp(prefix='kc-fx-token-')
+        _atexit.register(_shutil.rmtree, _TOKEN_DIR, True)
+        with open(_os.path.join(_TOKEN_DIR, '.api-token'), 'w') as fh:
+            fh.write('test-api-token')
+    return _mock.patch.object(server.ClaudeTaskManager, 'TOKEN_FILE',
+                              _os.path.join(_TOKEN_DIR, '.api-token'))

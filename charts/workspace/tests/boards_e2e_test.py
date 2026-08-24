@@ -63,6 +63,7 @@ except ImportError:  # pragma: no cover - platform shim
     sys.modules['fcntl'] = _shim
 
 import server                                   # noqa: E402
+from tests import board_fixtures as fx         # noqa: E402
 from boards import store as bstore              # noqa: E402
 from boards import templates as btemplates      # noqa: E402
 
@@ -215,6 +216,13 @@ class _E2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = os.path.realpath(tempfile.mkdtemp(prefix='kc-e2e-'))
+        # A board run refuses to start without a usable task-API
+        # token (#633); model a configured workspace. See
+        # board_fixtures.workspace_token_patch.
+        _tok = fx.workspace_token_patch()
+        _tok.start()
+        cls.addClassCleanup(_tok.stop)
+
         cls._saved_home, BM.HOME_ROOT = BM.HOME_ROOT, cls.tmpdir
         cls._saved_cred, BCM.HOME_ROOT = BCM.HOME_ROOT, cls.tmpdir
         cls._auth = server.BrowserHandler.check_claude_auth
