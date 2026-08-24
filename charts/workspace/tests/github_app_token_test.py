@@ -102,6 +102,119 @@ class MintingTests(TokenScriptTestCase):
         run.assert_not_called()
 
 
+class AtomicWriteTests(TokenScriptTestCase):
+    """Nobody may ever observe one of these files half-written.
+
+    Every one of them is read by a *different* process while this daemon
+    rewrites it: TOKEN_FILE by the git credential helper on every git
+    operation, PROFILE_HOOK by every new shell, GIT_STORE_FILE by git itself.
+    `open(path, "w")` truncates on entry, so all of them had a window in which
+    they existed and were empty — which is how two unrelated contributor PRs
+    ended up red with `'' != 'ghs_boot'`.
+    """
+
+    def test_a_reader_never_sees_an_empty_file_mid_write(self):
+        """The regression, reproduced as a race the old code loses.
+
+        The reader uses exactly the condition a credential helper does: the
+        path exists, so read it. With truncate-then-write it observes ''.
+        """
+        target = os.path.join(self.tmp.name, "raced")
+        with open(target, "w") as f:
+            f.write("old-token")
+
+        seen = []
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    with open(target) as f:
+                        seen.append(f.read())
+                except OSError:
+                    pass
+
+        th = threading.Thread(target=reader, daemon=True)
+        th.start()
+        try:
+            for i in range(200):
+                self.mod.atomic_write(target, f"token-{i}")
+        finally:
+            stop.set()
+            th.join(timeout=5)
+
+        self.assertTrue(seen, "reader never managed a read")
+        # Every observation must be a WHOLE value — never '' and never a prefix.
+        bad = [v for v in seen if not (v == "old-token" or
+                                       (v.startswith("token-") and v[6:].isdigit()))]
+        self.assertEqual(bad, [], f"torn or empty reads: {bad[:5]}")
+
+    def test_the_secret_is_never_briefly_world_readable(self):
+        """Permissions are set at creation, not chmod-ed after the write.
+
+        The old order wrote the token first and fixed the mode second, so under
+        the usual umask the file sat at 0644 with a live credential in it.
+        """
+        target = os.path.join(self.tmp.name, "secret")
+        modes = []
+        stop = threading.Event()
+
+        def watcher():
+            while not stop.is_set():
+                try:
+                    modes.append(os.stat(target).st_mode & 0o777)
+                except OSError:
+                    pass
+
+        th = threading.Thread(target=watcher, daemon=True)
+        th.start()
+        try:
+            for i in range(200):
+                self.mod.atomic_write(target, f"ghs_{i}")
+        finally:
+            stop.set()
+            th.join(timeout=5)
+
+        self.assertTrue(modes, "watcher never saw the file")
+        self.assertEqual([m for m in modes if m != 0o600], [],
+                         f"observed non-0600 modes: {sorted(set(modes))}")
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self):
+        target = os.path.join(self.tmp.name, "boom")
+        real_replace = os.replace
+
+        def failing_replace(a, b):
+            raise OSError("disk gone")
+
+        os.replace = failing_replace
+        try:
+            with self.assertRaises(OSError):
+                self.mod.atomic_write(target, "never-lands")
+        finally:
+            os.replace = real_replace
+
+        leftovers = [n for n in os.listdir(self.tmp.name) if ".tmp-" in n]
+        self.assertEqual(leftovers, [], f"temp files left: {leftovers}")
+
+    def test_the_old_value_survives_a_failed_write(self):
+        """Truncate-then-write destroys the old file before it knows the new
+        one is good. GIT_STORE_FILE holds other hosts' credentials."""
+        target = os.path.join(self.tmp.name, "store")
+        with open(target, "w") as f:
+            f.write("https://other-host.example\n")
+
+        real_replace = os.replace
+        os.replace = lambda a, b: (_ for _ in ()).throw(OSError("disk gone"))
+        try:
+            with self.assertRaises(OSError):
+                self.mod.atomic_write(target, "replacement")
+        finally:
+            os.replace = real_replace
+
+        with open(target) as f:
+            self.assertEqual(f.read(), "https://other-host.example\n")
+
+
 class HandshakeTests(TokenScriptTestCase):
     """The cross-container protocol that replaces the synchronous `--once`."""
 
@@ -139,13 +252,30 @@ class HandshakeTests(TokenScriptTestCase):
 
     def test_serve_mints_on_entry_without_being_asked(self):
         """The sidecar must produce a token at boot even if nobody requests
-        one — a warm pod's PVC token may already be expired."""
+        one — a warm pod's PVC token may already be expired.
+
+        Waits for CONTENT, not for the path to exist. Waiting on existence and
+        then asserting on content is a race the test loses roughly one run in
+        a few hundred, and it failed that way on two unrelated contributor PRs
+        (#634, #635) with `'' != 'ghs_boot'`. The write is atomic now, so the
+        file cannot be seen empty — but a test that only passes because of a
+        guarantee somewhere else should not be phrased as though it is racing.
+        """
         self.stub_mint("ghs_boot")
         self.run_serve()
-        deadline = time.time() + 5
-        while not os.path.exists(self.mod.TOKEN_FILE) and time.time() < deadline:
+        self.assertEqual(self._await_content("TOKEN_FILE"), "ghs_boot")
+
+    def _await_content(self, const, timeout=5):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                value = self.read(const)
+            except OSError:
+                value = ""
+            if value:
+                return value
             time.sleep(0.02)
-        self.assertEqual(self.read("TOKEN_FILE"), "ghs_boot")
+        self.fail(f"{const} still had no content after {timeout}s")
 
     def test_request_times_out_loudly_when_no_sidecar_answers(self):
         """No sidecar running: bounded wait, False, and the caller decides.
