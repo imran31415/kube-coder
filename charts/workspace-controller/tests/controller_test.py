@@ -1356,5 +1356,308 @@ class SelfServeTokenBindingTest(unittest.TestCase):
         self.assertFalse(self.check(self.MASTER, None))
 
 
+NOW = 1_000_000.0
+
+
+def _ws(**over):
+    """An opted-in, running workspace that IS eligible to pause. Each test
+    breaks exactly one thing, so a failure names its own cause."""
+    ws = {
+        'user': 'octo', 'deployment': 'ws-octo', 'namespace': 'ws-octo',
+        'state': 'running', 'desiredReplicas': 1,
+        'autoPause': {'enabled': True, 'idleMinutes': 120, 'autoPausedAt': None},
+    }
+    ws.update(over)
+    return ws
+
+
+def _beacon(busy='false', last=NOW - 7200, at=NOW - 10):
+    b = {}
+    if busy is not None:
+        b[controller.ANN_BUSY] = busy
+    if last is not None:
+        b[controller.ANN_LAST_ACTIVITY] = str(last)
+    if at is not None:
+        b[controller.ANN_BEACON_AT] = str(at)
+    return b
+
+
+class ShouldPauseTest(unittest.TestCase):
+    """The auto-pause decision (#612).
+
+    This is the highest-stakes pure function in the controller: a wrong `True`
+    scales a workspace to 0 while an agent is mid-run and destroys that work.
+    Every case below that is not the happy path must come back False.
+    """
+
+    def test_pauses_an_idle_opted_in_workspace(self):
+        ok, why = controller.should_pause(_ws(), _beacon(), NOW)
+        self.assertTrue(ok, why)
+
+    def test_never_pauses_a_workspace_that_did_not_opt_in(self):
+        ws = _ws(autoPause={'enabled': False, 'idleMinutes': 120})
+        ok, why = controller.should_pause(ws, _beacon(), NOW)
+        self.assertFalse(ok)
+        self.assertIn('not opted in', why)
+
+    def test_never_pauses_a_busy_workspace(self):
+        ok, why = controller.should_pause(_ws(), _beacon(busy='true'), NOW)
+        self.assertFalse(ok)
+        self.assertIn('busy', why)
+
+    def test_unrecognised_busy_value_counts_as_busy(self):
+        # Fail closed: only the literal "false" is permission to pause.
+        for value in ('TRUE', 'maybe', '', 'yes', '1'):
+            ok, _ = controller.should_pause(_ws(), _beacon(busy=value), NOW)
+            self.assertFalse(ok, f'busy={value!r} must not pause')
+
+    def test_busy_is_case_insensitive_for_false(self):
+        ok, why = controller.should_pause(_ws(), _beacon(busy='False'), NOW)
+        self.assertTrue(ok, why)
+
+    def test_never_pauses_before_the_threshold(self):
+        ok, why = controller.should_pause(_ws(), _beacon(last=NOW - 60), NOW)
+        self.assertFalse(ok)
+        self.assertIn('threshold', why)
+
+    def test_threshold_comes_from_the_workspace_not_the_default(self):
+        ws = _ws(autoPause={'enabled': True, 'idleMinutes': 5})
+        ok, why = controller.should_pause(ws, _beacon(last=NOW - 600), NOW)
+        self.assertTrue(ok, why)          # 10m idle, 5m threshold
+
+    def test_never_pauses_on_a_stale_beacon(self):
+        # A dead beacon thread must not read as "quiet".
+        ok, why = controller.should_pause(
+            _ws(), _beacon(at=NOW - 9999), NOW, beacon_max_age=300)
+        self.assertFalse(ok)
+        self.assertIn('stale', why)
+
+    def test_never_pauses_without_a_beacon(self):
+        # An older workspace image publishes nothing at all.
+        for beacon in (None, {}):
+            ok, why = controller.should_pause(_ws(), beacon, NOW)
+            self.assertFalse(ok)
+            self.assertIn('beacon', why)
+
+    def test_never_pauses_on_malformed_annotations(self):
+        for bad in ({controller.ANN_BEACON_AT: 'soon',
+                     controller.ANN_BUSY: 'false',
+                     controller.ANN_LAST_ACTIVITY: '1'},
+                    {controller.ANN_BEACON_AT: str(NOW - 10),
+                     controller.ANN_BUSY: 'false',
+                     controller.ANN_LAST_ACTIVITY: 'ages ago'}):
+            ok, why = controller.should_pause(_ws(), bad, NOW)
+            self.assertFalse(ok, why)
+
+    def test_never_pauses_an_already_stopped_workspace(self):
+        ok, why = controller.should_pause(_ws(desiredReplicas=0), _beacon(), NOW)
+        self.assertFalse(ok)
+        self.assertIn('already stopped', why)
+
+    def test_never_pauses_a_workspace_that_is_not_settled(self):
+        for state in ('transitioning', 'degraded', 'stopped'):
+            ok, why = controller.should_pause(_ws(state=state), _beacon(), NOW)
+            self.assertFalse(ok, f'{state} must not pause')
+
+
+class AutoPauseConfigTest(unittest.TestCase):
+    """Reading the opt-in off the Deployment's annotations."""
+
+    def _dep(self, ann):
+        return {'metadata': {'name': 'ws-octo', 'annotations': ann}}
+
+    def test_absent_annotations_mean_disabled(self):
+        cfg = controller.auto_pause_config({'metadata': {'name': 'ws-octo'}})
+        self.assertFalse(cfg['enabled'])
+
+    def test_reads_enabled_and_threshold(self):
+        cfg = controller.auto_pause_config(self._dep({
+            controller.ANN_AUTO_PAUSE: 'true',
+            controller.ANN_AUTO_PAUSE_IDLE: '45'}))
+        self.assertTrue(cfg['enabled'])
+        self.assertEqual(cfg['idleMinutes'], 45)
+
+    def test_bad_threshold_falls_back_to_the_default(self):
+        for bad in ('nonsense', '0', '-5'):
+            cfg = controller.auto_pause_config(self._dep({
+                controller.ANN_AUTO_PAUSE: 'true',
+                controller.ANN_AUTO_PAUSE_IDLE: bad}))
+            self.assertEqual(cfg['idleMinutes'],
+                             controller.AUTOPAUSE_DEFAULT_IDLE_MINUTES)
+
+
+class AutoPauseValuesEditTest(unittest.TestCase):
+    """values.yaml write-back, so a toggle survives the next reconcile."""
+
+    BLOCK = 'autoPause:\n  enabled: false\n  idleMinutes: 120\n'
+
+    def test_flips_an_existing_block(self):
+        out, changed = controller._swap_auto_pause(self.BLOCK, True, 30)
+        self.assertTrue(changed)
+        self.assertIn('enabled: true', out)
+        self.assertIn('idleMinutes: 30', out)
+
+    def test_appends_the_block_when_missing(self):
+        # Every workspace provisioned before #612 has no autoPause block; the
+        # toggle has to persist for those too or the next reconcile undoes it.
+        out, changed = controller._swap_auto_pause('image:\n  tag: v1\n', True, 60)
+        self.assertTrue(changed)
+        self.assertIn('autoPause:', out)
+        self.assertIn('enabled: true', out)
+        self.assertIn('idleMinutes: 60', out)
+
+    def test_no_change_is_reported_as_no_change(self):
+        # _gitops_edit_values skips the commit entirely when nothing changed.
+        _, changed = controller._swap_auto_pause(self.BLOCK, False, 120)
+        self.assertFalse(changed)
+
+    def test_only_touches_its_own_block(self):
+        content = ('resources:\n  limits:\n    cpu: "2"\n\n' + self.BLOCK +
+                   '\nssh:\n  enabled: true\n')
+        out, changed = controller._swap_auto_pause(content, True, 15)
+        self.assertTrue(changed)
+        self.assertIn('cpu: "2"', out)
+        self.assertIn('ssh:\n  enabled: true', out)
+
+
+class AutoPauseSweepTest(unittest.TestCase):
+    """The fleet sweep: what it scales, and what it must never touch."""
+
+    def setUp(self):
+        self.calls = []
+        self._orig = (controller.list_workspaces, controller._kubectl_run,
+                      controller._pod_beacon, controller._cpu_is_idle,
+                      controller.find_workspace)
+        controller._kubectl_run = lambda args, namespace=None: self.calls.append(
+            (list(args), namespace))
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}'}
+        controller._cpu_is_idle = lambda ns, dep: True
+        controller._pod_beacon = lambda ns, dep: _beacon()
+        controller.list_workspaces = lambda: {'workspaces': [_ws()]}
+
+    def tearDown(self):
+        (controller.list_workspaces, controller._kubectl_run,
+         controller._pod_beacon, controller._cpu_is_idle,
+         controller.find_workspace) = self._orig
+
+    def test_pauses_an_eligible_workspace(self):
+        decisions = controller.autopause_pass(now=NOW)
+        self.assertEqual(len(decisions), 1)
+        self.assertTrue(decisions[0]['paused'], decisions[0]['reason'])
+        verbs = [c[0][0] for c in self.calls]
+        self.assertIn('scale', verbs)
+
+    def test_pausing_never_touches_the_pvc(self):
+        """Criterion 4 — PVC preservation asserted, not assumed.
+
+        Pausing is `kubectl scale` and an annotation patch. Nothing in this
+        path may name a PVC or delete anything: the whole point of pause over
+        teardown is that the home volume survives it.
+        """
+        controller.autopause_pass(now=NOW)
+        self.assertTrue(self.calls)
+        for args, _ns in self.calls:
+            self.assertNotIn('delete', args)
+            flat = ' '.join(args).lower()
+            self.assertNotIn('pvc', flat)
+            self.assertNotIn('persistentvolumeclaim', flat)
+
+    def test_scales_to_zero_not_to_something_else(self):
+        controller.autopause_pass(now=NOW)
+        scale = next(c[0] for c in self.calls if c[0][0] == 'scale')
+        self.assertIn('--replicas=0', scale)
+
+    def test_marks_the_workspace_as_auto_paused(self):
+        controller.autopause_pass(now=NOW)
+        patch = next(c[0] for c in self.calls if c[0][0] == 'patch')
+        body = json.loads(patch[patch.index('-p') + 1])
+        self.assertIn(controller.ANN_AUTO_PAUSED_AT,
+                      body['metadata']['annotations'])
+
+    def test_skips_workspaces_that_did_not_opt_in(self):
+        controller.list_workspaces = lambda: {
+            'workspaces': [_ws(autoPause={'enabled': False, 'idleMinutes': 120})]}
+        decisions = controller.autopause_pass(now=NOW)
+        self.assertEqual(decisions, [])
+        self.assertEqual(self.calls, [])
+
+    def test_unmeasurable_cpu_blocks_the_pause(self):
+        # Prometheus down => we cannot confirm idleness => leave it running.
+        controller._cpu_is_idle = lambda ns, dep: None
+        decisions = controller.autopause_pass(now=NOW)
+        self.assertFalse(decisions[0]['paused'])
+        self.assertEqual(self.calls, [])
+
+    def test_busy_cpu_blocks_the_pause(self):
+        # A compile or dev server left running is invisible to the beacon and
+        # very visible here.
+        controller._cpu_is_idle = lambda ns, dep: False
+        decisions = controller.autopause_pass(now=NOW)
+        self.assertFalse(decisions[0]['paused'])
+        self.assertEqual(self.calls, [])
+
+    def test_one_failing_workspace_does_not_stop_the_sweep(self):
+        controller.list_workspaces = lambda: {
+            'workspaces': [_ws(user='a', deployment='ws-a', namespace='ws-a'),
+                           _ws(user='b', deployment='ws-b', namespace='ws-b')]}
+        boom = {'n': 0}
+
+        def flaky(args, namespace=None):
+            boom['n'] += 1
+            if boom['n'] == 1:
+                raise controller.KubectlError('conflict')
+            self.calls.append((list(args), namespace))
+        controller._kubectl_run = flaky
+        decisions = controller.autopause_pass(now=NOW)
+        self.assertEqual(len(decisions), 2)
+        self.assertTrue(any(d['paused'] for d in decisions))
+
+
+class SetAutoPauseTest(unittest.TestCase):
+    """The per-workspace toggle endpoint's business logic."""
+
+    def setUp(self):
+        controller.GITOPS_REPO = ''        # no write-back in tests
+        self.calls = []
+        self._orig = (controller.find_workspace, controller._kubectl_run)
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}'}
+        controller._kubectl_run = lambda args, namespace=None: self.calls.append(
+            (list(args), namespace))
+
+    def tearDown(self):
+        controller.find_workspace, controller._kubectl_run = self._orig
+
+    def test_enabling_patches_the_deployment_annotations(self):
+        result = controller.set_workspace_auto_pause('octo', True, 45)
+        self.assertEqual(result['autoPause'], {'enabled': True, 'idleMinutes': 45})
+        args, ns = self.calls[0]
+        self.assertEqual(args[0], 'patch')
+        self.assertEqual(args[1], 'deployment/ws-octo')
+        self.assertEqual(ns, 'ws-octo')
+        body = json.loads(args[args.index('-p') + 1])
+        ann = body['metadata']['annotations']
+        self.assertEqual(ann[controller.ANN_AUTO_PAUSE], 'true')
+        self.assertEqual(ann[controller.ANN_AUTO_PAUSE_IDLE], '45')
+
+    def test_toggling_never_rolls_the_pod(self):
+        # The annotation is on the Deployment's own metadata, not the pod
+        # template — restarting a workspace to change a pause policy would
+        # interrupt the very work the policy protects.
+        controller.set_workspace_auto_pause('octo', True, 45)
+        body = json.loads(self.calls[0][0][self.calls[0][0].index('-p') + 1])
+        self.assertNotIn('spec', body)
+
+    def test_rejects_a_nonsense_threshold(self):
+        for bad in ('soon', '-1', '0', '99999999'):
+            with self.assertRaises(ValueError):
+                controller.set_workspace_auto_pause('octo', True, bad)
+
+    def test_rejects_an_invalid_workspace_name(self):
+        with self.assertRaises(ValueError):
+            controller.set_workspace_auto_pause('../etc', True, 60)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -374,7 +374,7 @@ All per-workspace, in the same console:
 
 - **Right-size resources** — **Edit limits** → set CPU / memory. Applying patches the live pod **and** commits the new limits to GitOps, so it's durable across redeploys. Live usage + estimated monthly cost sit right above the control.
 - **Keep them current** — each workspace shows its release and an **update** action; users can also self-update from their own dashboard.
-- **Pause to save spend** — **Stop** scales the pod to zero (PVC preserved); **Start** brings it back unchanged.
+- **Pause to save spend** — **Stop** scales the pod to zero (PVC preserved); **Start** brings it back unchanged. Opt a workspace into **auto-pause** and the controller does it for you once the workspace has been idle, never while a build, chat turn or terminal is live. Waking stays manual — a request to a paused workspace fails until it's started. See [docs/auto-pause.md](docs/auto-pause.md).
 
 #### Automation / break-glass: the CLI
 

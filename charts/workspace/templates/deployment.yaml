@@ -3,8 +3,17 @@ kind: Deployment
 metadata:
   name: ws-{{ .Values.user.name }}
   namespace: {{ .Values.namespace }}
-  labels: 
+  labels:
     app: ws-{{ .Values.user.name }}
+  annotations:
+    # Auto-pause opt-in (#612), read by the controller off the Deployment it
+    # already lists — no extra API call to decide whether a workspace
+    # participates. On the Deployment rather than the pod template on purpose:
+    # changing the policy must not roll the pod (and so must not interrupt the
+    # very work the policy exists to protect). The beacon's busy/last-activity
+    # annotations are the pod's; these two are the operator's.
+    kube-coder.io/auto-pause: {{ .Values.autoPause.enabled | quote }}
+    kube-coder.io/auto-pause-idle-minutes: {{ .Values.autoPause.idleMinutes | quote }}
 spec:
   replicas: 1
   strategy:
@@ -66,6 +75,13 @@ spec:
         # — the entrypoint creates the file after first mint.
         - name: BASH_ENV
           value: /home/dev/.profile.d-github-env
+        # Which pod the activity beacon annotates (#612). The hostname is the
+        # same value on a Deployment pod, but naming it explicitly means the
+        # beacon never depends on that equivalence holding.
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         {{- if eq .Values.build.mode "buildkit" }}
         - name: DOCKER_HOST
           value: "tcp://localhost:2376"

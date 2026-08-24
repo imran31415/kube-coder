@@ -393,6 +393,15 @@ body {
   margin-left: 0.25rem;
 }
 
+/* Auto-paused (#612): stopped BY the controller, not by a person. Amber rather
+   than the grey of `stopped` — it is a state someone may want to undo, and it
+   has to be distinguishable from a workspace that was deliberately turned off. */
+.pill-autopaused {
+  background: rgba(210, 153, 34, 0.16);
+  color: #e3b341;
+  margin-left: 0.25rem;
+}
+
 /* Namespace-isolation badges (#103): teal = migrated to its own namespace,
    amber outline = still in the shared control-plane namespace. */
 .pill-isolated {

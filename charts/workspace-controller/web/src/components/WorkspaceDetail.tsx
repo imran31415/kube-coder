@@ -4,6 +4,7 @@ import {
   type Workspace,
   type WorkspaceMetrics,
   getWorkspaceMetrics,
+  setWorkspaceAutoPause,
   setWorkspaceResources,
   updateWorkspace,
 } from '../api/workspaces';
@@ -156,6 +157,8 @@ export function WorkspaceDetail({ user }: { user: string }) {
             onSaved={() => setReloadKey((k) => k + 1)}
           />
 
+          {ws && <AutoPauseCard ws={ws} onSaved={() => setReloadKey((k) => k + 1)} />}
+
           {ws && <UpdatesCard ws={ws} onUpdated={() => setReloadKey((k) => k + 1)} />}
 
           <div class="detail-foot">
@@ -291,6 +294,97 @@ function ResourceEditor({
         <button class="btn ghost" disabled={saving} onClick={() => setOpen(false)}>
           Cancel
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Auto-pause opt-in for one workspace (#612).
+ *
+ * The wake path is manual, so this is the one control in the console whose
+ * consequence is "this workspace will stop answering requests until someone
+ * presses Start". That is stated here rather than in the docs alone.
+ */
+function AutoPauseCard({ ws, onSaved }: { ws: Workspace; onSaved: () => void }) {
+  const cfg = ws.autoPause;
+  const [enabled, setEnabled] = useState(!!cfg?.enabled);
+  const [minutes, setMinutes] = useState(String(cfg?.idleMinutes ?? 120));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const dirty = enabled !== !!cfg?.enabled || minutes !== String(cfg?.idleMinutes ?? 120);
+
+  async function save() {
+    const mins = Number(minutes);
+    if (!Number.isFinite(mins) || mins <= 0) {
+      setErr('Idle threshold must be a positive number of minutes.');
+      return;
+    }
+    if (
+      enabled &&
+      !window.confirm(
+        `Auto-pause ${ws.user} after ${mins} minutes idle?\n\n` +
+          `Its pod is scaled to 0 and the home volume is kept. Waking is manual — ` +
+          `requests to a paused workspace fail until someone presses Start.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      await setWorkspaceAutoPause(ws.user, enabled, mins);
+      setDone(true);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div class="res-editor">
+      <div class="res-editor-fields">
+        <label class="field">
+          <span class="field-label">Auto-pause when idle</span>
+          <input
+            type="checkbox"
+            checked={enabled}
+            aria-label="Auto-pause when idle"
+            onChange={(e) => {
+              setEnabled((e.target as HTMLInputElement).checked);
+              setDone(false);
+            }}
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">Idle threshold (minutes)</span>
+          <input
+            class="input"
+            value={minutes}
+            disabled={!enabled}
+            placeholder="120"
+            onInput={(e) => {
+              setMinutes((e.target as HTMLInputElement).value);
+              setDone(false);
+            }}
+          />
+        </label>
+      </div>
+      {err && <div class="banner err">{err}</div>}
+      <p class="sub">
+        A paused workspace keeps its home volume — only compute stops. It is never paused while a
+        build is running, a chat turn is in flight, or a terminal is attached.{' '}
+        <strong>Waking is manual:</strong> requests to a paused workspace fail until it is started.
+      </p>
+      <div class="res-editor-actions">
+        <button class="btn start" disabled={saving || !dirty} onClick={save}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {done && !dirty && <span class="res-edit-note">Auto-pause updated.</span>}
       </div>
     </div>
   );

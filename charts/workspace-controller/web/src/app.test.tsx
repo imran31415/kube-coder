@@ -140,6 +140,52 @@ describe('WorkspaceList state filter (#547)', () => {
     expect(stopped).toEqual([]);
   });
 
+  it('badges an auto-paused workspace so it reads as parked, not turned off (#612)', async () => {
+    rows = [
+      ws('bob', 'stopped', {
+        autoPause: { enabled: true, idleMinutes: 120, autoPausedAt: 1_000_000 },
+      }),
+      ws('dave', 'stopped'),
+    ];
+    workspaces.value = rows;
+    render(<App />);
+    await waitFor(() => expect(chip('Stopped (2)')).toBeInTheDocument());
+    fireEvent.click(chip('Stopped (2)'));
+
+    expect(within(rowFor('bob')).getByText('auto-paused')).toBeInTheDocument();
+    // dave was stopped by a person — it must not claim the controller did it.
+    expect(within(rowFor('dave')).queryByText('auto-paused')).toBeNull();
+  });
+
+  it('an opted-in workspace that is still running is not badged as paused', async () => {
+    rows = [
+      ws('alice', 'running', {
+        autoPause: { enabled: true, idleMinutes: 120, autoPausedAt: null },
+      }),
+    ];
+    workspaces.value = rows;
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+
+    expect(within(rowFor('alice')).queryByText('auto-paused')).toBeNull();
+  });
+
+  it('an auto-paused workspace is still startable from the list', async () => {
+    // Criterion 5: the way back has to be obvious and has to work.
+    rows = [
+      ws('bob', 'stopped', {
+        autoPause: { enabled: true, idleMinutes: 120, autoPausedAt: 1_000_000 },
+      }),
+    ];
+    workspaces.value = rows;
+    render(<App />);
+    await waitFor(() => expect(chip('Stopped (1)')).toBeInTheDocument());
+    fireEvent.click(chip('Stopped (1)'));
+
+    fireEvent.click(within(rowFor('bob')).getByRole('button', { name: 'Start' }));
+    await waitFor(() => expect(started).toEqual(['bob']));
+  });
+
   it('counts are faceted: search and namespace chips narrow them, the state chip does not', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());

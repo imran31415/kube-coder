@@ -309,6 +309,10 @@ def _ws_item(dep):
         'image': image,
         'imageTag': image_tag,
         'version': version,
+        # Auto-pause opt-in + whether THIS controller was what stopped it
+        # (#612). Read from the Deployment's own annotations, so the fleet
+        # listing stays one deployments read per namespace — no pod query.
+        'autoPause': auto_pause_config(dep),
     }
 
 
@@ -396,6 +400,285 @@ def scale_workspace(user, replicas):
                  namespace=ws['namespace'])
     invalidate_workspaces_cache()   # reflect start/stop on the next console poll
     return name
+
+
+# --- Auto-pause (#612) -------------------------------------------------------
+#
+# An idle workspace is the dominant waste in a multi-tenant deployment. Every
+# mechanical piece already existed — scale_workspace() above turns a workspace
+# off while preserving the PVC, the console shows `stopped`, and the insights
+# pass already NOTICES idleness and prices it. All that was missing was acting
+# on it, which is policy, and policy here is almost entirely about safety.
+#
+# Scaling a busy workspace to 0 destroys a running agent's work, which is
+# strictly worse than leaving a pod idle. The controller cannot see busyness on
+# its own: it reads Prometheus (cadvisor / kube-state-metrics) and never talks
+# to a workspace, and CPU cannot distinguish an idle workspace from an agent
+# parked at a permission prompt — that one burns no CPU and must never be
+# paused. So the workspace publishes the answer itself, onto its own pod's
+# annotations (server.py: ActivityBeacon), and this reads it back.
+#
+# Every rule below fails CLOSED: unknown, unparseable, missing or stale inputs
+# all mean "do not pause". Not pausing costs cents; pausing a working agent
+# costs the user their run.
+
+# Fleet kill switch. Per-workspace opt-in is off by default anyway, so this
+# stays on and operators enable individual workspaces.
+AUTOPAUSE_ENABLED = os.environ.get('AUTOPAUSE_ENABLED', 'true').strip().lower() \
+    not in ('0', 'false', 'no', 'off')
+AUTOPAUSE_INTERVAL = float(os.environ.get('AUTOPAUSE_INTERVAL_SECONDS', '300'))
+# How old a beacon may be and still be believed. Must comfortably exceed the
+# workspace's publish interval (KC_BEACON_INTERVAL, default 30s) so ordinary
+# scheduling jitter never reads as a dead beacon.
+AUTOPAUSE_BEACON_MAX_AGE = float(os.environ.get('AUTOPAUSE_BEACON_MAX_AGE_SECONDS', '300'))
+# Used when a workspace opted in without naming its own threshold.
+AUTOPAUSE_DEFAULT_IDLE_MINUTES = float(
+    os.environ.get('AUTOPAUSE_DEFAULT_IDLE_MINUTES', '120'))
+
+# Written by the workspace chart onto the Deployment (the operator's intent).
+ANN_AUTO_PAUSE = 'kube-coder.io/auto-pause'
+ANN_AUTO_PAUSE_IDLE = 'kube-coder.io/auto-pause-idle-minutes'
+# Written by this controller onto the Deployment when it pauses one, so the
+# console can tell an auto-pause from someone pressing Stop.
+ANN_AUTO_PAUSED_AT = 'kube-coder.io/auto-paused-at'
+# Written by the workspace onto its own pod (server.py: ActivityBeacon).
+ANN_BUSY = 'kube-coder.io/busy'
+ANN_LAST_ACTIVITY = 'kube-coder.io/last-activity'
+ANN_BEACON_AT = 'kube-coder.io/beacon-at'
+
+
+def _ann_float(value):
+    """An annotation value → float, or None. Annotations are free-form strings
+    that anyone with edit rights can set to anything, so every read of one has
+    to survive garbage without deciding to scale a workspace to zero."""
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _ann_bool(value, default=False):
+    v = str(value).strip().lower()
+    if v in ('1', 'true', 'yes', 'on'):
+        return True
+    if v in ('0', 'false', 'no', 'off'):
+        return False
+    return default
+
+
+def auto_pause_config(dep):
+    """The workspace's opt-in, read off its Deployment annotations."""
+    ann = (dep.get('metadata', {}) or {}).get('annotations', {}) or {}
+    idle = _ann_float(ann.get(ANN_AUTO_PAUSE_IDLE))
+    if idle is None or idle <= 0:
+        idle = AUTOPAUSE_DEFAULT_IDLE_MINUTES
+    return {
+        'enabled': _ann_bool(ann.get(ANN_AUTO_PAUSE), False),
+        'idleMinutes': idle,
+        'autoPausedAt': _ann_float(ann.get(ANN_AUTO_PAUSED_AT)),
+    }
+
+
+def should_pause(ws, beacon, now, beacon_max_age=None):
+    """Decide whether ONE workspace may be auto-paused. Returns (bool, reason).
+
+    Pure — every input is a plain dict — so the entire policy is table-testable
+    without a cluster, which matters for a decision whose failure mode is
+    destroying someone's work.
+
+    `ws` is a _ws_item(); `beacon` is the pod's annotation map (or None when
+    there is no pod, or no beacon on it). `reason` is the audit trail: why it
+    paused, or precisely why it declined.
+    """
+    max_age = AUTOPAUSE_BEACON_MAX_AGE if beacon_max_age is None else beacon_max_age
+    cfg = ws.get('autoPause') or {}
+
+    if not cfg.get('enabled'):
+        return False, 'not opted in'
+    if (ws.get('desiredReplicas') or 0) == 0:
+        return False, 'already stopped'
+    # Only ever pause a settled, healthy workspace. Pausing something mid-roll
+    # or already degraded turns one problem into two, and the state is about to
+    # change anyway.
+    if ws.get('state') != 'running':
+        return False, f"state is {ws.get('state')!r}, not running"
+
+    if not beacon:
+        return False, 'no activity beacon (older image, or no pod)'
+
+    beacon_at = _ann_float(beacon.get(ANN_BEACON_AT))
+    if beacon_at is None:
+        return False, 'beacon has no readable timestamp'
+    age = now - beacon_at
+    if age > max_age:
+        return False, f'beacon is stale ({int(age)}s old, max {int(max_age)}s)'
+
+    # Anything that is not literally "false" counts as busy — including a value
+    # we do not recognise. The default has to be the one that preserves work.
+    if str(beacon.get(ANN_BUSY, '')).strip().lower() != 'false':
+        return False, 'workspace reports busy'
+
+    last = _ann_float(beacon.get(ANN_LAST_ACTIVITY))
+    if last is None:
+        return False, 'beacon has no readable last-activity'
+
+    idle_for = now - last
+    threshold = float(cfg.get('idleMinutes') or AUTOPAUSE_DEFAULT_IDLE_MINUTES) * 60.0
+    if idle_for < threshold:
+        return False, f'idle {int(idle_for)}s < threshold {int(threshold)}s'
+
+    return True, f'idle {int(idle_for)}s >= threshold {int(threshold)}s'
+
+
+def _pod_beacon(namespace, deployment):
+    """Annotations of the workspace's pod, or None. Deliberately NOT part of
+    _ws_item: that runs on the console's poll path, where an all-namespace pod
+    read previously stacked enough JSON to OOM this pod. This is called only
+    from the auto-pause pass, once per opted-in workspace, every few minutes."""
+    try:
+        out = _kubectl_json(['get', 'pods', '-l', f'app={deployment}'],
+                            namespace=namespace)
+    except KubectlError:
+        return None
+    for pod in (out.get('items') or []):
+        meta = pod.get('metadata', {}) or {}
+        ann = meta.get('annotations', {}) or {}
+        if ANN_BEACON_AT in ann:
+            return ann
+    return None
+
+
+def _cpu_is_idle(namespace, deployment):
+    """Second opinion from Prometheus: True only if measured CPU is under the
+    idle threshold. None when it cannot be measured.
+
+    The beacon knows about Builds, chat turns and terminals — it does NOT know
+    about a dev server or a compile someone left running in a detached tmux.
+    That work is invisible to every other signal here and very visible in CPU,
+    so this is the check that catches it. An unmeasurable answer blocks the
+    pause rather than allowing it."""
+    pod_re = f'{deployment}-.*'
+    expr = (f'sum(avg by (pod, container) (rate(container_cpu_usage_seconds_total'
+            f'{{namespace="{namespace}",pod=~"{pod_re}",container!=""}}[5m])))')
+    try:
+        cores = prom_scalar(expr)
+    except PromError:
+        return None
+    if cores is None:
+        return None
+    return cores < INSIGHTS_IDLE_CPU_CORES
+
+
+def _mark_auto_paused(namespace, deployment, when):
+    """Record that WE paused this one, so the console can distinguish it from a
+    workspace someone stopped by hand — and so a manual Start can clear it."""
+    patch = json.dumps({'metadata': {'annotations': {
+        ANN_AUTO_PAUSED_AT: f'{when:.0f}'}}})
+    _kubectl_run(['patch', f'deployment/{deployment}', '--type=merge', '-p', patch],
+                 namespace=namespace)
+
+
+def clear_auto_paused(user):
+    """Drop the auto-paused marker. Called when a workspace is started, so a
+    workspace resumed by hand stops being labelled 'paused automatically'.
+    Best-effort: never block a start on bookkeeping."""
+    try:
+        ws = find_workspace(user)
+    except (LookupError, ValueError):
+        return
+    patch = json.dumps({'metadata': {'annotations': {ANN_AUTO_PAUSED_AT: None}}})
+    try:
+        _kubectl_run(['patch', f'deployment/{ws["deployment"]}', '--type=merge',
+                      '-p', patch], namespace=ws['namespace'])
+    except KubectlError as exc:
+        sys.stderr.write(f'[autopause] clearing marker for {user} failed: {exc}\n')
+
+
+def autopause_pass(now=None):
+    """One sweep of the fleet. Returns a list of per-workspace decisions —
+    returned rather than only logged so the pass is testable and so a future
+    endpoint can show an operator why a workspace did or did not pause."""
+    now = time.time() if now is None else now
+    decisions = []
+    try:
+        listing = list_workspaces()
+    except Exception as exc:
+        sys.stderr.write(f'[autopause] listing failed: {exc}\n')
+        return decisions
+
+    for ws in listing.get('workspaces', []):
+        cfg = ws.get('autoPause') or {}
+        if not cfg.get('enabled'):
+            continue                      # keep the log about opted-in workspaces
+        beacon = _pod_beacon(ws['namespace'], ws['deployment'])
+        ok, reason = should_pause(ws, beacon, now)
+        if ok:
+            # Only now spend a Prometheus query — the cheap local checks have
+            # already ruled out everything else.
+            cpu_idle = _cpu_is_idle(ws['namespace'], ws['deployment'])
+            if cpu_idle is not True:
+                ok, reason = False, ('cpu not measurably idle' if cpu_idle is None
+                                     else 'cpu above idle threshold')
+        decisions.append({'user': ws['user'], 'paused': False, 'reason': reason})
+        if not ok:
+            continue
+        try:
+            scale_workspace(ws['user'], 0)
+            _mark_auto_paused(ws['namespace'], ws['deployment'], now)
+            decisions[-1]['paused'] = True
+            sys.stderr.write(f'[autopause] paused {ws["user"]}: {reason}\n')
+        except (KubectlError, LookupError, ValueError) as exc:
+            decisions[-1]['reason'] = f'pause failed: {exc}'
+            sys.stderr.write(f'[autopause] pausing {ws["user"]} failed: {exc}\n')
+    return decisions
+
+
+class AutoPauser:
+    """Background sweep. The controller is otherwise entirely request-driven —
+    it computes advisories only when the console asks — but auto-pause has to
+    happen whether or not anyone is looking at it."""
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _start_lock = threading.Lock()
+    _last_run_at = 0.0
+    _last_decisions = []
+
+    @classmethod
+    def start(cls, *, interval_seconds=None):
+        interval = AUTOPAUSE_INTERVAL if interval_seconds is None else interval_seconds
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            while not cls._stop_event.is_set():
+                # Wait FIRST. Nothing should be scaled to zero in the first
+                # moments after a controller restart, while the fleet listing
+                # and Prometheus are both cold — a restart must never be a way
+                # to pause the fleet.
+                cls._stop_event.wait(interval)
+                if cls._stop_event.is_set():
+                    break
+                try:
+                    cls._last_decisions = autopause_pass()
+                    cls._last_run_at = time.time()
+                except Exception as exc:
+                    sys.stderr.write(f'[autopause] pass failed: {exc}\n')
+
+        t = threading.Thread(target=_loop, name='auto-pauser', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def status(cls):
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'lastRunAt': cls._last_run_at or None,
+            'lastDecisions': cls._last_decisions,
+        }
 
 
 # --- Resource limits ---------------------------------------------------------
@@ -733,6 +1016,112 @@ def gitops_update_resources(slug, limits):
     summary = ', '.join(f'{k}={v}' for k, v in limits.items())
     return _gitops_edit_values(slug, lambda c: _swap_resource_limits(c, limits),
                                f'update {slug} resource limits ({summary})')
+
+
+def _swap_auto_pause(content, enabled, idle_minutes):
+    """Set autoPause.enabled / .idleMinutes in a values.yaml body, appending the
+    block when it isn't there yet. Returns (new_content, changed).
+
+    Appending matters: every workspace provisioned before #612 has a values.yaml
+    with no autoPause block at all, and an operator toggling auto-pause on one of
+    those must persist — otherwise the next reconcile silently turns it back off
+    and the console would be lying about the setting. Line/regex based, matching
+    _swap_resource_limits — no YAML dependency in this path.
+    """
+    desired = {'enabled': 'true' if enabled else 'false',
+               'idleMinutes': f'{int(idle_minutes)}'}
+    m = re.search(r'(?m)^autoPause:[ \t]*$', content)
+    if not m:
+        block = ('\n# Auto-pause an idle workspace (#612): scale to 0, keep the PVC.\n'
+                 '# Wake is manual — press Start in the console.\n'
+                 'autoPause:\n'
+                 f'  enabled: {desired["enabled"]}\n'
+                 f'  idleMinutes: {desired["idleMinutes"]}\n')
+        sep = '' if content.endswith('\n') else '\n'
+        return content + sep + block, True
+
+    nl = content.find('\n', m.end())
+    if nl == -1:
+        return content, False
+    body_start = nl + 1
+    i = body_start
+    while i < len(content):
+        end = content.find('\n', i)
+        end = len(content) if end == -1 else end + 1
+        line = content[i:end]
+        if line.strip() != '':
+            indent = len(line) - len(line.lstrip(' \t'))
+            if indent == 0:                  # dedent → autoPause block ended
+                break
+        i = end
+    body = content[body_start:i]
+    new_body, changed = body, False
+    for key, value in desired.items():
+        pattern = re.compile(rf'(?m)^([ \t]+{key}:[ \t]*)(.*)$')
+        km = pattern.search(new_body)
+        if km:
+            if km.group(2).strip() != value:
+                new_body = pattern.sub(lambda mm: f'{mm.group(1)}{value}', new_body, count=1)
+                changed = True
+        else:                                # partial block — add the missing key
+            new_body = new_body + f'  {key}: {value}\n'
+            changed = True
+    if not changed:
+        return content, False
+    return content[:body_start] + new_body + content[i:], True
+
+
+def gitops_update_auto_pause(slug, enabled, idle_minutes):
+    """Persist an auto-pause toggle to the user's values.yaml. Returns True iff
+    pushed."""
+    state = 'on' if enabled else 'off'
+    return _gitops_edit_values(
+        slug, lambda c: _swap_auto_pause(c, enabled, idle_minutes),
+        f'turn auto-pause {state} for {slug} (idle {int(idle_minutes)}m)')
+
+
+def set_workspace_auto_pause(user, enabled, idle_minutes=None, persist=True):
+    """Turn auto-pause on/off for one workspace.
+
+    Same dual write as set_workspace_resources: patch the live Deployment so the
+    change takes effect on the next sweep, AND commit it to the user's
+    values.yaml so the next reconcile doesn't undo it. The annotation goes on
+    the Deployment's metadata, not its pod template, so changing the policy
+    never rolls the pod — restarting a workspace to tell it it might be paused
+    later would be its own small outage.
+    """
+    if not _USER_RE.match(user):
+        raise ValueError('invalid workspace name')
+    enabled = bool(enabled)
+    if idle_minutes in (None, ''):
+        idle = AUTOPAUSE_DEFAULT_IDLE_MINUTES
+    else:
+        parsed = _ann_float(idle_minutes)
+        if parsed is None or parsed <= 0:
+            raise ValueError('idleMinutes must be a positive number')
+        if parsed > 43200:                   # 30 days — a typo, not a policy
+            raise ValueError('idleMinutes exceeds max 43200 (30 days)')
+        idle = parsed
+
+    ws = find_workspace(user)
+    patch = json.dumps({'metadata': {'annotations': {
+        ANN_AUTO_PAUSE: 'true' if enabled else 'false',
+        ANN_AUTO_PAUSE_IDLE: f'{int(idle)}',
+    }}})
+    _kubectl_run(['patch', f"deployment/{ws['deployment']}", '--type=merge', '-p', patch],
+                 namespace=ws['namespace'])
+
+    persisted = False
+    persist_error = None
+    if persist and GITOPS_REPO and GITOPS_TOKEN:
+        try:
+            persisted = gitops_update_auto_pause(user, enabled, idle)
+        except (ProvisionError, GithubError) as exc:
+            persist_error = str(exc)
+            sys.stderr.write(f'[controller] gitops auto-pause update {user} failed: {exc}\n')
+    invalidate_workspaces_cache()
+    return {'user': user, 'autoPause': {'enabled': enabled, 'idleMinutes': idle},
+            'persisted': persisted, 'persistError': persist_error}
 
 
 def set_workspace_image(user, target_version=None, persist=True):
@@ -2400,6 +2789,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'ok': True, 'user': user, 'limits': result['limits'],
                             'persisted': result['persisted'], 'persistError': result['persistError']})
             return
+        # Auto-pause opt-in for one workspace (#612).
+        am = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/auto-pause$', path)
+        if am:
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            user = am.group(1)
+            try:
+                body = self.read_json_body()
+                result = set_workspace_auto_pause(
+                    user, body.get('enabled'), body.get('idleMinutes'))
+            except ValueError as exc:
+                self.send_json({'error': str(exc)}, 400)
+                return
+            except LookupError:
+                self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
+                return
+            except KubectlError as exc:
+                sys.stderr.write(f'[controller] set auto-pause {user}: {exc}: {exc.stderr}\n')
+                self.send_json({'error': str(exc)}, 502)
+                return
+            self.send_json({'ok': True, **result})
+            return
         # Restart-and-update: repoint the workspace at a release version (latest
         # by default). Admin route (oauth2-gated) and the workspace-brokered
         # self-serve route (shared-token-gated) share one handler.
@@ -2468,6 +2880,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             self.read_json_body()  # drain body if any; we don't need it
             scale_workspace(user, replicas)
+            if action == 'start':
+                # Started by hand — it is no longer "paused automatically".
+                clear_auto_paused(user)
         except ValueError:
             self.send_json({'error': 'invalid workspace name'}, 400)
             return
@@ -2537,6 +2952,16 @@ def main():
                   file=sys.stderr)
     else:
         print('[controller] self-serve disabled (SELF_SERVE_TOKEN unset)', file=sys.stderr)
+
+    # Auto-pause sweep (#612). Opt-in is per workspace and off by default, so
+    # starting the sweep here changes nothing until an operator enables it on a
+    # specific workspace.
+    if AUTOPAUSE_ENABLED:
+        AutoPauser.start()
+        print(f'[controller] auto-pause sweep every {AUTOPAUSE_INTERVAL:.0f}s '
+              f'(per-workspace opt-in)', file=sys.stderr)
+    else:
+        print('[controller] auto-pause disabled (AUTOPAUSE_ENABLED)', file=sys.stderr)
 
     httpd = http.server.ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
     print(f'[controller] listening on 0.0.0.0:{PORT}', file=sys.stderr)

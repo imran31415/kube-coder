@@ -16540,6 +16540,10 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         m = re.match(r'^/api/terminal-proxy(/.*)?$', claude_path)
         if not m:
             return False
+        # Someone is using a terminal — keep auto-pause off this workspace
+        # (#612). tmux clients are the primary signal; this covers the window
+        # between a proxied request and ttyd actually attaching.
+        ActivityBeacon.note_terminal_activity()
         upstream_path = m.group(1) or '/'
         qs = self.path.split('?', 1)
         if len(qs) == 2:
@@ -18399,6 +18403,250 @@ class EventBroker:
         return event
 
 
+class ActivityBeacon:
+    """Publish this workspace's activity onto its own pod's annotations, so the
+    controller can auto-pause an idle workspace without destroying work (#612).
+
+    The controller reads Prometheus (cadvisor / kube-state-metrics) and never
+    talks to a workspace, so CPU usage is all it can see — and CPU cannot tell
+    an idle workspace from an agent parked at a permission prompt, which burns
+    almost no CPU and must never be paused. This process already knows the
+    difference, so it writes the answer where the controller is already
+    looking: the pod object it lists anyway. No new API, no new credential.
+
+    Three annotations, all on our own pod:
+
+        kube-coder.io/busy           "true"/"false" — pausing now would lose work
+        kube-coder.io/last-activity  unix seconds of the most recent activity
+        kube-coder.io/beacon-at      unix seconds of this write
+
+    `beacon-at` is the freshness proof, and it is the reason the whole scheme is
+    safe. The controller treats a missing, unparseable or stale beacon as BUSY,
+    so a workspace on an older image (no beacon at all), or one whose thread has
+    died, is simply never auto-paused. Failing closed is the only defensible
+    direction here: not pausing costs a few cents of idle compute, pausing a
+    working agent costs the user their run.
+    """
+
+    BUSY_ANNOTATION = 'kube-coder.io/busy'
+    LAST_ACTIVITY_ANNOTATION = 'kube-coder.io/last-activity'
+    BEACON_AT_ANNOTATION = 'kube-coder.io/beacon-at'
+
+    #: A terminal counts as attached for this long after its last proxied byte.
+    #: ttyd traffic is bursty — someone reading output sends nothing at all — so
+    #: the window has to outlast a pause in typing, not just the last keystroke.
+    TERMINAL_WINDOW_SECONDS = 600.0
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _start_lock = threading.Lock()
+    _lock = threading.Lock()
+    _terminal_at = 0.0
+    _last_run_at = 0.0
+    _last_error = None
+    _last_state = None
+    #: Boot floors last-activity. A workspace that has never run a Build has no
+    #: activity timestamps at all, and "no timestamp" must not read as "idle
+    #: since the epoch" — that would pause a freshly started workspace the
+    #: moment someone opted it in, which is precisely when they want to use it.
+    _started_at = time.time()
+
+    @classmethod
+    def note_terminal_activity(cls):
+        """Stamp 'a terminal is in use'. Called from the ttyd proxy on every
+        request and websocket upgrade, so it must stay this cheap."""
+        with cls._lock:
+            cls._terminal_at = time.time()
+
+    @classmethod
+    def terminal_at(cls):
+        with cls._lock:
+            return cls._terminal_at
+
+    @staticmethod
+    def _ts(value):
+        """Any stored timestamp → float unix seconds, or 0.0. Task and thread
+        metadata are written with time.time(), but a hand-edited or truncated
+        file must degrade to "no timestamp" rather than raise mid-sweep."""
+        try:
+            ts = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return ts if ts > 0 else 0.0
+
+    # ── activity sources ────────────────────────────────────────────────────
+
+    @classmethod
+    def _build_activity(cls):
+        """(a Build is live, newest Build timestamp) across every task on this
+        pod. Reuses ClaudeTaskManager._LIVE_STATUSES so 'busy' means exactly
+        what the rest of the server means by it — including waiting-for-input,
+        which is the case CPU alone gets wrong."""
+        live, last = False, 0.0
+        try:
+            metas = ProjectsManager._scan_task_metas()
+        except Exception as e:
+            # Unreadable tasks dir: report busy. We cannot prove it is idle,
+            # and the fail-closed direction is not pausing.
+            print(f'[beacon] task scan failed: {e}', file=sys.stderr)
+            return True, time.time()
+        for meta in metas:
+            if not isinstance(meta, dict):
+                continue
+            if meta.get('status') in ClaudeTaskManager._LIVE_STATUSES:
+                live = True
+            for key in ('last_activity_at', 'finished_at', 'created_at'):
+                last = max(last, cls._ts(meta.get(key)))
+        return live, last
+
+    @classmethod
+    def _hypervisor_activity(cls):
+        """(a chat turn is in flight, newest chat timestamp). A thread meta
+        status of 'running' is a live turn — stale ones are repaired at boot by
+        reconcile_stale_running_threads(), so after startup 'running' is real."""
+        if not _HYPERVISOR_AVAILABLE or HypervisorSession is None:
+            return False, 0.0
+        live, last = False, 0.0
+        try:
+            tids = os.listdir(HYPERVISOR_DIR)
+        except OSError:
+            return live, last
+        for tid in tids:
+            try:
+                session = HypervisorSession.get(tid)
+                meta = session.read_meta() if session else None
+            except Exception:
+                continue            # one malformed thread must not blind the sweep
+            if not meta:
+                continue
+            if meta.get('status') == 'running':
+                live = True
+            last = max(last, cls._ts(meta.get('updated_at')))
+        return live, last
+
+    @classmethod
+    def _terminal_attached(cls):
+        """True while a browser actually has a terminal open.
+
+        The web terminal at /terminal is routed by the ingress **straight to
+        ttyd:7681** and never passes through this process, so the proxy stamp
+        in note_terminal_activity() cannot see it. What both the web route and
+        the mobile /api/terminal-proxy route do have in common is that ttyd
+        attaches a tmux client — and Build sessions are created detached
+        (`tmux new-session -d`), so they can never look like an attached
+        terminal. A missing tmux, or no server running at all, reads as not
+        attached; the Build and Hypervisor checks still cover real work."""
+        try:
+            r = subprocess.run(['tmux', 'list-clients', '-F', '#{client_name}'],
+                               capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if r.returncode != 0:
+            return False
+        return any(line.strip() for line in r.stdout.splitlines())
+
+    @classmethod
+    def compute(cls, now=None):
+        """Current activity as {'busy', 'last_activity', 'reasons'}.
+
+        Pure with respect to Kubernetes — it only reads local state — so the
+        whole busy decision is unit-testable without a cluster."""
+        now = float(now if now is not None else time.time())
+        reasons = []
+
+        build_live, build_ts = cls._build_activity()
+        if build_live:
+            reasons.append('build')
+
+        hv_live, hv_ts = cls._hypervisor_activity()
+        if hv_live:
+            reasons.append('hypervisor')
+
+        term_ts = cls.terminal_at()
+        if cls._terminal_attached():
+            term_ts = now
+        if term_ts and (now - term_ts) <= cls.TERMINAL_WINDOW_SECONDS:
+            reasons.append('terminal')
+
+        return {
+            'busy': bool(reasons),
+            'last_activity': max(build_ts, hv_ts, term_ts, cls._started_at),
+            'reasons': reasons,
+        }
+
+    # ── publication ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def pod_name():
+        """Our own pod's name. POD_NAME comes from the downward API; the
+        hostname fallback is the same value on a Deployment pod (which sets no
+        spec.hostname), and keeps this working if the env var is ever dropped."""
+        return os.environ.get('POD_NAME') or socket.gethostname()
+
+    @classmethod
+    def publish(cls, state, now=None):
+        """Write `state` onto our pod. Raises on failure so the caller logs it
+        and the annotation goes stale — which the controller reads as busy."""
+        now = float(now if now is not None else time.time())
+        annotations = {
+            cls.BUSY_ANNOTATION: 'true' if state['busy'] else 'false',
+            cls.LAST_ACTIVITY_ANNOTATION: f"{state['last_activity']:.0f}",
+            cls.BEACON_AT_ANNOTATION: f'{now:.0f}',
+        }
+        patch = json.dumps({'metadata': {'annotations': annotations}})
+        result = subprocess.run(
+            ['kubectl', 'patch', 'pod', cls.pod_name(),
+             '-n', CronManager.detect_namespace(), '--type=merge', '-p', patch],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout
+                                or 'kubectl patch failed').strip())
+        return annotations
+
+    @classmethod
+    def start(cls, *, interval_seconds=30):
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            while not cls._stop_event.is_set():
+                try:
+                    state = cls.compute()
+                    cls.publish(state)
+                    cls._last_state = state
+                    cls._last_error = None
+                    cls._last_run_at = time.time()
+                except Exception as e:
+                    # Never fatal. A workspace with no RBAC to patch its pod, or
+                    # no kubectl at all (local dev), just stops publishing — and
+                    # a workspace the controller cannot read is never paused.
+                    # Log only when the error CHANGES: a permanently missing RBAC
+                    # grant would otherwise print every interval forever and bury
+                    # everything else in the pod log.
+                    message = str(e)
+                    if message != cls._last_error:
+                        print(f'[beacon] publish failed: {message}', file=sys.stderr)
+                    cls._last_error = message
+                cls._stop_event.wait(interval_seconds)
+
+        t = threading.Thread(target=_loop, name='activity-beacon', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def status(cls):
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'last_run_at': cls._last_run_at or None,
+            'last_error': cls._last_error,
+            'state': cls._last_state,
+        }
+
+
 class TaskReconciler:
     """Single-process background poller that reconciles non-terminal task
     status on an interval, so completion hooks fire and finished_at /
@@ -18652,6 +18900,21 @@ if __name__ == "__main__":
         print(f'[tasks] background reconciler started ({_reconcile_interval}s)')
     except Exception as e:
         print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
+
+    # Activity beacon: stamps busy / last-activity onto this pod's annotations
+    # so the controller can auto-pause an idle workspace without killing a live
+    # Build, chat turn or terminal (#612). Opt-in is decided controller-side;
+    # the beacon publishes unconditionally so that enabling auto-pause later
+    # does not have to wait for a pod restart to get a fresh signal.
+    try:
+        _beacon_interval = int(os.environ.get('KC_BEACON_INTERVAL', '30'))
+    except (TypeError, ValueError):
+        _beacon_interval = 30
+    try:
+        ActivityBeacon.start(interval_seconds=_beacon_interval)
+        print(f'[beacon] activity beacon started ({_beacon_interval}s)')
+    except Exception as e:
+        print(f'[beacon] start failed: {e}', file=sys.stderr)
 
     # Board run orphan sweep (#588 Phase 4). A run whose process died is
     # DEFINITIVELY stale at boot — no worker of a previous process can still be

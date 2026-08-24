@@ -198,6 +198,26 @@ resources:
     cpu: "2"
     memory: 4Gi
 
+# Auto-pause an idle workspace: scale the pod to 0 and keep the PVC (#612).
+# The PVC — the expensive part to retain — is untouched, so pausing only stops
+# paying for compute. Off by default: pausing is safe but not free, because the
+# wake path is manual (see below), and nothing should start switching off a
+# tenant's workspace because they upgraded the chart.
+#
+# The controller runs the policy. It pauses only when the workspace's own
+# activity beacon says it is not busy — no live Build, no Hypervisor turn, no
+# attached terminal — AND the beacon is fresh. A stale or missing beacon counts
+# as busy, so a workspace whose beacon has died is never paused.
+#
+# WAKE IS MANUAL: a request to a paused workspace FAILS until someone presses
+# Start in the console. There is no wake-on-request; see docs/auto-pause.md.
+autoPause:
+  enabled: false
+  # Minutes of no activity before the controller pauses the workspace.
+  # Deliberately separate from the console's 6h "idle" advisory window — that
+  # one decides when to *tell* an operator, this one decides when to *act*.
+  idleMinutes: 120
+
 # Per-namespace ResourceQuota + LimitRange (see templates/resourcequota.yaml).
 # Now that each workspace owns its namespace, the quota bounds a single tenant
 # instead of a shared pool.
