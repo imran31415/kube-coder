@@ -137,9 +137,37 @@ class _FakeWorker:
         return {'running': cls.running}
 
 
+class _FakeBoards:
+    """One board with real traffic, so the board collector actually renders.
+
+    Boards were the one section `stubbed()` did not cover, so board series came
+    from whatever the machine happened to have configured. On a CI runner that
+    is nothing, so the cardinality rules below were never applied to board
+    metrics at all — and the `board`/`disposition`/`decision` labels went
+    unnoticed for a whole phase. On a workspace with real boards the same test
+    failed. A fixture makes both machines see the same thing, and makes the
+    board labels something the rules are actually checked against.
+    """
+
+    @classmethod
+    def board_ids(cls):
+        return ['acme-jira']
+
+    @classmethod
+    def for_board(cls, board_id):
+        return {
+            'board_id': board_id,
+            'dispositions': {'completed': 3, 'needs_review': 1},
+            'decisions': {'approved': 2, 'rejected': 1},
+            'approval_rate': 0.667,
+            'decided': 3,
+            'open': 4,
+        }
+
+
 @contextlib.contextmanager
 def stubbed(metas=None, hypervisor=_FakeHypervisor, memory=_FakeMemory,
-            worker=_FakeWorker):
+            worker=_FakeWorker, boards=_FakeBoards):
     """Point the collector at fixtures instead of the live workspace."""
     metas = TASK_METAS if metas is None else metas
     with contextlib.ExitStack() as stack:
@@ -149,6 +177,12 @@ def stubbed(metas=None, hypervisor=_FakeHypervisor, memory=_FakeMemory,
         stack.enter_context(mock.patch.object(server, 'HypervisorSession', hypervisor))
         stack.enter_context(mock.patch.object(server, 'MemoryManager', memory))
         stack.enter_context(mock.patch.object(server, 'EmbeddingWorker', worker))
+        stack.enter_context(mock.patch.object(
+            server.BoardMetricsManager, 'board_ids',
+            classmethod(lambda c: boards.board_ids())))
+        stack.enter_context(mock.patch.object(
+            server.BoardMetricsManager, 'for_board',
+            classmethod(lambda c, board_id: boards.for_board(board_id))))
         yield
 
 
@@ -634,8 +668,13 @@ class CardinalityTests(unittest.TestCase):
                  'project', 'project_id', 'url', 'prompt', 'user', 'name',
                  'parent_task_id', 'key', 'namespace', 'error'}
 
+    #: `board` is operator data, not a fixed vocabulary — but it is capped at
+    #: MAX_BOARDS with the tail folded into a single "other" series, which
+    #: `boards_phase7_test.test_the_board_label_is_CAPPED` pins. `disposition`
+    #: and `decision` come from boards.review.DISPOSITIONS and
+    #: BoardMetricsManager.DECISION_STATES, both fixed tuples.
     ALLOWED = {'scope', 'class', 'model', 'coverage', 'status', 'outcome',
-               'section'}
+               'section', 'board', 'disposition', 'decision'}
 
     def setUp(self):
         self.p = _parsed()

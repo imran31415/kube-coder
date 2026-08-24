@@ -219,6 +219,13 @@ class TemplateTests(_Base):
         self.assertEqual(created['vendor'], 'jira')
         self.assertEqual(created['id'], 'jira-sup')
 
+    def _github_connector(self):
+        status, body = self._req(
+            'POST', '/api/boards/templates/github-issues/fill',
+            {'values': {'OWNER': 'acme', 'REPO': 'billing-api'}})
+        self.assertEqual(status, 200, body)
+        return body['connector']
+
     def test_the_github_template_needs_the_workspace_app_token_to_EXIST(self):
         """GitHub asks for no credential because the workspace brokers one —
         which is a better story right up until the workspace has not got one,
@@ -228,14 +235,34 @@ class TemplateTests(_Base):
         Pinned as a real precondition rather than a surprise: the create route
         refuses, in the one sentence that explains why, and the connect form
         shows that sentence instead of a bare 400.
+
+        The absence of the token is *forced*, not inherited. Read off the real
+        filesystem this asserts the opposite of its own name on any workspace
+        that has an App token — which is every real one — so it passed only on
+        a bare CI runner and failed for anyone running the suite where the
+        feature actually works.
         """
-        status, body = self._req(
-            'POST', '/api/boards/templates/github-issues/fill',
-            {'values': {'OWNER': 'acme', 'REPO': 'billing-api'}})
-        self.assertEqual(status, 200, body)
-        status, created = self._req('POST', '/api/boards', body['connector'])
-        self.assertEqual(status, 400)
+        absent = os.path.join(self.tmpdir, 'no-such-github-token')
+        with mock.patch.object(server.GitHubManager, 'TOKEN_FILE', absent):
+            status, created = self._req('POST', '/api/boards',
+                                        self._github_connector())
+        self.assertEqual(status, 400, created)
         self.assertIn('GitHub App token', created['error'])
+
+    def test_the_github_template_creates_once_the_workspace_HAS_a_token(self):
+        """The other half, which used to be asserted only by accident.
+
+        Without it, "refuses when the token is missing" is satisfied just as
+        well by a route that refuses always.
+        """
+        present = os.path.join(self.tmpdir, 'github-token')
+        with open(present, 'w') as fh:
+            fh.write('ghs_fake_installation_token')
+        with mock.patch.object(server.GitHubManager, 'TOKEN_FILE', present):
+            status, created = self._req('POST', '/api/boards',
+                                        self._github_connector())
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created['vendor'], 'github')
 
     def test_filling_is_matched_before_the_board_id_routes(self):
         """`templates` is reserved precisely so this cannot become a board
