@@ -146,9 +146,16 @@ export const createTask = (input: CreateTaskInput) => apiPost<TaskDetail>('/api/
 export const sendMessage = (id: string, prompt: string, submit = true) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/message`, { prompt, submit });
 
-/** Send Escape to the live assistant session without killing the task. */
+/**
+ * Send Escape to the live assistant session without killing the task.
+ *
+ * `interrupted` is false when there was no live turn left to stop — a success,
+ * not a failure. Stop is pressed while a turn is ending, so that race is the
+ * common case rather than an edge one.
+ */
 export const interruptTask = (id: string) =>
-  apiPost<TaskDetail>(`/api/claude/tasks/${id}/interrupt`, {});
+  apiPost<TaskDetail & { interrupted: boolean }>(
+    `/api/claude/tasks/${id}/interrupt`, {});
 
 export const renameTask = (id: string, name: string) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/rename`, { name });

@@ -3426,31 +3426,54 @@ class ClaudeTaskManager:
 
     @staticmethod
     def interrupt_task(task_id):
-        """Send Escape to a live task's tmux session without killing it."""
+        """Send Escape to a live task's tmux session without killing it.
+
+        Returns `(meta, interrupted, error)`. A task whose session has already
+        gone is NOT an error: it comes back `interrupted=False` with no message.
+        Stop is a fire-and-forget button pressed while a turn is finishing, so
+        the common race — click lands microseconds after the CLI settles — must
+        not surface as a failure toast. `handle_hypervisor_stop` reasons the
+        same way about idle threads, and for the same reason.
+        """
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         meta_path = os.path.join(task_dir, 'task.json')
         if not os.path.isfile(meta_path):
-            return None, 'Task not found'
+            return None, False, 'Task not found'
 
-        with open(meta_path, 'r') as f:
-            meta = json.load(f)
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            # task.json is not written atomically, so a read landing mid-write
+            # sees a truncated file. That is a transient state, not a missing
+            # task — say so rather than reporting the task gone.
+            return None, False, 'Task metadata is unreadable right now'
 
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
-        check = subprocess.run(
-            ['tmux', 'has-session', '-t', session_name],
-            capture_output=True, text=True,
-        )
+        # Bounded like every other tmux call in this file: an unbounded
+        # subprocess.run here parks a request-handler thread forever if the
+        # tmux server ever wedges.
+        try:
+            check = subprocess.run(
+                ['tmux', 'has-session', '-t', session_name],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return meta, False, None
         if check.returncode != 0:
-            return None, 'Session is no longer running'
+            return meta, False, None
 
-        result = subprocess.run(
-            ['tmux', 'send-keys', '-t', session_name, 'Escape'],
-            capture_output=True, text=True,
-        )
+        try:
+            result = subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, 'Escape'],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return None, False, f'Failed to interrupt session: {e}'
         if result.returncode != 0:
-            return None, result.stderr.strip() or 'Failed to interrupt session'
+            return None, False, result.stderr.strip() or 'Failed to interrupt session'
 
-        return meta, None
+        return meta, True, None
 
     @staticmethod
     def delete_task(task_id):
@@ -13199,15 +13222,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json(task)
 
     def handle_claude_interrupt_task(self):
-        """POST /api/claude/tasks/{id}/interrupt: stop the current turn."""
+        """POST /api/claude/tasks/{id}/interrupt: stop the current turn.
+
+        Reports `interrupted` alongside the task so a caller can tell "Escape
+        sent" from "there was nothing left to interrupt" — both of which are
+        successes. Only a task that does not exist, or a tmux that refused the
+        key, is an error.
+        """
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
-        task, err = ClaudeTaskManager.interrupt_task(self._claude_task_id)
+        task, interrupted, err = ClaudeTaskManager.interrupt_task(
+            self._claude_task_id)
         if task is None:
-            self.send_json({'error': err or 'Task not found'}, 404)
+            status = 404 if err == 'Task not found' else 502
+            self.send_json({'error': err or 'Task not found'}, status)
             return
-        self.send_json(task)
+        self.send_json(dict(task, interrupted=interrupted))
 
     def handle_claude_rename_task(self):
         if not self.check_claude_auth():

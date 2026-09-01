@@ -252,8 +252,12 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     if (status !== 'running' || readOnly || interrupting) return;
     setInterrupting(true);
     try {
-      await interruptTask(taskId);
-      pushToast('Interrupt sent', { kind: 'warn' });
+      const res = await interruptTask(taskId);
+      // Distinguish "Escape sent" from "the turn had already finished". Both
+      // are successes; saying the same thing for both makes the button feel
+      // like it worked when there was nothing to work on.
+      if (res?.interrupted) pushToast('Interrupt sent', { kind: 'warn' });
+      else pushToast('Nothing to interrupt — the turn had already finished', { kind: 'info' });
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Interrupt failed', { kind: 'danger' });
     } finally {
