@@ -3425,57 +3425,6 @@ class ClaudeTaskManager:
         return updated, None
 
     @staticmethod
-    def interrupt_task(task_id):
-        """Send Escape to a live task's tmux session without killing it.
-
-        Returns `(meta, interrupted, error)`. A task whose session has already
-        gone is NOT an error: it comes back `interrupted=False` with no message.
-        Stop is a fire-and-forget button pressed while a turn is finishing, so
-        the common race — click lands microseconds after the CLI settles — must
-        not surface as a failure toast. `handle_hypervisor_stop` reasons the
-        same way about idle threads, and for the same reason.
-        """
-        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
-        meta_path = os.path.join(task_dir, 'task.json')
-        if not os.path.isfile(meta_path):
-            return None, False, 'Task not found'
-
-        try:
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            # task.json is not written atomically, so a read landing mid-write
-            # sees a truncated file. That is a transient state, not a missing
-            # task — say so rather than reporting the task gone.
-            return None, False, 'Task metadata is unreadable right now'
-
-        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
-        # Bounded like every other tmux call in this file: an unbounded
-        # subprocess.run here parks a request-handler thread forever if the
-        # tmux server ever wedges.
-        try:
-            check = subprocess.run(
-                ['tmux', 'has-session', '-t', session_name],
-                capture_output=True, text=True, timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return meta, False, None
-        if check.returncode != 0:
-            return meta, False, None
-
-        try:
-            result = subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, 'Escape'],
-                capture_output=True, text=True, timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError) as e:
-            return None, False, f'Failed to interrupt session: {e}'
-        if result.returncode != 0:
-            return None, False, result.stderr.strip() or 'Failed to interrupt session'
-
-        return meta, True, None
-
-    @staticmethod
     def delete_task(task_id):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         meta_path = os.path.join(task_dir, 'task.json')
@@ -13221,25 +13170,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json(task)
 
-    def handle_claude_interrupt_task(self):
-        """POST /api/claude/tasks/{id}/interrupt: stop the current turn.
-
-        Reports `interrupted` alongside the task so a caller can tell "Escape
-        sent" from "there was nothing left to interrupt" — both of which are
-        successes. Only a task that does not exist, or a tmux that refused the
-        key, is an error.
-        """
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        task, interrupted, err = ClaudeTaskManager.interrupt_task(
-            self._claude_task_id)
-        if task is None:
-            status = 404 if err == 'Task not found' else 502
-            self.send_json({'error': err or 'Task not found'}, status)
-            return
-        self.send_json(dict(task, interrupted=interrupted))
-
     def handle_claude_rename_task(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -14010,14 +13940,43 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Task not found'}, 404)
             return
         session_name = task.get('tmux_session', f'kube-coder-{self._claude_task_id}')
-        result = subprocess.run(
-            ['tmux', 'send-keys', '-t', session_name, tmux_key],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            self.send_json({'error': result.stderr.strip() or 'tmux send-keys failed'}, 500)
+
+        # A session that has already gone is NOT an error. The web composer's
+        # Stop button sends `escape` here, and Stop is pressed while a turn is
+        # ending — so the click landing microseconds after the CLI settles is
+        # the common race, not an edge case. Reporting it as a failure raises
+        # an error toast for a turn that did exactly what the user asked.
+        # `delivered` lets a caller tell "key sent" from "nothing left to send
+        # it to"; both are successes. handle_hypervisor_stop reasons the same
+        # way about idle threads.
+        #
+        # Every tmux call is bounded: unbounded, a wedged tmux server parks
+        # this request-handler thread permanently.
+        try:
+            live = subprocess.run(
+                ['tmux', 'has-session', '-t', session_name],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            self.send_json({'ok': True, 'key': key, 'delivered': False})
             return
-        self.send_json({'ok': True, 'key': key})
+        if live.returncode != 0:
+            self.send_json({'ok': True, 'key': key, 'delivered': False})
+            return
+
+        try:
+            result = subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, tmux_key],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as e:
+            self.send_json({'error': f'tmux send-keys failed: {e}'}, 502)
+            return
+        if result.returncode != 0:
+            # The session exists but refused the key — a real fault, and an
+            # upstream one, so 502 rather than 500.
+            self.send_json(
+                {'error': result.stderr.strip() or 'tmux send-keys failed'}, 502)
+            return
+        self.send_json({'ok': True, 'key': key, 'delivered': True})
 
     # ── Desktop launcher handlers ──────────────────────────────────────
     # All reads (GET /api/desktop, /api/desktop/{id}) pass through
@@ -17676,12 +17635,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                     self._claude_task_id = m.group(1)
                     self.handle_claude_followup()
                     return
-                # /api/claude/tasks/{id}/interrupt — send Escape to Claude Code
-                m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/interrupt$', path)
-                if m:
-                    self._claude_task_id = m.group(1)
-                    self.handle_claude_interrupt_task()
-                    return
                 # /api/hypervisor/threads/{id}/messages — chat follow-up
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/messages$', path)
                 if m:
@@ -18770,7 +18723,6 @@ if __name__ == "__main__":
     print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
     print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
     print("  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
-    print("  POST /api/claude/tasks/{id}/interrupt - Stop the current assistant turn")
     print("  POST /api/claude/tasks/{id}/rename  - Rename a task")
     print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
     print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")

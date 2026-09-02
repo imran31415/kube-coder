@@ -2,17 +2,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  interruptTask: vi.fn(),
+  sendTaskKey: vi.fn(),
   getTask: vi.fn(),
   sendFollowup: vi.fn(),
   pushToast: vi.fn(),
 }));
 
-// `getTask` is mocked alongside `interruptTask` because MessageChat polls for
+// `getTask` is mocked alongside `sendTaskKey` because MessageChat polls for
 // the pending-prompt state; a partial module mock makes it undefined and the
 // component throws before the Stop button is ever rendered.
 vi.mock('../../api/tasks', () => ({
-  interruptTask: mocks.interruptTask,
+  sendTaskKey: mocks.sendTaskKey,
   getTask: mocks.getTask,
 }));
 vi.mock('../../store/tasks', () => ({ sendFollowup: mocks.sendFollowup }));
@@ -53,8 +53,8 @@ import { serverMode } from '../../store/server-mode';
 import { MessageChat } from './MessageChat';
 
 beforeEach(() => {
-  mocks.interruptTask.mockReset();
-  mocks.interruptTask.mockResolvedValue({ task_id: 'task-1', status: 'running', interrupted: true });
+  mocks.sendTaskKey.mockReset();
+  mocks.sendTaskKey.mockResolvedValue({ ok: true, key: 'escape', delivered: true });
   mocks.getTask.mockReset();
   mocks.getTask.mockResolvedValue({ task_id: 'task-1', status: 'running' });
   mocks.pushToast.mockReset();
@@ -67,14 +67,15 @@ describe('MessageChat interrupt button', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /stop/i }));
 
-    await waitFor(() => expect(mocks.interruptTask).toHaveBeenCalledWith('task-1'));
+    // Stop is Escape on the shared key endpoint — not an endpoint of its own.
+    await waitFor(() => expect(mocks.sendTaskKey).toHaveBeenCalledWith('task-1', 'escape'));
     expect(mocks.pushToast).toHaveBeenCalledWith('Interrupt sent', { kind: 'warn' });
   });
 
   it('says so plainly when the turn had already finished', async () => {
     // The fire-and-forget race: Stop lands just after the CLI settles. That is
     // a success, so it must not read like a failure.
-    mocks.interruptTask.mockResolvedValue({ task_id: 'task-1', interrupted: false });
+    mocks.sendTaskKey.mockResolvedValue({ ok: true, key: 'escape', delivered: false });
     render(<MessageChat taskId="task-1" status="running" />);
 
     fireEvent.click(screen.getByRole('button', { name: /stop/i }));
@@ -98,6 +99,6 @@ describe('MessageChat interrupt button', () => {
     const stop = screen.getByRole('button', { name: /stop/i });
     expect(stop).toBeDisabled();
     fireEvent.click(stop);
-    expect(mocks.interruptTask).not.toHaveBeenCalled();
+    expect(mocks.sendTaskKey).not.toHaveBeenCalled();
   });
 });

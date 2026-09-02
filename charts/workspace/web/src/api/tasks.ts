@@ -147,15 +147,19 @@ export const sendMessage = (id: string, prompt: string, submit = true) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/message`, { prompt, submit });
 
 /**
- * Send Escape to the live assistant session without killing the task.
+ * Send one control key to the task's live tmux session.
  *
- * `interrupted` is false when there was no live turn left to stop — a success,
- * not a failure. Stop is pressed while a turn is ending, so that race is the
- * common case rather than an edge one.
+ * The same endpoint the mobile key bar uses — Escape is how a running turn is
+ * interrupted, so the composer's Stop button is `sendTaskKey(id, 'escape')`
+ * rather than an endpoint of its own.
+ *
+ * `delivered` is false when the session had already gone. That is a success,
+ * not a failure: Stop is pressed while a turn is ending, so the click landing
+ * just after the CLI settles is the common race, not an edge case.
  */
-export const interruptTask = (id: string) =>
-  apiPost<TaskDetail & { interrupted: boolean }>(
-    `/api/claude/tasks/${id}/interrupt`, {});
+export const sendTaskKey = (id: string, key: string) =>
+  apiPost<{ ok: boolean; key: string; delivered: boolean }>(
+    `/api/claude/tasks/${id}/key`, { key });
 
 export const renameTask = (id: string, name: string) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/rename`, { name });
