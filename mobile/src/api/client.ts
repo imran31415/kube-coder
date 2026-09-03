@@ -326,6 +326,22 @@ export async function setGitConfig(name: string, email: string): Promise<void> {
   await request('/api/github/config', { method: 'POST', body: { name, email } });
 }
 
+/** Register this device's Expo push token so the workspace can send high-signal
+ *  alerts (an agent waiting on you, a decision) to the phone. Idempotent. */
+export async function registerPushToken(
+  token: string,
+  platform: 'ios' | 'android',
+): Promise<void> {
+  if (getConfig().mock) return;
+  await request('/api/push/register', { method: 'POST', body: { token, platform } });
+}
+
+/** Drop this device's push token (on disconnect). Idempotent. */
+export async function unregisterPushToken(token: string): Promise<void> {
+  if (getConfig().mock) return;
+  await request('/api/push/unregister', { method: 'POST', body: { token } });
+}
+
 /** Generate a fresh ed25519 key pair (overwrites any existing one) and return
  *  the refreshed SSH status, including the new public key to add to GitHub. */
 export async function generateSshKey(email: string): Promise<GithubStatus['ssh']> {

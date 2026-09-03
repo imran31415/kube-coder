@@ -46,6 +46,11 @@ except ImportError:      # pragma: no cover - module always ships beside server.
 # Fail closed.
 import safe_http
 
+# Mobile push notifications (Expo): device-token store + high-signal dispatch,
+# hooked into FeedManager.emit below. Stdlib-only and self-contained, so it
+# never affects server startup.
+import push_notify
+
 # Board Processor (#588/#589) — connector schema, deterministic fetch/act
 # engine, and the three-tier rate limiter. Pure: the package never imports
 # server and never touches the network except through a callable BoardsManager
@@ -5470,6 +5475,13 @@ class FeedManager:
         try:
             EventBroker.publish('feed.item', {'id': item['id'], 'kind': kind,
                                               'project_id': item['project_id']})
+        except Exception:
+            pass
+        # Mobile push (#push): same signal as the in-app feed, delivered to the
+        # phone. Fire-and-forget and self-gating — only high-signal items
+        # (waiting / decision) with a registered device actually send.
+        try:
+            push_notify.dispatch(item)
         except Exception:
             pass
         return item
@@ -12816,6 +12828,59 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({'ok': True})
 
+    def handle_push_register(self):
+        """Register a device's Expo push token (mobile app, after onboarding /
+        on cold start). Idempotent upsert keyed by the token."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        token = (data.get('token') or '').strip()
+        if not push_notify.is_expo_token(token):
+            self.send_json({'error': 'a valid Expo push token is required'}, 400)
+            return
+        platform = (data.get('platform') or '').strip().lower()
+        if platform not in ('ios', 'android', ''):
+            self.send_json({'error': "platform must be 'ios' or 'android'"}, 400)
+            return
+        try:
+            push_notify.PushTokenStore.register(token, platform, self._memory_actor())
+        except Exception as e:
+            print(f'[push] register failed: {e}', file=sys.stderr)
+            self.send_json({'error': 'could not store token'}, 500)
+            return
+        self.send_json({'ok': True}, 201)
+
+    def handle_push_unregister(self):
+        """Drop a device token (mobile logout / disconnect). Token via ?token=
+        query param or JSON body. Idempotent — absent token still returns ok."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        token = ''
+        if '?' in self.path:
+            qs = urllib.parse.urlparse(self.path).query
+            token = (urllib.parse.parse_qs(qs).get('token') or [''])[0].strip()
+        if not token:
+            try:
+                token = (self.read_json_body().get('token') or '').strip()
+            except (json.JSONDecodeError, ValueError):
+                token = ''
+        if not token:
+            self.send_json({'error': 'token is required'}, 400)
+            return
+        try:
+            push_notify.PushTokenStore.unregister(token)
+        except Exception as e:
+            print(f'[push] unregister failed: {e}', file=sys.stderr)
+            self.send_json({'error': 'could not remove token'}, 500)
+            return
+        self.send_json({'ok': True})
+
     def handle_claude_get_task(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -17562,6 +17627,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # Feed (#469)
             elif path == "/api/feed":
                 self.handle_feed_create()
+            # Mobile push notifications (#push): device-token registration
+            elif path == "/api/push/register":
+                self.handle_push_register()
+            elif path == "/api/push/unregister":
+                self.handle_push_unregister()
             # Desktop launcher (dashboard)
             elif path == "/api/desktop":
                 self.handle_desktop_create()

@@ -16,8 +16,8 @@ design is about safety and honesty rather than throughput.
 > writes instead of making them, approve / reject / edit those from the desktop
 > or a phone, and **send one back with a question so the agent resumes with its
 > prior context**. Selection strategies, starter connector templates and
-> per-board approval-rate metrics are in. Mobile **push** is still out of scope
-> and needs its own issue.
+> per-board approval-rate metrics are in. Mobile **push** now delivers the
+> high-signal items (an agent waiting on you, a decision) to the phone.
 
 ![Three external boards, and the review queue that gates every write](screenshots/board-processor/board-review.png)
 
@@ -477,9 +477,13 @@ dependency, so nothing can react to reconnection) and reuses one `approval_id`
 across every retry. A 409 is terminal in that queue: a stale approval must not
 be retried, because the point of the guard is that a human looks again.
 
-Push notification is **out of scope** and needs its own issue — there is no
-`expo-notifications` in the app, so the signal rides the feed and in-app
-polling.
+Push notification now rides the **same** signal as the feed: `FeedManager.emit`
+dispatches an Expo push for the high-signal items — `waiting=True` (an agent is
+blocked on the human) or `kind='decision'` — to every device registered via
+`POST /api/push/register`. Delivery is fire-and-forget (daemon thread, no
+retries, `DeviceNotRegistered` tokens pruned), gated by `KC_PUSH_ENABLED`. See
+`push_notify.py` and the mobile `src/push/notifications.ts`. Everything else
+still rides the feed and in-app polling.
 
 ---
 

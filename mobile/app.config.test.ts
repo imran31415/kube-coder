@@ -50,6 +50,18 @@ describe('app.config transport posture — production (env unset)', () => {
   });
 });
 
+function hasPlugin(config: ReturnType<typeof buildConfig>, name: string): boolean {
+  return (config.plugins ?? []).some((p) =>
+    p === name || (Array.isArray(p) && p[0] === name),
+  );
+}
+
+describe('app.config push notifications', () => {
+  it('registers the expo-notifications config plugin (adds the iOS aps entitlement)', () => {
+    expect(hasPlugin(buildConfig(), 'expo-notifications')).toBe(true);
+  });
+});
+
 describe('app.config transport posture — development/preview (env=1)', () => {
   it('allows arbitrary iOS loads', () => {
     process.env.EXPO_PUBLIC_ALLOW_CLEARTEXT = '1';
