@@ -25,7 +25,14 @@ vi.mock('../../store/hypervisor', async (importOriginal) => {
 });
 
 import { Chat } from './Chat';
-import { events, activeThreadId, activeStatus, sending, config } from '../../store/hypervisor';
+import {
+  events,
+  activeThreadId,
+  activeStatus,
+  sending,
+  config,
+  transcriptSource,
+} from '../../store/hypervisor';
 
 const BLOCK_H = 100;
 const realFetch = globalThis.fetch;
@@ -91,6 +98,7 @@ beforeEach(() => {
   };
   activeThreadId.value = 't1';
   activeStatus.value = 'idle';
+  transcriptSource.value = 'capture';
   sending.value = false;
   // Long enough that the transcript actually scrolls under the fake layout.
   events.value = [
@@ -107,6 +115,7 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   events.value = [];
   activeThreadId.value = null;
+  transcriptSource.value = null;
   sending.value = false;
   config.value = null;
 });
@@ -191,5 +200,104 @@ describe('Chat transcript pinning (#530)', () => {
     fireEvent.scroll(el);
     events.value = [...events.value, msg(7, 'assistant', 'still following')];
     await waitFor(() => expect(layout.fromBottom()).toBe(0));
+  });
+});
+
+
+describe('Chat transcript pinning across a source flip (#644)', () => {
+  /** What the server hands back once the turn completes: the same conversation
+   *  re-stamped from Claude Code's JSONL, carrying the structured tool detail
+   *  the live capture never showed — so it is *longer* than what it replaces. */
+  const sessionLog = () => [
+    msg(1, 'user', 'hello'),
+    msg(2, 'assistant', 'hi there'),
+    msg(3, 'user', 'and then?'),
+    msg(4, 'assistant', 'this and that'),
+    msg(5, 'user', 'go on'),
+    msg(6, 'assistant', 'more still'),
+    msg(7, 'assistant', 'ran a tool'),
+    msg(8, 'assistant', 'read a file'),
+    msg(9, 'assistant', 'THE FINAL ANSWER'),
+  ];
+
+  it('lands on the new answer when a completing turn swaps in the session log', async () => {
+    activeStatus.value = 'running';
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await waitFor(() => expect(layout.fromBottom()).toBe(0));
+
+    // The turn completes: source flips and every event is replaced.
+    transcriptSource.value = 'session_log';
+    events.value = sessionLog();
+    activeStatus.value = 'idle';
+    await settle();
+
+    expect(layout.fromBottom()).toBe(0);
+  });
+
+  it('survives the reflow scroll the swap fires — the reader never moved', async () => {
+    // The regression. Re-laying out a wholesale-replaced transcript makes the
+    // browser clamp scrollTop and fire a `scroll`; read as a gesture, it unpins
+    // a reader who never touched the page, stranding them up in older messages
+    // because the session log is longer than the capture it replaced.
+    activeStatus.value = 'running';
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await waitFor(() => expect(layout.fromBottom()).toBe(0));
+
+    transcriptSource.value = 'session_log';
+    events.value = sessionLog();
+    activeStatus.value = 'idle';
+    // Commit the swap first — a browser cannot clamp before the new content
+    // exists — then let the reflow fire its scroll.
+    await nextFrame();
+    layout.scrollTo(200);
+    await settle();
+
+    expect(layout.fromBottom()).toBe(0);
+  });
+
+  it('still leaves a reader who scrolled up alone across the flip', async () => {
+    // The hold must not become "always follow": someone reading history when
+    // the turn completes keeps their place.
+    activeStatus.value = 'running';
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await settle();
+
+    layout.scrollTo(0); // deliberately reading history — unpins
+    await settle();
+
+    transcriptSource.value = 'session_log';
+    events.value = sessionLog();
+    activeStatus.value = 'idle';
+    await settle();
+
+    expect(el.scrollTop).toBe(0);
+  });
+
+  it('unpins normally again once the swap has settled', async () => {
+    // The hold is scoped to the flip: a genuine scroll away afterwards still
+    // stops the poll from yanking the reader down.
+    activeStatus.value = 'running';
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await waitFor(() => expect(layout.fromBottom()).toBe(0));
+
+    transcriptSource.value = 'session_log';
+    events.value = sessionLog();
+    activeStatus.value = 'idle';
+    await settle();
+
+    layout.scrollTo(0);
+    await settle();
+    events.value = [...events.value, msg(10, 'assistant', 'a later poll result')];
+    await settle();
+
+    expect(el.scrollTop).toBe(0);
   });
 });
