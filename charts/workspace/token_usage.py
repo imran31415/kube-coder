@@ -82,6 +82,20 @@ COVERAGE_NO_SESSION = 'no_session_id'     # Claude, but no session id to read
 #: transcript (Builds). Codex / Antigravity / Ante / OpenCode / LibreFang /
 #: kc-harness expose neither, so they contribute 0 — which is why the coverage
 #: marker exists rather than a bare zero.
+#:
+#: DeepSeek Harness (#639) is the interesting near-miss and is deliberately NOT
+#: here. ACP does define a per-turn token report — `PromptResponse.usage`, whose
+#: shape maps cleanly onto CLASSES (inputTokens / outputTokens /
+#: cachedReadTokens / cachedWriteTokens) — but it is marked UNSTABLE in the
+#: protocol AND the harness's own `@deepseek-ai/dsh-token-meter` is an OPTIONAL
+#: peer dependency of its ACP server, so a given build may simply never populate
+#: it. Claiming `measured` on that basis is exactly the failure this marker
+#: exists to prevent: a silent zero that reads as "spent nothing".
+#:
+#: To promote it, run one real turn and check the bridge's stderr — acp_bridge
+#: logs whether the turn's PromptResponse carried a `usage` object precisely so
+#: this question is answerable in one run. If it does, map it in the adapter and
+#: add the id here; the coverage marker then flips for both surfaces at once.
 INSTRUMENTED_ASSISTANTS = frozenset({'claude'})
 
 #: Cap on retained warning strings per ledger — bounded so a persistently

@@ -597,7 +597,21 @@ class AcpBridge:
         if 'error' in r:
             self.emit({'type': 'error', 'text': _err_text(r)})
             return 1
-        stop = str((r.get('result') or {}).get('stopReason') or '')
+        result = r.get('result') or {}
+        # Token accounting (#639/#574). ACP defines a per-turn `usage` on the
+        # prompt response, but it is UNSTABLE in the protocol and the harness's
+        # token-meter plugin is an OPTIONAL peer dependency of its ACP server —
+        # so whether any given build reports spend is not knowable from the
+        # schema. Say what this build actually did, once per turn, so the first
+        # person with a real key learns the answer from one run instead of
+        # reverse-engineering it. See token_usage.INSTRUMENTED_ASSISTANTS.
+        usage = result.get('usage')
+        if isinstance(usage, dict):
+            _log(f'turn reported token usage: {json.dumps(usage, sort_keys=True)}')
+        else:
+            _log('turn reported no token usage (PromptResponse.usage absent) — '
+                 'spend for this assistant stays not_instrumented')
+        stop = str(result.get('stopReason') or '')
         self.emit({'type': 'done', 'stopReason': stop or 'end_turn'})
         # Only a SETTLED turn gets the pane's closing `result` event; the error
         # branch above already emitted its own, and two would read as two turns.
