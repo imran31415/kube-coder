@@ -730,6 +730,13 @@ class _StructuredCliAdapter(Adapter):
         except json.JSONDecodeError:
             ctx.setdefault('_raw', []).append(line.rstrip('\n'))  # → raw fallback
             return []
+        # Valid JSON that isn't an object (a bare array, string or number) is
+        # still not an event — every _parse_obj below indexes it as a mapping.
+        # Treat it as raw text like any other unrecognized line rather than
+        # letting an AttributeError take down the whole turn.
+        if not isinstance(o, dict):
+            ctx.setdefault('_raw', []).append(line.rstrip('\n'))
+            return []
         return self._parse_obj(ctx, o)
 
     def _parse_obj(self, ctx, o):
@@ -974,11 +981,124 @@ class CodexAdapter(_StructuredCliAdapter):
         return []  # turn.started / item.started / turn.completed / retry chatter
 
 
+class DeepseekHarnessAdapter(_StructuredCliAdapter):
+    """DeepSeek Harness (`dsh`) via the ACP bridge (issue #639).
+
+    Unlike every other adapter here, this one does NOT spawn the assistant's
+    CLI directly. `dsh`'s structured surface is ACP — a bidirectional JSON-RPC
+    server that asks the client questions mid-turn — and the shared process
+    runner is one-way by construction (write stdin, read stdout, wait). So we
+    spawn `acp_bridge.py`, which owns the protocol and re-emits it as the
+    line-delimited stream this class already knows how to parse. See that
+    file's module docstring for why the split is where it is; everything below
+    is a straight mapping of its small envelope onto canonical events.
+
+    The harness's own prose-only mode (`--profile headless`) is deliberately
+    not used: it would render as FallbackAdapter-grade text with no tool cards,
+    which is the thing this whole path exists to avoid.
+
+    Multi-turn via the ACP session id, carried in ctx across turns. The bridge
+    falls back to a fresh session when an old id can no longer be resumed, and
+    reports whichever id it actually used — so ctx always tracks reality rather
+    than what we asked for.
+    """
+
+    kind = 'deepseek-harness'
+
+    # Canonical effort → the harness's own vocabulary, which is off/low/high/max
+    # (captured from a live `session/new`'s advertised `reasoning_effort`
+    # option). `high` is the harness's DEFAULT and its documented "balance for
+    # most tasks", so the canonical default maps onto it 1:1 and canonical
+    # `medium` rounds up to it rather than down to `low` — understating effort
+    # is the more surprising failure. `off` is never selected: a user who picks
+    # a level is asking for reasoning, not for none.
+    _EFFORT_NATIVE = {'low': 'low', 'medium': 'high', 'high': 'high',
+                      'xhigh': 'max', 'max': 'max'}
+
+    @staticmethod
+    def _bridge_path() -> str:
+        """The bridge ships beside this module (both land in /tmp/browser at
+        pod boot), so resolve it relatively — that works in the pod and in a
+        checkout without either hard-coding a runtime path."""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'acp_bridge.py')
+
+    def build(self, ctx, text, first):
+        self._reset_turn(ctx)
+        workdir = ctx.get('workdir') or WORKSPACE_HOME
+        argv = [sys.executable or 'python3', self._bridge_path(),
+                '--cwd', workdir]
+        sid = ctx.get('dsh_session_id')
+        if sid:
+            argv += ['--session', sid]
+        # A per-thread model (#308) wins over the pod default; read fresh each
+        # turn so a mid-session switch takes effect. The bridge resolves the
+        # friendly id ("deepseek-v4-pro") against what the session actually
+        # advertises, so nothing here needs to know the harness's encoded
+        # provider/model pair form.
+        model = (ctx.get('model') or os.environ.get('KC_DSH_MODEL', '')).strip()
+        if model:
+            argv += ['--model', model]
+        eff = self._EFFORT_NATIVE.get(
+            native_effort('deepseek-harness', ctx.get('effort')), '')
+        if eff:
+            argv += ['--effort', eff]
+        # The preamble rides on the FIRST turn's prompt: ACP has no
+        # append-system-prompt equivalent, and re-sending it every turn would
+        # both waste context and break the KV-cache prefix the harness keeps
+        # across turns of one session.
+        stdin = text if not (first and ctx.get('preamble')) \
+            else ctx['preamble'] + '\n\n' + text
+        return {'argv': argv, 'cwd': workdir, 'stdin': stdin + '\n'}
+
+    def _parse_obj(self, ctx, o):
+        t = str(o.get('type') or '')
+        if t == 'session':
+            sid = o.get('sessionId')
+            if isinstance(sid, str) and sid:
+                ctx['dsh_session_id'] = sid
+            return []
+        if t in ('message', 'thought'):
+            txt = o.get('text')
+            if not isinstance(txt, str) or not txt.strip():
+                return []
+            ctx['_emitted'] = True
+            # Reasoning is rendered as an ordinary message for now: the
+            # canonical schema has no `thought` type, and silently dropping it
+            # would lose the only visible sign that a long turn is working.
+            return [{'role': 'assistant', 'type': 'message', 'text': txt}]
+        if t == 'tool_call':
+            ctx['_emitted'] = True
+            inp = o.get('input')
+            return [{'role': 'assistant', 'type': 'tool_call',
+                     'tool_id': str(o.get('id') or ''),
+                     'tool': {'name': o.get('name') or o.get('title') or 'tool',
+                              'input': inp if isinstance(inp, dict) else {}}}]
+        if t == 'tool_result':
+            ctx['_emitted'] = True
+            return [{'role': 'system', 'type': 'tool_result',
+                     'tool_use_id': str(o.get('id') or ''),
+                     'is_error': bool(o.get('is_error')),
+                     'text': _stringify(o.get('text'))}]
+        if t == 'error':
+            ctx['_emitted'] = True
+            return [{'role': 'system', 'type': 'error',
+                     'text': _stringify(o.get('text')) or 'deepseek-harness error'}]
+        # `usage` is context-window telemetry, not token spend, and `done` only
+        # settles the turn — neither belongs in the transcript. Marking the turn
+        # as emitted on `done` stops a clean but silent turn (a tool-only turn,
+        # say) from falling through to the raw-stdout fallback.
+        if t == 'done':
+            ctx['_emitted'] = True
+        return []
+
+
 _ADAPTERS: Dict[str, Adapter] = {
     'claude': ClaudeAdapter(),
     'ante': AnteAdapter(),
     'opencode': OpencodeAdapter(),
     'codex': CodexAdapter(),
+    'deepseek-harness': DeepseekHarnessAdapter(),
     'fallback': FallbackAdapter(),
 }
 
@@ -990,6 +1110,8 @@ def _adapter_for(assistant: str) -> Adapter:
         return _ADAPTERS['ante']
     if assistant == 'codex':
         return _ADAPTERS['codex']
+    if assistant == 'deepseek-harness':
+        return _ADAPTERS['deepseek-harness']
     if assistant.startswith('opencode'):
         return _ADAPTERS['opencode']
     return _ADAPTERS['fallback']
