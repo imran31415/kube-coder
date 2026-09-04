@@ -151,22 +151,65 @@ data:
         return data["token"]
 
 
+    def atomic_write(path: str, content: str, mode: int = 0o600):
+        """Write `content` to `path` so no reader can ever see a partial file.
+
+        `open(path, "w")` truncates immediately and fills in afterwards, so
+        every one of these files had a window in which it existed and was
+        EMPTY. That is not theoretical for any of them:
+
+          * TOKEN_FILE is re-read by the git credential helper on every single
+            git operation, and this daemon rewrites it hourly. A push landing
+            in the window authenticates with an empty password and fails in a
+            way indistinguishable from an expired token (cf. issue #454).
+          * PROFILE_HOOK is sourced by every new shell; a torn read is a shell
+            startup error, not merely a missing variable.
+          * GIT_STORE_FILE holds credentials for OTHER hosts too. Truncate-then
+            -write means a crash mid-write loses them.
+
+        Writing a sibling temp file and renaming closes all of it: `os.replace`
+        is atomic within a directory, so a reader sees either the whole old
+        file or the whole new one, never a half.
+
+        The mode is set on the descriptor at creation rather than chmod-ed
+        afterwards. The old order wrote the secret first and fixed the
+        permissions second, leaving the token briefly readable by anyone —
+        0644 under the usual umask.
+        """
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        tmp = os.path.join(directory, f".{os.path.basename(path)}.tmp-{os.getpid()}")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+            try:
+                os.write(fd, content.encode("utf-8"))
+                # The rename is atomic, but a crash could still leave the new
+                # name pointing at unflushed blocks. Cheap here; these files are
+                # tiny and rewritten hourly at most.
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
     def write_credentials(token: str):
         """Write token file and sourceable env file."""
         os.makedirs(CREDENTIALS_DIR, exist_ok=True)
 
-        with open(TOKEN_FILE, "w") as f:
-            f.write(token)
-        os.chmod(TOKEN_FILE, 0o600)
+        atomic_write(TOKEN_FILE, token)
 
         # Raw exports — sourced by start.sh itself at boot so the entrypoint can
         # always reach GitHub with the App token regardless of the user-facing
         # auth mode. NOT sourced by user shells (that's the guarded hook below).
         env_content = f'export GITHUB_TOKEN="{token}"\nexport GH_TOKEN="{token}"\n'
 
-        with open(ENV_FILE, "w") as f:
-            f.write(env_content)
-        os.chmod(ENV_FILE, 0o600)
+        atomic_write(ENV_FILE, env_content)
 
         # Per-shell profile hook (BASH_ENV + ~/.bashrc/~/.profile source this).
         # It self-guards on the auth mode: in 'personal' mode it exports nothing,
@@ -181,9 +224,7 @@ data:
             "fi\n"
         )
         try:
-            with open(PROFILE_HOOK, "w") as f:
-                f.write(hook_content)
-            os.chmod(PROFILE_HOOK, 0o600)
+            atomic_write(PROFILE_HOOK, hook_content)
         except OSError:
             pass
 
@@ -210,9 +251,7 @@ data:
         if len(kept) == len(lines):
             return
         try:
-            with open(GIT_STORE_FILE, "w") as f:
-                f.writelines(kept)
-            os.chmod(GIT_STORE_FILE, 0o600)
+            atomic_write(GIT_STORE_FILE, "".join(kept))
             print("[github-app-token] Purged %d stale github.com line(s) from "
                   "%s" % (len(lines) - len(kept), GIT_STORE_FILE))
         except OSError:
@@ -344,10 +383,7 @@ data:
     def write_ack(nonce: str):
         """Echo a serviced request's nonce back to the requester."""
         try:
-            os.makedirs(CREDENTIALS_DIR, exist_ok=True)
-            with open(ACK_FILE, "w") as f:
-                f.write(nonce + "\n")
-            os.chmod(ACK_FILE, 0o600)
+            atomic_write(ACK_FILE, nonce + "\n")
         except OSError as e:
             print(f"[github-app-token] Could not write ack: {e}", file=sys.stderr)
 
@@ -362,10 +398,7 @@ data:
         """
         nonce = "%d-%d" % (os.getpid(), int(time.time() * 1000))
         try:
-            os.makedirs(CREDENTIALS_DIR, exist_ok=True)
-            with open(REQUEST_FILE, "w") as f:
-                f.write(nonce + "\n")
-            os.chmod(REQUEST_FILE, 0o600)
+            atomic_write(REQUEST_FILE, nonce + "\n")
         except OSError as e:
             print(f"[github-app-token] Could not write mint request: {e}",
                   file=sys.stderr)
