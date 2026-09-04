@@ -239,7 +239,9 @@ def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
 # Assistants with a non-interactive one-shot "print" mode that exits when
 # the task is done. Anything not listed has no reliable headless interface
 # (kc-harness) and is always run interactively (prompt pasted into the REPL).
-_HEADLESS_CAPABLE = {'claude', 'ante', 'codex', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'opencode-zen'}
+_HEADLESS_CAPABLE = {'claude', 'ante', 'codex', 'antigravity', 'librefang',
+                     'opencode-openrouter', 'opencode-deepseek', 'opencode-zen',
+                     'deepseek-harness'}
 
 
 def _codex_model_flag() -> str:
@@ -264,6 +266,39 @@ def _antigravity_model() -> str:
     """Optional model the Antigravity CLI (agy) runs against, from
     KC_ANTIGRAVITY_MODEL. Empty => let agy pick its own default."""
     return os.environ.get('KC_ANTIGRAVITY_MODEL', '')
+
+
+def _dsh_command(prompt: str = '', headless: bool = True) -> str:
+    """DeepSeek Harness (#639) — the ACP bridge, not the `dsh` CLI directly.
+
+    `dsh`'s structured surface is a bidirectional JSON-RPC server, so both
+    modes go through charts/workspace/acp_bridge.py:
+
+      headless    one prompt on stdin, events on stdout, exits when the turn
+                  settles — exactly the "print mode" contract this module
+                  needs to detect completion by session death + exit code.
+      interactive `--serve`, one long-lived ACP session fed by tmux paste,
+                  the same thing the Builds tab runs.
+
+    `--format stream-json` in both, because the orchestrator captures the
+    tmux pane as TEXT: that renderer interleaves human-readable lines with
+    the JSONL, so `get_agent_output` returns something a parent agent can
+    actually read.
+
+    Tool approvals are auto-answered by the bridge — which is what a
+    sub-agent needs anyway, matching the skip-approval flags every other
+    headless command here passes.
+    """
+    flags = ['--cwd', '"$PWD"', '--format', 'stream-json']
+    model = os.environ.get('KC_DSH_MODEL', '')
+    if model:
+        flags += ['--model', _shell_quote(model)]
+    if headless:
+        # printf keeps the prompt off argv and out of `ps`, and its format
+        # string is a literal '%s' so a prompt containing % is inert.
+        return f'printf %s {_shell_quote(prompt)} | python3 /tmp/browser/acp_bridge.py ' \
+               + ' '.join(flags)
+    return 'python3 /tmp/browser/acp_bridge.py --serve ' + ' '.join(flags)
 
 
 def _librefang_agent() -> str:
@@ -311,6 +346,8 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
             return f'agy --model {_shell_quote(m)}' if m else 'agy'
         if assistant == 'kc-harness':
             return 'python3 /tmp/browser/harness.py'
+        if assistant == 'deepseek-harness':
+            return _dsh_command(headless=False)
         if assistant == 'codex':
             # Interactive Codex TUI. The pod is externally sandboxed (k8s), so
             # bypass approvals/sandbox for the unattended sub-agent.
@@ -323,6 +360,8 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
         return assistant if assistant in ('claude', 'ante') else 'claude'
 
     q = _shell_quote(prompt)
+    if assistant == 'deepseek-harness':
+        return _dsh_command(prompt, headless=True)
     if assistant == 'claude':
         return f'claude --dangerously-skip-permissions -p {q}'
     if assistant == 'ante':
@@ -385,6 +424,7 @@ _ASSISTANTS_LIST = [
     {'id': 'librefang', 'label': 'LibreFang'},
     {'id': 'opencode-openrouter', 'label': 'OpenRouter'},
     {'id': 'opencode-deepseek', 'label': 'DeepSeek'},
+    {'id': 'deepseek-harness', 'label': 'DeepSeek Harness'},
     {'id': 'opencode-zen', 'label': 'OpenCode Zen'},
     {'id': 'kc-harness', 'label': 'Opensource GPU'},
 ]
@@ -770,7 +810,10 @@ TOOLS: Dict[str, Any] = {
                         'type': 'string',
                         'description': 'Which agent to spawn. Omit to use the '
                                        'workspace default assistant.',
-                        'enum': ['ante', 'claude', 'codex', 'antigravity', 'librefang', 'opencode-openrouter', 'opencode-deepseek', 'opencode-zen', 'kc-harness'],
+                        'enum': ['ante', 'claude', 'codex', 'antigravity',
+                                 'librefang', 'opencode-openrouter',
+                                 'opencode-deepseek', 'deepseek-harness',
+                                 'opencode-zen', 'kc-harness'],
                     },
                     'mode': {
                         'type': 'string',

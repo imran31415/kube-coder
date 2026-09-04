@@ -300,6 +300,12 @@ def _sync_codex(upserts, removals):
 
 # Looked up via globals() at sync time (not captured here) so tests can patch
 # an individual _sync_* function on the module.
+# NB: the DeepSeek Harness (#639) is deliberately NOT here. Every provider
+# above owns an on-disk config file this registry can merge servers into; the
+# harness's MCP surface is per-SESSION instead — ACP's `session/new` takes the
+# server list as a request field, so a file-based fan-out has nothing to write.
+# Its servers are supplied by the ACP bridge at session open. Adding a no-op
+# entry here would only make sync_all() report a provider it never syncs.
 _PROVIDERS = ('claude', 'opencode', 'ante', 'codex')
 
 
