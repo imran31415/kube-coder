@@ -309,6 +309,16 @@ _OPENCODE_ZEN_FREE_MODELS = (
     'nemotron-3-ultra-free',
 )
 _OPENCODE_ZEN_DEFAULT_MODEL = _OPENCODE_ZEN_FREE_MODELS[0]
+
+# DeepSeek Harness models (#639), read off a live `session/new`'s advertised
+# `model` config option. Bare ids: the ACP bridge resolves each against what
+# the session actually offers, so nothing above it handles the harness's
+# encoded ["provider","model"] pair form. The default is the harness's own
+# (`deepseek-v4-flash`), so listing the assistant changes no behaviour. The
+# experimental vision model the harness also offers is deliberately absent —
+# an operator who wants it sets KC_DSH_MODELS.
+_DSH_MODELS = ('deepseek-v4-flash', 'deepseek-v4-pro')
+_DSH_DEFAULT_MODEL = _DSH_MODELS[0]
 # Short context note pasted as the first message of a new chat, so the agent
 # knows its role + that it has the dashboard tools. Kept terse on purpose —
 # a big preamble front-loads noise and some CLIs handle it poorly.
@@ -2147,6 +2157,16 @@ class ClaudeTaskManager:
             'id': 'codex',
             'label': 'Codex',
         },
+        # DeepSeek Harness (#639) — DeepSeek's own open-source harness (`dsh`),
+        # driven over its ACP JSON-RPC server rather than someone else's agent
+        # loop. Deliberately distinct from `opencode-deepseek` below, which is
+        # OpenCode's agent loop merely ANSWERED by a DeepSeek model; both
+        # coexist. Needs BOTH the binary and DEEPSEEK_API_KEY (see
+        # available_assistants) — unlike agy/codex, there is no OAuth path.
+        'deepseek-harness': {
+            'id': 'deepseek-harness',
+            'label': 'DeepSeek Harness',
+        },
         # LibreFang — open-source agent OS (https://librefang.ai). Tasks talk
         # to its registry-bundled "coder" agent via `librefang chat`; the CLI
         # picks up whatever provider key is in the environment
@@ -2207,6 +2227,16 @@ class ClaudeTaskManager:
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['codex'],
                 model=os.environ.get('KC_CODEX_MODEL', ''),
+            ))
+        # DeepSeek Harness — gated on BOTH signals. Binary presence alone is
+        # the right test only for OAuth CLIs (agy, codex); `dsh` authenticates
+        # with an API key, so listing it without one would offer an entry whose
+        # every turn fails with "Authentication Fails". An older image without
+        # the binary simply doesn't list it — nothing else is affected.
+        if shutil.which('dsh') and os.environ.get('DEEPSEEK_API_KEY'):
+            out.append(dict(
+                ClaudeTaskManager.ASSISTANTS['deepseek-harness'],
+                model=os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL),
             ))
         # LibreFang — listed only when its CLI is actually resolvable (older
         # images predate it, and /usr/local/bin/librefang is a symlink to a
@@ -2306,6 +2336,7 @@ class ClaudeTaskManager:
         'opencode-zen': 'KC_OPENCODE_ZEN_MODELS',
         'codex': 'KC_CODEX_MODELS',
         'antigravity': 'KC_ANTIGRAVITY_MODELS',
+        'deepseek-harness': 'KC_DSH_MODELS',
     }
 
     @staticmethod
@@ -2332,6 +2363,15 @@ class ClaudeTaskManager:
             # the free catalogue so they're one tap away in the switcher.
             default = os.environ.get('KC_OPENCODE_ZEN_MODEL', _OPENCODE_ZEN_DEFAULT_MODEL)
             return _dedup_keep_order([default, *_OPENCODE_ZEN_FREE_MODELS])
+        if assistant_id == 'deepseek-harness':
+            # The harness's own ids, read off a live `session/new`'s advertised
+            # model option. The bridge resolves a bare id here against that
+            # option, so this layer never handles the encoded
+            # ["provider","model"] pair form. The experimental vision model the
+            # harness also offers is left out of the default list — an operator
+            # who wants it sets KC_DSH_MODELS.
+            default = os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL)
+            return _dedup_keep_order([default, *_DSH_MODELS])
         return []
 
     @staticmethod
@@ -2385,7 +2425,23 @@ class ClaudeTaskManager:
         'claude': 'xhigh',
         'codex': 'xhigh',
         'kc-harness': 'high',
+        # DeepSeek Harness exposes off/low/high/max as a session config option,
+        # so `max` is genuinely reachable and nothing clamps. Its four stops
+        # don't line up 1:1 with the canonical five — _DSH_EFFORT_VOCAB below
+        # owns that translation.
+        'deepseek-harness': 'max',
     }
+
+    # Canonical level → the DeepSeek Harness's own word for it. `high` is the
+    # harness's DEFAULT and its documented "balance for most tasks", so the
+    # canonical default maps 1:1 and canonical `medium` rounds UP to it rather
+    # than down to `low` — understating effort is the more surprising failure.
+    # `off` is never selected: a user who picks a level wants reasoning.
+    # NB: MUST mirror hypervisor_session.DeepseekHarnessAdapter._EFFORT_NATIVE,
+    # which delivers the same knob on the Hypervisor path — a unit test asserts
+    # the two stay in lockstep, exactly as _EFFORT_CAP does.
+    _DSH_EFFORT_VOCAB = {'low': 'low', 'medium': 'high', 'high': 'high',
+                         'xhigh': 'max', 'max': 'max'}
 
     # assistant id → env var overriding its DEFAULT effort (helm
     # assistant.<name>.effort → KC_*_EFFORT), mirroring _MODEL_LIST_ENV/KC_*_MODEL.
@@ -2393,6 +2449,7 @@ class ClaudeTaskManager:
         'claude': 'KC_CLAUDE_EFFORT',
         'codex': 'KC_CODEX_EFFORT',
         'kc-harness': 'KC_HARNESS_EFFORT',
+        'deepseek-harness': 'KC_DSH_EFFORT',
     }
 
     @staticmethod
@@ -2468,6 +2525,10 @@ class ClaudeTaskManager:
         'claude': {'env': 'CLAUDE_CODE_EFFORT_LEVEL'},
         'codex': {'config': 'model_reasoning_effort'},
         'kc-harness': {'env': 'KC_EFFORT'},
+        # A third delivery shape: a plain `--flag value` pair. `vocab`
+        # translates the canonical level into the CLI's own word first, for a
+        # CLI whose stops don't match the canonical five.
+        'deepseek-harness': {'flag': '--effort', 'vocab': _DSH_EFFORT_VOCAB},
     }
 
     @staticmethod
@@ -2487,9 +2548,14 @@ class ClaudeTaskManager:
         spliced into the `bash -lc` command line built by assistant_command."""
         spec = ClaudeTaskManager._EFFORT_DELIVERY.get(assistant) or {}
         native = ClaudeTaskManager.resolve_native_effort(assistant, effort)
-        if not native or not spec.get('config'):
+        if not native:
             return []
-        return ['-c', _shell_quote(f'{spec["config"]}={native}')]
+        if spec.get('config'):
+            return ['-c', _shell_quote(f'{spec["config"]}={native}')]
+        if spec.get('flag'):
+            value = (spec.get('vocab') or {}).get(native, native)
+            return [spec['flag'], _shell_quote(value)]
+        return []
 
     @staticmethod
     def resolve_assistant(requested):
@@ -2660,6 +2726,32 @@ class ClaudeTaskManager:
             # Reasoning effort (#362): `-c model_reasoning_effort=<level>`
             # overrides ~/.codex/config.toml for this invocation only.
             parts += ClaudeTaskManager.effort_cli_args('codex', effort)
+            return ' '.join(parts)
+        if assistant == 'deepseek-harness':
+            # DeepSeek Harness (#639) in a Build pane. `dsh` ships no REPL we
+            # can use — the `tui` profile is not among the bundles the npm
+            # package installs, and `--profile headless` is one-shot prose with
+            # no tool output — so the Build runs the ACP bridge's serve mode:
+            # one long-lived ACP session, prompt after prompt off the tmux
+            # pane, rendered as stream-json + plain text. Same
+            # reads-stdin-emits-JSONL contract as kc-harness above.
+            #
+            # `auto_approve` is deliberately a NO-OP here, and that is a real
+            # difference from the other assistants: ACP's permission requests
+            # arrive as JSON-RPC calls that must be answered programmatically
+            # within the turn, and a tmux pane has no way to put that question
+            # to the user and get an answer back. The bridge therefore always
+            # auto-approves — the pod is the sandbox — so the Build tab does
+            # NOT keep prompting for approval the way it does for claude/ante.
+            # Documented in docs/llm-setup.md so it isn't a surprise.
+            model = model or os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL)
+            # `$PWD` is the task's workdir: create_task wraps this in
+            # `cd <workdir> && …` under `bash -lc`.
+            parts = ['python3', '/tmp/browser/acp_bridge.py', '--serve',
+                     '--format', 'stream-json', '--cwd', '"$PWD"']
+            if model:
+                parts.append(f'--model {_shell_quote(model)}')
+            parts += ClaudeTaskManager.effort_cli_args('deepseek-harness', effort)
             return ' '.join(parts)
         if assistant == 'librefang':
             # Interactive chat REPL with the registry's "coder" agent (synced

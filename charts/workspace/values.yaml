@@ -565,6 +565,27 @@ assistant:
   deepseek:
     apiKey: ""                            # DEEPSEEK_API_KEY
     model: "deepseek-chat"                # or "deepseek-reasoner"
+  # DeepSeek Harness (https://github.com/deepseek-ai/deepseek-harness) — the
+  # `dsh` CLI, DeepSeek's OWN agent harness, pre-installed in the image. This
+  # is a different product from assistant.deepseek above: that one is
+  # OpenCode's agent loop with a DeepSeek model answering it; this one is the
+  # agent loop DeepSeek's own authors built for their models, driven over the
+  # harness's ACP JSON-RPC server. Both coexist; pick per task.
+  #
+  # There is NO key to set here — it reuses assistant.deepseek.apiKey (the same
+  # DEEPSEEK_API_KEY). The dashboard lists it only when that key is set AND the
+  # `dsh` binary resolves, so an older image simply doesn't offer it.
+  deepseekHarness:
+    model: ""                             # KC_DSH_MODEL (blank => deepseek-v4-flash)
+    # Optional: comma-separated list that fully REPLACES the built-in model
+    # list in the in-chat switcher (e.g. to surface the experimental vision
+    # model, which is not offered by default).
+    models: ""                            # KC_DSH_MODELS
+    # Default reasoning effort (#362). The harness's own stops are
+    # off/low/high/max; the canonical level is translated, and `medium` rounds
+    # UP to the harness's `high` (its documented balance point) rather than
+    # down. Blank => built-in default (high). Nothing clamps: `max` is real.
+    effort: ""                            # KC_DSH_EFFORT
   # OpenCode → Zen (https://opencode.ai/zen) — OpenCode's hosted gateway of
   # free coding models (~100 req/day, no credit card, one-time free signup key).
   # This is the zero-cost path for trial/demo workspaces: set assistant.default
