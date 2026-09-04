@@ -215,6 +215,18 @@ spec:
         - name: KC_MEMORY_INJECT_MAX_ENTRY_CHARS
           value: {{ . | quote }}
         {{- end }}
+        {{- /* Mobile push (Expo). server.py reads KC_PUSH_ENABLED at import;
+               only emitted when disabled, since push_notify defaults to on.
+               EXPO_ACCESS_TOKEN is optional (Expo's push API needs no key
+               unless the project enables enhanced security). */}}
+        {{- if not (.Values.push | default dict).enabled }}
+        - name: KC_PUSH_ENABLED
+          value: "false"
+        {{- end }}
+        {{- with (.Values.push | default dict).expoAccessToken }}
+        - name: EXPO_ACCESS_TOKEN
+          value: {{ . | quote }}
+        {{- end }}
         {{- if .Values.github.app.appId }}
         # GITHUB_APP_PRIVATE_KEY is deliberately NOT here (issue #558). The
         # agent runs in this container and every process it spawns inherits

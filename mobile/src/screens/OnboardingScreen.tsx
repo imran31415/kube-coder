@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Button, Label } from '../components/ui';
 import { ping } from '../api/client';
+import { registerForPush } from '../push/notifications';
 import { validateHost } from '../util/urlPolicy';
 import { DEMO_HOST, getConfig, saveConnection } from '../store/config';
 import { colors, font, gradients, radius, space } from '../theme';
@@ -42,7 +43,9 @@ export default function OnboardingScreen() {
     await saveConnection(policy.url ?? host, token);
     try {
       await ping();
-      // success — App re-renders into the tab navigator via config subscription
+      // success — App re-renders into the tab navigator via config subscription.
+      // Register this device for push now that we're connected (best-effort).
+      void registerForPush();
     } catch (e) {
       setError(`Could not connect: ${(e as Error).message}`);
       // roll back so we stay on onboarding

@@ -131,6 +131,11 @@ export function buildConfig(): ExpoConfig {
             'Allow kube-coder to take a photo to attach to a task.',
         },
       ],
+      // Mobile push notifications: high-signal alerts (an agent is waiting on
+      // you / a decision was recorded) delivered to the phone. The config
+      // plugin adds the iOS `aps-environment` entitlement EAS needs; APNs
+      // credentials are managed by EAS at build time.
+      'expo-notifications',
     ],
     extra: {
       eas: {

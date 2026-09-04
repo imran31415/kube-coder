@@ -10,6 +10,7 @@ import { ProviderKeysCard } from '../components/ProviderKeysCard';
 import { MessagingCard } from '../components/MessagingCard';
 import { UpdatesCard } from '../components/UpdatesCard';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
+import { unregisterForPush } from '../push/notifications';
 import { useConfig } from '../store/useConfig';
 import { colors, font, space } from '../theme';
 import { confirmAction } from '../util/confirm';
@@ -33,7 +34,13 @@ export default function SettingsScreen() {
         : 'Your saved host and API token will be removed from this device.',
       confirmLabel: isDemo ? 'Leave demo' : 'Disconnect',
       destructive: true,
-      onConfirm: clearConnection,
+      // Drop the push registration first: it needs the host/token that
+      // clearConnection is about to erase, and leaving it behind would keep
+      // the old workspace pushing to this phone.
+      onConfirm: async () => {
+        await unregisterForPush();
+        await clearConnection();
+      },
     });
   }
 
