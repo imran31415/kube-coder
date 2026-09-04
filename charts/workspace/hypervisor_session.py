@@ -233,7 +233,8 @@ def _expand_choices(partial: Dict[str, Any]) -> List[Dict[str, Any]]:
 # test asserts the two stay in lockstep (they live in separate modules because
 # server imports this one, not vice-versa).
 EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
-EFFORT_CAP = {'claude': 'xhigh', 'codex': 'xhigh', 'kc-harness': 'high'}
+EFFORT_CAP = {'claude': 'xhigh', 'codex': 'xhigh', 'kc-harness': 'high',
+              'deepseek-harness': 'max'}
 
 
 def native_effort(assistant: str, canonical: str) -> str:

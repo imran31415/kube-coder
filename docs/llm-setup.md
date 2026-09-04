@@ -3,10 +3,10 @@
 How the three assistants are wired up, what each one is for, and how to
 configure the GPU droplet for the open-source path.
 
-## The three assistants
+## The assistants
 
-Each kube-coder workspace exposes up to three assistant options in the
-dashboard's New Task dropdown. All three share the same task lifecycle
+Each kube-coder workspace exposes a set of assistant options in the
+dashboard's New Task dropdown. They all share the same task lifecycle
 (tmux session, JSONL output, memory injection, dashboard rendering); they
 differ only in which CLI/process runs inside the pane and which model
 backs it.
@@ -16,6 +16,8 @@ backs it.
 | `claude`               | Claude Code       | Anthropic API (`claude` CLI in pod)    | Default. Full agentic work.                         |
 | `gemini`               | Google Gemini     | Gemini API (`gemini` CLI in pod)       | Native Google models; generous free tier.           |
 | `opencode-openrouter`  | OpenRouter        | `opencode` CLI → OpenRouter            | Claude-class behaviour without Anthropic billing.   |
+| `opencode-deepseek`    | DeepSeek          | `opencode` CLI → DeepSeek API          | OpenCode's agent loop, answered by a DeepSeek model. |
+| `deepseek-harness`     | DeepSeek Harness  | `dsh` CLI over ACP → DeepSeek API      | DeepSeek's OWN agent loop. See below.               |
 | `kc-harness`           | Opensource GPU    | In-pod Python loop → Ollama (or any OpenAI-compatible endpoint) | Self-hosted open models on a GPU droplet.           |
 
 Claude Code is always available. The other two only appear in the
@@ -74,6 +76,104 @@ Wiring:
   loader silently drop the rest.
 - `assistant_command('opencode-openrouter')` returns
   `opencode --model openrouter/<model>`.
+
+## DeepSeek Harness (`dsh`)
+
+DeepSeek's own open-source agent harness
+([deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)),
+pre-installed in the image.
+
+### How it differs from `opencode-deepseek`
+
+They look similar and are not. Both talk to the DeepSeek API with the
+same key, but the *agent* is different:
+
+| | `opencode-deepseek` | `deepseek-harness` |
+| --- | --- | --- |
+| Agent loop | OpenCode's | DeepSeek's own |
+| Tool surface | OpenCode's tools | the harness's tools |
+| Failure modes | OpenCode's | the harness's |
+| Model's role | answers the prompts | the harness is tuned for it |
+
+Neither replaces the other, and enabling the key lists **both**. Pick
+per task: reach for the harness when you want the loop the model's
+authors built for it, and for `opencode-deepseek` when you want
+OpenCode's behaviour with DeepSeek pricing.
+
+### Enabling it
+
+There is **no key of its own** — it reuses the DeepSeek key you already
+set for `opencode-deepseek`:
+
+```yaml
+# secrets/<user>/assistant.yaml (gitignored)
+assistant:
+  deepseek:
+    apiKey: "sk-…"          # https://platform.deepseek.com — shared by BOTH
+  deepseekHarness:
+    model: ""               # optional; blank => deepseek-v4-flash
+    models: ""              # optional; comma-separated, replaces the switcher list
+    effort: ""              # optional; low/medium/high/xhigh/max
+```
+
+The entry appears in the picker only when **both** are true:
+
+- `DEEPSEEK_API_KEY` is set, **and**
+- the `dsh` binary resolves on PATH.
+
+Binary presence alone is not enough. That is the right signal only for
+the OAuth CLIs (`agy`, `codex`); `dsh` authenticates with an API key, so
+listing it without one would offer an entry whose every turn fails with
+`Authentication Fails`. On a workspace image predating the install, the
+entry is simply absent — nothing else is affected.
+
+### Wiring
+
+- The CLI is installed in the image under its **own Node 22** at
+  `/opt/node22`, with a wrapper on PATH. It does not run on the image's
+  Node 20 — its plugin tree needs `node:zlib`'s `createZstdDecompress`
+  (≥ 22.15) and `Promise.withResolvers` (≥ 22.0). See
+  `devlaptop/Dockerfile` before bumping the pin.
+- `start.sh` points `~/.dsh` at the PVC. That one directory holds the
+  harness's sessions, its auto-initialized profiles and its
+  anonymous-user id; on the ephemeral home it would be wiped on every
+  restart and session resume would resume nothing.
+- Both surfaces go through **ACP**, the Agent Client Protocol
+  (`dsh --profile acp`), not the prose-only `--profile headless`. That
+  is what gives the Hypervisor real streamed tool cards instead of a
+  block of text. `charts/workspace/acp_bridge.py` speaks the protocol
+  and re-emits it as line-delimited events.
+- Hypervisor chat → `DeepseekHarnessAdapter` in `hypervisor_session.py`,
+  which spawns the bridge per turn and resumes the ACP session.
+- Builds → `assistant_command('deepseek-harness')` returns the bridge in
+  `--serve --format stream-json` mode: one long-lived ACP session fed
+  prompt after prompt from the tmux pane. `dsh` ships no REPL we can use
+  (its `tui` profile is not among the bundles the npm package installs,
+  and `--profile headless` is one-shot prose).
+
+### One behaviour difference worth knowing
+
+**A Build with this assistant does not prompt for tool approval.** For
+`claude`/`ante`, the Build tab leaves the CLI's approval prompts on and
+only the Hypervisor uses the skip-permissions flag. ACP's permission
+requests arrive as JSON-RPC calls that must be answered *inside* the
+turn, and a tmux pane has no way to put that question to you and get an
+answer back — an unanswered request stalls the turn forever. The bridge
+therefore always approves, on both surfaces. The pod is the sandbox.
+
+### Models and effort
+
+The in-chat model switcher offers `deepseek-v4-flash` (default) and
+`deepseek-v4-pro`. The harness also exposes an experimental vision model
+which is deliberately not in the default list — set
+`assistant.deepseekHarness.models` to curate your own.
+
+Reasoning effort maps the workspace's canonical five stops onto the
+harness's own `off`/`low`/`high`/`max`. `high` is the harness's default
+and its documented balance point, so canonical `high` maps to it exactly
+and canonical `medium` rounds **up** to it rather than down to `low`.
+Nothing clamps at the top: `max` is real. `off` is never selected — if
+you pick a level, you want reasoning.
 
 ## Google Gemini
 
@@ -292,6 +392,8 @@ request.
 | ----------------------------------------------------------- | ----------------------------------------------------------------- |
 | `charts/workspace/server.py`                                | `ClaudeTaskManager.ASSISTANTS`, `assistant_command()`, `create_task()`. |
 | `charts/workspace/harness.py`                               | kc-harness implementation (tools, XML parser, REPL).              |
+| `charts/workspace/acp_bridge.py`                            | ACP client for `dsh` — protocol → line-delimited events; `--serve` for Builds. |
+| `charts/workspace/hypervisor_session.py`                    | `DeepseekHarnessAdapter` (and every other Hypervisor adapter).    |
 | `charts/workspace/harness_test.py`                          | Unit tests for parsing / tool execution.                          |
 | `charts/workspace/templates/browser-configmap.yaml`         | Packages `harness.py` into the configmap mounted at `/tmp/browser`. |
 | `charts/workspace/templates/workspace-entrypoint-configmap.yaml` | Renders `~/.config/opencode/opencode.json` when fallback or openrouter is set. |

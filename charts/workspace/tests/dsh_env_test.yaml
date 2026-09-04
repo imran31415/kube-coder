@@ -1,0 +1,93 @@
+suite: DeepSeek Harness assistant env (#639)
+# `dsh` has no key of its own — it reuses DEEPSEEK_API_KEY, the same key the
+# existing OpenCode→DeepSeek entry uses. Only the model/effort overrides are
+# new, and the server gates the picker entry on the key AND the binary, so
+# these vars are emitted independently of whether a key is configured.
+templates:
+  - templates/deployment.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: emits nothing when the harness is left at its defaults
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_MODEL
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_MODELS
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_EFFORT
+          any: true
+
+  - it: wires the model override
+    template: templates/deployment.yaml
+    set:
+      assistant.deepseekHarness.model: deepseek-v4-pro
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_MODEL
+            value: "deepseek-v4-pro"
+
+  - it: wires a curated model list for the in-chat switcher
+    template: templates/deployment.yaml
+    set:
+      assistant.deepseekHarness.models: "deepseek-v4-pro,deepseek-v4-flash-vision-exp"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_MODELS
+            value: "deepseek-v4-pro,deepseek-v4-flash-vision-exp"
+
+  - it: wires the default reasoning effort
+    template: templates/deployment.yaml
+    set:
+      assistant.deepseekHarness.effort: max
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_EFFORT
+            value: "max"
+
+  - it: leaves the existing OpenCode DeepSeek path untouched
+    template: templates/deployment.yaml
+    set:
+      assistant.deepseek.apiKey: sk-test
+      assistant.deepseekHarness.model: deepseek-v4-pro
+    asserts:
+      # One key, two assistants: the harness must not displace the OpenCode
+      # provider's own model var.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DEEPSEEK_MODEL
+            value: "deepseek-chat"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_DSH_MODEL
+            value: "deepseek-v4-pro"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEEPSEEK_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: assistant-secrets-testuser
+                key: deepseek-api-key
