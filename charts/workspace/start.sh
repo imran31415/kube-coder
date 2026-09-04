@@ -628,6 +628,40 @@ for HOME_DIR in /home/ubuntu; do
   ln -sfn "$CODEX_TARGET" "$LINK" 2>/dev/null || true
 done
 
+# Persist DeepSeek Harness (`dsh`, issue #639) state across pod restarts. The
+# harness resolves ONE root for all user data — an explicit config path, then
+# $DSH_HOME, then ~/.dsh (@deepseek-ai/dsh-home-paths) — and puts its sessions,
+# its auto-initialized profiles (incl. the `acp` profile the Hypervisor boots)
+# and its anonymous-user id under it. On the ephemeral /home/ubuntu that root is
+# wiped every restart, which would mean session resume resumes nothing and the
+# acp profile is re-initialized on every boot. Point ~/.dsh at the PVC — same
+# pattern as ~/.codex above, and it needs no env var because ~/.dsh IS the
+# documented default root.
+DSH_TARGET=/home/dev/.dsh
+mkdir -p "$DSH_TARGET"
+chmod 700 "$DSH_TARGET"
+if [ -L "$DSH_TARGET" ]; then
+  DD=$(readlink "$DSH_TARGET")
+  if [ "$DD" = "$DSH_TARGET" ] || [ "$DD" = ".dsh" ]; then
+    rm -f "$DSH_TARGET"; mkdir -p "$DSH_TARGET"; chmod 700 "$DSH_TARGET"
+  fi
+fi
+for HOME_DIR in /home/ubuntu; do
+  [ -d "$HOME_DIR" ] || continue
+  LINK="$HOME_DIR/.dsh"
+  [ "$LINK" = "$DSH_TARGET" ] && continue
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$DSH_TARGET" ]; then
+    continue
+  fi
+  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+    cp -an "$LINK"/. "$DSH_TARGET"/ 2>/dev/null || true
+    rm -rf "$LINK"
+  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    rm -f "$LINK"
+  fi
+  ln -sfn "$DSH_TARGET" "$LINK" 2>/dev/null || true
+done
+
 # Persist Ante's config across pod restarts and keep its binary on the PVC.
 # Ante stores everything (settings, sessions, versions.json) under ~/.ante,
 # which on the ephemeral /home/ubuntu home was wiped every restart. We point
