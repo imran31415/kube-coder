@@ -146,6 +146,21 @@ export const createTask = (input: CreateTaskInput) => apiPost<TaskDetail>('/api/
 export const sendMessage = (id: string, prompt: string, submit = true) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/message`, { prompt, submit });
 
+/**
+ * Send one control key to the task's live tmux session.
+ *
+ * The same endpoint the mobile key bar uses — Escape is how a running turn is
+ * interrupted, so the composer's Stop button is `sendTaskKey(id, 'escape')`
+ * rather than an endpoint of its own.
+ *
+ * `delivered` is false when the session had already gone. That is a success,
+ * not a failure: Stop is pressed while a turn is ending, so the click landing
+ * just after the CLI settles is the common race, not an edge case.
+ */
+export const sendTaskKey = (id: string, key: string) =>
+  apiPost<{ ok: boolean; key: string; delivered: boolean }>(
+    `/api/claude/tasks/${id}/key`, { key });
+
 export const renameTask = (id: string, name: string) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/rename`, { name });
 

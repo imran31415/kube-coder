@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { TaskStatus, PendingPrompt, PromptOption } from '../../api/tasks';
-import { getTask } from '../../api/tasks';
+import { getTask, sendTaskKey } from '../../api/tasks';
 import { sendFollowup } from '../../store/tasks';
 import { pushToast } from '../../store/ui';
 import { Button } from '../../components/primitives/Button';
@@ -80,6 +80,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
 
   const [busy, setBusy] = useState(false);
   const [prompt, setPrompt] = useState<PendingPrompt | null>(null);
+  const [interrupting, setInterrupting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -247,6 +248,23 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
     }
   }
 
+  async function onInterrupt() {
+    if (status !== 'running' || readOnly || interrupting) return;
+    setInterrupting(true);
+    try {
+      const res = await sendTaskKey(taskId, 'escape');
+      // Distinguish "Escape sent" from "the turn had already finished". Both
+      // are successes; saying the same thing for both makes the button feel
+      // like it worked when there was nothing to work on.
+      if (res?.delivered) pushToast('Interrupt sent', { kind: 'warn' });
+      else pushToast('Nothing to interrupt — the turn had already finished', { kind: 'info' });
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Interrupt failed', { kind: 'danger' });
+    } finally {
+      setInterrupting(false);
+    }
+  }
+
   function onKey(e: KeyboardEvent) {
     // Cmd/Ctrl+Enter sends; plain Enter inserts a newline.
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -361,6 +379,18 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
             >
               <Icon name="image" size={14} />
             </Button>
+            {status === 'running' && (
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                disabled={interrupting || readOnly}
+                title="Interrupt the current assistant turn"
+                onClick={onInterrupt}
+              >
+                <Icon name="close" size={12} /> Stop
+              </Button>
+            )}
             <Button
               type="submit"
               variant="primary"

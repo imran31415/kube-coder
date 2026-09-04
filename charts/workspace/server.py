@@ -14005,14 +14005,43 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Task not found'}, 404)
             return
         session_name = task.get('tmux_session', f'kube-coder-{self._claude_task_id}')
-        result = subprocess.run(
-            ['tmux', 'send-keys', '-t', session_name, tmux_key],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            self.send_json({'error': result.stderr.strip() or 'tmux send-keys failed'}, 500)
+
+        # A session that has already gone is NOT an error. The web composer's
+        # Stop button sends `escape` here, and Stop is pressed while a turn is
+        # ending — so the click landing microseconds after the CLI settles is
+        # the common race, not an edge case. Reporting it as a failure raises
+        # an error toast for a turn that did exactly what the user asked.
+        # `delivered` lets a caller tell "key sent" from "nothing left to send
+        # it to"; both are successes. handle_hypervisor_stop reasons the same
+        # way about idle threads.
+        #
+        # Every tmux call is bounded: unbounded, a wedged tmux server parks
+        # this request-handler thread permanently.
+        try:
+            live = subprocess.run(
+                ['tmux', 'has-session', '-t', session_name],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            self.send_json({'ok': True, 'key': key, 'delivered': False})
             return
-        self.send_json({'ok': True, 'key': key})
+        if live.returncode != 0:
+            self.send_json({'ok': True, 'key': key, 'delivered': False})
+            return
+
+        try:
+            result = subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, tmux_key],
+                capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as e:
+            self.send_json({'error': f'tmux send-keys failed: {e}'}, 502)
+            return
+        if result.returncode != 0:
+            # The session exists but refused the key — a real fault, and an
+            # upstream one, so 502 rather than 500.
+            self.send_json(
+                {'error': result.stderr.strip() or 'tmux send-keys failed'}, 502)
+            return
+        self.send_json({'ok': True, 'key': key, 'delivered': True})
 
     # ── Desktop launcher handlers ──────────────────────────────────────
     # All reads (GET /api/desktop, /api/desktop/{id}) pass through
