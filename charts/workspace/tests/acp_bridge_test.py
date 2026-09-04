@@ -19,6 +19,8 @@ Run with:    python3 -m unittest tests.acp_bridge_test
 (from charts/workspace/)
 """
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -724,6 +726,83 @@ class ServeModeTest(unittest.TestCase):
         results = [e for e in events if e.get('type') == 'result']
         self.assertEqual(len(results), 1)
         self.assertIn('no key', results[0]['result'])
+
+
+class StreamJsonSinkTest(unittest.TestCase):
+    """Serve mode reuses ONE sink across every prompt, so its per-turn state
+    has to be reset per turn. Driven directly: the failure only shows up in a
+    turn that settles without saying anything, which is awkward to script
+    through a stub agent but trivial here."""
+
+    def drive(self, steps):
+        sink = acp_bridge.StreamJsonSink()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            for step in steps:
+                if step == 'START':
+                    sink.turn_start()
+                elif step == 'END':
+                    sink.turn_end()
+                else:
+                    sink.emit(step)
+        out = []
+        for line in buf.getvalue().splitlines():
+            if line.startswith('{'):
+                out.append(json.loads(line))
+        return out
+
+    def results(self, steps):
+        return [e['result'] for e in self.drive(steps) if e.get('type') == 'result']
+
+    def test_a_settled_turn_reports_its_own_answer(self):
+        self.assertEqual(
+            self.results(['START', {'type': 'message', 'text': 'hello'}, 'END']),
+            ['hello'])
+
+    def test_a_failed_turn_does_not_bleed_into_the_next_one(self):
+        # The bug this exists for: a failed turn sets the result text and never
+        # reaches turn_end, so without the per-turn reset the NEXT turn — if it
+        # settles without saying anything, e.g. a tool-only turn — would close
+        # by reporting the previous turn's error as its own outcome.
+        self.assertEqual(self.results([
+            'START', {'type': 'error', 'text': 'boom'},          # turn 1 fails
+            'START',                                             # turn 2
+            {'type': 'tool_call', 'id': 't1', 'name': 'bash', 'input': {}},
+            {'type': 'tool_result', 'id': 't1', 'text': 'ok'},
+            'END',
+        ]), ['error: boom', ''])
+
+    def test_an_answer_does_not_bleed_into_the_next_turn_either(self):
+        self.assertEqual(self.results([
+            'START', {'type': 'message', 'text': 'first answer'}, 'END',
+            'START', {'type': 'tool_call', 'id': 't1', 'name': 'bash',
+                      'input': {}}, 'END',
+        ]), ['first answer', ''])
+
+    def test_thoughts_are_shown_but_are_not_the_answer(self):
+        # A `thought` is rendered for the watcher, but the turn's result is the
+        # committed message — reporting reasoning as the answer would be worse
+        # than reporting nothing.
+        self.assertEqual(self.results([
+            'START', {'type': 'thought', 'text': 'hmm'},
+            {'type': 'message', 'text': 'the answer'}, 'END']),
+            ['the answer'])
+
+    def test_no_plain_line_can_be_mistaken_for_an_event(self):
+        sink = acp_bridge.StreamJsonSink()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sink.turn_start()
+            sink.emit({'type': 'session', 'sessionId': 's1'})
+            sink.emit({'type': 'message', 'text': '{"looks": "like json"}'})
+            sink.emit({'type': 'tool_call', 'id': 't', 'name': 'x', 'input': {}})
+            sink.emit({'type': 'tool_result', 'id': 't', 'text': 'r'})
+            sink.emit({'type': 'error', 'text': 'e'})
+        for line in buf.getvalue().splitlines():
+            if line.startswith('{'):
+                json.loads(line)  # every {-leading line must parse as an event
+            else:
+                self.assertTrue(line[:1] in '·◇…↳⚒✗', line)
 
 
 class ContentMappingTest(unittest.TestCase):
