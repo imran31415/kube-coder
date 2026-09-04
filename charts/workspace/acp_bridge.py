@@ -112,11 +112,103 @@ def default_argv() -> List[str]:
     return [DSH_BIN, '--profile', DSH_PROFILE]
 
 
+# ── output sinks ────────────────────────────────────────────────────────
+# The same turn feeds two very different consumers:
+#   * the Hypervisor adapter, which wants our small envelope, one object per
+#     line, and renders the tool cards itself;
+#   * the Builds tab, which runs this in a tmux pane and whose parser reads
+#     Claude's stream-json shape (the same events kc-harness emits), with
+#     human-readable lines interleaved for whoever is watching the pane.
+# One `emit()` call site, two renderings.
+
+
+class Sink:
+    def emit(self, event: Dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def turn_end(self) -> None:
+        """Called after a turn settles. Only the pane rendering needs it."""
+
+
+def _write(line: str) -> None:
+    sys.stdout.write(line + '\n')
+    sys.stdout.flush()
+
+
+class EventSink(Sink):
+    """One JSON object per line, exactly as documented at the top of this file."""
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        _write(json.dumps(event, ensure_ascii=False))
+
+
+class StreamJsonSink(Sink):
+    """Claude stream-json for the dashboard + plain text for the tmux pane.
+
+    Mirrors harness.py's contract: JSONL events and pretty lines share stdout,
+    and the dashboard's parser ignores any line that is not JSON — so a line
+    must never merely *start* with `{`. Pretty lines here are prefixed with a
+    glyph, which guarantees that.
+    """
+
+    _GLYPH = {'message': '◇ assistant', 'thought': '… thinking',
+              'tool_result': '↳', 'error': '✗ error'}
+
+    def __init__(self):
+        self._last_text = ''
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        t = event.get('type')
+        text = _stringify(event.get('text'))
+        if t == 'session':
+            _write(f"· session {event.get('sessionId')}")
+            return
+        if t in ('message', 'thought'):
+            if t == 'message':
+                self._last_text = text
+            _write(json.dumps({'type': 'assistant', 'message': {'content': [
+                {'type': 'text', 'text': text}]}}, ensure_ascii=False))
+            _write(f'{self._GLYPH[t]}  {text}')
+            return
+        if t == 'tool_call':
+            name = event.get('name') or 'tool'
+            inp = event.get('input') if isinstance(event.get('input'), dict) else {}
+            _write(json.dumps({'type': 'assistant', 'message': {'content': [
+                {'type': 'tool_use', 'id': event.get('id') or '', 'name': name,
+                 'input': inp}]}}, ensure_ascii=False))
+            _write(f'⚒ {name}  {json.dumps(inp, ensure_ascii=False)[:240]}')
+            return
+        if t == 'tool_result':
+            _write(json.dumps({'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': event.get('id') or '',
+                 'content': text, 'is_error': bool(event.get('is_error'))}]}},
+                ensure_ascii=False))
+            _write(f"{self._GLYPH['tool_result']} {text[:600]}")
+            return
+        if t == 'error':
+            self._last_text = f'error: {text}'
+            _write(json.dumps({'type': 'result', 'result': self._last_text},
+                              ensure_ascii=False))
+            _write(f"{self._GLYPH['error']}  {text}")
+            return
+        # `usage` is context telemetry and `done` is handled by turn_end so the
+        # result event carries the answer text rather than an empty string.
+
+    def turn_end(self) -> None:
+        _write(json.dumps({'type': 'result', 'result': self._last_text},
+                          ensure_ascii=False))
+        self._last_text = ''
+
+
 class AcpBridge:
     def __init__(self, cwd: str, session_id: str = '', model: str = '',
                  effort: str = '', timeout: int = DEFAULT_TIMEOUT,
-                 argv: Optional[List[str]] = None):
+                 argv: Optional[List[str]] = None,
+                 sink: Optional['Sink'] = None):
         self.cwd = cwd
+        # Where events go. EventSink is the adapter-facing envelope; the Builds
+        # tab swaps in StreamJsonSink so the same turn renders in a tmux pane.
+        self.sink = sink or EventSink()
         self.want_session = session_id
         self.model = model
         self.effort = effort
@@ -144,8 +236,7 @@ class AcpBridge:
     # ── plumbing ────────────────────────────────────────────────────────
 
     def emit(self, obj: Dict[str, Any]) -> None:
-        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + '\n')
-        sys.stdout.flush()
+        self.sink.emit(obj)
 
     def _send(self, obj: Dict[str, Any]) -> None:
         if not self.proc or not self.proc.stdin:
@@ -477,7 +568,13 @@ class AcpBridge:
             _log(f'set {config_id}={value!r} failed: {_err_text(r)}')
 
     def prompt(self, text: str) -> int:
-        """Run one turn. Returns the process exit code to use."""
+        """Run one turn. Returns the process exit code to use.
+
+        Safe to call repeatedly on one live connection (serve mode): per-turn
+        state is the text buffer and the tool table, both reset here.
+        """
+        self._buf, self._buf_kind, self._buf_msg_id = [], '', ''
+        self._tools = {}
         r = self.request('session/prompt', {
             'sessionId': self.session_id,
             'prompt': [{'type': 'text', 'text': text}],
@@ -488,6 +585,9 @@ class AcpBridge:
             return 1
         stop = str((r.get('result') or {}).get('stopReason') or '')
         self.emit({'type': 'done', 'stopReason': stop or 'end_turn'})
+        # Only a SETTLED turn gets the pane's closing `result` event; the error
+        # branch above already emitted its own, and two would read as two turns.
+        self.sink.turn_end()
         # `refusal` and `cancelled` are real outcomes, not failures: the
         # transcript already shows what happened, so exiting non-zero would
         # make the adapter print a spurious "exited with code 1" on top of it.
@@ -658,6 +758,63 @@ def _read_prompt() -> str:
         return ''
 
 
+# In serve mode stdin is a tmux pane, not a pipe: `tmux paste-buffer` types the
+# prompt in and never sends EOF, so `sys.stdin.read()` blocks forever. kc-harness
+# already solved this exactly once, with an idle-timeout terminator that works
+# for both a paste and a human typing. Import it rather than write a second,
+# subtly-different copy — both modules land in the same directory at pod boot.
+FIRST_PROMPT_TIMEOUT = 300   # a dashboard paste lands a few seconds after spawn
+EXIT_WORDS = ('/exit', '/quit', 'exit', 'quit', ':q')
+
+
+def _serve_reader():
+    """harness.read_prompt, or None when it cannot be imported."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from harness import read_prompt  # noqa: WPS433 (deliberate late import)
+    except Exception as e:                # pragma: no cover - defensive
+        _log(f'cannot import harness.read_prompt: {e}')
+        return None
+    return read_prompt
+
+
+def serve(bridge: 'AcpBridge') -> int:
+    """Read prompt after prompt from a tmux pane, reusing ONE ACP session.
+
+    This is what the Builds tab runs. Reusing the session is not just tidiness:
+    booting `dsh`'s plugin tree is the slow part of a turn, and a fresh session
+    per prompt would also throw away the harness's KV-cache prefix and its
+    conversation history.
+    """
+    read_prompt = _serve_reader()
+    if read_prompt is None:
+        bridge.emit({'type': 'error',
+                     'text': 'serve mode unavailable: harness.read_prompt '
+                             'could not be imported'})
+        return 1
+    first = True
+    while True:
+        text = read_prompt(
+            first_chunk_timeout=FIRST_PROMPT_TIMEOUT if first else None)
+        if text is None:                       # stdin closed
+            _log('stdin closed, exiting')
+            return 0
+        if not text.strip():
+            if first:
+                # A paste that never landed would otherwise look hung from the
+                # dashboard forever.
+                bridge.emit({'type': 'error', 'text': '(no prompt received)'})
+                return 0
+            continue
+        if text.strip().lower() in EXIT_WORDS:
+            _log('bye')
+            return 0
+        first = False
+        bridge.prompt(text)
+        # A failed turn is not a failed SESSION: the pane stays open so the
+        # user can fix the prompt (or the key) and try again.
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description='Drive `dsh --profile acp` and emit line-delimited events.')
@@ -672,15 +829,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                          '(off/low/high/max), best-effort')
     ap.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT,
                     help='seconds to allow one turn to settle')
+    ap.add_argument('--format', choices=('events', 'stream-json'),
+                    default='events',
+                    help="'events' (default) for the Hypervisor adapter; "
+                         "'stream-json' for a Builds tmux pane")
+    ap.add_argument('--serve', action='store_true',
+                    help='stay open and take prompt after prompt from stdin, '
+                         'reusing one ACP session (the Builds tab)')
     args = ap.parse_args(argv)
 
-    text = _read_prompt()
-    if not text.strip():
-        print(json.dumps({'type': 'error', 'text': 'empty prompt'}), flush=True)
-        return 2
+    sink = StreamJsonSink() if args.format == 'stream-json' else EventSink()
+
+    text = ''
+    if not args.serve:
+        text = _read_prompt()
+        if not text.strip():
+            sink.emit({'type': 'error', 'text': 'empty prompt'})
+            return 2
 
     bridge = AcpBridge(cwd=args.cwd, session_id=args.session, model=args.model,
-                       effort=args.effort, timeout=args.timeout)
+                       effort=args.effort, timeout=args.timeout, sink=sink)
 
     def on_signal(_signum, _frame):
         # A user-issued stop should cancel the TURN, giving the agent a chance
@@ -698,7 +866,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         bridge.close()
         return 1
     try:
-        return bridge.prompt(text)
+        return serve(bridge) if args.serve else bridge.prompt(text)
     finally:
         bridge.close()
 

@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -541,6 +542,188 @@ class AcpBridgeE2ETest(unittest.TestCase):
                     {'emit': [_chunk('nope')], 'result': {'stopReason': stop}}))
                 self.assertEqual(run.rc, 0, run.stderr)
                 self.assertEqual(run.first('done')['stopReason'], stop)
+
+
+class ServeModeTest(unittest.TestCase):
+    """Serve mode is what the Builds tab runs: one long-lived ACP session fed
+    prompt after prompt from a tmux pane that never sends EOF."""
+
+    def _spawn(self, scenario, extra_args=()):
+        tmp = tempfile.mkdtemp(prefix='acp-serve-test-')
+        scenario_path = os.path.join(tmp, 'scenario.json')
+        recorded_path = os.path.join(tmp, 'recorded.jsonl')
+        agent_path = os.path.join(tmp, 'stub_agent.py')
+        with open(scenario_path, 'w') as f:
+            json.dump(scenario, f)
+        with open(agent_path, 'w') as f:
+            f.write(STUB_AGENT)
+        bridge_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'acp_bridge.py')
+        env = dict(os.environ)
+        env['KC_DSH_ARGV'] = json.dumps(
+            [sys.executable, agent_path, scenario_path, recorded_path])
+        env['KC_DSH_HANDSHAKE_TIMEOUT'] = '20'
+        proc = subprocess.Popen(
+            [sys.executable, bridge_path, '--cwd', tmp, '--serve', *extra_args],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+        return proc, recorded_path
+
+    @staticmethod
+    def _collect(proc, recorded_path, timeout=90):
+        # A test that already closed stdin must not have communicate() try to
+        # flush it again.
+        if proc.stdin is not None and proc.stdin.closed:
+            proc.stdin = None
+        out, err = proc.communicate(timeout=timeout)
+        events, plain = [], []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                plain.append(line)
+        sent = []
+        if os.path.exists(recorded_path):
+            with open(recorded_path) as f:
+                for line in f:
+                    if line.strip():
+                        sent.append(json.loads(line))
+        return proc.returncode, events, plain, sent, err
+
+    def test_two_prompts_reuse_one_session(self):
+        # Booting dsh's plugin tree is the slow part of a turn, and a fresh
+        # session per prompt would also throw away the conversation.
+        proc, rec = self._spawn(_base_scenario(
+            {'emit': [_chunk('ok')], 'result': {'stopReason': 'end_turn'}}))
+        proc.stdin.write('first prompt\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.write('second prompt\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.close()
+        rc, events, _plain, sent, err = self._collect(proc, rec)
+        self.assertEqual(rc, 0, err)
+        methods = [m.get('method') for m in sent if m.get('method')]
+        self.assertEqual(methods.count('session/new'), 1)
+        self.assertEqual(methods.count('session/prompt'), 2)
+        self.assertEqual(methods.count('initialize'), 1)
+        texts = [m['params']['prompt'][0]['text']
+                 for m in sent if m.get('method') == 'session/prompt']
+        self.assertEqual([t.strip() for t in texts],
+                         ['first prompt', 'second prompt'])
+        self.assertEqual(len([e for e in events if e.get('type') == 'done']), 2)
+
+    def test_closed_stdin_exits_zero(self):
+        proc, rec = self._spawn(_base_scenario(
+            {'emit': [_chunk('ok')], 'result': {'stopReason': 'end_turn'}}))
+        proc.stdin.write('only prompt\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.close()
+        rc, _events, _plain, _sent, err = self._collect(proc, rec)
+        self.assertEqual(rc, 0, err)
+
+    def test_exit_word_closes_the_pane_cleanly(self):
+        proc, rec = self._spawn(_base_scenario(
+            {'emit': [_chunk('ok')], 'result': {'stopReason': 'end_turn'}}))
+        proc.stdin.write('hello\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.write('/exit\n')
+        proc.stdin.flush()
+        rc, _events, _plain, sent, err = self._collect(proc, rec)
+        self.assertEqual(rc, 0, err)
+        methods = [m.get('method') for m in sent if m.get('method')]
+        self.assertEqual(methods.count('session/prompt'), 1)
+
+    def test_a_failed_turn_does_not_end_the_session(self):
+        # The user should be able to fix the key (or the prompt) and retry in
+        # the same pane.
+        scenario = _base_scenario({
+            'error': {'code': -32603, 'message': 'Internal error: turn failed: '
+                                                 'Authentication Fails'}})
+        proc, rec = self._spawn(scenario)
+        proc.stdin.write('one\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.write('two\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.close()
+        rc, events, _plain, sent, err = self._collect(proc, rec)
+        self.assertEqual(rc, 0, err)
+        methods = [m.get('method') for m in sent if m.get('method')]
+        self.assertEqual(methods.count('session/prompt'), 2)
+        self.assertEqual(len([e for e in events if e.get('type') == 'error']), 2)
+
+    def test_stream_json_format_renders_for_a_tmux_pane(self):
+        scenario = _base_scenario({
+            'emit': [
+                _chunk('Looking.'),
+                _update({'sessionUpdate': 'tool_call', 'toolCallId': 't1',
+                         'title': 'Read README.md', 'name': 'read_file',
+                         'status': 'pending', 'rawInput': {'path': 'README.md'}}),
+                _update({'sessionUpdate': 'tool_call_update', 'toolCallId': 't1',
+                         'status': 'completed',
+                         'content': [{'type': 'content',
+                                      'content': {'type': 'text',
+                                                  'text': '# kube-coder'}}]}),
+                _chunk('It is the readme.', message_id='m2'),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        proc, rec = self._spawn(scenario, extra_args=('--format', 'stream-json'))
+        proc.stdin.write('read the readme\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.close()
+        rc, events, plain, _sent, err = self._collect(proc, rec)
+        self.assertEqual(rc, 0, err)
+        kinds = [(e.get('type'),
+                  (e.get('message', {}).get('content') or [{}])[0].get('type'))
+                 for e in events]
+        self.assertEqual(kinds, [
+            ('assistant', 'text'),
+            ('assistant', 'tool_use'),
+            ('user', 'tool_result'),
+            ('assistant', 'text'),
+            ('result', None),
+        ])
+        # The tool blocks use the same field names the Claude log parser reads,
+        # so a Build transcript renders with no special-casing.
+        tool_use = events[1]['message']['content'][0]
+        self.assertEqual(tool_use['name'], 'read_file')
+        self.assertEqual(tool_use['input'], {'path': 'README.md'})
+        self.assertEqual(tool_use['id'], 't1')
+        tool_result = events[2]['message']['content'][0]
+        self.assertEqual(tool_result['tool_use_id'], 't1')
+        self.assertEqual(tool_result['content'], '# kube-coder')
+        self.assertFalse(tool_result['is_error'])
+        # The closing result carries the answer, not an empty string.
+        self.assertEqual(events[-1]['result'], 'It is the readme.')
+        # Human-readable lines share stdout, and none of them may start with
+        # `{` or the dashboard's JSON filter would try to parse them.
+        self.assertTrue(plain)
+        self.assertFalse([p for p in plain if p.startswith('{')])
+
+    def test_stream_json_reports_a_failed_turn_once(self):
+        scenario = _base_scenario({
+            'error': {'code': -32603, 'message': 'turn failed: no key'}})
+        proc, rec = self._spawn(scenario, extra_args=('--format', 'stream-json'))
+        proc.stdin.write('go\n')
+        proc.stdin.flush()
+        time.sleep(4)
+        proc.stdin.close()
+        rc, events, _plain, _sent, err = self._collect(proc, rec)
+        self.assertEqual(rc, 0, err)
+        results = [e for e in events if e.get('type') == 'result']
+        self.assertEqual(len(results), 1)
+        self.assertIn('no key', results[0]['result'])
 
 
 class ContentMappingTest(unittest.TestCase):
