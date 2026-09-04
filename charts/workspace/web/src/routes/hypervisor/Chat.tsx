@@ -752,6 +752,10 @@ export function Chat({
   // closed the jiggle feedback loop (#348).
   const programmaticTopRef = useRef<number | null>(null);
   const pinRafRef = useRef(0);
+  // Set while a transcript *swap* is re-laying out, so the scroll events that
+  // reflow fires are not mistaken for the reader leaving the bottom (#644).
+  const swapEchoRef = useRef(false);
+  const swapRafRef = useRef(0);
 
   /** One scroll write: park the viewport on the newest message. */
   function writeBottom() {
@@ -795,6 +799,17 @@ export function Chat({
     ) {
       return;
     }
+    // Mid-swap the browser is re-laying out a transcript that was replaced
+    // wholesale, and clamping scrollTop as the flow's height changes under it.
+    // Those scrolls are the reflow talking, not the reader (#644) — keep the
+    // pin, and put the viewport back on the newest message, since the offset
+    // the clamp chose is meaningless in the document that just replaced it.
+    // This settles rather than loops: the write lands at the bottom, so the
+    // scroll it fires takes the `< 80` branch above.
+    if (swapEchoRef.current) {
+      pinToBottom();
+      return;
+    }
     pinnedRef.current = false;
   }
 
@@ -804,6 +819,48 @@ export function Chat({
     pinnedRef.current = true;
     setVisibleTurns(TURN_WINDOW);
   }, [active]);
+
+  // The transcript source flips from `capture` to `session_log` the moment a
+  // turn completes, and that swap replaces every event: seqs are re-stamped, so
+  // the whole flow re-renders and the browser clamps scrollTop while the new
+  // heights settle. The clamp fires a `scroll` event that onTranscriptScroll
+  // read as "the reader chose to leave the bottom", unpinning someone who never
+  // touched the page — and because the session log is the *fuller* record
+  // (structured tool runs the live capture never showed), the offset it strands
+  // them at sits well up in older messages. That is the reported jump: the view
+  // leaps backwards exactly when the answer they were waiting for arrives
+  // (#644).
+  //
+  // Raised during render rather than from an effect, for two reasons: the
+  // reflow's scroll can land before effects flush (by then the echo would have
+  // cleared the pin, and nothing could tell that reader from one who genuinely
+  // scrolled up), and the hold's lifetime must not depend on effect ordering —
+  // an effect that early-returns leaves it stuck on, which would pin the reader
+  // to the bottom for good.
+  const lastSourceRef = useRef(transcriptSource.value);
+  if (lastSourceRef.current !== transcriptSource.value) {
+    lastSourceRef.current = transcriptSource.value;
+    // A reader who had already scrolled up keeps their place — a swap is not a
+    // reason to yank them down.
+    if (pinnedRef.current) {
+      swapEchoRef.current = true;
+      if (typeof requestAnimationFrame === 'function') {
+        // Two frames: one for the swapped-in content to lay out and fire its
+        // clamp, one for our own follow-up pin write to land. Scoped to the
+        // flip, so a reader scrolling away mid-stream still unpins immediately.
+        cancelAnimationFrame(swapRafRef.current);
+        swapRafRef.current = requestAnimationFrame(() => {
+          swapRafRef.current = requestAnimationFrame(() => {
+            swapEchoRef.current = false;
+          });
+        });
+      } else {
+        swapEchoRef.current = false;
+      }
+    }
+  }
+
+  useEffect(() => () => cancelAnimationFrame(swapRafRef.current), []);
 
   function revealEarlier() {
     // Revealing older turns must not yank the view to the bottom — unpin so the
