@@ -126,6 +126,9 @@ class Sink:
     def emit(self, event: Dict[str, Any]) -> None:
         raise NotImplementedError
 
+    def turn_start(self) -> None:
+        """Called before each turn. Only the pane rendering needs it."""
+
     def turn_end(self) -> None:
         """Called after a turn settles. Only the pane rendering needs it."""
 
@@ -155,6 +158,15 @@ class StreamJsonSink(Sink):
               'tool_result': '↳', 'error': '✗ error'}
 
     def __init__(self):
+        self._last_text = ''
+
+    def turn_start(self) -> None:
+        # Serve mode reuses one sink for every prompt, so the answer text MUST
+        # be cleared here. Without it a turn that settles without saying
+        # anything — a tool-only turn — closes with whatever the PREVIOUS turn
+        # left behind, and the failure case is the ugly one: a failed turn sets
+        # `error: …` and never reaches turn_end, so the next successful turn
+        # would report that stale error as its own result.
         self._last_text = ''
 
     def emit(self, event: Dict[str, Any]) -> None:
@@ -570,11 +582,13 @@ class AcpBridge:
     def prompt(self, text: str) -> int:
         """Run one turn. Returns the process exit code to use.
 
-        Safe to call repeatedly on one live connection (serve mode): per-turn
-        state is the text buffer and the tool table, both reset here.
+        Safe to call repeatedly on one live connection (serve mode): every
+        piece of per-turn state — the text buffer, the tool table, and the
+        sink's own — is reset here.
         """
         self._buf, self._buf_kind, self._buf_msg_id = [], '', ''
         self._tools = {}
+        self.sink.turn_start()
         r = self.request('session/prompt', {
             'sessionId': self.session_id,
             'prompt': [{'type': 'text', 'text': text}],
