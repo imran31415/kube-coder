@@ -628,6 +628,21 @@ memory:
     enabled: false
     intervalHours: 6
 
+# Mobile push notifications (Expo). The mobile app registers its device token
+# via POST /api/push/register; server.py then pushes the HIGH-SIGNAL feed items
+# — an agent waiting on you, or a recorded decision — to the phone. Everything
+# else stays in the in-app Feed. Delivery is fire-and-forget to Expo's public
+# push service (exp.host); no credential is needed server-side.
+push:
+  # Projected as KC_PUSH_ENABLED. Set false to keep the feed but send nothing
+  # to devices (e.g. the read-only public demo, or a pod you don't want paging
+  # a phone). Registered tokens are retained, just not dispatched to.
+  enabled: true
+  # Optional Expo access token, only needed if the Expo project has
+  # enhanced security ("push security") switched on. Projected as
+  # EXPO_ACCESS_TOKEN. Supply via a gitignored per-user overlay.
+  expoAccessToken: ""
+
 # GitHub App configuration for automatic git/gh authentication.
 # Two ways to supply credentials:
 #  (1) Inline via appId / installationId / privateKey (the chart creates a

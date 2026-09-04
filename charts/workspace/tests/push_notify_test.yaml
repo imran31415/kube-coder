@@ -1,0 +1,42 @@
+suite: mobile push notification config wiring
+values:
+  - test-values.yaml
+tests:
+  # push_notify.py defaults KC_PUSH_ENABLED to on, so the happy path emits
+  # nothing — the absence of the var IS the "enabled" state.
+  - it: emits no push env by default (enabled, no Expo key)
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_PUSH_ENABLED
+        any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXPO_ACCESS_TOKEN
+        any: true
+
+  - it: projects KC_PUSH_ENABLED=false when push is disabled
+    template: templates/deployment.yaml
+    set:
+      push.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_PUSH_ENABLED
+            value: "false"
+
+  # Optional — only for Expo projects with enhanced security switched on.
+  - it: projects EXPO_ACCESS_TOKEN when supplied
+    template: templates/deployment.yaml
+    set:
+      push.expoAccessToken: expo-tok-123
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXPO_ACCESS_TOKEN
+            value: expo-tok-123

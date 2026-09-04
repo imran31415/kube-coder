@@ -19,7 +19,7 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 
-import { registerPushToken } from '../api/client';
+import { registerPushToken, unregisterPushToken } from '../api/client';
 import { getConfig } from '../store/config';
 import { navigateTo, navigationRef } from '../store/nav';
 import { pushTargetFromData, type PushData } from '../util/push';
@@ -82,6 +82,26 @@ export async function registerForPush(): Promise<void> {
     lastRegistered = expoToken;
   } catch {
     // best-effort; the feed still carries every signal
+  }
+}
+
+/** Drop this device's token from the workspace it is registered with, and
+ *  forget it locally. Called on disconnect, BEFORE the saved host/token are
+ *  cleared — `unregisterPushToken` needs them to reach the workspace.
+ *
+ *  Clearing `lastRegistered` is the load-bearing half: without it the next
+ *  connection (often a *different* workspace) would see an unchanged Expo token
+ *  and skip registration, so push would silently never arrive there. The
+ *  network call is best-effort cleanup that stops the old workspace pushing to
+ *  a phone that has disconnected from it. */
+export async function unregisterForPush(): Promise<void> {
+  const token = lastRegistered;
+  lastRegistered = '';
+  if (!token) return;
+  try {
+    await unregisterPushToken(token);
+  } catch {
+    // best-effort — we are disconnecting either way
   }
 }
 
