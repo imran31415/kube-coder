@@ -289,7 +289,10 @@ def _dsh_command(prompt: str = '', headless: bool = True) -> str:
     sub-agent needs anyway, matching the skip-approval flags every other
     headless command here passes.
     """
-    flags = ['--cwd', '"$PWD"', '--format', 'stream-json']
+    # `--mcp default` = the curated dashboard+memory pair. Not the full
+    # boot-seeded set: ACP connects every declared server before publishing
+    # the session, so one slow npx server is a dead sub-agent.
+    flags = ['--cwd', '"$PWD"', '--format', 'stream-json', '--mcp', 'default']
     model = os.environ.get('KC_DSH_MODEL', '')
     if model:
         flags += ['--model', _shell_quote(model)]

@@ -1029,6 +1029,10 @@ class DeepseekHarnessAdapter(_StructuredCliAdapter):
         workdir = ctx.get('workdir') or WORKSPACE_HOME
         argv = [sys.executable or 'python3', self._bridge_path(),
                 '--cwd', workdir]
+        # The same curated two servers Claude gets (--mcp-config above), which
+        # is what the Hypervisor preamble promises the agent it has. Without
+        # this a dsh thread is told it has `dashboard` tools and has none.
+        argv += ['--mcp', _HYPERVISOR_MCP_CONFIG]
         sid = ctx.get('dsh_session_id')
         if sid:
             argv += ['--session', sid]

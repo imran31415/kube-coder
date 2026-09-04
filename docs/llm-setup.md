@@ -145,6 +145,16 @@ entry is simply absent — nothing else is affected.
   and re-emits it as line-delimited events.
 - Hypervisor chat → `DeepseekHarnessAdapter` in `hypervisor_session.py`,
   which spawns the bridge per turn and resumes the ACP session.
+- **MCP tools** are attached per SESSION, not from a config file: ACP's
+  `session/new` takes the server list as a request field, which is why
+  the harness is absent from `mcp_registry`'s file-based fan-out. All
+  three surfaces get the curated `dashboard` + `memory` pair — the same
+  two the Hypervisor pins for Claude, and not the full boot-seeded set,
+  because ACP *connects* every declared server before publishing the
+  session and rolls the session back if any connection fails. One slow
+  npx-launched server would be a dead session, not a missing tool.
+  Commands are resolved to absolute paths first: the harness rejects a
+  relative one outright.
 - Builds → `assistant_command('deepseek-harness')` returns the bridge in
   `--serve --format stream-json` mode: one long-lived ACP session fed
   prompt after prompt from the tmux pane. `dsh` ships no REPL we can use
