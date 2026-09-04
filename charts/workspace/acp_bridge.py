@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -84,6 +85,24 @@ DEFAULT_TIMEOUT = int(os.environ.get('KC_DSH_TURN_TIMEOUT', '900'))
 # How long to wait for the handshake + session setup before giving up. Boot
 # loads the whole plugin tree, so it is slower than a normal RPC.
 HANDSHAKE_TIMEOUT = int(os.environ.get('KC_DSH_HANDSHAKE_TIMEOUT', '120'))
+
+# The MCP servers a `--mcp default` caller gets. Deliberately the SAME curated
+# two the Hypervisor pins for every other assistant (hypervisor_session's
+# _HYPERVISOR_MCP_CONFIG — a unit test asserts the two stay identical), and for
+# a reason that is sharper under ACP than elsewhere: `session/new` validates and
+# CONNECTS every declared server before publishing the agent, and "any initial
+# connection or discovery failure rolls back the unpublished Agent". A slow or
+# broken npx-launched server is therefore not a missing tool — it is a dead
+# session. The full boot-seeded set (playwright, sequential-thinking) is left
+# out on exactly that ground.
+WORKSPACE_HOME = '/home/dev'
+CURATED_MCP = {
+    'dashboard': {'type': 'stdio', 'command': 'python3',
+                  'args': ['/tmp/browser/mcp_dashboard.py']},
+    'memory': {'type': 'stdio', 'command': 'python3',
+               'args': [os.path.join(WORKSPACE_HOME, '.claude-memory',
+                                     'mcp_memory.py')]},
+}
 
 # ACP config option ids advertised by the harness (captured in-pod).
 CONFIG_MODEL = 'model'
@@ -216,7 +235,8 @@ class AcpBridge:
     def __init__(self, cwd: str, session_id: str = '', model: str = '',
                  effort: str = '', timeout: int = DEFAULT_TIMEOUT,
                  argv: Optional[List[str]] = None,
-                 sink: Optional['Sink'] = None):
+                 sink: Optional['Sink'] = None,
+                 mcp_servers: Optional[List[Dict[str, Any]]] = None):
         self.cwd = cwd
         # Where events go. EventSink is the adapter-facing envelope; the Builds
         # tab swaps in StreamJsonSink so the same turn renders in a tmux pane.
@@ -225,6 +245,7 @@ class AcpBridge:
         self.model = model
         self.effort = effort
         self.timeout = timeout
+        self.mcp_servers = mcp_servers or []
         self.argv = argv or default_argv()
 
         self.proc: Optional[subprocess.Popen] = None
@@ -519,7 +540,8 @@ class AcpBridge:
         if self.want_session:
             r = self.request('session/resume',
                              {'sessionId': self.want_session, 'cwd': self.cwd,
-                              'mcpServers': []}, HANDSHAKE_TIMEOUT)
+                              'mcpServers': self.mcp_servers},
+                             HANDSHAKE_TIMEOUT)
             if 'error' not in r:
                 self.session_id = self.want_session
                 cfg = (r.get('result') or {}).get('configOptions') or []
@@ -530,7 +552,8 @@ class AcpBridge:
                 _log(f'resume of {self.want_session} failed ({_err_text(r)}); '
                      'starting a new session')
         if not self.session_id:
-            r = self.request('session/new', {'cwd': self.cwd, 'mcpServers': []},
+            r = self.request('session/new',
+                             {'cwd': self.cwd, 'mcpServers': self.mcp_servers},
                              HANDSHAKE_TIMEOUT)
             if 'error' in r:
                 self.emit({'type': 'error',
@@ -777,6 +800,75 @@ def _match_config_value(option: Any, wanted: str) -> Optional[str]:
     return None
 
 
+def parse_mcp(spec: str) -> List[Dict[str, Any]]:
+    """`--mcp` value → ACP `McpServer[]`.
+
+    Accepts the shape every other MCP surface in this repo already speaks —
+    `{"mcpServers": {"<name>": {"command": ..., "args": [...], "env": {...}}}}`
+    (Claude's --mcp-config, seed_claude_config.DESIRED_MCPS) — plus the literal
+    `default`, which means CURATED_MCP. ACP wants a LIST of named servers with
+    env as name/value pairs, so this is the whole translation.
+
+    Malformed input degrades to no servers rather than raising: an agent with
+    no tools is a worse turn, an agent that never starts is no turn at all.
+    """
+    spec = (spec or '').strip()
+    if not spec:
+        return []
+    if spec == 'default':
+        servers = CURATED_MCP
+    else:
+        try:
+            parsed = json.loads(spec)
+        except ValueError as e:
+            _log(f'--mcp is not valid JSON ({e}); starting with no MCP servers')
+            return []
+        if not isinstance(parsed, dict):
+            _log('--mcp must be an object; starting with no MCP servers')
+            return []
+        servers = parsed.get('mcpServers', parsed)
+        if not isinstance(servers, dict):
+            _log('--mcp has no usable mcpServers map; starting with none')
+            return []
+
+    out: List[Dict[str, Any]] = []
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        # stdio only. An http/sse entry is expressible in ACP but nothing in
+        # this workspace ships one, and guessing a translation we cannot test
+        # would be worse than saying we skipped it.
+        kind = str(cfg.get('type') or 'stdio')
+        command = cfg.get('command')
+        if kind != 'stdio' or not isinstance(command, str) or not command:
+            _log(f'skipping MCP server {name!r}: only stdio entries are supported')
+            continue
+        # The harness REQUIRES an absolute command and rejects the whole
+        # session otherwise ("mcpServers[0].command must be an absolute path"),
+        # while every config in this repo spells it `python3` because the other
+        # harnesses resolve it on PATH. Resolve it here rather than editing
+        # configs that are correct for their own consumers. An unresolvable
+        # command drops that ONE server — a rejected session/new would cost the
+        # whole turn.
+        if not os.path.isabs(command):
+            resolved = shutil.which(command)
+            if not resolved:
+                _log(f'skipping MCP server {name!r}: {command!r} is not on PATH '
+                     'and the harness requires an absolute command')
+                continue
+            command = resolved
+        args = cfg.get('args')
+        env = cfg.get('env')
+        out.append({
+            'name': str(name),
+            'command': command,
+            'args': [str(a) for a in args] if isinstance(args, list) else [],
+            'env': [{'name': str(k), 'value': str(v)}
+                    for k, v in env.items()] if isinstance(env, dict) else [],
+        })
+    return out
+
+
 def _read_prompt() -> str:
     """The prompt arrives on stdin, not argv: it is arbitrary user text and can
     be long, multi-line, and full of shell metacharacters."""
@@ -861,6 +953,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     default='events',
                     help="'events' (default) for the Hypervisor adapter; "
                          "'stream-json' for a Builds tmux pane")
+    ap.add_argument('--mcp', default='',
+                    help="MCP servers for the session: 'default' for the "
+                         "curated set, or a {\"mcpServers\": {…}} JSON object. "
+                         "Omit for none.")
     ap.add_argument('--serve', action='store_true',
                     help='stay open and take prompt after prompt from stdin, '
                          'reusing one ACP session (the Builds tab)')
@@ -876,7 +972,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
 
     bridge = AcpBridge(cwd=args.cwd, session_id=args.session, model=args.model,
-                       effort=args.effort, timeout=args.timeout, sink=sink)
+                       effort=args.effort, timeout=args.timeout, sink=sink,
+                       mcp_servers=parse_mcp(args.mcp))
 
     def on_signal(_signum, _frame):
         # A user-issued stop should cancel the TURN, giving the agent a chance
