@@ -57,7 +57,7 @@ export function buildConfig(): ExpoConfig {
   return {
     name: 'kube-coder',
     slug: 'kube-coder-mobile',
-    version: '1.3',
+    version: '1.4',
     orientation: 'portrait',
     icon: './assets/icon.png',
     scheme: 'kubecoder',
