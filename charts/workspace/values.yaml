@@ -198,6 +198,29 @@ resources:
     cpu: "2"
     memory: 4Gi
 
+# Sandboxed container runtime for the workspace pod (#613). Empty = the cluster
+# default runtime, i.e. exactly today's behaviour — the field is omitted from the
+# pod spec entirely rather than rendered empty.
+#
+# Set to the name of a RuntimeClass ("gvisor", "kata-containers", …) to run
+# workspaces under a stronger kernel boundary: gVisor intercepts syscalls in a
+# user-space kernel, Kata runs the pod in a lightweight VM. This bounds what a
+# compromised agent can reach. It does NOT stop prompt injection, and it does not
+# separate a workspace's human from its agents — they share one pod and one
+# kernel boundary whatever the runtime is.
+#
+# PREREQUISITE, and the failure mode if you skip it: the cluster must already
+# have nodes running that runtime AND a matching RuntimeClass object. Naming one
+# that does not exist makes the workspace pod UNSCHEDULABLE — it sits Pending and
+# the workspace never starts.
+#
+# Note for build.mode: buildkit — that mode adds a `privileged: true` DinD
+# sidecar, and gVisor does not support privileged containers, so builds will fail
+# (at build time, not at schedule time, which makes it confusing to diagnose).
+# Kata is VM-backed and does not have this limitation. The default kaniko mode
+# has no DinD sidecar and is unaffected. See SECURITY.md.
+runtimeClassName: ""
+
 # Per-namespace ResourceQuota + LimitRange (see templates/resourcequota.yaml).
 # Now that each workspace owns its namespace, the quota bounds a single tenant
 # instead of a shared pool.
