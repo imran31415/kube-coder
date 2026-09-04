@@ -30,6 +30,19 @@ RUN yarn build
 # arch. The digest names a multi-arch index, so it resolves per-platform.
 FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS node-dist
 
+# DeepSeek Harness (`dsh`, issue #639) needs a NEWER Node than the rest of the
+# workspace: its plugin tree imports `node:zlib`'s `createZstdDecompress`
+# (Node >= 22.15) and `Promise.withResolvers` (Node >= 22.0), so booting it on
+# the runtime's Node 20 fails outright at plugin load, not at first use:
+#   Error: dsh: plugin tree failed to load: … The requested module 'node:zlib'
+#   does not provide an export named 'createZstdDecompress'
+#   Error: … (@deepseek-ai/dsh-agent-loop): Promise.withResolvers is not a function
+# Bumping the whole image to Node 22 would move Claude Code, OpenCode, Codex and
+# the dashboard SPA build under it at the same time, so instead we ship a SECOND,
+# side-by-side Node purely for `dsh` (installed under /opt/node22 below, never on
+# PATH). Same digest-pinned-official-image supply chain as node-dist above.
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node22-dist
+
 FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -178,6 +191,53 @@ RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.147.0
 RUN npm install -g @openai/codex@${CODEX_VERSION}
+
+# DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
+# self-hostable (github.com/deepseek-ai/deepseek-harness). Surfaces in the
+# dashboard as the `deepseek-harness` assistant and drives the Hypervisor over
+# the harness's ACP (Agent Client Protocol) JSON-RPC stdio server, so it gets
+# real streamed tool cards rather than the prose-only `--profile headless`
+# output. Distinct from the existing `opencode-deepseek` entry, which is
+# OpenCode's agent loop merely answered by a DeepSeek model; both coexist.
+#
+# TWO things make this install unlike the npm one-liners above:
+#
+#  1. NODE 22. The harness does not run on the image's Node 20 (see the
+#     node22-dist stage for the exact import failures), so we copy a second
+#     Node + npm into /opt/node22, install the CLI with THAT npm into its own
+#     /opt/dsh prefix, and ship a wrapper on PATH that execs it under Node 22.
+#     /opt/node22 is deliberately NOT on PATH: nothing else in the image should
+#     silently change Node version. npm's own `dsh` bin shim is bypassed for the
+#     same reason (its `#!/usr/bin/env node` would resolve to Node 20).
+#
+#  2. ONE package, not two. The ACP server lives in `@deepseek-ai/dsh-acp`, but
+#     it is a Cordis plugin with no bin of its own: `dsh` depends on
+#     `@deepseek-ai/dsh-acp-app`, which depends on `dsh-acp`, and `dsh --profile
+#     acp` boots that bundle out of the dsh installation. Installing dsh-acp at
+#     top level would add a second, unused copy.
+#
+# VERSION PIN — read before bumping. Every published version is a prerelease and
+# the npm `latest` dist-tag LAGS: 0.1.1-rc.2 (`latest` as of writing) does not
+# depend on dsh-acp-app at all and has no `acp` profile, so pinning "latest"
+# would silently ship a build with no ACP server. 0.1.2-rc.1 (`next`) is the
+# first version that carries it. The renovate marker is here so the pin is
+# tracked, but `config:recommended` ignores unstable versions — bumps are
+# manual until upstream cuts a stable 0.1.x, and any bump MUST be re-checked
+# against `dsh --profile acp` actually answering an ACP `initialize`.
+# renovate: datasource=npm depName=@deepseek-ai/dsh
+ARG DSH_VERSION=0.1.2-rc.1
+COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
+COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
+    && /opt/node22/bin/node --version \
+    && PATH=/opt/node22/bin:$PATH npm install -g --prefix /opt/dsh \
+         @deepseek-ai/dsh@${DSH_VERSION} \
+    && rm -f /opt/dsh/bin/dsh \
+    && printf '%s\n' '#!/bin/sh' \
+         'exec /opt/node22/bin/node /opt/dsh/lib/node_modules/@deepseek-ai/dsh/lib/bin.js "$@"' \
+         > /usr/local/bin/dsh \
+    && chmod 755 /usr/local/bin/dsh \
+    && dsh --help >/dev/null
 
 # Antigravity CLI (agy) — Google's terminal-native coding agent. Selected
 # per-task in the dashboard (the `antigravity` assistant) and spawnable via the
