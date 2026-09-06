@@ -1,0 +1,84 @@
+/* A select you can type into — see SearchSelect.tsx for why it exists. */
+
+.ss { position: relative; display: inline-flex; min-width: 0; }
+
+.ss-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.ss-trigger:hover:not(:disabled) { background: var(--surface-3); }
+.ss-trigger:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.ss-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ss-value-empty { color: var(--text-muted); }
+.ss-caret { color: var(--text-subtle); font-size: var(--text-2xs); flex-shrink: 0; }
+
+.ss-pop {
+  /* Fixed, not absolute: the chat toolbar scrolls horizontally at ≤390px and
+     an absolute popover is clipped by that overflow. See SearchSelect.tsx. */
+  position: fixed;
+  z-index: 60;
+  /* Wide enough to read a path, capped so it never runs off a phone. */
+  min-width: 220px;
+  max-width: min(360px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 38%);
+  overflow: hidden;
+}
+
+.ss-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+
+.ss-list {
+  margin: 0;
+  padding: 4px;
+  /* Scrolls vertically, which a list does well — the horizontal rails this
+     replaces did not, because a row cannot be scanned. */
+  max-height: 260px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ss-opt {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: var(--text-xs);
+  color: var(--text);
+  cursor: pointer;
+}
+.ss-opt-cursor { background: var(--surface-3); }
+.ss-opt-on { color: var(--accent); font-weight: var(--weight-semibold); }
+.ss-opt-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-opt-hint { color: var(--text-subtle); font-size: var(--text-2xs); flex-shrink: 0; }
+
+.ss-empty { padding: 8px; font-size: var(--text-xs); color: var(--text-muted); }

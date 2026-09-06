@@ -30,6 +30,7 @@ import {
   type HvRenderBlock,
   type HvTurn,
 } from '../util/hvTranscript';
+import { SearchPicker } from '../components/SearchPicker';
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
 
@@ -190,21 +191,29 @@ export default function CtoScreen() {
         }
       />
 
-      {/* Project pill switcher */}
+      {/* Project switcher. A rail of pills hid every project past the third
+          off the right edge, with no way to jump to one — which is worst
+          exactly when a workspace has enough projects to need switching. */}
       <View style={styles.railWrap}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
-          <Pill label="Workspace" on={selected === null} onPress={() => setSelected(null)} />
-          {projects.filter((p) => p.status !== 'archived').map((p) => (
-            <Pill
-              key={p.id}
-              label={p.name}
-              on={selected === p.id}
-              running={p.pulse?.running ?? 0}
-              waiting={p.pulse?.waiting ?? 0}
-              onPress={() => setSelected(p.id)}
-            />
-          ))}
-        </ScrollView>
+        <SearchPicker
+          label="Project"
+          icon="albums-outline"
+          value={selected ?? ''}
+          onChange={(v) => setSelected(v || null)}
+          emptyLabel="Workspace"
+          options={projects
+            .filter((p) => p.status !== 'archived')
+            .map((p) => {
+              const running = p.pulse?.running ?? 0;
+              const waiting = p.pulse?.waiting ?? 0;
+              // The pill carried these as coloured dots; keep the signal as
+              // words rather than dropping it on the way to the sheet.
+              const hint = [running ? `${running} running` : '', waiting ? `${waiting} waiting` : '']
+                .filter(Boolean)
+                .join(' · ');
+              return { value: p.id, label: p.name, hint: hint || undefined };
+            })}
+        />
       </View>
 
       {/* keyboardVerticalOffset stays 0: the KAV extends to the screen bottom
@@ -283,18 +292,6 @@ export default function CtoScreen() {
 
       <BriefSheet open={briefOpen} brief={brief} onClose={() => setBriefOpen(false)} nav={nav} />
     </SafeAreaView>
-  );
-}
-
-function Pill({ label, on, running = 0, waiting = 0, onPress }: {
-  label: string; on: boolean; running?: number; waiting?: number; onPress: () => void;
-}) {
-  return (
-    <Pressable style={[styles.pill, on && styles.pillOn]} onPress={onPress}>
-      <Text style={[styles.pillText, on && styles.pillTextOn]} numberOfLines={1}>{label}</Text>
-      {running > 0 && <View style={[styles.dot, { backgroundColor: colors.running }]} />}
-      {waiting > 0 && <View style={[styles.dot, { backgroundColor: colors.waiting }]} />}
-    </Pressable>
   );
 }
 
@@ -427,12 +424,6 @@ const styles = StyleSheet.create({
   briefBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
   briefBtnText: { color: colors.textMuted, fontSize: font.size.xs },
   railWrap: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  rail: { paddingHorizontal: space.lg, paddingVertical: space.sm, gap: 8 },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 6, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, maxWidth: 200 },
-  pillOn: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  pillText: { color: colors.textMuted, fontSize: font.size.sm },
-  pillTextOn: { color: colors.text, fontWeight: '600' },
-  dot: { width: 6, height: 6, borderRadius: 3 },
   chat: { flex: 1 },
   transcript: { flex: 1 },
   transcriptInner: { padding: space.lg, gap: space.md },

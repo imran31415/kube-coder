@@ -41,6 +41,7 @@ import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
 import { projects, refreshProjects } from '../../store/projects';
+import { SearchSelect } from '../../components/primitives/SearchSelect';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
@@ -415,20 +416,17 @@ export function HypervisorRoute() {
             a clean layer over the agent the user already configures. */}
         <label class="hv-agent-picker">
           <span class="hv-eyebrow">Agent</span>
-          <select
+          <SearchSelect
             class="hv-agent-select"
+            ariaLabel="Chat agent"
             value={selectedAssistant.value}
-            onChange={(e) => setSelectedAssistant((e.target as HTMLSelectElement).value)}
-            aria-label="Chat agent"
-          >
-            {(cfg?.assistants ?? []).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.label}
-                {a.free ? ' · free' : ''}
-                {a.model ? ` · ${a.model}` : ''}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setSelectedAssistant(v)}
+            options={(cfg?.assistants ?? []).map((a) => ({
+              value: a.id,
+              label: a.label,
+              hint: [a.free ? 'free' : '', a.model || ''].filter(Boolean).join(' · '),
+            }))}
+          />
           {assistantNeedsDisclosure(effectiveAssistant) && (
             <span class="hv-agent-disclosure" role="note">
               ⚠️ Free models may use your prompts + code for training — avoid
@@ -455,25 +453,29 @@ export function HypervisorRoute() {
               title={`This chat runs in ${activeThread.workdir || 'its creation folder'}. Chats keep the folder they were created in — start a New chat to pick a different one.`}
             />
           ) : dirs.length > 0 ? (
-            <select
+            <SearchSelect
               class="hv-agent-select"
-              value={selectedWorkdir.value}
-              onChange={(e) => (selectedWorkdir.value = (e.target as HTMLSelectElement).value)}
-              aria-label="Folder for new chats"
+              ariaLabel="Folder for new chats"
               title="The folder a new chat starts in"
-            >
-              {/* Keep the current value selectable even when it isn't in the
-                  server's list (e.g. a custom HYPERVISOR_WORKDIR). */}
-              {selectedWorkdir.value && !dirs.some((d) => d.path === selectedWorkdir.value) && (
-                <option value={selectedWorkdir.value}>{selectedWorkdir.value}</option>
-              )}
-              {dirs.map((d) => (
-                <option key={d.path} value={d.path}>
-                  {d.label ?? d.path}
-                  {d.is_git ? '  (git)' : ''}
-                </option>
-              ))}
-            </select>
+              value={selectedWorkdir.value}
+              onChange={(v) => (selectedWorkdir.value = v)}
+              // A custom HYPERVISOR_WORKDIR is a real answer the server's list
+              // will never contain, so typing one has to be committable.
+              allowCustom
+              options={[
+                // Keep the current value selectable even when it isn't in the
+                // server's list (e.g. a custom HYPERVISOR_WORKDIR).
+                ...(selectedWorkdir.value &&
+                !dirs.some((d) => d.path === selectedWorkdir.value)
+                  ? [{ value: selectedWorkdir.value, label: selectedWorkdir.value }]
+                  : []),
+                ...dirs.map((d) => ({
+                  value: d.path,
+                  label: d.label ?? d.path,
+                  hint: d.is_git ? 'git' : undefined,
+                })),
+              ]}
+            />
           ) : (
             <input
               class="hv-agent-select"
@@ -648,21 +650,14 @@ export function HypervisorRoute() {
             {models.length > 0 && (
               <label class="hv-model-picker" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
                 <span class="hv-model-label">Model</span>
-                <select
+                <SearchSelect
                   class="hv-model-select"
+                  ariaLabel="Chat model"
                   value={currentModel}
                   disabled={status === 'running'}
-                  onChange={(e) =>
-                    void setActiveThreadModel((e.target as HTMLSelectElement).value)
-                  }
-                  aria-label="Chat model"
-                >
-                  {models.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => void setActiveThreadModel(v)}
+                  options={models.map((m) => ({ value: m, label: m }))}
+                />
               </label>
             )}
             {/* Reasoning-effort selector (#362). Same behaviour as the model
@@ -716,27 +711,22 @@ export function HypervisorRoute() {
                 }
               >
                 <span class="hv-model-label">Project</span>
-                <select
+                <SearchSelect
                   class="hv-model-select"
+                  ariaLabel="Project for this chat"
                   value={currentProject}
-                  onChange={(e) =>
-                    void setActiveThreadProject((e.target as HTMLSelectElement).value)
-                  }
-                  aria-label="Project for this chat"
-                >
-                  <option value="">No project</option>
-                  {/* Keep an unknown binding (archived/deleted project) shown
-                      rather than silently snapping the select to "No project". */}
-                  {currentProject &&
-                    !projectList.some((p) => p.id === currentProject) && (
-                      <option value={currentProject}>{currentProject}</option>
-                    )}
-                  {projectList.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name || p.id}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => void setActiveThreadProject(v)}
+                  emptyLabel="No project"
+                  options={[
+                    // Keep an unknown binding (archived/deleted project) shown
+                    // rather than silently snapping the picker to "No project".
+                    ...(currentProject &&
+                    !projectList.some((p) => p.id === currentProject)
+                      ? [{ value: currentProject, label: currentProject }]
+                      : []),
+                    ...projectList.map((p) => ({ value: p.id, label: p.name || p.id })),
+                  ]}
+                />
               </label>
             )}
             {active && status && (
