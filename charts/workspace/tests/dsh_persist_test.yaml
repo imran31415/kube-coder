@@ -1,0 +1,42 @@
+suite: DeepSeek Harness home persistence (#639)
+# `dsh` resolves ONE root for all its user data — an explicit config path, then
+# $DSH_HOME, then ~/.dsh. Everything lives under it: sessions, the
+# auto-initialized `acp` profile the Hypervisor boots, the anonymous-user id.
+# HOME is the ephemeral /home/ubuntu, so without this redirect onto the PVC a
+# pod restart loses every resumable session and re-initializes the profile.
+templates:
+  - templates/workspace-entrypoint-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: points ~/.dsh at the PVC-backed /home/dev/.dsh
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'DSH_TARGET=/home/dev/\.dsh'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'LINK="\$HOME_DIR/\.dsh"'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'ln -sfn "\$DSH_TARGET" "\$LINK"'
+
+  - it: migrates an existing ephemeral ~/.dsh once, no-clobber, before symlinking
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # cp -an = archive + no-clobber: a real PVC session store is never
+      # overwritten by a stale ephemeral copy on restart.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'cp -an "\$LINK"/\. "\$DSH_TARGET"/'
+
+  - it: creates the PVC root private, before anything can write to it
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'mkdir -p "\$DSH_TARGET"'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'chmod 700 "\$DSH_TARGET"'
