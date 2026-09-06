@@ -77,6 +77,7 @@ import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
 import { useKeyboardVisible } from '../util/useKeyboard';
+import { SearchPicker } from '../components/SearchPicker';
 import { colors, font, radius, space } from '../theme';
 
 const SUGGESTIONS = [
@@ -826,26 +827,18 @@ export default function HypervisorScreen() {
             more than one assistant is available; existing threads keep the
             assistant they were created with. */}
         {!activeThread && (config?.assistants?.length ?? 0) > 1 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.asstRow}
-            contentContainerStyle={styles.asstRowContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            {config!.assistants.map((a) => {
-              const on = (selectedAssistant || config?.defaultAssistant) === a.id;
-              return (
-                <Pressable
-                  key={a.id}
-                  onPress={() => chooseAssistant(a.id)}
-                  style={[styles.asstChip, on && styles.asstChipOn]}
-                >
-                  <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>{a.label || a.id}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Agent"
+              icon="hardware-chip-outline"
+              value={selectedAssistant || config?.defaultAssistant || ''}
+              onChange={chooseAssistant}
+              options={config!.assistants.map((a) => ({
+                value: a.id,
+                label: a.label || a.id,
+              }))}
+            />
+          </View>
         )}
 
         {/* Model picker (#308/#361) — parity with the web hv-model-select. Shown
@@ -854,31 +847,16 @@ export default function HypervisorScreen() {
             switches it; the change lands on the next turn). Disabled while a
             turn is running, matching the web `disabled={status === 'running'}`. */}
         {models.length > 0 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.asstRow}
-            contentContainerStyle={styles.asstRowContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            <Ionicons name="cube-outline" size={14} color={colors.textFaint} />
-            {models.map((m) => {
-              const on = currentModel === m;
-              return (
-                <Pressable
-                  key={m}
-                  onPress={() => void chooseModel(m)}
-                  disabled={blocked}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Model ${m}`}
-                  accessibilityState={{ selected: on, disabled: blocked }}
-                  style={[styles.asstChip, on && styles.asstChipOn, blocked && styles.asstChipOff]}
-                >
-                  <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>{m}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Model"
+              icon="cube-outline"
+              value={currentModel}
+              disabled={blocked}
+              onChange={(m) => void chooseModel(m)}
+              options={models.map((m) => ({ value: m, label: m }))}
+            />
+          </View>
         )}
 
         {/* New-chat folder picker (#370) — parity with the web sidebar Folder
@@ -887,58 +865,31 @@ export default function HypervisorScreen() {
             (config.workdir) is offered as the first chip since /api/workspace/
             dirs only lists folders UNDER it; when the list is empty entirely,
             fall back to free text like the web picker and NewTaskScreen. */}
-        {!activeThread &&
-          (dirs.length > 0 ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.asstRow}
-              contentContainerStyle={styles.asstRowContent}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Ionicons name="folder-outline" size={14} color={colors.textFaint} />
-              {config?.workdir && !dirs.some((d) => d.path === config.workdir) && (
-                <Pressable
-                  onPress={() => setSelectedWorkdir(config.workdir)}
-                  style={[styles.asstChip, selectedWorkdir === config.workdir && styles.asstChipOn]}
-                >
-                  <Text
-                    style={[styles.asstChipText, selectedWorkdir === config.workdir && styles.asstChipTextOn]}
-                  >
-                    {config.workdir}
-                  </Text>
-                </Pressable>
-              )}
-              {dirs.map((d) => {
-                const on = selectedWorkdir === d.path;
-                return (
-                  <Pressable
-                    key={d.path}
-                    onPress={() => setSelectedWorkdir(d.path)}
-                    style={[styles.asstChip, on && styles.asstChipOn]}
-                  >
-                    <Text style={[styles.asstChipText, on && styles.asstChipTextOn]}>
-                      {(d.label ?? d.path) + (d.is_git_repo ? ' (git)' : '')}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          ) : (
-            <View style={styles.workdirRow}>
-              <Ionicons name="folder-outline" size={14} color={colors.textFaint} />
-              <TextInput
-                style={styles.workdirInput}
-                value={selectedWorkdir}
-                onChangeText={setSelectedWorkdir}
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder={config?.workdir || '/home/dev'}
-                placeholderTextColor={colors.textFaint}
-                accessibilityLabel="Folder for new chats"
-              />
-            </View>
-          ))}
+        {!activeThread && (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Folder"
+              icon="folder-outline"
+              value={selectedWorkdir}
+              onChange={setSelectedWorkdir}
+              // /api/workspace/dirs only lists folders UNDER the server root,
+              // so a custom workdir has to remain typeable — the old rail fell
+              // back to a free-text field for the same reason.
+              allowCustom
+              placeholder={config?.workdir || 'Workspace root'}
+              options={[
+                ...(config?.workdir && !dirs.some((d) => d.path === config.workdir)
+                  ? [{ value: config.workdir, label: config.workdir }]
+                  : []),
+                ...dirs.map((d) => ({
+                  value: d.path,
+                  label: d.label ?? d.path,
+                  hint: d.is_git_repo ? 'git' : undefined,
+                })),
+              ]}
+            />
+          </View>
+        )}
 
         <View
           style={[
@@ -1824,50 +1775,9 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2,
     borderLeftColor: colors.border,
   },
-  asstRow: {
-    maxHeight: 44,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  asstRowContent: {
-    alignItems: 'center',
-    gap: space.sm,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-  },
-  asstChip: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.pill,
-    paddingHorizontal: space.md,
-    paddingVertical: 6,
-  },
-  asstChipOn: { backgroundColor: colors.accent + '22', borderColor: colors.accent },
-  // Dimmed while a turn is running — the model can't switch mid-turn (web parity).
-  asstChipOff: { opacity: 0.4 },
-  asstChipText: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '500' },
-  asstChipTextOn: { color: colors.accent, fontWeight: '700' },
-  // Free-text folder fallback when /api/workspace/dirs returns nothing.
-  workdirRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    paddingHorizontal: space.md,
-    paddingVertical: space.xs + 2,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  workdirInput: {
-    flex: 1,
-    color: colors.text,
-    fontSize: font.size.sm,
-    backgroundColor: colors.surface2,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
-    paddingVertical: 6,
-  },
+  // One picker per row: the pickers are self-labelling, and stacking them
+  // keeps each at a full touch height instead of competing for a rail.
+  pickerRow: { paddingHorizontal: space.md, paddingBottom: space.xs },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',

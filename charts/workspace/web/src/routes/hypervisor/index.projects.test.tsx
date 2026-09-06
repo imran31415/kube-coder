@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/preact';
+import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { HypervisorRoute } from './index';
 import {
@@ -113,16 +113,48 @@ describe('chat list grouped by project (#358)', () => {
 
   it('offers a project picker seeded from the registry', async () => {
     render(<HypervisorRoute />);
-    const picker = (await screen.findByLabelText(
-      'Project for this chat',
-    )) as HTMLSelectElement;
-    expect([...picker.options].map((o) => o.textContent)).toEqual([
+    // The picker is a searchable combobox, not a <select>: opening it is what
+    // reveals the options, and typing is what makes a long registry usable.
+    const picker = await screen.findByLabelText('Project for this chat');
+    // No chat open → the picker reflects what the NEXT new chat is filed into.
+    expect(picker.textContent).toContain('No project');
+
+    fireEvent.click(picker);
+    const options = (await screen.findByRole('listbox', { name: 'Project for this chat' }))
+      .querySelectorAll('[role="option"]');
+    expect([...options].map((o) => o.textContent)).toEqual([
       'No project',
       'kube-coder',
       'Pool Hall',
     ]);
-    // No chat open → the picker reflects what the NEXT new chat is filed into.
-    expect(picker.value).toBe('');
+  });
+
+  it('filters the project list as you type', async () => {
+    // The reason this component exists: a registry long enough to scroll is
+    // exactly when a <select> stops being usable.
+    render(<HypervisorRoute />);
+    fireEvent.click(await screen.findByLabelText('Project for this chat'));
+
+    const search = await screen.findByLabelText('Search Project for this chat');
+    fireEvent.input(search, { target: { value: 'pool' } });
+
+    const options = screen
+      .getByRole('listbox', { name: 'Project for this chat' })
+      .querySelectorAll('[role="option"]');
+    expect([...options].map((o) => o.textContent)).toEqual(['Pool Hall']);
+  });
+
+  it('picking from the filtered list binds that project', async () => {
+    render(<HypervisorRoute />);
+    fireEvent.click(await screen.findByLabelText('Project for this chat'));
+    fireEvent.input(await screen.findByLabelText('Search Project for this chat'), {
+      target: { value: 'pool' },
+    });
+    fireEvent.mouseDown(screen.getByRole('option', { name: 'Pool Hall' }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Project for this chat').textContent).toContain('Pool Hall'),
+    );
   });
 
   it('hides the picker entirely in a workspace with no projects', async () => {
