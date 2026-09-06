@@ -1,0 +1,651 @@
+"""Unit tests for charts/workspace/acp_bridge.py (issue #639).
+
+Two layers, deliberately:
+
+  * Pure-function tests for the mapping helpers — content blocks, tool-call
+    content, config-option matching, error text.
+  * End-to-end tests that spawn a REAL subprocess speaking REAL ACP JSON-RPC
+    over stdio (`_StubAgent` below) and assert on the bridge's stdout stream
+    and exit code. The whole point of the bridge is bidirectional protocol
+    handling — request/response correlation, answering the agent mid-turn,
+    merging tool-call updates — and none of that is exercised by calling
+    methods on an object. No `dsh` binary is needed.
+
+The stub's handshake response is the one captured verbatim from a real
+`dsh --profile acp` 0.1.2-rc.1 in-pod, including its grouped, JSON-encoded
+model values — the shape `_match_config_value` exists to cope with.
+
+Run with:    python3 -m unittest tests.acp_bridge_test
+(from charts/workspace/)
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import acp_bridge  # noqa: E402
+
+
+# Captured verbatim from `dsh --profile acp` 0.1.2-rc.1 (Node 22, in-pod).
+REAL_INITIALIZE_RESULT = {
+    'protocolVersion': 1,
+    'agentInfo': {'name': 'deepseek-harness-acp', 'version': '0.0.1'},
+    'agentCapabilities': {
+        'mcpCapabilities': {'http': True},
+        'promptCapabilities': {'image': False, 'audio': False,
+                               'embeddedContext': False},
+        'sessionCapabilities': {'close': {}, 'list': {}, 'resume': {}},
+    },
+    'authMethods': [],
+}
+
+# Also captured verbatim: note the grouped select and the JSON-encoded
+# ["provider","model"] values.
+REAL_CONFIG_OPTIONS = [
+    {
+        'id': 'model', 'name': 'Model', 'category': 'model', 'type': 'select',
+        'currentValue': '["deepseek-official","deepseek-v4-flash"]',
+        'options': [{
+            'group': 'deepseek-official', 'name': 'DeepSeek',
+            'options': [
+                {'value': '["deepseek-official","deepseek-v4-flash"]',
+                 'name': 'DeepSeek-V4-Flash',
+                 'description': 'Fast, efficient, and economical; suited to '
+                                'focused, routine, or parallel tasks.'},
+                {'value': '["deepseek-official","deepseek-v4-pro"]',
+                 'name': 'DeepSeek-V4-Pro',
+                 'description': 'Stronger agentic coding, knowledge, and '
+                                'difficult reasoning; suited to complex or '
+                                'quality-critical tasks at higher cost.'},
+                {'value': '["deepseek-official","deepseek-v4-flash-vision-exp"]',
+                 'name': 'DeepSeek-V4-Flash-Vision-Exp'},
+            ],
+        }],
+    },
+    {
+        'id': 'reasoning_effort', 'name': 'Reasoning effort',
+        'category': 'thought_level', 'type': 'select', 'currentValue': 'high',
+        'options': [
+            {'value': 'off', 'name': 'Off'},
+            {'value': 'low', 'name': 'Low'},
+            {'value': 'high', 'name': 'High'},
+            {'value': 'max', 'name': 'Max'},
+        ],
+    },
+]
+
+SESSION_ID = 'eaf27528-e856-4ec9-b664-d974579e14fe'
+
+# A scriptable ACP agent. Reads JSON-RPC from stdin; for each request it looks
+# up a canned reply in the scenario file and, before replying, emits any
+# `session/update` notifications (or client-bound requests) that scenario step
+# lists. That ordering is what a real agent does: updates stream, then the
+# prompt response settles the turn.
+STUB_AGENT = textwrap.dedent('''
+    import json, sys
+    scenario = json.load(open(sys.argv[1]))
+    recorded = open(sys.argv[2], 'w')
+
+    def send(o):
+        sys.stdout.write(json.dumps(o) + '\\n')
+        sys.stdout.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        msg = json.loads(line)
+        recorded.write(line + '\\n')
+        recorded.flush()
+        method = msg.get('method')
+        if method is None:
+            continue  # a response to something we asked the client
+        step = scenario.get(method)
+        if step is None:
+            if 'id' in msg:
+                send({'jsonrpc': '2.0', 'id': msg['id'],
+                      'error': {'code': -32601, 'message': 'no stub for ' + method}})
+            continue
+        for out in step.get('emit', []):
+            send(out)
+        if 'id' in msg:
+            if 'error' in step:
+                send({'jsonrpc': '2.0', 'id': msg['id'], 'error': step['error']})
+            else:
+                send({'jsonrpc': '2.0', 'id': msg['id'],
+                      'result': step.get('result', {})})
+        if step.get('exit'):
+            break
+''')
+
+
+def _update(payload):
+    return {'jsonrpc': '2.0', 'method': 'session/update',
+            'params': {'sessionId': SESSION_ID, 'update': payload}}
+
+
+def _chunk(text, kind='agent_message_chunk', message_id='m1'):
+    return _update({'sessionUpdate': kind, 'messageId': message_id,
+                    'content': {'type': 'text', 'text': text}})
+
+
+def _base_scenario(prompt_step):
+    return {
+        'initialize': {'result': REAL_INITIALIZE_RESULT},
+        'session/new': {'result': {'sessionId': SESSION_ID,
+                                   'configOptions': REAL_CONFIG_OPTIONS}},
+        'session/set_config_option': {'result': {'configOptions': REAL_CONFIG_OPTIONS}},
+        'session/close': {'result': {}},
+        'session/prompt': prompt_step,
+    }
+
+
+class _Run:
+    """Result of driving the bridge end to end against the stub."""
+
+    def __init__(self, rc, events, sent, stderr):
+        self.rc = rc
+        self.events = events
+        self.sent = sent          # every JSON-RPC message the client sent
+        self.stderr = stderr
+
+    def of_type(self, t):
+        return [e for e in self.events if e.get('type') == t]
+
+    def first(self, t):
+        got = self.of_type(t)
+        return got[0] if got else None
+
+    def sent_methods(self):
+        return [m.get('method') for m in self.sent if m.get('method')]
+
+    def sent_call(self, method):
+        for m in self.sent:
+            if m.get('method') == method:
+                return m
+        return None
+
+
+class AcpBridgeE2ETest(unittest.TestCase):
+    """Drives acp_bridge.main() as a subprocess against the stub agent."""
+
+    maxDiff = None
+
+    def run_bridge_with(self, scenario, prompt='do the thing', extra_args=(),
+                        timeout=60):
+        """Spawn the bridge with KC_DSH_ARGV pointed at the stub agent, feed
+        it `prompt` on stdin, and collect both sides of the conversation."""
+        tmp = tempfile.mkdtemp(prefix='acp-bridge-test-')
+        scenario_path = os.path.join(tmp, 'scenario.json')
+        recorded_path = os.path.join(tmp, 'recorded.jsonl')
+        agent_path = os.path.join(tmp, 'stub_agent.py')
+        with open(scenario_path, 'w') as f:
+            json.dump(scenario, f)
+        with open(agent_path, 'w') as f:
+            f.write(STUB_AGENT)
+
+        bridge_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'acp_bridge.py')
+        env = dict(os.environ)
+        env['KC_DSH_ARGV'] = json.dumps(
+            [sys.executable, agent_path, scenario_path, recorded_path])
+        env['KC_DSH_HANDSHAKE_TIMEOUT'] = '20'
+        proc = subprocess.run(
+            [sys.executable, bridge_path, '--cwd', tmp, *extra_args],
+            input=prompt, capture_output=True, text=True, env=env,
+            timeout=timeout)
+        events = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line:
+                events.append(json.loads(line))
+        sent = []
+        if os.path.exists(recorded_path):
+            with open(recorded_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        sent.append(json.loads(line))
+        return _Run(proc.returncode, events, sent, proc.stderr)
+
+    # ── happy path ──────────────────────────────────────────────────────
+
+    def test_plain_turn_streams_one_message_not_one_per_chunk(self):
+        scenario = _base_scenario({
+            'emit': [_chunk('Hello'), _chunk(', '), _chunk('world.')],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 0, run.stderr)
+        self.assertEqual([e['type'] for e in run.events],
+                         ['session', 'message', 'done'])
+        self.assertEqual(run.first('message')['text'], 'Hello, world.')
+        self.assertEqual(run.first('session')['sessionId'], SESSION_ID)
+        self.assertEqual(run.first('done')['stopReason'], 'end_turn')
+
+    def test_handshake_uses_protocol_1_and_understates_capabilities(self):
+        # Understating is load-bearing: the agent must not ask us for a file
+        # read or a terminal, because an unanswerable request hangs the turn.
+        run = self.run_bridge_with(_base_scenario(
+            {'result': {'stopReason': 'end_turn'}}))
+        init = run.sent_call('initialize')
+        self.assertEqual(init['params']['protocolVersion'], 1)
+        caps = init['params']['clientCapabilities']
+        self.assertEqual(caps['fs'], {'readTextFile': False,
+                                      'writeTextFile': False})
+        self.assertFalse(caps['terminal'])
+        self.assertIn('session/new', run.sent_methods())
+        self.assertIn('session/prompt', run.sent_methods())
+
+    def test_prompt_carries_the_stdin_text_as_a_text_block(self):
+        run = self.run_bridge_with(
+            _base_scenario({'result': {'stopReason': 'end_turn'}}),
+            prompt='multi\nline\nprompt with $quotes and `backticks`')
+        sent = run.sent_call('session/prompt')
+        self.assertEqual(sent['params']['sessionId'], SESSION_ID)
+        self.assertEqual(sent['params']['prompt'],
+                         [{'type': 'text',
+                           'text': 'multi\nline\nprompt with $quotes and `backticks`'}])
+
+    # ── tool cards ──────────────────────────────────────────────────────
+
+    def test_tool_call_then_update_becomes_a_call_and_a_result(self):
+        scenario = _base_scenario({
+            'emit': [
+                _chunk('Let me look.'),
+                _update({'sessionUpdate': 'tool_call', 'toolCallId': 't1',
+                         'title': 'Read README.md', 'name': 'read_file',
+                         'kind': 'read', 'status': 'pending',
+                         'rawInput': {'path': 'README.md'}}),
+                _update({'sessionUpdate': 'tool_call_update', 'toolCallId': 't1',
+                         'status': 'completed',
+                         'content': [{'type': 'content',
+                                      'content': {'type': 'text',
+                                                  'text': '# kube-coder'}}]}),
+                _chunk('It is the readme.', message_id='m2'),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 0, run.stderr)
+        self.assertEqual([e['type'] for e in run.events],
+                         ['session', 'message', 'tool_call', 'tool_result',
+                          'message', 'done'])
+        call = run.first('tool_call')
+        self.assertEqual(call['id'], 't1')
+        self.assertEqual(call['name'], 'read_file')
+        self.assertEqual(call['kind'], 'read')
+        self.assertEqual(call['input'], {'path': 'README.md'})
+        result = run.first('tool_result')
+        self.assertEqual(result['id'], 't1')
+        self.assertFalse(result['is_error'])
+        self.assertEqual(result['text'], '# kube-coder')
+        # Ordering matters: text before the tool must not be swallowed into the
+        # text after it.
+        msgs = [e['text'] for e in run.of_type('message')]
+        self.assertEqual(msgs, ['Let me look.', 'It is the readme.'])
+
+    def test_failed_tool_is_flagged_is_error(self):
+        scenario = _base_scenario({
+            'emit': [
+                _update({'sessionUpdate': 'tool_call', 'toolCallId': 't9',
+                         'title': 'Run tests', 'name': 'bash',
+                         'status': 'in_progress'}),
+                _update({'sessionUpdate': 'tool_call_update', 'toolCallId': 't9',
+                         'status': 'failed', 'rawOutput': 'exit 1'}),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        result = run.first('tool_result')
+        self.assertTrue(result['is_error'])
+        self.assertEqual(result['text'], 'exit 1')
+
+    def test_tool_call_that_arrives_already_completed_still_reports_once(self):
+        scenario = _base_scenario({
+            'emit': [
+                _update({'sessionUpdate': 'tool_call', 'toolCallId': 't2',
+                         'title': 'Grep', 'name': 'grep', 'status': 'completed',
+                         'content': [{'type': 'content',
+                                      'content': {'type': 'text', 'text': 'hit'}}]}),
+                # A late duplicate update must not double-render the card.
+                _update({'sessionUpdate': 'tool_call_update', 'toolCallId': 't2',
+                         'status': 'completed'}),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(len(run.of_type('tool_call')), 1)
+        self.assertEqual(len(run.of_type('tool_result')), 1)
+        self.assertEqual(run.first('tool_result')['text'], 'hit')
+
+    def test_update_for_an_unseen_tool_call_still_renders_a_card(self):
+        scenario = _base_scenario({
+            'emit': [
+                _update({'sessionUpdate': 'tool_call_update', 'toolCallId': 't3',
+                         'title': 'Edit main.py', 'name': 'edit',
+                         'status': 'completed',
+                         'content': [{'type': 'diff', 'path': '/x/main.py',
+                                      'newText': 'y'}]}),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(len(run.of_type('tool_call')), 1)
+        self.assertEqual(run.first('tool_call')['name'], 'edit')
+        self.assertEqual(run.first('tool_result')['text'], '[diff /x/main.py]')
+
+    def test_thought_chunks_are_a_separate_event_kind(self):
+        scenario = _base_scenario({
+            'emit': [_chunk('thinking...', kind='agent_thought_chunk'),
+                     _chunk('answer', message_id='m2')],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual([e['type'] for e in run.events],
+                         ['session', 'thought', 'message', 'done'])
+
+    def test_usage_update_is_forwarded_and_noise_updates_are_not(self):
+        scenario = _base_scenario({
+            'emit': [
+                _update({'sessionUpdate': 'user_message_chunk',
+                         'content': {'type': 'text', 'text': 'echo of my prompt'}}),
+                _update({'sessionUpdate': 'plan', 'entries': []}),
+                _update({'sessionUpdate': 'usage_update', 'used': 1200,
+                         'size': 128000}),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual([e['type'] for e in run.events],
+                         ['session', 'usage', 'done'])
+        self.assertEqual(run.first('usage'), {'type': 'usage', 'used': 1200,
+                                              'size': 128000})
+
+    # ── the bidirectional half ──────────────────────────────────────────
+
+    def test_permission_request_is_auto_approved_so_the_turn_never_stalls(self):
+        scenario = _base_scenario({
+            'emit': [
+                {'jsonrpc': '2.0', 'id': 900,
+                 'method': 'session/request_permission',
+                 'params': {
+                     'sessionId': SESSION_ID,
+                     'toolCall': {'toolCallId': 't1', 'title': 'rm -rf build'},
+                     'options': [
+                         {'optionId': 'rej', 'name': 'No', 'kind': 'reject_once'},
+                         {'optionId': 'once', 'name': 'Yes', 'kind': 'allow_once'},
+                         {'optionId': 'always', 'name': 'Always',
+                          'kind': 'allow_always'},
+                     ]}},
+                _chunk('done'),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 0, run.stderr)
+        answers = [m for m in run.sent if m.get('id') == 900]
+        self.assertEqual(len(answers), 1, 'the agent must get exactly one answer')
+        self.assertEqual(answers[0]['result']['outcome'],
+                         {'outcome': 'selected', 'optionId': 'always'})
+
+    def test_unsupported_agent_request_is_answered_with_an_error_not_silence(self):
+        # Silence here would hang the turn forever, which is strictly worse
+        # than telling the agent we cannot do it.
+        scenario = _base_scenario({
+            'emit': [
+                {'jsonrpc': '2.0', 'id': 901, 'method': 'fs/read_text_file',
+                 'params': {'path': '/etc/shadow'}},
+                _chunk('carried on'),
+            ],
+            'result': {'stopReason': 'end_turn'},
+        })
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 0, run.stderr)
+        answers = [m for m in run.sent if m.get('id') == 901]
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(answers[0]['error']['code'], -32601)
+        self.assertEqual(run.first('message')['text'], 'carried on')
+
+    # ── model / effort selection ────────────────────────────────────────
+
+    def test_model_pick_is_resolved_against_the_advertised_options(self):
+        run = self.run_bridge_with(
+            _base_scenario({'result': {'stopReason': 'end_turn'}}),
+            extra_args=('--model', 'deepseek-v4-pro', '--effort', 'max'))
+        sets = [m for m in run.sent
+                if m.get('method') == 'session/set_config_option']
+        by_id = {m['params']['configId']: m['params']['value'] for m in sets}
+        self.assertEqual(by_id['model'], '["deepseek-official","deepseek-v4-pro"]')
+        self.assertEqual(by_id['reasoning_effort'], 'max')
+
+    def test_unknown_model_keeps_the_harness_default_instead_of_failing(self):
+        run = self.run_bridge_with(
+            _base_scenario({'result': {'stopReason': 'end_turn'}}),
+            extra_args=('--model', 'gpt-9-ultra'))
+        self.assertEqual(run.rc, 0, run.stderr)
+        self.assertNotIn('session/set_config_option', run.sent_methods())
+        self.assertIn('not offered by this session', run.stderr)
+
+    def test_a_failing_set_config_option_does_not_fail_the_turn(self):
+        scenario = _base_scenario({'result': {'stopReason': 'end_turn'}})
+        scenario['session/set_config_option'] = {
+            'error': {'code': -32602, 'message': 'Invalid params: bad option'}}
+        run = self.run_bridge_with(scenario, extra_args=('--model',
+                                                         'deepseek-v4-pro'))
+        self.assertEqual(run.rc, 0, run.stderr)
+        self.assertEqual(run.first('done')['stopReason'], 'end_turn')
+
+    # ── resume ──────────────────────────────────────────────────────────
+
+    def test_resume_uses_session_resume_and_keeps_the_id(self):
+        scenario = _base_scenario({'result': {'stopReason': 'end_turn'}})
+        scenario['session/resume'] = {'result': {'configOptions': REAL_CONFIG_OPTIONS}}
+        run = self.run_bridge_with(scenario, extra_args=('--session', SESSION_ID))
+        self.assertIn('session/resume', run.sent_methods())
+        self.assertNotIn('session/new', run.sent_methods())
+        self.assertEqual(run.first('session')['sessionId'], SESSION_ID)
+
+    def test_unresumable_session_falls_back_to_a_new_one(self):
+        # A pruned session must cost the user their history, not their turn.
+        scenario = _base_scenario({'result': {'stopReason': 'end_turn'}})
+        scenario['session/resume'] = {
+            'error': {'code': -32602, 'message': 'Invalid params: unknown session'}}
+        run = self.run_bridge_with(scenario, extra_args=('--session', 'gone'))
+        self.assertEqual(run.rc, 0, run.stderr)
+        self.assertIn('session/new', run.sent_methods())
+        self.assertEqual(run.first('session')['sessionId'], SESSION_ID)
+        self.assertIn('starting a new session', run.stderr)
+
+    # ── failure modes ───────────────────────────────────────────────────
+
+    def test_prompt_error_becomes_an_error_event_and_a_nonzero_exit(self):
+        # The real shape when DEEPSEEK_API_KEY is missing or wrong, captured
+        # in-pod against dsh 0.1.2-rc.1.
+        scenario = _base_scenario({
+            'error': {'code': -32603,
+                      'message': 'Internal error: turn failed: Authentication '
+                                 'Fails, Your api key: ****0000 is invalid'}})
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 1)
+        self.assertIn('Authentication Fails', run.first('error')['text'])
+        self.assertEqual(run.of_type('done'), [])
+
+    def test_session_new_failure_is_reported_and_exits_nonzero(self):
+        scenario = _base_scenario({'result': {'stopReason': 'end_turn'}})
+        scenario['session/new'] = {'error': {'code': -32603,
+                                             'message': 'workspace not found'}}
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 1)
+        self.assertIn('session/new failed', run.first('error')['text'])
+
+    def test_agent_that_dies_mid_turn_yields_an_error_not_a_hang(self):
+        scenario = _base_scenario({'result': {'stopReason': 'end_turn'}})
+        scenario['session/new'] = {'exit': True}
+        run = self.run_bridge_with(scenario, timeout=60)
+        self.assertEqual(run.rc, 1)
+        self.assertTrue(run.of_type('error'))
+
+    def test_missing_binary_reports_cleanly(self):
+        env = dict(os.environ)
+        env['KC_DSH_BIN'] = '/nonexistent/dsh-does-not-exist'
+        env.pop('KC_DSH_ARGV', None)
+        bridge_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'acp_bridge.py')
+        proc = subprocess.run([sys.executable, bridge_path], input='hi',
+                              capture_output=True, text=True, env=env,
+                              timeout=60)
+        self.assertEqual(proc.returncode, 1)
+        events = [json.loads(x) for x in proc.stdout.splitlines() if x.strip()]
+        self.assertEqual(events[0]['type'], 'error')
+        self.assertIn('cannot start', events[0]['text'])
+
+    def test_empty_prompt_is_rejected_without_spawning_anything(self):
+        bridge_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'acp_bridge.py')
+        env = dict(os.environ)
+        env['KC_DSH_BIN'] = '/nonexistent/dsh-does-not-exist'
+        env.pop('KC_DSH_ARGV', None)
+        proc = subprocess.run([sys.executable, bridge_path], input='   \n',
+                              capture_output=True, text=True, env=env,
+                              timeout=60)
+        self.assertEqual(proc.returncode, 2)
+        events = [json.loads(x) for x in proc.stdout.splitlines() if x.strip()]
+        self.assertEqual(events, [{'type': 'error', 'text': 'empty prompt'}])
+
+    def test_non_json_noise_on_the_agents_stdout_is_survived(self):
+        scenario = _base_scenario({
+            'emit': [_chunk('still here')],
+            'result': {'stopReason': 'end_turn'},
+        })
+        # A bare string is not a JSON-RPC object; the bridge must log and
+        # continue rather than tear down a working turn.
+        scenario['session/prompt']['emit'].insert(0, 'not json at all')
+        run = self.run_bridge_with(scenario)
+        self.assertEqual(run.rc, 0, run.stderr)
+        self.assertEqual(run.first('message')['text'], 'still here')
+
+    def test_refusal_and_cancellation_are_outcomes_not_failures(self):
+        for stop in ('refusal', 'cancelled', 'max_tokens'):
+            with self.subTest(stop=stop):
+                run = self.run_bridge_with(_base_scenario(
+                    {'emit': [_chunk('nope')], 'result': {'stopReason': stop}}))
+                self.assertEqual(run.rc, 0, run.stderr)
+                self.assertEqual(run.first('done')['stopReason'], stop)
+
+
+class ContentMappingTest(unittest.TestCase):
+    def test_block_text_variants(self):
+        self.assertEqual(acp_bridge._block_text({'type': 'text', 'text': 'hi'}),
+                         'hi')
+        self.assertEqual(
+            acp_bridge._block_text({'type': 'resource_link', 'name': 'a.py',
+                                    'uri': 'file:///a.py'}),
+            '[resource_link a.py]')
+        self.assertEqual(
+            acp_bridge._block_text({'type': 'resource',
+                                    'resource': {'text': 'inline'}}), 'inline')
+        self.assertEqual(acp_bridge._block_text({'type': 'image'}), '[image]')
+        # Unknown/malformed blocks must not raise.
+        self.assertEqual(acp_bridge._block_text(None), '')
+        self.assertEqual(acp_bridge._block_text({'type': 'quantum'}), '')
+
+    def test_tool_content_flattens_mixed_items(self):
+        text = acp_bridge._tool_content_text([
+            {'type': 'content', 'content': {'type': 'text', 'text': 'line one'}},
+            {'type': 'diff', 'path': '/a/b.py', 'newText': 'x'},
+            {'type': 'terminal', 'terminalId': 'term-1'},
+            'garbage',
+        ])
+        self.assertEqual(text, 'line one\n[diff /a/b.py]\n[terminal term-1]')
+        self.assertEqual(acp_bridge._tool_content_text(None), '')
+
+    def test_error_text_prefers_message_and_appends_data(self):
+        self.assertEqual(
+            acp_bridge._err_text({'error': {'code': -1, 'message': 'boom'}}),
+            'boom')
+        self.assertEqual(
+            acp_bridge._err_text({'error': {'message': 'boom',
+                                            'data': {'why': 'no key'}}}),
+            'boom: {"why": "no key"}')
+        self.assertEqual(acp_bridge._err_text({'error': None}), 'unknown error')
+
+
+class ConfigMatchTest(unittest.TestCase):
+    MODEL_OPTION = REAL_CONFIG_OPTIONS[0]
+    EFFORT_OPTION = REAL_CONFIG_OPTIONS[1]
+
+    def test_matches_a_bare_model_id_inside_the_json_pair(self):
+        self.assertEqual(
+            acp_bridge._match_config_value(self.MODEL_OPTION, 'deepseek-v4-pro'),
+            '["deepseek-official","deepseek-v4-pro"]')
+
+    def test_matches_the_display_name_case_insensitively(self):
+        self.assertEqual(
+            acp_bridge._match_config_value(self.MODEL_OPTION, 'deepseek-v4-flash'),
+            '["deepseek-official","deepseek-v4-flash"]')
+        self.assertEqual(
+            acp_bridge._match_config_value(self.MODEL_OPTION, 'DeepSeek-V4-Pro'),
+            '["deepseek-official","deepseek-v4-pro"]')
+
+    def test_matches_the_exact_encoded_value(self):
+        exact = '["deepseek-official","deepseek-v4-flash-vision-exp"]'
+        self.assertEqual(
+            acp_bridge._match_config_value(self.MODEL_OPTION, exact), exact)
+
+    def test_flat_option_lists_work_too(self):
+        self.assertEqual(
+            acp_bridge._match_config_value(self.EFFORT_OPTION, 'low'), 'low')
+        self.assertEqual(
+            acp_bridge._match_config_value(self.EFFORT_OPTION, 'High'), 'high')
+
+    def test_unknown_or_missing_returns_none(self):
+        self.assertIsNone(
+            acp_bridge._match_config_value(self.MODEL_OPTION, 'gpt-9'))
+        self.assertIsNone(acp_bridge._match_config_value(None, 'x'))
+        self.assertIsNone(
+            acp_bridge._match_config_value(self.MODEL_OPTION, ''))
+
+
+class PermissionOutcomeTest(unittest.TestCase):
+    def test_prefers_allow_always_then_allow_once(self):
+        self.assertEqual(
+            acp_bridge.AcpBridge._permission_outcome({'options': [
+                {'optionId': 'a', 'kind': 'allow_once'},
+                {'optionId': 'b', 'kind': 'allow_always'}]}),
+            {'outcome': 'selected', 'optionId': 'b'})
+        self.assertEqual(
+            acp_bridge.AcpBridge._permission_outcome({'options': [
+                {'optionId': 'r', 'kind': 'reject_once'},
+                {'optionId': 'a', 'kind': 'allow_once'}]}),
+            {'outcome': 'selected', 'optionId': 'a'})
+
+    def test_unknown_kind_is_treated_as_permissive(self):
+        self.assertEqual(
+            acp_bridge.AcpBridge._permission_outcome({'options': [
+                {'optionId': 'x', 'kind': 'something_new'}]}),
+            {'outcome': 'selected', 'optionId': 'x'})
+
+    def test_reject_only_and_empty_option_sets_are_honest(self):
+        self.assertEqual(
+            acp_bridge.AcpBridge._permission_outcome({'options': [
+                {'optionId': 'r', 'kind': 'reject_always'}]}),
+            {'outcome': 'selected', 'optionId': 'r'})
+        self.assertEqual(
+            acp_bridge.AcpBridge._permission_outcome({'options': []}),
+            {'outcome': 'cancelled'})
+        self.assertEqual(acp_bridge.AcpBridge._permission_outcome({}),
+                         {'outcome': 'cancelled'})
+
+
+if __name__ == '__main__':
+    unittest.main()
