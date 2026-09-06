@@ -2203,6 +2203,24 @@ class ClaudeTaskManager:
     }
 
     @staticmethod
+    def _provider_keys():
+        """Provider keys as the dropdown should see them: a key the user set in
+        Settings counts exactly as much as one baked into the pod env.
+
+        ProviderKeysManager persists self-service keys on the PVC and applies
+        them at every CLI spawn, but nothing ever copies them into this
+        process's environ. Gating the dropdown on os.environ alone therefore
+        hid every self-service entry — the user set a DeepSeek key, the key was
+        used correctly the moment a turn ran, but the assistant never appeared
+        to be selectable in the first place. A stored key wins over the pod
+        env, matching env_overlay's own override semantics.
+        """
+        merged = {k: v for k, v in os.environ.items()
+                  if k in ProviderKeysManager.ALLOWED}
+        merged.update(ProviderKeysManager.env_overlay())
+        return merged
+
+    @staticmethod
     def available_assistants():
         # Claude is always first-listed and always installed, but it is no
         # longer hard-flagged as the default — the configured workspace default
@@ -2210,6 +2228,8 @@ class ClaudeTaskManager:
         # default=True and sorts to the front. See _apply_default_flag below.
         out = [dict(ClaudeTaskManager.ASSISTANTS['claude'])]
         out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
+        # Self-service keys (Settings) count the same as pod-env keys here.
+        keys = ClaudeTaskManager._provider_keys()
         # Antigravity — listed only when its `agy` CLI is actually resolvable
         # (older images predate it; /usr/local/bin/agy is a symlink to a PVC path
         # start.sh seeds). Auth is OAuth (`agy` login once in the pod), so there's
@@ -2233,7 +2253,7 @@ class ClaudeTaskManager:
         # with an API key, so listing it without one would offer an entry whose
         # every turn fails with "Authentication Fails". An older image without
         # the binary simply doesn't list it — nothing else is affected.
-        if shutil.which('dsh') and os.environ.get('DEEPSEEK_API_KEY'):
+        if shutil.which('dsh') and keys.get('DEEPSEEK_API_KEY'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['deepseek-harness'],
                 model=os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL),
@@ -2244,12 +2264,12 @@ class ClaudeTaskManager:
         # dead option.
         if shutil.which('librefang'):
             out.append(dict(ClaudeTaskManager.ASSISTANTS['librefang']))
-        if os.environ.get('OPENROUTER_API_KEY'):
+        if keys.get('OPENROUTER_API_KEY'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['opencode-openrouter'],
                 model=os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'),
             ))
-        if os.environ.get('DEEPSEEK_API_KEY'):
+        if keys.get('DEEPSEEK_API_KEY'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['opencode-deepseek'],
                 model=os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat'),
@@ -2259,7 +2279,7 @@ class ClaudeTaskManager:
         # auto-discovered provider: start.sh writes an explicit opencode.json
         # provider stanza when OPENCODE_API_KEY is set (a per-user or a shared
         # platform key), which is the same signal we gate the dropdown on here.
-        if os.environ.get('OPENCODE_API_KEY'):
+        if keys.get('OPENCODE_API_KEY'):
             out.append(dict(
                 ClaudeTaskManager.ASSISTANTS['opencode-zen'],
                 model=os.environ.get('KC_OPENCODE_ZEN_MODEL', _OPENCODE_ZEN_DEFAULT_MODEL),

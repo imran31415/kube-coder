@@ -30,14 +30,20 @@ def _ids(assistants):
 
 
 class _GateBase(unittest.TestCase):
-    """available_assistants() reads os.environ and PATH; pin both."""
+    """available_assistants() reads PATH, os.environ and the stored provider
+    keys; pin all three. `stored` is what the user set in Settings, which
+    ProviderKeysManager persists on the PVC — it must be stubbed rather than
+    left to the real file, or a run inside a workspace pod would read that
+    pod's keys and stop testing anything."""
 
     # A workspace with nothing else configured, so the assertions are about
     # `dsh` alone rather than about whatever this machine happens to have set.
     BASE_ENV = {}
 
-    def listed(self, env, which):
+    def listed(self, env, which, stored=None):
         with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                                  return_value=dict(stored or {})), \
                 mock.patch.object(server.shutil, 'which',
                                   side_effect=lambda n: '/usr/local/bin/' + n
                                   if n in which else None):
@@ -97,6 +103,44 @@ class GatingTest(_GateBase):
         self.assertEqual(entry['models'][0], 'deepseek-v4-pro')
         # …and is not duplicated further down the list.
         self.assertEqual(entry['models'].count('deepseek-v4-pro'), 1)
+
+
+class SelfServiceKeyTest(_GateBase):
+    """A key set in Settings must enable the entry exactly like a pod-env one.
+
+    ProviderKeysManager persists self-service keys on the PVC and applies them
+    at CLI spawn, but never copies them into the server's own environ. The
+    dropdown gated on os.environ alone, so a user could set a DeepSeek key,
+    have it work the moment a turn ran, and still never be offered the
+    assistant — which is how it presented on a workspace running v1.60.0.
+    """
+
+    def test_stored_key_lists_the_harness(self):
+        out = self.listed({}, {'dsh'}, stored={'DEEPSEEK_API_KEY': 'sk-x'})
+        self.assertIn(DSH, _ids(out))
+
+    def test_stored_key_lists_the_opencode_deepseek_entry(self):
+        out = self.listed({}, set(), stored={'DEEPSEEK_API_KEY': 'sk-x'})
+        self.assertIn('opencode-deepseek', _ids(out))
+
+    def test_stored_key_still_needs_the_binary(self):
+        out = self.listed({}, set(), stored={'DEEPSEEK_API_KEY': 'sk-x'})
+        self.assertNotIn(DSH, _ids(out))
+
+    def test_stored_openrouter_and_zen_keys_list_their_entries(self):
+        out = _ids(self.listed({}, set(), stored={
+            'OPENROUTER_API_KEY': 'sk-or', 'OPENCODE_API_KEY': 'sk-oc'}))
+        self.assertIn('opencode-openrouter', out)
+        self.assertIn('opencode-zen', out)
+
+    def test_stored_key_overrides_the_pod_env(self):
+        out = self.listed({'DEEPSEEK_API_KEY': 'sk-pod'}, {'dsh'},
+                          stored={'DEEPSEEK_API_KEY': 'sk-user'})
+        self.assertIn(DSH, _ids(out))
+
+    def test_no_key_anywhere_still_hides_it(self):
+        out = self.listed({}, {'dsh'}, stored={})
+        self.assertNotIn(DSH, _ids(out))
 
 
 class ModelListTest(unittest.TestCase):
