@@ -87,10 +87,15 @@ class SkillProvider:
             return None
         meta, body = parse_frontmatter(raw)
         # Name: frontmatter wins, else the containing folder / file stem.
+        # The folder is only the right fallback for the `<name>/SKILL.md`
+        # bundle layout. A provider that also discovers a FLAT `<name>.md`
+        # (deepseek_harness) would otherwise inherit the name of the scanned
+        # ROOT for every one of its flat skills — and collide them all.
         name = (meta.get('name') or '').strip()
         if not name:
+            stem = os.path.splitext(os.path.basename(path))[0]
             parent = os.path.basename(os.path.dirname(path))
-            name = parent if parent else os.path.splitext(os.path.basename(path))[0]
+            name = parent if (stem.upper() == 'SKILL' and parent) else stem
         name = name.lower()
         if not SKILL_NAME_RE.match(name):
             print(f'[skills] {self.key}: skip {path}: unsafe name {name!r}',
@@ -210,8 +215,9 @@ from .claude import ClaudeProvider          # noqa: E402
 from .opencode import OpenCodeProvider      # noqa: E402
 from .ante import AnteProvider              # noqa: E402
 from .antigravity import AntigravityProvider  # noqa: E402
+from .deepseek_harness import DeepseekHarnessProvider  # noqa: E402
 
 PROVIDERS: Dict[str, SkillProvider] = {
     p.key: p for p in (ClaudeProvider(), OpenCodeProvider(), AnteProvider(),
-                       AntigravityProvider())
+                       AntigravityProvider(), DeepseekHarnessProvider())
 }
