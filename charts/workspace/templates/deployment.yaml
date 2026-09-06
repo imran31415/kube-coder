@@ -143,6 +143,19 @@ spec:
         - name: KC_OPENCODE_ZEN_MODEL
           value: {{ .Values.assistant.opencodeZen.model | quote }}
         {{- end }}
+        {{- /* DeepSeek Harness (#639). No key of its own — it reuses
+               DEEPSEEK_API_KEY emitted above, so these are emitted
+               independently of whether that key is set; the server gates the
+               picker entry on the key AND the binary. Guarded so an absent
+               value block never errors on an older values file. */}}
+        {{- if (.Values.assistant.deepseekHarness).model }}
+        - name: KC_DSH_MODEL
+          value: {{ .Values.assistant.deepseekHarness.model | quote }}
+        {{- end }}
+        {{- if (.Values.assistant.deepseekHarness).models }}
+        - name: KC_DSH_MODELS
+          value: {{ .Values.assistant.deepseekHarness.models | quote }}
+        {{- end }}
         {{- if (.Values.assistant.antigravity).model }}
         - name: KC_ANTIGRAVITY_MODEL
           value: {{ .Values.assistant.antigravity.model | quote }}
@@ -171,8 +184,8 @@ spec:
         {{- end }}
         {{- /* Reasoning-effort defaults (#362). Optional per-assistant curation
                of the default effort level (low/medium/high/xhigh/max); blank =>
-               the built-in default (high). Only claude/codex/kc-harness have a
-               usable knob. Guarded so an absent value block never errors. */}}
+               the built-in default (high). Only claude/codex/kc-harness and the
+               DeepSeek Harness have a usable knob. Guarded so an absent value block never errors. */}}
         {{- if (.Values.claude).effort }}
         - name: KC_CLAUDE_EFFORT
           value: {{ .Values.claude.effort | quote }}
@@ -184,6 +197,10 @@ spec:
         {{- if (.Values.assistant.fallback).effort }}
         - name: KC_HARNESS_EFFORT
           value: {{ .Values.assistant.fallback.effort | quote }}
+        {{- end }}
+        {{- if (.Values.assistant.deepseekHarness).effort }}
+        - name: KC_DSH_EFFORT
+          value: {{ .Values.assistant.deepseekHarness.effort | quote }}
         {{- end }}
         {{- /* Phase-2 semantic-memory embeddings (#90). Only emitted when a
                provider is configured; the key is referenced from a Secret. */}}
