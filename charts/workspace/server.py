@@ -2748,7 +2748,13 @@ class ClaudeTaskManager:
             # `$PWD` is the task's workdir: create_task wraps this in
             # `cd <workdir> && …` under `bash -lc`.
             parts = ['python3', '/tmp/browser/acp_bridge.py', '--serve',
-                     '--format', 'stream-json', '--cwd', '"$PWD"']
+                     '--format', 'stream-json', '--cwd', '"$PWD"',
+                     # The curated dashboard+memory pair, same as every other
+                     # assistant gets from its seeded config. Deliberately not
+                     # the full boot-seeded set: ACP connects every declared
+                     # server before publishing the session, so one slow or
+                     # broken npx server is a dead session, not a missing tool.
+                     '--mcp', 'default']
             if model:
                 parts.append(f'--model {_shell_quote(model)}')
             parts += ClaudeTaskManager.effort_cli_args('deepseek-harness', effort)
