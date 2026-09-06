@@ -146,10 +146,20 @@ export function attachNotificationResponseListener(): () => void {
   };
 }
 
-/** One-call init from App boot: display handler + tap routing + registration. */
+/** One-call init from App boot: display handler + tap routing + registration.
+ *
+ *  Runs inside App's boot effect, so a throw here escapes the effect and takes
+ *  the app down before first render — the one failure this module must never
+ *  cause. The native calls are therefore guarded like everything else here, and
+ *  a failure degrades to "no push" rather than "no app". */
 export function initPush(): () => void {
-  configureNotificationHandler();
-  const detach = attachNotificationResponseListener();
-  void registerForPush();
-  return detach;
+  try {
+    configureNotificationHandler();
+    const detach = attachNotificationResponseListener();
+    void registerForPush();
+    return detach;
+  } catch {
+    // best-effort; the in-app Feed still carries every signal
+    return () => {};
+  }
 }

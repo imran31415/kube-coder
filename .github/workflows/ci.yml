@@ -198,6 +198,14 @@ jobs:
         run: npm run test
         working-directory: mobile
 
+      # Catches native/JS version drift that typecheck and vitest cannot: the
+      # React <-> react-native-renderer pin is asserted at runtime, so a
+      # mismatched bump builds and tests green and then crashes on launch.
+      # That is exactly how the v1.4 / build 56 launch crash shipped.
+      - name: Expo doctor
+        run: npx expo-doctor
+        working-directory: mobile
+
   docker-build:
     name: Docker Build Smoke Test
     runs-on: ubuntu-latest
