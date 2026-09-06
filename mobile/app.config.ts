@@ -93,6 +93,13 @@ export function buildConfig(): ExpoConfig {
       bundler: 'metro',
     },
     plugins: [
+      // SDK 57 requires these to be registered as config plugins; they are no
+      // longer picked up implicitly from the dependency alone. expo-font and
+      // expo-asset are direct peer dependencies of @expo/vector-icons and
+      // expo-audio respectively, and must be linked natively.
+      'expo-status-bar',
+      'expo-font',
+      'expo-asset',
       'expo-secure-store',
       // Inline video playback for the Hypervisor chat's video previews.
       'expo-video',
