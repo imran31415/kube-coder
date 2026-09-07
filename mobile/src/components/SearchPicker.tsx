@@ -15,15 +15,20 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo, useState } from 'react';
 import {
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { colors, font, radius, space } from '../theme';
 import { canUseCustom, filterOptions, type PickerOption } from '../util/pickerFilter';
+import { sheetMaxHeight } from '../util/sheetSizing';
+import { useKeyboardHeight } from '../util/useKeyboard';
 
 export type { PickerOption };
 
@@ -53,6 +58,13 @@ export function SearchPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // The search field autofocuses, so the keyboard is up for the entire life
+  // of this sheet. A Modal mounts into its own native view hierarchy, so the
+  // screen-level KeyboardAvoidingView never applied here and the option list
+  // sat under the keys (#662). Size against the space actually left.
+  const { height: screenHeight } = useWindowDimensions();
+  const keyboardHeight = useKeyboardHeight();
+  const maxHeight = sheetMaxHeight(screenHeight, keyboardHeight);
 
   // Filtering lives in util/pickerFilter so it can be tested directly — this
   // app's suite is pure-logic, with no React Native render harness.
@@ -100,7 +112,15 @@ export function SearchPicker({
 
       <Modal visible={open} animationType="slide" transparent onRequestClose={close}>
         <Pressable style={styles.backdrop} onPress={close} accessibilityLabel="Close picker" />
-        <View style={styles.sheet}>
+        {/* KeyboardAvoidingView goes INSIDE the Modal — matching the sheets
+            that already handle this (ControllerConnectModal, ProviderKeysCard,
+            TriggersScreen…). It lifts the sheet; maxHeight is what stops the
+            lifted sheet from running off the top instead. */}
+        <KeyboardAvoidingView
+          style={styles.sheetWrap}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+        <View style={[styles.sheet, { maxHeight }]}>
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>{label}</Text>
             <Pressable onPress={close} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
@@ -169,6 +189,7 @@ export function SearchPicker({
             </Pressable>
           ) : null}
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </>
   );
@@ -196,12 +217,10 @@ const styles = StyleSheet.create({
   valueEmpty: { color: colors.textMuted },
 
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
+  sheetWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    maxHeight: '75%',
+    // maxHeight is applied inline from sheetMaxHeight() — with the keyboard
+    // up, a percentage of the full screen is the wrong denominator.
     backgroundColor: colors.bgElevated,
     borderTopLeftRadius: radius.lg,
     borderTopRightRadius: radius.lg,
@@ -229,7 +248,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: font.size.sm,
   },
-  list: { marginTop: space.sm },
+  list: { marginTop: space.sm, flexShrink: 1 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

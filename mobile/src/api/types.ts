@@ -312,6 +312,9 @@ export interface HypervisorThread {
   /** Model this thread runs on (#308), persisted server-side in the thread's
    *  meta. Drives the mobile switcher's current value when the thread reopens. */
   model?: string;
+  /** Folder the thread runs in, fixed when it was created (#345/#370). The
+   *  server has always sent it; mobile only started showing it with #636. */
+  workdir?: string;
   status: string;
   created_at: number | null;
   updated_at: number | null;

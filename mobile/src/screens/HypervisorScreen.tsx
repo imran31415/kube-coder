@@ -19,6 +19,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -76,7 +77,8 @@ import {
 import { EmptyState, ErrorBanner, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
-import { useKeyboardVisible } from '../util/useKeyboard';
+import { sheetMaxHeight } from '../util/sheetSizing';
+import { useKeyboardHeight, useKeyboardVisible } from '../util/useKeyboard';
 import { SearchPicker } from '../components/SearchPicker';
 import { colors, font, radius, space } from '../theme';
 
@@ -865,7 +867,32 @@ export default function HypervisorScreen() {
             (config.workdir) is offered as the first chip since /api/workspace/
             dirs only lists folders UNDER it; when the list is empty entirely,
             fall back to free text like the web picker and NewTaskScreen. */}
-        {!activeThread && (
+        {/* An open chat shows the folder it actually runs in, read-only (#636,
+            parity with web #637). Hiding the row entirely — what this did
+            before — meant a phone user switching between chats across several
+            repos had no way to tell which repo the open chat targets, which
+            is the whole worry behind the request. The value is fixed at
+            creation, so the control is disabled rather than editable. */}
+        {activeThread ? (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Folder"
+              icon="folder-outline"
+              // An older thread with no recorded workdir gets the honest
+              // placeholder rather than the server default dressed up as
+              // this chat's folder — that guess is the bug web #637 fixed.
+              value={activeThread.workdir || ''}
+              placeholder="Its creation folder"
+              disabled
+              onChange={() => undefined}
+              options={
+                activeThread.workdir
+                  ? [{ value: activeThread.workdir, label: activeThread.workdir }]
+                  : []
+              }
+            />
+          </View>
+        ) : (
           <View style={styles.pickerRow}>
             <SearchPicker
               label="Folder"
@@ -1010,6 +1037,11 @@ function ChatsSheet({
   // Inline rename: the row being edited plus its draft text.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
+  // Renaming autofocuses a field inside this sheet, so the keyboard comes up
+  // over a sheet sized against the full screen (#662).
+  const { height: screenHeight } = useWindowDimensions();
+  const keyboardHeight = useKeyboardHeight();
+  const sheetHeight = sheetMaxHeight(screenHeight, keyboardHeight);
 
   function startRename(t: HypervisorThread) {
     setRenamingId(t.id);
@@ -1041,7 +1073,15 @@ function ChatsSheet({
           onClose();
         }}
       />
-      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
+      {/* Inside the Modal — the screen's KeyboardAvoidingView wraps the chat,
+          not this sheet's separate native view hierarchy (#662). */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View
+        style={[
+          styles.sheet,
+          { maxHeight: sheetHeight, paddingBottom: Math.max(insets.bottom, space.md) },
+        ]}
+      >
         <View style={styles.sheetGrip} />
         <View style={styles.sheetHead}>
           <Text style={styles.sheetTitle}>Chats</Text>
@@ -1173,6 +1213,7 @@ function ChatsSheet({
           </ScrollView>
         )}
       </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

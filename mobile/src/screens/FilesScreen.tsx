@@ -10,7 +10,9 @@ import {
   Alert,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -295,6 +297,13 @@ export default function FilesScreen() {
       <Modal visible={renaming !== null} animationType="fade" transparent onRequestClose={() => setRenaming(null)}>
         <View style={styles.dialogRoot}>
           <Pressable style={styles.sheetBackdrop} onPress={() => setRenaming(null)} />
+          {/* The name field autofocuses; without this the keyboard covers the
+              dialog's Rename button. A Modal has its own view hierarchy, so
+              the screen-level avoider does not apply (#662). */}
+          <KeyboardAvoidingView
+            style={styles.dialogAvoider}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
           <View style={styles.dialog}>
             <Text style={styles.dialogTitle}>Rename</Text>
             <Text style={styles.dialogBody}>{renaming?.name}</Text>
@@ -319,6 +328,7 @@ export default function FilesScreen() {
               />
             </View>
           </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </SafeAreaView>
@@ -396,6 +406,9 @@ const styles = StyleSheet.create({
   binaryMeta: { color: colors.textFaint, fontSize: font.size.xs, fontFamily: font.mono },
 
   dialogRoot: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
+  // Full width so the centred card keeps its own maxWidth; the avoider only
+  // supplies bottom padding when the keyboard is up.
+  dialogAvoider: { width: '100%', alignItems: 'center' },
   dialog: {
     width: '100%',
     maxWidth: 380,

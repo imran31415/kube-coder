@@ -4,7 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -41,6 +43,11 @@ export function AppPickerSheet({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
+        {/* The custom-port field sits at the very bottom of the sheet, so the
+            keyboard covers the thing it just opened for. A Modal is its own
+            native view hierarchy — the screen's KeyboardAvoidingView never
+            reaches in here, so the sheet carries its own (#662). */}
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         {/* Stop backdrop-press from closing when tapping the sheet itself. */}
         <Pressable style={styles.sheet} onPress={() => undefined}>
           <View style={styles.grabber} />
@@ -87,6 +94,7 @@ export function AppPickerSheet({
             </Pressable>
           </View>
         </Pressable>
+        </KeyboardAvoidingView>
       </Pressable>
     </Modal>
   );
