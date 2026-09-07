@@ -7,7 +7,10 @@ with urllib. Covers:
   * Hashed /next/assets/* files are served with the immutable cache header
   * Unknown deep-link paths fall back to index.html (SPA history)
   * Path traversal attempts (/next/../foo) are rejected with 403
-  * Bare `/` and top-level SPA routes (/tasks, /memory, …) all serve index
+  * Every route in the SPA's own table (parsed from router.ts) serves
+    index.html, on a bare path, a nested deep link and an /oauth prefix
+  * The fallback stops at the server's namespaces: missing assets, unknown
+    /api/* paths and /metrics/prometheus do not get the SPA shell
   * When the dist directory does not exist, /next returns a helpful 404
 
 Run with:
@@ -16,15 +19,38 @@ Run with:
 
 import http.server
 import os
+import re
 import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
+
+
+def _spa_routes():
+    """Read the SPA's own route table out of web/src/store/router.ts.
+
+    Derived, never restated: the reason /cto, /board, /feed and /skills
+    404'd on refresh (#665) is that server.py kept a hand-copied list of
+    these paths, and a test that also hardcoded five of them could not
+    notice the drift. Parsing the real table means a route added to the SPA
+    is covered here the moment it lands.
+    """
+    router_ts = os.path.join(
+        os.path.dirname(HERE), 'web', 'src', 'store', 'router.ts')
+    with open(router_ts) as fh:
+        src = fh.read()
+    block = re.search(r'export const ROUTES: RouteDef\[\] = \[(.*?)\n\];',
+                      src, re.S)
+    assert block, 'ROUTES table not found in router.ts'
+    routes = re.findall(r"path:\s*'([^']+)'", block.group(1))
+    assert len(routes) >= 10, f'suspiciously few SPA routes parsed: {routes}'
+    return routes
 
 
 def _free_port():
@@ -166,11 +192,63 @@ class NextSpaRouteTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b'<div id="app">', body)
 
-    def test_top_level_spa_routes_serve_index_html(self):
-        for route in ['/tasks', '/memory', '/triggers', '/files', '/settings']:
-            status, _, body = self._get(route)
+    def test_every_spa_route_serves_index_html(self):
+        # Every route the app declares must survive a refresh / new-tab open.
+        for route in _spa_routes():
+            status, headers, body = self._get(route)
             self.assertEqual(status, 200, msg=f'{route} returned {status}')
-            self.assertIn(b'<div id="app">', body, msg=f'{route} did not serve SPA index.html')
+            self.assertIn(b'<div id="app">', body,
+                          msg=f'{route} did not serve SPA index.html')
+            self.assertIn('no-cache', headers.get('Cache-Control', ''),
+                          msg=f'{route} was served cacheable')
+
+    def test_spa_routes_survive_a_nested_deep_link(self):
+        # /tasks/<id>, /board/<id>/review … the client router owns the rest
+        # of the path, so the whole subtree has to reach index.html.
+        for route in _spa_routes():
+            status, _, body = self._get(f'{route}/deep/link')
+            self.assertEqual(status, 200, msg=f'{route}/deep/link -> {status}')
+            self.assertIn(b'<div id="app">', body)
+
+    def test_oauth_prefixed_spa_routes_serve_index_html(self):
+        # In oauth2 mode the SPA keeps the ingress prefix in pushState URLs,
+        # so a refresh asks the server for /oauth/<route>.
+        for route in _spa_routes():
+            status, _, body = self._get(f'/oauth{route}')
+            self.assertEqual(status, 200, msg=f'/oauth{route} -> {status}')
+            self.assertIn(b'<div id="app">', body)
+
+    # --- …but the fallback must not swallow the server's own namespaces ---
+
+    def test_missing_static_file_still_404s(self):
+        # A path with an extension is an asset request. Answering it with
+        # HTML would turn a missing bundle into a confusing parse error.
+        for path in ['/nope.js', '/favicon-missing.ico', '/assets/gone.css']:
+            with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
+                self._get(path)
+            self.assertEqual(ctx.exception.code, 404, msg=path)
+
+    def test_unknown_api_path_does_not_return_the_spa(self):
+        # Clients check status codes; a typo'd endpoint must not look like a
+        # successful HTML response.
+        try:
+            status, _, body = self._get('/api/definitely-not-a-route')
+        except urllib.error.HTTPError as e:
+            self.assertGreaterEqual(e.code, 400)
+        else:
+            self.assertNotIn(b'<div id="app">', body,
+                             msg=f'unknown /api path served the SPA ({status})')
+
+    def test_metrics_prometheus_is_not_swallowed_by_the_fallback(self):
+        # Extension-less and unauthenticated — exactly the shape the history
+        # fallback matches. It must stay a server route (401, not HTML).
+        try:
+            status, _, body = self._get('/metrics/prometheus')
+        except urllib.error.HTTPError as e:
+            self.assertIn(e.code, (401, 403))
+        else:
+            self.assertNotIn(b'<div id="app">', body,
+                             msg=f'/metrics/prometheus served the SPA ({status})')
 
 
 class NextSpaMissingDistTests(unittest.TestCase):
