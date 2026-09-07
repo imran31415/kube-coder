@@ -291,10 +291,20 @@ describe('Chat transcript pinning across a source flip (#644)', () => {
     transcriptSource.value = 'session_log';
     events.value = sessionLog();
     activeStatus.value = 'idle';
-    await settle();
 
-    layout.scrollTo(0);
-    await settle();
+    // Scroll away only once the swap hold has actually lifted, and prove it
+    // lifted by the scroll STICKING. `settle()` cannot express this: it counts
+    // frames from the signal write, while the component starts its two-frame
+    // hold when it re-renders — so on a loaded machine the frames run out
+    // before the hold even begins. A scroll landing inside the hold is read as
+    // reflow echo and pinned back to the bottom (Chat.tsx `swapEchoRef`),
+    // which is a real, permanent 350 rather than a value that settles to 0 a
+    // frame later. Reproduced 1-in-12 under 4-way CPU load; see #661.
+    await waitFor(() => {
+      layout.scrollTo(0);
+      expect(el.scrollTop).toBe(0);
+    });
+
     events.value = [...events.value, msg(10, 'assistant', 'a later poll result')];
     await settle();
 
