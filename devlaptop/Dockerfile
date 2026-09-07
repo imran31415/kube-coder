@@ -385,6 +385,36 @@ RUN apt-get update && apt-get install -y wget \
     && rm -f "/tmp/ttyd.${TTYD_ARCH}" /tmp/ttyd.SHA256SUMS \
     && rm -rf /var/lib/apt/lists/*
 
+# Install ripwire — a deterministic code map for the agents in this workspace.
+#
+# Why it is baked in rather than left to the agent: its whole value is being
+# reached for BEFORE reading files, and a tool an agent has to install first is
+# a tool it grep-and-reads around instead. It is one static binary with no
+# runtime deps, so the cost here is disk, not surface.
+#
+# The release tarball also ships `skills/` and `hooks/`; only the binary is
+# taken. Workspace-level skills are the operator's business, and the ONE skill
+# this repo wants — scoping a PR — lives in .claude/skills/kc-scope-pr, version
+# controlled with the repo it describes.
+#
+# renovate: datasource=github-releases depName=redhat-et/ripwire
+ARG RIPWIRE_VERSION=v0.4.0
+# Checksum-verified against the vendor-published .sha256, same posture as
+# docker-compose and kubectl above. The published .sha256 names the asset, so
+# only the digest is taken from it and re-paired with the local path.
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "amd64" ]; then RW_ARCH="x64"; elif [ "$ARCH" = "arm64" ]; then RW_ARCH="arm64"; else echo "ripwire: unsupported arch $ARCH" >&2; exit 1; fi \
+    && RW_NUM="${RIPWIRE_VERSION#v}" \
+    && RW_ASSET="ripwire-${RW_NUM}-linux-${RW_ARCH}.tar.gz" \
+    && RW_BASE="https://github.com/redhat-et/ripwire/releases/download/${RIPWIRE_VERSION}" \
+    && curl -fsSL "${RW_BASE}/${RW_ASSET}" -o "/tmp/${RW_ASSET}" \
+    && curl -fsSL "${RW_BASE}/${RW_ASSET}.sha256" -o /tmp/ripwire.sha256 \
+    && echo "$(cut -d' ' -f1 /tmp/ripwire.sha256)  /tmp/${RW_ASSET}" | sha256sum -c - \
+    && tar -xzf "/tmp/${RW_ASSET}" -C /tmp \
+    && install -m 0755 "/tmp/ripwire-${RW_NUM}-linux-${RW_ARCH}/ripwire" /usr/local/bin/ripwire \
+    && rm -rf "/tmp/${RW_ASSET}" /tmp/ripwire.sha256 "/tmp/ripwire-${RW_NUM}-linux-${RW_ARCH}" \
+    && ripwire --version
+
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \

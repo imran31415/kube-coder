@@ -173,11 +173,21 @@ gh api -X PATCH repos/imran31415/kube-coder/issues/N -f state=closed -f state_re
 
 ## Before shipping
 
-Run **kc-preflight** first so CI is green on the first push. Never push a branch
-you haven't at least `bash -n`/typecheck/test-run locally — CI round-trips are slow.
+Two skills, in this order:
+
+1. **kc-scope-pr** — what the diff actually reaches, which tests cover it, what
+   it made worse, what it left untested. Its `impacted=` and `untested=` numbers
+   belong in the PR body when they are large: a reviewer who sees "3 files
+   changed" reads the diff differently than one who also sees the blast radius.
+2. **kc-preflight** — runs the suites for real, so CI is green on the first push.
+
+Never push a branch you haven't at least `bash -n`/typecheck/test-run locally —
+CI round-trips are slow.
 
 ## See also
 
+- **kc-scope-pr** for the numbers that make a PR body reviewable, and the tests
+  to run before this one.
 - Your `github-auth` memory has the full background on the App-token auth setup
   and the stale-extraheader footgun.
 - To add a commit to an already-open PR, just `git push` again; if you're using
