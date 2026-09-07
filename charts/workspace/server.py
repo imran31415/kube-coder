@@ -11256,19 +11256,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # dashboard on each visit. Without this, SimpleHTTPRequestHandler
         # sends no Cache-Control and Safari can pin a stale SPA index.html
         # for days, hiding bundle updates behind a manual cache-clear.
-        # Applied to HTML AND to SPA routes (which don't end in .html but
-        # serve index.html via serve_next_spa) — the previous .html-only
-        # check missed /, /memory, /tasks etc., leading to users stuck on
-        # months-old bundles. Static hashed assets keep default heuristics.
+        # SPA *routes* don't end in .html, but they are all served by
+        # serve_next_spa, which sends the same no-cache pair itself. This
+        # used to carry a second hand-copied list of top-level routes; it
+        # drifted from the app (missing /cto, /board, /feed, /skills) and
+        # also stamped no-cache onto hashed /next/assets/* files that had
+        # just been marked immutable. Static hashed assets keep default
+        # heuristics.
         path = (self.path or '').split('?', 1)[0].lower()
-        is_html = path.endswith('.html')
-        is_spa_route = (
-            path in ('/', '/dashboard', '/dashboard/', '/browser', '/browser/', '/next', '/next/')
-            or path.startswith('/next/')
-            or any(path == r or path.startswith(r + '/')
-                   for r in ('/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop', '/hypervisor', '/walkie', '/mission'))
-        )
-        if is_html or is_spa_route:
+        if path.endswith('.html'):
             self.send_header('Cache-Control', 'no-cache, must-revalidate')
             self.send_header('Pragma', 'no-cache')
         super().end_headers()
@@ -11293,14 +11289,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if self._dispatch_referer_proxy('GET'):
             return
 
-        # All SPA routes serve the new dashboard. /next/* is the explicit form
-        # (kept for backward compat after cutover) and the bare top-level
-        # routes (/, /tasks, /memory, …) all serve the same SPA index.html so
-        # client-side routing handles deep links. The legacy dashboard.html
-        # has been removed; if /opt/dashboard-dist is missing we return 503
-        # rather than fall back to anything stale.
-        SPA_TOP_LEVEL = {'/', '/tasks', '/memory', '/apps', '/triggers', '/files', '/docs', '/settings', '/desktop', '/hypervisor', '/walkie', '/mission'}
-        first_seg = '/' + normalized_path.split('/')[1] if normalized_path != '/' else '/'
+        # The SPA's own roots serve the new dashboard. /next/* is the
+        # explicit form (kept for backward compat after cutover). Every
+        # *other* client-side route (/tasks, /memory, /cto, …) is handled by
+        # the history fallback at the END of this method — server.py no
+        # longer keeps a copy of the app's route table, which is what left
+        # /cto, /board, /feed and /skills 404ing on refresh (#665). The
+        # legacy dashboard.html has been removed; if /opt/dashboard-dist is
+        # missing we return 503 rather than fall back to anything stale.
         if normalized_path == "/next" or normalized_path == "/next/" or normalized_path.startswith("/next/"):
             rel = normalized_path[len("/next"):] if normalized_path.startswith("/next") else ""
             self.serve_next_spa(rel)
@@ -11308,7 +11304,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         elif (
             normalized_path in ["/", "/dashboard", "/dashboard/"]
             or normalized_path in ["/browser", "/browser/"]
-            or first_seg in SPA_TOP_LEVEL
         ):
             # SPA at root. /dashboard and /browser kept for back-compat URLs.
             self.serve_next_spa('/')
@@ -11333,9 +11328,9 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         # Matched on normalized_path (not raw self.path like /metrics above) so
         # a query string or the SPA's /oauth prefix still reaches the scrape
-        # endpoint. Ordering note: 'metrics' is not in SPA_TOP_LEVEL, so the
-        # SPA catch-all earlier in this chain does not swallow it — there is a
-        # test that fails if that ever changes.
+        # endpoint. Ordering note: /metrics is in NON_SPA_PREFIXES, so the
+        # SPA history fallback at the end of this chain does not swallow it —
+        # there is a test that fails if that ever changes.
         elif normalized_path == "/metrics/prometheus":
             self.send_prometheus_metrics()
             return
@@ -11718,7 +11713,40 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_file_view()
             return
 
+        # Nothing above matched. If this looks like a client-side route,
+        # serve the SPA shell so deep links, refreshes and new-tab opens
+        # work for every route in the app (#665). Anything else — a missing
+        # asset, a typo'd /api/* path — keeps falling through to a 404.
+        if self._is_spa_history_path(normalized_path):
+            self.serve_next_spa('/')
+            return
+
         super().do_GET()
+
+    # Namespaces server.py owns. A request under one of these is a server
+    # route (or a mistyped one) and must keep 404ing rather than be answered
+    # with the SPA shell — an /api/* typo returning HTML 200 would break
+    # clients that only check the status code. This is the inverse of the
+    # allowlist it replaced: the server enumerates what IS ITS OWN, never
+    # what belongs to the SPA, so the two can no longer drift.
+    NON_SPA_PREFIXES = ('/api', '/health', '/livez', '/metrics', '/next',
+                        '/vnc', '/vnc-proxy', '/websockify')
+
+    def _is_spa_history_path(self, normalized_path):
+        """True if an otherwise-unmatched GET should serve the SPA shell.
+
+        Structural on purpose: any extension-less path outside the server's
+        own namespaces is a client-side route. Adding a route to the SPA
+        therefore needs no change here.
+        """
+        if not normalized_path.startswith('/'):
+            return False
+        first_seg = '/' + normalized_path.split('/')[1]
+        if first_seg in self.NON_SPA_PREFIXES:
+            return False
+        # A genuinely missing static file (/foo.js, /favicon.ico) stays a
+        # 404 instead of being handed back as HTML.
+        return '.' not in normalized_path.rstrip('/').rsplit('/', 1)[-1]
 
     def serve_next_spa(self, rel_path):
         """Serve the new Preact SPA built into /opt/dashboard-dist/.
@@ -11789,6 +11817,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
         else:
             self.send_header('Cache-Control', 'no-cache, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
         self.end_headers()
         self.wfile.write(body)
 
