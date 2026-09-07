@@ -115,6 +115,12 @@ jobs:
         # against a throwaway DB); this just fails fast with a clear message.
         run: bash -n scripts/memory-db-copy.sh
 
+      - name: retry.sh tests
+        # devlaptop/retry.sh wraps every registry install in the image build,
+        # so a break here surfaces only as a confusing Docker build failure.
+        # The suite is offline — the flaky command is a counter file.
+        run: sh devlaptop/retry_test.sh
+
       - name: doctor.sh operator-preflight tests (#580)
         # scripts/doctor.sh reaches the cluster only through read-only CLIs, so
         # the suite shims kubectl/helm/dig/git on PATH and drives each check's

@@ -16,10 +16,14 @@
 # target arch. See the runtime `FROM` below.
 FROM --platform=$BUILDPLATFORM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS dashboard-builder
 WORKDIR /web
+# Every registry install in this file goes through `retry` — a transient 404
+# or reset from registry.npmjs.org used to fail the whole build outright. See
+# the header of devlaptop/retry.sh for the incident that motivated it.
+COPY devlaptop/retry.sh /usr/local/bin/retry
 # Copy package manifests first so dep-install layer is cacheable.
 COPY charts/workspace/web/package.json ./package.json
 COPY charts/workspace/web/yarn.lock* ./
-RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; else yarn install; fi
+RUN if [ -f yarn.lock ]; then retry yarn install --frozen-lockfile; else retry yarn install; fi
 COPY charts/workspace/web/ ./
 RUN yarn build
 
@@ -87,6 +91,9 @@ ARG NPM_VERSION=11.19.0
 # package integrity/signature against the registry on install.
 # renovate: datasource=npm depName=yarn
 ARG YARN_VERSION=1.22.22
+# Retry wrapper for the registry installs below (see the dashboard-builder
+# stage above, and devlaptop/retry.sh).
+COPY devlaptop/retry.sh /usr/local/bin/retry
 COPY --from=node-dist /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-dist /usr/local/include/node /usr/local/include/node
 COPY --from=node-dist /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
@@ -94,8 +101,8 @@ COPY --from=node-dist /usr/local/lib/node_modules/corepack /usr/local/lib/node_m
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
-    && npm install -g npm@${NPM_VERSION} \
-    && npm install -g yarn@${YARN_VERSION} \
+    && retry npm install -g npm@${NPM_VERSION} \
+    && retry npm install -g yarn@${YARN_VERSION} \
     && node --version && npm --version && yarn --version
 
 # Install Docker CLI and Docker Compose
@@ -171,7 +178,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.233
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
 # the chart's `assistant.provider` value (defaults to claude). Supports
@@ -180,7 +187,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # https://opencode.ai
 # renovate: datasource=npm depName=opencode-ai
 ARG OPENCODE_VERSION=1.18.18
-RUN npm install -g opencode-ai@${OPENCODE_VERSION}
+RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
 # as the `codex` assistant and drives the Hypervisor via `codex exec --json`.
@@ -190,7 +197,7 @@ RUN npm install -g opencode-ai@${OPENCODE_VERSION}
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.147.0
-RUN npm install -g @openai/codex@${CODEX_VERSION}
+RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 
 # DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
 # self-hostable (github.com/deepseek-ai/deepseek-harness). Surfaces in the
@@ -230,7 +237,7 @@ COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
     && /opt/node22/bin/node --version \
-    && PATH=/opt/node22/bin:$PATH npm install -g --prefix /opt/dsh \
+    && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/dsh \
          @deepseek-ai/dsh@${DSH_VERSION} \
     && rm -f /opt/dsh/bin/dsh \
     && printf '%s\n' '#!/bin/sh' \
