@@ -22,8 +22,10 @@
 import React, { useCallback, useState } from 'react';
 import {
   FlatList,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -272,6 +274,10 @@ export default function BoardScreen() {
         onRequestClose={() => setSendingBack(null)}
       >
         <View style={styles.modalBackdrop}>
+          {/* The note field autofocuses, so the keyboard lands on top of the
+              card's own buttons. Modals need their own KeyboardAvoidingView —
+              the screen's does not reach into a Modal's view tree (#662). */}
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>
               Send back {sendingBack?.item_key || sendingBack?.item_id}
@@ -315,6 +321,7 @@ export default function BoardScreen() {
               </Pressable>
             </View>
           </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </SafeAreaView>
