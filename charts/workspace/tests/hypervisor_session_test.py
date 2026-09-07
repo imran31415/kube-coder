@@ -1059,6 +1059,195 @@ class TurnStopNoticeTest(unittest.TestCase):
                 proc.wait()
 
 
+class StopWatcherScopeTest(unittest.TestCase):
+    """A stop disarms the watchers ITS OWN turn armed, and no others (#669).
+
+    #402 made stop() sweep every active watcher on the thread. That is right
+    for a watcher the stopped turn set up, and wrong for one armed three turns
+    earlier against a CI run — which is how this was found: a watcher polled
+    happily for 11 minutes, then died 3 seconds after an unrelated interrupt,
+    silently, having been the sanctioned way to wait across turns.
+
+    Drives real turns through the FallbackAdapter, same as TurnStopNoticeTest.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_dir = hs.HYPERVISOR_DIR
+        self._orig_home = hs.WORKSPACE_HOME
+        hs.HYPERVISOR_DIR = os.path.join(self.tmp, 'threads')
+        hs.WORKSPACE_HOME = self.tmp
+        os.makedirs(hs.HYPERVISOR_DIR, exist_ok=True)
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig_dir
+        hs.WORKSPACE_HOME = self._orig_home
+
+    def _mk(self, cli_cmd):
+        return hs.HypervisorSession.create(
+            assistant='shell', workdir=self.tmp, cli_cmd=cli_cmd,
+            preamble='', title='x')
+
+    def _wait_idle(self, s, timeout=20.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with hs._RUNLOCK:
+                if not hs._RUNNING.get(s.id):
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def _wait_proc(self, s, timeout=20.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with hs._RUNLOCK:
+                proc = hs._PROCS.get(s.id)
+            if proc is not None:
+                return proc
+            time.sleep(0.05)
+        return None
+
+    @staticmethod
+    def _state(s, wid):
+        return {w['id']: w['state'] for w in hs.WATCHERS.list(s.id)}[wid]
+
+    def test_stop_spares_watchers_armed_by_an_earlier_turn(self):
+        """The reported bug: an interrupt must not kill an older watcher."""
+        # One command, two behaviours: turn one echoes and exits, turn two
+        # blocks long enough to be stopped mid-flight. Keeps both turns real
+        # on a single thread, which is what the scoping is about.
+        s = self._mk('read -r x; case "$x" in *two*) sleep 30;; *) echo "$x";; esac')
+        s.send('turn one')
+        self.assertTrue(self._wait_idle(s), 'first turn never finished')
+        # Armed with turn 1's stamp — the counter is not reset when a turn
+        # ends, so this is the same stamp the agent gets arming mid-turn.
+        old = hs.WATCHERS.arm(s.id, kind='command', target='true',
+                              note='CI for PR #670')
+        self.assertEqual(old['turn_seq'], 1)
+
+        s.send('turn two')
+        proc = self._wait_proc(s)
+        self.assertIsNotNone(proc, 'runner never spawned a process')
+        try:
+            self.assertTrue(s.stop())
+            self.assertTrue(self._wait_idle(s), 'stopped turn never finished')
+            self.assertEqual(self._state(s, old['id']), 'armed')
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_stop_disarms_the_watchers_of_the_turn_it_stops(self):
+        """#402's behaviour, preserved for the case it was written for."""
+        s = self._mk('sleep 30')
+        s.send('hello')
+        proc = self._wait_proc(s)
+        self.assertIsNotNone(proc, 'runner never spawned a process')
+        try:
+            mine = hs.WATCHERS.arm(s.id, kind='command', target='true',
+                                   note='this turn\'s build')
+            self.assertTrue(s.stop())
+            self.assertTrue(self._wait_idle(s), 'stopped turn never finished')
+            self.assertEqual(self._state(s, mine['id']), 'cancelled')
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_the_stop_notice_names_what_it_disarmed(self):
+        """A silent disarm is unrecoverable; the marker has to say so."""
+        s = self._mk('sleep 30')
+        s.send('hello')
+        proc = self._wait_proc(s)
+        self.assertIsNotNone(proc, 'runner never spawned a process')
+        try:
+            hs.WATCHERS.arm(s.id, kind='command', target='true',
+                            note='CI for PR #670')
+            self.assertTrue(s.stop())
+            self.assertTrue(self._wait_idle(s), 'stopped turn never finished')
+            notice = [e.get('text') or '' for e in s.read_events()
+                      if 'Stopped by user' in (e.get('text') or '')]
+            self.assertEqual(len(notice), 1)
+            self.assertIn('disarmed 1 cross-turn watcher', notice[0])
+            self.assertIn('CI for PR #670', notice[0])
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_idle_stop_still_disarms_the_last_turn_only(self):
+        """#402 made stop() disarm even when idle (the kill is a no-op then).
+        That is kept — what changes is that it reaches only the newest turn's
+        watchers, not every one the thread ever armed."""
+        s = self._mk('cat')
+        s.send('turn one')
+        self.assertTrue(self._wait_idle(s), 'first turn never finished')
+        old = hs.WATCHERS.arm(s.id, kind='command', target='true', note='old')
+        s.send('turn two')
+        self.assertTrue(self._wait_idle(s), 'second turn never finished')
+        recent = hs.WATCHERS.arm(s.id, kind='command', target='true',
+                                 note='recent')
+        self.assertEqual((old['turn_seq'], recent['turn_seq']), (1, 2))
+        self.assertFalse(s.stop())  # nothing live to kill
+        self.assertEqual(self._state(s, recent['id']), 'cancelled')
+        self.assertEqual(self._state(s, old['id']), 'armed')
+
+
+class CancelThreadScopeTest(unittest.TestCase):
+    """WatcherManager.cancel_thread's turn scoping, without running turns."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_dir = hs.HYPERVISOR_DIR
+        hs.HYPERVISOR_DIR = os.path.join(self.tmp, 'threads')
+        os.makedirs(hs.HYPERVISOR_DIR, exist_ok=True)
+        self.s = hs.HypervisorSession.create(
+            assistant='shell', workdir=self.tmp, cli_cmd='cat',
+            preamble='', title='x')
+
+    def tearDown(self):
+        hs.HYPERVISOR_DIR = self._orig_dir
+        with hs._RUNLOCK:
+            hs._TURN_SEQ.pop(self.s.id, None)
+
+    def _arm_at(self, seq, note=''):
+        with hs._RUNLOCK:
+            hs._TURN_SEQ[self.s.id] = seq
+        return hs.WATCHERS.arm(self.s.id, kind='command', target='true',
+                               note=note)
+
+    def _states(self):
+        return {w['id']: w['state'] for w in hs.WATCHERS.list(self.s.id)}
+
+    def test_none_takes_them_all(self):
+        """The delete path: a deleted thread must not keep polling at all."""
+        a, b = self._arm_at(1), self._arm_at(2)
+        self.assertEqual(len(hs.WATCHERS.cancel_thread(self.s.id)), 2)
+        st = self._states()
+        self.assertEqual([st[a['id']], st[b['id']]], ['cancelled'] * 2)
+
+    def test_a_turn_takes_only_its_own(self):
+        a, b = self._arm_at(1), self._arm_at(2)
+        got = hs.WATCHERS.cancel_thread(self.s.id, turn_seq=2)
+        self.assertEqual([w['id'] for w in got], [b['id']])
+        st = self._states()
+        self.assertEqual([st[a['id']], st[b['id']]], ['armed', 'cancelled'])
+
+    def test_returns_the_watchers_so_the_notice_can_name_them(self):
+        self._arm_at(3, note='the deploy')
+        got = hs.WATCHERS.cancel_thread(self.s.id, turn_seq=3)
+        self.assertIn('the deploy', hs._disarmed_note(got))
+
+    def test_already_cancelled_watchers_are_not_swept_twice(self):
+        w = self._arm_at(1)
+        self.assertEqual(len(hs.WATCHERS.cancel_thread(self.s.id, turn_seq=1)), 1)
+        self.assertEqual(hs.WATCHERS.cancel_thread(self.s.id, turn_seq=1), [])
+        self.assertEqual(self._states()[w['id']], 'cancelled')
+
+    def test_note_is_empty_when_nothing_was_disarmed(self):
+        self.assertEqual(hs._disarmed_note([]), '')
+
+
 class ChoiceExpansionTest(unittest.TestCase):
     """The ```choice fence → canonical `choice` event split (harness-agnostic)."""
 

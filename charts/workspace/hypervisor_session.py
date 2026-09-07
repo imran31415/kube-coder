@@ -1601,7 +1601,46 @@ _PROCS: Dict[str, subprocess.Popen] = {}
 # Thread ids the user asked to stop; lets _run_turn record a clean "stopped"
 # marker (instead of a spurious error) and skip the adapter's finalize.
 _STOPPING: set = set()
+# Monotonic per-thread turn counter, bumped as each turn is dispatched. Cross-
+# turn watchers are stamped with the value current at arm time so a stop can
+# disarm the turn it is actually stopping and leave older watchers alone
+# (#669). Process-local and never persisted: after a restart the counter
+# restarts at 0, so pre-restart watchers no longer match a live turn and a
+# stop leaves them running — the safe direction to fail.
+_TURN_SEQ: Dict[str, int] = {}
 _RUNLOCK = threading.Lock()
+
+
+def _turn_seq(thread_id: str) -> int:
+    """The turn number currently running on a thread (0 if none has run)."""
+    with _RUNLOCK:
+        return _TURN_SEQ.get(thread_id, 0)
+
+
+# Watchers a stop disarmed, handed from stop() to the runner's finally so the
+# notice rides the same "⏹ Stopped by user." marker instead of racing it.
+_STOPPED_WATCHERS: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _disarmed_note(watchers: List[Dict[str, Any]]) -> str:
+    """The tail naming watchers a stop disarmed (#669).
+
+    A silent disarm is unrecoverable for both sides: the agent was told to end
+    its turn and wait for a notification that will now never arrive, and the
+    user has no way to know the "tell me when X" they set up is gone. Naming
+    them makes the loss a decision rather than a mystery.
+    """
+    labels = []
+    for w in watchers:
+        label = (w.get('note') or '').strip() or \
+            f"{w.get('kind') or 'watcher'} {w.get('target') or ''}".strip()
+        labels.append(label[:80])
+    if not labels:
+        return ''
+    n = len(labels)
+    return ('\nAlso disarmed %d cross-turn watcher%s set up by this turn: %s'
+            % (n, '' if n == 1 else 's', '; '.join(labels)))
+
 
 # ───────────────────────────────────────────────────────────────────────────
 # Turn-complete observers (issue #306 — Conversation Gateway)
@@ -1835,8 +1874,12 @@ class HypervisorSession:
         # Preserve the thread's original activity ordering across a
         # delete→restore round-trip: don't let _write_meta bump updated_at.
         self._write_meta(m, touch=False)
-        # A deleted thread must not keep polling or inject notifications (#402).
+        # A deleted thread must not keep polling or inject notifications
+        # (#402) — ALL of them, not just one turn's (#669).
         WATCHERS.cancel_thread(self.id)
+        with _RUNLOCK:
+            _TURN_SEQ.pop(self.id, None)
+            _STOPPED_WATCHERS.pop(self.id, None)
 
     def revive(self) -> bool:
         """Clear ``deleted_at`` so a soft-deleted thread reappears in the
@@ -2194,6 +2237,7 @@ class HypervisorSession:
         self._write_meta(meta)
         with _RUNLOCK:
             _RUNNING[self.id] = True
+            _TURN_SEQ[self.id] = _TURN_SEQ.get(self.id, 0) + 1
         threading.Thread(target=self._run_turn, args=(text, first, meta),
                          daemon=True).start()
 
@@ -2211,10 +2255,17 @@ class HypervisorSession:
         the runner's finally clearing the registry would otherwise stamp a
         naturally-completed turn as "⏹ Stopped by user." (#532).
         """
-        # Stopping the thread also disarms its cross-turn watchers (#402): the
-        # user is halting the work, so its pending "tell me when X" polls must
-        # not keep running and inject follow-up turns later.
-        WATCHERS.cancel_thread(self.id)
+        # Stopping disarms the cross-turn watchers THIS turn armed (#402,
+        # narrowed by #669): the user is halting this work, so its pending
+        # "tell me when X" polls must not fire later. Watchers from EARLIER
+        # turns are left alone — a stop means "stop this turn", not "forget
+        # every long-running thing I asked you to keep an eye on". Still runs
+        # ahead of the early returns below, so an idle stop disarms the last
+        # turn's watchers exactly as #402 intended; only the announcement
+        # needs a live turn to ride on.
+        with _RUNLOCK:
+            seq = _TURN_SEQ.get(self.id, 0)
+        disarmed = WATCHERS.cancel_thread(self.id, turn_seq=seq)
         with _RUNLOCK:
             proc = _PROCS.get(self.id)
             running = bool(_RUNNING.get(self.id))
@@ -2228,6 +2279,10 @@ class HypervisorSession:
             if proc is not None and proc.poll() is not None:
                 return False
             _STOPPING.add(self.id)
+            # Only once we know a real turn is being stopped — the early
+            # returns above must not leave a stash for a later turn's marker.
+            if disarmed:
+                _STOPPED_WATCHERS[self.id] = disarmed
         if proc is None:
             # Turn is registered but its Popen hasn't been created yet (tiny
             # window in _run_turn); the stop flag above makes the runner skip
@@ -2458,9 +2513,11 @@ class HypervisorSession:
                 _PROCS.pop(self.id, None)
                 stopped = self.id in _STOPPING
                 _STOPPING.discard(self.id)
+                disarmed = _STOPPED_WATCHERS.pop(self.id, None)
             if stopped:
                 self._append([{'role': 'system', 'type': 'message',
-                               'text': '⏹ Stopped by user.'}])
+                               'text': '⏹ Stopped by user.'
+                                       + _disarmed_note(disarmed or [])}])
             m = self.read_meta() or meta
             # Product metrics (#363): fold this turn's token usage into the
             # thread's running total before persisting. The adapter stashes a
@@ -2728,6 +2785,10 @@ class WatcherManager:
             'last_check_at': 0.0,
             'state': 'armed',
             'outcome': '',
+            # Which turn armed this (#669). stop() cancels only its own turn's
+            # watchers, so a "tell me when CI goes green" armed three turns ago
+            # survives an unrelated interrupt.
+            'turn_seq': _turn_seq(thread_id),
         }
         w['deadline'] = now + w['timeout']
         if kind == 'file':
@@ -2774,25 +2835,36 @@ class WatcherManager:
                 self._save(thread_id, items)
             return hit
 
-    def cancel_thread(self, thread_id: str) -> int:
-        """Cancel every active watcher of a thread (stop / delete). Never
-        raises — called from paths that must not fail. Returns the count."""
+    def cancel_thread(self, thread_id: str,
+                      turn_seq: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Cancel a thread's active watchers. Never raises — called from paths
+        that must not fail. Returns the watchers it cancelled.
+
+        ``turn_seq`` scopes the sweep to the watchers armed by that turn (#669),
+        which is what a user-issued stop means: halt THIS work, not every
+        "tell me when X" the thread ever set up. Deleting a thread passes None
+        and takes them all — a deleted thread must not keep polling at all.
+        """
         try:
             with self._lock:
                 items = self._load(thread_id)
-                n = 0
+                hit = []
                 for w in items:
-                    if w.get('state') in _WATCH_ACTIVE_STATES:
-                        w['state'] = 'cancelled'
-                        w['cancelled_at'] = _now()
-                        n += 1
-                if n:
+                    if w.get('state') not in _WATCH_ACTIVE_STATES:
+                        continue
+                    if turn_seq is not None and \
+                            int(w.get('turn_seq') or 0) != turn_seq:
+                        continue
+                    w['state'] = 'cancelled'
+                    w['cancelled_at'] = _now()
+                    hit.append(dict(w))
+                if hit:
                     self._save(thread_id, items)
-                return n
+                return hit
         except Exception as e:
             _log(f'watcher cancel_thread {thread_id} failed: '
                  f'{type(e).__name__}: {e}')
-            return 0
+            return []
 
     # ── evaluation tick ────────────────────────────────────────────────────
     def tick(self, now: Optional[float] = None) -> None:
