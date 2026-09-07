@@ -206,6 +206,105 @@ export async function removeCredential(name: string): Promise<string | null> {
 
 // ── runs ───────────────────────────────────────────────────────────────────
 
+/** The Runs form's settings — everything the operator chooses before Start. */
+export interface BoardRunForm {
+  mode: 'propose' | 'autonomous';
+  limit: number;
+  concurrency: number;
+  strategy: string;
+}
+
+export const RUN_FORM_DEFAULTS: Readonly<BoardRunForm> = {
+  mode: 'propose',
+  limit: 10,
+  concurrency: 3,
+  strategy: '',
+};
+
+const RUN_FORM_KEY = 'kc.boardRunForm';
+
+/** The `<input min/max>` bounds, restated here because storage is untrusted:
+ *  a hand-edited entry must not submit a run the form itself would reject. */
+const LIMIT_MIN = 1;
+const LIMIT_MAX = 500;
+const CONCURRENCY_MIN = 1;
+const CONCURRENCY_MAX = 8;
+
+function clampInt(raw: unknown, min: number, max: number, fallback: number): number {
+  // Absent or empty means "never chosen" — fall back rather than clamp, or
+  // a missing field would read as 0 and land on the minimum.
+  if (raw === null || raw === undefined || raw === '') return fallback;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function sanitizeRunForm(raw: unknown): BoardRunForm {
+  const o = (raw ?? {}) as Partial<BoardRunForm>;
+  return {
+    mode: o.mode === 'autonomous' ? 'autonomous' : RUN_FORM_DEFAULTS.mode,
+    limit: clampInt(o.limit, LIMIT_MIN, LIMIT_MAX, RUN_FORM_DEFAULTS.limit),
+    concurrency: clampInt(
+      o.concurrency, CONCURRENCY_MIN, CONCURRENCY_MAX, RUN_FORM_DEFAULTS.concurrency,
+    ),
+    strategy: typeof o.strategy === 'string' ? o.strategy : RUN_FORM_DEFAULTS.strategy,
+  };
+}
+
+function readRunForms(): Record<string, BoardRunForm> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RUN_FORM_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, BoardRunForm> = {};
+    for (const [id, form] of Object.entries(parsed as Record<string, unknown>)) {
+      out[id] = sanitizeRunForm(form);
+    }
+    return out;
+  } catch {
+    /* private mode, or somebody hand-edited the entry into nonsense */
+    return {};
+  }
+}
+
+/**
+ * Runs-form settings that outlive the panel, keyed by board (#643).
+ *
+ * RunsPanel is unmounted whenever the operator leaves the Runs tab — and
+ * watching a run means bouncing to Review and back. Holding Items / At once
+ * in component state meant every trip silently restored `10 @ 3`, so an
+ * operator who had chosen `5 @ 2` and hit Start again dispatched a heavier
+ * run than they had configured. On a 4 GiB pod that difference is enough to
+ * OOM-kill the workspace, taking in-flight items and live tmux with it.
+ *
+ * Keyed by board id, never global: two boards can want very different
+ * concurrency, and carrying one board's numbers to another silently would
+ * be the same bug wearing a different hat.
+ */
+export const boardRunForms = signal<Record<string, BoardRunForm>>(readRunForms());
+
+/** The stored form for a board, or the defaults if it has never been set. */
+export function runFormFor(boardId: string | null): BoardRunForm {
+  if (!boardId) return { ...RUN_FORM_DEFAULTS };
+  return boardRunForms.value[boardId] ?? { ...RUN_FORM_DEFAULTS };
+}
+
+/** Merge a change into a board's form and mirror it to localStorage. */
+export function setRunForm(boardId: string | null, patch: Partial<BoardRunForm>): void {
+  if (!boardId) return;
+  const next = sanitizeRunForm({ ...runFormFor(boardId), ...patch });
+  boardRunForms.value = { ...boardRunForms.value, [boardId]: next };
+  try {
+    localStorage.setItem(RUN_FORM_KEY, JSON.stringify(boardRunForms.value));
+  } catch {
+    /* private mode — the choice still survives tab switches, just not reloads */
+  }
+}
+
+/** Test seam: drop persisted forms and re-read storage. */
+export function _resetRunFormsForTest(): void {
+  boardRunForms.value = readRunForms();
+}
+
 /** Run summaries per board id. */
 export const boardRuns = signal<Record<string, BoardRunSummary[]>>({});
 export const activeRun = signal<BoardRun | null>(null);

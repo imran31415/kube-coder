@@ -18,6 +18,8 @@ import {
   previewStrategy,
   boardMetrics,
   refreshBoardMetrics,
+  runFormFor,
+  setRunForm,
 } from '../../store/boards';
 import { clampLabel, truncationLabel } from '../../api/boards';
 import { MutatorOnly } from '../../components/MutatorOnly';
@@ -38,11 +40,13 @@ import type { BoardRunSummary } from '../../api/boards';
  */
 export function RunsPanel() {
   const boardId = selectedBoardId.value;
-  const [mode, setMode] = useState<'propose' | 'autonomous'>('propose');
-  const [limit, setLimit] = useState(10);
-  const [concurrency, setConcurrency] = useState(3);
+  // Every choice on this form lives in the store, per board (#643). Leaving
+  // the Runs tab unmounts this panel, and watching a run means bouncing to
+  // Review and back — with the values in useState, each trip quietly reset
+  // Items / At once to the heavier defaults under an operator who had
+  // deliberately turned them down.
+  const { mode, limit, concurrency, strategy } = runFormFor(boardId);
   const [starting, setStarting] = useState(false);
-  const [strategy, setStrategy] = useState('');
   const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
@@ -50,10 +54,19 @@ export function RunsPanel() {
     void refreshRuns(boardId);
     void refreshStrategies(boardId);
     strategyPreview.value = null;
-    setStrategy('');
     startRunPolling(boardId);
     return () => stopRunPolling();
   }, [boardId]);
+
+  // A restored strategy that the board no longer defines would leave the
+  // select showing nothing while still filtering the run. Drop it once the
+  // real list has loaded.
+  const knownStrategies = strategies.value;
+  useEffect(() => {
+    if (!boardId || !strategy) return;
+    if (!Object.keys(knownStrategies).length) return;
+    if (!(strategy in knownStrategies)) setRunForm(boardId, { strategy: '' });
+  }, [boardId, strategy, knownStrategies]);
 
   /** The selection this form will actually send. A saved strategy supplies
    *  the filters; the two numbers on the form always win, because they are
@@ -104,7 +117,9 @@ export function RunsPanel() {
               value={strategy}
               aria-label="Selection strategy"
               onInput={(e) => {
-                setStrategy((e.target as HTMLSelectElement).value);
+                setRunForm(boardId, {
+                  strategy: (e.target as HTMLSelectElement).value,
+                });
                 strategyPreview.value = null;
               }}
             >
@@ -122,11 +137,11 @@ export function RunsPanel() {
               value={mode}
               aria-label="Run mode"
               onInput={(e) =>
-                setMode(
-                  (e.target as HTMLSelectElement).value as
+                setRunForm(boardId, {
+                  mode: (e.target as HTMLSelectElement).value as
                     | 'propose'
                     | 'autonomous',
-                )
+                })
               }
             >
               <option value="propose">Propose — stage every write</option>
@@ -141,7 +156,9 @@ export function RunsPanel() {
               max={500}
               value={limit}
               onInput={(e) =>
-                setLimit(Number((e.target as HTMLInputElement).value) || 1)
+                setRunForm(boardId, {
+                  limit: Number((e.target as HTMLInputElement).value) || 1,
+                })
               }
             />
           </label>
@@ -153,7 +170,9 @@ export function RunsPanel() {
               max={8}
               value={concurrency}
               onInput={(e) =>
-                setConcurrency(Number((e.target as HTMLInputElement).value) || 1)
+                setRunForm(boardId, {
+                  concurrency: Number((e.target as HTMLInputElement).value) || 1,
+                })
               }
             />
           </label>
