@@ -9,7 +9,11 @@ argument-hint: "[all | web | python | helm | shell] (default: all)"
 # kube-coder preflight (run CI locally)
 
 Mirrors `.github/workflows/ci.yml` so you catch failures before pushing instead
-of waiting on a CI round-trip. Run the subset named by `$ARGUMENTS` (default
+of waiting on a CI round-trip.
+
+> **Run `kc-scope-pr` first.** This skill runs whole suites; that one tells you
+> which suites your change actually reaches, and what it left untested. A green
+> preflight over a suite that never touches your diff is not evidence. Run the subset named by `$ARGUMENTS` (default
 `all`). Report a concise PASS/FAIL summary per section at the end.
 
 Run from the repo root (`/home/dev/kube-coder`).
