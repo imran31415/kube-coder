@@ -386,9 +386,13 @@ make new-user      USER=<name>    # scaffold a workspace (prints the OAuth-App c
 make deploy        USER=<name>    # helm upgrade --install
 make logs|shell|test USER=<name>  # operate a running workspace
 make stop|start    USER=<name>    # scale to zero / back
+make backup-user   USER=<name>    # archive the home volume (QUIESCE=1 for a consistent copy)
+make restore-user  USER=<name> ARCHIVE=<path|s3://…>
 ```
 
 Full CLI walkthrough: [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md).
+
+The home volume is the only state a workspace can't rebuild — project checkouts, `~/.credentials`, the memory DB. The chart stops `helm uninstall` from deleting it; a backup is what covers storage failure, node loss and a stray `kubectl delete pvc`. The archive contains live SSH keys, so where it lands matters: [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) covers the sinks, the encryption story and the restore drill.
 
 ---
 

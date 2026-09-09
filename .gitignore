@@ -65,3 +65,9 @@ graphify-out/
 
 # Local dev board state (charts/workspace/web/dev_server.py, KC_LOCAL_HOME).
 charts/workspace/.devdata/
+
+# Home-volume backups written by scripts/backup-user.sh (#579). These archives
+# contain the user's SSH private keys and every persisted tool login — they must
+# never be committable by accident. The script writes them 0600 in a 0700 dir;
+# this is the second lock on the same door. See docs/BACKUP_RESTORE.md.
+backups/
