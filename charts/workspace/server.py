@@ -46,6 +46,14 @@ except ImportError:      # pragma: no cover - module always ships beside server.
 # Fail closed.
 import safe_http
 
+# Runtime catalog (#604) — the single declarative source of truth for which
+# agent CLIs exist and how each is launched. Shared with
+# mcp_agent_orchestrator.py so the interactive and headless launch paths cannot
+# encode the same fact in two formats and drift. Pure and dependency-free;
+# imported unguarded because a server that cannot name its runtimes cannot
+# launch a task at all.
+import runtimes
+
 # Mobile push notifications (Expo): device-token store + high-signal dispatch,
 # hooked into FeedManager.emit below. Stdlib-only and self-contained, so it
 # never affects server startup.
@@ -294,31 +302,15 @@ def _is_first_cto_thread():
         return False
     return not any((t.get('persona') or '') == 'cto' for t in threads)
 # OpenCode Zen (issue #395) — the free coding models on OpenCode's hosted Zen
-# gateway. The whole list is offered in the in-chat model switcher; the first
-# entry is the built-in default (a coding-oriented model), overridable per
-# deployment via KC_OPENCODE_ZEN_MODEL / KC_OPENCODE_ZEN_MODELS. Zen advertises
-# these as free-for-a-limited-time and may train on submitted data — the UI
-# surfaces that disclosure (see the trainingDisclosure flag on the assistant).
-_OPENCODE_ZEN_FREE_MODELS = (
-    'deepseek-v4-flash-free',
-    'big-pickle',
-    'mimo-v2.5-free',
-    'laguna-s-2.1-free',
-    'ling-3.0-flash-free',
-    'north-mini-code-free',
-    'nemotron-3-ultra-free',
-)
-_OPENCODE_ZEN_DEFAULT_MODEL = _OPENCODE_ZEN_FREE_MODELS[0]
-
-# DeepSeek Harness models (#639), read off a live `session/new`'s advertised
-# `model` config option. Bare ids: the ACP bridge resolves each against what
-# the session actually offers, so nothing above it handles the harness's
-# encoded ["provider","model"] pair form. The default is the harness's own
-# (`deepseek-v4-flash`), so listing the assistant changes no behaviour. The
-# experimental vision model the harness also offers is deliberately absent —
-# an operator who wants it sets KC_DSH_MODELS.
-_DSH_MODELS = ('deepseek-v4-flash', 'deepseek-v4-pro')
-_DSH_DEFAULT_MODEL = _DSH_MODELS[0]
+# gateway; and the DeepSeek Harness model ids (#639). Both now live in the
+# runtime catalog (runtimes.py, #604) because the orchestrator needs the same
+# defaults and used to carry hand-copied literals with "keep in sync with
+# server.py" comments above them. Aliased here so this module's existing
+# readers are unchanged.
+_OPENCODE_ZEN_FREE_MODELS = runtimes.OPENCODE_ZEN_FREE_MODELS
+_OPENCODE_ZEN_DEFAULT_MODEL = runtimes.OPENCODE_ZEN_DEFAULT_MODEL
+_DSH_MODELS = runtimes.DSH_MODELS
+_DSH_DEFAULT_MODEL = runtimes.DSH_DEFAULT_MODEL
 # Short context note pasted as the first message of a new chat, so the agent
 # knows its role + that it has the dashboard tools. Kept terse on purpose —
 # a big preamble front-loads noise and some CLIs handle it poorly.
@@ -2135,71 +2127,24 @@ class ClaudeTaskManager:
     # The legacy `opencode-fallback` assistant was retired in favour of
     # kc-harness: same endpoint, narrow tool surface, XML-aware parser, so
     # small local models actually execute tools instead of describing them.
+    # Derived from the runtime catalog (runtimes.py, #604) rather than
+    # re-listing the ids: this is the dropdown's PRESENTATION view of a runtime
+    # (id + label + the two picker markers), and duplicating the id set here is
+    # exactly the drift the catalog exists to remove — a runtime could be
+    # launchable but unlistable, or listed but unlaunchable. Which of these
+    # entries a given workspace actually offers is decided by
+    # available_assistants() below, on binary + key presence.
+    #
+    # `trainingDisclosure` stays camelCase because it is wire format: the SPA
+    # and the mobile app read it off /api/claude/assistants.
     ASSISTANTS = {
-        'claude': {
-            'id': 'claude',
-            'label': 'Claude Code',
-        },
-        'ante': {
-            'id': 'ante',
-            'label': 'Ante CLI',
-        },
-        # Antigravity — Google's `agy` CLI, pre-installed in the image. OAuth
-        # login (no API key), so it's listed whenever its binary is resolvable.
-        'antigravity': {
-            'id': 'antigravity',
-            'label': 'Antigravity',
-        },
-        # Codex — OpenAI's `codex` CLI, pre-installed in the image. ChatGPT
-        # OAuth login (no API key: `codex login` once in the pod), so it's
-        # listed whenever its binary is resolvable — same signal as Antigravity.
-        'codex': {
-            'id': 'codex',
-            'label': 'Codex',
-        },
-        # DeepSeek Harness (#639) — DeepSeek's own open-source harness (`dsh`),
-        # driven over its ACP JSON-RPC server rather than someone else's agent
-        # loop. Deliberately distinct from `opencode-deepseek` below, which is
-        # OpenCode's agent loop merely ANSWERED by a DeepSeek model; both
-        # coexist. Needs BOTH the binary and DEEPSEEK_API_KEY (see
-        # available_assistants) — unlike agy/codex, there is no OAuth path.
-        'deepseek-harness': {
-            'id': 'deepseek-harness',
-            'label': 'DeepSeek Harness',
-        },
-        # LibreFang — open-source agent OS (https://librefang.ai). Tasks talk
-        # to its registry-bundled "coder" agent via `librefang chat`; the CLI
-        # picks up whatever provider key is in the environment
-        # (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …).
-        'librefang': {
-            'id': 'librefang',
-            'label': 'LibreFang',
-        },
-        'opencode-openrouter': {
-            'id': 'opencode-openrouter',
-            'label': 'OpenRouter',
-        },
-        'opencode-deepseek': {
-            'id': 'opencode-deepseek',
-            'label': 'DeepSeek',
-        },
-        # OpenCode Zen (#395) — OpenCode's hosted gateway of free coding models.
-        # No credit card, ~100 req/day on a one-time free signup key, so it's the
-        # zero-cost default for trial/demo workspaces. `free` drives the "free"
-        # marker in the picker; `trainingDisclosure` drives the UI note that Zen
-        # may train on submitted data.
-        'opencode-zen': {
-            'id': 'opencode-zen',
-            'label': 'OpenCode Zen',
-            'free': True,
-            'trainingDisclosure': True,
-        },
-        # kc-harness — thin in-pod LLM tool-call loop at /tmp/browser/harness.py
-        # See charts/workspace/harness.py for the design rationale.
-        'kc-harness': {
-            'id': 'kc-harness',
-            'label': 'Opensource GPU',
-        },
+        rid: dict(
+            {'id': rid, 'label': entry['label']},
+            **({'free': True} if entry.get('free') else {}),
+            **({'trainingDisclosure': True} if entry.get('training_disclosure')
+               else {}),
+        )
+        for rid, entry in runtimes.RUNTIMES.items()
     }
 
     @staticmethod
@@ -2702,158 +2647,88 @@ class ClaudeTaskManager:
         return supported
 
     @staticmethod
-    def assistant_command(assistant, auto_approve=False, model='', effort='',
-                          session_id='', resume_session_id=''):
-        # `model` / `effort` are the caller's per-launch choices (already run
-        # through resolve_model / resolve_effort). Both are optional and both
-        # fall back to the workspace env default when empty, so every existing
-        # call site keeps its exact previous command. `model` is what lets a
-        # project default (#483) reach an interactive build; `effort` (#362) is
-        # only used by the CLIs that take it as a flag — the ones that read an
-        # env var instead are served by effort_env() at launch.
-        #
-        # auto_approve launches the interactive REPL with the CLI's
-        # skip-permissions flag so it never blocks on an in-terminal approval
-        # menu. This is required for surfaces that drive the agent purely by
-        # pasting text (the Hypervisor chat, which has no way to answer an
-        # arrow/number permission prompt) — mirrors the headless orchestrator's
-        # per-CLI skip flags. The Build tab leaves this off so its live terminal
-        # keeps prompting for approval as before. Only claude/ante/antigravity
-        # expose a REPL-compatible skip flag; other CLIs are launched unchanged.
-        if assistant == 'ante':
-            return 'ante --yolo' if auto_approve else 'ante'
-        if assistant == 'antigravity':
-            # Interactive Antigravity (agy) REPL for the dashboard pane. Optional
-            # model via KC_ANTIGRAVITY_MODEL (agy picks a sensible default
-            # otherwise); quoted so a hostile env var can't break out of the
-            # `bash -lc` shell_cmd built downstream in create_task().
-            model = model or os.environ.get('KC_ANTIGRAVITY_MODEL', '')
-            skip = '--dangerously-skip-permissions ' if auto_approve else ''
-            model_flag = f'--model {_shell_quote(model)}' if model else ''
-            return f'agy {skip}{model_flag}'.strip()
-        if assistant == 'codex':
-            # Interactive Codex TUI for the dashboard pane. Optional model via
-            # KC_CODEX_MODEL (codex picks its own default otherwise); quoted so a
-            # hostile env var can't break out of the `bash -lc` shell_cmd built
-            # downstream in create_task(). The pod is externally sandboxed (k8s),
-            # so auto_approve uses the bypass flag documented for exactly that.
-            model = model or os.environ.get('KC_CODEX_MODEL', '')
-            parts = ['codex']
-            if auto_approve:
-                parts.append('--dangerously-bypass-approvals-and-sandbox')
-            if model:
-                parts.append(f'--model {_shell_quote(model)}')
-            # Reasoning effort (#362): `-c model_reasoning_effort=<level>`
-            # overrides ~/.codex/config.toml for this invocation only.
-            parts += ClaudeTaskManager.effort_cli_args('codex', effort)
-            return ' '.join(parts)
-        if assistant == 'deepseek-harness':
-            # DeepSeek Harness (#639) in a Build pane. `dsh` ships no REPL we
-            # can use — the `tui` profile is not among the bundles the npm
-            # package installs, and `--profile headless` is one-shot prose with
-            # no tool output — so the Build runs the ACP bridge's serve mode:
-            # one long-lived ACP session, prompt after prompt off the tmux
-            # pane, rendered as stream-json + plain text. Same
-            # reads-stdin-emits-JSONL contract as kc-harness above.
-            #
-            # `auto_approve` is deliberately a NO-OP here, and that is a real
-            # difference from the other assistants: ACP's permission requests
-            # arrive as JSON-RPC calls that must be answered programmatically
-            # within the turn, and a tmux pane has no way to put that question
-            # to the user and get an answer back. The bridge therefore always
-            # auto-approves — the pod is the sandbox — so the Build tab does
-            # NOT keep prompting for approval the way it does for claude/ante.
-            # Documented in docs/llm-setup.md so it isn't a surprise.
-            model = model or os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL)
-            # `$PWD` is the task's workdir: create_task wraps this in
-            # `cd <workdir> && …` under `bash -lc`.
-            parts = ['python3', '/tmp/browser/acp_bridge.py', '--serve',
-                     '--format', 'stream-json', '--cwd', '"$PWD"',
-                     # The curated dashboard+memory pair, same as every other
-                     # assistant gets from its seeded config. Deliberately not
-                     # the full boot-seeded set: ACP connects every declared
-                     # server before publishing the session, so one slow or
-                     # broken npx server is a dead session, not a missing tool.
-                     '--mcp', 'default']
-            if model:
-                parts.append(f'--model {_shell_quote(model)}')
-            parts += ClaudeTaskManager.effort_cli_args('deepseek-harness', effort)
-            return ' '.join(parts)
-        if assistant == 'librefang':
-            # Interactive chat REPL with the registry's "coder" agent (synced
-            # into ~/.librefang by `librefang init`). KC_LIBREFANG_AGENT
-            # overrides the agent name for users who ship their own manifest.
-            # Quoted so a hostile env var can't break out of the `bash -lc`
-            # shell_cmd built downstream in create_task().
-            #
-            # `librefang chat` needs the kernel daemon running — without it the
-            # CLI panics ("there is no reactor running") and the tmux session
-            # exits instantly. `librefang start` self-daemonizes and is a no-op
-            # when already up; poll status briefly so the REPL doesn't attach
-            # before the daemon's API binds. Mirrors the headless bootstrap in
-            # mcp_agent_orchestrator.py.
-            agent = _shell_quote(os.environ.get('KC_LIBREFANG_AGENT', 'coder'))
-            return (
-                'librefang status -q >/dev/null 2>&1 || { '
-                'librefang start >/dev/null 2>&1 || true; '
-                'for _ in 1 2 3 4 5 6 7 8 9 10; do '
-                'librefang status -q >/dev/null 2>&1 && break; sleep 1; '
-                'done; }; '
-                f'librefang chat {agent}'
-            )
-        if assistant == 'opencode-openrouter':
-            model = model or os.environ.get('KC_OPENROUTER_MODEL',
-                                            'anthropic/claude-sonnet-4')
-            # Quote the model so a hostile env var can't break out of the
-            # `bash -lc` shell_cmd built downstream in create_task().
-            return f'opencode --model {_shell_quote(f"openrouter/{model}")}'
-        if assistant == 'opencode-deepseek':
-            model = model or os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
-            return f'opencode --model {_shell_quote(f"deepseek/{model}")}'
-        if assistant == 'opencode-zen':
-            # OpenCode Zen (#395). The provider id `opencode-zen` matches the
-            # custom provider stanza start.sh writes into opencode.json; the
-            # model is one of Zen's free ids. Quote so a hostile env var can't
-            # break out of the `bash -lc` shell_cmd built in create_task().
-            model = model or os.environ.get('KC_OPENCODE_ZEN_MODEL',
-                                            _OPENCODE_ZEN_DEFAULT_MODEL)
-            return f'opencode --model {_shell_quote(f"opencode-zen/{model}")}'
-        if assistant == 'kc-harness':
-            # Reads stdin (tmux paste) and emits dashboard JSONL events.
-            # KC_HARNESS_MODEL / KC_FALLBACK_MODEL pick the model; the
-            # default lives in harness.py.
-            return 'python3 /tmp/browser/harness.py'
-        # Claude Code. `default` is the "let the CLI pick" sentinel from the
-        # model list, so it never becomes a --model flag. Effort rides
-        # CLAUDE_CODE_EFFORT_LEVEL in the launch env (see effort_env), not argv.
-        parts = ['claude']
-        if auto_approve:
-            parts.append('--dangerously-skip-permissions')
-        if model and model != 'default':
-            parts.append(f'--model {_shell_quote(model)}')
-        # Resume an EARLIER session (#588 Phase 6) — the re-scoping round trip.
-        # Mutually exclusive with --session-id below, and deliberately checked
-        # first: you cannot both mint a new session and continue an old one, and
-        # continuing is the whole point here. The transcript the CLI reopens is
-        # the one --session-id pinned at that Build's birth, so this only works
-        # for a Build launched by us, in the same workdir.
+    def _claude_session_args(model, session_id, resume_session_id):
+        """The `claude` launch hook (#604): the stateful bits the runtime catalog
+        deliberately does NOT model as a template, because they depend on what
+        THIS CLI build advertises rather than on the runtime's identity.
+
+        Returns (argv_fragment, final) — `final` means "stop here", because
+        --resume and --session-id are mutually exclusive: you cannot both mint a
+        new session and continue an old one, and continuing is the whole point.
+
+        Resume (#588 Phase 6) is checked first and wins. The transcript the CLI
+        reopens is the one --session-id pinned at that Build's birth, so it only
+        works for a Build we launched, in the same workdir.
+
+        Otherwise pin the session id (#574) so the Build's transcript lands at a
+        path we KNOW: ~/.claude/projects/<escaped-cwd>/<session_id>.jsonl. That is
+        what makes a Build's token usage readable at all, and it removes the "most
+        recently modified .jsonl in this project dir" guess, which is ambiguous
+        the moment a Build and a Hypervisor thread share a workdir. Only a
+        well-formed uuid is passed through — Claude Code refuses to launch on
+        anything else — and only when this CLI advertises the flag at all.
+        """
         if (_valid_uuid(resume_session_id)
                 and ClaudeTaskManager._claude_supports_resume()):
-            parts.append(f'--resume {_shell_quote(resume_session_id)}')
-            return ' '.join(parts)
-        # Pin the Claude session id (#574) so the Build's transcript lands at a
-        # path we KNOW: ~/.claude/projects/<escaped-cwd>/<session_id>.jsonl. That
-        # is what makes a Build's token usage readable at all — and it removes the
-        # "most recently modified .jsonl in this project dir" guess, which is
-        # ambiguous the moment a Build and a Hypervisor thread share a workdir.
-        # Verified end-to-end on a live pod: interactive `claude --session-id
-        # <uuid>` writes exactly <uuid>.jsonl. Only a well-formed uuid is passed
-        # through — Claude Code rejects anything else and would refuse to launch —
-        # and only when this CLI advertises the flag at all.
+            return [f'--resume {_shell_quote(resume_session_id)}'], True
         if (_valid_uuid(session_id)
                 and ClaudeTaskManager._claude_supports_session_id()):
-            parts.append(f'--session-id {_shell_quote(session_id)}')
-        return ' '.join(parts)
+            return [f'--session-id {_shell_quote(session_id)}'], False
+        return [], False
+
+    @staticmethod
+    def assistant_command(assistant, auto_approve=False, model='', effort='',
+                          session_id='', resume_session_id=''):
+        """The interactive launch command for `assistant`, rendered from the
+        runtime catalog (charts/workspace/runtimes.py, #604).
+
+        This used to be nine hand-written `if assistant ==` branches, each
+        re-deriving its own model default and re-applying _shell_quote by hand
+        against a hostile env var. The per-runtime knowledge now lives in exactly
+        one place; what is left here is the three things that are genuinely this
+        call site's business — resolving the model, resolving the skip-approvals
+        flag, and resolving effort — plus one registered hook for Claude's
+        session/resume flags.
+
+        `model` / `effort` are the caller's per-launch choices (already run
+        through resolve_model / resolve_effort). Both are optional and both fall
+        back to the workspace env default when empty, so every existing call site
+        keeps its exact previous command. `model` is what lets a project default
+        (#483) reach an interactive build; `effort` (#362) is only used by the
+        CLIs that take it as a flag — the ones that read an env var instead are
+        served by effort_env() at launch.
+
+        auto_approve launches the REPL with the CLI's skip-permissions flag so it
+        never blocks on an in-terminal approval menu. This is required for
+        surfaces that drive the agent purely by pasting text (the Hypervisor chat,
+        which has no way to answer an arrow/number permission prompt) — mirrors
+        the headless orchestrator's per-CLI skip flags. The Build tab leaves this
+        off so its live terminal keeps prompting for approval as before. A runtime
+        whose catalog entry declares no `skip_permissions_flag` launches
+        unchanged; for deepseek-harness that is a documented no-op rather than an
+        oversight (see its catalog entry).
+
+        An unknown id falls through to Claude, exactly as the branch chain did —
+        the retired `opencode-fallback` id still lands on `claude`.
+        """
+        entry = runtimes.RUNTIMES.get(assistant)
+        if entry is None:
+            assistant, entry = 'claude', runtimes.RUNTIMES['claude']
+        skip_flag = entry.get('skip_permissions_flag')
+        parts = runtimes.render(
+            assistant, entry['launch_args'],
+            quote=_shell_quote,
+            model=runtimes.resolve_model(assistant, model),
+            arg=runtimes.resolve_arg(assistant),
+            skip=[skip_flag] if (auto_approve and skip_flag) else [],
+            effort=ClaudeTaskManager.effort_cli_args(assistant, effort),
+        )
+        if entry.get('launch_hook') == 'claude_session_args':
+            extra, _final = ClaudeTaskManager._claude_session_args(
+                model, session_id, resume_session_id)
+            if extra:
+                parts = ' '.join([parts, *extra])
+        return parts
 
     # Soft ceiling on concurrently-live tasks created through this manager
     # (dashboard / desktop / webhook / cron). Protects a small 2-3 CPU pod from
