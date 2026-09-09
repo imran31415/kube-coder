@@ -25,6 +25,13 @@ import traceback
 import uuid
 from typing import Any, Dict, List, Optional
 
+# Runtime catalog (#604) — the single declarative source of truth for which
+# agent CLIs exist and how each is launched, shared with server.py so the
+# headless and interactive launch paths cannot drift. A sibling module: this
+# server runs as `python3 /tmp/browser/mcp_agent_orchestrator.py`, and the
+# Dockerfile's `COPY charts/workspace/*.py` puts runtimes.py right beside it.
+import runtimes
+
 # ───────────────────────────────────────────────────────────────────────────
 # Constants
 # ───────────────────────────────────────────────────────────────────────────
@@ -236,99 +243,9 @@ def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
         _write_meta(parent_dir, meta)
 
 
-# Assistants with a non-interactive one-shot "print" mode that exits when
-# the task is done. Anything not listed has no reliable headless interface
-# (kc-harness) and is always run interactively (prompt pasted into the REPL).
-_HEADLESS_CAPABLE = {'claude', 'ante', 'codex', 'antigravity', 'librefang',
-                     'opencode-openrouter', 'opencode-deepseek', 'opencode-zen',
-                     'deepseek-harness'}
-
-
-def _codex_model_flag() -> str:
-    """Optional `-m <model>` for codex; empty when KC_CODEX_MODEL is unset (codex
-    picks its own default). Mirrors server.py's assistant_command."""
-    m = os.environ.get('KC_CODEX_MODEL', '')
-    return f'-m {_shell_quote(m)} ' if m else ''
-
-
-def _opencode_model(assistant: str) -> str:
-    if assistant == 'opencode-deepseek':
-        return 'deepseek/' + os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat')
-    if assistant == 'opencode-zen':
-        # Provider id `opencode-zen` matches the opencode.json stanza start.sh
-        # writes; the model is one of Zen's free ids (#395). Keep the default in
-        # sync with server.py's _OPENCODE_ZEN_DEFAULT_MODEL.
-        return 'opencode-zen/' + os.environ.get('KC_OPENCODE_ZEN_MODEL', 'deepseek-v4-flash-free')
-    return 'openrouter/' + os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4')
-
-
-def _antigravity_model() -> str:
-    """Optional model the Antigravity CLI (agy) runs against, from
-    KC_ANTIGRAVITY_MODEL. Empty => let agy pick its own default."""
-    return os.environ.get('KC_ANTIGRAVITY_MODEL', '')
-
-
-def _dsh_command(prompt: str = '', headless: bool = True) -> str:
-    """DeepSeek Harness (#639) — the ACP bridge, not the `dsh` CLI directly.
-
-    `dsh`'s structured surface is a bidirectional JSON-RPC server, so both
-    modes go through charts/workspace/acp_bridge.py:
-
-      headless    one prompt on stdin, events on stdout, exits when the turn
-                  settles — exactly the "print mode" contract this module
-                  needs to detect completion by session death + exit code.
-      interactive `--serve`, one long-lived ACP session fed by tmux paste,
-                  the same thing the Builds tab runs.
-
-    `--format stream-json` in both, because the orchestrator captures the
-    tmux pane as TEXT: that renderer interleaves human-readable lines with
-    the JSONL, so `get_agent_output` returns something a parent agent can
-    actually read.
-
-    Tool approvals are auto-answered by the bridge — which is what a
-    sub-agent needs anyway, matching the skip-approval flags every other
-    headless command here passes.
-    """
-    # `--mcp default` = the curated dashboard+memory pair. Not the full
-    # boot-seeded set: ACP connects every declared server before publishing
-    # the session, so one slow npx server is a dead sub-agent.
-    flags = ['--cwd', '"$PWD"', '--format', 'stream-json', '--mcp', 'default']
-    model = os.environ.get('KC_DSH_MODEL', '')
-    if model:
-        flags += ['--model', _shell_quote(model)]
-    if headless:
-        # printf keeps the prompt off argv and out of `ps`, and its format
-        # string is a literal '%s' so a prompt containing % is inert.
-        return f'printf %s {_shell_quote(prompt)} | python3 /tmp/browser/acp_bridge.py ' \
-               + ' '.join(flags)
-    return 'python3 /tmp/browser/acp_bridge.py --serve ' + ' '.join(flags)
-
-
-def _librefang_agent() -> str:
-    """LibreFang agent name tasks talk to — the registry-bundled `coder`
-    unless KC_LIBREFANG_AGENT points at a user-supplied manifest."""
-    return os.environ.get('KC_LIBREFANG_AGENT', 'coder')
-
-
-def _librefang_daemon_bootstrap() -> str:
-    """Shell prefix that ensures the LibreFang kernel daemon is up.
-
-    Both `librefang chat` (interactive) and `librefang message` (headless)
-    talk to the kernel and panic ("there is no reactor running") when no
-    daemon is running, killing the tmux session instantly. `librefang start`
-    self-daemonizes and is a no-op when already up; we poll status briefly so
-    the follow-up command doesn't run before the daemon's API binds."""
-    return (
-        'librefang status -q >/dev/null 2>&1 || { '
-        'librefang start >/dev/null 2>&1 || true; '
-        'for _ in 1 2 3 4 5 6 7 8 9 10; do '
-        'librefang status -q >/dev/null 2>&1 && break; sleep 1; '
-        'done; }; '
-    )
-
-
 def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) -> str:
-    """Build the shell command that launches an assistant.
+    """Build the shell command that launches an assistant, from the runtime
+    catalog (charts/workspace/runtimes.py, #604).
 
     headless=True → a one-shot 'print' invocation that takes the prompt on
     the command line and EXITS when finished, so completion is detectable via
@@ -336,61 +253,36 @@ def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) 
     the bare interactive REPL; the caller pastes the prompt afterwards. Used
     for long-lived sessions a human will attach to.
 
-    Sub-agents run autonomously with no human to approve tool calls, so the
-    headless commands include each CLI's skip-approval flag. They run inside
-    the same isolated per-user workspace pod the dashboard already trusts.
-    """
-    if not headless or assistant not in _HEADLESS_CAPABLE:
-        # Interactive REPL — prompt delivered via tmux paste by the caller.
-        if assistant in ('opencode-openrouter', 'opencode-deepseek', 'opencode-zen'):
-            return f'opencode --model {_shell_quote(_opencode_model(assistant))}'
-        if assistant == 'antigravity':
-            m = _antigravity_model()
-            return f'agy --model {_shell_quote(m)}' if m else 'agy'
-        if assistant == 'kc-harness':
-            return 'python3 /tmp/browser/harness.py'
-        if assistant == 'deepseek-harness':
-            return _dsh_command(headless=False)
-        if assistant == 'codex':
-            # Interactive Codex TUI. The pod is externally sandboxed (k8s), so
-            # bypass approvals/sandbox for the unattended sub-agent.
-            return f'codex --dangerously-bypass-approvals-and-sandbox {_codex_model_flag()}'.rstrip()
-        if assistant == 'librefang':
-            # Interactive REPL also needs the daemon — see _assistant_command's
-            # headless branch and _librefang_daemon_bootstrap().
-            return (_librefang_daemon_bootstrap()
-                    + f'librefang chat {_shell_quote(_librefang_agent())}')
-        return assistant if assistant in ('claude', 'ante') else 'claude'
+    A runtime is headless-capable exactly when its catalog entry declares a
+    `headless_args` template — there is no longer a separate `_HEADLESS_CAPABLE`
+    set that can disagree with the branch bodies, which is the drift #604 names:
+    a runtime launchable interactively could silently fall back to `claude` in
+    headless mode. Anything with no genuine one-shot interface (kc-harness reads
+    stdin) declares `headless_args: None` and gets its REPL, prompt pasted.
 
-    q = _shell_quote(prompt)
-    if assistant == 'deepseek-harness':
-        return _dsh_command(prompt, headless=True)
-    if assistant == 'claude':
-        return f'claude --dangerously-skip-permissions -p {q}'
-    if assistant == 'ante':
-        return f'ante --yolo -p {q}'
-    if assistant == 'codex':
-        # `codex exec <prompt>` is the one-shot non-interactive mode (exits when
-        # done). Bypass approvals/sandbox (pod is externally sandboxed) and skip
-        # the git-repo check so it runs in any workdir. No --json here: the
-        # orchestrator captures the tmux pane as text, and exec prints its final
-        # message to stdout.
-        return (f'codex exec --dangerously-bypass-approvals-and-sandbox '
-                f'--skip-git-repo-check {_codex_model_flag()}{q}')
-    if assistant == 'antigravity':
-        # `agy -p` is the CLI's one-shot print mode (prompt on the command line,
-        # exits when done). --dangerously-skip-permissions auto-approves tool
-        # calls for the unattended sub-agent, matching claude above.
-        m = _antigravity_model()
-        model_flag = f'--model {_shell_quote(m)} ' if m else ''
-        return f'agy --dangerously-skip-permissions {model_flag}-p {q}'
-    if assistant == 'librefang':
-        # `librefang message` is the CLI's one-shot mode but requires the
-        # daemon (see _librefang_daemon_bootstrap()).
-        agent = _shell_quote(_librefang_agent())
-        return _librefang_daemon_bootstrap() + f'librefang message {agent} {q}'
-    # OpenCode one-shot: `opencode run <message>` is non-interactive.
-    return f'opencode run --model {_shell_quote(_opencode_model(assistant))} {q}'
+    Sub-agents run autonomously with no human to approve tool calls, so the
+    headless templates carry each CLI's skip-approval flag. They run inside
+    the same isolated per-user workspace pod the dashboard already trusts.
+
+    Unknown ids fall back to `claude`, as before.
+    """
+    # Capability is judged on the id as REQUESTED, before the unknown-id
+    # fallback below: an id this workspace doesn't know is not headless-capable,
+    # so it gets Claude's REPL with the prompt pasted rather than a headless
+    # Claude run it never asked for. Same disposition as before #604.
+    use_headless = headless and runtimes.is_headless_capable(assistant)
+    entry = runtimes.RUNTIMES.get(assistant)
+    if entry is None:
+        assistant, entry = 'claude', runtimes.RUNTIMES['claude']
+    template = entry['headless_args'] if use_headless else (
+        entry.get('orch_launch_args') or entry['launch_args'])
+    return runtimes.render(
+        assistant, template,
+        quote=_shell_quote,
+        model=runtimes.resolve_model(assistant, orchestrator=True),
+        prompt=prompt if use_headless else '',
+        arg=runtimes.resolve_arg(assistant),
+    )
 
 
 def _wait_pane_ready(session_name: str, min_delay: float = 1.5,
@@ -419,17 +311,14 @@ def _wait_pane_ready(session_name: str, min_delay: float = 1.5,
 # Tool implementations
 # ───────────────────────────────────────────────────────────────────────────
 
+# Derived from the runtime catalog (runtimes.py, #604) rather than re-listing
+# the ids: this feeds the `spawn_agent` tool's `assistant` enum, and an enum
+# that disagreed with what _assistant_command can actually launch is precisely
+# the drift the catalog removes — an id accepted by the schema but with no
+# command behind it, or a launchable runtime no agent can ask for.
 _ASSISTANTS_LIST = [
-    {'id': 'claude', 'label': 'Claude Code'},
-    {'id': 'ante', 'label': 'Ante CLI'},
-    {'id': 'codex', 'label': 'Codex'},
-    {'id': 'antigravity', 'label': 'Antigravity'},
-    {'id': 'librefang', 'label': 'LibreFang'},
-    {'id': 'opencode-openrouter', 'label': 'OpenRouter'},
-    {'id': 'opencode-deepseek', 'label': 'DeepSeek'},
-    {'id': 'deepseek-harness', 'label': 'DeepSeek Harness'},
-    {'id': 'opencode-zen', 'label': 'OpenCode Zen'},
-    {'id': 'kc-harness', 'label': 'Opensource GPU'},
+    {'id': rid, 'label': entry['label']}
+    for rid, entry in runtimes.RUNTIMES.items()
 ]
 
 
@@ -465,7 +354,7 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     # REPL for human attach. Assistants without a headless mode (kc-harness)
     # fall back to interactive regardless.
     requested_interactive = args.get('mode') == 'interactive'
-    use_headless = (not requested_interactive) and assistant in _HEADLESS_CAPABLE
+    use_headless = (not requested_interactive) and runtimes.is_headless_capable(assistant)
     mode = 'headless' if use_headless else 'interactive'
 
     # Depth guard: refuse to spawn beyond MAX_SPAWN_DEPTH so a recursive

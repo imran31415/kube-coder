@@ -18,7 +18,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
-import mcp_agent_orchestrator as orch  # noqa: E402
+import mcp_agent_orchestrator as orch
+import runtimes  # noqa: E402
 import mcp_registry  # noqa: E402
 import server  # noqa: E402
 from skills.providers import PROVIDERS  # noqa: E402
@@ -32,7 +33,7 @@ class OrchestratorRegistrationTest(unittest.TestCase):
         # The bridge's default mode takes one prompt and exits, which is
         # exactly the contract this module needs to detect completion by
         # session death + exit code.
-        self.assertIn(DSH, orch._HEADLESS_CAPABLE)
+        self.assertTrue(runtimes.is_headless_capable(DSH))
 
     def test_listed_and_accepted_by_the_tool_enum(self):
         self.assertIn(DSH, [a['id'] for a in orch._ASSISTANTS_LIST])
