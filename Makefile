@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
 
 # =============================================================================
 # Generic per-user helpers
@@ -319,6 +319,52 @@ migrate-all: ## Migrate every workspace in SRC (default $(NAMESPACE)) to its own
 	  ./scripts/migrate-user-namespace.sh "$$u" $(MIGRATE_FLAGS) || { echo "migrate $$u FAILED — stopping."; exit 1; }; \
 	done; \
 	echo ""; echo "migrate-all complete."
+
+# =============================================================================
+# Home-volume backup / restore (#579)
+# =============================================================================
+# The home PVC holds everything that isn't reproducible: project checkouts,
+# ~/.credentials (SSH keys + every persisted tool login), .claude-memory and
+# .claude-tasks. `helm.sh/resource-policy: keep` on the PVC stops OUR tooling
+# from deleting it; it does nothing for storage failure, node loss or a stray
+# `kubectl delete pvc`. These wrap scripts/backup-user.sh / restore-user.sh.
+#
+#   make backup-user USER=<name>                      # -> backups/<name>/
+#   make backup-user USER=<name> QUIESCE=1            # consistent (stops the pod)
+#   make backup-user USER=<name> S3=s3://b/p S3_SECRET=aws-backup
+#   make backup-user USER=<name> ENCRYPT_TO=<gpg-id>  # never store it plaintext
+#   make restore-user USER=<name> ARCHIVE=<path|s3://…> [FORCE=1]
+#   make backup-user USER=<name> DRY_RUN=1            # print, touch nothing
+#
+# THE ARCHIVE CONTAINS LIVE CREDENTIALS. Full guide + restore drill:
+# docs/BACKUP_RESTORE.md.
+BACKUP_FLAGS = \
+	$(if $(filter 1 true yes,$(DRY_RUN)),--dry-run,) \
+	$(if $(filter 1 true yes,$(QUIESCE)),--quiesce,) \
+	$(if $(OUT),--out $(OUT),) \
+	$(if $(S3),--s3 $(S3),) \
+	$(if $(S3_SECRET),--s3-secret $(S3_SECRET),) \
+	$(if $(ENCRYPT_TO),--encrypt-to $(ENCRYPT_TO),) \
+	$(if $(NS),--namespace $(NS),)
+
+RESTORE_FLAGS = \
+	$(if $(filter 1 true yes,$(DRY_RUN)),--dry-run,) \
+	$(if $(filter 1 true yes,$(FORCE)),--force,) \
+	$(if $(S3_SECRET),--s3-secret $(S3_SECRET),) \
+	$(if $(NS),--namespace $(NS),)
+
+# Deliberately NOT gated on require-user: that also demands a local values.yaml,
+# and a volume is worth backing up (and restoring) whether or not this checkout
+# happens to hold the workspace's chart config. Disaster recovery must not
+# depend on `make users-sync` having run.
+backup-user: ## Archive a workspace's home volume (USER=<name> [QUIESCE=1] [OUT=path] [S3=s3://… S3_SECRET=name] [ENCRYPT_TO=gpg-id] [DRY_RUN=1])
+	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make backup-user USER=chase)"; exit 1; fi
+	@./scripts/backup-user.sh "$(USER)" $(BACKUP_FLAGS)
+
+restore-user: ## Restore a home volume from an archive (USER=<name> ARCHIVE=<path|s3://…> [FORCE=1] [DRY_RUN=1])
+	@if [ -z "$(USER)" ]; then echo "ERROR: pass USER=<name> (e.g. make restore-user USER=chase ARCHIVE=…)"; exit 1; fi
+	@if [ -z "$(ARCHIVE)" ]; then echo "ERROR: pass ARCHIVE=<path|s3://…> (e.g. make restore-user USER=$(USER) ARCHIVE=backups/$(USER)/ws-$(USER)-home-20260801T120000Z.tar.gz)"; exit 1; fi
+	@./scripts/restore-user.sh "$(USER)" "$(ARCHIVE)" $(RESTORE_FLAGS)
 
 # =============================================================================
 # Dashboard SPA (charts/workspace/web/)
