@@ -223,8 +223,16 @@ class AssistantCommandTest(unittest.TestCase):
         cmd = self.cmd()
         self.assertTrue(cmd.startswith(
             'python3 /tmp/browser/acp_bridge.py --serve '
-            '--format stream-json --cwd "$PWD"'))
+            '--format pretty --cwd "$PWD"'))
         self.assertNotIn('dsh ', cmd)
+
+    def test_the_pane_gets_prose_not_a_machine_format(self):
+        """#639: the pane is read by a person on both surfaces — ttyd on web,
+        TerminalView on mobile — and parsed by neither, so stream-json printed
+        every event twice."""
+        cmd = self.cmd()
+        self.assertIn('--format pretty', cmd)
+        self.assertNotIn('stream-json', cmd)
 
     def test_cwd_is_the_tasks_workdir(self):
         # create_task wraps this in `cd <workdir> && …` under `bash -lc`.

@@ -2753,8 +2753,7 @@ class ClaudeTaskManager:
             # package installs, and `--profile headless` is one-shot prose with
             # no tool output — so the Build runs the ACP bridge's serve mode:
             # one long-lived ACP session, prompt after prompt off the tmux
-            # pane, rendered as stream-json + plain text. Same
-            # reads-stdin-emits-JSONL contract as kc-harness above.
+            # pane, rendered as plain text for the person reading it.
             #
             # `auto_approve` is deliberately a NO-OP here, and that is a real
             # difference from the other assistants: ACP's permission requests
@@ -2768,7 +2767,11 @@ class ClaudeTaskManager:
             # `$PWD` is the task's workdir: create_task wraps this in
             # `cd <workdir> && …` under `bash -lc`.
             parts = ['python3', '/tmp/browser/acp_bridge.py', '--serve',
-                     '--format', 'stream-json', '--cwd', '"$PWD"',
+                     # `pretty`, not `stream-json`: the pane is read by a
+                     # person on both surfaces (ttyd on web, TerminalView on
+                     # mobile) and parsed by neither, so the JSON half was
+                     # every event printed twice (#639).
+                     '--format', 'pretty', '--cwd', '"$PWD"',
                      # The curated dashboard+memory pair, same as every other
                      # assistant gets from its seeded config. Deliberately not
                      # the full boot-seeded set: ACP connects every declared
