@@ -40,6 +40,43 @@ assistant choice is mapped to a shell command by
 `ClaudeTaskManager.assistant_command()` in `charts/workspace/server.py`,
 and that command is what tmux starts in the new pane.
 
+### Adding a runtime
+
+Every runtime is one entry in **`charts/workspace/runtimes.py`** — the single
+declarative catalog (#604). An id exists there and nowhere else: the dashboard
+list, the orchestrator's `spawn_agent` enum, the interactive command, the
+headless command and the headless-capability flag are all derived from it.
+
+A straightforward CLI needs no code, just argv templates:
+
+```python
+'my-runtime': {
+    'label': 'My Runtime',
+    'model_env': 'KC_MY_MODEL',
+    'model_default': 'some-model',
+    'skip_permissions_flag': '--yolo',
+    'launch_args': ['myrt', SKIP, ['--model', MODEL]],
+    'headless_args': ['myrt', 'run', ['--model', MODEL], PROMPT],
+},
+```
+
+Rules worth knowing before you write one:
+
+- **Capabilities must be truthful.** `headless_args: None` declares "this CLI
+  has no one-shot mode" (kc-harness reads stdin) and the orchestrator pastes
+  into its REPL instead. It is a deliberate declaration, not a gap — and
+  because capability IS the presence of the template, the two cannot drift.
+- **Quoting is the renderer's job.** Placeholders (`MODEL`, `PROMPT`, `ARG`)
+  are always shell-quoted; literal tokens never are. Don't hand-quote.
+- **A nested list is an optional group** — `['--model', MODEL]` disappears
+  entirely when no model resolves, rather than leaving a dangling flag.
+- **Genuine process choreography stays a hook.** LibreFang's daemon poll is a
+  declared `shell_prefix`; Claude's `--session-id` / `--resume` probe is a
+  registered `launch_hook`. Register it in the catalog; don't branch inline.
+
+`tests/runtime_command_matrix_test.py` pins the exact command string for every
+runtime in every mode, and fails if a catalog entry is added without one.
+
 ## Claude Code
 
 Path of least friction. Two auth modes:
@@ -400,7 +437,10 @@ request.
 
 | File                                                        | Role                                                              |
 | ----------------------------------------------------------- | ----------------------------------------------------------------- |
-| `charts/workspace/server.py`                                | `ClaudeTaskManager.ASSISTANTS`, `assistant_command()`, `create_task()`. |
+| `charts/workspace/runtimes.py`                              | **The runtime catalog** — one entry per agent CLI; every other list derives from it. |
+| `charts/workspace/server.py`                                | `assistant_command()` (renders the catalog), `available_assistants()`, `create_task()`. |
+| `charts/workspace/mcp_agent_orchestrator.py`                | `_assistant_command()` — the headless/sub-agent render of the same catalog. |
+| `charts/workspace/tests/runtime_command_matrix_test.py`     | Golden exact-string matrix for every runtime × launch mode. |
 | `charts/workspace/harness.py`                               | kc-harness implementation (tools, XML parser, REPL).              |
 | `charts/workspace/acp_bridge.py`                            | ACP client for `dsh` — protocol → line-delimited events; `--serve` for Builds. |
 | `charts/workspace/hypervisor_session.py`                    | `DeepseekHarnessAdapter` (and every other Hypervisor adapter).    |

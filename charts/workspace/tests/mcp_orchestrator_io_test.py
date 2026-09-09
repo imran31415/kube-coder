@@ -26,7 +26,8 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-import mcp_agent_orchestrator as orch  # noqa: E402
+import mcp_agent_orchestrator as orch
+import runtimes  # noqa: E402
 
 
 def _proc(returncode=0, stdout='', stderr=''):
@@ -146,24 +147,36 @@ class AppendSubTaskTests(TasksDirTestCase):
 
 
 class ModelResolutionTests(unittest.TestCase):
+    """Model/arg resolution moved out of orchestrator-private helpers and into
+    the shared runtime catalog (#604), so these assert the same facts against
+    runtimes.resolve_model / resolve_arg. The orchestrator asks with
+    `orchestrator=True`, which is what honours an entry's `orch_model_default`
+    where the two launch paths genuinely disagree today."""
+
     def test_opencode_deepseek_model(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop('KC_DEEPSEEK_MODEL', None)
-            self.assertEqual(orch._opencode_model('opencode-deepseek'), 'deepseek/deepseek-chat')
+            self.assertEqual(
+                runtimes.resolve_model('opencode-deepseek', orchestrator=True),
+                'deepseek/deepseek-chat')
             os.environ['KC_DEEPSEEK_MODEL'] = 'deepseek-coder'
-            self.assertEqual(orch._opencode_model('opencode-deepseek'), 'deepseek/deepseek-coder')
+            self.assertEqual(
+                runtimes.resolve_model('opencode-deepseek', orchestrator=True),
+                'deepseek/deepseek-coder')
 
     def test_opencode_openrouter_default(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop('KC_OPENROUTER_MODEL', None)
-            self.assertTrue(orch._opencode_model('opencode-openrouter').startswith('openrouter/'))
+            self.assertTrue(
+                runtimes.resolve_model('opencode-openrouter', orchestrator=True)
+                .startswith('openrouter/'))
 
     def test_librefang_agent_default_and_override(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop('KC_LIBREFANG_AGENT', None)
-            self.assertEqual(orch._librefang_agent(), 'coder')
+            self.assertEqual(runtimes.resolve_arg('librefang'), 'coder')
             os.environ['KC_LIBREFANG_AGENT'] = 'custom'
-            self.assertEqual(orch._librefang_agent(), 'custom')
+            self.assertEqual(runtimes.resolve_arg('librefang'), 'custom')
 
 
 class GetStatusToolTests(TasksDirTestCase):
