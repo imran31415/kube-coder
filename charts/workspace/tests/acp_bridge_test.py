@@ -29,6 +29,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -728,14 +729,17 @@ class ServeModeTest(unittest.TestCase):
         self.assertIn('no key', results[0]['result'])
 
 
-class StreamJsonSinkTest(unittest.TestCase):
-    """Serve mode reuses ONE sink across every prompt, so its per-turn state
-    has to be reset per turn. Driven directly: the failure only shows up in a
-    turn that settles without saying anything, which is awkward to script
-    through a stub agent but trivial here."""
+class _SinkDriver(unittest.TestCase):
+    """Drive a sink through a scripted turn and hand back the raw stdout lines.
 
-    def drive(self, steps):
-        sink = acp_bridge.StreamJsonSink()
+    Shared by both sink suites: they differ in what they assert about the
+    output, never in how the turn is played.
+    """
+
+    SINK = None
+
+    def drive(self, steps, sink=None):
+        sink = sink or (self.SINK or acp_bridge.PrettySink)()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             for step in steps:
@@ -745,14 +749,122 @@ class StreamJsonSinkTest(unittest.TestCase):
                     sink.turn_end()
                 else:
                     sink.emit(step)
-        out = []
-        for line in buf.getvalue().splitlines():
-            if line.startswith('{'):
-                out.append(json.loads(line))
-        return out
+        return buf.getvalue().splitlines()
+
+
+class PrettySinkTest(_SinkDriver):
+    """The Builds pane is read by a person and parsed by nobody (#639).
+
+    The bug: `--format stream-json` wrote a JSON frame AND a prose line for
+    every event, so a "Hello" turn showed the answer twice with raw protocol
+    between the halves. Both surfaces render the pane verbatim — ttyd on web,
+    TerminalView on mobile — so the JSON was paying a readability cost for a
+    consumer that does not exist.
+    """
+
+    def test_a_turn_emits_no_json_at_all(self):
+        lines = self.drive([
+            'START',
+            {'type': 'thought', 'text': 'thinking about it'},
+            {'type': 'message', 'text': 'Hello!'},
+            'END',
+        ])
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertFalse(line.lstrip().startswith('{'), f'JSON leaked: {line}')
+
+    def test_the_answer_appears_exactly_once(self):
+        # The visible symptom in the issue: the reply rendered twice, once as
+        # a frame and once as prose.
+        lines = self.drive(['START', {'type': 'message', 'text': 'Hello!'}, 'END'])
+        self.assertEqual(sum('Hello!' in l for l in lines), 1)
+
+    def test_it_still_says_who_is_speaking(self):
+        lines = self.drive(['START', {'type': 'thought', 'text': 'hmm'},
+                            {'type': 'message', 'text': 'hi'}, 'END'])
+        joined = '\n'.join(lines)
+        self.assertIn('thinking', joined)
+        self.assertIn('assistant', joined)
+
+    def test_a_tool_call_and_its_result_are_readable(self):
+        lines = self.drive(['START',
+                            {'type': 'tool_call', 'name': 'read_file',
+                             'input': {'path': 'a.py'}},
+                            {'type': 'tool_result', 'id': '1', 'text': 'contents'},
+                            'END'])
+        joined = '\n'.join(lines)
+        self.assertIn('read_file', joined)
+        self.assertIn('contents', joined)
+        for line in lines:
+            self.assertFalse(line.lstrip().startswith('{'))
+
+    def test_an_error_is_shown_not_swallowed(self):
+        lines = self.drive(['START', {'type': 'error', 'text': 'boom'}, 'END'])
+        self.assertIn('boom', '\n'.join(lines))
+
+    def test_stream_json_still_carries_both_halves(self):
+        # The machine contract is kept, just not used by the pane — a caller
+        # that asks for it must still get JSON.
+        lines = self.drive(['START', {'type': 'message', 'text': 'Hello!'}, 'END'],
+                           sink=acp_bridge.StreamJsonSink())
+        self.assertTrue(any(l.lstrip().startswith('{') for l in lines))
+        self.assertTrue(any('assistant' in l and not l.lstrip().startswith('{')
+                            for l in lines))
+
+    def test_both_sinks_render_prose_identically(self):
+        # Rendering is inherited, so the two can never drift into disagreeing
+        # about how a tool call reads.
+        steps = ['START', {'type': 'thought', 'text': 't'},
+                 {'type': 'message', 'text': 'm'},
+                 {'type': 'tool_call', 'name': 'x', 'input': {}}, 'END']
+        pretty = [l for l in self.drive(steps) if not l.lstrip().startswith('{')]
+        stream = [l for l in self.drive(steps, sink=acp_bridge.StreamJsonSink())
+                  if not l.lstrip().startswith('{')]
+        self.assertEqual(pretty, stream)
+
+
+class DebugChannelTest(unittest.TestCase):
+    """Per-turn telemetry is silent by default; a real problem never is.
+
+    Gating everything behind the flag would hide failures to tidy a pane, so
+    the split is deliberate: `_debug` for chatter, `_log` for anything a person
+    can act on.
+    """
+
+    def capture(self, fn, *, debug):
+        buf = io.StringIO()
+        with mock.patch.object(acp_bridge, 'DEBUG', debug), \
+                contextlib.redirect_stderr(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_telemetry_is_silent_unless_asked_for(self):
+        self.assertEqual(self.capture(lambda: acp_bridge._debug('usage: 12'),
+                                      debug=False), '')
+        self.assertIn('usage: 12',
+                      self.capture(lambda: acp_bridge._debug('usage: 12'), debug=True))
+
+    def test_a_problem_is_printed_either_way(self):
+        for debug in (False, True):
+            self.assertIn('write to agent failed',
+                          self.capture(lambda: acp_bridge._log('write to agent failed'),
+                                       debug=debug))
+
+
+class StreamJsonSinkTest(_SinkDriver):
+    """Serve mode reuses ONE sink across every prompt, so its per-turn state
+    has to be reset per turn. Driven directly: the failure only shows up in a
+    turn that settles without saying anything, which is awkward to script
+    through a stub agent but trivial here."""
+
+    SINK = acp_bridge.StreamJsonSink
+
+    def frames(self, steps):
+        """Just the JSON frames — this suite is about the machine contract."""
+        return [json.loads(l) for l in self.drive(steps) if l.startswith('{')]
 
     def results(self, steps):
-        return [e['result'] for e in self.drive(steps) if e.get('type') == 'result']
+        return [e['result'] for e in self.frames(steps) if e.get('type') == 'result']
 
     def test_a_settled_turn_reports_its_own_answer(self):
         self.assertEqual(
