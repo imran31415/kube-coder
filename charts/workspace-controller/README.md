@@ -22,6 +22,20 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
   controller's Role still can't read `nodes` (see below). On a shared cluster the
   bar separates *workspace* usage from *other tenants* sharing the same nodes, so
   "total usage vs allocatable" is honest headroom rather than workspaces alone.
+- **Fleet agent spend** — token spend across every workspace (`GET /api/spend`),
+  broken down by workspace and by model, over a selectable window. Each
+  workspace already measures its own agent spend and exposes it at
+  `/metrics/prometheus` (see `docs/prometheus-metrics.md`); the controller only
+  aggregates, via the same Prometheus the capacity rollup uses — it never calls a
+  workspace's HTTP API, so a workspace that is currently stopped still counts.
+  Requires those workspace series to actually be **scraped**: the endpoint is
+  authenticated and no ServiceMonitor ships by default, so until one is
+  configured the panel says so explicitly rather than rendering zeroes. Token
+  spend is reported per class (`input` / `cache_read` / `cache_write` /
+  `output`) and never as one number, because those bill at very different rates,
+  and it is always shown beside how many runs were *measurable at all* — only
+  Claude Code reports usage, so an uninstrumented assistant's 0 means "unknown",
+  not "spent nothing".
 - **Edit CPU/memory limits** — the detail page has an *Edit limits* control that
   patches the `ide` container's CPU + memory limits in place
   (`POST /api/workspaces/<user>/resources`). Like start/stop it's a live
