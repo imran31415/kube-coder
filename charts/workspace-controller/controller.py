@@ -106,6 +106,13 @@ INSIGHTS_IDLE_CPU_CORES = float(os.environ.get('INSIGHTS_IDLE_CPU_CORES', '0.05'
 # the same regex classifies both a workspace Deployment and its namespace.
 _NAME_RE = re.compile(r'^' + re.escape(WORKSPACE_PREFIX) + r'([a-z0-9][a-z0-9-]{0,40})$')
 _USER_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
+# A workspace Deployment's pod: <deployment>-<replicaset-hash>-<pod-suffix>.
+# A user whose own name contains dashes still resolves, because the two
+# generated suffixes are dash-free and anchored to the end.
+# Used for spend series (#581); everything with a kubectl listing on hand
+# should prefer _user_for_pod, which matches against real deployment names.
+_POD_USER_RE = re.compile(
+    r'^' + re.escape(WORKSPACE_PREFIX) + r'([a-z0-9][a-z0-9-]{0,40}?)-[a-z0-9]{5,10}-[a-z0-9]{5}$')
 
 
 def ns_for_user(user):
@@ -1439,6 +1446,234 @@ def cluster_health():
     return out
 
 
+
+# --- Fleet agent spend (#581) ------------------------------------------------
+#
+# The measurement half of this already exists and is NOT re-invented here: each
+# workspace exposes its own token ledgers at /metrics/prometheus (#105/#603) as
+# kubecoder_agent_tokens{scope,model,class}, kubecoder_agent_tokens_unclassified
+# {scope} and kubecoder_agent_runs{scope,coverage}. This is purely the operator
+# -plane rollup: the same Prometheus the capacity page already queries, grouped
+# by workspace and by model.
+#
+# Deliberately NOT controller->workspace HTTP polling. That would need a new
+# auth path per workspace and returns nothing when a workspace is asleep, while
+# Prometheus keeps the history of a workspace that is currently scaled to zero.
+SPEND_TOKENS = 'kubecoder_agent_tokens'
+SPEND_UNCLASSIFIED = 'kubecoder_agent_tokens_unclassified'
+SPEND_RUNS = 'kubecoder_agent_runs'
+#: The four priceable input/output classes (#574). Kept apart because they bill
+#: at very different rates — summing them into one number prices a cache read
+#: like fresh input.
+TOKEN_CLASSES = ('input', 'cache_read', 'cache_write', 'output')
+#: How measurable a run's spend is. Only `measured` runs can report spend at
+#: all, so this is what stops an uninstrumented assistant's 0 from reading as
+#: "spent nothing" in a fleet total.
+COVERAGE_STATES = ('measured', 'not_instrumented', 'no_session_id')
+#: Models kept in the fleet breakdown before the tail is folded into `other`.
+#: The workspace already caps its own label at 20 per scope; this caps the
+#: fleet-wide union, which is 20 x <workspaces> in the worst case.
+SPEND_MAX_MODELS = int(os.environ.get('SPEND_MAX_MODELS', '20'))
+
+
+def _spend_selector():
+    """Label matcher for workspace-exposed metrics. Namespace + pod are target
+    labels the Prometheus Operator attaches to every scraped series, so they are
+    present regardless of what the workspace itself labels — the same pair the
+    capacity queries key on."""
+    return f'{_ws_prom_ns_selector()},pod=~"{WORKSPACE_PREFIX}.*"'
+
+
+def _spend_expr(metric, by, window=None):
+    """`sum by (...)` over one workspace-exposed metric, optionally shifted back
+    by `window` seconds.
+
+    `offset` binds to the selector, not to the aggregation, which is why the
+    caller cannot simply append it to the finished expression."""
+    off = f' offset {int(window)}s' if window else ''
+    return f'sum by ({", ".join(by)}) ({metric}{{{_spend_selector()}}}{off})'
+
+
+def _spend_growth(metric, by, window):
+    """`{labelset: growth}` for one metric over `window`, keyed by a tuple of
+    `by` label values, alongside the current value.
+
+    These metrics are GAUGES on purpose — each workspace recomputes them from
+    the ledgers on disk, so deleting a task makes the figure fall, and typing
+    them as counters would make `rate()` re-credit the drop as a spike. Growth
+    over a window is therefore `x - (x offset w)`, never `increase()`.
+
+    Two honesty details:
+
+    * a workspace first scraped *inside* the window has no `offset` sample, so
+      its growth is its whole current value. That overstates the window but is
+      the only defensible reading — the alternative is dropping a new
+      workspace's spend entirely.
+    * growth is clamped at 0. A negative delta means ledgers were pruned, not
+      that tokens were refunded.
+    """
+    now = {tuple(str(m.get(k, '')) for k in by): v
+           for m, v in prom_instant_multi(_spend_expr(metric, by))}
+    then = {tuple(str(m.get(k, '')) for k in by): v
+            for m, v in prom_instant_multi(_spend_expr(metric, by, window))}
+    return {k: (max(0.0, v - then.get(k, 0.0)), v) for k, v in now.items()}
+
+
+def _empty_classes():
+    return {c: 0 for c in TOKEN_CLASSES}
+
+
+def _class_block(counts, unclassified=0):
+    """One workspace's / model's / the fleet's token figures.
+
+    `total` sums only the priceable classes. `unclassified` is real spend whose
+    input-class mix was lost before it was recorded (pre-#574 ledgers); it is
+    reported beside the total rather than inside it, because pricing it as
+    fresh input overstates a cache read by roughly 10x."""
+    block = {c: int(counts.get(c, 0)) for c in TOKEN_CLASSES}
+    block['total'] = sum(block.values())
+    block['unclassified'] = int(unclassified)
+    return block
+
+
+def _user_for_spend_series(namespace, pod):
+    """Username for a scraped workspace series.
+
+    The namespace is authoritative — workspaces live in per-user ws-<user>
+    namespaces (#103) — but a workspace not yet migrated off the shared
+    namespace has to be identified from its pod name instead, which is the
+    deployment name plus the two ReplicaSet suffixes."""
+    m = _NAME_RE.match(namespace or '')
+    if m:
+        return m.group(1)
+    m = _POD_USER_RE.match(pod or '')
+    return m.group(1) if m else None
+
+
+def fleet_spend(window_seconds=None):
+    """Fleet-wide agent token spend over a window, per workspace and per model.
+
+    Prometheus-only, and every failure mode is reported in the payload rather
+    than raised, so the console always renders something true:
+
+    * `metricsError` set          -> Prometheus is unset or unreachable. With
+                                     PROMETHEUS_URL empty `_prom_get` already
+                                     says "metrics disabled", and the console
+                                     turns that into "spend metrics require
+                                     Prometheus".
+    * `workspacesReporting == 0`  -> Prometheus answered but no workspace is
+                                     exporting these series. That is a scrape
+                                     gap, not a fleet that spent nothing, and
+                                     `scrapeHint` says so.
+
+    The distinction matters: all three states otherwise look like a page of
+    zeroes, and a zero an operator trusts is worse than no number at all.
+    """
+    window = max(1800, min(window_seconds or INSIGHTS_WINDOW, 604800))
+    out = {
+        'generatedAt': int(time.time()),
+        'windowSeconds': window,
+        'fleet': {'window': _class_block({}), 'current': _class_block({})},
+        'byWorkspace': [],
+        'byModel': [],
+        'coverage': {'window': {s: 0 for s in COVERAGE_STATES},
+                     'current': {s: 0 for s in COVERAGE_STATES}},
+        'workspacesReporting': 0,
+        'metricsError': None,
+        'scrapeHint': None,
+    }
+
+    try:
+        by_ws = _spend_growth(SPEND_TOKENS, ('namespace', 'pod', 'class'), window)
+        by_model = _spend_growth(SPEND_TOKENS, ('model', 'class'), window)
+        residue = _spend_growth(SPEND_UNCLASSIFIED, ('namespace', 'pod'), window)
+        runs = _spend_growth(SPEND_RUNS, ('coverage',), window)
+    except PromError as exc:
+        out['metricsError'] = str(exc)
+        return out
+
+    # Per workspace. Series whose namespace and pod both fail to name a user
+    # are dropped rather than bucketed into "unknown": they are not workspaces.
+    workspaces = {}
+    for (namespace, pod, klass), (grew, current) in by_ws.items():
+        user = _user_for_spend_series(namespace, pod)
+        if not user or klass not in TOKEN_CLASSES:
+            continue
+        ws = workspaces.setdefault(user, {'namespace': namespace,
+                                          'window': _empty_classes(),
+                                          'current': _empty_classes(),
+                                          'residue': [0, 0]})
+        ws['window'][klass] += grew
+        ws['current'][klass] += current
+    for (namespace, pod), (grew, current) in residue.items():
+        user = _user_for_spend_series(namespace, pod)
+        if user in workspaces:
+            workspaces[user]['residue'][0] += grew
+            workspaces[user]['residue'][1] += current
+
+    out['byWorkspace'] = sorted(
+        ({'user': user,
+          'namespace': ws['namespace'],
+          'window': _class_block(ws['window'], ws['residue'][0]),
+          'current': _class_block(ws['current'], ws['residue'][1])}
+         for user, ws in workspaces.items()),
+        key=lambda w: (-w['window']['total'], w['user']))
+    out['workspacesReporting'] = len(out['byWorkspace'])
+
+    fleet_window, fleet_current = _empty_classes(), _empty_classes()
+    for w in out['byWorkspace']:
+        for c in TOKEN_CLASSES:
+            fleet_window[c] += w['window'][c]
+            fleet_current[c] += w['current'][c]
+    out['fleet'] = {
+        'window': _class_block(fleet_window,
+                               sum(w['window']['unclassified'] for w in out['byWorkspace'])),
+        'current': _class_block(fleet_current,
+                                sum(w['current']['unclassified'] for w in out['byWorkspace'])),
+    }
+
+    # Per model, fleet-wide. `unattributed` is spend a workspace's own ledger
+    # could not pin on a model; it is kept as its own row rather than dropped,
+    # so the model rows still sum to the fleet total.
+    models = {}
+    for (model, klass), (grew, current) in by_model.items():
+        if klass not in TOKEN_CLASSES:
+            continue
+        m = models.setdefault(model or 'unknown',
+                              {'window': _empty_classes(), 'current': _empty_classes()})
+        m['window'][klass] += grew
+        m['current'][klass] += current
+    ranked = sorted(models.items(),
+                    key=lambda kv: (-sum(kv[1]['window'].values()), kv[0]))
+    kept, tail = ranked[:SPEND_MAX_MODELS], ranked[SPEND_MAX_MODELS:]
+    rows = [{'model': name,
+             'window': _class_block(b['window']),
+             'current': _class_block(b['current'])} for name, b in kept]
+    if tail:
+        folded = {'window': _empty_classes(), 'current': _empty_classes()}
+        for _, b in tail:
+            for c in TOKEN_CLASSES:
+                folded['window'][c] += b['window'][c]
+                folded['current'][c] += b['current'][c]
+        rows.append({'model': 'other',
+                     'window': _class_block(folded['window']),
+                     'current': _class_block(folded['current'])})
+    out['byModel'] = rows
+
+    for (state,), (grew, current) in runs.items():
+        if state in out['coverage']['window']:
+            out['coverage']['window'][state] += int(grew)
+            out['coverage']['current'][state] += int(current)
+
+    if not out['workspacesReporting']:
+        out['scrapeHint'] = (
+            f'Prometheus has no {SPEND_TOKENS} series for any workspace. The '
+            'workspaces expose them at /metrics/prometheus, but that endpoint '
+            'is authenticated and nothing scrapes it by default — see '
+            'docs/prometheus-metrics.md for the ServiceMonitor.')
+    return out
+
+
 # --- Provisioning ------------------------------------------------------------
 #
 # Self-service onboarding: an admin types a GitHub username, creates a GitHub
@@ -2247,6 +2482,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Prometheus-only (no kubectl): any backend outage is captured in
             # the payload's metricsError, so this always returns 200.
             self.send_json(cluster_capacity(rng, step))
+            return
+        if path == '/api/spend':
+            if not self.check_admin():
+                self.send_json({'error': 'unauthorized'}, 401)
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            try:
+                rng = int(q.get('range', [str(INSIGHTS_WINDOW)])[0])
+            except ValueError:
+                rng = INSIGHTS_WINDOW
+            # Prometheus-only, like /api/capacity: a Prometheus that is unset or
+            # unreachable lands in metricsError and this still returns 200, so
+            # the console can say why the numbers are missing instead of
+            # rendering an unexplained page of zeroes.
+            self.send_json(fleet_spend(rng))
             return
         m = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/metrics$', path)
         if m:

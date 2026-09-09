@@ -45,3 +45,14 @@ export function tone(pct: number | null, warn: number, crit: number): 'ok' | 'wa
   if (pct >= warn) return 'warn';
   return 'ok';
 }
+
+/** Token counts, which routinely run to eight figures. Kept at three
+ *  significant figures so a table of them stays scannable; the exact number is
+ *  never the operator's question, the relative size is. */
+export function fmtTokens(n: number | null): string {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(Math.round(n));
+}
