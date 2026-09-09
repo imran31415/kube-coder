@@ -109,9 +109,37 @@ CONFIG_MODEL = 'model'
 CONFIG_EFFORT = 'reasoning_effort'
 
 
-def _log(msg: str) -> None:
-    """Diagnostics go to stderr. stdout is the event stream and nothing else."""
+#: Per-turn telemetry and normal-lifecycle chatter are printed only when this
+#: is set. Everything reached through `_log` is a PROBLEM someone can act on
+#: and is always printed — gating those too would be hiding failures to tidy a
+#: pane, which is the wrong trade (#639).
+DEBUG = (os.environ.get('KC_ACP_DEBUG') or '').strip().lower() in (
+    '1', 'true', 'yes', 'on')
+
+
+def _diag(msg: str) -> None:
+    """Write one diagnostic. stderr, because stdout is the event stream."""
     print(f'[acp-bridge] {msg}', file=sys.stderr, flush=True)
+
+
+def _log(msg: str) -> None:
+    """A problem worth surfacing, always printed.
+
+    tmux interleaves stderr into the Builds pane, so anything written here is
+    read by a person mid-conversation — reserve it for things they can act on.
+    """
+    _diag(msg)
+
+
+def _debug(msg: str) -> None:
+    """Telemetry and lifecycle noise: silent unless KC_ACP_DEBUG is set.
+
+    The token-usage note fires EVERY turn and the agent's own stderr passthrough
+    fires constantly; on the Builds pane both read as though the agent said
+    them (#639). They are still one env var away when diagnosing.
+    """
+    if DEBUG:
+        _diag(msg)
 
 
 def default_argv() -> List[str]:
@@ -164,13 +192,17 @@ class EventSink(Sink):
         _write(json.dumps(event, ensure_ascii=False))
 
 
-class StreamJsonSink(Sink):
-    """Claude stream-json for the dashboard + plain text for the tmux pane.
+class PrettySink(Sink):
+    """Human-readable lines only — what someone watching a tmux pane wants.
 
-    Mirrors harness.py's contract: JSONL events and pretty lines share stdout,
-    and the dashboard's parser ignores any line that is not JSON — so a line
-    must never merely *start* with `{`. Pretty lines here are prefixed with a
-    glyph, which guarantees that.
+    This is the Builds-tab default. The pane is read by a person: the web tab
+    renders it through ttyd and the mobile Task view through TerminalView, and
+    NEITHER parses it. Putting a machine format there costs readability and
+    buys nothing (#639) — every event appeared twice, once as JSON and once as
+    prose.
+
+    Rendering lives here and `StreamJsonSink` inherits it, so the two can never
+    drift into disagreeing about how a tool call reads.
     """
 
     _GLYPH = {'message': '◇ assistant', 'thought': '… thinking',
@@ -188,42 +220,79 @@ class StreamJsonSink(Sink):
         # would report that stale error as its own result.
         self._last_text = ''
 
-    def emit(self, event: Dict[str, Any]) -> None:
+    def _pretty(self, event: Dict[str, Any]) -> Optional[str]:
+        """The one human line for an event, or None when it has none.
+
+        Also the place `_last_text` is maintained, so a subclass that adds a
+        machine format cannot forget to track the answer.
+        """
         t = event.get('type')
         text = _stringify(event.get('text'))
         if t == 'session':
-            _write(f"· session {event.get('sessionId')}")
-            return
+            return f"· session {event.get('sessionId')}"
         if t in ('message', 'thought'):
             if t == 'message':
                 self._last_text = text
+            return f'{self._GLYPH[t]}  {text}'
+        if t == 'tool_call':
+            name = event.get('name') or 'tool'
+            inp = event.get('input') if isinstance(event.get('input'), dict) else {}
+            return f'⚒ {name}  {json.dumps(inp, ensure_ascii=False)[:240]}'
+        if t == 'tool_result':
+            return f"{self._GLYPH['tool_result']} {text[:600]}"
+        if t == 'error':
+            self._last_text = f'error: {text}'
+            return f"{self._GLYPH['error']}  {text}"
+        # `usage` is context telemetry and `done` is handled by turn_end so the
+        # result event carries the answer text rather than an empty string.
+        return None
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        line = self._pretty(event)
+        if line is not None:
+            _write(line)
+
+    def turn_end(self) -> None:
+        # No result frame: the answer is already on the pane as prose, and
+        # repeating it is exactly the duplication this sink exists to remove.
+        self._last_text = ''
+
+
+class StreamJsonSink(PrettySink):
+    """Claude stream-json for a machine reader + the same prose for a human.
+
+    Mirrors harness.py's contract: JSONL events and pretty lines share stdout,
+    and a parser ignores any line that is not JSON — so a line must never
+    merely *start* with `{`. Pretty lines are prefixed with a glyph, which
+    guarantees that.
+
+    NOT what the Builds pane uses any more (#639) — nothing on either surface
+    parses a Build pane, so the JSON half was pure noise there. Kept because
+    the contract is the one an external reader would expect, and choosing it is
+    one flag away.
+    """
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        t = event.get('type')
+        text = _stringify(event.get('text'))
+        if t in ('message', 'thought'):
             _write(json.dumps({'type': 'assistant', 'message': {'content': [
                 {'type': 'text', 'text': text}]}}, ensure_ascii=False))
-            _write(f'{self._GLYPH[t]}  {text}')
-            return
-        if t == 'tool_call':
+        elif t == 'tool_call':
             name = event.get('name') or 'tool'
             inp = event.get('input') if isinstance(event.get('input'), dict) else {}
             _write(json.dumps({'type': 'assistant', 'message': {'content': [
                 {'type': 'tool_use', 'id': event.get('id') or '', 'name': name,
                  'input': inp}]}}, ensure_ascii=False))
-            _write(f'⚒ {name}  {json.dumps(inp, ensure_ascii=False)[:240]}')
-            return
-        if t == 'tool_result':
+        elif t == 'tool_result':
             _write(json.dumps({'type': 'user', 'message': {'content': [
                 {'type': 'tool_result', 'tool_use_id': event.get('id') or '',
                  'content': text, 'is_error': bool(event.get('is_error'))}]}},
                 ensure_ascii=False))
-            _write(f"{self._GLYPH['tool_result']} {text[:600]}")
-            return
-        if t == 'error':
-            self._last_text = f'error: {text}'
-            _write(json.dumps({'type': 'result', 'result': self._last_text},
+        elif t == 'error':
+            _write(json.dumps({'type': 'result', 'result': f'error: {text}'},
                               ensure_ascii=False))
-            _write(f"{self._GLYPH['error']}  {text}")
-            return
-        # `usage` is context telemetry and `done` is handled by turn_end so the
-        # result event carries the answer text rather than an empty string.
+        super().emit(event)
 
     def turn_end(self) -> None:
         _write(json.dumps({'type': 'result', 'result': self._last_text},
@@ -630,10 +699,10 @@ class AcpBridge:
         # reverse-engineering it. See token_usage.INSTRUMENTED_ASSISTANTS.
         usage = result.get('usage')
         if isinstance(usage, dict):
-            _log(f'turn reported token usage: {json.dumps(usage, sort_keys=True)}')
+            _debug(f'turn reported token usage: {json.dumps(usage, sort_keys=True)}')
         else:
-            _log('turn reported no token usage (PromptResponse.usage absent) — '
-                 'spend for this assistant stays not_instrumented')
+            _debug('turn reported no token usage (PromptResponse.usage absent) — '
+                   'spend for this assistant stays not_instrumented')
         stop = str(result.get('stopReason') or '')
         self.emit({'type': 'done', 'stopReason': stop or 'end_turn'})
         # Only a SETTLED turn gets the pane's closing `result` event; the error
@@ -682,7 +751,7 @@ class AcpBridge:
             return
         try:
             for line in p.stderr:
-                _log(f'dsh: {line.rstrip()}')
+                _debug(f'dsh: {line.rstrip()}')
         except (OSError, ValueError):
             pass
 
@@ -917,7 +986,7 @@ def serve(bridge: 'AcpBridge') -> int:
         text = read_prompt(
             first_chunk_timeout=FIRST_PROMPT_TIMEOUT if first else None)
         if text is None:                       # stdin closed
-            _log('stdin closed, exiting')
+            _debug('stdin closed, exiting')
             return 0
         if not text.strip():
             if first:
@@ -949,7 +1018,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                          '(off/low/high/max), best-effort')
     ap.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT,
                     help='seconds to allow one turn to settle')
-    ap.add_argument('--format', choices=('events', 'stream-json'),
+    ap.add_argument('--format', choices=('events', 'stream-json', 'pretty'),
                     default='events',
                     help="'events' (default) for the Hypervisor adapter; "
                          "'stream-json' for a Builds tmux pane")
@@ -962,7 +1031,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                          'reusing one ACP session (the Builds tab)')
     args = ap.parse_args(argv)
 
-    sink = StreamJsonSink() if args.format == 'stream-json' else EventSink()
+    sink = {'stream-json': StreamJsonSink,
+            'pretty': PrettySink}.get(args.format, EventSink)()
 
     text = ''
     if not args.serve:
