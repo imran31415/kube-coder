@@ -45,6 +45,33 @@ spec:
           key: token
 ```
 
+## Fleet rollup in the controller
+
+The workspace-controller aggregates these series across every workspace at
+`GET /api/spend`, and the console renders it beside cluster capacity and
+insights (issue #581). The controller queries the same Prometheus it already
+uses for capacity — it never calls a workspace's own HTTP API, so a workspace
+that is stopped still contributes its history.
+
+Two things this depends on, and neither is automatic:
+
+1. **Something has to scrape the workspaces.** The chart ships no ServiceMonitor
+   (the endpoint is authenticated with a per-workspace token that lives on the
+   PVC, not in a Secret, so a generic one would not work) — use the
+   ServiceMonitor above, one Secret per workspace. Until then `/api/spend`
+   reports `scrapeHint` and the console says no workspace is exporting spend
+   metrics, rather than showing a total of zero.
+2. **`PROMETHEUS_URL` has to be set on the controller.** Unset, `_prom_get`
+   already raises `metrics disabled`, which surfaces as `metricsError` and reads
+   in the console as "spend metrics require Prometheus".
+
+Because these are gauges, the controller computes a window's growth as
+`x - (x offset <window>)` and clamps the result at zero — see *Why almost
+everything is a gauge* below. Two consequences worth knowing when reading the
+number: a workspace first scraped *inside* the window has no earlier sample, so
+its whole current value is attributed to the window; and a window in which
+ledgers were pruned under-reports rather than going negative.
+
 ## What is exposed
 
 | Metric | Type | Labels | Meaning |

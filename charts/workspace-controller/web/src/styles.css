@@ -1315,3 +1315,100 @@ body {
   color: var(--muted);
   font-size: 0.78rem;
 }
+
+/* Agent spend (#581) — reuses the .cap panel chrome; only the token-specific
+   rows are new. */
+.spend-total {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.spend-total-val {
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.spend-total-unit {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.spend-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-left: 0.5rem;
+}
+
+.spend-classes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+
+.spend-class {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #202026;
+  border-radius: 6px;
+}
+
+.spend-class-name {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.spend-class-val {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.spend-coverage {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.spend-table {
+  margin-top: 1rem;
+}
+
+.spend-row {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.45rem 0;
+  border-top: 1px solid #202026;
+  font-size: 0.82rem;
+}
+
+.spend-row:first-of-type {
+  border-top: none;
+}
+
+.spend-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spend-row-classes {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.spend-row-total {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

@@ -17,6 +17,7 @@ import { MetricsPanel } from './components/MetricsPanel';
 import { WorkspaceDetail } from './components/WorkspaceDetail';
 import { InsightsBar } from './components/InsightsBar';
 import { CapacityPanel } from './components/CapacityPanel';
+import { SpendPanel } from './components/SpendPanel';
 import { HealthSummary } from './components/HealthSummary';
 import { ProvisionForm } from './components/ProvisionForm';
 import { MobileAccessCard } from './components/MobileAccessCard';
@@ -55,12 +56,14 @@ function CapacityView() {
           <button class="crumb" onClick={() => navigate('/')}>← Workspaces</button>
           <h1>Cluster resources</h1>
           <p class="sub">
-            Live capacity across all nodes, usage history, and per-workspace advisories.
+            Live capacity across all nodes, usage history, agent spend, and per-workspace
+            advisories.
           </p>
         </div>
       </header>
       <InsightsBar />
       <CapacityPanel />
+      <SpendPanel />
     </div>
   );
 }

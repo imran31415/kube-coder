@@ -1358,3 +1358,161 @@ class SelfServeTokenBindingTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PodUserRegexTest(unittest.TestCase):
+    """Spend series are keyed by namespace first, pod second — the pod fallback
+    only exists for a workspace still in the shared namespace."""
+
+    def test_peels_the_two_generated_suffixes(self):
+        self.assertEqual(controller._POD_USER_RE.match('ws-dev-7d9c8b6f5-abcde').group(1), 'dev')
+
+    def test_username_may_contain_dashes(self):
+        self.assertEqual(
+            controller._POD_USER_RE.match('ws-my-long-name-7d9c8b6f5-abcde').group(1),
+            'my-long-name')
+
+    def test_rejects_a_bare_deployment_name(self):
+        self.assertIsNone(controller._POD_USER_RE.match('ws-dev'))
+
+    def test_namespace_wins_over_pod(self):
+        self.assertEqual(controller._user_for_spend_series('ws-alice', 'ws-bob-abc123-xyzzy'),
+                         'alice')
+
+    def test_pod_fallback_for_the_shared_namespace(self):
+        self.assertEqual(controller._user_for_spend_series('coder', 'ws-bob-7d9c8b6f5-abcde'),
+                         'bob')
+
+    def test_non_workspace_series_are_unidentified(self):
+        self.assertIsNone(controller._user_for_spend_series('default', 'prometheus-0'))
+
+
+class FleetSpendTest(unittest.TestCase):
+    """The #581 rollup, with Prometheus faked out. Growth over a window is
+    `x - (x offset w)` because the workspace metrics are gauges (#603)."""
+
+    def setUp(self):
+        self._instant = controller.prom_instant_multi
+
+    def tearDown(self):
+        controller.prom_instant_multi = self._instant
+
+    @staticmethod
+    def _fake(series):
+        """`series[(metric, offset?)] -> [(labels, value)]`, matched on the
+        expression the code actually builds."""
+        def fake_instant(expr):
+            offset = ' offset ' in expr
+            for metric, rows in series.items():
+                name, want_offset = metric
+                if expr.startswith(f'sum by ') and f'({name}{{' in expr and offset == want_offset:
+                    return rows
+            return []
+        return fake_instant
+
+    def _run(self, series, window=3600):
+        controller.prom_instant_multi = self._fake(series)
+        return controller.fleet_spend(window)
+
+    def test_window_growth_and_breakdowns(self):
+        ws = lambda ns, pod, k: {'namespace': ns, 'pod': pod, 'class': k}
+        out = self._run({
+            ('kubecoder_agent_tokens', False): [
+                (ws('ws-alice', 'ws-alice-abc123-xyzzy', 'input'), 1000.0),
+                (ws('ws-alice', 'ws-alice-abc123-xyzzy', 'output'), 200.0),
+                (ws('ws-bob', 'ws-bob-abc123-xyzzy', 'input'), 50.0),
+                ({'model': 'claude-opus-5', 'class': 'input'}, 900.0),
+                ({'model': 'claude-sonnet-5', 'class': 'input'}, 150.0),
+            ],
+            ('kubecoder_agent_tokens', True): [
+                (ws('ws-alice', 'ws-alice-abc123-xyzzy', 'input'), 400.0),
+                ({'model': 'claude-opus-5', 'class': 'input'}, 400.0),
+            ],
+            ('kubecoder_agent_tokens_unclassified', False): [
+                ({'namespace': 'ws-alice', 'pod': 'ws-alice-abc123-xyzzy'}, 70.0),
+            ],
+            ('kubecoder_agent_tokens_unclassified', True): [],
+            ('kubecoder_agent_runs', False): [
+                ({'coverage': 'measured'}, 12.0),
+                ({'coverage': 'not_instrumented'}, 5.0),
+            ],
+            ('kubecoder_agent_runs', True): [({'coverage': 'measured'}, 4.0)],
+        })
+        self.assertIsNone(out['metricsError'])
+        self.assertIsNone(out['scrapeHint'])
+        self.assertEqual(out['workspacesReporting'], 2)
+
+        alice, bob = out['byWorkspace']            # sorted by window spend, desc
+        self.assertEqual(alice['user'], 'alice')
+        self.assertEqual(alice['window']['input'], 600)     # 1000 - 400
+        self.assertEqual(alice['window']['output'], 200)    # no prior sample
+        self.assertEqual(alice['window']['total'], 800)
+        self.assertEqual(alice['window']['unclassified'], 70)
+        self.assertEqual(alice['current']['total'], 1200)
+        self.assertEqual(bob['user'], 'bob')
+        self.assertEqual(bob['window']['input'], 50)
+
+        self.assertEqual(out['fleet']['window']['total'], 850)
+        self.assertEqual(out['fleet']['current']['total'], 1250)
+        self.assertEqual(out['fleet']['window']['unclassified'], 70)
+
+        by_model = {m['model']: m for m in out['byModel']}
+        self.assertEqual(by_model['claude-opus-5']['window']['input'], 500)
+        self.assertEqual(by_model['claude-sonnet-5']['window']['input'], 150)
+
+        # Coverage is the zero-disambiguator: it must ride along on the same
+        # window, or a fleet total looks complete when most of it is unmeasured.
+        self.assertEqual(out['coverage']['window']['measured'], 8)
+        self.assertEqual(out['coverage']['window']['not_instrumented'], 5)
+        self.assertEqual(out['coverage']['current']['measured'], 12)
+
+    def test_pruned_ledgers_never_report_negative_spend(self):
+        out = self._run({
+            ('kubecoder_agent_tokens', False): [
+                ({'namespace': 'ws-alice', 'pod': 'ws-alice-abc123-xyzzy',
+                  'class': 'input'}, 100.0)],
+            ('kubecoder_agent_tokens', True): [
+                ({'namespace': 'ws-alice', 'pod': 'ws-alice-abc123-xyzzy',
+                  'class': 'input'}, 900.0)],
+        })
+        self.assertEqual(out['byWorkspace'][0]['window']['input'], 0)
+        self.assertEqual(out['byWorkspace'][0]['current']['input'], 100)
+
+    def test_non_workspace_series_are_ignored(self):
+        out = self._run({
+            ('kubecoder_agent_tokens', False): [
+                ({'namespace': 'default', 'pod': 'prometheus-0', 'class': 'input'}, 5.0)],
+        })
+        self.assertEqual(out['byWorkspace'], [])
+        self.assertEqual(out['fleet']['window']['total'], 0)
+        self.assertIsNotNone(out['scrapeHint'])
+
+    def test_model_tail_is_folded_not_dropped(self):
+        rows = [({'model': f'm{i:02d}', 'class': 'input'}, float(100 - i))
+                for i in range(controller.SPEND_MAX_MODELS + 3)]
+        out = self._run({('kubecoder_agent_tokens', False): rows})
+        names = [m['model'] for m in out['byModel']]
+        self.assertEqual(len(names), controller.SPEND_MAX_MODELS + 1)
+        self.assertEqual(names[-1], 'other')
+        # 3 shed models: the three smallest, 100-20 .. 100-22.
+        self.assertEqual(out['byModel'][-1]['window']['input'], 80 + 79 + 78)
+
+    def test_prometheus_unset_says_so_instead_of_reporting_zero(self):
+        def boom(expr):
+            raise controller.PromError('metrics disabled (PROMETHEUS_URL unset)')
+        controller.prom_instant_multi = boom
+        out = controller.fleet_spend()
+        self.assertEqual(out['metricsError'], 'metrics disabled (PROMETHEUS_URL unset)')
+        self.assertEqual(out['workspacesReporting'], 0)
+        self.assertEqual(out['fleet']['window']['total'], 0)
+        self.assertIsNone(out['scrapeHint'])   # not a scrape gap — no backend at all
+
+    def test_nothing_scraped_is_distinguished_from_no_spend(self):
+        out = self._run({})
+        self.assertIsNone(out['metricsError'])
+        self.assertIn('/metrics/prometheus', out['scrapeHint'])
+
+    def test_window_is_clamped_and_reported(self):
+        controller.prom_instant_multi = lambda expr: []
+        self.assertEqual(controller.fleet_spend(10)['windowSeconds'], 1800)
+        self.assertEqual(controller.fleet_spend(99999999)['windowSeconds'], 604800)
