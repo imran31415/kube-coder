@@ -85,7 +85,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
 # renovate: datasource=npm depName=npm
-ARG NPM_VERSION=11.19.0
+ARG NPM_VERSION=11.19.1
 # Pin Yarn (classic) explicitly instead of installing floating `latest` — a
 # supply-chain hardening from the July 2026 review (finding 7). npm verifies the
 # package integrity/signature against the registry on install.
@@ -116,7 +116,7 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # Pinned for reproducible builds — Renovate bumps COMPOSE_VERSION weekly
 # (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
 # renovate: datasource=github-releases depName=docker/compose
-ARG COMPOSE_VERSION=v5.4.0
+ARG COMPOSE_VERSION=v5.5.1
 # Checksum-verified against the vendor-published .sha256 before it is made
 # executable (supply-chain hardening, July 2026 review, finding 7).
 RUN ARCH=$(dpkg --print-architecture) \
@@ -134,7 +134,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # release path and verified before install, so a corrupted/tampered binary fails
 # the build (`sha256sum -c` exits non-zero). Bump KUBECTL_VERSION to update.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.36.3
+ARG KUBECTL_VERSION=v1.37.0
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
   && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
@@ -159,9 +159,9 @@ RUN ARCH=$(dpkg --print-architecture) \
 # the new values from
 #   curl -fsSL https://api.github.com/repos/coder/code-server/releases/tags/v<VER> \
 #     | jq -r '.assets[] | select(.name|endswith(".deb")) | "\(.name) \(.digest)"'
-ARG CODE_SERVER_VERSION=4.128.0
-ARG CODE_SERVER_SHA256_AMD64=c0f6e3706c4285f06bb2350274576f289262e6a9962a70e3c31c6d3ea17a29d2
-ARG CODE_SERVER_SHA256_ARM64=b97107ee3ac7c2253a30221da12a562692a2765610457b647ecfcbc02a8ccc4f
+ARG CODE_SERVER_VERSION=4.137.0
+ARG CODE_SERVER_SHA256_AMD64=f0165952d918092eb321a2d4e75a1e7035807d687b698ccda63aea2bfa1c58bc
+ARG CODE_SERVER_SHA256_ARM64=0d2b58387833f328bec3723f842bf68e59031fc24b1e03a9c6c1659765a420ef
 RUN ARCH=$(dpkg --print-architecture) \
   && case "$ARCH" in \
        amd64) CS_SHA256="$CODE_SERVER_SHA256_AMD64" ;; \
@@ -237,6 +237,10 @@ COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
     && /opt/node22/bin/node --version \
+    # This npm arrives verbatim from node:22-slim, so NPM_VERSION above never
+    # reached it and Trivy saw TWO npm trees with two sets of CVEs. Pin it to
+    # the same version as the main one so they cannot drift apart again.
+    && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/node22 npm@${NPM_VERSION} \
     && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/dsh \
          @deepseek-ai/dsh@${DSH_VERSION} \
     && rm -f /opt/dsh/bin/dsh \
