@@ -40,8 +40,9 @@ export const threadsLoading = signal(false);
  * Chat "surface" context (#466). Lets the AI CTO page reuse this store + the
  * `<Chat/>` component without forking: when a route sets persona='cto' + a
  * project, new threads are created bound to that persona/project and the thread
- * list is filtered to it. The default ('' / null) is the plain Hypervisor tab —
- * unchanged, and its list excludes CTO threads so the two surfaces don't mix.
+ * list is filtered to it. The default ('' / null) is the plain Hypervisor tab,
+ * whose list is now every thread regardless of persona (#683) — the modes are a
+ * badge + chip in the sidebar, not two disjoint lists.
  * The CTO route sets this on mount and resets it on unmount.
  */
 export const chatPersona = signal<string>('');
@@ -274,12 +275,17 @@ export async function initHypervisor(): Promise<void> {
 export async function refreshThreads(): Promise<void> {
   threadsLoading.value = true;
   try {
-    // Scope the list to the current surface: the CTO page sees only its
-    // persona (+ project); the plain Chat tab excludes CTO threads (#465/#466).
+    // ONE list (#683). The CTO page still scopes itself to its persona (+ the
+    // project its rail has selected) for as long as that page exists; Chat asks
+    // for everything and does its own mode filtering client-side
+    // (routes/hypervisor/threadMode.ts). Chat used to send `persona=default`,
+    // which made the two lists disjoint — so a CTO thread was invisible to
+    // every thread-management affordance Chat has (rename, trash, Active/Past,
+    // project groups) and #663 had to ask for them a second time.
     const filter =
       chatPersona.value === 'cto'
         ? { persona: 'cto' as const, project: chatProjectId.value ?? undefined }
-        : { persona: 'default' as const };
+        : undefined;
     threads.value = await listThreads(filter);
   } catch {
     /* keep last-good list */
