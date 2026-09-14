@@ -505,3 +505,92 @@ export function truncationLabel(result: {
       return 'This list may be incomplete.';
   }
 }
+
+// ── labels for the states a human actually watches ─────────────────────────
+//
+// Run-item states and dispositions are wire enums, and the UI had been
+// rendering them raw: a reviewer read `needs_rescoping` and a run table said
+// `claimed` with no hint that it meant "a worker has it but has not started".
+// They are spelled out here, once, so the Runs table, the review queue and the
+// mobile card list cannot drift into three different vocabularies.
+
+/** Where a run item is, in words. */
+export function runItemStateLabel(state: RunItemState): string {
+  switch (state) {
+    case 'pending': return 'queued';
+    case 'claimed': return 'starting';
+    case 'working': return 'working';
+    case 'done': return 'done';
+    case 'failed': return 'failed';
+    case 'skipped': return 'skipped';
+    default: return state;
+  }
+}
+
+/**
+ * Sort weight for a run item: what is happening now, then what is about to,
+ * then what is settled.
+ *
+ * The table had rendered in map-insertion order, which interleaves finished
+ * items between running ones — so "what is happening right now" had to be
+ * found by reading every row. Live work sorts to the top because that is the
+ * only part of the table that changes while you watch it.
+ */
+export function runItemOrder(state: RunItemState): number {
+  switch (state) {
+    case 'working': return 0;
+    case 'claimed': return 1;
+    case 'pending': return 2;
+    case 'failed': return 3;
+    case 'done': return 4;
+    case 'skipped': return 5;
+    default: return 6;
+  }
+}
+
+/** True while the item is still moving — drives the spinner and the live count. */
+export function isRunItemLive(state: RunItemState): boolean {
+  return state === 'working' || state === 'claimed' || state === 'pending';
+}
+
+/** A disposition as prose, never the raw enum. */
+export function dispositionLabel(d: string | null | undefined): string {
+  if (!d) return '';
+  switch (d) {
+    case 'completed': return 'completed';
+    case 'needs_review': return 'needs review';
+    case 'needs_rescoping': return 'needs rescoping';
+    case 'blocked': return 'blocked';
+    case 'rejected': return 'rejected';
+    case 'failed': return 'failed';
+    default: return d.replace(/_/g, ' ');
+  }
+}
+
+/**
+ * Evidence values come back as arbitrary JSON, and a non-scalar one had been
+ * going through `String(value)` — which renders an object as the notorious
+ * `[object Object]` chip. Anything that is not a scalar is shown as compact
+ * JSON instead, because an unreadable chip is worse than a long one.
+ */
+export function evidenceValueLabel(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map((v) => evidenceValueLabel(v)).join(', ');
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** "4s", "2m 10s", "1h 3m" — elapsed, at the precision a watcher cares about. */
+export function elapsedLabel(fromSeconds: number, nowMs: number = Date.now()): string {
+  if (!fromSeconds) return '';
+  const secs = Math.max(0, Math.round(nowMs / 1000 - fromSeconds));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}

@@ -10,8 +10,6 @@ import {
   closeRun,
   startRun,
   stopRun,
-  startRunPolling,
-  stopRunPolling,
   strategies,
   strategyPreview,
   refreshStrategies,
@@ -21,9 +19,17 @@ import {
   runFormFor,
   setRunForm,
 } from '../../store/boards';
-import { clampLabel, truncationLabel } from '../../api/boards';
+import {
+  clampLabel,
+  truncationLabel,
+  runItemStateLabel,
+  runItemOrder,
+  isRunItemLive,
+  dispositionLabel,
+  elapsedLabel,
+} from '../../api/boards';
 import { MutatorOnly } from '../../components/MutatorOnly';
-import type { BoardRunSummary } from '../../api/boards';
+import type { BoardRun, BoardRunSummary } from '../../api/boards';
 
 /**
  * Runs (#588 Phase 4/6) — start N items working in parallel and watch them.
@@ -49,13 +55,15 @@ export function RunsPanel() {
   const [starting, setStarting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
 
+  // Progress polling is NOT started here. It belongs to the route, which stays
+  // mounted across tab switches — owning it from this panel meant stepping
+  // over to Review to approve something silently stopped the poll tracking the
+  // run you went there to act on.
   useEffect(() => {
     if (!boardId) return;
     void refreshRuns(boardId);
     void refreshStrategies(boardId);
     strategyPreview.value = null;
-    startRunPolling(boardId);
-    return () => stopRunPolling();
   }, [boardId]);
 
   // A restored strategy that the board no longer defines would leave the
@@ -239,19 +247,8 @@ export function RunsPanel() {
                   </p>
                 )}
                 {run.error && <p class="board-error">{run.error}</p>}
-                <table class="board-run-items">
-                  <tbody>
-                    {Object.values(open.items).map((item) => (
-                      <tr key={item.id} class={`board-run-item-${item.state}`}>
-                        <td class="mono">{item.key || item.id}</td>
-                        <td>{item.title}</td>
-                        <td class="mono">{item.state}</td>
-                        <td>{item.disposition ?? ''}</td>
-                        <td class="board-run-item-error">{item.error}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <RunTally run={run} />
+                <RunItemTable run={open} />
                 {run.status === 'running' && (
                   <MutatorOnly>
                     <button
@@ -385,5 +382,131 @@ function RunLine({ run }: { run: BoardRunSummary }) {
         </span>
       )}
     </>
+  );
+}
+
+/**
+ * A run's own counts, above its item list.
+ *
+ * `4/9` in the collapsed row says how much is finished but not what the rest
+ * is doing, and "3 queued behind 1 worker" and "3 failing right now" are very
+ * different situations that the single fraction renders identically. Only
+ * non-zero buckets are drawn, so a clean run stays a short line.
+ */
+function RunTally({ run }: { run: BoardRunSummary }) {
+  const c = run.counts ?? {};
+  const buckets: { key: string; label: string; n: number }[] = [
+    { key: 'working', label: 'working', n: (c.working ?? 0) + (c.claimed ?? 0) },
+    { key: 'pending', label: 'queued', n: c.pending ?? 0 },
+    { key: 'done', label: 'done', n: c.done ?? 0 },
+    { key: 'failed', label: 'failed', n: c.failed ?? 0 },
+    { key: 'skipped', label: 'skipped', n: c.skipped ?? 0 },
+  ].filter((b) => b.n > 0);
+
+  if (buckets.length === 0) return null;
+
+  return (
+    <ul class="board-run-tally" aria-label="Run progress by state">
+      {buckets.map((b) => (
+        <li key={b.key} class={`board-run-tally-${b.key}`}>
+          <span class="mono">{b.n}</span> {b.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The items of one run, live work first.
+ *
+ * Two things were previously left for the reader to work out. The state was
+ * rendered as its raw enum in the same ink as everything else, so `pending`,
+ * `working` and `done` were three words of identical weight — you had to read
+ * each row to find the one that was moving. And the rows came out in map
+ * insertion order, which interleaves finished items between running ones.
+ *
+ * Sorting live work to the top and giving each state a pill means the answer
+ * to "what is happening right now" is the top of the table, every time.
+ */
+function RunItemTable({ run }: { run: BoardRun }) {
+  // Elapsed times only tick while something is actually live; a settled run
+  // must not hold a timer open for a table nobody is watching change.
+  const items = Object.values(run.items ?? {});
+  const anyLive = items.some((i) => isRunItemLive(i.state));
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!anyLive) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [anyLive]);
+
+  if (items.length === 0) {
+    return <p class="board-empty">This run has no items.</p>;
+  }
+
+  const sorted = [...items].sort((a, b) => {
+    const byState = runItemOrder(a.state) - runItemOrder(b.state);
+    if (byState !== 0) return byState;
+    return (a.key || a.id).localeCompare(b.key || b.id, undefined, {
+      numeric: true,
+    });
+  });
+
+  return (
+    <table class="board-run-items">
+      <thead class="board-run-items-head">
+        <tr>
+          <th scope="col">Item</th>
+          <th scope="col">Title</th>
+          <th scope="col">State</th>
+          <th scope="col">Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((item) => {
+          const live = isRunItemLive(item.state);
+          return (
+            <tr key={item.id} class={`board-run-item-${item.state}`}>
+              <td class="mono">{item.key || item.id}</td>
+              <td class="board-run-item-title">{item.title}</td>
+              <td>
+                <span class={`board-state-pill board-state-${item.state}`}>
+                  {item.state === 'working' && (
+                    <span class="board-spinner" aria-hidden="true" />
+                  )}
+                  {runItemStateLabel(item.state)}
+                </span>
+                {/* Elapsed only while it is live: on a settled item the
+                    number would keep climbing forever and mean nothing. */}
+                {live && item.updated_at > 0 && (
+                  <span class="board-run-item-elapsed mono">
+                    {elapsedLabel(item.updated_at, now)}
+                  </span>
+                )}
+              </td>
+              <td>
+                {/* A `failed` disposition next to a FAILED state pill says the
+                    same word twice; the error underneath is the part that
+                    carries information. */}
+                {item.disposition && item.disposition !== item.state && (
+                  <span
+                    class={`board-disposition board-disposition-${item.disposition}`}
+                  >
+                    {dispositionLabel(item.disposition)}
+                  </span>
+                )}
+                {item.error && (
+                  <span class="board-run-item-error">{item.error}</span>
+                )}
+                {!item.disposition && !item.error && live && (
+                  <span class="board-run-item-waiting">—</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'preact/hooks';
-import { signal } from '@preact/signals';
 import {
   reviewGroups,
   reviewError,
@@ -11,9 +10,12 @@ import {
   selectedBoardId,
   reviewFocusItemId,
   lastResumeOutcome,
+  decisionPending,
+  type DecisionKind,
 } from '../../store/boards';
 import { PromptDialog } from '../../components/ConfirmDialog';
 import { MutatorOnly } from '../../components/MutatorOnly';
+import { dispositionLabel, evidenceValueLabel } from '../../api/boards';
 import type { StagedAction, StagedRecord } from '../../api/boards';
 
 /**
@@ -29,12 +31,22 @@ import type { StagedAction, StagedRecord } from '../../api/boards';
  * for. Grouping is done server-side so the mobile card list agrees with this.
  */
 
-/** Per-item busy flag: one approval in flight must not grey out the queue. */
-const busy = signal<Record<string, boolean>>({});
+/** What a card says about itself while its decision is in flight. */
+const PENDING_LABEL: Record<DecisionKind, string> = {
+  approve: 'Approving…',
+  reject: 'Rejecting…',
+  send_back: 'Sending back…',
+  edit: 'Saving…',
+};
 
-function setBusy(itemId: string, value: boolean) {
-  busy.value = { ...busy.value, [itemId]: value };
-}
+/** What a settled card says once the decision has landed. */
+const DECIDED_LABEL: Record<string, string> = {
+  approved: 'approved',
+  rejected: 'rejected',
+  sent_back: 'sent back',
+  partial: 'partial',
+  pending: 'pending',
+};
 
 type EditTarget = { record: StagedRecord; action: StagedAction };
 
@@ -79,7 +91,7 @@ export function ReviewPanel() {
       {groups.map((group) => (
         <section key={group.disposition} class="board-review-group">
           <h3 class={`board-disposition board-disposition-${group.disposition}`}>
-            {group.disposition.replace(/_/g, ' ')}
+            {dispositionLabel(group.disposition)}
             <span class="board-review-count mono">{group.count}</span>
           </h3>
           {group.items.map((record) => (
@@ -114,12 +126,10 @@ export function ReviewPanel() {
           if (!editing) return;
           const { record, action } = editing;
           setEditing(null);
-          setBusy(record.item_id, true);
           await editStaged(boardId, record.item_id, action.id, {
             ...action.params,
             body: value,
           });
-          setBusy(record.item_id, false);
         }}
         onCancel={() => setEditing(null)}
       />
@@ -139,9 +149,7 @@ export function ReviewPanel() {
           if (!rejecting) return;
           const record = rejecting;
           setRejecting(null);
-          setBusy(record.item_id, true);
           await rejectStaged(boardId, record.item_id, value);
-          setBusy(record.item_id, false);
         }}
         onCancel={() => setRejecting(null)}
       />
@@ -168,9 +176,7 @@ export function ReviewPanel() {
           if (!sendingBack) return;
           const record = sendingBack;
           setSendingBack(null);
-          setBusy(record.item_id, true);
           await sendBackStaged(boardId, record.item_id, value);
-          setBusy(record.item_id, false);
         }}
         onCancel={() => setSendingBack(null)}
       />
@@ -226,15 +232,26 @@ function ReviewCard({
   onSendBack: () => void;
 }) {
   const pending = record.pending_actions ?? [];
-  const isBusy = busy.value[record.item_id] === true;
+  // The KIND of decision in flight, not merely that one is. Approving a
+  // customer-visible comment is a real call to the vendor and can take
+  // seconds; a card that only greyed itself out gave no way to tell that wait
+  // apart from a wedged page, so each button now names the verb it waits on.
+  const inFlight = decisionPending.value[record.item_id];
+  const isBusy = inFlight !== undefined;
   const evidence = Object.entries(record.evidence ?? {});
 
   return (
     <article
-      class={`board-review-card ${focused ? 'is-focused' : ''} ${
-        record.open ? '' : 'is-decided'
-      }`}
+      class={[
+        'board-review-card',
+        focused ? 'is-focused' : '',
+        record.open ? '' : 'is-decided',
+        isBusy ? 'is-deciding' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       data-item-id={record.item_id}
+      aria-busy={isBusy ? 'true' : undefined}
     >
       <header class="board-review-card-head">
         <span class="board-review-key mono">
@@ -273,7 +290,7 @@ function ReviewCard({
                     disabled={isBusy}
                     onClick={() => onEdit(action)}
                   >
-                    Edit
+                    {inFlight === 'edit' ? PENDING_LABEL.edit : 'Edit'}
                   </button>
                 </MutatorOnly>
               </div>
@@ -299,7 +316,10 @@ function ReviewCard({
           {evidence.map(([key, value]) => (
             <li key={key} class="board-evidence-chip">
               <span class="board-evidence-key">{key.replace(/_/g, ' ')}</span>
-              <span class="mono">{String(value)}</span>
+              {/* Not String(value): evidence is arbitrary JSON, and anything
+                  that was not a scalar rendered as the useless
+                  `[object Object]`. */}
+              <span class="mono">{evidenceValueLabel(value)}</span>
             </li>
           ))}
         </ul>
@@ -307,7 +327,9 @@ function ReviewCard({
 
       {!record.open && (
         <p class="board-review-decided">
-          {record.state}
+          <span class={`board-decided-pill board-decided-${record.state}`}>
+            {DECIDED_LABEL[record.state] ?? record.state}
+          </span>
           {record.decided_by ? ` · ${record.decided_by}` : ''}
           {record.state === 'partial' && (
             <span class="board-review-partial">
@@ -325,13 +347,18 @@ function ReviewCard({
               type="button"
               class="btn btn-primary btn-sm"
               disabled={isBusy || pending.length === 0}
-              onClick={async () => {
-                setBusy(record.item_id, true);
-                await approveStaged(boardId, record);
-                setBusy(record.item_id, false);
-              }}
+              onClick={() => void approveStaged(boardId, record)}
             >
-              {pending.length <= 1 ? 'Approve' : `Approve ${pending.length}`}
+              {inFlight === 'approve' ? (
+                <>
+                  <span class="board-spinner" aria-hidden="true" />
+                  {PENDING_LABEL.approve}
+                </>
+              ) : pending.length <= 1 ? (
+                'Approve'
+              ) : (
+                `Approve ${pending.length}`
+              )}
             </button>
             <button
               type="button"
@@ -339,7 +366,7 @@ function ReviewCard({
               disabled={isBusy}
               onClick={onReject}
             >
-              Reject
+              {inFlight === 'reject' ? PENDING_LABEL.reject : 'Reject'}
             </button>
             <button
               type="button"
@@ -347,7 +374,7 @@ function ReviewCard({
               disabled={isBusy}
               onClick={onSendBack}
             >
-              Send back
+              {inFlight === 'send_back' ? PENDING_LABEL.send_back : 'Send back'}
             </button>
           </footer>
         </MutatorOnly>

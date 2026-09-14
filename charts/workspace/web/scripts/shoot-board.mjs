@@ -176,7 +176,26 @@ const METRICS = {
   edited_before_approval: 2, open: 2,
 };
 
-const RUNS = [{
+/**
+ * A run mid-flight, and one that has finished.
+ *
+ * The live one is first because it is the state the Runs tab is hardest to
+ * read and the one the panel exists for: a finished run is a table of settled
+ * rows, which says nothing about whether the surface can show you work
+ * actually moving.
+ */
+const LIVE_RUN = {
+  id: 'run-1786296104-a71b2f05', board_id: 'zendesk-acme', mode: 'propose',
+  status: 'running', concurrency: 2, requested_concurrency: 3,
+  clamp_reason: 'the pod was already running 10 of 12 tasks, so this run got 2 workers',
+  created_at: now - 260, updated_at: now - 3, finished_at: null,
+  error: '', listing_complete: true, truncation_reason: '',
+  total: 5,
+  counts: { pending: 1, claimed: 0, working: 2, done: 1, failed: 1, skipped: 0 },
+  done: 1, failed: 1, skipped: 0,
+};
+
+const RUNS = [LIVE_RUN, {
   id: 'run-1786295532-d33e8337', board_id: 'zendesk-acme', mode: 'propose',
   status: 'done', concurrency: 3, requested_concurrency: 3, clamp_reason: '',
   created_at: now - 1200, updated_at: now - 100, finished_at: now - 100,
@@ -184,6 +203,56 @@ const RUNS = [{
   total: 4, counts: { pending: 0, claimed: 0, working: 0, done: 3, failed: 0, skipped: 1 },
   done: 3, failed: 0, skipped: 1,
 }];
+
+/** The live run's items, deliberately keyed out of order — the panel sorts. */
+const LIVE_RUN_DETAIL = {
+  ...LIVE_RUN,
+  select: { order: 'updated_at asc', limit: 5 },
+  stop_on: { consecutive_failures: 3 },
+  stop_requested: false,
+  consecutive_failures: 0,
+  skipped_already_processed: 5,
+  items: {
+    404: {
+      id: '404', key: '404', title: 'Duplicate charge on annual renewal',
+      url: '', content_hash: 'h4', state: 'done', lease_owner: 'run-1786296104',
+      task_id: 't4', disposition: 'completed',
+      reason: 'refunded the duplicate line and replied to the customer',
+      error: '', writes_used: 2, updated_at: now - 120,
+    },
+    388: {
+      id: '388', key: '388', title: 'Rate-limit headers missing on 429',
+      url: '', content_hash: 'h1', state: 'working', lease_owner: 'run-1786296104',
+      task_id: 't1', disposition: null, reason: '', error: '',
+      writes_used: 0, updated_at: now - 74,
+    },
+    451: {
+      id: '451', key: '451', title: 'Export is broken for some customers',
+      url: '', content_hash: 'h5', state: 'pending', lease_owner: '',
+      task_id: '', disposition: null, reason: '', error: '',
+      writes_used: 0, updated_at: now - 8,
+    },
+    412: {
+      id: '412', key: '412', title: 'VAT applied at the wrong rate for IE customers',
+      url: '', content_hash: 'h2', state: 'working', lease_owner: 'run-1786296104',
+      task_id: 't2', disposition: null, reason: '', error: '',
+      writes_used: 0, updated_at: now - 31,
+    },
+    399: {
+      id: '399', key: '399', title: 'Webhook retries stop after the first 5xx',
+      url: '', content_hash: 'h3', state: 'failed', lease_owner: '',
+      task_id: 't3', disposition: 'failed',
+      reason: '', error: 'the build ended without reporting a disposition',
+      writes_used: 0, updated_at: now - 200,
+    },
+  },
+};
+
+const RUN_DETAIL = {
+  [LIVE_RUN.id]: LIVE_RUN_DETAIL,
+  [RUNS[1].id]: { ...RUNS[1], select: {}, stop_on: {}, stop_requested: false,
+    consecutive_failures: 0, items: {} },
+};
 
 const STRATEGIES = {
   strategies: {
@@ -325,6 +394,13 @@ async function mockBoards(page, boardId, { empty = false, failFetch = false } = 
       items, complete: true, truncation_reason: '', pages_fetched: 1,
     }));
     await page.route(new RegExp(`/api/boards/${b.id}/runs$`), (r) => json(r, { runs: RUNS }));
+    // Registered before the list pattern would otherwise swallow it: opening a
+    // run is what shows the per-item states, which is the whole point of the
+    // live shot.
+    await page.route(new RegExp(`/api/boards/${b.id}/runs/([^/?]+)`), (r) => {
+      const id = decodeURIComponent(new URL(r.request().url()).pathname.split('/runs/')[1] || '');
+      return json(r, RUN_DETAIL[id] || LIVE_RUN_DETAIL);
+    });
     await page.route(new RegExp(`/api/boards/${b.id}/review`), (r) => json(r, REVIEW));
     await page.route(new RegExp(`/api/boards/${b.id}/metrics`), (r) => json(r, METRICS));
     await page.route(new RegExp(`/api/boards/${b.id}/strategies$`), (r) => json(r, STRATEGIES));
@@ -444,6 +520,10 @@ try {
   const shots = [
     { name: 'board-items', tab: 'Items', board: 'github-billing-api', viewport: WIDE },
     { name: 'board-runs', tab: 'Runs', board: 'zendesk-acme', viewport: WIDE },
+    // A run actually in flight, opened: live work sorted to the top, each
+    // state as a pill, and the per-state tally above the table.
+    { name: 'board-run-live', tab: 'Runs', board: 'zendesk-acme', openRun: true,
+      viewport: { width: 1440, height: 1000 } },
     { name: 'board-review', tab: 'Review', board: 'zendesk-acme', viewport: WIDE },
     { name: 'board-credentials', tab: 'Credentials', board: 'zendesk-acme', viewport: WIDE },
     { name: 'board-review-mobile', tab: 'Review', board: 'zendesk-acme',
@@ -466,6 +546,10 @@ try {
     if (s.tab && s.tab !== 'Items') {
       const tab = page.locator('.board-tab', { hasText: s.tab }).first();
       if (await tab.count()) { await tab.click(); await page.waitForTimeout(700); }
+    }
+    if (s.openRun) {
+      const row = page.locator('.board-run-row').first();
+      if (await row.count()) { await row.click(); await page.waitForTimeout(800); }
     }
     if (s.preview) {
       const btn = page.getByRole('button', { name: /what would this work/i }).first();

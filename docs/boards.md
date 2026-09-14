@@ -30,9 +30,10 @@ More in [`screenshots/board-processor/`](screenshots/board-processor/) — the
 whole connect flow screen by screen (`board-connect-*`, walked through
 [below](#connecting-a-board)), the items list with vendor statuses normalized
 (`board-items`), a run with its selection strategy and the "what would this
-work?" preview (`board-runs`, `board-preview`), the credential store that never
-shows a value (`board-credentials`), and the review queue on a phone
-(`board-review-mobile`). Regenerate with
+work?" preview (`board-runs`, `board-preview`), a run **mid-flight** with live
+work sorted to the top of its item table (`board-run-live`), the credential
+store that never shows a value (`board-credentials`), and the review queue on a
+phone (`board-review-mobile`). Regenerate with
 `node scripts/shoot-board.mjs <out-dir>` from `charts/workspace/web`.
 
 ---
