@@ -121,6 +121,16 @@ jobs:
         # The suite is offline — the flaky command is a counter file.
         run: sh devlaptop/retry_test.sh
 
+      - name: Syntax-check backup-user.sh / restore-user.sh
+        run: bash -n scripts/backup-user.sh && bash -n scripts/restore-user.sh
+
+      - name: backup/restore home-volume tests (#579)
+        # backup-user.sh + restore-user.sh reach the cluster only through
+        # kubectl, so the suite shims it on PATH and drives every branch from
+        # env — including the partial-archive and non-empty-volume guards that
+        # decide whether a backup is trustworthy. Offline, no cluster, seconds.
+        run: bash scripts/backup_restore_test.sh
+
       - name: doctor.sh operator-preflight tests (#580)
         # scripts/doctor.sh reaches the cluster only through read-only CLIs, so
         # the suite shims kubectl/helm/dig/git on PATH and drives each check's
