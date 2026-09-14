@@ -26,9 +26,9 @@ vi.mock('../../api/events', () => ({
   eventStreamConnected: { value: false },
 }));
 
-import { CtoConfig, matchesProjectDefaults } from './CtoConfig';
+import { CtoConfig } from './CtoConfig';
 import { config, ctoAssistant, ctoModel, ctoEffort } from '../../store/hypervisor';
-import { projects } from '../../store/projects';
+import { matchesProjectDefaults, projects } from '../../store/projects';
 import type { Project } from '../../api/projects';
 
 const PROJECT: Project = {
