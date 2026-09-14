@@ -28,9 +28,12 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
   `/metrics/prometheus` (see `docs/prometheus-metrics.md`); the controller only
   aggregates, via the same Prometheus the capacity rollup uses — it never calls a
   workspace's HTTP API, so a workspace that is currently stopped still counts.
-  Requires those workspace series to actually be **scraped**: the endpoint is
-  authenticated and no ServiceMonitor ships by default, so until one is
-  configured the panel says so explicitly rather than rendering zeroes. Token
+  Requires those workspace series to actually be **scraped** — opt-in via
+  `controller.metricsScrapeToken` here plus `metrics.podMonitor` in the
+  workspace chart, which renders a PodMonitor and a NetworkPolicy carve-out
+  per workspace and authenticates the scrape with a metrics-only token derived
+  per workspace (never the Claude Task API token). Until that is turned on the
+  panel says so explicitly rather than rendering zeroes. Token
   spend is reported per class (`input` / `cache_read` / `cache_write` /
   `output`) and never as one number, because those bill at very different rates,
   and it is always shown beside how many runs were *measurable at all* — only

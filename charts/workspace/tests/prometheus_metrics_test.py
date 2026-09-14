@@ -856,3 +856,96 @@ class BackwardCompatibilityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MetricsScrapeTokenTests(_ServerTestCase):
+    """The metrics-only scrape credential (#581).
+
+    A Prometheus scrape must not be handed the Claude Task API token: that one
+    is read/write over the whole API, is self-minted onto the PVC rather than
+    into a Secret (so no PodMonitor could reference it), and the user can
+    regenerate it out from under the scraper. KC_METRICS_SCRAPE_TOKEN is the
+    narrow alternative — accepted on the exposition path and nowhere else.
+    """
+
+    SCRAPE = 'derived-scrape-token-for-this-workspace'
+
+    @contextlib.contextmanager
+    def scrape_token(self, value=SCRAPE):
+        prev = os.environ.get('KC_METRICS_SCRAPE_TOKEN')
+        if value is None:
+            os.environ.pop('KC_METRICS_SCRAPE_TOKEN', None)
+        else:
+            os.environ['KC_METRICS_SCRAPE_TOKEN'] = value
+        try:
+            yield
+        finally:
+            if prev is None:
+                os.environ.pop('KC_METRICS_SCRAPE_TOKEN', None)
+            else:
+                os.environ['KC_METRICS_SCRAPE_TOKEN'] = prev
+
+    def test_scrape_token_is_accepted_on_the_exposition(self):
+        with self.scrape_token(), stubbed():
+            with self.get('/metrics/prometheus', token=self.SCRAPE) as r:
+                self.assertEqual(r.status, 200)
+                promparse.assert_valid(r.read().decode('utf-8'), prefix=PREFIX)
+
+    def test_task_api_token_still_works(self):
+        # The scrape credential is additive — it must not displace the existing
+        # one, or the dashboard and every existing client break.
+        with self.scrape_token(), stubbed():
+            with self.get('/metrics/prometheus') as r:
+                self.assertEqual(r.status, 200)
+
+    def test_scrape_token_does_not_open_the_json_metrics_twin(self):
+        # The JSON endpoint exposes more (nested objects, top-N lists) and a
+        # scrape needs none of it, so the wider credential stops at one path.
+        with self.scrape_token():
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/metrics', token=self.SCRAPE)
+            self.assertEqual(ctx.exception.code, 401)
+
+    def test_scrape_token_does_not_open_the_task_api(self):
+        # The whole point of a second credential: it buys read-only metrics,
+        # not the ability to create or kill tasks.
+        with self.scrape_token():
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/api/claude/tasks', token=self.SCRAPE)
+            self.assertEqual(ctx.exception.code, 401)
+
+    def _raw_bearer(self, path, value):
+        """Send a literal `Authorization: Bearer <value>` — including the empty
+        string, which `self.get` would substitute the real token for."""
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}')
+        req.add_header('Authorization', f'Bearer {value}')
+        return urllib.request.urlopen(req, timeout=10)
+
+    def test_an_absent_or_empty_expected_value_never_authenticates(self):
+        # The failure that would matter most: if an unset/blank env var
+        # compared equal to a blank presented credential, deleting the Secret
+        # would quietly make the exposition world-readable rather than closed.
+        for configured in (None, '', '   '):
+            with self.scrape_token(configured):
+                for presented in ('', '   ', 'anything'):
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        self._raw_bearer('/metrics/prometheus', presented)
+                    self.assertEqual(ctx.exception.code, 401,
+                                     f'configured={configured!r} presented={presented!r}')
+
+    def test_wrong_scrape_token_is_refused(self):
+        with self.scrape_token():
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/metrics/prometheus', token=self.SCRAPE + 'x')
+            self.assertEqual(ctx.exception.code, 401)
+
+    def test_token_is_read_from_env_per_request_not_cached(self):
+        # Rotation must take effect on restart without a stale module-level
+        # copy still accepting the withdrawn credential.
+        with self.scrape_token('first'), stubbed():
+            with self.get('/metrics/prometheus', token='first') as r:
+                self.assertEqual(r.status, 200)
+        with self.scrape_token('second'):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get('/metrics/prometheus', token='first')
+            self.assertEqual(ctx.exception.code, 401)

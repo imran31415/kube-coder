@@ -1,0 +1,70 @@
+{{- if .Values.metrics.podMonitor.enabled }}
+{{/*
+PodMonitor: let a Prometheus scrape this workspace's own /metrics/prometheus
+(#581), so the controller can roll agent spend up across the fleet.
+
+WHY A PodMonitor, NOT A ServiceMonitor
+  ServiceMonitor endpoints embed HTTPConfigWithProxyAndTLSFiles, which carries
+  `bearerTokenFile` and `tlsConfig.{caFile,certFile,keyFile}` — paths on the
+  PROMETHEUS container's filesystem. A monitor object living in a tenant
+  namespace that can name a file inside Prometheus is a capability nobody wants
+  here: with the stock chart's `arbitraryFSAccessThroughSMs: false` (permissive
+  default) such a monitor can point Prometheus at its own ServiceAccount token
+  and have it delivered, every scrape interval, to a pod where the tenant has
+  root. That is CVE-2026-47701 / GHSA-cxh2-4639-vmc5 in another operator.
+  PodMonitor embeds HTTPConfigWithProxy, which has NO file fields — so this
+  whole class of mistake is unrepresentable rather than merely discouraged.
+
+WHY THE SECRET IS HERE AND NOT IN THE MONITORING NAMESPACE
+  The Prometheus Operator resolves a monitor's credential from the MONITOR's
+  own namespace (promcfg.go: store.ForNamespace(m.Namespace)), and
+  SecretKeySelector has no namespace field — a cross-namespace ref is
+  structurally impossible. One credential per scrape config is therefore the
+  rule, and per-workspace credentials mean per-workspace monitors. That is the
+  trade taken deliberately: the alternative is one shared token every tenant
+  can read out of its own pod and replay against every other workspace.
+
+WHY THIS OBJECT CAN LIVE IN A TENANT NAMESPACE AT ALL
+  Stock kube-prometheus-stack renders `podMonitorNamespaceSelector: {}` — all
+  namespaces — and `podMonitorSelector: {matchLabels: {release: <release>}}`.
+  So the label below, not the namespace, is what decides whether this is picked
+  up. Get it wrong and there is no error anywhere: the object simply never
+  becomes a target.
+
+NOTE ON WHAT PROMETHEUS STORES
+  The operator inlines credential VALUES as plaintext into the generated
+  prometheus-<name> Secret in the monitoring namespace, so every workspace's
+  derived token ends up concatenated there regardless. The per-workspace
+  derivation buys isolation at the TENANT end — which is where root access
+  lives, and so where the threat is — not inside Prometheus.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ws-{{ .Values.user.name }}-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app: ws-{{ .Values.user.name }}
+  podMetricsEndpoints:
+  # `browser` is the 6080 container port (see service.yaml / deployment.yaml).
+  # Named rather than numeric so a port renumber can't silently scrape nothing.
+  - port: browser
+    path: /metrics/prometheus
+    scheme: http
+    interval: {{ .Values.metrics.podMonitor.interval | default "60s" | quote }}
+    scrapeTimeout: {{ .Values.metrics.podMonitor.scrapeTimeout | default "10s" | quote }}
+    {{- if .Values.metrics.scrapeSecretName }}
+    authorization:
+      type: Bearer
+      credentials:
+        name: {{ .Values.metrics.scrapeSecretName }}
+        key: metrics-scrape-token
+    {{- end }}
+{{- end }}
