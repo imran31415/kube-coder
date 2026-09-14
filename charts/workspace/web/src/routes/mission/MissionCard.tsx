@@ -39,12 +39,15 @@ function timeLabel(card: Card): string {
   return at ? `${rel(now - at)} ago` : '';
 }
 
-/** Route for a card (or a lineage reference by namespaced id). An AI-CTO chat
- *  (persona 'cto') opens the /cto page rather than the plain chat tab (#467);
- *  lineage refs have no persona and fall through to the default. */
-export function cardHref(id: string, persona?: string): string {
+/** Route for a card (or a lineage reference by namespaced id).
+ *
+ *  A CTO chat used to route to the /cto page rather than to the thread (#467),
+ *  because Chat's list excluded CTO threads so the thread URL had nothing to
+ *  open. With one list (#683) every chat card opens its own chat, which is what
+ *  a card pointing at a conversation always meant. */
+export function cardHref(id: string): string {
   const [kind, ref] = id.split(/:(.*)/s);
-  if (kind === 'chat') return persona === 'cto' ? '/cto' : `/hypervisor/${ref}`;
+  if (kind === 'chat') return `/hypervisor/${ref}`;
   return `/tasks/${ref}`;
 }
 
@@ -99,7 +102,7 @@ export function MissionCard({
   const live = card.state === 'running' || card.state === 'waiting';
   const isTask = card.kind !== 'chat';
   const isCto = card.persona === 'cto';
-  const open = () => navigate(cardHref(card.id, card.persona));
+  const open = () => navigate(cardHref(card.id));
   const select = onSelect ? () => onSelect(card.id) : open;
 
   async function onKill() {

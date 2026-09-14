@@ -18,13 +18,14 @@ export interface ServerMode {
    *  demo deploy), MutatorOnly renders mutation controls disabled instead of
    *  hiding them, so visitors see the full UI. The server still 403s writes. */
   demoShowAll?: boolean;
-  /** AI CTO feature gate (#467). Undefined/true → the /cto nav item + route
-   *  are shown; false hides them (deployment set `cto.enabled: false`, or the
-   *  Hypervisor it rides is off). */
+  /** AI CTO feature gate (#467). Re-read in #683 as "CTO mode is offered"
+   *  rather than "the /cto page exists": undefined/true → Chat shows the Mode
+   *  picker and the Feed is a nav item; false hides both (deployment set
+   *  `cto.enabled: false`, or the Hypervisor it rides is off). */
   ctoEnabled?: boolean;
   /** devcontainer.json support (#594). Independent of ctoEnabled — reading a
    *  repo's own environment file is a workspace capability, not part of the
-   *  CTO page. False hides the Dev container card and 404s /api/devcontainer*. */
+   *  AI CTO. False hides the Dev container card and 404s /api/devcontainer*. */
   devcontainerEnabled?: boolean;
   /** Board Processor (#588/#589). Independent of ctoEnabled — working an
    *  external tracker and running an AI CTO over our own projects are separate

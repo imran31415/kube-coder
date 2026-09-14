@@ -8,7 +8,6 @@ import {
   selectedEffort,
   selectedModel,
   selectedProject,
-  setChatContext,
   threads as threadStore,
 } from '../../store/hypervisor';
 import { _resetProjectsForTest } from '../../store/projects';
@@ -106,7 +105,6 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   localStorage.clear();
   closeThread();
-  setChatContext('', null);
   _resetProjectsForTest();
   navigate('/hypervisor');
 });

@@ -91,7 +91,7 @@ const CONFIG = {
   readOnly: false,
 };
 
-async function mockChat(page) {
+async function mockChat(page, opts = {}) {
   const json = (r, body) => r.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
   await page.route('**/api/projects/_discover', (r) => json(r, { candidates: [], registered: [] }));
   await page.route('**/api/projects/kube-coder/brief', (r) => json(r, BRIEF));
@@ -101,7 +101,12 @@ async function mockChat(page) {
   await page.route(/\/api\/hypervisor\/threads\/[^/?]+/, (r) =>
     json(r, { thread: THREADS[0], events: EVENTS, source: 'session_log' }),
   );
-  await page.route('**/api/hypervisor/threads**', (r) => json(r, { threads: THREADS }));
+  await page.route('**/api/hypervisor/threads**', (r) =>
+    json(r, { threads: opts.threads ?? THREADS }),
+  );
+  await page.route('**/api/subscriptions', (r) =>
+    json(r, { subscriptions: {}, claude_ready: true }),
+  );
   await page.route('**/api/workspace/dirs', (r) => json(r, { dirs: [{ path: '/home/dev/kube-coder', label: 'kube-coder', is_git: true }] }));
   await page.route('**/api/tasks**', (r) => json(r, { tasks: [] }));
   await page.route('**/api/mode', (r) => json(r, { readOnly: false, authed: true, authMode: 'basic', ctoEnabled: true }));
@@ -128,13 +133,18 @@ try {
     // The brief is a bottom sheet on a phone rather than a third column, so
     // open it — a shot of the closed sheet shows nothing about the brief.
     { name: 'chat-brief-sheet-mobile-dark', path: '/hypervisor/c_plan', viewport: { width: 390, height: 844 }, theme: 'dark', openBrief: true },
+    // The AI CTO's front door, now reached by the /cto redirect rather than by
+    // a page of its own: Chat, CTO mode pre-selected, its welcome in the
+    // transcript's centring slot.
+    { name: 'chat-cto-welcome-desktop-dark', path: '/cto', viewport: { width: 1440, height: 900 }, theme: 'dark', threads: [] },
+    { name: 'chat-cto-welcome-desktop-light', path: '/cto', viewport: { width: 1440, height: 900 }, theme: 'light', threads: [] },
   ];
   for (const s of shots) {
     const ctx = await browser.newContext({
       viewport: s.viewport, deviceScaleFactor: 2, colorScheme: s.theme,
     });
     const page = await ctx.newPage();
-    await mockChat(page);
+    await mockChat(page, { threads: s.threads });
     await page.goto(`${BASE}${s.path}`, { waitUntil: 'load' });
     await page.waitForSelector('.route-hypervisor', { timeout: 15000 });
     await page.evaluate((theme) => {

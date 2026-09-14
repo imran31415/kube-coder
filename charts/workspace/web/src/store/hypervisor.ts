@@ -37,42 +37,20 @@ export const threads = signal<HypervisorThread[]>([]);
 export const threadsLoading = signal(false);
 
 /**
- * Chat "surface" context (#466). Lets the AI CTO page reuse this store + the
- * `<Chat/>` component without forking: when a route sets persona='cto' + a
- * project, new threads are created bound to that persona/project and the thread
- * list is filtered to it. The default ('' / null) is the plain Hypervisor tab,
- * whose list is now every thread regardless of persona (#683) — the modes are a
- * badge + chip in the sidebar, not two disjoint lists.
- * The CTO route sets this on mount and resets it on unmount.
- */
-export const chatPersona = signal<string>('');
-export const chatProjectId = signal<string | null>(null);
-
-export function setChatContext(persona: string, projectId: string | null): void {
-  chatPersona.value = persona;
-  chatProjectId.value = projectId;
-}
-
-/**
- * The mode a NEW chat started from the Chat tab will carry (#683) — '' for a
- * plain workspace chat, 'cto' for an AI CTO one. Exactly the same two-mode
- * behaviour as the Agent / Folder / Project pickers: it sets what the *next*
- * new chat gets, and an already-open thread is unaffected.
+ * The mode a NEW chat will carry (#683) — '' for a plain workspace chat, 'cto'
+ * for an AI CTO one. Exactly the same two-mode behaviour as the Agent / Folder
+ * / Project pickers: it sets what the *next* new chat gets, and an already-open
+ * thread is unaffected.
  *
  * Creation-time only, deliberately. The preamble that defines a mode is handed
  * to the agent once, via --append-system-prompt on turn 1, so a thread that
  * switched mid-flight would have two identities and no honest way to show it.
+ *
+ * This replaced the `chatPersona` / `chatProjectId` "surface context" the AI CTO
+ * page set on mount: with one chat surface there is no second surface holding a
+ * competing selection, so the mode is just another new-chat default.
  */
 export const newChatMode = signal<string>('');
-
-/**
- * The persona a new thread on the CURRENT surface gets: the embedding route's
- * context (the CTO page sets 'cto' for as long as it exists), else the Chat
- * tab's own Mode picker.
- */
-export function surfacePersona(): string {
-  return chatPersona.value || newChatMode.value;
-}
 
 /** Soft-deleted threads, shown in the "Recently deleted" section so an
  *  accidental delete can be restored. Loaded lazily when the user expands it. */
@@ -110,24 +88,9 @@ export const selectedModel = signal<string>('');
  *  acts on that thread instead (setActiveThreadEffort). */
 export const selectedEffort = signal<string>('');
 
-/**
- * The AI CTO's OWN assistant/model/effort (#483). Deliberately separate from
- * the three signals above: the CTO page reuses this store, and before this it
- * inherited whatever the Chat tab happened to have selected — so a model picked
- * for a throwaway chat silently became the CTO's. These are seeded from the
- * selected project's defaults (falling back to the workspace default) and are
- * what sendMessage passes when the surface is the CTO.
- */
-export const ctoAssistant = signal<string>('');
-export const ctoModel = signal<string>('');
-export const ctoEffort = signal<string>('');
-
-/** The project a NEW chat on the Chat tab is filed into (#358) — '' for none,
- *  which stays the default so a workspace with no projects is unchanged. The
- *  CTO surface has its own binding (chatProjectId, set by the CTO page), so the
- *  two never borrow each other's — same split as assistant/model/effort (#483).
- *  For an already-open chat the picker re-files that chat instead
- *  (setActiveThreadProject). */
+/** The project a NEW chat is filed into (#358) — '' for none, which stays the
+ *  default so a workspace with no projects is unchanged. For an already-open
+ *  chat the picker re-files that chat instead (setActiveThreadProject). */
 export const selectedProject = signal<string>('');
 
 /** The folder a NEW thread starts in (#345) — seeded from config.workdir (the
@@ -183,13 +146,6 @@ export function setSelectedAssistant(assistantId: string): void {
   selectedEffort.value = assistantEffortDefault(assistantId);
 }
 
-/** Same, for the CTO surface's own selection (#483). */
-export function setCtoAssistant(assistantId: string): void {
-  ctoAssistant.value = assistantId;
-  ctoModel.value = assistantModels(assistantId)[0] ?? '';
-  ctoEffort.value = assistantEffortDefault(assistantId);
-}
-
 /** A project's stored assistant configuration (#483/#362) — the three fields on
  *  the project record, absent/'' meaning "inherit the workspace default". */
 export interface ProjectDefaults {
@@ -227,21 +183,11 @@ export function resolveProjectDefaults(project: ProjectDefaults | null): {
   return { assistant, model, effort };
 }
 
-/** Seed the CTO page's own selection from a project (#483). Called whenever the
- *  rail's selected project changes. */
-export function seedCtoConfig(project: ProjectDefaults | null): void {
-  const next = resolveProjectDefaults(project);
-  ctoAssistant.value = next.assistant;
-  ctoModel.value = next.model;
-  ctoEffort.value = next.effort;
-}
-
 /**
- * Seed CHAT's new-chat selection from a project (#683) — the same idea, applied
- * to the pickers a user actually has in front of them now that the CTO page's
- * gear is going away. Only meaningful with no chat open: an existing chat
- * carries its own assistant and model, and re-seeding would silently overrule
- * them.
+ * Seed Chat's new-chat selection from a project (#683/#483) — the pickers a
+ * user actually has in front of them. Only meaningful with no chat open: an
+ * existing chat carries its own assistant and model, and re-seeding would
+ * silently overrule them.
  */
 export function seedChatConfig(project: ProjectDefaults | null): void {
   const next = resolveProjectDefaults(project);
@@ -250,40 +196,11 @@ export function seedChatConfig(project: ProjectDefaults | null): void {
   selectedEffort.value = next.effort;
 }
 
-/** True when the AI CTO PAGE is driving this store — which is what the #483
- *  assistant/model/effort/project split keys off, because that page carries its
- *  own pickers. Chat's Mode picker introduces no second set of pickers, so a
- *  CTO-mode chat started from Chat uses Chat's own selection. */
-export function isCtoSurface(): boolean {
-  return chatPersona.value === 'cto';
-}
-
-/** True when the chat being composed is an AI CTO one, however it got there —
- *  the CTO page's context or Chat's Mode picker (#683). This is what decides
- *  the persona, the workdir rule, and the Claude-credential gate. */
+/** True when the chat being composed is an AI CTO one (#683) — what decides the
+ *  persona sent at creation, the project-resolved workdir, and the
+ *  Claude-credential gate. */
 export function isCtoChat(): boolean {
-  return surfacePersona() === 'cto';
-}
-
-/** The assistant/model/effort a NEW thread on the CURRENT surface will use.
- *  Reading through these (rather than the raw signals) is what keeps the CTO
- *  and the Chat tab from borrowing each other's selection (#483). */
-export function surfaceAssistant(): string {
-  return isCtoSurface() ? ctoAssistant.value : selectedAssistant.value;
-}
-
-export function surfaceModel(): string {
-  return isCtoSurface() ? ctoModel.value : selectedModel.value;
-}
-
-export function surfaceEffort(): string {
-  return isCtoSurface() ? ctoEffort.value : selectedEffort.value;
-}
-
-/** The project a NEW chat on the CURRENT surface is filed into (#358): the CTO
- *  page's selected project, or the Chat tab's own picker. */
-export function surfaceProjectId(): string {
-  return (isCtoSurface() ? chatProjectId.value : selectedProject.value) || '';
+  return newChatMode.value === 'cto';
 }
 
 /** Live workspace "entities" surfaced as chips in the chat — currently the
@@ -319,9 +236,6 @@ export async function initHypervisor(): Promise<void> {
     if (!selectedEffort.value) {
       selectedEffort.value = assistantEffortDefault(selectedAssistant.value);
     }
-    // The CTO surface reseeds from its project (seedCtoConfig) as soon as one is
-    // selected; this only covers the gap before that lands (#483).
-    if (!ctoAssistant.value) seedCtoConfig(null);
     if (!selectedWorkdir.value) {
       selectedWorkdir.value = cfg.workdir || '';
     }
@@ -334,18 +248,12 @@ export async function initHypervisor(): Promise<void> {
 export async function refreshThreads(): Promise<void> {
   threadsLoading.value = true;
   try {
-    // ONE list (#683). The CTO page still scopes itself to its persona (+ the
-    // project its rail has selected) for as long as that page exists; Chat asks
-    // for everything and does its own mode filtering client-side
-    // (routes/hypervisor/threadMode.ts). Chat used to send `persona=default`,
-    // which made the two lists disjoint — so a CTO thread was invisible to
-    // every thread-management affordance Chat has (rename, trash, Active/Past,
-    // project groups) and #663 had to ask for them a second time.
-    const filter =
-      chatPersona.value === 'cto'
-        ? { persona: 'cto' as const, project: chatProjectId.value ?? undefined }
-        : undefined;
-    threads.value = await listThreads(filter);
+    // ONE list (#683). Every thread, whatever its persona; the modes are a
+    // badge + a filter chip in the sidebar (routes/hypervisor/threadMode.ts),
+    // not two disjoint lists. Chat used to send `persona=default` and the AI
+    // CTO page `persona=cto`, which made a CTO thread invisible to every
+    // thread-management affordance Chat has — #663, by construction.
+    threads.value = await listThreads();
   } catch {
     /* keep last-good list */
   } finally {
@@ -423,9 +331,9 @@ async function pollActive(): Promise<void> {
 export async function openThread(id: string): Promise<void> {
   activeThreadId.value = id;
   // Remember the last-open chat so a later bare visit (returning to the app,
-  // clicking the tab) can reopen it — see store/lastSession.ts. Keyed by
-  // surface so the CTO page and the Chat tab restore independently (#466).
-  rememberLastSession(chatPersona.value === 'cto' ? 'cto' : 'hypervisor', id);
+  // clicking the tab) can reopen it — see store/lastSession.ts. One surface, so
+  // one key (#683); the CTO page's separate 'cto' key went with the page.
+  rememberLastSession('hypervisor', id);
   events.value = [];
   activeStatus.value = '';
   transcriptSource.value = null;
@@ -471,11 +379,9 @@ export async function sendMessage(text: string): Promise<void> {
     if (!activeThreadId.value) {
       const thread = await createThread({
         message: trimmed,
-        // Surface-scoped (#483): the CTO uses its own project-seeded selection,
-        // the Chat tab its own — neither borrows the other's.
-        assistant: surfaceAssistant() || undefined,
-        model: surfaceModel() || undefined,
-        effort: surfaceEffort() || undefined,
+        assistant: selectedAssistant.value || undefined,
+        model: selectedModel.value || undefined,
+        effort: selectedEffort.value || undefined,
         // A CTO thread omits the workdir so the server defaults it to the bound
         // project's first workdir; a plain chat sends the picker's folder. Sending
         // the picker's /home/dev default would defeat the server's project
@@ -485,13 +391,11 @@ export async function sendMessage(text: string): Promise<void> {
         // Sending the picker's /home/dev default would defeat the server's
         // project default (its `not workdir` guard would never fire).
         workdir: isCtoChat() ? undefined : selectedWorkdir.value || undefined,
-        // AI CTO (#465): bind new threads to the CTO persona when the CTO page
-        // set that context or Chat's Mode picker is on CTO (#683); undefined
-        // (a plain chat) otherwise.
-        persona: surfacePersona() || undefined,
-        // The project binding is surface-scoped (#358): the CTO page's project,
-        // or the Chat tab's own picker — undefined when neither is set.
-        project_id: surfaceProjectId() || undefined,
+        // AI CTO (#465): bind new threads to the CTO persona when the Mode
+        // picker says so (#683); undefined (a plain chat) otherwise.
+        persona: newChatMode.value || undefined,
+        // The project this chat is filed into (#358) — undefined when none.
+        project_id: selectedProject.value || undefined,
       });
       await refreshThreads();
       await openThread(thread.id);
@@ -559,9 +463,7 @@ export async function renameThreadTitle(id: string, title: string): Promise<void
 export async function setActiveThreadModel(model: string): Promise<void> {
   const id = activeThreadId.value;
   if (!id) {
-    // Move the current surface's new-chat default, not the other's (#483).
-    if (isCtoSurface()) ctoModel.value = model;
-    else selectedModel.value = model;
+    selectedModel.value = model;
     return;
   }
   const prev = threads.value;
@@ -580,8 +482,7 @@ export async function setActiveThreadModel(model: string): Promise<void> {
 export async function setActiveThreadEffort(effort: string): Promise<void> {
   const id = activeThreadId.value;
   if (!id) {
-    if (isCtoSurface()) ctoEffort.value = effort;
-    else selectedEffort.value = effort;
+    selectedEffort.value = effort;
     return;
   }
   const prev = threads.value;
@@ -604,9 +505,7 @@ export async function setActiveThreadEffort(effort: string): Promise<void> {
 export async function setActiveThreadProject(projectId: string): Promise<void> {
   const id = activeThreadId.value;
   if (!id) {
-    // Never move the CTO's project from here — that selection belongs to the
-    // CTO page's rail (#483's split, applied to the project binding).
-    if (!isCtoSurface()) selectedProject.value = projectId;
+    selectedProject.value = projectId;
     return;
   }
   const prev = threads.value;
@@ -630,8 +529,7 @@ export async function removeThread(id: string): Promise<void> {
     /* best effort */
   }
   if (activeThreadId.value === id) closeThread();
-  // Forget the surface's own last-session key (openThread keyed it by persona).
-  forgetLastSession(chatPersona.value === 'cto' ? 'cto' : 'hypervisor', id);
+  forgetLastSession('hypervisor', id);
   await refreshThreads();
   // Keep the trash view in sync only if it's been loaded at least once.
   if (deletedThreads.value.length > 0) await refreshDeletedThreads();
