@@ -23,27 +23,101 @@ TOKEN=$(cat /home/dev/.claude-tasks/.api-token)
 curl -H "Authorization: Bearer $TOKEN" localhost:6080/metrics/prometheus
 ```
 
-With the Prometheus Operator:
+With the Prometheus Operator, **the chart renders the monitor object for you** —
+you do not hand-write one. Turn both halves on:
 
 ```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: kube-coder-workspace
-spec:
-  selector:
-    matchLabels: { app: workspace }        # your workspace Service labels
-  endpoints:
-    - port: http                            # the 6080 port
-      path: /metrics/prometheus
-      interval: 30s
-      authorization:
-        credentials:
-          # one Secret per workspace — the token is per-workspace state on the
-          # PVC, not a cluster-wide credential
-          name: <workspace>-claude-api-token
-          key: token
+# controller values — mints the master scrape token (once, for the cluster)
+controller:
+  metricsScrapeToken:
+    enabled: true
+
+# workspace values — per workspace
+metrics:
+  scrapeSecretName: kc-metrics-scrape
+  podMonitor:
+    enabled: true
+    labels:
+      release: prometheus     # MUST match your Prometheus CR's podMonitorSelector
 ```
+
+Then re-run `scripts/ensure-workspace-namespace.sh` (or `make deploy USER=<u>`)
+so the namespace is seeded with its derived token.
+
+### How the credential works, and why it is not the API token
+
+A scrape authenticates with a **metrics-only** bearer token, never the Claude
+Task API token above. Three reasons the API token cannot do this job:
+
+* it is read/write over the whole API — the same string that reads a counter
+  can create and kill tasks;
+* it is self-minted onto the PVC at runtime, so it is not a Kubernetes Secret,
+  and the Prometheus Operator can only reference a Secret;
+* `POST /api/claude/auth/token/regenerate` would silently break every later
+  scrape.
+
+The scrape token is derived per workspace instead:
+
+```
+metrics-scrape-token = HMAC-SHA256(master, "kc-metrics-scrape/<user>")
+```
+
+`scripts/ensure-workspace-namespace.sh` computes it and writes it to a Secret in
+the workspace's own namespace; the pod mounts it as `KC_METRICS_SCRAPE_TOKEN`
+and `check_metrics_auth` accepts it on `/metrics/prometheus` and nowhere else.
+The master never enters a tenant namespace, so a token read out of one
+workspace — where the user has root — scrapes that workspace alone. This is the
+same derivation the self-serve update token uses, for the same reason.
+
+### Why the Secret lives in the workspace namespace
+
+Because it has to. The Operator resolves a monitor's credential from the
+**monitor object's own namespace** (`promcfg.go`: `store.ForNamespace(m.Namespace)`),
+and `SecretKeySelector` has no `namespace` field, so a cross-namespace
+reference is structurally impossible. One credential per scrape config is the
+rule — which is exactly why per-workspace credentials imply per-workspace
+monitor objects. The alternative, one shared token, is a token every tenant can
+read out of its own pod and replay against every other workspace.
+
+Note that the Operator inlines credential *values* as plaintext into the
+generated `prometheus-<name>` Secret in the monitoring namespace, so all the
+derived tokens end up concatenated there regardless. The derivation buys
+isolation at the tenant end — where root access lives, and so where the threat
+is — not inside Prometheus.
+
+### Why PodMonitor and not ServiceMonitor
+
+`ServiceMonitor` endpoints can name files on the **Prometheus container's**
+filesystem (`bearerTokenFile`, `tlsConfig.caFile`, …). A monitor object that
+lives in a tenant namespace and can do that is a capability worth removing: with
+kube-prometheus-stack's default `arbitraryFSAccessThroughSMs: false`
+(permissive), such a monitor can point Prometheus at its own ServiceAccount
+token and have it delivered, every scrape interval, to a pod where the tenant
+is root. That is CVE-2026-47701 / GHSA-cxh2-4639-vmc5 in another operator.
+`PodMonitor` embeds a config type with no file fields at all, so the mistake is
+unrepresentable rather than merely discouraged.
+
+Worth asking whoever owns your Prometheus install to set
+`prometheus.prometheusSpec.arbitraryFSAccessThroughSMs: true` anyway — it is a
+one-line values change and it closes that hole for every other tenant too.
+
+### Two ways this silently scrapes nothing
+
+Neither produces an error anywhere, so check both if the fleet rollup stays
+empty:
+
+1. **The selector label is wrong.** Stock kube-prometheus-stack renders
+   `podMonitorSelector: {matchLabels: {release: <helm release name>}}`. If your
+   release is not called `prometheus`, override `metrics.podMonitor.labels`.
+   Confirm with `kubectl get prometheus -A -o jsonpath='{..podMonitorSelector}'`.
+2. **The network path is closed.** The workspace's ingress NetworkPolicy denies
+   everything except `ingress-nginx`. Enabling `metrics.podMonitor` adds a
+   second rule admitting the Prometheus pod on 6080 only; point
+   `metrics.prometheusNamespace` / `metrics.prometheusPodLabels` at your actual
+   install if it is not `default` / `app.kubernetes.io/name: prometheus`. The
+   carve-out follows `metrics.podMonitor.enabled` — if you scrape these pods
+   some other way (your own `ScrapeConfig`, say), leave it enabled so the
+   network rule is rendered and simply let the PodMonitor go unselected.
 
 ## Fleet rollup in the controller
 
@@ -53,12 +127,10 @@ insights (issue #581). The controller queries the same Prometheus it already
 uses for capacity — it never calls a workspace's own HTTP API, so a workspace
 that is stopped still contributes its history.
 
-Two things this depends on, and neither is automatic:
+Two things this depends on, and neither is on by default:
 
-1. **Something has to scrape the workspaces.** The chart ships no ServiceMonitor
-   (the endpoint is authenticated with a per-workspace token that lives on the
-   PVC, not in a Secret, so a generic one would not work) — use the
-   ServiceMonitor above, one Secret per workspace. Until then `/api/spend`
+1. **The workspaces have to be scraped** — `controller.metricsScrapeToken` and
+   the workspace's `metrics.podMonitor`, both above. Until they are, `/api/spend`
    reports `scrapeHint` and the console says no workspace is exporting spend
    metrics, rather than showing a total of zero.
 2. **`PROMETHEUS_URL` has to be set on the controller.** Unset, `_prom_get`

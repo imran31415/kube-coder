@@ -387,6 +387,21 @@ spec:
               name: {{ .Values.update.selfServeSecretName }}
               key: self-serve-token
         {{- end }}
+        {{- if .Values.metrics.scrapeSecretName }}
+        # Metrics-only bearer token a Prometheus scrape presents to
+        # /metrics/prometheus (#581). Deliberately NOT the Claude Task API
+        # token: that one is read/write over the whole API, lives on the PVC
+        # rather than in a Secret (so no PodMonitor could reference it), and is
+        # user-regenerable. This value is the per-workspace derivation
+        # HMAC-SHA256(master, "kc-metrics-scrape/<user>") seeded by
+        # scripts/ensure-workspace-namespace.sh; check_metrics_auth accepts it
+        # on that one path and nowhere else.
+        - name: KC_METRICS_SCRAPE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.metrics.scrapeSecretName }}
+              key: metrics-scrape-token
+        {{- end }}
         # DEMO_SHOW_ALL=true makes the SPA render mutation UI (dimmed +
         # click-intercepted) instead of hiding it, so the public demo shows
         # the full surface. Server still 403s every write. Presentation-only;

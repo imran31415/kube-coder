@@ -50,3 +50,25 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
+{{- if .Values.metrics.podMonitor.enabled }}
+  # Prometheus scrape of /metrics/prometheus (#581). A SECOND rule rather than
+  # another peer on the rule above, because this one is port-scoped: the
+  # ingress-nginx rule deliberately carries no `ports:` (the controller fronts
+  # every port), while a scraper has business with 6080 and nothing else. A
+  # NetworkPolicy ORs its rules, so adding this widens the allow-list by
+  # exactly one pod-selector on exactly one port.
+  #
+  # This is required, not optional: without it the endpoint is unreachable from
+  # any monitoring namespace and the scrape silently yields nothing — the
+  # policy above denies all ingress except from ingress-nginx.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.metrics.prometheusNamespace | default "default" }}
+      podSelector:
+        matchLabels:
+          {{- toYaml (.Values.metrics.prometheusPodLabels | default (dict "app.kubernetes.io/name" "prometheus")) | nindent 10 }}
+    ports:
+    - protocol: TCP
+      port: 6080
+{{- end }}

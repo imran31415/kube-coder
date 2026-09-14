@@ -1510,7 +1510,10 @@ class FleetSpendTest(unittest.TestCase):
     def test_nothing_scraped_is_distinguished_from_no_spend(self):
         out = self._run({})
         self.assertIsNone(out['metricsError'])
-        self.assertIn('/metrics/prometheus', out['scrapeHint'])
+        # The hint has to name the remedy, not just the symptom — an operator
+        # reading "no series" with no next step re-reads it as "no spend".
+        self.assertIn('metrics.podMonitor.enabled', out['scrapeHint'])
+        self.assertIn('metricsScrapeToken', out['scrapeHint'])
 
     def test_window_is_clamped_and_reported(self):
         controller.prom_instant_multi = lambda expr: []
