@@ -24,7 +24,8 @@ from unittest import mock
 # Import mcp_agent_orchestrator.py from the parent directory.
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-import mcp_agent_orchestrator as orch  # noqa: E402
+import mcp_agent_orchestrator as orch
+import runtimes  # noqa: E402
 
 
 def _tmux_alive(*args, **kwargs):
@@ -59,7 +60,7 @@ class AssistantCommandTests(unittest.TestCase):
         self.assertEqual(cmd, 'codex --dangerously-bypass-approvals-and-sandbox')
 
     def test_codex_is_headless_capable_and_listed(self):
-        self.assertIn('codex', orch._HEADLESS_CAPABLE)
+        self.assertTrue(runtimes.is_headless_capable('codex'))
         self.assertIn('codex', {a['id'] for a in orch._ASSISTANTS_LIST})
 
     def test_headless_antigravity_has_print_and_skip_permissions(self):
