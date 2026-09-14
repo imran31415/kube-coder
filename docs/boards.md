@@ -469,6 +469,16 @@ An item needing a human emits a waiting `FeedManager` item, which drives both
 the feed row and the topbar waiting badge. `board:<board_id>:<item_id>` links
 deep-link to the card.
 
+That ref has **two** colons, and the item id may contain more of them — a
+GitHub GraphQL global id is `I_kwDOA:4102`. Both clients therefore split off
+the board id only and take the rest verbatim: `web/src/routes/feed/FeedItem.tsx`
+builds `/board?board=&review=`, and `mobile/src/util/feed.ts` returns a board
+target that `src/store/boardFocus.ts` hands to `BoardScreen`. A push carries the
+same ref in `data.ref`, so a notification tap and a feed chip land in the same
+place. Mobile passes the ids through **unencoded** — they go into a plain object
+and are matched against `item_id` literally, where the web's query string has
+to encode them.
+
 **Mobile leads this design.** Approving five staged replies from a phone is the
 realistic workflow; running a board from a phone is not — so `BoardScreen`
 carries the queue and the decisions and nothing else. Decisions go through a
@@ -476,6 +486,12 @@ local AsyncStorage queue that drains opportunistically (there is no NetInfo
 dependency, so nothing can react to reconnection) and reuses one `approval_id`
 across every retry. A 409 is terminal in that queue: a stale approval must not
 be retried, because the point of the guard is that a human looks again.
+
+Every control on that screen is at least **44pt** tall (the iOS minimum) and
+carries an `accessibilityLabel`; the drawer shows a count of board items
+awaiting a decision, counted from the **feed** on open — never polled, and never
+from the boards API, because listing board items spends someone else's rate
+limit and a badge is not worth that (#692).
 
 Push notification now rides the **same** signal as the feed: `FeedManager.emit`
 dispatches an Expo push for the high-signal items — `waiting=True` (an agent is
@@ -614,9 +630,18 @@ down.
 
 ## Not yet built
 
-Mobile **push** needs its own issue — there is no `expo-notifications` in the
-app, so the signal rides the feed and in-app polling. Dollar caps stay blocked
-on #573; per-run budgets remain in tokens.
+**Cold start from a notification.** Nothing calls
+`getLastNotificationResponseAsync()`, so a tap that launches the app from
+scratch lands on the default screen rather than the item — for every ref kind,
+not just `board:`. The focus store makes the fix two lines (park the target,
+replay it after boot); it is not done.
+
+**iPad.** The app has no tablet layout anywhere, so the review card runs the
+full width of a 1024pt viewport. Capping the list
+(`contentContainerStyle: { maxWidth: 700, alignSelf: 'center' }`) is the whole
+fix, if it turns out to matter.
+
+Dollar caps stay blocked on #573; per-run budgets remain in tokens.
 
 ---
 
@@ -687,3 +712,13 @@ cd mobile && npm run typecheck && npm test
   connector, and never reports a fetch that did not happen
 - `mobile/src/util/approvalQueue.test.ts` — enqueue, drain, and that a retry
   reuses one `approval_id`
+- `mobile/src/util/feed.test.ts` · `mobile/src/util/push.test.ts` —
+  `board:` refs, including an item id that contains colons, and the malformed
+  forms that must fall back to the Feed rather than to half a target
+- `mobile/src/store/boardFocus.test.ts` — the deep-link handoff, and that the
+  **second** of two quick taps wins
+- `mobile/scripts/check-board.mjs` — a **local** Playwright gate (like
+  `check-nav.mjs`; neither runs in CI) over the Expo web export: the drawer
+  badge, the 44pt targets, the type scale, the send-back modal, and the feed
+  chip landing on the card its ref names. Run it with
+  `npm run check:board`

@@ -70,3 +70,30 @@ describe('FeedItemView', () => {
     expect(discussed).toHaveBeenCalledOnce();
   });
 });
+
+describe('FeedItemView · board refs', () => {
+  /* The mobile app mirrors this parser exactly (#692), so the shape it copies
+     is worth pinning on both sides: only the board id is split off, and the
+     item id is whatever follows — colons and all. */
+  it('resolves a board: ref to the item it names', () => {
+    render(
+      <FeedItemView
+        item={item({ links: [{ label: 'Open item', ref: 'board:acme-jira:812' }] })}
+      />,
+    );
+    fireEvent.click(screen.getByText('Open item'));
+    expect(navigate).toHaveBeenCalledWith('/board?board=acme-jira&review=812');
+  });
+
+  it('keeps a colon-bearing item id whole', () => {
+    // A GitHub GraphQL global id. Splitting on every colon would send the
+    // reviewer to a queue position that does not exist.
+    render(
+      <FeedItemView
+        item={item({ links: [{ label: 'Open item', ref: 'board:gh:I_kwDOA:4102' }] })}
+      />,
+    );
+    fireEvent.click(screen.getByText('Open item'));
+    expect(navigate).toHaveBeenCalledWith('/board?board=gh&review=I_kwDOA%3A4102');
+  });
+});

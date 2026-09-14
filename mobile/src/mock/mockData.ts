@@ -808,6 +808,17 @@ export function mockFeed(): FeedItem[] {
       links: [{ label: 'Open task', ref: 'task:d4e5f6' }], waiting: true, read: true,
     },
     {
+      // The demo build's only board deep link. It points at the SECOND board
+      // and at an item id that contains a colon — a GitHub GraphQL global id —
+      // so following it exercises the board switch and the ref split, not the
+      // trivial case where the target is already on screen (#692).
+      id: 'fd_5', ts: NOW - 2700, kind: 'activity', title: 'kube-coder#4102 needs your review',
+      body_md: 'reproduced on 1.60.2; the patch is a one-line guard',
+      source: 'board:kube-coder-gh', project_id: 'kube-coder',
+      links: [{ label: 'Board runs OOM a 4GiB workspace', ref: 'board:kube-coder-gh:I_kwDOA:4102' }],
+      waiting: true, read: false,
+    },
+    {
       id: 'fd_4', ts: NOW - 90000, kind: 'decision', title: 'SSE over websockets — matches the rest of the stack',
       body_md: '', source: 'system:memory', project_id: 'kube-coder',
       links: [{ label: 'View decision', ref: 'memory:project.kube-coder.decisions/sse' }], waiting: false, read: true,
@@ -1072,6 +1083,35 @@ export const mockBoardReview: BoardReviewItem[] = [
     decided_by: '',
     created_at: NOW - 3600 * 3,
     updated_at: NOW - 3600 * 3,
+  },
+  {
+    board_id: 'kube-coder-gh',
+    // A GitHub GraphQL global id: it contains a colon, which is exactly what
+    // the "board:<board_id>:<item_id>" ref has to survive.
+    item_id: 'I_kwDOA:4102',
+    item_key: '#4102',
+    item_title: 'Board runs OOM a 4GiB workspace',
+    item_url: 'https://github.com/imran31415/kube-coder/issues/4102',
+    content_hash: 'cd90ef12',
+    state: 'pending',
+    disposition: 'needs_review',
+    reason: 'reproduced on 1.60.2; concurrent agents exceed the memory limit',
+    evidence: { tool_calls: 7, tests: '18 passed' },
+    actions: [],
+    pending_actions: [
+      {
+        id: 'a3',
+        action: 'comment',
+        params: { body: 'Reproduced — the default concurrency of 3 exceeds a 4GiB limit. Guarding it in #4110.' },
+        preview: 'Reproduced — the default concurrency of 3 exceeds a 4GiB limit. Guarding it in #4110.',
+        writes: 1,
+        state: 'pending',
+      },
+    ],
+    open: true,
+    decided_by: '',
+    created_at: NOW - 3600 * 5,
+    updated_at: NOW - 3600 * 5,
   },
   {
     board_id: 'acme-jira',

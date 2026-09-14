@@ -11,68 +11,35 @@
  * verifies the element is actually topmost (elementFromPoint), not merely
  * present.
  *
- * Prereq:  EXPO_PUBLIC_MOCK=1 npx expo export --platform web   (writes dist/)
+ * The hit-test helpers live in scripts/lib/harness.mjs, shared with
+ * check-board.mjs — this file's private copies had drifted (no waitVisible, so
+ * every wait here was a fixed sleep).
+ *
+ * Prereq:  npm run export:web                (writes dist/ with the demo data)
  * Run:     node scripts/check-nav.mjs        (or: npm run check:nav)
  * Output:  PASS/FAIL per flow; exit 1 on any dead end. Screenshots land in
  *          $SHOTS_DIR if set.
  */
-import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
-import handler from 'serve-handler';
-import { chromium } from 'playwright';
+import {
+  clickVisible,
+  freshPage as newPage,
+  launchBrowser,
+  openDrawerAndGo,
+  serveDist,
+  sleep,
+  visibleNth,
+} from './lib/harness.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const distDir = path.resolve(__dirname, '..', 'dist');
 const shotsDir = process.env.SHOTS_DIR || null;
 if (shotsDir) await mkdir(shotsDir, { recursive: true });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const server = http.createServer((req, res) =>
-  handler(req, res, { public: distDir, rewrites: [{ source: '**', destination: '/index.html' }] }),
-);
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const port = server.address().port;
-
-const browser = await chromium.launch();
+const { port, close } = await serveDist(import.meta.url);
+const browser = await launchBrowser();
 let failures = 0;
 
-const isTopmost = (el) => {
-  const r = el.getBoundingClientRect();
-  if (!r.width || !r.height) return false;
-  const t = document.elementFromPoint(
-    Math.max(0, Math.min(r.x + r.width / 2, window.innerWidth - 1)),
-    Math.max(0, Math.min(r.y + r.height / 2, window.innerHeight - 1)),
-  );
-  return t === el || el.contains(t) || (t && t.contains(el));
-};
-
-async function visibleNth(loc) {
-  const n = await loc.count();
-  for (let i = 0; i < n; i++) {
-    if (await loc.nth(i).evaluate(isTopmost).catch(() => false)) return i;
-  }
-  return -1;
-}
-
-async function clickVisible(loc, what) {
-  const i = await visibleNth(loc);
-  if (i < 0) throw new Error(`no hit-testable match for: ${what}`);
-  await loc.nth(i).click();
-}
-
-async function freshPage() {
-  const page = await browser.newPage({
-    viewport: { width: 390, height: 844 },
-    deviceScaleFactor: 2,
-    isMobile: true,
-    hasTouch: true,
-  });
-  await page.goto(`http://127.0.0.1:${port}/`);
-  await sleep(1400);
-  return page;
-}
+const freshPage = () => newPage(browser, port);
 
 async function assertEscape(page, tag, shotName) {
   const hasMenu = (await visibleNth(page.getByLabel('Open menu'))) >= 0;
@@ -82,19 +49,6 @@ async function assertEscape(page, tag, shotName) {
   console.log(`${ok ? 'PASS' : 'FAIL'} ${tag}  menu=${hasMenu} back=${hasBack}`);
   if (shotsDir && shotName) await page.screenshot({ path: path.join(shotsDir, shotName) });
   return { hasMenu, hasBack };
-}
-
-// Drawer entries carry an aria-label ("Go to Docs") distinct from their visible
-// text, so they can't collide with the same word rendered by a screen below —
-// and the list scrolls now that it's longer than a short phone screen, so the
-// target is scrolled in before the topmost hit-test.
-async function openDrawerAndGo(page, item) {
-  await clickVisible(page.getByLabel('Open menu'), 'menu button');
-  await sleep(450);
-  const entry = page.getByLabel(`Go to ${item}`);
-  await entry.first().scrollIntoViewIfNeeded();
-  await clickVisible(entry, `drawer item ${item}`);
-  await sleep(900);
 }
 
 // ---------- Path A: cold start on Desktop → Mission strip row → Mission
@@ -151,7 +105,11 @@ async function openDrawerAndGo(page, item) {
   const page = await freshPage();
   // Drawer labels from src/navGroups.ts (#267): Mission Control is now the
   // section header; its screen entry is "Overview", and Hypervisor is "Chat".
-  for (const item of ['Overview', 'Chat', 'Walkie-Talkie', 'Builds', 'Triggers', 'Apps', 'Memory', 'Files', 'Skills', 'Docs', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
+  //
+  // Feed, AI CTO and Board were absent from this list — which is precisely why
+  // nothing here ever noticed that Board was unreachable from a notification
+  // (#692). A dead-end check that skips a screen cannot report on it.
+  for (const item of ['Overview', 'AI CTO', 'Feed', 'Board', 'Chat', 'Walkie-Talkie', 'Builds', 'Triggers', 'Apps', 'Memory', 'Files', 'Skills', 'Docs', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
     await openDrawerAndGo(page, item);
     await assertEscape(page, `Top-level: ${item}`, `05-top-${item.toLowerCase()}.png`);
   }
@@ -195,5 +153,5 @@ async function openDrawerAndGo(page, item) {
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 await browser.close();
-server.close();
+close();
 process.exit(failures === 0 ? 0 : 1);
