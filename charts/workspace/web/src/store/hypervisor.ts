@@ -47,7 +47,16 @@ export const threadsLoading = signal(false);
 export const chatPersona = signal<string>('');
 export const chatProjectId = signal<string | null>(null);
 
+let contextVersion = 0;
+const selectionVersion = signal(0);
+export function getChatSelectionVersion(): number { return selectionVersion.value; }
+
 export function setChatContext(persona: string, projectId: string | null): void {
+  if (chatPersona.peek() !== persona || chatProjectId.peek() !== projectId) {
+    contextVersion++;
+    threads.value = [];
+    deletedThreads.value = [];
+  }
   chatPersona.value = persona;
   chatProjectId.value = projectId;
 }
@@ -68,6 +77,8 @@ export const activeStatus = signal<string>('');
 export const transcriptSource = signal<TranscriptSource | null>(null);
 
 export const sending = signal(false);
+/** Serialize chat management with sends so archive cannot race a new turn. */
+export const chatManagementBusy = signal(false);
 /** True from the moment the user hits Stop until the turn actually ends, so the
  *  Stop button can show a pending state and not be double-fired. */
 export const stopping = signal(false);
@@ -241,7 +252,7 @@ export async function refreshWorkspaceTasks(): Promise<void> {
 
 let pollTimer: number | null = null;
 
-export async function initHypervisor(): Promise<void> {
+export async function initHypervisor(loadThreads = true): Promise<void> {
   configError.value = null;
   try {
     const cfg = await getHypervisorConfig();
@@ -268,34 +279,52 @@ export async function initHypervisor(): Promise<void> {
   } catch (e) {
     configError.value = e instanceof Error ? e.message : 'Failed to load config';
   }
-  await refreshThreads();
+  if (loadThreads) await refreshThreads();
 }
 
-export async function refreshThreads(): Promise<void> {
+function threadFilter() {
+  return chatPersona.value === 'cto'
+    ? { persona: 'cto' as const, project: chatProjectId.value ?? undefined }
+    : { persona: 'default' as const };
+}
+
+function scopedThreads(list: HypervisorThread[]): HypervisorThread[] {
+  return list.filter(t => chatPersona.value === 'cto'
+    ? t.persona === 'cto' && (t.project_id || null) === chatProjectId.value
+    : t.persona !== 'cto');
+}
+
+let listRequest = 0;
+let trashRequest = 0;
+export async function refreshThreads(): Promise<boolean> {
+  const context = contextVersion;
+  const request = ++listRequest;
   threadsLoading.value = true;
   try {
-    // Scope the list to the current surface: the CTO page sees only its
-    // persona (+ project); the plain Chat tab excludes CTO threads (#465/#466).
-    const filter =
-      chatPersona.value === 'cto'
-        ? { persona: 'cto' as const, project: chatProjectId.value ?? undefined }
-        : { persona: 'default' as const };
-    threads.value = await listThreads(filter);
+    const list = await listThreads(threadFilter());
+    if (context !== contextVersion || request !== listRequest) return false;
+    threads.value = scopedThreads(list);
+    return true;
   } catch {
-    /* keep last-good list */
+    return false; // Keep the last good list; callers must not infer an empty history.
   } finally {
-    threadsLoading.value = false;
+    if (request === listRequest) threadsLoading.value = false;
   }
 }
 
-export async function refreshDeletedThreads(): Promise<void> {
+export async function refreshDeletedThreads(): Promise<boolean> {
+  const context = contextVersion;
+  const request = ++trashRequest;
   deletedLoading.value = true;
   try {
-    deletedThreads.value = await listDeletedThreads();
+    const list = await listDeletedThreads(threadFilter());
+    if (context !== contextVersion || request !== trashRequest) return false;
+    deletedThreads.value = scopedThreads(list);
+    return true;
   } catch {
-    /* keep last-good list */
+    return false;
   } finally {
-    deletedLoading.value = false;
+    if (request === trashRequest) deletedLoading.value = false;
   }
 }
 
@@ -333,15 +362,18 @@ export function sameTranscript(
   return a.seq === b.seq && a.type === b.type && a.text === b.text;
 }
 
+let pollRequest = 0;
 async function pollActive(): Promise<void> {
   const id = activeThreadId.value;
   if (!id) return;
+  const selection = selectionVersion.peek();
+  const request = ++pollRequest;
   try {
     // Re-fetch the full (small) transcript each tick — simplest correct model
     // for a chat.
     const detail = await getThread(id, 0);
     // Guard against a late poll landing after the user switched threads.
-    if (activeThreadId.value !== id) return;
+    if (activeThreadId.value !== id || selection !== selectionVersion.peek() || request !== pollRequest) return;
     // Only swap `events` when content actually changed, keeping its identity
     // stable across idle ticks — see sameTranscript (#348).
     const source = detail.source ?? null;
@@ -356,6 +388,9 @@ async function pollActive(): Promise<void> {
 }
 
 export async function openThread(id: string): Promise<void> {
+  stopPolling();
+  const selection = selectionVersion.peek() + 1;
+  selectionVersion.value = selection;
   activeThreadId.value = id;
   // Remember the last-open chat so a later bare visit (returning to the app,
   // clicking the tab) can reopen it — see store/lastSession.ts. Keyed by
@@ -366,10 +401,11 @@ export async function openThread(id: string): Promise<void> {
   transcriptSource.value = null;
   chatError.value = null;
   await pollActive();
-  startPolling();
+  if (selection === selectionVersion.peek()) startPolling();
 }
 
 export function closeThread(): void {
+  selectionVersion.value = selectionVersion.peek() + 1;
   stopPolling();
   activeThreadId.value = null;
   events.value = [];
@@ -382,17 +418,19 @@ let optimisticSeq = -1;
 /** Send a chat message. Creates a new thread if none is active. */
 export async function sendMessage(text: string): Promise<void> {
   const trimmed = text.trim();
-  if (!trimmed || sending.value) return;
+  if (!trimmed || sending.value || chatManagementBusy.value) return;
   // Gate the AI CTO first-win path on a working Claude credential (#494): with
   // none present, firing a task just dies with a raw provider error, so refuse
   // the send and point the user at the connect panel the CTO welcome renders.
   // Only blocks the CTO surface, and only when readiness is known-false (null =
   // not yet probed → don't block an existing authenticated user).
-  if (chatPersona.value === 'cto' && claudeReady.value === false) {
+  if (chatPersona.value === 'cto' && surfaceAssistant() === 'claude' && claudeReady.value === false) {
     chatError.value =
       'Connect your Claude account to start building — use the connect options above.';
     return;
   }
+  const context = contextVersion;
+  const selection = selectionVersion.peek();
   sending.value = true;
   chatError.value = null;
   // Optimistically show the user's turn until the next poll replaces it with
@@ -426,7 +464,9 @@ export async function sendMessage(text: string): Promise<void> {
         // or the Chat tab's own picker — undefined when neither is set.
         project_id: surfaceProjectId() || undefined,
       });
+      if (context !== contextVersion || selection !== selectionVersion.peek()) return;
       await refreshThreads();
+      if (context !== contextVersion || selection !== selectionVersion.peek()) return;
       await openThread(thread.id);
       // Reflect the new thread in the URL so a refresh reopens it. Guarded so
       // we only touch history when actually on the Hypervisor route — the CTO
@@ -440,7 +480,8 @@ export async function sendMessage(text: string): Promise<void> {
       await pollActive();
     }
   } catch (e) {
-    chatError.value = e instanceof Error ? e.message : 'Failed to send';
+    if (context === contextVersion && selection === selectionVersion.peek())
+      chatError.value = e instanceof Error ? e.message : 'Failed to send';
   } finally {
     sending.value = false;
   }

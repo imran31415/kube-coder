@@ -8,6 +8,7 @@ import {
   activeThreadId,
   activeStatus,
   sending,
+  chatManagementBusy,
   stopping,
   chatError,
   selectedAssistant,
@@ -327,7 +328,7 @@ function ChoiceBlock({
   interactive: boolean;
   onChoose: (text: string) => void;
 }) {
-  const disabled = !interactive || sending.value || activeStatus.value === 'running';
+  const disabled = !interactive || sending.value || chatManagementBusy.value || activeStatus.value === 'running';
   return (
     <div class="hv-choice">
       {question && (
@@ -895,7 +896,7 @@ export function Chat({
   // Input is locked whenever a turn is in flight — not just during the brief
   // send request — so the user can't queue a message the server would reject
   // (409 "assistant is still responding"). Stop is the only action then.
-  const blocked = busy || working;
+  const blocked = busy || working || chatManagementBusy.value;
   const readOnly = config.value?.readOnly;
   const empty = !active && evts.length === 0;
   const cli = selectedAssistant.value || 'agent';

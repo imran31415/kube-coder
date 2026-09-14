@@ -16,10 +16,11 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   listProjects, getProjectBrief, listThreads, createThread,
   sendThreadMessage, getThreadDetail, getHypervisorConfig,
+  listDeletedThreads, deleteThread, restoreThread, renameThread,
 } from '../api/client';
 import { Button, EmptyState, Loading, ScreenHeader } from '../components/ui';
 import { Markdown } from '../components/Markdown';
-import type { HvEvent, Project, ProjectBrief } from '../api/types';
+import type { HvEvent, HypervisorThread, Project, ProjectBrief } from '../api/types';
 import {
   buildTurns,
   groupActivity,
@@ -30,6 +31,9 @@ import {
   type HvRenderBlock,
   type HvTurn,
 } from '../util/hvTranscript';
+import { ChatsSheet } from '../components/ChatsSheet';
+import { confirmAction } from '../util/confirm';
+import { ctoThreads, selectionAfterArchive } from '../util/chatHistory';
 import { SearchPicker } from '../components/SearchPicker';
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
@@ -57,6 +61,23 @@ export default function CtoScreen() {
   const [status, setStatus] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [threads, setThreads] = useState<HypervisorThread[]>([]);
+  const [deletedThreads, setDeletedThreads] = useState<HypervisorThread[]>([]);
+  const [chatsOpen, setChatsOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [undo, setUndo] = useState<HypervisorThread | null>(null);
+  const [readOnly, setReadOnly] = useState(false);
+  const generation = useRef(0);
+  const selection = useRef(0);
+  const mutation = useRef(false);
+  const sendPending = useRef(false);
+  const activeRef = useRef(activeId);
+  activeRef.current = activeId;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [defaultAssistant, setDefaultAssistant] = useState<string | undefined>();
   // Bounded render window over the tail of the transcript (#525) — ScrollView
   // mounts every child, so a long CTO thread kept every turn alive until the
@@ -78,7 +99,7 @@ export default function CtoScreen() {
     (async () => {
       try {
         const cfg = await getHypervisorConfig();
-        if (alive) setDefaultAssistant(cfg.defaultAssistant);
+        if (alive) { setDefaultAssistant(cfg.defaultAssistant); setReadOnly(!!cfg.readOnly); }
       } catch { /* keep default */ }
       try {
         const ps = await listProjects();
@@ -95,43 +116,143 @@ export default function CtoScreen() {
     return () => { alive = false; };
   }, []);
 
-  // On project change: load its brief, filter the CTO thread list to it, and
-  // continue the latest thread (delivering any queued Feed-handoff prefix).
+  function openChat(id: string | null) {
+    selection.current++;
+    activeRef.current = id;
+    setActiveId(id);
+    setEvents([]);
+    setStatus('');
+    setError(null);
+    setDraft('');
+    setVisibleTurns(TURN_WINDOW);
+    transcriptSource.current = null;
+    suppressAutoScroll.current = false;
+    setChatsOpen(false);
+  }
+
+  // Invalidate old requests on project changes and unmount. Lists and transcript
+  // must always belong to the same project, even when network replies reorder.
   useEffect(() => {
     if (projects === null) return;
-    let alive = true;
+    const scope = ++generation.current;
     setBrief(null);
-    setEvents([]);
-    setActiveId(null);
-    setVisibleTurns(TURN_WINDOW);
+    openChat(null);
+    setThreads([]);
+    setDeletedThreads([]);
+    setTrashOpen(false);
+    setUndo(null);
+    setHistoryLoading(true);
+    const initialSelection = selection.current;
+    if (selected) {
+      void getProjectBrief(selected).then(b => {
+        if (scope === generation.current) setBrief(b);
+      }).catch(() => { /* A brief failure must not delay or disable chat. */ });
+    }
     (async () => {
-      if (selected) {
-        try { const b = await getProjectBrief(selected); if (alive) setBrief(b); } catch { /* */ }
+      try {
+        const list = ctoThreads(await listThreads({ persona: 'cto', project: selected ?? undefined }), selected);
+        if (scope !== generation.current) return;
+        setThreads(list);
+        if (initialSelection !== selection.current) return;
+        openChat(list[0]?.id ?? null);
+        const text = pendingDiscuss.current;
+        if (text) {
+          pendingDiscuss.current = null;
+          void send(text, { id: list[0]?.id ?? null, project: selected, scope });
+        }
+      } catch (e) {
+        if (scope === generation.current) setError(e instanceof Error ? e.message : 'Unable to load chats.');
+      } finally {
+        if (scope === generation.current) setHistoryLoading(false);
       }
-      let threads: Awaited<ReturnType<typeof listThreads>> = [];
-      try { threads = await listThreads({ persona: 'cto', project: selected ?? undefined }); } catch { /* */ }
-      if (!alive) return;
-      if (threads.length) setActiveId(threads[0].id);
-      const text = pendingDiscuss.current;
-      if (text) { pendingDiscuss.current = null; void send(text); }
     })();
-    return () => { alive = false; };
+    return () => { generation.current++; };
   }, [selected, projects]);
+
+  async function refreshHistory(includeTrash = trashOpen) {
+    const scope = generation.current;
+    const project = selected;
+    setHistoryLoading(true);
+    try {
+      const [live, trash] = await Promise.all([
+        listThreads({ persona: 'cto', project: project ?? undefined }),
+        includeTrash ? listDeletedThreads({ persona: 'cto', project: project ?? undefined }) : Promise.resolve(null),
+      ]);
+      if (scope !== generation.current) return;
+      setThreads(ctoThreads(live, project));
+      if (trash) setDeletedThreads(ctoThreads(trash, project));
+    } finally { if (scope === generation.current) setHistoryLoading(false); }
+  }
+
+  async function mutate(action: (scope: number) => Promise<void>) {
+    if (mutation.current) return;
+    const scope = generation.current;
+    mutation.current = true;
+    setBusy(true);
+    setError(null);
+    try { await action(scope); }
+    catch (e) { if (scope === generation.current) setError(e instanceof Error ? e.message : 'Unable to update chat. Try again.'); }
+    finally { mutation.current = false; setBusy(false); }
+  }
+
+  function confirmArchive(t: HypervisorThread) {
+    const scope = generation.current;
+    confirmAction({
+      title: 'Archive chat?', message: `${t.title || 'New chat'} will move to Recently deleted. You can restore it later.`,
+      confirmLabel: 'Archive', destructive: true,
+      onConfirm: () => {
+        if (scope !== generation.current) return;
+        void mutate(async () => {
+          const version = selection.current;
+          const detail = await getThreadDetail(t.id);
+          if (scope !== generation.current) return;
+          if (detail.thread.status === 'running' || (activeRef.current === t.id && sendPending.current)) {
+            throw new Error('This chat is running. Wait for it to finish or stop it before archiving.');
+          }
+          await deleteThread(t.id);
+          if (scope !== generation.current) return;
+          const remaining = threads.filter(row => row.id !== t.id);
+          setThreads(remaining);
+          if (version === selection.current && activeRef.current === t.id) {
+            openChat(selectionAfterArchive(activeRef.current, t.id, remaining));
+          }
+          setUndo(t);
+          await refreshHistory(true);
+        });
+      },
+    });
+  }
+
+  async function restoreChat(t: HypervisorThread, scope: number) {
+    await restoreThread(t.id);
+    if (scope !== generation.current) return;
+    setDeletedThreads(list => list.filter(row => row.id !== t.id));
+    if (undo?.id === t.id) setUndo(null);
+    await refreshHistory(true);
+  }
 
   // Poll the active thread (2s), mirroring HypervisorScreen.
   useEffect(() => {
     if (!activeId) return;
+    const version = selection.current;
     let alive = true;
+    let polling = false;
     const tick = async () => {
+      if (polling || sendPending.current) return;
+      polling = true;
       try {
         const d = await getThreadDetail(activeId, 0);
-        if (!alive || d.thread.id !== activeId) return;
+        if (!alive || version !== selection.current || d.thread.id !== activeRef.current) return;
         const src = d.source ?? null;
         const prev = transcriptSource.current;
         transcriptSource.current = src;
         setEvents((cur) => (sameTranscript(cur, d.events, prev, src) ? cur : d.events));
         setStatus(d.thread.status);
+        setThreads(list => list.some(t => t.id === d.thread.id && t.status !== d.thread.status)
+          ? list.map(t => t.id === d.thread.id ? { ...t, status: d.thread.status } : t)
+          : list);
       } catch { /* transient */ }
+      finally { polling = false; }
     };
     void tick();
     const timer = setInterval(tick, 2000);
@@ -139,9 +260,14 @@ export default function CtoScreen() {
   }, [activeId]);
 
   const send = useCallback(
-    async (text?: string) => {
+    async (text?: string, target?: { id: string | null; project: string | null; scope: number }) => {
       const finalText = (text ?? draft).trim();
-      if (!finalText || sending) return;
+      if (!finalText || sendPending.current || readOnly || (!target && (status === 'running' || historyLoading || mutation.current))) return;
+      const scope = target?.scope ?? generation.current;
+      const version = selection.current;
+      const id = target ? target.id : activeRef.current;
+      const project = target ? target.project : selected;
+      sendPending.current = true;
       setDraft('');
       setSending(true);
       setEvents((prev) => [
@@ -150,18 +276,31 @@ export default function CtoScreen() {
       ]);
       setStatus('running');
       try {
-        if (!activeId) {
+        if (!id) {
           // A CTO thread omits workdir so the server defaults it to the project.
-          const thread = await createThread(finalText, defaultAssistant, undefined, undefined, 'cto', selected ?? undefined);
+          const projectConfig = projects?.find(p => p.id === project);
+          const thread = await createThread(finalText,
+            projectConfig?.default_assistant || defaultAssistant, undefined,
+            projectConfig?.default_model || undefined, 'cto', project ?? undefined,
+            projectConfig?.default_effort || undefined);
+          if (scope !== generation.current || version !== selection.current || project !== selectedRef.current) return;
+          activeRef.current = thread.id;
           setActiveId(thread.id);
+          setThreads(list => [thread, ...list.filter(t => t.id !== thread.id)]);
         } else {
-          await sendThreadMessage(activeId, finalText);
+          await sendThreadMessage(id, finalText);
         }
-      } catch { /* surfaced by the next poll / status */ } finally {
+      } catch (e) {
+        if (scope === generation.current && version === selection.current) {
+          setError(e instanceof Error ? e.message : 'Unable to send message.');
+          setStatus('error');
+        }
+      } finally {
+        sendPending.current = false;
         setSending(false);
       }
     },
-    [draft, sending, activeId, defaultAssistant, selected],
+    [draft, defaultAssistant, selected, historyLoading, readOnly, status, projects],
   );
 
   const selectedProject = projects?.find((p) => p.id === selected) ?? null;
@@ -182,14 +321,35 @@ export default function CtoScreen() {
         title="AI CTO"
         subtitle={selectedProject ? selectedProject.name : 'Engineering judgment for your workspace'}
         right={
-          selected ? (
+          <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+            <Pressable style={styles.briefBtn} accessibilityRole="button" accessibilityLabel="New chat" disabled={busy || sending || readOnly} onPress={() => openChat(null)}><Text style={styles.briefBtnText}>New chat</Text></Pressable>
+            <Pressable style={styles.briefBtn} accessibilityRole="button" accessibilityLabel="Chat history" disabled={historyLoading} onPress={() => { setChatsOpen(true); void mutate(() => refreshHistory()); }}><Text style={styles.briefBtnText}>Chats</Text></Pressable>
+          {selected && (
             <Pressable style={styles.briefBtn} onPress={() => setBriefOpen(true)}>
               <Ionicons name="reader-outline" size={15} color={colors.textMuted} />
               <Text style={styles.briefBtnText}>Brief</Text>
             </Pressable>
-          ) : undefined
+          )}
+          </View>
         }
       />
+      {error && <Text accessibilityRole="alert" style={styles.historyNotice}>{error}</Text>}
+      {undo && <View style={styles.historyBar}><Text style={styles.historyNotice}>Chat archived.</Text>
+        <Pressable disabled={busy || sending || readOnly} accessibilityRole="button" accessibilityLabel="Undo archive" onPress={() => void mutate(scope => restoreChat(undo, scope))}><Text style={styles.briefBtnText}>Undo</Text></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Dismiss archive notice" onPress={() => setUndo(null)}><Text style={styles.briefBtnText}>Dismiss</Text></Pressable>
+      </View>}
+      <ChatsSheet visible={chatsOpen} threads={threads} activeId={activeId} onClose={() => setChatsOpen(false)}
+        onOpen={openChat} onNew={() => openChat(null)} archiveLabel="Archive" busy={busy || sending} readOnly={readOnly}
+        loading={historyLoading} error={error} notice={undo ? 'Chat archived.' : null}
+        onUndo={undo ? () => void mutate(scope => restoreChat(undo, scope)) : undefined}
+        onDelete={confirmArchive} onRename={(id, title) => void mutate(async scope => {
+          await renameThread(id, title.trim());
+          if (scope === generation.current) await refreshHistory();
+        })}
+        deletedThreads={deletedThreads} trashOpen={trashOpen} onToggleTrash={() => {
+          setTrashOpen(!trashOpen);
+          if (!trashOpen) void mutate(() => refreshHistory(true));
+        }} onRestore={t => void mutate(scope => restoreChat(t, scope))} />
 
       {/* Project switcher. A rail of pills hid every project past the third
           off the right edge, with no way to jump to one — which is worst
@@ -246,7 +406,7 @@ export default function CtoScreen() {
               </Text>
               <View style={styles.chips}>
                 {STARTERS(selectedProject?.name ?? null).map((c) => (
-                  <Pressable key={c} style={styles.starter} disabled={sending} onPress={() => void send(c)}>
+                  <Pressable key={c} style={styles.starter} disabled={sending || busy || historyLoading || readOnly} onPress={() => void send(c)}>
                     <Text style={styles.starterText}>{c}</Text>
                   </Pressable>
                 ))}
@@ -286,7 +446,7 @@ export default function CtoScreen() {
             placeholderTextColor={colors.textFaint}
             multiline
           />
-          <Button title="" icon="arrow-up" onPress={() => void send()} loading={sending} disabled={!draft.trim()} />
+          <Button title="" icon="arrow-up" onPress={() => void send()} loading={sending} disabled={!draft.trim() || busy || historyLoading || readOnly || status === 'running'} />
         </View>
       </KeyboardAvoidingView>
 
@@ -420,6 +580,8 @@ function BriefSheet({ open, brief, onClose, nav }: {
 }
 
 const styles = StyleSheet.create({
+  historyNotice: { color: colors.textMuted, fontSize: font.size.sm, padding: space.sm },
+  historyBar: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   container: { flex: 1, backgroundColor: colors.bg },
   briefBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
   briefBtnText: { color: colors.textMuted, fontSize: font.size.xs },

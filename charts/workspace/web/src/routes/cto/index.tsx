@@ -7,6 +7,7 @@ import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { serverMode } from '../../store/server-mode';
 import { Chat } from '../hypervisor/Chat';
 import {
+  getChatSelectionVersion,
   activeThreadId,
   activeStatus,
   initHypervisor,
@@ -17,8 +18,10 @@ import {
   sendMessage,
   sending,
   threads,
+  deletedThreads,
   setChatContext,
   seedCtoConfig,
+  surfaceAssistant,
   config as hvConfig,
 } from '../../store/hypervisor';
 import {
@@ -38,6 +41,7 @@ import { claudeReady, claudeProbed, refreshClaudeReady } from '../../store/claud
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
 import { CtoConfig } from './CtoConfig';
+import { ChatHistory } from './ChatHistory';
 import { BriefPanel, BriefTab } from './BriefPanel';
 import {
   clampCtoRailW,
@@ -158,7 +162,7 @@ export function CtoRoute() {
   useEffect(() => {
     if (disabled) return;
     setChatContext('cto', null);
-    void initHypervisor();
+    void initHypervisor(false);
     // First-win gate (#494): know whether Claude is connected so the welcome
     // can offer the connect panel instead of firing a doomed build.
     void refreshClaudeReady();
@@ -187,14 +191,19 @@ export function CtoRoute() {
   useEffect(() => {
     if (disabled) return;
     setChatContext('cto', selId);
+    closeThread();
+    threads.value = [];
+    deletedThreads.value = [];
     let cancelled = false;
-    void refreshThreads().then(() => {
-      if (cancelled) return;
+    const selection = getChatSelectionVersion();
+    void refreshThreads().then(async (loaded) => {
+      if (cancelled || !loaded || selection !== getChatSelectionVersion()) return;
       const list = threads.value;
-      if (list.length) void openThread(list[0].id);
+      if (list.length) await openThread(list[0].id);
       else newChat();
       // Deliver a queued Feed handoff into the now-ready thread (continues the
       // latest, or seeds a new one) — the deterministic context prefix.
+      if (cancelled) return;
       const text = pendingHandoff.current;
       if (text) {
         pendingHandoff.current = null;
@@ -297,7 +306,7 @@ export function CtoRoute() {
   const chipsPending = !claudeProbed.value;
 
   const welcome =
-    claudeReady.value === false ? (
+    claudeReady.value === false && surfaceAssistant() === 'claude' ? (
       <div class="cto-welcome">
         <p class="cto-welcome-lead">
           Connect Claude and I'll start building. Sign in with your Claude
@@ -421,6 +430,7 @@ export function CtoRoute() {
             {/* Per-project provider/model/effort (#483, #362). Compact by
                 design — the CTO surface stays executive-clean and the dials
                 live one tap behind the gear. */}
+            <ChatHistory key={selId ?? "workspace"} narrow={narrow} />
             <CtoConfig project={selectedProject} />
             {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
@@ -469,7 +479,7 @@ export function CtoRoute() {
             composer then read as one hero instead of the opener pinning to the
             top with a dead gap above the composer. Chat renders it only while
             the thread is empty, which is also the old `!active` condition. */}
-        <Chat hideEmptyState welcome={welcome} />
+        <Chat key={getChatSelectionVersion()} hideEmptyState welcome={welcome} />
       </section>
 
       {!narrow &&

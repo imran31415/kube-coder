@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import type { HypervisorThread } from '../api/hypervisor';
 
 // Mock the API + router collaborators so the store's rename action is exercised
@@ -48,9 +48,17 @@ import {
   closeThread,
   setChatContext,
   chatPersona,
+  refreshThreads,
+  openThread,
+  events,
 } from './hypervisor';
 import type { HypervisorConfig } from '../api/hypervisor';
 import type { HvEvent } from '../routes/hypervisor/transcript';
+
+afterEach(() => {
+  closeThread();
+  setChatContext('', null);
+});
 
 function thread(over: Partial<HypervisorThread> = {}): HypervisorThread {
   return {
@@ -269,5 +277,55 @@ describe('workdir picker (#345)', () => {
     closeThread();
     setChatContext('', null);
     chatPersona.value = '';
+  });
+});
+
+
+describe('CTO async navigation isolation', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it('ignores project A history arriving after switching to project B', async () => {
+    const old = deferred<HypervisorThread[]>();
+    setChatContext('cto', 'A');
+    listThreads.mockReturnValueOnce(old.promise);
+    const pending = refreshThreads();
+    setChatContext('cto', 'B');
+    listThreads.mockResolvedValueOnce([thread({ id: 'b', persona: 'cto', project_id: 'B' })]);
+    await refreshThreads();
+    old.resolve([thread({ id: 'a', persona: 'cto', project_id: 'A' })]);
+    expect(await pending).toBe(false);
+    expect(threads.value.map(t => t.id)).toEqual(['b']);
+  });
+
+  it('does not open a newly created A thread after the user switches to B', async () => {
+    const created = deferred<HypervisorThread>();
+    setChatContext('cto', 'A');
+    createThread.mockReturnValueOnce(created.promise);
+    const pending = sendMessage('Project A plan');
+    expect(createThread).toHaveBeenCalledWith(expect.objectContaining({ persona: 'cto', project_id: 'A' }));
+    setChatContext('cto', 'B');
+    closeThread();
+    created.resolve(thread({ id: 'a', persona: 'cto', project_id: 'A' }));
+    await pending;
+    expect(activeThreadId.value).toBeNull();
+    expect(getThread).not.toHaveBeenCalled();
+  });
+
+  it('ignores an old transcript when navigating A to B and back to A', async () => {
+    const old = deferred<{ thread: HypervisorThread; events: HvEvent[] }>();
+    getThread.mockReturnValueOnce(old.promise);
+    const pending = openThread('a');
+    getThread.mockResolvedValueOnce({ thread: thread({ id: 'b' }), events: [] });
+    await openThread('b');
+    const fresh: HvEvent = { seq: 2, ts: 2, role: 'assistant', type: 'message', text: 'Fresh response' };
+    getThread.mockResolvedValueOnce({ thread: thread(), events: [fresh] });
+    await openThread('a');
+    old.resolve({ thread: thread(), events: [] });
+    await pending;
+    expect(events.value).toEqual([fresh]);
   });
 });

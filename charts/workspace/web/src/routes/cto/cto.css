@@ -765,3 +765,20 @@
 .dc-cmd-root { font-size: var(--text-xs); color: var(--warn); line-height: 1.4; }
 .dc-cmd-caveat { font-size: var(--text-xs); color: var(--text-subtle); line-height: 1.4; }
 .dc-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* Chat history shares one list across the desktop menu and narrow sheet. */
+.cto-history-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cto-history-trigger { white-space: nowrap; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); cursor: pointer; }
+.cto-history { padding: 12px; max-height: 65dvh; overflow-y: auto; }
+.cto-history p { margin: 8px 0; font-size: var(--text-xs); }
+.cto-history-list { list-style: none; padding: 0; margin: 8px 0; }
+.cto-history-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.cto-history-row button, .cto-history > button, .cto-history-notice button { padding: 6px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+.cto-history-select, .cto-history-name { flex: 1; min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.cto-history-select span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cto-history-select small { color: var(--text-subtle); }
+.cto-history-select[aria-current] { font-weight: var(--weight-semibold); outline: 1px solid var(--text-subtle); }
+.cto-history button:disabled, .cto-history-trigger:disabled { opacity: .5; cursor: default; }
+.cto-history-notice { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--border); background: var(--bg); font-size: var(--text-xs); }
+.cto-topbar-meta { flex-wrap: wrap; }
+@media (max-width: 860px) { .cto-topbar { flex-wrap: wrap; } .cto-history { max-height: none; } }

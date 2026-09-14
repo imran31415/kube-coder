@@ -837,13 +837,13 @@ export async function listThreads(filter?: {
 }
 
 /** The "Recently deleted" trash view — soft-deleted threads only. */
-export async function listDeletedThreads(): Promise<HypervisorThread[]> {
+export async function listDeletedThreads(filter?: { persona?: 'cto' | 'default'; project?: string }): Promise<HypervisorThread[]> {
   if (getConfig().mock) {
     await delay(80);
     return [];
   }
   const d = await request<{ threads?: HypervisorThread[] }>('/api/hypervisor/threads', {
-    query: { deleted: 1 },
+    query: { deleted: 1, persona: filter?.persona, project: filter?.project },
   });
   return d.threads ?? [];
 }
@@ -857,12 +857,13 @@ export async function createThread(
   // thread omits workdir so the server defaults it to the project's workdir.
   persona?: string,
   projectId?: string,
+  effort?: string,
 ): Promise<HypervisorThread> {
   const d = await request<{ thread: HypervisorThread }>('/api/hypervisor/threads', {
     method: 'POST',
     // `model` is validated server-side by resolve_model(); omit when unset so
     // the assistant's default applies (parity with the web createThread).
-    body: { message, assistant, workdir, model, persona, project_id: projectId },
+    body: { message, assistant, workdir, model, persona, project_id: projectId, effort },
   });
   return d.thread;
 }

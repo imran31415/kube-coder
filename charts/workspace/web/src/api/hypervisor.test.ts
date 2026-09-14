@@ -24,6 +24,14 @@ function capture(body: unknown) {
 }
 
 describe('hypervisor soft-delete api (#260)', () => {
+  it('scopes recently deleted by persona and project on the existing endpoint', async () => {
+    const calls = capture({ threads: [] });
+    await listDeletedThreads({ persona: 'cto', project: 'project A' });
+    const url = new URL(calls[0].url, 'http://localhost');
+    expect(url.searchParams.get('deleted')).toBe('1');
+    expect(url.searchParams.get('persona')).toBe('cto');
+    expect(url.searchParams.get('project')).toBe('project A');
+  });
   it('listThreads hits the default (live) list endpoint', async () => {
     const calls = capture({ threads: [{ id: 'a', title: 'A', assistant: 'claude', status: 'idle', created_at: 1, updated_at: 1 }] });
     const r = await listThreads();

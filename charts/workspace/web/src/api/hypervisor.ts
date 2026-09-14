@@ -166,9 +166,10 @@ export const listThreads = (filter?: ThreadFilter) =>
   }).then((r) => r.threads ?? []);
 
 /** The "Recently deleted" trash view — soft-deleted threads only. */
-export const listDeletedThreads = () =>
+export const listDeletedThreads = (filter?: ThreadFilter) =>
   apiGet<{ threads: HypervisorThread[] }>(
-    '/api/hypervisor/threads?deleted=1',
+    '/api/hypervisor/threads',
+    { deleted: 1, persona: filter?.persona, project: filter?.project },
   ).then((r) => r.threads ?? []);
 
 export const createThread = (opts: {

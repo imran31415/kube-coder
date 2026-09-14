@@ -468,6 +468,10 @@ export interface Project {
   memory_namespace: string;
   status: 'active' | 'paused' | 'archived';
   north_star: string;
+  /** Empty or absent values inherit the workspace configuration. */
+  default_assistant?: string;
+  default_model?: string;
+  default_effort?: string;
   last_seen_at: number | null;
   created_at: number;
   updated_at: number;
