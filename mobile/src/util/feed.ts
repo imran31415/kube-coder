@@ -10,22 +10,56 @@ export type FeedRefTarget =
   | { kind: 'task'; id: string }
   | { kind: 'thread'; id: string }
   | { kind: 'memory' }
+  | { kind: 'board'; boardId: string; itemId: string }
   | { kind: 'external'; url: string }
   | { kind: 'none' };
 
 /** Resolve a feed link to a native navigation target. task: → TaskDetail,
- *  thread: → CtoScreen, memory: → MemoryScreen, href → in-app browser. */
+ *  thread: → CtoScreen, memory: → MemoryScreen, board: → BoardScreen with the
+ *  named item focused, href → in-app browser. */
 export function resolveFeedRef(link: FeedLink): FeedRefTarget {
   if (link.href) return { kind: 'external', url: link.href };
   const ref = link.ref || '';
-  const idx = ref.indexOf(':');
-  if (idx < 0) return { kind: 'none' };
-  const kind = ref.slice(0, idx);
-  const rest = ref.slice(idx + 1);
+  // Split off the FIRST colon only. A board ref is three parts
+  // ("board:<board_id>:<item_id>") and the item id can itself contain colons —
+  // a GitHub GraphQL global id looks like `gid://…`. Slicing at every colon
+  // would truncate the id and the card would never be found.
+  const [kind, rest] = splitOnce(ref);
   if (kind === 'task' && rest) return { kind: 'task', id: rest };
   if (kind === 'thread' && rest) return { kind: 'thread', id: rest };
   if (kind === 'memory') return { kind: 'memory' };
+  if (kind === 'board' && rest) {
+    const [boardId, itemId] = splitOnce(rest);
+    if (boardId && itemId) return { kind: 'board', boardId, itemId };
+    return { kind: 'none' };
+  }
   return { kind: 'none' };
+}
+
+/** `a:b:c` → `['a', 'b:c']`; no colon → `['a:b:c'...]` with an empty tail. */
+function splitOnce(value: string): [string, string] {
+  const idx = value.indexOf(':');
+  if (idx < 0) return [value, ''];
+  return [value.slice(0, idx), value.slice(idx + 1)];
+}
+
+/** True when this link points at a board review item. */
+export function isBoardLink(link: FeedLink): boolean {
+  return resolveFeedRef(link).kind === 'board';
+}
+
+/**
+ * How many feed items are a board card still waiting on a decision.
+ *
+ * Deliberately derived from the FEED, not from the boards API: a board item
+ * fetch is an outbound call against someone else's rate limit, and the drawer
+ * badge must never be the thing that spends that budget. The web's
+ * WaitingBadge makes the same trade for the same reason.
+ */
+export function countBoardsAwaitingReview(items: FeedItem[]): number {
+  return items.filter(
+    (it) => it.waiting && !it.read && (it.links ?? []).some(isBoardLink),
+  ).length;
 }
 
 /** Short human label for the item's source. */
@@ -33,6 +67,7 @@ export function feedSourceLabel(source: string): string {
   if (source.startsWith('agent:')) return 'CTO';
   if (source.startsWith('cron:')) return `cron · ${source.slice(5)}`;
   if (source.startsWith('system:')) return source.slice(7);
+  if (source.startsWith('board:')) return `board · ${source.slice(6)}`;
   return source || 'system';
 }
 

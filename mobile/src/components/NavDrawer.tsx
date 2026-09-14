@@ -11,6 +11,8 @@ import { closeDrawer, navigateTo, useActiveTab, useDrawerOpen } from '../store/n
 import { hasController } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { splitNavGroups } from '../navGroups';
+import { listFeed } from '../api/client';
+import { countBoardsAwaitingReview } from '../util/feed';
 import type { NavItemDef } from '../navGroups';
 import { colors, font, gradients, radius, space } from '../theme';
 
@@ -18,7 +20,7 @@ const WIDTH = Math.min(320, Math.round(Dimensions.get('window').width * 0.82));
 
 /** One destination row. Shared by the scrolling list and the pinned tail so
  *  both keep the same hit area, active styling and accessibility label. */
-function DrawerItem({ item, active }: { item: NavItemDef; active: string }) {
+function DrawerItem({ item, active, badge = 0 }: { item: NavItemDef; active: string; badge?: number }) {
   const on = item.name === active;
   const icon = (on ? item.icon.replace('-outline', '') : item.icon) as keyof typeof Ionicons.glyphMap;
   return (
@@ -27,13 +29,19 @@ function DrawerItem({ item, active }: { item: NavItemDef; active: string }) {
       accessibilityRole="button"
       // Distinct from the label text so screen readers (and the nav guard) can
       // target the drawer entry unambiguously, even when a screen underneath
-      // renders the same word.
-      accessibilityLabel={`Go to ${item.label}`}
+      // renders the same word. The count is appended rather than left to the
+      // badge alone — a bare number beside a word reads as nothing at all.
+      accessibilityLabel={badge > 0 ? `Go to ${item.label}, ${badge} waiting` : `Go to ${item.label}`}
       accessibilityState={{ selected: on }}
       style={({ pressed }) => [styles.item, on && styles.itemActive, pressed && styles.itemPressed]}
     >
       <Ionicons name={icon} size={20} color={on ? colors.accent : colors.textMuted} />
       <Text style={[styles.itemLabel, on && styles.itemLabelActive]}>{item.label}</Text>
+      {badge > 0 ? (
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>{badge > 9 ? '9+' : String(badge)}</Text>
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -45,7 +53,29 @@ export function NavDrawer() {
   const insets = useSafeAreaInsets();
   // Keep the Modal mounted through the close animation, then unmount.
   const [mounted, setMounted] = React.useState(open);
+  const [boardWaiting, setBoardWaiting] = React.useState(0);
   const slide = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = shown
+
+  // Counted from the FEED, once, on open — never polled, and never from the
+  // boards API. Listing board items is an outbound call against someone else's
+  // rate limit, and a badge is not worth spending that budget on a timer. The
+  // web's WaitingBadge makes the same trade for the same reason.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    listFeed()
+      .then((items) => {
+        if (!cancelled) setBoardWaiting(countBoardsAwaitingReview(items));
+      })
+      // A failed fetch shows NO badge. An error here would be a worse lie than
+      // silence: the drawer is not the place to learn the workspace is down.
+      .catch(() => {
+        if (!cancelled) setBoardWaiting(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (open) setMounted(true);
@@ -108,7 +138,12 @@ export function NavDrawer() {
                   <View style={styles.groupDivider} />
                 )}
                 {g.items.map((it) => (
-                  <DrawerItem key={it.name} item={it} active={active} />
+                  <DrawerItem
+                    key={it.name}
+                    item={it}
+                    active={active}
+                    badge={it.name === 'Board' ? boardWaiting : 0}
+                  />
                 ))}
               </View>
             ))}
@@ -204,6 +239,20 @@ const styles = StyleSheet.create({
   itemPressed: { backgroundColor: colors.cardHover },
   itemLabel: { color: colors.textMuted, fontSize: font.size.md, fontWeight: '600' },
   itemLabelActive: { color: colors.text },
+  // marginLeft:auto rather than flex on the label — the label is allowed to
+  // keep its natural width so a long one still truncates against the panel
+  // edge, not against the badge.
+  badge: {
+    marginLeft: 'auto',
+    minWidth: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: { color: colors.accentText, fontSize: font.size.xs, fontWeight: '700' },
 
   footer: { color: colors.textFaint, fontSize: font.size.xs, paddingHorizontal: space.md, paddingTop: space.md },
 });

@@ -17,6 +17,7 @@ import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
 import { groupByDay, resolveFeedRef, feedSourceLabel, discussPrefix } from '../util/feed';
+import { requestBoardFocus } from '../store/boardFocus';
 
 type Nav = { navigate: (tab: string, opts?: object) => void };
 
@@ -81,6 +82,15 @@ export default function FeedScreen() {
       if (target.kind === 'task') nav.navigate('Tasks', { screen: 'TaskDetail', params: { id: target.id }, initial: false });
       else if (target.kind === 'thread') nav.navigate('Cto', {});
       else if (target.kind === 'memory') nav.navigate('Memory', {});
+      // A board chip was inert until #692: resolveFeedRef could not parse a
+      // three-part ref, so this fell through to nothing at all. The ids go
+      // into the store VERBATIM — unlike the web, which puts them in a query
+      // string and must encode them. Encoding here would turn a GraphQL id
+      // like `I_kwDOA:4102` into one that matches no card in the queue.
+      else if (target.kind === 'board') {
+        requestBoardFocus(target.boardId, target.itemId);
+        nav.navigate('Board', {});
+      }
       else if (target.kind === 'external') void Linking.openURL(target.url).catch(() => {});
     },
     [nav],

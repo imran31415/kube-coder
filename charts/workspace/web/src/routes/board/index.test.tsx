@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/preact';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { render, screen, cleanup } from '@testing-library/preact';
 import { BoardRail } from './BoardRail';
 import { ItemList } from './ItemList';
 import { ItemDetail } from './ItemDetail';
@@ -8,6 +8,7 @@ import {
   boardItems,
   selectedBoardId,
   selectedItemId,
+  reviewFocusItemId,
   _resetBoardsForTest,
 } from '../../store/boards';
 import { visibleNavGroups } from '../../store/router';
@@ -204,5 +205,98 @@ describe('/board nav gating', () => {
     const paths2 = noBoard.flatMap((g) => g.items.map((i) => i.path));
     expect(paths2).toContain('/cto');
     expect(paths2).not.toContain('/board');
+  });
+});
+
+
+/**
+ * The receiving end of a board deep link.
+ *
+ * `FeedItem.openLink` builds `/board?board=<id>&review=<item_id>`, and the
+ * mobile app now routes the same ref to its own Board screen (#692). Both
+ * depend on this route reading the pair back — and on the item id surviving
+ * whatever the vendor put in it.
+ *
+ * The stubs are per-FILE, not per-test: mounting the route starts async work
+ * that outlives the test body, and restoring the real fetch underneath it sent
+ * a stray request at the dev server.
+ */
+describe('/board deep link', () => {
+  const realFetch = globalThis.fetch;
+  const realES = globalThis.EventSource;
+  // Mounting the route chains several awaits (boards → select → review), so a
+  // single microtask flush is not enough to drain them before teardown.
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+
+  beforeAll(() => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      // Shaped like the real endpoints: /items ALWAYS carries `complete`
+      // and `truncation_reason` (server.py:12286), and ItemList's
+      // incomplete-listing banner reads both. A stub that omitted them was
+      // testing a response the server cannot send.
+      json: async () => ({
+        boards: [], items: [], groups: [], runs: [],
+        complete: true, truncation_reason: '', pages_fetched: 1,
+      }),
+      text: async () => '{}',
+    })) as unknown as typeof fetch;
+    // The route opens the event stream on mount; happy-dom has no EventSource.
+    globalThis.EventSource = class {
+      addEventListener() {}
+      close() {}
+    } as unknown as typeof EventSource;
+  });
+
+  afterAll(async () => {
+    await settle();
+    globalThis.fetch = realFetch;
+    globalThis.EventSource = realES;
+  });
+
+  beforeEach(() => _resetBoardsForTest());
+  afterEach(async () => {
+    cleanup();
+    await settle();
+    _resetBoardsForTest();
+    window.history.replaceState({}, '', '/board');
+  });
+
+  it('focuses the item named in ?review= and opens the Review tab', async () => {
+    const { BoardRoute } = await import('./index');
+    window.history.replaceState({}, '', '/board?board=acme-jira&review=812');
+    const { container } = render(<BoardRoute />);
+    await settle();
+    expect(reviewFocusItemId.value).toBe('812');
+    expect(container.querySelector('.board-tab.is-active')?.textContent).toContain(
+      'Review',
+    );
+  });
+
+  it('decodes an item id that contains colons', async () => {
+    // GitHub GraphQL global ids go out percent-encoded and have to come back
+    // as the literal id, or the card being focused is one that cannot exist.
+    const { BoardRoute } = await import('./index');
+    window.history.replaceState(
+      {},
+      '',
+      `/board?board=gh&review=${encodeURIComponent('I_kwDOA:4102')}`,
+    );
+    render(<BoardRoute />);
+    await settle();
+    expect(reviewFocusItemId.value).toBe('I_kwDOA:4102');
+  });
+
+  it('leaves the focus alone when no ?review= is given', async () => {
+    const { BoardRoute } = await import('./index');
+    window.history.replaceState({}, '', '/board?board=acme-jira');
+    const { container } = render(<BoardRoute />);
+    await settle();
+    expect(reviewFocusItemId.value).toBe(null);
+    expect(container.querySelector('.board-tab.is-active')?.textContent).toContain(
+      'Items',
+    );
   });
 });

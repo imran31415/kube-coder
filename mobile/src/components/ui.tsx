@@ -20,14 +20,22 @@ export function Card({
   style,
   onPress,
   accent,
+  nativeID,
 }: {
   children: React.ReactNode;
   style?: ViewStyle;
   onPress?: () => void;
   accent?: string; // optional left accent bar (e.g. for running tasks)
+  // Forwarded so a caller can address one card from outside React — a deep
+  // link scrolling to the item it names, or the local Playwright gate
+  // asserting that it landed (#692). Becomes an `id` on the web export.
+  nativeID?: string;
 }) {
   const inner = (
-    <View style={[styles.card, accent ? { borderLeftWidth: 2, borderLeftColor: accent } : null, style]}>
+    <View
+      nativeID={nativeID}
+      style={[styles.card, accent ? { borderLeftWidth: 2, borderLeftColor: accent } : null, style]}
+    >
       {children}
     </View>
   );

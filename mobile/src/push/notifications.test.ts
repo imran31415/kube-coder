@@ -35,9 +35,12 @@ vi.mock('../api/client', () => ({
   unregisterPushToken: vi.fn(async () => {}),
 }));
 vi.mock('../store/config', () => ({ getConfig: () => ({ host: '', token: '' }) }));
+const navigateTo = vi.fn();
+const navigate = vi.fn();
+let navReady = false;
 vi.mock('../store/nav', () => ({
-  navigateTo: vi.fn(),
-  navigationRef: { isReady: () => false, navigate: vi.fn() },
+  navigateTo: (...a: unknown[]) => navigateTo(...a),
+  navigationRef: { isReady: () => navReady, navigate: (...a: unknown[]) => navigate(...a) },
 }));
 
 describe('initPush — must never break app boot', () => {
@@ -48,6 +51,7 @@ describe('initPush — must never break app boot', () => {
     vi.resetModules();
     addResponseListener.mockReturnValue({ remove: vi.fn() });
     setHandler.mockImplementation(() => {});
+    navReady = false;
   });
 
   it('returns a detach function on the happy path', async () => {
@@ -72,5 +76,55 @@ describe('initPush — must never break app boot', () => {
     });
     const { initPush } = await import('./notifications');
     expect(() => initPush()).not.toThrow();
+  });
+});
+
+/**
+ * Where a tapped notification lands (#692).
+ *
+ * The server has always pushed board review items — push_notify copies the
+ * feed link's ref into `data.ref`, and a board review emits
+ * "board:<board_id>:<item_id>". Mobile could not parse three parts, so every
+ * one of those taps fell through to the default and opened the Feed.
+ */
+describe('handleNotificationTap — board review pushes', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    navReady = true;
+    const { _resetBoardFocusForTest } = await import('../store/boardFocus');
+    _resetBoardFocusForTest();
+  });
+
+  it('opens Board and parks the item for the screen to focus', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const { peekBoardFocus } = await import('../store/boardFocus');
+    handleNotificationTap({ ref: 'board:acme-jira:812', waiting: true });
+    expect(navigateTo).toHaveBeenCalledWith('Board');
+    expect(peekBoardFocus()).toMatchObject({ boardId: 'acme-jira', itemId: '812' });
+  });
+
+  it('parks a colon-bearing item id unchanged', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const { peekBoardFocus } = await import('../store/boardFocus');
+    handleNotificationTap({ ref: 'board:kube-coder-gh:I_kwDOA:4102' });
+    expect(peekBoardFocus()?.itemId).toBe('I_kwDOA:4102');
+  });
+
+  it('still falls back to the Feed for a malformed board ref', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const { peekBoardFocus } = await import('../store/boardFocus');
+    handleNotificationTap({ ref: 'board:acme-jira' });
+    expect(navigateTo).toHaveBeenCalledWith('Feed');
+    expect(peekBoardFocus()).toBeNull();
+  });
+
+  it('does nothing at all before the navigator is ready', async () => {
+    navReady = false;
+    const { handleNotificationTap } = await import('./notifications');
+    const { peekBoardFocus } = await import('../store/boardFocus');
+    handleNotificationTap({ ref: 'board:acme-jira:812' });
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(peekBoardFocus()).toBeNull();
   });
 });

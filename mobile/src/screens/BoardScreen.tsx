@@ -19,7 +19,7 @@
  * tab screens stay mounted, and a backgrounded tab must not keep hitting the
  * workspace.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -40,6 +40,7 @@ import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../compone
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
+import { clearBoardFocus, useBoardFocus } from '../store/boardFocus';
 import {
   drain,
   enqueue,
@@ -76,12 +77,24 @@ export default function BoardScreen() {
   const [boards, setBoards] = useState<BoardSummary[] | null>(null);
   const [boardId, setBoardId] = useState<string | null>(null);
   const [groups, setGroups] = useState<BoardReviewGroup[] | null>(null);
+  // Which board `groups` actually belongs to. While a switch is in flight the
+  // queue on screen is still the PREVIOUS board's, and a deep link that
+  // searched it would decide its item was gone.
+  const [groupsBoard, setGroupsBoard] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  // Kept apart from `notice`, which carries queue errors and is meant to
+  // persist. This one answers "I tapped a notification and nothing happened",
+  // so it is a passing remark and clears itself.
+  const [focusNote, setFocusNote] = useState<string | null>(null);
   const [queued, setQueued] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [sendingBack, setSendingBack] = useState<BoardReviewItem | null>(null);
   const [note, setNote] = useState('');
+  const listRef = useRef<FlatList<Row>>(null);
+  /** The board the last fetch was for — see the board-switch effect below. */
+  const loadedFor = useRef<string | null>(null);
 
   /** Send one queued decision. Returns the status so the queue can decide
    *  whether it is worth retrying. */
@@ -121,9 +134,14 @@ export default function BoardScreen() {
       if (!boards) setBoards(list);
       const active = boardId ?? list[0]?.id ?? null;
       if (!boardId && active) setBoardId(active);
+      // Claim the board before awaiting, so the switch effect below sees this
+      // pass already covers it and does not fire a duplicate fetch for the
+      // board this very call is resolving.
+      loadedFor.current = active;
 
       setQueued(pendingItemIds(await readQueue(AsyncStorage)));
       setGroups(active ? await getBoardReview(active) : []);
+      setGroupsBoard(active);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -132,6 +150,18 @@ export default function BoardScreen() {
   }, [boardId, boards, send]);
 
   usePolling(load, 15000);
+
+  // usePolling holds `fn` in a ref keyed only on the interval, so selecting a
+  // different board does not restart the poll: the queue simply stayed blank
+  // until the next 15-second tick. That was survivable while the only way to
+  // switch was tapping a chip; a deep link that lands on the other board would
+  // spend those 15 seconds on a spinner with nothing to show for it.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => {
+    if (!boardId || loadedFor.current === boardId) return;
+    void loadRef.current();
+  }, [boardId]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -172,22 +202,86 @@ export default function BoardScreen() {
     [commit],
   );
 
-  const rows: Row[] | null = groups
-    ? groups.flatMap((g) => [
-        {
-          type: 'header' as const,
-          key: `h:${g.disposition}`,
-          label: DISPOSITION_LABEL[g.disposition] ?? g.disposition,
-          count: g.count,
-          rule: DISPOSITION_RULE[g.disposition] ?? colors.border,
-        },
-        ...g.items.map((item) => ({
-          type: 'item' as const,
-          key: item.item_id,
-          item,
-        })),
-      ])
-    : null;
+  // Memoized: the focus effect below depends on it, and a bare const would
+  // hand it a new array on every render — including every 15-second poll tick.
+  const rows = useMemo<Row[] | null>(
+    () =>
+      groups
+        ? groups.flatMap((g) => [
+            {
+              type: 'header' as const,
+              key: `h:${g.disposition}`,
+              label: DISPOSITION_LABEL[g.disposition] ?? g.disposition,
+              count: g.count,
+              rule: DISPOSITION_RULE[g.disposition] ?? colors.border,
+            },
+            ...g.items.map((item) => ({
+              type: 'item' as const,
+              key: item.item_id,
+              item,
+            })),
+          ])
+        : null,
+    [groups],
+  );
+
+  // A board review push, or a board chip in the Feed, names ONE item on ONE
+  // board. Both park that request in the focus store rather than passing a
+  // route param, because this is a tab screen that stays mounted: a param set
+  // on the first tap would still be there, stale, on the second.
+  const focus = useBoardFocus();
+  useEffect(() => {
+    if (!focus) return;
+
+    // A stale push can name a board that has since been disconnected. Say so,
+    // rather than poll a 404 forever.
+    if (boards && !boards.some((b) => b.id === focus.boardId)) {
+      setFocusNote('That board is no longer connected to this workspace.');
+      clearBoardFocus(focus.seq);
+      return;
+    }
+
+    // Usually the item is on the board that is NOT on screen. Switch and
+    // return; the effect above fetches, and this runs again when it lands.
+    if (boardId !== focus.boardId) {
+      setBoardId(focus.boardId);
+      setGroups(null);
+      return;
+    }
+
+    if (rows === null || groupsBoard !== focus.boardId) return;
+
+    const index = rows.findIndex(
+      (r) => r.type === 'item' && r.item.item_id === focus.itemId,
+    );
+    if (index < 0) {
+      // Decided by someone else, dismissed, or never in this queue. One
+      // sentence beats a screen waiting on a card that is not coming.
+      setFocusNote('That item is no longer awaiting a decision.');
+      clearBoardFocus(focus.seq);
+      return;
+    }
+
+    // Highlight FIRST. Rows are variable-height with no getItemLayout, so the
+    // scroll can miss; the mark is what actually lands the user on the card.
+    setHighlight(focus.itemId);
+    listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.1 });
+    clearBoardFocus(focus.seq);
+  }, [focus, boards, boardId, rows, groupsBoard]);
+
+  // The mark is an arrival cue, not a state. Left up, it would still be there
+  // after five minutes of scrolling, claiming to mean something.
+  useEffect(() => {
+    if (!highlight) return;
+    const t = setTimeout(() => setHighlight(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlight]);
+
+  useEffect(() => {
+    if (!focusNote) return;
+    const t = setTimeout(() => setFocusNote(null), 6000);
+    return () => clearTimeout(t);
+  }, [focusNote]);
 
   const openCount = groups
     ? groups.flatMap((g) => g.items).filter((i) => i.open).length
@@ -213,6 +307,9 @@ export default function BoardScreen() {
                 setBoardId(b.id);
                 setGroups(null);
               }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: boardId === b.id }}
+              accessibilityLabel={`Show ${b.display_name}`}
               style={[styles.chip, boardId === b.id && styles.chipActive]}
             >
               <Text
@@ -230,6 +327,11 @@ export default function BoardScreen() {
 
       {error && <ErrorBanner message={error} />}
       {notice && <ErrorBanner message={notice} />}
+      {focusNote && (
+        <Text style={styles.focusNote} role="status">
+          {focusNote}
+        </Text>
+      )}
 
       {rows === null ? (
         <Loading />
@@ -240,12 +342,23 @@ export default function BoardScreen() {
         />
       ) : (
         <FlatList
+          ref={listRef}
           data={rows}
           keyExtractor={(r) => r.key}
           contentContainerStyle={styles.list}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
+          // Cards are variable-height and there is no getItemLayout to give,
+          // so a scroll to an unmeasured row throws rather than scrolling.
+          // Approximate it instead — the highlight already marks the card, so
+          // landing near it is enough.
+          onScrollToIndexFailed={({ index, averageItemLength }) => {
+            listRef.current?.scrollToOffset({
+              offset: index * averageItemLength,
+              animated: true,
+            });
+          }}
           renderItem={({ item: row }) =>
             row.type === 'header' ? (
               <View style={styles.groupHead}>
@@ -257,6 +370,7 @@ export default function BoardScreen() {
               <ReviewCard
                 item={row.item}
                 busy={queued.has(row.item.item_id)}
+                focused={highlight === row.item.item_id}
                 onDecide={decide}
               />
             )
@@ -298,6 +412,8 @@ export default function BoardScreen() {
             <View style={styles.modalActions}>
               <Pressable
                 style={styles.btn}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
                 onPress={() => {
                   setSendingBack(null);
                   setNote('');
@@ -309,6 +425,9 @@ export default function BoardScreen() {
                 style={[styles.btn, styles.btnPrimary,
                         !note.trim() && styles.btnDisabled]}
                 disabled={!note.trim()}
+                accessibilityRole="button"
+                accessibilityLabel="Confirm send back"
+                accessibilityState={{ disabled: !note.trim() }}
                 onPress={async () => {
                   const target = sendingBack;
                   const text = note.trim();
@@ -331,15 +450,26 @@ export default function BoardScreen() {
 function ReviewCard({
   item,
   busy,
+  focused,
   onDecide,
 }: {
   item: BoardReviewItem;
   busy: boolean;
+  focused: boolean;
   onDecide: (item: BoardReviewItem, decision: Decision) => void;
 }) {
   const evidence = Object.entries(item.evidence ?? {});
   return (
-    <Card style={busy ? styles.cardBusy : undefined}>
+    <Card
+      // The item id VERBATIM — it is what a "board:<board>:<item>" ref carries,
+      // and GitHub's GraphQL ids contain characters that would not survive
+      // being cleaned up.
+      nativeID={`board-item-${item.item_id}`}
+      style={StyleSheet.flatten([
+        busy ? styles.cardBusy : null,
+        focused ? styles.cardFocused : null,
+      ])}
+    >
       <View style={styles.cardHead}>
         <Text style={styles.itemKey}>{item.item_key || item.item_id}</Text>
         <Text style={styles.itemAge}>{relativeTime(item.created_at)}</Text>
@@ -370,7 +500,12 @@ function ReviewCard({
       )}
 
       {!!item.item_url && (
-        <Pressable onPress={() => void Linking.openURL(item.item_url)}>
+        <Pressable
+          style={styles.linkHit}
+          accessibilityRole="link"
+          accessibilityLabel="Open ticket"
+          onPress={() => void Linking.openURL(item.item_url)}
+        >
           <Text style={styles.link}>Open ticket ↗</Text>
         </Pressable>
       )}
@@ -382,12 +517,24 @@ function ReviewCard({
       ) : (
         item.open && (
           <View style={styles.actions}>
+            {/* With nothing staged there is nothing to approve — an item in
+                needs_rescoping, say. Dimming the inked fill left the ONE
+                unavailable action as the heaviest thing on the card; dropping
+                the fill entirely puts it behind the two that still work. */}
             <Pressable
-              style={[styles.btn, styles.btnPrimary]}
+              style={[styles.btn,
+                      item.pending_actions.length > 0 ? styles.btnPrimary : styles.btnDisabled]}
               disabled={item.pending_actions.length === 0}
+              accessibilityRole="button"
+              accessibilityLabel="Approve"
+              accessibilityState={{ disabled: item.pending_actions.length === 0 }}
               onPress={() => onDecide(item, 'approve')}
             >
-              <Text style={styles.btnPrimaryText}>
+              <Text
+                style={
+                  item.pending_actions.length > 0 ? styles.btnPrimaryText : styles.btnText
+                }
+              >
                 {item.pending_actions.length <= 1
                   ? 'Approve'
                   : `Approve ${item.pending_actions.length}`}
@@ -395,12 +542,16 @@ function ReviewCard({
             </Pressable>
             <Pressable
               style={styles.btn}
+              accessibilityRole="button"
+              accessibilityLabel="Reject"
               onPress={() => onDecide(item, 'reject')}
             >
               <Text style={styles.btnText}>Reject</Text>
             </Pressable>
             <Pressable
               style={styles.btn}
+              accessibilityRole="button"
+              accessibilityLabel="Send back"
               onPress={() => onDecide(item, 'send-back')}
             >
               <Text style={styles.btnText}>Send back</Text>
@@ -426,8 +577,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.pill,
-    paddingHorizontal: space.sm,
-    paddingVertical: 4,
+    paddingHorizontal: space.md,
+    // minHeight alone pins the label to the top of the taller box — centring
+    // is half the fix, not a flourish.
+    minHeight: 44,
+    justifyContent: 'center',
   },
   chipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   chipText: { color: colors.textMuted, fontSize: font.size.sm },
@@ -446,11 +600,27 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   groupCount: { color: colors.textMuted, fontSize: font.size.xs },
+  focusNote: {
+    color: colors.textMuted,
+    fontSize: font.size.sm,
+    paddingHorizontal: space.md,
+    paddingBottom: space.sm,
+  },
   cardBusy: { opacity: 0.6 },
+  // Where a deep link landed. An arrival cue, cleared after a few seconds —
+  // see the timer in the screen above.
+  cardFocused: {
+    borderColor: colors.accent,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.accent,
+    backgroundColor: colors.surface2,
+  },
   cardHead: { flexDirection: 'row', justifyContent: 'space-between' },
   itemKey: { color: colors.textMuted, fontSize: font.size.xs },
   itemAge: { color: colors.textMuted, fontSize: font.size.xs },
-  itemTitle: { color: colors.text, fontSize: font.size.md, marginTop: 2 },
+  // The one line that says WHAT is being decided; it was the same size as the
+  // body copy under it.
+  itemTitle: { color: colors.text, fontSize: font.size.lg, marginTop: 2 },
   action: {
     marginTop: space.sm,
     padding: space.sm,
@@ -458,7 +628,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   actionName: { color: colors.textMuted, fontSize: font.size.xs },
-  actionPreview: { color: colors.text, fontSize: font.size.sm, marginTop: 2 },
+  // About to be sent to a customer verbatim, so it has to be readable without
+  // squinting — this is the text the decision is actually about.
+  actionPreview: { color: colors.text, fontSize: font.size.md, marginTop: 2 },
+  // Left one step down: the agent's rationale is supporting material, and at
+  // the same size as the preview above it the card loses its hierarchy.
   reason: { color: colors.textMuted, fontSize: font.size.sm, marginTop: space.sm },
   chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs, marginTop: space.sm },
   evidenceChip: {
@@ -468,20 +642,29 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   evidenceText: { color: colors.textMuted, fontSize: font.size.xs },
-  link: { color: colors.accent, fontSize: font.size.sm, marginTop: space.sm },
-  queued: { color: colors.textMuted, fontSize: font.size.xs, marginTop: space.sm },
-  actions: { flexDirection: 'row', gap: space.xs, marginTop: space.md },
+  // The <Text> keeps its own size; the Pressable around it carries the hit
+  // area, which was previously zero beyond the glyphs themselves.
+  linkHit: { minHeight: 44, justifyContent: 'center', marginTop: space.xs },
+  link: { color: colors.accent, fontSize: font.size.md },
+  queued: { color: colors.textMuted, fontSize: font.size.sm, marginTop: space.sm },
+  // Wraps: three 44pt buttons at the larger label size no longer fit one line
+  // on a narrow phone, and a row that overflows would push "Send back" off the
+  // card entirely.
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.md },
   btn: {
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.sm,
     paddingHorizontal: space.md,
-    paddingVertical: space.xs,
+    paddingVertical: space.sm,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   btnPrimary: { backgroundColor: colors.accent, borderColor: colors.accent },
-  btnDisabled: { opacity: 0.4 },
-  btnText: { color: colors.text, fontSize: font.size.sm },
-  btnPrimaryText: { color: colors.accentText, fontSize: font.size.sm },
+  btnDisabled: { opacity: 0.45 },
+  btnText: { color: colors.text, fontSize: font.size.md },
+  btnPrimaryText: { color: colors.accentText, fontSize: font.size.md },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -496,7 +679,7 @@ const styles = StyleSheet.create({
     padding: space.md,
     gap: space.sm,
   },
-  modalTitle: { color: colors.text, fontSize: font.size.md },
+  modalTitle: { color: colors.text, fontSize: font.size.lg },
   modalBody: { color: colors.textMuted, fontSize: font.size.sm },
   modalInput: {
     borderWidth: 1,
@@ -509,7 +692,7 @@ const styles = StyleSheet.create({
   },
   modalActions: {
     flexDirection: 'row',
-    gap: space.xs,
+    gap: space.sm,
     justifyContent: 'flex-end',
   },
 });
