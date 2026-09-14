@@ -39,6 +39,7 @@ import {
   getHypervisorConfig,
   getThreadDetail,
   listDeletedThreads,
+  listProjects,
   listThreads,
   listWorkspaceDirs,
   previewFile,
@@ -53,7 +54,7 @@ import {
 import { AppEmbed } from '../components/AppEmbed';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
-import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, TranscriptSource, WorkdirOption } from '../api/types';
+import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, Project, TranscriptSource, WorkdirOption } from '../api/types';
 import {
   buildTurns,
   groupActivity,
@@ -80,6 +81,8 @@ import { relativeTime } from '../util/format';
 import { sheetMaxHeight } from '../util/sheetSizing';
 import { useKeyboardHeight, useKeyboardVisible } from '../util/useKeyboard';
 import { SearchPicker } from '../components/SearchPicker';
+import { ProjectBriefSheet } from '../components/ProjectBriefSheet';
+import { MODE_OPTIONS, personaLabel } from '../util/threadMode';
 import { colors, font, radius, space } from '../theme';
 
 const SUGGESTIONS = [
@@ -105,10 +108,29 @@ interface Attachment {
   status: 'uploading' | 'ready' | 'error';
 }
 
-/** Params other screens (the Desktop composer, its Activity feed) can pass when
- *  navigating to the Hypervisor tab: seed + auto-send a first message, or open
- *  an existing thread. Consumed once, then cleared. */
-type HvParams = { initialMessage?: string; openThreadId?: string } | undefined;
+/** Params other screens can pass when navigating to the Chat tab: seed +
+ *  auto-send a first message (the Desktop composer), open an existing thread
+ *  (its Activity feed), or hand off a Feed item to the AI CTO (#683 — the Feed
+ *  used to navigate to a separate Cto screen, which no longer exists).
+ *  Consumed once, then cleared. */
+type HvParams =
+  | {
+      initialMessage?: string;
+      openThreadId?: string;
+      /** Start the seeded chat in this mode (persona) — 'cto' from the Feed. */
+      mode?: string;
+      /** File the seeded chat into this project. */
+      projectId?: string;
+    }
+  | undefined;
+
+/** The AI CTO's deterministic starter chips, shown for a new chat in CTO mode
+ *  (#683). Nothing fires until one is tapped. */
+const CTO_STARTERS = (project: string | null) => [
+  'What should I focus on?',
+  project ? `Where is ${project} at?` : 'What are we building?',
+  'Break a goal into tasks',
+];
 
 export default function HypervisorScreen() {
   const insets = useSafeAreaInsets();
@@ -147,6 +169,13 @@ export default function HypervisorScreen() {
   // '' omits workdir on create, letting the server default apply. A thread
   // keeps the folder it was created in for life.
   const [selectedWorkdir, setSelectedWorkdir] = useState('');
+  // Mode + project for the NEXT new chat (#683) — the two bindings the AI CTO
+  // screen used to own. Both are creation-time: the preamble lands once, on
+  // turn 1, and a thread keeps the project it was filed into unless re-filed.
+  const [selectedMode, setSelectedMode] = useState('');
+  const [selectedProject, setSelectedProject] = useState('');
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [briefOpen, setBriefOpen] = useState(false);
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
@@ -294,6 +323,22 @@ export default function HypervisorScreen() {
     }
   }, []);
 
+  // The project registry backs the chat↔project binding and the brief sheet
+  // (#683). Cheap and cached; a workspace with none just keeps both hidden.
+  useEffect(() => {
+    let alive = true;
+    listProjects()
+      .then((ps) => {
+        if (alive) setProjects(ps.filter((p) => p.status !== 'archived'));
+      })
+      .catch(() => {
+        /* an unprojected workspace is the normal case, not an error */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   useEffect(() => {
     void getHypervisorConfig()
       .then((c) => {
@@ -377,10 +422,18 @@ export default function HypervisorScreen() {
   useEffect(() => {
     const params = route.params as HvParams;
     if (!params) return;
+    // A Feed "Discuss with CTO" handoff (#470) arrives as mode + project +
+    // message: apply the bindings BEFORE sending, so the thread is created
+    // with them rather than re-filed afterwards.
+    if (params.mode !== undefined) setSelectedMode(params.mode);
+    if (params.projectId !== undefined) setSelectedProject(params.projectId);
     if (params.openThreadId) {
       openThread(params.openThreadId);
     } else if (params.initialMessage) {
-      void send(params.initialMessage);
+      void send(params.initialMessage, {
+        mode: params.mode,
+        projectId: params.projectId,
+      });
     }
     if (params.openThreadId || params.initialMessage) {
       // The tab navigator has no typed params for this screen; clear the
@@ -388,6 +441,8 @@ export default function HypervisorScreen() {
       (navigation.setParams as (p: HvParams) => void)({
         initialMessage: undefined,
         openThreadId: undefined,
+        mode: undefined,
+        projectId: undefined,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -527,7 +582,11 @@ export default function HypervisorScreen() {
     }
   }
 
-  async function send(text?: string) {
+  /** `override` lets a handoff pass its bindings straight through: React state
+   *  set in the same tick isn't readable here yet, and creating the thread
+   *  first and re-filing it after would leave turn 1 running under the wrong
+   *  preamble — the one thing a creation-time mode cannot recover from. */
+  async function send(text?: string, override?: { mode?: string; projectId?: string }) {
     if (sending || attachments.some((a) => a.status === 'uploading')) return;
     const msg = (text ?? draft).trim();
     const paths = attachments
@@ -550,12 +609,18 @@ export default function HypervisorScreen() {
     ]);
     try {
       if (!activeId) {
+        const mode = override?.mode ?? selectedMode;
+        const projectId = override?.projectId ?? selectedProject;
         const thread = await createThread(
           finalText,
           selectedAssistant || config?.defaultAssistant,
-          selectedWorkdir.trim() || undefined,
+          // A CTO chat omits the workdir so the server resolves it from the
+          // bound project's record (#465); a plain chat sends the picker's.
+          mode === 'cto' ? undefined : selectedWorkdir.trim() || undefined,
           // '' ⇒ omit so the server applies the assistant's default (#308).
           selectedModel || undefined,
+          mode || undefined,
+          projectId || undefined,
         );
         await refreshThreads();
         openThread(thread.id);
@@ -616,14 +681,39 @@ export default function HypervisorScreen() {
   const currentModel = activeId
     ? activeThread?.model || models[0] || ''
     : selectedModel || models[0] || '';
+  // Mode (#683). A thread's mode is fixed at creation — the preamble lands once,
+  // on turn 1 — so with a chat open this is a read-only badge, not a control.
+  const openModeLabel = personaLabel(activeThread?.persona);
+  const ctoComposing = !activeId && selectedMode === 'cto';
+  // The brief belongs to the project a chat is filed into, whatever its mode
+  // (#683) — the AI CTO screen is not a precondition for reading it.
+  const briefProjectId = activeThread?.project_id || null;
+  const selectedProjectName =
+    projects.find((p) => p.id === selectedProject)?.name ?? null;
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScreenHeader
         title={activeThread ? activeThread.title || 'Chat' : 'Hypervisor'}
-        subtitle={activeThread ? `via ${activeThread.assistant || agentName}` : 'Talk to your workspace'}
+        subtitle={
+          activeThread
+            ? `${openModeLabel ? `${openModeLabel} · ` : ''}via ${activeThread.assistant || agentName}`
+            : 'Talk to your workspace'
+        }
         right={
           <View style={styles.headerActions}>
+            {/* The project brief, for any chat filed into a project (#683). */}
+            {briefProjectId && (
+              <Pressable
+                onPress={() => setBriefOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Open project brief"
+                style={({ pressed }) => [styles.chatsBtn, pressed && { opacity: 0.6 }]}
+              >
+                <Ionicons name="reader-outline" size={16} color={colors.text} />
+              </Pressable>
+            )}
             {/* Speak replies (issue #396) — on-device TTS via expo-speech;
                 the preference persists per device, same key as the web. */}
             <Pressable
@@ -693,13 +783,23 @@ export default function HypervisorScreen() {
         >
           {empty ? (
             <View style={styles.welcome}>
+              {/* The AI CTO's own opener, for a chat being composed in CTO mode
+                  (#683). It is the last thing the deleted CTO screen had that
+                  Chat didn't; everything else about that screen was already
+                  this one. */}
               <EmptyState
-                icon="hardware-chip-outline"
-                title="Kube-Coder"
-                subtitle="Ask about your workspace or tell it what to do — it reads live state and acts on it through your tools."
+                icon={ctoComposing ? 'compass-outline' : 'hardware-chip-outline'}
+                title={ctoComposing ? 'AI CTO' : 'Kube-Coder'}
+                subtitle={
+                  ctoComposing
+                    ? selectedProjectName
+                      ? `I'm across ${selectedProjectName}. What do you want to move on?`
+                      : 'I already know your workspace. What do you want to build or move on?'
+                    : 'Ask about your workspace or tell it what to do — it reads live state and acts on it through your tools.'
+                }
               />
               <View style={styles.suggests}>
-                {SUGGESTIONS.map((s) => (
+                {(ctoComposing ? CTO_STARTERS(selectedProjectName) : SUGGESTIONS).map((s) => (
                   <Pressable key={s} onPress={() => void send(s)} style={styles.suggest} disabled={blocked}>
                     <Text style={styles.suggestText}>{s}</Text>
                   </Pressable>
@@ -843,6 +943,70 @@ export default function HypervisorScreen() {
           </View>
         )}
 
+        {/* Mode picker (#683) — which preamble a NEW chat is created with, the
+            phone's half of the web sidebar's Mode control. It maps 1:1 onto the
+            server's `persona` field, so there is no new server concept and
+            existing CTO threads need no migration. Creation-time only: an open
+            thread shows its mode in the header subtitle instead, because the
+            preamble was delivered once, on turn 1.
+
+            Unlike the web, this isn't gated on a capability flag — the mobile
+            app doesn't read `ctoEnabled` today, exactly as the AI CTO drawer
+            entry it replaces wasn't gated either. */}
+        {!activeThread && (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Mode"
+              icon="compass-outline"
+              value={selectedMode}
+              onChange={setSelectedMode}
+              options={MODE_OPTIONS}
+            />
+          </View>
+        )}
+
+        {/* Project picker (#358/#683) — what a NEW chat is filed into, which
+            also decides which brief its header can open. Hidden entirely in a
+            workspace with no projects. An open chat shows its own binding,
+            read-only: re-filing mid-thread is a web-side affordance and the
+            phone's job here is to make the binding legible. */}
+        {(projects.length > 0 || !!activeThread?.project_id) && (
+          <View style={styles.pickerRow}>
+            {activeThread ? (
+              <SearchPicker
+                label="Project"
+                icon="albums-outline"
+                value={activeThread.project_id || ''}
+                placeholder="No project"
+                disabled
+                onChange={() => undefined}
+                options={projects.map((p) => ({ value: p.id, label: p.name || p.id }))}
+              />
+            ) : (
+              <SearchPicker
+                label="Project"
+                icon="albums-outline"
+                value={selectedProject}
+                emptyLabel="No project"
+                onChange={setSelectedProject}
+                options={projects.map((p) => {
+                  const running = p.pulse?.running ?? 0;
+                  const waiting = p.pulse?.waiting ?? 0;
+                  // The AI CTO rail carried these as coloured dots; keep the
+                  // signal as words rather than dropping it with the rail.
+                  const hint = [
+                    running ? `${running} running` : '',
+                    waiting ? `${waiting} waiting` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ');
+                  return { value: p.id, label: p.name || p.id, hint: hint || undefined };
+                })}
+              />
+            )}
+          </View>
+        )}
+
         {/* Model picker (#308/#361) — parity with the web hv-model-select. Shown
             whenever the effective assistant offers a model choice, for BOTH a
             new chat (sets the new-thread default) and an open thread (live-
@@ -890,6 +1054,21 @@ export default function HypervisorScreen() {
                   ? [{ value: activeThread.workdir, label: activeThread.workdir }]
                   : []
               }
+            />
+          </View>
+        ) : ctoComposing ? (
+          // A CTO chat starts in its bound project's folder — the server
+          // resolves it from the project record, so this picker has nothing to
+          // say. Showing a folder we deliberately don't send would lie.
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Folder"
+              icon="folder-outline"
+              value=""
+              placeholder="Its project's folder"
+              disabled
+              onChange={() => undefined}
+              options={[]}
             />
           </View>
         ) : (
@@ -996,6 +1175,15 @@ export default function HypervisorScreen() {
           )}
         </View>
       </KeyboardAvoidingView>
+
+      {/* The deterministic project brief (#466), for any chat filed into a
+          project (#683) — a sheet on the phone rather than a third column. */}
+      <ProjectBriefSheet
+        open={briefOpen}
+        projectId={briefProjectId}
+        onClose={() => setBriefOpen(false)}
+        nav={navigation as unknown as { navigate: (tab: string, opts?: object) => void }}
+      />
     </SafeAreaView>
   );
 }
@@ -1137,10 +1325,18 @@ function ChatsSheet({
                     <Text numberOfLines={1} style={[styles.chatRowTitle, on && { color: colors.text }]}>
                       {t.title || 'New chat'}
                     </Text>
-                    <Text numberOfLines={1} style={styles.chatRowMeta}>
-                      {t.assistant || 'agent'}
-                      {t.updated_at ? ` · ${relativeTime(t.updated_at)}` : ''}
-                    </Text>
+                    <View style={styles.chatRowMetaRow}>
+                      {/* A thread's mode, read-only (#683) — CTO and board
+                          chats live in this list now, so the list has to say
+                          which is which. */}
+                      {!!personaLabel(t.persona) && (
+                        <Text style={styles.chatRowMode}>{personaLabel(t.persona)}</Text>
+                      )}
+                      <Text numberOfLines={1} style={styles.chatRowMeta}>
+                        {t.assistant || 'agent'}
+                        {t.updated_at ? ` · ${relativeTime(t.updated_at)}` : ''}
+                      </Text>
+                    </View>
                   </View>
                 </Pressable>
                 <Pressable
@@ -1660,7 +1856,19 @@ const styles = StyleSheet.create({
   },
   chatRowBody: { flex: 1, minWidth: 0, gap: 2 },
   chatRowTitle: { color: colors.textMuted, fontSize: font.size.md, fontWeight: '500' },
-  chatRowMeta: { color: colors.textFaint, fontSize: font.size.xs },
+  chatRowMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  chatRowMeta: { color: colors.textFaint, fontSize: font.size.xs, flexShrink: 1 },
+  // The thread's mode (#683) — a badge, not a control: a thread's persona is
+  // fixed at creation because its preamble is delivered once, on turn 1.
+  chatRowMode: {
+    color: colors.textMuted,
+    fontSize: font.size.xs,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accentSoft,
+    overflow: 'hidden',
+  },
   chatDel: {
     width: 40,
     height: 40,

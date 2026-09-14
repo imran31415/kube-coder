@@ -79,7 +79,10 @@ export default function FeedScreen() {
       setItems((prev) => prev?.map((i) => (i.id === item.id ? { ...i, read: true } : i)) ?? prev);
       const target = resolveFeedRef(link);
       if (target.kind === 'task') nav.navigate('Tasks', { screen: 'TaskDetail', params: { id: target.id }, initial: false });
-      else if (target.kind === 'thread') nav.navigate('Cto', {});
+      // A thread ref opens THAT chat (#683). It used to open the AI CTO screen
+      // and lose the reference entirely, because that screen's list was scoped
+      // to persona=cto and had no notion of opening a thread by id.
+      else if (target.kind === 'thread') nav.navigate('Hypervisor', { openThreadId: target.id });
       else if (target.kind === 'memory') nav.navigate('Memory', {});
       else if (target.kind === 'external') void Linking.openURL(target.url).catch(() => {});
     },
@@ -89,7 +92,14 @@ export default function FeedScreen() {
   const discuss = useCallback(
     (item: FeedItem) => {
       void markFeedRead(item.id).catch(() => {});
-      nav.navigate('Cto', { discussProject: item.project_id, discussText: discussPrefix(item) });
+      // The AI CTO is a mode of Chat now (#683), so the handoff carries its
+      // bindings as params rather than targeting a screen that only ever did
+      // one persona.
+      nav.navigate('Hypervisor', {
+        mode: 'cto',
+        projectId: item.project_id,
+        initialMessage: discussPrefix(item),
+      });
     },
     [nav],
   );
