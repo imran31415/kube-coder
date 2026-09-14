@@ -53,6 +53,27 @@ export function setChatContext(persona: string, projectId: string | null): void 
   chatProjectId.value = projectId;
 }
 
+/**
+ * The mode a NEW chat started from the Chat tab will carry (#683) — '' for a
+ * plain workspace chat, 'cto' for an AI CTO one. Exactly the same two-mode
+ * behaviour as the Agent / Folder / Project pickers: it sets what the *next*
+ * new chat gets, and an already-open thread is unaffected.
+ *
+ * Creation-time only, deliberately. The preamble that defines a mode is handed
+ * to the agent once, via --append-system-prompt on turn 1, so a thread that
+ * switched mid-flight would have two identities and no honest way to show it.
+ */
+export const newChatMode = signal<string>('');
+
+/**
+ * The persona a new thread on the CURRENT surface gets: the embedding route's
+ * context (the CTO page sets 'cto' for as long as it exists), else the Chat
+ * tab's own Mode picker.
+ */
+export function surfacePersona(): string {
+  return chatPersona.value || newChatMode.value;
+}
+
 /** Soft-deleted threads, shown in the "Recently deleted" section so an
  *  accidental delete can be restored. Loaded lazily when the user expands it. */
 export const deletedThreads = signal<HypervisorThread[]>([]);
@@ -201,9 +222,19 @@ export function seedCtoConfig(
       : assistantEffortDefault(assistant);
 }
 
-/** True when the current chat surface is the AI CTO rather than the Chat tab. */
+/** True when the AI CTO PAGE is driving this store — which is what the #483
+ *  assistant/model/effort/project split keys off, because that page carries its
+ *  own pickers. Chat's Mode picker introduces no second set of pickers, so a
+ *  CTO-mode chat started from Chat uses Chat's own selection. */
 export function isCtoSurface(): boolean {
   return chatPersona.value === 'cto';
+}
+
+/** True when the chat being composed is an AI CTO one, however it got there —
+ *  the CTO page's context or Chat's Mode picker (#683). This is what decides
+ *  the persona, the workdir rule, and the Claude-credential gate. */
+export function isCtoChat(): boolean {
+  return surfacePersona() === 'cto';
 }
 
 /** The assistant/model/effort a NEW thread on the CURRENT surface will use.
@@ -394,7 +425,7 @@ export async function sendMessage(text: string): Promise<void> {
   // the send and point the user at the connect panel the CTO welcome renders.
   // Only blocks the CTO surface, and only when readiness is known-false (null =
   // not yet probed → don't block an existing authenticated user).
-  if (chatPersona.value === 'cto' && claudeReady.value === false) {
+  if (isCtoChat() && claudeReady.value === false) {
     chatError.value =
       'Connect your Claude account to start building — use the connect options above.';
     return;
@@ -421,13 +452,15 @@ export async function sendMessage(text: string): Promise<void> {
         // project's first workdir; a plain chat sends the picker's folder. Sending
         // the picker's /home/dev default would defeat the server's project
         // default (its `not workdir` guard would never fire).
-        workdir:
-          chatPersona.value === 'cto'
-            ? undefined
-            : selectedWorkdir.value || undefined,
+        // A CTO chat omits the workdir so the server defaults it to the bound
+        // project's first workdir; a plain chat sends the picker's folder.
+        // Sending the picker's /home/dev default would defeat the server's
+        // project default (its `not workdir` guard would never fire).
+        workdir: isCtoChat() ? undefined : selectedWorkdir.value || undefined,
         // AI CTO (#465): bind new threads to the CTO persona when the CTO page
-        // set that context; undefined (a plain chat) otherwise.
-        persona: chatPersona.value || undefined,
+        // set that context or Chat's Mode picker is on CTO (#683); undefined
+        // (a plain chat) otherwise.
+        persona: surfacePersona() || undefined,
         // The project binding is surface-scoped (#358): the CTO page's project,
         // or the Chat tab's own picker — undefined when neither is set.
         project_id: surfaceProjectId() || undefined,
