@@ -162,6 +162,49 @@ demoShowAll: false
 # `controller.update.selfServeSecretName`. Empty (default) => the Updates
 # section reports "self-serve unavailable" and admins update from the controller
 # dashboard instead.
+# Prometheus scraping of this workspace's own /metrics/prometheus (#581).
+#
+# Two halves, both off by default:
+#
+#   scrapeSecretName  — the Secret (key `metrics-scrape-token`) holding this
+#                       workspace's metrics-only bearer token. Seeded by
+#                       scripts/ensure-workspace-namespace.sh as a per-workspace
+#                       HMAC derivation of the controller's kc-metrics-scrape
+#                       master, so a token read out of this pod scrapes this
+#                       workspace alone. Mounted as KC_METRICS_SCRAPE_TOKEN.
+#   podMonitor        — the monitor object that makes a Prometheus actually
+#                       scrape it. A PodMonitor rather than a ServiceMonitor on
+#                       purpose: PodMonitor has no `bearerTokenFile` field at
+#                       all, so a monitor in a tenant namespace structurally
+#                       cannot point Prometheus at its own ServiceAccount token
+#                       (CVE-2026-47701 is that bug in another operator).
+#
+# The credential Secret MUST live in this namespace: the Prometheus Operator
+# resolves a monitor's secret ref from the monitor's own namespace and
+# SecretKeySelector has no namespace field.
+metrics:
+  scrapeSecretName: ""
+  podMonitor:
+    enabled: false
+    # Labels the Prometheus CR's podMonitorSelector matches on. Stock
+    # kube-prometheus-stack renders `matchLabels: {release: <helm release>}`,
+    # so this must carry that label or the object is silently ignored — it is
+    # NOT an error you will see anywhere. Confirm with:
+    #   kubectl get prometheus -A -o jsonpath='{..podMonitorSelector}'
+    labels:
+      release: prometheus
+    interval: 60s
+    scrapeTimeout: 10s
+  # Where the scraping Prometheus lives. Used ONLY by the ingress
+  # NetworkPolicy, which otherwise denies everything but ingress-nginx — a
+  # PodMonitor with no network path scrapes nothing and reports no error.
+  # Matched on the namespace's `kubernetes.io/metadata.name` label (set by
+  # Kubernetes itself) plus the Prometheus pod's own labels, so the carve-out
+  # is one pod on one port rather than a whole namespace.
+  prometheusNamespace: default
+  prometheusPodLabels:
+    app.kubernetes.io/name: prometheus
+
 update:
   selfServeSecretName: ""
   # Override the controller self-serve URL. Defaults to the in-cluster Service

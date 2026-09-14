@@ -11810,6 +11810,56 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return ClaudeTaskManager.verify_token(token)
         return False
 
+    def check_metrics_auth(self):
+        """Auth gate for GET /metrics/prometheus ONLY.
+
+        Not the JSON /metrics twin, and never /api/*. The exposition is a
+        bounded, flat document with a fixed label vocabulary; the JSON endpoint
+        returns nested objects and top-N lists that a scraper has no use for.
+        Confining the wider credential to the one path a scrape actually needs
+        is the whole point of having a second credential at all.
+
+        Accepts everything `check_claude_auth` accepts, plus one extra
+        credential: KC_METRICS_SCRAPE_TOKEN, a metrics-only bearer token that
+        exists so a Prometheus scrape never has to be handed the Claude Task
+        API token (#581).
+
+        Why a second credential rather than reusing the existing one:
+
+        * The Task API token is read/write over the whole API — the same string
+          that would scrape a counter can create and kill tasks. A scraper
+          needs neither.
+        * It is self-minted onto the PVC at runtime (`get_or_create_token`), so
+          it is not a Kubernetes Secret and a ServiceMonitor/PodMonitor cannot
+          reference it. The Prometheus Operator resolves a monitor's credential
+          Secret from the monitor's OWN namespace, so the credential has to be
+          something the chart can put there.
+        * `POST /api/claude/auth/token/regenerate` would silently break every
+          future scrape.
+
+        The scrape token is provisioned the other way round: derived per
+        workspace by ensure-workspace-namespace.sh as
+        HMAC-SHA256(master, "kc-metrics-scrape/<user>"), written to a Secret in
+        the workspace's own namespace, and mounted here as an env var. The
+        master never enters a tenant namespace, so a token read out of one
+        workspace scrapes that workspace alone — the same property the
+        self-serve token derivation exists to give (controller.py:
+        self_serve_token_for; security review July 2026, finding 2).
+
+        Read from the environment on every call rather than cached at import:
+        the Secret can be rotated by a restart, and a stale module-level copy
+        would keep accepting a withdrawn credential.
+        """
+        if self.check_claude_auth():
+            return True
+        expected = os.environ.get('KC_METRICS_SCRAPE_TOKEN', '').strip()
+        if not expected:
+            return False
+        auth_header = self.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return False
+        return secrets.compare_digest(auth_header[7:].strip(), expected)
+
     def check_oauth_only(self):
         """Returns True only if request has OAuth2 proxy headers (not bearer token).
         Only honored when TRUSTED_PROXY=true; otherwise returns False.
@@ -17990,13 +18040,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         path costs nothing and cannot break the SPA. See
         PrometheusMetricsCollector for what is exposed and why.
 
-        Same auth gate as the JSON endpoint — it reports the same underlying
-        facts, so anything that could read it there can read it here. A
-        Prometheus scrape authenticates with the workspace's Claude Task API
-        token as a Bearer credential (`authorization` / `bearerTokenSecret` in
-        a ServiceMonitor).
+        Auth is `check_metrics_auth`, NOT the plain `check_claude_auth` the
+        JSON endpoint uses. It accepts everything that one does, plus the
+        metrics-only KC_METRICS_SCRAPE_TOKEN that a Prometheus scrape presents
+        as a Bearer credential (`authorization.credentials` on the PodMonitor
+        the chart renders). The wider credential is deliberately confined to
+        this one path: the JSON twin exposes more, and a scrape needs none of
+        it. See check_metrics_auth for why a scrape does not simply reuse the
+        Claude Task API token (#581).
         """
-        if not self.check_claude_auth():
+        if not self.check_metrics_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         if not _PROMETHEUS_AVAILABLE:

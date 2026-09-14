@@ -49,6 +49,22 @@ controller:
     # by sealed-secrets/SOPS. When set, the chart does not create its own Secret.
     existingSecretName: ""
 
+  # Master token behind per-workspace Prometheus metrics scraping (#581).
+  # Never leaves this namespace: ensure-workspace-namespace.sh seeds each
+  # workspace with only HMAC-SHA256(master, "kc-metrics-scrape/<user>"), and
+  # the workspace chart's PodMonitor authenticates with that derivation. Off by
+  # default — a cluster with no Prometheus scraping workspace pods has no use
+  # for it, and the workspace chart's metrics.podMonitor.enabled is the other
+  # half of the switch.
+  metricsScrapeToken:
+    enabled: false
+    # Pin a specific master instead of auto-generating. Empty => generate +
+    # preserve across upgrades.
+    value: ""
+    # Bring your own Secret (must expose a `metrics-scrape-token` key). When
+    # set, the chart does not create its own.
+    existingSecretName: ""
+
   # Workspace version updates: surface "update available" per workspace and let
   # a confirmed action restart it onto the latest release image. The live
   # Deployment is patched immediately; when provisioning's GitOps repo is

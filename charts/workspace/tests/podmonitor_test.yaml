@@ -1,0 +1,216 @@
+suite: workspace metrics scraping — PodMonitor + NetworkPolicy carve-out (#581)
+templates:
+  - templates/podmonitor.yaml
+set:
+  user.name: alice
+  namespace: ws-alice
+tests:
+  # A cluster with no Prometheus scraping workspace pods gets no object and no
+  # network carve-out — the whole feature is opt-in at the chart level.
+  - it: renders nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders a PodMonitor, not a ServiceMonitor, when enabled
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodMonitor
+      - equal:
+          path: apiVersion
+          value: monitoring.coreos.com/v1
+      - equal:
+          path: metadata.name
+          value: ws-alice-metrics
+      # Co-located with the workspace: the Operator resolves a monitor's
+      # credential Secret from the monitor's OWN namespace.
+      - equal:
+          path: metadata.namespace
+          value: ws-alice
+
+  # Stock kube-prometheus-stack renders podMonitorSelector as
+  # {matchLabels: {release: <helm release>}}. Without this label the object is
+  # silently never selected — no error surfaces anywhere.
+  - it: carries the release label the stock Prometheus selector matches on
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+
+  - it: lets an operator override the selector label for a differently-named release
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.podMonitor.labels:
+        release: kps
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: kps
+
+  # `browser` is the name of containerPort 6080. PodMonitor resolves the port
+  # by NAME against the pod spec, so a renumber can't silently scrape nothing.
+  - it: scrapes the 6080 container port by name, on the exposition path
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: browser
+      - equal:
+          path: spec.podMetricsEndpoints[0].path
+          value: /metrics/prometheus
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: ws-alice
+
+  - it: authenticates with the metrics-only token, never the Task API token
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.scrapeSecretName: kc-metrics-scrape
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].authorization.type
+          value: Bearer
+      - equal:
+          path: spec.podMetricsEndpoints[0].authorization.credentials.name
+          value: kc-metrics-scrape
+      - equal:
+          path: spec.podMetricsEndpoints[0].authorization.credentials.key
+          value: metrics-scrape-token
+
+  # A PodMonitor cannot express bearerTokenFile at all (it embeds
+  # HTTPConfigWithProxy, which has no file fields). That is why this is a
+  # PodMonitor: a monitor in a tenant namespace must not be able to name a file
+  # inside the Prometheus container and have its contents delivered to a pod
+  # where the tenant has root (CVE-2026-47701 in another operator).
+  - it: never emits a filesystem-backed credential
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.scrapeSecretName: kc-metrics-scrape
+    asserts:
+      - notExists:
+          path: spec.podMetricsEndpoints[0].bearerTokenFile
+      - notExists:
+          path: spec.podMetricsEndpoints[0].tlsConfig
+
+  - it: omits the auth stanza when no scrape Secret is configured
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - notExists:
+          path: spec.podMetricsEndpoints[0].authorization
+
+---
+suite: workspace ingress NetworkPolicy — Prometheus scrape carve-out (#581)
+templates:
+  - templates/networkpolicy.yaml
+set:
+  user.name: alice
+  namespace: ws-alice
+tests:
+  # Without this the PodMonitor scrapes nothing and reports no error: the base
+  # policy denies all ingress except from ingress-nginx, on every port.
+  - it: leaves the deny-all-but-ingress-nginx policy alone by default
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: ingress-nginx
+
+  - it: admits the Prometheus pod on 6080 only, when scraping is enabled
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 2
+      # The original rule is untouched and still carries no port restriction.
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: ingress-nginx
+      - notExists:
+          path: spec.ingress[0].ports
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 6080
+      - equal:
+          path: spec.ingress[1].ports[0].protocol
+          value: TCP
+
+  # namespaceSelector AND podSelector in the SAME peer, not two peers: the
+  # carve-out is one pod in one namespace, not every pod in `default`.
+  - it: scopes the peer to the Prometheus pod rather than its whole namespace
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.ingress[1].from
+          count: 1
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: default
+      - equal:
+          path: spec.ingress[1].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: prometheus
+
+  - it: follows a Prometheus installed somewhere other than default
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.prometheusNamespace: monitoring
+      metrics.prometheusPodLabels:
+        app.kubernetes.io/name: prometheus
+        prometheus: kps
+    asserts:
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: monitoring
+      - equal:
+          path: spec.ingress[1].from[0].podSelector.matchLabels.prometheus
+          value: kps
+
+---
+suite: workspace metrics scrape token env (#581)
+templates:
+  - templates/deployment.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: does not mount a scrape token unless one is configured
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_METRICS_SCRAPE_TOKEN
+          any: true
+
+  # The value is the per-workspace HMAC derivation seeded by
+  # ensure-workspace-namespace.sh — never the Claude Task API token, which is
+  # read/write over the whole API and lives on the PVC, not in a Secret.
+  - it: mounts the per-workspace scrape token from its own namespace Secret
+    template: templates/deployment.yaml
+    set:
+      metrics.scrapeSecretName: kc-metrics-scrape
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_METRICS_SCRAPE_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: kc-metrics-scrape
+                key: metrics-scrape-token
+          any: true
