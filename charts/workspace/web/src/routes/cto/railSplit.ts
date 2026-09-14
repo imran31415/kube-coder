@@ -26,6 +26,16 @@ export function initialCtoRailW(raw: string | null): number {
 // Both side panes can fold away so the chat — the column the user actually
 // works in — owns the width. Each pane's *explicit* choice is persisted next
 // to the rail width; with no choice recorded, a width heuristic decides.
+//
+// The pane-choice helpers themselves now live with the Chat sidebar's geometry
+// (#683), because the brief pane moved there; this page re-exports them for as
+// long as it exists.
+
+export {
+  readPaneCollapsed,
+  writePaneCollapsed,
+  resolvePaneCollapsed,
+} from '../hypervisor/sidebarSplit';
 
 /** localStorage keys for the persisted collapse choice of each side pane. */
 export const CTO_RAIL_COLLAPSED_KEY = 'kc.ctoRailCollapsed';
@@ -42,24 +52,6 @@ export const CTO_BRIEF_W = 320;
  *  breakpoint there was a wide band where all three panes rendered and the chat
  *  was left uncomfortably narrow. */
 export const CTO_AUTO_COLLAPSE_MAX = 1200;
-
-/** Parse a persisted pane choice. `null` = never chosen → heuristics decide. */
-export function readPaneCollapsed(raw: string | null): boolean | null {
-  if (raw === '1') return true;
-  if (raw === '0') return false;
-  return null;
-}
-
-/** Serialize a pane choice for localStorage. */
-export function writePaneCollapsed(collapsed: boolean): string {
-  return collapsed ? '1' : '0';
-}
-
-/** Resolve a pane's collapsed state — an explicit user choice always wins over
- *  the auto-collapse heuristic. */
-export function resolvePaneCollapsed(choice: boolean | null, auto: boolean): boolean {
-  return choice ?? auto;
-}
 
 /** The desktop grid template: rail · (handle) · chat · brief. The handle track
  *  only exists while the rail is expanded — a collapsed rail isn't resizable. */

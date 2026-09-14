@@ -41,8 +41,17 @@ import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
-import { projects, refreshProjects } from '../../store/projects';
+import {
+  projects,
+  refreshProjects,
+  selectProject,
+  startProjectsPolling,
+  stopProjectsPolling,
+} from '../../store/projects';
 import { serverMode } from '../../store/server-mode';
+import { BottomSheet } from '../../components/BottomSheet';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { BriefPanel, BriefTab } from './BriefPanel';
 import { SearchSelect } from '../../components/primitives/SearchSelect';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
@@ -56,12 +65,18 @@ import {
 } from './threadMode';
 import { groupByProject, isUngrouped } from './projectGroups';
 import {
+  BRIEF_AUTO_COLLAPSE_MAX,
+  BRIEF_COLLAPSED_KEY,
   SIDEBAR_W_DEFAULT,
   SIDEBAR_W_KEY,
   SIDEBAR_W_MAX,
   SIDEBAR_W_MIN,
+  chatGridTemplate,
   clampSidebarW,
   initialSidebarW,
+  readPaneCollapsed,
+  resolvePaneCollapsed,
+  writePaneCollapsed,
 } from './sidebarSplit';
 import './hypervisor.css';
 
@@ -76,6 +91,15 @@ function statusLabel(s: string): string {
   return s || 'idle';
 }
 
+/** Read a persisted pane-collapse choice, tolerating a blocked localStorage. */
+function readPane(key: string): boolean | null {
+  try {
+    return readPaneCollapsed(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
 /** Abbreviate the workspace home for compact display: /home/dev/Umi → ~/Umi. */
 function shortDir(path: string): string {
   return path.replace(/^\/home\/[^/]+/, '~');
@@ -83,11 +107,21 @@ function shortDir(path: string): string {
 
 export function HypervisorRoute() {
   const isMobile = useIsMobile();
+  // Wide enough to render three columns, too narrow for the chat to be
+  // comfortable between them → the brief folds to its edge tab by default.
+  const cramped = useMediaQuery(`(max-width: ${BRIEF_AUTO_COLLAPSE_MAX}px)`);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
   // Which thread modes the list shows (#683). 'all' is the default and the
   // only state a workspace that has never started a CTO chat ever sees.
   const [modeFilter, setModeFilter] = useState<ThreadModeFilter>('all');
+  // Brief pane (#683). `null` = the user has never toggled it, so the width
+  // heuristic decides; an explicit choice is persisted and wins from then on.
+  const [briefChoice, setBriefChoice] = useState<boolean | null>(() =>
+    readPane(BRIEF_COLLAPSED_KEY),
+  );
+  // Mobile shows the brief as a bottom sheet rather than a third column.
+  const [briefSheetOpen, setBriefSheetOpen] = useState(false);
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -192,6 +226,34 @@ export function HypervisorRoute() {
   const activeThread = list.find((t) => t.id === active) ?? null;
   const status = activeStatus.value;
 
+  // Brief pane (#683). Shown for ANY project-bound chat, not just CTO ones —
+  // freeing the deterministic brief from the AI CTO page is the point. A chat
+  // with no project bound keeps exactly the two-column layout Chat has always
+  // had. Only an OPEN chat can have a binding worth briefing on; the new-chat
+  // project picker is a default, not a subject.
+  const boundProject = (activeThread?.project_id || '') || '';
+  const briefShown = !!boundProject;
+  const briefCollapsed =
+    !isMobile && resolvePaneCollapsed(briefChoice, cramped);
+
+  // Point the projects store at the open chat's project so BriefPanel — which
+  // reads `brief` / `selectedProjectId` — renders that chat's brief. This is
+  // also what stamps `last_seen_at` now that the AI CTO page's rail no longer
+  // owns the stamp (#683): "you opened a chat filed under this project" is the
+  // same signal the rail's "you looked at this project" was.
+  useEffect(() => {
+    if (!boundProject) return;
+    void selectProject(boundProject);
+  }, [boundProject]);
+
+  // The brief is live (a decision the agent records shows up without a reload),
+  // so subscribe only while a brief is actually on screen.
+  useEffect(() => {
+    if (!briefShown) return;
+    startProjectsPolling();
+    return () => stopProjectsPolling();
+  }, [briefShown]);
+
   // Mode (#683). `ctoEnabled` no longer means "the /cto page exists" — it means
   // "CTO mode is offered". With the flag off the picker never renders and the
   // workspace behaves exactly as it does with the feature disabled today.
@@ -290,6 +352,16 @@ export function HypervisorRoute() {
     // the path effect above calls openThread(id).
     navigate(`/hypervisor/${encodeURIComponent(id)}`);
     setSidebarOpen(false);
+  }
+
+  function toggleBrief() {
+    const next = !briefCollapsed;
+    setBriefChoice(next);
+    try {
+      localStorage.setItem(BRIEF_COLLAPSED_KEY, writePaneCollapsed(next));
+    } catch {
+      /* noop */
+    }
   }
 
   function startRename(id: string, title: string) {
@@ -398,7 +470,16 @@ export function HypervisorRoute() {
       ref={rootRef}
       class={`route route-hypervisor ${splitDragging ? 'hv-split-dragging' : ''}`}
       data-sidebar-open={sidebarOpen ? 'true' : 'false'}
-      style={!isMobile ? { gridTemplateColumns: `${sidebarW}px 6px 1fr` } : undefined}
+      style={
+        !isMobile
+          ? {
+              gridTemplateColumns: chatGridTemplate({
+                sidebarW,
+                brief: !briefShown ? 'none' : briefCollapsed ? 'collapsed' : 'expanded',
+              }),
+            }
+          : undefined
+      }
     >
       <div class="hv-scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
 
@@ -746,6 +827,20 @@ export function HypervisorRoute() {
             <Icon name="walkie" size={13} /> Walkie-Talkie
           </a>
           <div class="hv-topbar-meta">
+            {/* On a phone the brief is a bottom sheet rather than a third
+                column — same treatment the AI CTO page used (#683). */}
+            {isMobile && briefShown && (
+              <button
+                type="button"
+                class="hv-brief-toggle"
+                onClick={() => setBriefSheetOpen(true)}
+                title="Project brief"
+                aria-label="Open project brief"
+              >
+                <Icon name="mission" size={15} />
+                Brief
+              </button>
+            )}
             {/* Speak replies (issue #396, tier 0) — read agent prose aloud via
                 the browser's speechSynthesis. Feature-detected; persists per
                 browser like the sidebar width. */}
@@ -897,6 +992,29 @@ export function HypervisorRoute() {
 
         <Chat />
       </section>
+
+      {/* The deterministic project brief (#466), no longer a property of the
+          AI CTO page: any chat filed into a project gets it. Zero LLM calls —
+          the server aggregates it — so it stays useful while the chat is idle.
+          Collapses to a thin edge tab; the choice persists per browser. */}
+      {!isMobile &&
+        briefShown &&
+        (briefCollapsed ? (
+          <BriefTab onExpand={toggleBrief} />
+        ) : (
+          <BriefPanel onCollapse={toggleBrief} />
+        ))}
+
+      {isMobile && briefShown && (
+        <BottomSheet
+          open={briefSheetOpen}
+          onClose={() => setBriefSheetOpen(false)}
+          title="Project brief"
+          initialSnap="full"
+        >
+          <BriefPanel />
+        </BottomSheet>
+      )}
     </div>
   );
 }
