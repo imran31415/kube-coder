@@ -185,8 +185,12 @@ RUNTIMES = {
         # across two files.
         'orch_model_default': None,
         'skip_permissions_flag': None,
+        # `pretty`, not `stream-json`: a Build pane is read by a person on both
+        # surfaces (ttyd on web, TerminalView on mobile) and parsed by neither,
+        # so the JSON half printed every event twice (#639). The orchestrator
+        # templates below keep stream-json — their output IS read by a machine.
         'launch_args': ['python3', '/tmp/browser/acp_bridge.py', '--serve',
-                        '--format', 'stream-json', '--cwd', '"$PWD"', *_ACP,
+                        '--format', 'pretty', '--cwd', '"$PWD"', *_ACP,
                         ['--model', MODEL], EFFORT],
         # Same flags, different ORDER — the fingerprint of two hand-written
         # implementations of one fact, kept byte-identical for now.
