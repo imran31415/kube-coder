@@ -276,11 +276,15 @@ HYPERVISOR_WORKDIR = os.environ.get('HYPERVISOR_WORKDIR', '/home/dev')
 # arbitrary directory read. A module constant rather than a literal so tests
 # can point it at a tmpdir — CI runners have no /home/dev.
 INSTRUCTION_SCAN_ROOT = HYPERVISOR_WORKDIR
-# AI CTO (#467) — the /cto page (project registry + CTO-persona chat + brief).
-# It rides the Hypervisor, so it's available only when BOTH this flag and the
-# Hypervisor are on. Off → the projects API 404s, the persona is ignored, and
-# the SPA hides the nav item (via the ctoEnabled config field). Default follows
+# AI CTO (#467) — the project registry, the CTO persona and the brief. It rides
+# the Hypervisor, so it's available only when BOTH this flag and the Hypervisor
+# are on. Off → the projects API 404s, the persona is ignored, and the SPA hides
+# the Mode picker + the Feed (via the ctoEnabled config field). Default follows
 # hypervisor.enabled through the chart.
+#
+# The flag used to mean "the /cto page exists". Since #683 folded that page into
+# Chat as a switchable mode, it means "CTO mode is offered" — a capability, not
+# a route. Nothing on this side changed with it.
 CTO_ENABLED = os.environ.get('CTO_ENABLED', 'true').lower() == 'true'
 
 
@@ -9988,8 +9992,8 @@ class DevcontainerManager:
     def available(cls):
         """Gated on its own flag, NOT on cto_available(). Reading the file a
         repo already carries is a workspace capability; the CTO gate is about
-        the /cto page and a deployment can reasonably have one without the
-        other."""
+        whether CTO mode is offered, and a deployment can reasonably have one
+        without the other."""
         return bool(cls.ENABLED and _DEVCONTAINER_AVAILABLE)
 
     @classmethod
@@ -11260,7 +11264,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 'ctoEnabled': cto_available(),
                 # devcontainer.json support (#594). Independent of ctoEnabled:
                 # reading the file a repo already carries is a workspace
-                # capability, not part of the CTO page.
+                # capability, not part of the AI CTO.
                 'devcontainerEnabled': DevcontainerManager.available(),
                 # Board Processor (#588/#589). Independent of ctoEnabled —
                 # working someone else's tracker and running an AI CTO over our
@@ -13433,10 +13437,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'threads': []})
             return
         threads = HypervisorSession.list(only_deleted=only_deleted)
-        # Persona/project filter (#465) so the Chat tab and the CTO page don't
-        # mix thread lists. No `persona` param → every thread (backward compat).
+        # Persona/project filter (#465). No `persona` param → every thread,
+        # which is what the dashboard asks for since #683 merged the two lists;
         # `persona=cto` → only CTO threads; `persona=default`/`none` → only
         # plain Hypervisor threads; `project=<id>` → additionally that project.
+        # The narrow forms are kept: they are how an API client scopes a query,
+        # and dropping them would be a breaking change for no gain.
         persona = (qs.get('persona') or [''])[0].strip().lower()
         project = (qs.get('project') or [''])[0].strip()
         if persona == 'cto':
@@ -17112,7 +17118,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def _devcontainer_gate(self):
         """(ok, workdir_or_empty). 401 unauthenticated, 404 when the feature is
         off. Deliberately NOT behind _require_cto: a deployment can run without
-        the CTO page and still want a repo's own environment read."""
+        the AI CTO and still want a repo's own environment read."""
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return False

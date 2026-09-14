@@ -66,7 +66,7 @@ browser (per-browser, not synced across devices).
 | Debug something interactively | **Chat** |
 | Hand over a task and walk away | **Builds** |
 | Run three jobs in parallel | **Builds** |
-| Get a live preview while iterating on an app | **AI CTO** (a Chat with a project bound to it) |
+| Get a live preview while iterating on an app | **Chat in CTO mode**, with a project bound to it |
 
 Still not sure? Start in **Chat** — you can always ask it to dispatch a
 build for you.

@@ -104,6 +104,29 @@ next to `server.py` at `/tmp/browser/` via `browser-configmap.yaml`.
   (markdown prose + expandable tool-activity chips). No screen scraping.
 - `api/hypervisor.ts`, `store/hypervisor.ts`: canonical event types + polling.
 
+### Modes — one surface, several personas (#683)
+
+A thread carries a `persona` server-side, and the preamble for it is delivered
+once, on turn 1. That is the *whole* difference between a plain chat and the AI
+CTO, so the client treats it as a property of the thread rather than a reason
+for a second page:
+
+- `routes/hypervisor/threadMode.ts` — labels, the sidebar's All/Workspace/CTO
+  filter, and "does this list even hold more than one mode".
+- `store/hypervisor.ts`'s `newChatMode` sets what the **next** new chat is
+  created as. It is creation-time only: a thread that switched mid-flight would
+  carry two identities with no honest way to render that. An open thread shows
+  its mode as a read-only badge.
+- The Board Processor's `board` / `board-gen` personas (#588/#589) use the same
+  mechanism. They are machine-created, so they are badge-only — never offered
+  in the Mode picker.
+- `CtoWelcome.tsx` is the AI CTO's opener, handed to `<Chat>`'s `welcome` slot.
+- `BriefPanel.tsx` + `DevcontainerPanel.tsx` are Chat's right-hand pane,
+  mounted for any chat bound to a project, whatever its mode.
+
+`ctoEnabled` gates whether CTO mode is *offered*, not whether a route exists;
+`/cto` survives only as a redirect into Chat with the mode pre-selected.
+
 ### Voice (issue #396)
 
 `routes/hypervisor/voice.ts` adds an opt-in voice layer. On the web dashboard
