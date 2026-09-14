@@ -89,11 +89,16 @@ GOLDEN = {
         #   2. --effort: server only (same gap as codex above).
         #   3. flag ORDER differs (--format/--cwd swapped) — harmless, but it is
         #      the fingerprint of two hand-written implementations of one fact.
+        #
+        # A FOURTH, deliberate divergence since #639: the interactive modes ask
+        # for `--format pretty` because a Build pane is read by a person and
+        # parsed by nobody, while the orchestrator modes keep `stream-json`
+        # because their output really is read by a machine.
         'interactive': ('python3 /tmp/browser/acp_bridge.py --serve '
-                        '--format stream-json --cwd "$PWD" --mcp default '
+                        '--format pretty --cwd "$PWD" --mcp default '
                         '--model deepseek-v4-flash --effort high'),
         'interactive_auto': ('python3 /tmp/browser/acp_bridge.py --serve '
-                             '--format stream-json --cwd "$PWD" --mcp default '
+                             '--format pretty --cwd "$PWD" --mcp default '
                              '--model deepseek-v4-flash --effort high'),
         'orch_interactive': ('python3 /tmp/browser/acp_bridge.py --serve '
                              '--cwd "$PWD" --format stream-json --mcp default'),

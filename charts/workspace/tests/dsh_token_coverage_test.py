@@ -87,9 +87,15 @@ class HypervisorRollupTest(unittest.TestCase):
 
 
 class UsageProbeTest(unittest.TestCase):
-    """The bridge says, once per turn, whether this harness build reported
-    token usage — so promoting it later is a one-run question, not an
-    archaeology exercise."""
+    """The bridge says whether this harness build reported token usage — so
+    promoting it later is a one-run question, not an archaeology exercise.
+
+    The probe now rides `KC_ACP_DEBUG` rather than printing on every turn
+    (#639). It stayed a one-run question — one env var and one run — but it
+    stopped being a line in the user's Builds pane, where tmux interleaves
+    stderr into the conversation and a per-turn telemetry note reads as though
+    the agent said it.
+    """
 
     def _run(self, prompt_step):
         tmp = tempfile.mkdtemp(prefix='dsh-usage-')
@@ -105,6 +111,8 @@ class UsageProbeTest(unittest.TestCase):
         env['KC_DSH_ARGV'] = json.dumps(
             [sys.executable, agent_path, scenario_path, recorded])
         env['KC_DSH_HANDSHAKE_TIMEOUT'] = '20'
+        # The probe is debug-gated (#639); this suite is what asks for it.
+        env['KC_ACP_DEBUG'] = '1'
         return subprocess.run([sys.executable, bridge, '--cwd', tmp],
                               input='go', capture_output=True, text=True,
                               env=env, timeout=60)
@@ -125,6 +133,33 @@ class UsageProbeTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn('turn reported token usage', p.stderr)
         self.assertIn('"inputTokens": 1000', p.stderr)
+
+    def test_the_probe_is_silent_without_the_flag(self):
+        """The #639 half: it must not print into a Builds pane unasked.
+
+        tmux interleaves stderr into that pane, so a per-turn telemetry note
+        arrives in the middle of a conversation looking like something the
+        agent said.
+        """
+        tmp = tempfile.mkdtemp(prefix='dsh-usage-quiet-')
+        scenario_path = os.path.join(tmp, 'scenario.json')
+        agent_path = os.path.join(tmp, 'stub_agent.py')
+        with open(scenario_path, 'w') as f:
+            json.dump(_base_scenario({'emit': [_chunk('ok')],
+                                      'result': {'stopReason': 'end_turn'}}), f)
+        with open(agent_path, 'w') as f:
+            f.write(STUB_AGENT)
+        bridge = os.path.join(os.path.dirname(HERE), 'acp_bridge.py')
+        env = dict(os.environ)
+        env['KC_DSH_ARGV'] = json.dumps(
+            [sys.executable, agent_path, scenario_path,
+             os.path.join(tmp, 'recorded.jsonl')])
+        env['KC_DSH_HANDSHAKE_TIMEOUT'] = '20'
+        env.pop('KC_ACP_DEBUG', None)
+        p = subprocess.run([sys.executable, bridge, '--cwd', tmp], input='go',
+                           capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn('token usage', p.stderr)
 
     def test_the_probe_does_not_leak_into_the_event_stream(self):
         # Diagnostics belong on stderr; stdout is the event stream the adapter
