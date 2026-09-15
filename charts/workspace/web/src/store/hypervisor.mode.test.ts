@@ -42,18 +42,13 @@ import {
   activeThreadId,
   chatError,
   config,
-  ctoAssistant,
-  ctoModel,
   isCtoChat,
-  isCtoSurface,
   newChatMode,
   selectedAssistant,
   selectedModel,
   selectedProject,
   selectedWorkdir,
   sendMessage,
-  setChatContext,
-  surfacePersona,
   threads,
 } from './hypervisor';
 import { claudeReady } from './claude';
@@ -78,10 +73,7 @@ beforeEach(() => {
   selectedModel.value = 'default';
   selectedProject.value = '';
   selectedWorkdir.value = '/home/dev/kube-coder';
-  ctoAssistant.value = 'ante';
-  ctoModel.value = 'opus';
   claudeReady.value = true;
-  setChatContext('', null);
   listThreads.mockResolvedValue([]);
   getThread.mockResolvedValue({ thread: { status: 'idle' }, events: [] });
   createThread.mockResolvedValue({ id: 't1' });
@@ -99,9 +91,9 @@ describe('the mode a new chat is created with', () => {
     expect(createThread.mock.calls[0][0].persona).toBe('cto');
   });
 
-  it('still lets the CTO page set the persona itself', async () => {
-    setChatContext('cto', 'kc');
-    expect(surfacePersona()).toBe('cto');
+  it('files a CTO chat into the project the user picked', async () => {
+    newChatMode.value = 'cto';
+    selectedProject.value = 'kc';
     await sendMessage('hi');
     expect(createThread.mock.calls[0][0]).toMatchObject({
       persona: 'cto',
@@ -111,20 +103,18 @@ describe('the mode a new chat is created with', () => {
 });
 
 describe('what riding on the mode actually changes', () => {
-  it('binds the project from Chat’s own picker, not the CTO page’s', async () => {
-    // The #483 split is about the CTO PAGE's separate pickers. Chat's Mode
-    // picker adds no second set, so a CTO-mode chat from Chat must use the
-    // project the user chose in Chat — not the page context's null.
+  it('binds the project from the picker, whatever the mode', async () => {
     newChatMode.value = 'cto';
     selectedProject.value = 'pool';
     await sendMessage('plan it');
     expect(createThread.mock.calls[0][0].project_id).toBe('pool');
   });
 
-  it('uses Chat’s own assistant selection, not the CTO page’s', async () => {
+  it('uses Chat’s own assistant selection — there is no second one', async () => {
+    // The AI CTO page carried its own assistant/model/effort (#483) precisely
+    // because it was a second surface. With one surface, one selection.
     newChatMode.value = 'cto';
-    expect(isCtoSurface()).toBe(false); // the PAGE is not driving
-    expect(isCtoChat()).toBe(true); // but the chat is a CTO one
+    expect(isCtoChat()).toBe(true);
     await sendMessage('plan it');
     expect(createThread.mock.calls[0][0]).toMatchObject({
       assistant: 'claude',

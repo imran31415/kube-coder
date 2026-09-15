@@ -1,0 +1,61 @@
+/* The AI CTO's opening beat inside Chat's empty state (#683).
+   Carved out of routes/cto/cto.css when the page was retired; the class names
+   are kept so the markup and its tests read the same. */
+
+.cto-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--size-4);
+  padding: var(--size-3) var(--size-2);
+  text-align: center;
+}
+.cto-welcome-lead {
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-medium);
+  color: var(--text);
+  max-width: 40ch;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+/* First-win connect gate (#494) — same column as the welcome, capped so the
+   two options don't sprawl on a wide desktop pane. */
+.cto-connect { max-width: 460px; width: 100%; text-align: left; }
+.cto-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--size-2);
+}
+.cto-chip {
+  font-size: var(--text-md);
+  padding: 7px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  animation: cto-chip-in var(--motion-base) both;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+@keyframes cto-chip-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.cto-chips .cto-chip:nth-child(2) { animation-delay: 40ms; }
+.cto-chips .cto-chip:nth-child(3) { animation-delay: 80ms; }
+.cto-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.cto-chip:disabled { opacity: 0.5; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .cto-chip { animation: none; } }
+
+/* Touch targets (#503) — phones give the chips a ≥44px tap area (WCAG 2.5.5).
+   Visual padding is preserved via flex centering, so the pill grows only its
+   hit box, not its ink. */
+@media (max-width: 720px) {
+  .cto-chip {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}

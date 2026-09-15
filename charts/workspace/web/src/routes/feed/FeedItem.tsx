@@ -7,7 +7,8 @@ import type { FeedItem as Item, FeedLink } from '../../api/feed';
 /**
  * One feed item (#470). Kind rule on the left, an uppercase meta line, the
  * title + optional markdown body, and action chips that resolve typed refs
- * (task: → /tasks, thread: → /cto, memory: → Memory, href → new tab) plus the
+ * (task: → /tasks, thread: → that chat, memory: → Memory, href → new tab) plus
+ * the
  * signature "Discuss with CTO" handoff.
  */
 
@@ -20,7 +21,10 @@ function openLink(link: FeedLink): void {
   const ref = link.ref || '';
   const [kind, rest] = ref.split(/:(.*)/s);
   if (kind === 'task') navigate(`/tasks/${encodeURIComponent(rest)}`);
-  else if (kind === 'thread') navigate('/cto');
+  // A thread ref opens THAT chat (#683). It used to open the /cto page and
+  // lose the reference, because Chat's list excluded CTO threads so the thread
+  // URL had nothing to open; with one list it does.
+  else if (kind === 'thread') navigate(`/hypervisor/${encodeURIComponent(rest)}`);
   else if (kind === 'memory') navigate('/memory');
   else if (kind === 'board') {
     // `board:<board_id>:<item_id>` — an item awaiting review (#588 Phase 5).

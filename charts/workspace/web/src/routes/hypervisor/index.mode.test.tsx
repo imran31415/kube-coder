@@ -4,7 +4,6 @@ import { HypervisorRoute } from './index';
 import {
   closeThread,
   newChatMode,
-  setChatContext,
   threads as threadStore,
 } from '../../store/hypervisor';
 import { _resetProjectsForTest } from '../../store/projects';
@@ -86,7 +85,6 @@ afterEach(() => {
   serverMode.value = realMode;
   localStorage.clear();
   closeThread();
-  setChatContext('', null);
   newChatMode.value = '';
   _resetProjectsForTest();
 });

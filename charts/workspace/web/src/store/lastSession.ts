@@ -10,12 +10,15 @@
  * to the newest session when the remembered one is gone.
  */
 
-export type SessionKind = 'hypervisor' | 'build' | 'cto';
+// The AI CTO page had its own key, because its thread list was disjoint from
+// Chat's and the two surfaces restored independently. One surface, one key
+// (#683) — a stale `kc.cto.lastThread` in a returning browser is simply
+// ignored.
+export type SessionKind = 'hypervisor' | 'build';
 
 const KEYS: Record<SessionKind, string> = {
   hypervisor: 'kc.hv.lastThread',
   build: 'kc.tasks.lastTask',
-  cto: 'kc.cto.lastThread',
 };
 
 export function rememberLastSession(kind: SessionKind, id: string): void {

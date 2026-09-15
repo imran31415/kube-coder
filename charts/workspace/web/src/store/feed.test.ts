@@ -107,7 +107,7 @@ describe('store/feed', () => {
     }
   });
 
-  it('discussWithCto sets a project-scoped handoff and navigates to /cto', () => {
+  it('discussWithCto sets a project-scoped handoff and navigates to Chat', () => {
     discussWithCto(item({
       title: 'Release is the bottleneck', project_id: 'kc',
       links: [{ label: 'Open task', ref: 'task:t1' }],
@@ -115,6 +115,8 @@ describe('store/feed', () => {
     expect(ctoHandoff.value?.projectId).toBe('kc');
     expect(ctoHandoff.value?.text).toContain('Release is the bottleneck');
     expect(ctoHandoff.value?.text).toContain('task:t1');
-    expect(navigate).toHaveBeenCalledWith('/cto');
+    // Chat consumes the handoff on mount (#683) — the /cto page that used to
+    // is now just a redirect into the same place.
+    expect(navigate).toHaveBeenCalledWith('/hypervisor');
   });
 });

@@ -135,9 +135,11 @@ export async function dismiss(id: string): Promise<void> {
 }
 
 // ── "Discuss with CTO" handoff (the signature action) ──────────────────────
-// Deterministic: builds a context prefix and hands it to the CTO page scoped to
-// the item's project. No LLM in the handoff itself — the CtoRoute consumes this
-// on mount, selects the project, and sends the prefix as the first message.
+// Deterministic: builds a context prefix and hands it to Chat, scoped to the
+// item's project. No LLM in the handoff itself — the Chat route consumes this
+// on mount, files the new chat into the project in CTO mode, and sends the
+// prefix as its first message. It used to land on the /cto page; that page is
+// now a redirect into the same place (#683).
 
 export interface CtoHandoff {
   projectId: string;
@@ -152,7 +154,7 @@ export function discussWithCto(item: FeedItem): void {
     projectId: item.project_id || '',
     text: `Re: ${item.title}${suffix}\n\nWhat should we do about this?`,
   };
-  navigate('/cto');
+  navigate('/hypervisor');
 }
 
 // ── real-time (feed.item SSE with poll fallback, mission.ts pattern) ───────

@@ -23,7 +23,6 @@ const ICONS: Record<string, IconName> = {
   '/tasks': 'tasks',
   '/desktop': 'desktop',
   '/mission': 'mission',
-  '/cto': 'cto',
   '/board': 'board',
   '/feed': 'feed',
   '/hypervisor': 'hypervisor',

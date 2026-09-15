@@ -64,28 +64,42 @@ describe('routeHref()', () => {
 });
 
 describe('NAV_GROUPS (#267)', () => {
-  it('covers every route except /settings exactly once (landing or item)', () => {
+  it('covers every navigable route exactly once (landing or item)', () => {
     const grouped = NAV_GROUPS.flatMap((g) => [
       ...(g.landing ? [g.landing] : []),
       ...g.items.map((i) => i.path),
     ]);
-    const expected = ROUTES.map((r) => r.path).filter((p) => p !== '/settings');
+    // /settings is a standalone trailing item the Rail renders itself, not a
+    // category member. /cto resolves (it redirects into Chat with CTO mode
+    // pre-selected) but is deliberately not a destination any more (#683).
+    const expected = ROUTES.map((r) => r.path).filter(
+      (p) => p !== '/settings' && p !== '/cto',
+    );
     expect([...grouped].sort()).toEqual([...expected].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
   });
 
-  it('visibleNavGroups hides /cto only when ctoEnabled is explicitly false (#467)', () => {
+  it('does not offer /cto as a destination (#683)', () => {
+    // The AI CTO is a mode of Chat now. The path still resolves for old
+    // bookmarks, but nothing in the nav points at it.
+    expect(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))).not.toContain('/cto');
+    expect(ROUTES.map((r) => r.path)).toContain('/cto');
+  });
+
+  it('visibleNavGroups hides /feed only when ctoEnabled is explicitly false (#467/#470)', () => {
     const paths = (gs: ReturnType<typeof visibleNavGroups>) =>
       gs.flatMap((g) => g.items.map((i) => i.path));
-    // Default / undefined / true → /cto present.
-    expect(paths(visibleNavGroups({}))).toContain('/cto');
-    expect(paths(visibleNavGroups({ ctoEnabled: true }))).toContain('/cto');
-    // Explicit false → filtered out, everything else intact.
+    // Default / undefined / true → the Feed is present.
+    expect(paths(visibleNavGroups({}))).toContain('/feed');
+    expect(paths(visibleNavGroups({ ctoEnabled: true }))).toContain('/feed');
+    // Explicit false → the Feed goes (it rides the AI CTO), everything else
+    // stays. Chat is NOT gated: the flag now hides the Mode picker inside it,
+    // not the surface itself (#683).
     const hidden = visibleNavGroups({ ctoEnabled: false });
-    expect(paths(hidden)).not.toContain('/cto');
+    expect(paths(hidden)).not.toContain('/feed');
     expect(paths(hidden)).toContain('/hypervisor');
     // Pure: the module constant is not mutated.
-    expect(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))).toContain('/cto');
+    expect(NAV_GROUPS.flatMap((g) => g.items.map((i) => i.path))).toContain('/feed');
   });
 
   it('navGroupFor resolves items and landings, and misses /settings', () => {

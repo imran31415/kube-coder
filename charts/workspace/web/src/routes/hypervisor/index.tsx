@@ -19,6 +19,7 @@ import {
   selectedProject,
   selectedWorkdir,
   newChatMode,
+  sendMessage,
   assistantModels,
   assistantEfforts,
   assistantEffortDefault,
@@ -43,15 +44,19 @@ import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
 import {
+  initProjects,
   matchesProjectDefaults,
   projects,
-  refreshProjects,
   selectProject,
   setProjectAssistantDefaults,
   startProjectsPolling,
   stopProjectsPolling,
 } from '../../store/projects';
 import { serverMode } from '../../store/server-mode';
+import { ctoHandoff } from '../../store/feed';
+import { justOnboarded } from '../../store/onboarding';
+import { refreshClaudeReady } from '../../store/claude';
+import { CtoWelcome } from './CtoWelcome';
 import { BottomSheet } from '../../components/BottomSheet';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { BriefPanel, BriefTab } from './BriefPanel';
@@ -130,6 +135,11 @@ export function HypervisorRoute() {
   // with no other visible result, so it has to say something.
   const [savingDefault, setSavingDefault] = useState(false);
   const [savedDefault, setSavedDefault] = useState(false);
+  // First-win landing (#487): a user arriving straight from onboarding gets a
+  // build-first opener. Capture the transient flag at mount and clear the
+  // signal so a later visit in the same session shows the normal welcome.
+  const [firstWin] = useState(() => justOnboarded.value);
+  const justOnboardedAtMount = firstWin;
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -188,15 +198,38 @@ export function HypervisorRoute() {
   }
 
   useEffect(() => {
+    // A "Discuss with CTO" handoff from the Feed (#470) overrides the usual
+    // restore: it means "start a CTO chat about THIS, filed under its project,
+    // with this context prefix already said". Consumed here because the /cto
+    // page that used to consume it is now a redirect into this route (#683).
+    const handoff = ctoHandoff.value;
+    if (handoff) {
+      ctoHandoff.value = null;
+      newChatMode.value = 'cto';
+      selectedProject.value = handoff.projectId || '';
+    }
+    // Consume the one-shot first-win flag so it never re-triggers on a later
+    // same-session visit (the captured `firstWin` local still drives this mount).
+    if (justOnboarded.value) justOnboarded.value = false;
+
     // On a bare /hypervisor entry (tab click, returning to the app), reopen
     // the chat the user last had open — or the newest one — once the thread
     // list is in. Mount-only, so the sidebar's "New" button and mobile back
     // (in-route navigations to the bare path) still mean "new chat" and are
-    // never fought; a deep link (/hypervisor/<id>) always wins.
+    // never fought; a deep link (/hypervisor/<id>) always wins. A handoff or a
+    // first-win landing wants a NEW chat, so neither restores.
     const enteredBare = !pathSuffix(currentPath.value).split('/')[0];
+    const wantsNewChat = !!handoff || justOnboardedAtMount;
     let cancelled = false;
     void initHypervisor().then(() => {
-      if (cancelled || !enteredBare) return;
+      if (cancelled) return;
+      if (handoff) {
+        // The thread list is in, so a send now creates the bound thread and
+        // lands the prefix as its first turn.
+        void sendMessage(handoff.text);
+        return;
+      }
+      if (!enteredBare || wantsNewChat) return;
       // Re-check the world after the async load: the user may have navigated
       // away, opened a chat, or started composing a new thread meanwhile.
       if (!currentPath.value.startsWith('/hypervisor')) return;
@@ -205,10 +238,14 @@ export function HypervisorRoute() {
       if (id) navigate(`/hypervisor/${encodeURIComponent(id)}`, true);
     });
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
-    // Projects back the chat↔project binding (#358): the picker's options and
-    // the sidebar's group labels. Cheap and cached; a workspace with none just
-    // keeps both hidden.
-    void refreshProjects();
+    // Projects back the chat↔project binding (#358): the picker's options, the
+    // sidebar's group labels and pulse, and the brief pane. Zero-touch
+    // discovery runs once per page load — it used to be the /cto page's
+    // bootstrap, and with that page gone this is where new projects are found.
+    void initProjects();
+    // Know whether Claude is connected so the CTO welcome can offer the connect
+    // panel instead of firing a doomed build (#494).
+    void refreshClaudeReady();
     return () => {
       cancelled = true;
       closeThread();
@@ -1095,7 +1132,27 @@ export function HypervisorRoute() {
           ]}
         />
 
-        <Chat />
+        {/* The AI CTO's opening beat (#683). Handed to <Chat> rather than
+            rendered above it so opener, chips and composer land in the
+            transcript's centring slot and read as one hero (#500); Chat shows
+            it only while the thread is empty. Only for a chat being composed
+            in CTO mode — an open thread has a transcript, and a plain new chat
+            keeps Chat's own hero. */}
+        {ctoComposing ? (
+          <Chat
+            hideEmptyState
+            welcome={
+              <CtoWelcome
+                projectName={
+                  projectList.find((p) => p.id === selectedProject.value)?.name ?? null
+                }
+                firstWin={firstWin}
+              />
+            }
+          />
+        ) : (
+          <Chat />
+        )}
       </section>
 
       {/* The deterministic project brief (#466), no longer a property of the

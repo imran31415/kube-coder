@@ -4,6 +4,7 @@ import { githubStatus, setGitConfig, generateSshKey, type GitHubStatus } from '.
 import { getHypervisorConfig } from '../api/hypervisor';
 import { navigate } from '../store/router';
 import { justOnboarded } from '../store/onboarding';
+import { newChatMode } from '../store/hypervisor';
 import { pushToast } from '../store/ui';
 import { Button } from './primitives/Button';
 import { Input } from './primitives/Input';
@@ -165,9 +166,10 @@ export function Onboarding() {
   }
 
   // Land the newly-onboarded user in the AI CTO front door (#487) instead of
-  // seeding a Build-tab "tour" task. The CTO welcome shows a warm first-win
-  // opener; combined with #486 the user's one-sentence reply builds immediately
-  // and #484/#485 auto-surface the preview.
+  // seeding a Build-tab "tour" task. That front door is now Chat with CTO mode
+  // pre-selected (#683) rather than a page of its own: same warm first-win
+  // opener, and combined with #486 the user's one-sentence reply builds
+  // immediately while #484/#485 auto-surface the preview.
   function enterCto() {
     // Backstop: never route a keyless user into the CTO with no way to build —
     // send them to the connect step instead (#494). Only applies to Claude-
@@ -177,7 +179,8 @@ export function Onboarding() {
       return;
     }
     justOnboarded.value = true;
-    navigate('/cto');
+    newChatMode.value = 'cto';
+    navigate('/hypervisor');
     dismiss();
   }
 

@@ -77,6 +77,9 @@ export const ROUTES: RouteDef[] = [
   // bare visit to the dashboard.
   { path: '/desktop', title: 'Desktop' },
   { path: '/mission', title: 'Mission Control' },
+  // Kept resolvable, not navigable (#683): /cto is a permanent redirect into
+  // Chat with CTO mode pre-selected, so old bookmarks and doc links still land
+  // somewhere sensible. It is deliberately absent from NAV_GROUPS below.
   { path: '/cto', title: 'AI CTO' },
   { path: '/board', title: 'Board' },
   { path: '/feed', title: 'Feed' },
@@ -124,12 +127,12 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Mission Control',
     landing: '/mission',
     items: [
-      { path: '/cto', label: 'AI CTO' },
+      // Chat leads the group now that the AI CTO is a mode of it (#683).
+      { path: '/hypervisor', label: 'Chat' },
       // The Board Processor works someone ELSE's backlog, so it belongs beside
-      // the AI CTO (which reasons over ours) rather than under Workspace.
+      // Chat (where the AI CTO reasons over ours) rather than under Workspace.
       { path: '/board', label: 'Board' },
       { path: '/feed', label: 'Feed' },
-      { path: '/hypervisor', label: 'Chat' },
       { path: '/tasks', label: 'Builds' },
       { path: '/walkie' },
       // Triggers fire builds — agent ops, not workspace plumbing.
@@ -152,20 +155,18 @@ export const NAV_GROUPS: NavGroup[] = [
  * NAV_GROUPS with capability-gated items removed. Pure — callers pass the flags
  * (from serverMode) so this module stays free of store imports.
  *
- * `/cto` hides when the AI CTO feature is off (#467); `/board` hides when the
- * Board Processor is off (#588/#589). They are INDEPENDENT gates: a workspace
- * can work an external board without running an AI CTO, and vice versa.
+ * `/feed` hides when the AI CTO feature is off (#467/#470 — the Feed rides it);
+ * `/board` hides when the Board Processor is off (#588/#589). They are
+ * INDEPENDENT gates: a workspace can work an external board without running an
+ * AI CTO, and vice versa. `/cto` is no longer listed at all (#683) — with the
+ * page folded into Chat, `ctoEnabled` gates the Mode picker, not a destination.
  */
 export function visibleNavGroups(caps: {
   ctoEnabled?: boolean;
   boardEnabled?: boolean;
 }): NavGroup[] {
   const hidden = new Set<string>();
-  if (caps.ctoEnabled === false) {
-    // The Feed rides the AI CTO, so both hide together (#467/#470).
-    hidden.add('/cto');
-    hidden.add('/feed');
-  }
+  if (caps.ctoEnabled === false) hidden.add('/feed');
   if (caps.boardEnabled === false) hidden.add('/board');
   if (hidden.size === 0) return NAV_GROUPS;
   return NAV_GROUPS.map((g) => ({
