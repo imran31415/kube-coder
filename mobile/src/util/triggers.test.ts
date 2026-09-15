@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { CronRecord, WebhookRecord } from '../api/types';
+import type { CronRecord, WebhookRecord, PageWatchRecord } from '../api/types';
 import {
+  isValidWatchUrl,
+  isValidSelector,
   describeSchedule,
   filterTriggers,
   isValidSchedule,
@@ -127,5 +129,86 @@ describe('filterTriggers', () => {
   it('is case-insensitive and returns everything for an empty query', () => {
     expect(filterTriggers(list, 'GITHUB').map((t) => t.id)).toEqual(['github-ci']);
     expect(filterTriggers(list, '   ')).toHaveLength(2);
+  });
+});
+
+describe('page-watch validation (mirrors server.py)', () => {
+  it('holds page-watch ids to the tight k8s-name rule, like crons', () => {
+    // PageWatchManager reuses CronManager._ID_RE — a watch is backed by a
+    // CronJob too, so it inherits the stricter rule, not the webhook one.
+    expect(isValidTriggerId('page-watch', 'ci-green')).toBe(true);
+    expect(isValidTriggerId('page-watch', 'CI-Green')).toBe(false);
+    expect(isValidTriggerId('page-watch', 'has_underscore')).toBe(false);
+    expect(isValidTriggerId('page-watch', 'a'.repeat(41))).toBe(false);
+    // ...and the webhook rule really is looser, so this is a real distinction.
+    expect(isValidTriggerId('webhook', 'has_underscore')).toBe(true);
+  });
+
+  it('accepts http(s) urls and rejects everything else', () => {
+    expect(isValidWatchUrl('https://example.com/build')).toBe(true);
+    expect(isValidWatchUrl('http://example.com')).toBe(true);
+    expect(isValidWatchUrl('example.com')).toBe(false);
+    expect(isValidWatchUrl('file:///etc/passwd')).toBe(false);
+    expect(isValidWatchUrl('javascript:alert(1)')).toBe(false);
+    expect(isValidWatchUrl('')).toBe(false);
+    expect(isValidWatchUrl(`https://e.test/${'x'.repeat(2100)}`)).toBe(false);
+  });
+
+  it('accepts the selector subset page_watch.parse_selector supports', () => {
+    for (const ok of ['div', '#main', '.status', 'div.card', 'span#id.a.b',
+      '[data-state="green"]', '.build .status']) {
+      expect(isValidSelector(ok)).toBe(true);
+    }
+  });
+
+  it('rejects selector syntax the server would refuse', () => {
+    // Rejecting here means the user learns the limit while typing, rather
+    // than from a failed save.
+    for (const bad of ['.a > .b', '.a + .b', '.a ~ .b', '.a, .b', 'a:hover']) {
+      expect(isValidSelector(bad)).toBe(false);
+    }
+  });
+
+  it('treats an empty selector as "watch the whole page"', () => {
+    expect(isValidSelector('')).toBe(true);
+    expect(isValidSelector('   ')).toBe(true);
+  });
+});
+
+describe('mergeTriggers with page watches', () => {
+  const pw = (over: Partial<PageWatchRecord> = {}): PageWatchRecord => ({
+    id: 'ci',
+    url: 'https://example.test/badge.svg',
+    schedule: '*/5 * * * *',
+    prompt_template: 'CI changed',
+    created_at: 500,
+    ...over,
+  });
+
+  it('folds all three kinds into one newest-first stream', () => {
+    const out = mergeTriggers(
+      [webhook({ created_at: 100 })],
+      [cron({ created_at: 200 })],
+      [pw({ created_at: 300 })],
+    );
+    expect(out.map((t) => t.kind)).toEqual(['page-watch', 'cron', 'webhook']);
+  });
+
+  it('carries the page-watch fields the row renders', () => {
+    const [t] = mergeTriggers([], [], [pw({ selector: '.status', last_error: 'boom' })]);
+    expect(t.url).toBe('https://example.test/badge.svg');
+    expect(t.selector).toBe('.status');
+    expect(t.last_error).toBe('boom');
+  });
+
+  it('defaults to no page watches so existing callers still work', () => {
+    expect(mergeTriggers([webhook()], [cron()])).toHaveLength(2);
+  });
+
+  it('filters on the url and selector, not just id and prompt', () => {
+    const list = mergeTriggers([], [], [pw({ selector: '.build-status' })]);
+    expect(filterTriggers(list, 'badge.svg')).toHaveLength(1);
+    expect(filterTriggers(list, 'build-status')).toHaveLength(1);
+    expect(filterTriggers(list, 'nothing-here')).toHaveLength(0);
   });
 });
