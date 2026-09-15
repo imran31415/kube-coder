@@ -45,6 +45,13 @@ import { SearchSelect } from '../../components/primitives/SearchSelect';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
+import {
+  filterByMode,
+  hasMixedModes,
+  personaHint,
+  personaLabel,
+  type ThreadModeFilter,
+} from './threadMode';
 import { groupByProject, isUngrouped } from './projectGroups';
 import {
   SIDEBAR_W_DEFAULT,
@@ -76,6 +83,9 @@ export function HypervisorRoute() {
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
+  // Which thread modes the list shows (#683). 'all' is the default and the
+  // only state a workspace that has never started a CTO chat ever sees.
+  const [modeFilter, setModeFilter] = useState<ThreadModeFilter>('all');
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -201,10 +211,16 @@ export function HypervisorRoute() {
     !!effortCap &&
     efforts.indexOf(currentEffort) > efforts.indexOf(effortCap);
 
+  // One list for every mode (#683). The chip narrows it; it never hides a
+  // thread by default, and the row only appears once the workspace actually
+  // holds more than one mode.
+  const showModeChips = hasMixedModes(list);
+  const modeFiltered = showModeChips ? filterByMode(list, modeFilter) : list;
+
   // Split into what you're working with now vs. older chats. Derived purely
   // from status + updated_at (see chatTabs.ts) — no server change needed.
   const { active: activeThreads, past: pastThreads } = partitionThreads(
-    list,
+    modeFiltered,
     active,
     Date.now(),
   );
@@ -275,6 +291,9 @@ export function HypervisorRoute() {
   }
 
   function renderThread(t: HypervisorThread) {
+    // A thread's mode is read-only (#683): it is fixed at creation, because the
+    // preamble that defines it is delivered once, on turn 1.
+    const modeBadge = personaLabel(t.persona);
     return renamingId === t.id ? (
       <div
         key={t.id}
@@ -321,6 +340,11 @@ export function HypervisorRoute() {
           <span class="hv-thread-body">
             <span class="hv-thread-title">{t.title || 'New chat'}</span>
             <span class="hv-thread-agent">
+              {modeBadge && (
+                <span class="hv-thread-mode" title={personaHint(t.persona)}>
+                  {modeBadge}
+                </span>
+              )}
               {t.assistant}
               {t.workdir ? ` · ${shortDir(t.workdir)}` : ''}
             </span>
@@ -411,6 +435,32 @@ export function HypervisorRoute() {
             {pastThreads.length > 0 && <span class="hv-tab-count">{pastThreads.length}</span>}
           </button>
         </nav>
+
+        {/* Mode filter (#683). CTO threads live in THIS list now, so the chip
+            row exists only to narrow it — never to hide anything by default.
+            Rendered only once the workspace actually holds more than one mode,
+            so a workspace that has never started a CTO chat is unchanged. */}
+        {showModeChips && (
+          <div class="hv-modes" role="group" aria-label="Filter chats by mode">
+            {(
+              [
+                ['all', 'All'],
+                ['default', 'Workspace'],
+                ['cto', 'CTO'],
+              ] as [ThreadModeFilter, string][]
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                class={`hv-mode-chip ${modeFilter === value ? 'hv-mode-chip-on' : ''}`}
+                aria-pressed={modeFilter === value}
+                onClick={() => setModeFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Which CLI agent a new chat uses — any enabled assistant. The chat is
             a clean layer over the agent the user already configures. */}
@@ -732,6 +782,12 @@ export function HypervisorRoute() {
             {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
                 {statusLabel(status as ThreadStatus)}
+              </Pill>
+            )}
+            {/* The open thread's mode, read-only (#683) — see renderThread. */}
+            {activeThread && personaLabel(activeThread.persona) && (
+              <Pill tone="info" title={personaHint(activeThread.persona)}>
+                {personaLabel(activeThread.persona)}
               </Pill>
             )}
             {(activeThread?.assistant || selectedAssistant.value) && (

@@ -146,6 +146,37 @@
   color: var(--text-muted);
 }
 
+/* Mode filter (#683) — All / Workspace / CTO. Deliberately lighter than the
+   Active/Past tabs above it: those split the list by recency (always present),
+   this one only appears once the workspace actually holds more than one mode. */
+.hv-modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 var(--size-3) var(--size-2);
+}
+.hv-mode-chip {
+  padding: 2px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-subtle);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast);
+}
+.hv-mode-chip:hover { color: var(--text); border-color: var(--border-strong); }
+.hv-mode-chip-on {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
 .hv-agent-picker {
   display: flex;
   flex-direction: column;
@@ -290,6 +321,19 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The thread's mode (#683) — a badge, not a control: a thread's persona is
+   fixed at creation because its preamble is delivered once, on turn 1. */
+.hv-thread-mode {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
 }
 
 .hv-thread-del,
