@@ -25,6 +25,7 @@ import {
   type BoardItemsResult,
   type BoardRun,
   type BoardRunSummary,
+  type RunItemState,
   listBoardTemplates,
   fillBoardTemplate,
   createBoard,
@@ -382,12 +383,37 @@ export async function stopRun(
  *  in flight. It stops the moment nothing is running. */
 const RUN_POLL_MS = 3000;
 let runPollTimer: ReturnType<typeof setInterval> | null = null;
+let runPollBoard: string | null = null;
 
+/**
+ * When run state was last read back from the server.
+ *
+ * The UI uses this to say "live" versus "last updated 40s ago". Without it a
+ * dropped event stream is indistinguishable from a quiet board: the numbers
+ * simply stop moving, and the operator cannot tell whether the run stalled or
+ * the page did.
+ */
+export const lastRunSync = signal<number | null>(null);
+
+/**
+ * Poll run progress for a board.
+ *
+ * Idempotent per board, because ownership moved up to the route. This used to
+ * be started and stopped by RunsPanel's own mount effect, and the tabs render
+ * conditionally — so stepping over to Review to approve something silently
+ * killed the poll tracking the run you went there to act on. Progress then
+ * rode entirely on the event stream, with nothing on screen to say so when
+ * that stream had dropped.
+ */
 export function startRunPolling(boardId: string): void {
+  if (runPollTimer != null && runPollBoard === boardId) return;
   stopRunPolling();
+  runPollBoard = boardId;
   runPollTimer = setInterval(() => {
     if (!hasLiveRun.value && !activeRun.value) return;
-    void refreshRuns(boardId);
+    void refreshRuns(boardId).then(() => {
+      lastRunSync.value = Date.now();
+    });
     const open = activeRun.value;
     if (open && open.status === 'running') void openRun(boardId, open.id);
   }, RUN_POLL_MS);
@@ -398,6 +424,7 @@ export function stopRunPolling(): void {
     clearInterval(runPollTimer);
     runPollTimer = null;
   }
+  runPollBoard = null;
 }
 
 // ── review ─────────────────────────────────────────────────────────────────
@@ -422,6 +449,89 @@ export async function refreshReview(boardId: string): Promise<void> {
 }
 
 /**
+ * Which decision is in flight on which item.
+ *
+ * This used to be a `busy` boolean private to ReviewPanel, and a boolean is
+ * exactly one bit short of what the button needs: it could grey the card out
+ * but could not say *what* was happening, so an approve waiting on a real
+ * GitHub write looked identical to a UI that had wedged. Holding the KIND here
+ * lets every surface — the card, the header, the mobile list — label the wait
+ * with the verb the operator actually clicked.
+ */
+export type DecisionKind = 'approve' | 'reject' | 'send_back' | 'edit';
+
+export const decisionPending = signal<Record<string, DecisionKind>>({});
+
+function setPending(itemId: string, kind: DecisionKind | null): void {
+  const next = { ...decisionPending.value };
+  if (kind) next[itemId] = kind;
+  else delete next[itemId];
+  decisionPending.value = next;
+}
+
+/**
+ * Patch one staged record in place, without re-reading the queue.
+ *
+ * A decision used to cost two serialized round trips before anything moved on
+ * screen: the write itself (a real call to the vendor, seconds long) and then
+ * a full re-read of the queue. The card only stopped looking busy after both.
+ * Applying the outcome locally the moment the write returns settles the card
+ * on the first round trip; the re-read still happens, but it confirms rather
+ * than blocks.
+ */
+function patchRecord(itemId: string, patch: Partial<StagedRecord>): void {
+  reviewGroups.value = reviewGroups.value.map((group) => ({
+    ...group,
+    items: group.items.map((r) =>
+      r.item_id === itemId ? { ...r, ...patch } : r,
+    ),
+  }));
+}
+
+/**
+ * Re-read the board's items after a decision, at most once per burst.
+ *
+ * Unlike the rest of the fan-out, this is an outbound call to somebody else's
+ * API, and the module note above is emphatic about not spending the vendor's
+ * rate-limit budget. Approving six cards in a row is one intent, not six, so
+ * the listing refreshes once after the flurry stops rather than per click.
+ */
+const ITEMS_REFRESH_DEBOUNCE_MS = 1200;
+let itemsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleItemsRefresh(boardId: string): void {
+  if (itemsRefreshTimer != null) clearTimeout(itemsRefreshTimer);
+  itemsRefreshTimer = setTimeout(() => {
+    itemsRefreshTimer = null;
+    if (selectedBoardId.value === boardId) void loadItems(boardId, true);
+  }, ITEMS_REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * Everything a decision changes, refreshed together.
+ *
+ * A decision is not confined to the review queue: approving a write closes the
+ * real ticket, which changes the Items listing; it settles the run item, which
+ * changes the Runs table; and it lands in the decision ledger, which changes
+ * the approval rate. Refreshing only the queue meant an operator could approve
+ * a card, switch to Items, and still see the issue they had just closed listed
+ * as open — the staleness the maintainer described as "hard to tell the state
+ * of the board and items".
+ *
+ * The reads are issued together rather than in sequence because they are
+ * independent, and `allSettled` because a failing metrics read must not stop
+ * the queue from refreshing.
+ */
+export async function syncAfterDecision(boardId: string): Promise<void> {
+  scheduleItemsRefresh(boardId);
+  await Promise.allSettled([
+    refreshReview(boardId),
+    refreshRuns(boardId),
+    refreshBoardMetrics(boardId),
+  ]);
+}
+
+/**
  * A client-minted id for one decision.
  *
  * The point is that it is generated ONCE per decision and reused by every
@@ -442,6 +552,7 @@ export async function approveStaged(
   record: StagedRecord,
   approvalId = newApprovalId(),
 ): Promise<string | null> {
+  setPending(record.item_id, 'approve');
   try {
     await approveStagedActions(boardId, record.item_id, {
       // The hash the CARD was drawn from, not a freshly-read one: that is what
@@ -449,7 +560,13 @@ export async function approveStaged(
       content_hash: record.content_hash,
       approval_id: approvalId,
     });
-    await refreshReview(boardId);
+    // Settle the card now; the fan-out below only confirms it.
+    patchRecord(record.item_id, {
+      state: 'approved',
+      open: false,
+      pending_actions: [],
+    });
+    void syncAfterDecision(boardId);
     return null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -458,6 +575,8 @@ export async function approveStaged(
     // what actually changed rather than an error over a stale card.
     await refreshReview(boardId);
     return message;
+  } finally {
+    setPending(record.item_id, null);
   }
 }
 
@@ -467,17 +586,22 @@ export async function rejectStaged(
   reason: string,
   approvalId = newApprovalId(),
 ): Promise<string | null> {
+  setPending(itemId, 'reject');
   try {
     await rejectStagedActions(boardId, itemId, {
       approval_id: approvalId,
       reason,
     });
-    await refreshReview(boardId);
+    patchRecord(itemId, { state: 'rejected', open: false, pending_actions: [] });
+    void syncAfterDecision(boardId);
     return null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     reviewError.value = message;
+    await refreshReview(boardId);
     return message;
+  } finally {
+    setPending(itemId, null);
   }
 }
 
@@ -497,27 +621,38 @@ export async function sendBackStaged(
   note: string,
   approvalId = newApprovalId(),
 ): Promise<string | null> {
+  setPending(itemId, 'send_back');
   try {
     const res = await sendBackStagedActions(boardId, itemId, {
       approval_id: approvalId,
       note,
     });
     lastResumeOutcome.value = res.resume ?? null;
-    await refreshReview(boardId);
+    patchRecord(itemId, { state: 'sent_back', open: false, pending_actions: [] });
+    void syncAfterDecision(boardId);
     return null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     reviewError.value = message;
+    await refreshReview(boardId);
     return message;
+  } finally {
+    setPending(itemId, null);
   }
 }
 
+/**
+ * Edit is NOT a decision — the item stays open, and nothing has been written to
+ * the board yet — so it refreshes the queue only and deliberately skips the
+ * fan-out that approve, reject and send-back perform.
+ */
 export async function editStaged(
   boardId: string,
   itemId: string,
   actionId: string,
   params: Record<string, unknown>,
 ): Promise<string | null> {
+  setPending(itemId, 'edit');
   try {
     await editStagedAction(boardId, itemId, {
       action_id: actionId,
@@ -529,6 +664,8 @@ export async function editStaged(
     const message = err instanceof Error ? err.message : String(err);
     reviewError.value = message;
     return message;
+  } finally {
+    setPending(itemId, null);
   }
 }
 
@@ -540,7 +677,13 @@ let eventRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 function onDashboardEvent(ev: DashboardEvent): void {
   if (ev.type === 'boards.review') {
     const boardId = String(ev.data.board_id ?? '');
-    if (boardId && boardId === selectedBoardId.value) void refreshReview(boardId);
+    if (boardId && boardId === selectedBoardId.value) {
+      void refreshReview(boardId);
+      // An agent staging work, or another reviewer deciding, moves the
+      // approval rate too — refreshing the queue alone left the strip under
+      // it quoting a figure from before the thing that just happened.
+      void refreshBoardMetrics(boardId);
+    }
     return;
   }
   if (ev.type === 'boards.run') {
@@ -548,7 +691,9 @@ function onDashboardEvent(ev: DashboardEvent): void {
     // riding the debounce that exists to protect the vendor's rate limit.
     const boardId = String(ev.data.board_id ?? '');
     if (boardId && boardId === selectedBoardId.value) {
-      void refreshRuns(boardId);
+      void refreshRuns(boardId).then(() => {
+        lastRunSync.value = Date.now();
+      });
       const open = activeRun.value;
       if (open && open.id === ev.data.id) void openRun(boardId, open.id);
     }
@@ -585,6 +730,95 @@ export function stopBoardsEvents(): void {
 
 /** True when SSE is up, so the UI can say "live" instead of implying a poll. */
 export const boardsLive = computed(() => eventStreamConnected.value);
+
+// ── where the board stands, and what to do next ────────────────────────────
+
+/**
+ * One line's worth of "where am I".
+ *
+ * The four tabs each answer a different question and none of them answers the
+ * first one an operator actually has, which is *what is happening and what
+ * should I do now*. Finding that out meant visiting Items to count, Runs to
+ * see whether anything was moving, and Review to see whether anything was
+ * waiting — the maintainer's "hard to tell the state of the board and items
+ * and next steps easily".
+ *
+ * `next` is deliberately one sentence rather than a status dump: a summary
+ * that lists five facts and recommends nothing has moved the work of deciding
+ * back onto the reader. The tab that sentence points at is returned separately
+ * as `nextTab`, so the UI can offer a button that goes there rather than
+ * printing "open Review" at somebody already reading the review queue.
+ */
+export type BoardTab = 'items' | 'runs' | 'review' | 'credentials';
+
+export interface BoardStanding {
+  items: number;
+  /** A run is in flight on this board. */
+  live: boolean;
+  working: number;
+  queued: number;
+  settled: number;
+  runTotal: number;
+  /** Open review cards — the count the Review badge shows. */
+  awaiting: number;
+  /** What is going on, in one sentence. Empty when there is no board. */
+  next: string;
+  /** Where acting on `next` would take you, or null when nothing is owed. */
+  nextTab: BoardTab | null;
+}
+
+export const boardStanding = computed<BoardStanding>(() => {
+  const board = selectedBoard.value;
+  const listing = selectedItems.value;
+  const runs = selectedBoardRuns.value;
+  const awaiting = openReviewCount.value;
+  const live = runs.find((r) => r.status === 'running') ?? null;
+
+  const counts: Partial<Record<RunItemState, number>> = live?.counts ?? {};
+  const working = (counts.working ?? 0) + (counts.claimed ?? 0);
+  const queued = counts.pending ?? 0;
+  const settled = live ? live.done + live.failed + live.skipped : 0;
+
+  const n = (count: number, one: string, many: string) =>
+    count === 1 ? one : many;
+
+  let next = '';
+  let nextTab: BoardTab | null = null;
+  if (!board) {
+    next = '';
+  } else if (board.credential_set === false) {
+    next = 'This board has no credential yet, so nothing can authenticate.';
+    nextTab = 'credentials';
+  } else if (live && awaiting > 0) {
+    next = `A run is in flight, and ${awaiting} ${n(awaiting, 'item', 'items')} already ${n(awaiting, 'needs', 'need')} your decision.`;
+    nextTab = 'review';
+  } else if (live) {
+    next = 'A run is in flight. Nothing needs you yet.';
+  } else if (awaiting > 0) {
+    next = `${awaiting} ${n(awaiting, 'item is', 'items are')} waiting on your decision.`;
+    nextTab = 'review';
+  } else if (!listing || listing.items.length === 0) {
+    next = 'No items were read from this board. Check the connector before running it.';
+  } else if (runs.length === 0) {
+    next = 'Nothing has been worked here yet.';
+    nextTab = 'runs';
+  } else {
+    next = 'Everything worked so far has been decided.';
+    nextTab = 'runs';
+  }
+
+  return {
+    items: listing?.items.length ?? 0,
+    live: !!live,
+    working,
+    queued,
+    settled,
+    runTotal: live?.total ?? 0,
+    awaiting,
+    next,
+    nextTab,
+  };
+});
 
 // ── strategies and metrics (#588 Phase 7) ──────────────────────────────────
 
@@ -773,6 +1007,12 @@ export function _resetBoardsForTest(): void {
   strategyPreview.value = null;
   boardMetrics.value = null;
   lastResumeOutcome.value = null;
+  decisionPending.value = {};
+  lastRunSync.value = null;
+  if (itemsRefreshTimer != null) {
+    clearTimeout(itemsRefreshTimer);
+    itemsRefreshTimer = null;
+  }
   stopRunPolling();
   stopBoardsEvents();
 }

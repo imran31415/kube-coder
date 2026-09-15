@@ -640,7 +640,10 @@
 .board-run-clamp { color: var(--warn); font-size: var(--text-xs); margin: 0 0 var(--size-2); }
 .board-run-items { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
 .board-run-items td { padding: var(--size-1) var(--size-2); border-bottom: 1px solid var(--border); }
-.board-run-item-failed td { color: var(--danger); }
+/* The FAILED pill and the error text carry the alarm now; tinting the key and
+   title red as well made the row harder to read rather than more urgent. */
+.board-run-item-failed .board-run-item-title,
+.board-run-item-failed td.mono { color: var(--text); }
 .board-run-item-skipped td { color: var(--text-subtle); }
 .board-run-item-error { color: var(--danger); }
 .board-run-stop-note {
@@ -860,4 +863,205 @@
   .queue-shape { flex-direction: column; align-items: stretch; gap: var(--size-3); }
   .qs-row { grid-template-columns: 4.5rem minmax(0, 1fr); }
   .qs-legend { grid-column: 1 / -1; flex-wrap: wrap; }
+}
+
+/* ── state legibility: standing strip, state pills, spinners ───────────────
+ *
+ * Everything in this block exists to answer one of two questions the surface
+ * could not previously answer at a glance: *what is happening right now*, and
+ * *did my click do anything*. Colour is used only to separate live from
+ * settled from failed — the ordinal ramp in queue-shape stays the page's only
+ * multi-step palette.
+ */
+
+.board-spinner {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: var(--size-1);
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: board-spin 0.7s linear infinite;
+  vertical-align: -0.05em;
+  flex: none;
+}
+
+@keyframes board-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Where the board stands, above the tab body. */
+.board-standing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--size-2) var(--size-4);
+  padding: var(--size-3) var(--size-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.board-standing-next {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text);
+  flex: 1 1 22rem;
+}
+.board-standing-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-3);
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+}
+.board-standing-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-1);
+  white-space: nowrap;
+}
+.board-standing-working { color: var(--accent); }
+.board-standing-awaiting { color: var(--warn); }
+
+/* Freshness, never asserted on faith — `is-stale` is what a dropped event
+ * stream looks like, and saying so beats stale numbers under a "live" label. */
+.board-standing-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-1);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--size-2);
+  border: 1px solid transparent;
+}
+.board-standing-live::before {
+  content: '';
+  width: 0.45em;
+  height: 0.45em;
+  border-radius: 50%;
+  background: currentColor;
+}
+.board-standing-live.is-live { color: var(--success); border-color: var(--border); }
+.board-standing-live.is-stale { color: var(--text-subtle); border-color: var(--border); }
+
+/* A run in flight, visible from any tab. */
+.board-tab-live {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: board-pulse 1.6s ease-in-out infinite;
+  flex: none;
+}
+
+@keyframes board-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Per-run counts, above its item table. */
+.board-run-tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-3);
+  list-style: none;
+  margin: 0 0 var(--size-3);
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+}
+.board-run-tally-working { color: var(--accent); }
+.board-run-tally-failed { color: var(--danger); }
+.board-run-tally-done { color: var(--success); }
+
+/* One item's state, as a pill rather than another word in the same ink. */
+.board-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-1);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--size-2);
+  border: 1px solid var(--border);
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+.board-state-working {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.board-state-claimed { color: var(--accent); }
+.board-state-done { color: var(--success); border-color: var(--success); }
+.board-state-failed { color: var(--danger); border-color: var(--danger); }
+.board-state-skipped { color: var(--text-subtle); opacity: 0.75; }
+
+.board-run-items-head th {
+  text-align: left;
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-subtle);
+  font-weight: var(--weight-medium);
+  padding: var(--size-1) var(--size-2);
+  border-bottom: 1px solid var(--border);
+}
+.board-run-item-title {
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-run-item-elapsed {
+  margin-left: var(--size-2);
+  font-size: var(--text-2xs);
+  color: var(--text-subtle);
+}
+.board-run-item-waiting { color: var(--text-subtle); }
+/* A live row is the one the eye should land on first. */
+.board-run-item-working td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+/* Dispositions that had no colour and so read as ordinary text. */
+.board-disposition-needs_rescoping { color: var(--warn); }
+.board-disposition-rejected { color: var(--text-subtle); }
+
+/* A decision in flight, and the decision once it has landed. */
+.board-review-card.is-deciding {
+  opacity: 0.85;
+  border-color: var(--accent);
+}
+.board-decided-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--size-2);
+  border: 1px solid var(--border);
+  color: var(--text-subtle);
+}
+.board-decided-approved { color: var(--success); border-color: var(--success); }
+.board-decided-rejected { color: var(--text-subtle); }
+.board-decided-sent_back { color: var(--warn); border-color: var(--warn); }
+.board-decided-partial { color: var(--danger); border-color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  .board-spinner,
+  .board-tab-live {
+    animation: none;
+  }
+  /* Without the spin, the ring alone reads as a static dot — keep the shape
+     meaningful by leaving the gap visible rather than hiding the element. */
+  .board-spinner { border-right-color: currentColor; opacity: 0.5; }
+}
+
+/* The next step as a button, not as a sentence telling you to go somewhere. */
+.board-standing-go {
+  margin-left: var(--size-2);
+  vertical-align: baseline;
 }

@@ -33,9 +33,17 @@ import {
   // credentials
   saveCredential,
   credentialsError,
+  decisionPending,
+  boardStanding,
+  boardRuns,
   _resetBoardsForTest,
 } from './boards';
-import type { BoardItem, StagedRecord } from '../api/boards';
+import type {
+  Board,
+  BoardItem,
+  BoardRunSummary,
+  StagedRecord,
+} from '../api/boards';
 
 const realFetch = globalThis.fetch;
 
@@ -438,5 +446,293 @@ describe('boards credentials store', () => {
     const err = await saveCredential('JIRA', { secret: 'x', format: 'basic' });
     expect(err).toContain('username is required');
     expect(credentialsError.value).toBeTruthy();
+  });
+});
+
+describe('a decision fans out to everything it changed', () => {
+  beforeEach(() => {
+    _resetBoardsForTest();
+  });
+
+  afterEach(() => {
+    _resetBoardsForTest();
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  function mkRecord(over: Partial<StagedRecord> = {}): StagedRecord {
+    return {
+      board_id: 'b1',
+      item_id: '46',
+      item_key: 'SUP-5',
+      item_title: 'Refund not received',
+      item_url: 'https://x/browse/SUP-5',
+      content_hash: 'hash-1',
+      run_id: 'run-1-aaaa',
+      state: 'pending',
+      disposition: 'needs_review',
+      reason: 'wants a call back',
+      evidence: {},
+      actions: [],
+      pending_actions: [],
+      open: true,
+      decided_by: '',
+      result: null,
+      created_at: 1,
+      updated_at: 1,
+      ...over,
+    };
+  }
+
+  function seedOpenCard(record = mkRecord()) {
+    selectedBoardId.value = 'b1';
+    reviewGroups.value = [
+      { disposition: 'needs_review', count: 1, items: [record] },
+    ];
+    return record;
+  }
+
+  it('refreshes runs and metrics too, not just the review queue', async () => {
+    /* The bug this pins: approving closed the real ticket and settled the run
+       item, but only the queue was re-read — so the Runs tab kept showing the
+       item as unsettled and the approval-rate strip quoted a figure from
+       before the decision. */
+    const calls = respond(200, { replayed: false, result: { ok: true } });
+    seedOpenCard();
+
+    await approveStaged('b1', mkRecord(), 'ap-1');
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/runs'))).toBe(true);
+      expect(calls.some((c) => c.url.includes('/metrics'))).toBe(true);
+    });
+    expect(calls.some((c) => c.url.includes('/review'))).toBe(true);
+  });
+
+  it('settles the card on the FIRST round trip, not the second', async () => {
+    /* A decision used to cost two serialized round trips before anything moved
+       on screen: the write, then a full queue re-read. Here the re-read never
+       resolves, and the card must still have settled. */
+    const record = seedOpenCard();
+    globalThis.fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if ((init?.method ?? 'GET') === 'GET' && u.includes('/review')) {
+        return new Promise<Response>(() => {}); // never resolves
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ replayed: false, result: { ok: true } }),
+        text: async () => '{}',
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await approveStaged('b1', record, 'ap-2');
+
+    const card = reviewGroups.value[0].items[0];
+    expect(card.open).toBe(false);
+    expect(card.state).toBe('approved');
+    expect(card.pending_actions).toEqual([]);
+    expect(openReviewCount.value).toBe(0);
+  });
+
+  it('names the decision in flight, then clears it', async () => {
+    /* A boolean could grey the card out but could not say WHICH verb was
+       waiting — an approve on a slow vendor looked like a wedged page. */
+    seedOpenCard();
+    let seen: string | undefined;
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      if (String(url).includes('/approve')) {
+        seen = decisionPending.value['46'];
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ replayed: false, result: { ok: true } }),
+        text: async () => '{}',
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await approveStaged('b1', mkRecord(), 'ap-3');
+    expect(seen).toBe('approve');
+    expect(decisionPending.value['46']).toBeUndefined();
+  });
+
+  it('clears the in-flight marker even when the decision fails', async () => {
+    respond(409, { error: 'stale', code: 'stale' });
+    seedOpenCard();
+    await approveStaged('b1', mkRecord(), 'ap-4');
+    expect(decisionPending.value['46']).toBeUndefined();
+  });
+
+  it('reject and send back fan out the same way', async () => {
+    const calls = respond(200, { ok: true, resume: null });
+    seedOpenCard();
+    await rejectStaged('b1', '46', 'out of scope', 'ap-5');
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.url.includes('/runs'))).toBe(true);
+    });
+    expect(reviewGroups.value[0].items[0].state).toBe('rejected');
+  });
+
+  it('edit does NOT fan out — nothing has been written to the board yet', async () => {
+    /* Editing a staged action changes what WOULD be sent. Treating it like a
+       decision would re-read the vendor's item list for no reason and burn
+       rate-limit budget on a click that changed nothing outside this app. */
+    const calls = respond(200, { ok: true });
+    seedOpenCard();
+    await editStaged('b1', '46', 'a1', { body: 'reworded' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.some((c) => c.url.includes('/runs'))).toBe(false);
+    expect(calls.some((c) => c.url.includes('/metrics'))).toBe(false);
+    expect(calls.some((c) => c.url.includes('/review'))).toBe(true);
+  });
+});
+
+describe('boardStanding — what is happening and what to do next', () => {
+  beforeEach(() => {
+    _resetBoardsForTest();
+  });
+  afterEach(() => {
+    _resetBoardsForTest();
+    globalThis.fetch = realFetch;
+  });
+
+  function seedBoard(over: Partial<Board> = {}) {
+    boards.value = [
+      {
+        id: 'b1',
+        vendor: 'github',
+        display_name: 'acme/demo',
+        base_url: 'https://api.github.com',
+        credential_ref: '@board-creds/T',
+        credential_set: true,
+        ...over,
+      } as Board,
+    ];
+    selectedBoardId.value = 'b1';
+  }
+
+  function seedItems(n: number) {
+    boardItems.value = {
+      b1: {
+        items: Array.from({ length: n }, (_, i) => ({
+          id: String(i),
+          key: `#${i}`,
+          title: `item ${i}`,
+          tags: [],
+        })) as unknown as BoardItem[],
+        complete: true,
+        truncation_reason: '',
+      } as never,
+    };
+  }
+
+  function seedRun(over: Partial<BoardRunSummary> = {}) {
+    boardRuns.value = {
+      b1: [
+        {
+          id: 'run-1',
+          board_id: 'b1',
+          mode: 'propose',
+          status: 'running',
+          concurrency: 2,
+          requested_concurrency: 2,
+          clamp_reason: '',
+          created_at: 1,
+          updated_at: 2,
+          finished_at: null,
+          error: '',
+          listing_complete: true,
+          truncation_reason: '',
+          total: 5,
+          counts: { working: 2, pending: 1, done: 2, failed: 0, skipped: 0, claimed: 0 },
+          done: 2,
+          failed: 0,
+          skipped: 0,
+          ...over,
+        } as BoardRunSummary,
+      ],
+    };
+  }
+
+  it('points at the credential before anything else', () => {
+    seedBoard({ credential_set: false });
+    expect(boardStanding.value.next).toMatch(/credential/i);
+    expect(boardStanding.value.nextTab).toBe('credentials');
+  });
+
+  it('counts live work while a run is in flight', () => {
+    seedBoard();
+    seedItems(9);
+    seedRun();
+    const s = boardStanding.value;
+    expect(s.live).toBe(true);
+    expect(s.working).toBe(2);
+    expect(s.queued).toBe(1);
+    expect(s.settled).toBe(2);
+    expect(s.items).toBe(9);
+    expect(s.next).toMatch(/in flight/i);
+  });
+
+  it('sends you to Review the moment something is waiting, even mid-run', () => {
+    seedBoard();
+    seedItems(9);
+    seedRun();
+    reviewGroups.value = [
+      {
+        disposition: 'needs_review',
+        count: 1,
+        items: [
+          {
+            item_id: '1', open: true, state: 'pending', pending_actions: [],
+          } as unknown as StagedRecord,
+        ],
+      },
+    ];
+    expect(boardStanding.value.awaiting).toBe(1);
+    expect(boardStanding.value.nextTab).toBe('review');
+  });
+
+  it('tells a board that has never been run to start one', () => {
+    seedBoard();
+    seedItems(9);
+    expect(boardStanding.value.nextTab).toBe('runs');
+  });
+
+  it('says nothing at all when no board is selected', () => {
+    expect(boardStanding.value.next).toBe('');
+  });
+});
+
+describe('the next step only points somewhere when something is owed', () => {
+  beforeEach(() => { _resetBoardsForTest(); });
+  afterEach(() => { _resetBoardsForTest(); globalThis.fetch = realFetch; });
+
+  it('offers no destination while a run is simply progressing', () => {
+    /* "A run is in flight. Nothing needs you yet." is a complete answer. An
+       action button beside it would invent work for a reader who has none. */
+    boards.value = [
+      {
+        id: 'b1', vendor: 'github', display_name: 'acme/demo',
+        base_url: '', credential_ref: '@board-creds/T', credential_set: true,
+      } as Board,
+    ];
+    selectedBoardId.value = 'b1';
+    boardRuns.value = {
+      b1: [
+        {
+          id: 'r', board_id: 'b1', mode: 'propose', status: 'running',
+          concurrency: 1, requested_concurrency: 1, clamp_reason: '',
+          created_at: 1, updated_at: 2, finished_at: null, error: '',
+          listing_complete: true, truncation_reason: '', total: 2,
+          counts: { pending: 1, claimed: 0, working: 1, done: 0, failed: 0, skipped: 0 },
+          done: 0, failed: 0, skipped: 0,
+        } as BoardRunSummary,
+      ],
+    };
+    expect(boardStanding.value.next).toMatch(/nothing needs you/i);
+    expect(boardStanding.value.nextTab).toBeNull();
   });
 });
