@@ -12,6 +12,10 @@ import {
   deleteCron,
   testWebhook,
   deleteWebhook,
+  checkPageWatch,
+  suspendPageWatch,
+  resumePageWatch,
+  deletePageWatch,
   type Trigger,
 } from '../api/triggers';
 import { pushToast } from './ui';
@@ -25,7 +29,9 @@ export const filteredTriggers = computed(() => {
   const needle = triggerFilter.value.trim().toLowerCase();
   if (!needle) return triggers.value;
   return triggers.value.filter((t) =>
-    `${t.kind} ${t.id} ${t.prompt} ${t.schedule ?? ''} ${t.workdir ?? ''}`.toLowerCase().includes(needle),
+    `${t.kind} ${t.id} ${t.prompt} ${t.schedule ?? ''} ${t.workdir ?? ''} ${t.url ?? ''} ${t.selector ?? ''}`
+      .toLowerCase()
+      .includes(needle),
   );
 });
 
@@ -43,9 +49,27 @@ export async function refreshTriggers(): Promise<void> {
 
 export async function fire(t: Trigger): Promise<void> {
   try {
-    if (t.kind === 'cron') await fireCron(t.id);
-    else await testWebhook(t.id);
-    pushToast(`Fired ${t.id}`, { kind: 'success' });
+    if (t.kind === 'cron') {
+      await fireCron(t.id);
+      pushToast(`Fired ${t.id}`, { kind: 'success' });
+    } else if (t.kind === 'page-watch') {
+      // A page-watch check is conditional, so report what actually happened
+      // rather than claiming it fired. "Checked — no change" is the common
+      // and correct answer, and saying "Fired" would be a lie.
+      const res = await checkPageWatch(t.id);
+      const said: Record<string, string> = {
+        changed: 'Page changed — task started',
+        unchanged: 'Checked — no change',
+        baseline: 'Baseline recorded — future changes will fire',
+        error: res.error ? `Could not read the page: ${res.error}` : 'Could not read the page',
+      };
+      pushToast(said[res.outcome] ?? `Checked ${t.id}`, {
+        kind: res.outcome === 'error' ? 'danger' : res.outcome === 'changed' ? 'success' : 'info',
+      });
+    } else {
+      await testWebhook(t.id);
+      pushToast(`Fired ${t.id}`, { kind: 'success' });
+    }
     await refreshTriggers();
   } catch (err) {
     pushToast(err instanceof Error ? err.message : 'Fire failed', { kind: 'danger' });
@@ -53,9 +77,13 @@ export async function fire(t: Trigger): Promise<void> {
 }
 
 export async function toggleSuspend(t: Trigger): Promise<void> {
-  if (t.kind !== 'cron') return;
+  // Webhooks have no timer to pause; both scheduled kinds do.
+  if (t.kind !== 'cron' && t.kind !== 'page-watch') return;
   try {
-    if (t.suspended) await resumeCron(t.id);
+    if (t.kind === 'page-watch') {
+      if (t.suspended) await resumePageWatch(t.id);
+      else await suspendPageWatch(t.id);
+    } else if (t.suspended) await resumeCron(t.id);
     else await suspendCron(t.id);
     pushToast(t.suspended ? 'Resumed' : 'Paused', { kind: 'info' });
     await refreshTriggers();
@@ -67,6 +95,7 @@ export async function toggleSuspend(t: Trigger): Promise<void> {
 export async function removeTrigger(t: Trigger): Promise<void> {
   try {
     if (t.kind === 'cron') await deleteCron(t.id);
+    else if (t.kind === 'page-watch') await deletePageWatch(t.id);
     else await deleteWebhook(t.id);
     pushToast(`Deleted ${t.id}`, { kind: 'warn' });
     await refreshTriggers();
