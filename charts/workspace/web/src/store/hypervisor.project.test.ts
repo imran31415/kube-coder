@@ -42,15 +42,11 @@ import {
   threads,
   activeThreadId,
   chatError,
-  chatPersona,
-  chatProjectId,
   selectedProject,
   selectedAssistant,
   selectedModel,
   selectedEffort,
-  ctoAssistant,
-  setChatContext,
-  surfaceProjectId,
+  newChatMode,
   setActiveThreadProject,
   sendMessage,
 } from './hypervisor';
@@ -61,36 +57,16 @@ beforeEach(() => {
   threads.value = [];
   activeThreadId.value = null;
   chatError.value = null;
-  chatPersona.value = '';
-  chatProjectId.value = null;
+  newChatMode.value = '';
   selectedProject.value = '';
   selectedAssistant.value = 'claude';
   selectedModel.value = '';
   selectedEffort.value = '';
-  ctoAssistant.value = 'claude';
   claudeReady.value = true;
   listThreads.mockResolvedValue([]);
   getThread.mockResolvedValue({ thread: { status: 'idle' }, events: [] });
   createThread.mockResolvedValue({ id: 't1' });
   setThreadProject.mockResolvedValue({});
-});
-
-describe('surfaceProjectId', () => {
-  it('reads the Chat tab picker on the Chat tab', () => {
-    selectedProject.value = 'kc';
-    chatProjectId.value = 'other';
-    expect(surfaceProjectId()).toBe('kc');
-  });
-
-  it('reads the CTO page selection on the CTO surface', () => {
-    setChatContext('cto', 'other');
-    selectedProject.value = 'kc';
-    expect(surfaceProjectId()).toBe('other');
-  });
-
-  it('is empty when neither surface has a project', () => {
-    expect(surfaceProjectId()).toBe('');
-  });
 });
 
 describe('a new chat is created filed into the picked project', () => {
@@ -115,11 +91,14 @@ describe('setActiveThreadProject', () => {
     expect(setThreadProject).not.toHaveBeenCalled();
   });
 
-  it('never moves the CTO page selection from the chat picker', async () => {
-    setChatContext('cto', 'cto-project');
+  it('moves it for a CTO-mode chat too — one surface, one picker (#683)', async () => {
+    // The AI CTO page used to hold a competing project selection that this
+    // picker was forbidden to touch. With one surface there is no other
+    // selection to protect.
+    newChatMode.value = 'cto';
     await setActiveThreadProject('kc');
-    expect(chatProjectId.value).toBe('cto-project');
-    expect(selectedProject.value).toBe('');
+    expect(selectedProject.value).toBe('kc');
+    expect(setThreadProject).not.toHaveBeenCalled();
   });
 
   it('re-files an open chat server-side and patches the list at once', async () => {

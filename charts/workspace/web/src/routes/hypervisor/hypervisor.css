@@ -146,6 +146,37 @@
   color: var(--text-muted);
 }
 
+/* Mode filter (#683) — All / Workspace / CTO. Deliberately lighter than the
+   Active/Past tabs above it: those split the list by recency (always present),
+   this one only appears once the workspace actually holds more than one mode. */
+.hv-modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 var(--size-3) var(--size-2);
+}
+.hv-mode-chip {
+  padding: 2px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-subtle);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast);
+}
+.hv-mode-chip:hover { color: var(--text); border-color: var(--border-strong); }
+.hv-mode-chip-on {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
 .hv-agent-picker {
   display: flex;
   flex-direction: column;
@@ -290,6 +321,38 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Project pulse on a group header (#683) — the AI CTO rail's card dots, moved
+   to the headers that replaced the rail. `.cto-dot*` come from brief.css. */
+.hv-group-pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+/* Unseen delta: this project moved since you last opened one of its chats.
+   Hollow so it reads as "news", not as another status light. */
+.hv-group-unseen {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1.5px solid var(--accent);
+  flex: none;
+}
+
+/* The thread's mode (#683) — a badge, not a control: a thread's persona is
+   fixed at creation because its preamble is delivered once, on turn 1. */
+.hv-thread-mode {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
 }
 
 .hv-thread-del,
@@ -458,7 +521,17 @@
   padding: 0 var(--size-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  /* Scroll rather than spill (#506, generalised in #683). The pill row —
+     Walkie link, speaker, Model, Effort, Project, status pills — is wider than
+     the chat column whenever that column is squeezed: at ≤390px by the
+     viewport, and at any width once the brief pane claims its own track. With
+     the brief beside it, an overflowing row painted OVER the brief; scrolling
+     keeps every control reachable and inside the column. SearchSelect's
+     popover is position:fixed precisely so this overflow can't clip it. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.hv-topbar::-webkit-scrollbar { display: none; }
 /* Mobile "past chats" trigger — a labeled chip with a live count, so it reads
    as "open my chat history" rather than an anonymous ••• menu. */
 .hv-topbar-menu {
@@ -600,6 +673,48 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+
+/* Brief sheet trigger (#683) — phones only; on desktop the brief is a column
+   with its own collapse tab, so this button doesn't exist there. */
+.hv-brief-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px; /* WCAG 2.5.5 tap target, matching the mobile chip sizes */
+  padding: 0 10px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.hv-brief-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* "Set as project default" (#483 → #683) — a quiet text button, not a CTA. It
+   persists a choice the user has already made with the pickers beside it, so
+   it should never compete with them for attention. */
+.hv-project-default {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-subtle);
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.hv-project-default:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.hv-project-default:disabled { cursor: default; opacity: 0.6; }
 
 /* ── Chat body ───────────────────────────────────────────────────────── */
 /* "How the Hypervisor works" guide sits between the topbar and the chat,
@@ -1239,6 +1354,8 @@
 /* ── Mobile ──────────────────────────────────────────────────────────── */
 @media (max-width: 720px) {
   .route-hypervisor {
+    /* index.tsx only sets the inline multi-column template on desktop, so the
+       brief never claims a track here — it renders as a bottom sheet. */
     grid-template-columns: 1fr;
     height: calc(100dvh - var(--topbar-total) - var(--bottomnav-total));
   }
@@ -1303,15 +1420,9 @@
   .hv-topbar-menu { display: inline-flex; }
   .hv-sidebar-close { display: inline-flex; }
   /* Chat toolbar (#506): at ≤390px the pill row (Chats · Walkie · speaker ·
-     model select) is wider than the viewport and the model <select> gets
-     clipped off the right edge. Let the row scroll horizontally instead of
-     hard-clipping, keep the title from hogging space, and let the select
-     shrink so it stays reachable. */
-  .hv-topbar {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .hv-topbar::-webkit-scrollbar { display: none; }
+     model select) is wider than the viewport. The row scrolls at every width
+     now (see .hv-topbar); here the title additionally stops hogging space so
+     the controls get what's left. */
   .hv-topbar-title { flex: 0 1 auto; }
   .hv-model-select { min-width: 0; }
   .hv-msg { max-width: 92%; }

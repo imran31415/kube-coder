@@ -11,7 +11,6 @@ describe('NAV_GROUPS (#267)', () => {
         'Apps',
         'Board',
         'Controller',
-        'Cto',
         'Desktop',
         'Docs',
         'Feed',
@@ -44,8 +43,12 @@ describe('NAV_GROUPS (#267)', () => {
     expect(byName.Hypervisor).toBe('Chat');
     expect(byName.Tasks).toBe('Builds');
     expect(byName.MissionControl).toBe('Overview');
-    expect(byName.Cto).toBe('AI CTO');
     expect(byName.Feed).toBe('Feed');
+  });
+
+  it('offers no AI CTO destination — it is a mode of Chat (#683)', () => {
+    expect(flat.map((i) => i.name)).not.toContain('Cto');
+    expect(NAV_GROUPS[0].items.map((i) => i.name)).toContain('Hypervisor');
   });
 
   it('files Triggers under Mission Control and Docs under Knowledge, like the web rail (#250)', () => {

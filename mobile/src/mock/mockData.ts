@@ -782,9 +782,15 @@ export function mockProjectBrief(id: string): ProjectBrief {
   };
 }
 
-export function mockCtoThreads(): HypervisorThread[] {
+/** One chat list for every mode (#683) — a plain workspace chat, a CTO one and
+ *  a Board Processor one, so the mock exercises the mode badges the merged list
+ *  renders. Before the merge the CTO thread was the only mocked thread, and it
+ *  was reachable only through `persona=cto`. */
+export function mockThreads(): HypervisorThread[] {
   return [
+    { id: 'th-1', title: 'Ship the chart change', assistant: 'claude', status: 'idle', created_at: NOW - 9000, updated_at: NOW - 120, persona: '', project_id: 'kube-coder' },
     { id: 'th-cto-1', title: 'What should I focus on?', assistant: 'claude', status: 'idle', created_at: NOW - 5000, updated_at: NOW - 300, persona: 'cto', project_id: 'kube-coder' },
+    { id: 'th-board-1', title: 'Triage KC-214', assistant: 'claude', status: 'idle', created_at: NOW - 40000, updated_at: NOW - 20000, persona: 'board', project_id: 'kube-coder' },
   ];
 }
 

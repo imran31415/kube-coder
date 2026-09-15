@@ -196,14 +196,17 @@ describe('/board nav gating', () => {
   });
 
   it('is independent of the CTO gate in both directions', () => {
+    // The AI CTO's own gate now hides the Feed that rides it, not a page of its
+    // own (#683) — but the point stands: a workspace can work an external board
+    // without an AI CTO, and vice versa.
     const noCto = visibleNavGroups({ ctoEnabled: false });
     const paths = noCto.flatMap((g) => g.items.map((i) => i.path));
     expect(paths).toContain('/board');
-    expect(paths).not.toContain('/cto');
+    expect(paths).not.toContain('/feed');
 
     const noBoard = visibleNavGroups({ boardEnabled: false });
     const paths2 = noBoard.flatMap((g) => g.items.map((i) => i.path));
-    expect(paths2).toContain('/cto');
+    expect(paths2).toContain('/feed');
     expect(paths2).not.toContain('/board');
   });
 });

@@ -4,7 +4,7 @@ Work items from a tracker **this workspace does not own** — a Jira project, a
 GitHub repo's issues, a Linear team, a Zendesk queue — through a connector that
 is data rather than code.
 
-The AI CTO answers *"what should we work on?"*. The Board Processor answers
+Chat's AI CTO mode answers *"what should we work on?"*. The Board Processor answers
 *"here is a board someone else is tracking — go work it."* It is the first
 surface that acts on a system kube-coder does not own, which is why most of its
 design is about safety and honesty rather than throughput.
@@ -137,7 +137,7 @@ is the same either way: `test-fetch` plus one held write.
 | Surface | What it is |
 |---|---|
 | Chat (Hypervisor) | Reactive assistant; operates this workspace |
-| AI CTO (`/cto`) | Strategy over **our** projects and decisions |
+| Chat in **CTO mode** | Strategy over **our** projects and decisions (#683 — it used to be its own `/cto` page) |
 | Mission Control | What is running right now |
 | **Board Processor (`/board`)** | Pulls items from an **external** board, works them, writes results back |
 

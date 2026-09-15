@@ -2,16 +2,16 @@
 
 > **What this workspace is.** A Kubernetes-hosted dev container with a
 > persistent `/home/dev`, full developer tooling, and a built-in
-> dashboard at `/`. At its front is an **AI CTO** that plans and builds
-> for you: tell it what you want in plain language and it writes the
-> code, runs it, and shows you a live preview — all against the same
-> files you can open in VS Code or over SSH.
+> dashboard at `/`. At its front is **Chat**, and Chat's **AI CTO mode**
+> plans and builds for you: tell it what you want in plain language and
+> it writes the code, runs it, and shows you a live preview — all
+> against the same files you can open in VS Code or over SSH.
 
 ## Your first win
 
-The fastest path from a fresh workspace to something running is the
-**AI CTO**. A first-run visit walks you through a short setup and then
-drops you straight into it:
+The fastest path from a fresh workspace to something running is **Chat
+in AI CTO mode**. A first-run visit walks you through a short setup and
+then drops you straight into it:
 
 1. **Onboarding.** On first load a short wizard appears. It sets your
    **git identity**, connects your **GitHub** account (browser sign-in,
@@ -21,9 +21,10 @@ drops you straight into it:
    subscription (recommended) or paste an `ANTHROPIC_API_KEY`. You can
    skip the git/SSH steps, but the CTO can't build until Claude is
    connected.
-2. **Land in the AI CTO.** When you finish, you land in the **AI CTO**
-   with a warm opener: *"Tell me in one sentence what you'd like to
-   build, and I'll get started right away."*
+2. **Land in the AI CTO.** When you finish, you land in **Chat** with
+   **Mode: CTO** already selected, and a warm opener: *"Tell me in one
+   sentence what you'd like to build, and I'll get started right
+   away."*
 3. **Type one sentence.** Something like *"Build me a personal portfolio
    website"* (there are starter chips for exactly this). Your first
    message **builds immediately** — no confirmation gate, no form to
@@ -47,9 +48,8 @@ for the keyboard-shortcut sheet.
 
 | Surface | What it's for |
 | --- | --- |
-| **AI CTO** | The front door. A chat with an AI CTO that plans and builds across your whole workspace; a first message builds right away, and previews surface inline. |
+| **Chat** | The front door, and the only chat surface. Every chat is a real agent session (Claude, OpenCode, …) acting on your live files. Pick **Mode: CTO** when you want the one that plans and builds across your whole workspace — a first message builds right away, and previews surface inline. Bind a chat to a **project** and its brief opens as a pane beside it. |
 | **Feed** | *What changed · what matters* — briefings, news, activity, and decisions your CTO and workspace post as things happen. |
-| **Chat** | The Hypervisor: a raw chat layer over your coding agents. Every chat is a real agent session (Claude, OpenCode, …) acting on your live files — lower-level than the CTO. |
 | **Builds** | Create and watch individual build tasks. Each runs in its own tmux session with a Chat and a raw Terminal view. |
 | **Walkie-Talkie** | A voice-first, push-to-talk channel to your workspace — speak, and a real agent turn answers back on a card and aloud. |
 | **Triggers** | Webhooks and cron jobs that fire builds on a schedule or an external event. |
@@ -83,7 +83,7 @@ identity, your Claude connection, browser preview, and live metrics.
 
 ## Prefer to drive it yourself?
 
-The AI CTO is the front door, not the only door. If you'd rather run a
+CTO mode is the front door, not the only door. If you'd rather run a
 single, scoped task and watch the terminal:
 
 1. Go to **Builds** and click **+ New task**.

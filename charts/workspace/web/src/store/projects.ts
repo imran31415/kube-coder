@@ -148,21 +148,19 @@ export function defaultMemoryNamespace(): string {
   return activeProject()?.memory_namespace || USER_NAMESPACE;
 }
 
-/** The most-active project (highest pulse.last_activity_at), or the first. */
-export function mostActive(list: Project[]): Project | null {
-  if (list.length === 0) return null;
-  return [...list].sort(
-    (a, b) => (b.pulse?.last_activity_at ?? 0) - (a.pulse?.last_activity_at ?? 0),
-  )[0];
-}
-
 let discovered = false;
 
-/** First-visit bootstrap: zero-touch discovery (server auto-provisions
- *  confident candidates), then load the registry and auto-select the last-seen
- *  project, else the most active. Safe to call on every mount — discovery runs
- *  once per page load. */
-export async function initCto(): Promise<void> {
+/**
+ * First-visit bootstrap: zero-touch discovery (the server auto-provisions
+ * confident candidates), then load the registry. Safe to call on every mount —
+ * discovery runs once per page load.
+ *
+ * It used to also auto-select a project, because the AI CTO page needed one
+ * selected to have anything to show. Chat doesn't (#683): the selection follows
+ * the chat you open, so choosing one here would fight that and would stamp
+ * `last_seen_at` on a project the user never looked at.
+ */
+export async function initProjects(): Promise<void> {
   if (!discovered) {
     discovered = true;
     try {
@@ -172,12 +170,24 @@ export async function initCto(): Promise<void> {
     }
   }
   await refreshProjects();
-  if (selectedProjectId.value !== null && brief.value) return; // already chosen
-  const list = projects.value;
-  const remembered = recallLastProject();
-  const pick =
-    (remembered && list.find((p) => p.id === remembered)) || mostActive(list);
-  await selectProject(pick ? pick.id : null);
+}
+
+/**
+ * True when a live assistant selection already matches what the project stores
+ * (#483). The "Set as project default" control is pointless then, so it says so
+ * rather than offering a write that would change nothing. Lives beside the
+ * writer it pairs with since the AI CTO's gear folded into Chat (#683).
+ */
+export function matchesProjectDefaults(
+  project: Project | null,
+  sel: { assistant: string; model: string; effort: string },
+): boolean {
+  if (!project) return false;
+  return (
+    (project.default_assistant || '') === sel.assistant &&
+    (project.default_model || '') === sel.model &&
+    (project.default_effort || '') === sel.effort
+  );
 }
 
 /**

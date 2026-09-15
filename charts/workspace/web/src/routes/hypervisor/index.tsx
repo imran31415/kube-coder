@@ -18,6 +18,8 @@ import {
   selectedEffort,
   selectedProject,
   selectedWorkdir,
+  newChatMode,
+  sendMessage,
   assistantModels,
   assistantEfforts,
   assistantEffortDefault,
@@ -35,24 +37,55 @@ import {
   refreshDeletedThreads,
   renameThreadTitle,
   closeThread,
+  seedChatConfig,
 } from '../../store/hypervisor';
 import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
-import { projects, refreshProjects } from '../../store/projects';
+import {
+  initProjects,
+  matchesProjectDefaults,
+  projects,
+  selectProject,
+  setProjectAssistantDefaults,
+  startProjectsPolling,
+  stopProjectsPolling,
+} from '../../store/projects';
+import { serverMode } from '../../store/server-mode';
+import { ctoHandoff } from '../../store/feed';
+import { justOnboarded } from '../../store/onboarding';
+import { refreshClaudeReady } from '../../store/claude';
+import { CtoWelcome } from './CtoWelcome';
+import { BottomSheet } from '../../components/BottomSheet';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { BriefPanel, BriefTab } from './BriefPanel';
 import { SearchSelect } from '../../components/primitives/SearchSelect';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
-import { groupByProject, isUngrouped } from './projectGroups';
 import {
+  filterByMode,
+  hasMixedModes,
+  personaHint,
+  personaLabel,
+  type ThreadModeFilter,
+} from './threadMode';
+import { groupByProject, isUngrouped } from './projectGroups';
+import { hasUnseenActivity, pulseLabel, pulseOf } from './projectPulse';
+import {
+  BRIEF_AUTO_COLLAPSE_MAX,
+  BRIEF_COLLAPSED_KEY,
   SIDEBAR_W_DEFAULT,
   SIDEBAR_W_KEY,
   SIDEBAR_W_MAX,
   SIDEBAR_W_MIN,
+  chatGridTemplate,
   clampSidebarW,
   initialSidebarW,
+  readPaneCollapsed,
+  resolvePaneCollapsed,
+  writePaneCollapsed,
 } from './sidebarSplit';
 import './hypervisor.css';
 
@@ -67,6 +100,15 @@ function statusLabel(s: string): string {
   return s || 'idle';
 }
 
+/** Read a persisted pane-collapse choice, tolerating a blocked localStorage. */
+function readPane(key: string): boolean | null {
+  try {
+    return readPaneCollapsed(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
 /** Abbreviate the workspace home for compact display: /home/dev/Umi → ~/Umi. */
 function shortDir(path: string): string {
   return path.replace(/^\/home\/[^/]+/, '~');
@@ -74,8 +116,30 @@ function shortDir(path: string): string {
 
 export function HypervisorRoute() {
   const isMobile = useIsMobile();
+  // Wide enough to render three columns, too narrow for the chat to be
+  // comfortable between them → the brief folds to its edge tab by default.
+  const cramped = useMediaQuery(`(max-width: ${BRIEF_AUTO_COLLAPSE_MAX}px)`);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
+  // Which thread modes the list shows (#683). 'all' is the default and the
+  // only state a workspace that has never started a CTO chat ever sees.
+  const [modeFilter, setModeFilter] = useState<ThreadModeFilter>('all');
+  // Brief pane (#683). `null` = the user has never toggled it, so the width
+  // heuristic decides; an explicit choice is persisted and wins from then on.
+  const [briefChoice, setBriefChoice] = useState<boolean | null>(() =>
+    readPane(BRIEF_COLLAPSED_KEY),
+  );
+  // Mobile shows the brief as a bottom sheet rather than a third column.
+  const [briefSheetOpen, setBriefSheetOpen] = useState(false);
+  // Transient feedback for "Set as project default" — the write is a one-shot
+  // with no other visible result, so it has to say something.
+  const [savingDefault, setSavingDefault] = useState(false);
+  const [savedDefault, setSavedDefault] = useState(false);
+  // First-win landing (#487): a user arriving straight from onboarding gets a
+  // build-first opener. Capture the transient flag at mount and clear the
+  // signal so a later visit in the same session shows the normal welcome.
+  const [firstWin] = useState(() => justOnboarded.value);
+  const justOnboardedAtMount = firstWin;
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -134,15 +198,38 @@ export function HypervisorRoute() {
   }
 
   useEffect(() => {
+    // A "Discuss with CTO" handoff from the Feed (#470) overrides the usual
+    // restore: it means "start a CTO chat about THIS, filed under its project,
+    // with this context prefix already said". Consumed here because the /cto
+    // page that used to consume it is now a redirect into this route (#683).
+    const handoff = ctoHandoff.value;
+    if (handoff) {
+      ctoHandoff.value = null;
+      newChatMode.value = 'cto';
+      selectedProject.value = handoff.projectId || '';
+    }
+    // Consume the one-shot first-win flag so it never re-triggers on a later
+    // same-session visit (the captured `firstWin` local still drives this mount).
+    if (justOnboarded.value) justOnboarded.value = false;
+
     // On a bare /hypervisor entry (tab click, returning to the app), reopen
     // the chat the user last had open — or the newest one — once the thread
     // list is in. Mount-only, so the sidebar's "New" button and mobile back
     // (in-route navigations to the bare path) still mean "new chat" and are
-    // never fought; a deep link (/hypervisor/<id>) always wins.
+    // never fought; a deep link (/hypervisor/<id>) always wins. A handoff or a
+    // first-win landing wants a NEW chat, so neither restores.
     const enteredBare = !pathSuffix(currentPath.value).split('/')[0];
+    const wantsNewChat = !!handoff || justOnboardedAtMount;
     let cancelled = false;
     void initHypervisor().then(() => {
-      if (cancelled || !enteredBare) return;
+      if (cancelled) return;
+      if (handoff) {
+        // The thread list is in, so a send now creates the bound thread and
+        // lands the prefix as its first turn.
+        void sendMessage(handoff.text);
+        return;
+      }
+      if (!enteredBare || wantsNewChat) return;
       // Re-check the world after the async load: the user may have navigated
       // away, opened a chat, or started composing a new thread meanwhile.
       if (!currentPath.value.startsWith('/hypervisor')) return;
@@ -151,10 +238,14 @@ export function HypervisorRoute() {
       if (id) navigate(`/hypervisor/${encodeURIComponent(id)}`, true);
     });
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
-    // Projects back the chat↔project binding (#358): the picker's options and
-    // the sidebar's group labels. Cheap and cached; a workspace with none just
-    // keeps both hidden.
-    void refreshProjects();
+    // Projects back the chat↔project binding (#358): the picker's options, the
+    // sidebar's group labels and pulse, and the brief pane. Zero-touch
+    // discovery runs once per page load — it used to be the /cto page's
+    // bootstrap, and with that page gone this is where new projects are found.
+    void initProjects();
+    // Know whether Claude is connected so the CTO welcome can offer the connect
+    // panel instead of firing a doomed build (#494).
+    void refreshClaudeReady();
     return () => {
       cancelled = true;
       closeThread();
@@ -180,6 +271,44 @@ export function HypervisorRoute() {
   const activeThread = list.find((t) => t.id === active) ?? null;
   const status = activeStatus.value;
 
+  // Brief pane (#683). Shown for ANY project-bound chat, not just CTO ones —
+  // freeing the deterministic brief from the AI CTO page is the point. A chat
+  // with no project bound keeps exactly the two-column layout Chat has always
+  // had. Only an OPEN chat can have a binding worth briefing on; the new-chat
+  // project picker is a default, not a subject.
+  const boundProject = (activeThread?.project_id || '') || '';
+  const briefShown = !!boundProject;
+  const briefCollapsed =
+    !isMobile && resolvePaneCollapsed(briefChoice, cramped);
+
+  // Point the projects store at the open chat's project so BriefPanel — which
+  // reads `brief` / `selectedProjectId` — renders that chat's brief. This is
+  // also what stamps `last_seen_at` now that the AI CTO page's rail no longer
+  // owns the stamp (#683): "you opened a chat filed under this project" is the
+  // same signal the rail's "you looked at this project" was.
+  useEffect(() => {
+    if (!boundProject) return;
+    void selectProject(boundProject);
+  }, [boundProject]);
+
+  // The brief is live (a decision the agent records shows up without a reload),
+  // so subscribe only while a brief is actually on screen.
+  useEffect(() => {
+    if (!briefShown) return;
+    startProjectsPolling();
+    return () => stopProjectsPolling();
+  }, [briefShown]);
+
+  // Mode (#683). `ctoEnabled` no longer means "the /cto page exists" — it means
+  // "CTO mode is offered". With the flag off the picker never renders and the
+  // workspace behaves exactly as it does with the feature disabled today.
+  const modeOffered = serverMode.value.ctoEnabled !== false;
+  // A thread's mode is fixed at creation (its preamble is delivered once, on
+  // turn 1), so with a chat open the control shows THAT chat's mode read-only —
+  // same two-mode shape as the Folder picker (#637).
+  const newMode = newChatMode.value;
+  const ctoComposing = !active && newMode === 'cto';
+
   // Model switcher (#308): an open thread uses its own assistant + stored model;
   // a not-yet-created chat uses the sidebar's assistant + new-thread default.
   const effectiveAssistant = activeThread?.assistant || selectedAssistant.value;
@@ -201,10 +330,16 @@ export function HypervisorRoute() {
     !!effortCap &&
     efforts.indexOf(currentEffort) > efforts.indexOf(effortCap);
 
+  // One list for every mode (#683). The chip narrows it; it never hides a
+  // thread by default, and the row only appears once the workspace actually
+  // holds more than one mode.
+  const showModeChips = hasMixedModes(list);
+  const modeFiltered = showModeChips ? filterByMode(list, modeFilter) : list;
+
   // Split into what you're working with now vs. older chats. Derived purely
   // from status + updated_at (see chatTabs.ts) — no server change needed.
   const { active: activeThreads, past: pastThreads } = partitionThreads(
-    list,
+    modeFiltered,
     active,
     Date.now(),
   );
@@ -219,6 +354,38 @@ export function HypervisorRoute() {
   // Sub-group the visible tab by project so chats from different projects don't
   // interleave. Headers are dropped when nothing is filed (single empty group).
   const groups = groupByProject(shown, projectList);
+
+  // Per-project assistant defaults (#483), moved off the AI CTO page's gear and
+  // beside the pickers they describe (#683). The record to write to is the one
+  // this chat is filed into — the open chat's project, or what the next new
+  // chat will be filed into.
+  const boundRecord = projectList.find((p) => p.id === currentProject) ?? null;
+  const liveSelection = {
+    assistant: effectiveAssistant,
+    model: currentModel,
+    effort: currentEffort,
+  };
+  const isProjectDefault = matchesProjectDefaults(boundRecord, liveSelection);
+
+  // Seed the next new chat's dials from the project it will be filed into, the
+  // way the CTO page seeded its own from the rail's selection. Only with no
+  // chat open: an open chat carries its own assistant and model, and re-seeding
+  // would silently overrule them.
+  const boundDefaults = boundRecord
+    ? [
+        boundRecord.default_assistant ?? '',
+        boundRecord.default_model ?? '',
+        boundRecord.default_effort ?? '',
+      ].join('\u0000')
+    : '';
+  const cfgLoaded = !!cfg;
+  useEffect(() => {
+    if (active || !cfgLoaded || !boundRecord) return;
+    seedChatConfig(boundRecord);
+    // Keyed on the stored fields (plus the config's arrival, which is what makes
+    // the per-assistant model/effort lists knowable) so switching projects
+    // re-seeds without stomping an in-session pick on every render.
+  }, [active, cfgLoaded, currentProject, boundDefaults]);
   const flatList = isUngrouped(groups);
 
   // If there's nothing to show under Active but there is history, land the user
@@ -234,6 +401,12 @@ export function HypervisorRoute() {
   useEffect(() => {
     if (trashOpen) void refreshDeletedThreads();
   }, [trashOpen]);
+
+  // Never leave the picker holding a mode the workspace does not offer — the
+  // flag is read at boot, so a stale 'cto' would otherwise survive it (#683).
+  useEffect(() => {
+    if (!modeOffered && newChatMode.value) newChatMode.value = '';
+  }, [modeOffered]);
 
   if (cfg && cfg.enabled === false) {
     return (
@@ -258,6 +431,34 @@ export function HypervisorRoute() {
     setSidebarOpen(false);
   }
 
+  async function saveProjectDefaults() {
+    if (!boundRecord) return;
+    setSavingDefault(true);
+    try {
+      await setProjectAssistantDefaults(boundRecord.id, {
+        default_assistant: liveSelection.assistant,
+        default_model: liveSelection.model,
+        default_effort: liveSelection.effort,
+      });
+      setSavedDefault(true);
+      window.setTimeout(() => setSavedDefault(false), 2000);
+    } catch {
+      /* setProjectAssistantDefaults rolls the list back; the button re-enables */
+    } finally {
+      setSavingDefault(false);
+    }
+  }
+
+  function toggleBrief() {
+    const next = !briefCollapsed;
+    setBriefChoice(next);
+    try {
+      localStorage.setItem(BRIEF_COLLAPSED_KEY, writePaneCollapsed(next));
+    } catch {
+      /* noop */
+    }
+  }
+
   function startRename(id: string, title: string) {
     setRenamingId(id);
     setDraftTitle(title || '');
@@ -275,6 +476,9 @@ export function HypervisorRoute() {
   }
 
   function renderThread(t: HypervisorThread) {
+    // A thread's mode is read-only (#683): it is fixed at creation, because the
+    // preamble that defines it is delivered once, on turn 1.
+    const modeBadge = personaLabel(t.persona);
     return renamingId === t.id ? (
       <div
         key={t.id}
@@ -321,6 +525,11 @@ export function HypervisorRoute() {
           <span class="hv-thread-body">
             <span class="hv-thread-title">{t.title || 'New chat'}</span>
             <span class="hv-thread-agent">
+              {modeBadge && (
+                <span class="hv-thread-mode" title={personaHint(t.persona)}>
+                  {modeBadge}
+                </span>
+              )}
               {t.assistant}
               {t.workdir ? ` · ${shortDir(t.workdir)}` : ''}
             </span>
@@ -356,7 +565,16 @@ export function HypervisorRoute() {
       ref={rootRef}
       class={`route route-hypervisor ${splitDragging ? 'hv-split-dragging' : ''}`}
       data-sidebar-open={sidebarOpen ? 'true' : 'false'}
-      style={!isMobile ? { gridTemplateColumns: `${sidebarW}px 6px 1fr` } : undefined}
+      style={
+        !isMobile
+          ? {
+              gridTemplateColumns: chatGridTemplate({
+                sidebarW,
+                brief: !briefShown ? 'none' : briefCollapsed ? 'collapsed' : 'expanded',
+              }),
+            }
+          : undefined
+      }
     >
       <div class="hv-scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
 
@@ -412,6 +630,32 @@ export function HypervisorRoute() {
           </button>
         </nav>
 
+        {/* Mode filter (#683). CTO threads live in THIS list now, so the chip
+            row exists only to narrow it — never to hide anything by default.
+            Rendered only once the workspace actually holds more than one mode,
+            so a workspace that has never started a CTO chat is unchanged. */}
+        {showModeChips && (
+          <div class="hv-modes" role="group" aria-label="Filter chats by mode">
+            {(
+              [
+                ['all', 'All'],
+                ['default', 'Workspace'],
+                ['cto', 'CTO'],
+              ] as [ThreadModeFilter, string][]
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                class={`hv-mode-chip ${modeFilter === value ? 'hv-mode-chip-on' : ''}`}
+                aria-pressed={modeFilter === value}
+                onClick={() => setModeFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Which CLI agent a new chat uses — any enabled assistant. The chat is
             a clean layer over the agent the user already configures. */}
         <label class="hv-agent-picker">
@@ -435,6 +679,45 @@ export function HypervisorRoute() {
           )}
         </label>
 
+        {/* Mode (#683) — which preamble a NEW chat is created with. Maps 1:1
+            onto the server's existing `persona` field: no new server concept,
+            and existing CTO threads need no migration. Applied at creation,
+            because the preamble is delivered once, on turn 1 — so with a chat
+            open this shows THAT chat's mode, read-only, exactly like the Folder
+            picker below. Hidden entirely when the workspace doesn't offer CTO
+            mode. Board Processor personas are deliberately absent: those
+            threads are machine-created, so they get a badge, not an option. */}
+        {modeOffered && (
+          <label class="hv-agent-picker">
+            <span class="hv-eyebrow">Mode</span>
+            {active && activeThread ? (
+              <input
+                class="hv-agent-select"
+                value={personaLabel(activeThread.persona) || 'Workspace'}
+                disabled
+                aria-label="This chat's mode"
+                title={
+                  personaHint(activeThread.persona) ||
+                  'A plain workspace chat. Chats keep the mode they were created in — start a New chat to pick a different one.'
+                }
+              />
+            ) : (
+              <select
+                class="hv-agent-select"
+                value={newMode}
+                aria-label="Mode for new chats"
+                title="The mode a new chat is created in — CTO starts it with the AI CTO's preamble"
+                onChange={(e) =>
+                  (newChatMode.value = (e.target as HTMLSelectElement).value)
+                }
+              >
+                <option value="">Workspace</option>
+                <option value="cto">CTO</option>
+              </select>
+            )}
+          </label>
+        )}
+
         {/* Where a NEW chat starts (#345). The backend has always accepted a
             per-thread workdir; this picker finally passes it, so starting an
             agent in a repo no longer burns a first message on `cd`. An open
@@ -451,6 +734,17 @@ export function HypervisorRoute() {
               disabled
               aria-label="This chat's folder"
               title={`This chat runs in ${activeThread.workdir || 'its creation folder'}. Chats keep the folder they were created in — start a New chat to pick a different one.`}
+            />
+          ) : ctoComposing ? (
+            // A CTO chat starts in its bound project's folder — the server
+            // resolves it from the project record, so this picker has nothing
+            // to say. Showing a folder we deliberately don't send would lie.
+            <input
+              class="hv-agent-select"
+              value="Project folder"
+              disabled
+              aria-label="Folder for new chats"
+              title="A CTO chat starts in its project's folder, chosen from the project record."
             />
           ) : dirs.length > 0 ? (
             <SearchSelect
@@ -495,16 +789,38 @@ export function HypervisorRoute() {
           )}
           {flatList
             ? shown.map(renderThread)
-            : groups.map((g) => (
-                <section key={g.id || '_none'} class="hv-thread-group">
-                  <h3 class="hv-thread-group-head">
-                    <Icon name={g.id ? 'cto' : 'chat'} size={11} />
-                    <span class="hv-thread-group-name">{g.label}</span>
-                    <span class="hv-tab-count">{g.threads.length}</span>
-                  </h3>
-                  {g.threads.map(renderThread)}
-                </section>
-              ))}
+            : groups.map((g) => {
+                // Pulse + unseen delta (#683), off the AI CTO rail's cards and
+                // onto the headers that replaced them. Both read straight off
+                // the registry record the list endpoint already returns.
+                const pulse = pulseOf(g.project);
+                const unseen = hasUnseenActivity(g.project);
+                const label = pulseLabel(pulse, unseen);
+                return (
+                  <section key={g.id || '_none'} class="hv-thread-group">
+                    <h3 class="hv-thread-group-head">
+                      <Icon name={g.id ? 'cto' : 'chat'} size={11} />
+                      <span class="hv-thread-group-name">{g.label}</span>
+                      {label && (
+                        <span class="hv-group-pulse" title={label}>
+                          {pulse.running > 0 && (
+                            <span class="cto-dot cto-dot-running" aria-hidden="true" />
+                          )}
+                          {pulse.waiting > 0 && (
+                            <span class="cto-dot cto-dot-waiting" aria-hidden="true" />
+                          )}
+                          {unseen && (
+                            <span class="hv-group-unseen" aria-hidden="true" />
+                          )}
+                          <span class="sr-only">{label}</span>
+                        </span>
+                      )}
+                      <span class="hv-tab-count">{g.threads.length}</span>
+                    </h3>
+                    {g.threads.map(renderThread)}
+                  </section>
+                );
+              })}
         </div>
 
         {/* Recently deleted — a collapsible trash so an accidental delete is
@@ -628,6 +944,20 @@ export function HypervisorRoute() {
             <Icon name="walkie" size={13} /> Walkie-Talkie
           </a>
           <div class="hv-topbar-meta">
+            {/* On a phone the brief is a bottom sheet rather than a third
+                column — same treatment the AI CTO page used (#683). */}
+            {isMobile && briefShown && (
+              <button
+                type="button"
+                class="hv-brief-toggle"
+                onClick={() => setBriefSheetOpen(true)}
+                title="Project brief"
+                aria-label="Open project brief"
+              >
+                <Icon name="mission" size={15} />
+                Brief
+              </button>
+            )}
             {/* Speak replies (issue #396, tier 0) — read agent prose aloud via
                 the browser's speechSynthesis. Feature-detected; persists per
                 browser like the sidebar width. */}
@@ -729,9 +1059,40 @@ export function HypervisorRoute() {
                 />
               </label>
             )}
+            {/* The one thing the AI CTO's gear had that Chat didn't (#483):
+                persist this agent/model/effort on the project, so every chat
+                filed into it — and every build it dispatches — starts there.
+                Same PUT /api/projects/{id} field the CTO writes through its own
+                `update_project` tool, so a choice made here and one the agent
+                makes for itself land in the same place. */}
+            {boundRecord && (
+              <button
+                type="button"
+                class="hv-project-default"
+                disabled={savingDefault || isProjectDefault}
+                onClick={() => void saveProjectDefaults()}
+                title={
+                  isProjectDefault
+                    ? `This is already ${boundRecord.name}'s default`
+                    : `Make this ${boundRecord.name}'s default agent, model and effort`
+                }
+              >
+                {savedDefault
+                  ? 'Saved'
+                  : isProjectDefault
+                    ? 'Project default'
+                    : 'Set as project default'}
+              </button>
+            )}
             {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
                 {statusLabel(status as ThreadStatus)}
+              </Pill>
+            )}
+            {/* The open thread's mode, read-only (#683) — see renderThread. */}
+            {activeThread && personaLabel(activeThread.persona) && (
+              <Pill tone="info" title={personaHint(activeThread.persona)}>
+                {personaLabel(activeThread.persona)}
               </Pill>
             )}
             {(activeThread?.assistant || selectedAssistant.value) && (
@@ -771,8 +1132,51 @@ export function HypervisorRoute() {
           ]}
         />
 
-        <Chat />
+        {/* The AI CTO's opening beat (#683). Handed to <Chat> rather than
+            rendered above it so opener, chips and composer land in the
+            transcript's centring slot and read as one hero (#500); Chat shows
+            it only while the thread is empty. Only for a chat being composed
+            in CTO mode — an open thread has a transcript, and a plain new chat
+            keeps Chat's own hero. */}
+        {ctoComposing ? (
+          <Chat
+            hideEmptyState
+            welcome={
+              <CtoWelcome
+                projectName={
+                  projectList.find((p) => p.id === selectedProject.value)?.name ?? null
+                }
+                firstWin={firstWin}
+              />
+            }
+          />
+        ) : (
+          <Chat />
+        )}
       </section>
+
+      {/* The deterministic project brief (#466), no longer a property of the
+          AI CTO page: any chat filed into a project gets it. Zero LLM calls —
+          the server aggregates it — so it stays useful while the chat is idle.
+          Collapses to a thin edge tab; the choice persists per browser. */}
+      {!isMobile &&
+        briefShown &&
+        (briefCollapsed ? (
+          <BriefTab onExpand={toggleBrief} />
+        ) : (
+          <BriefPanel onCollapse={toggleBrief} />
+        ))}
+
+      {isMobile && briefShown && (
+        <BottomSheet
+          open={briefSheetOpen}
+          onClose={() => setBriefSheetOpen(false)}
+          title="Project brief"
+          initialSnap="full"
+        >
+          <BriefPanel />
+        </BottomSheet>
+      )}
     </div>
   );
 }

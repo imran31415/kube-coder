@@ -122,3 +122,27 @@ describe('isUngrouped', () => {
     expect(isUngrouped(groups)).toBe(false);
   });
 });
+
+describe('the registry record rides along (#683)', () => {
+  it('attaches the project so the header can render its pulse', () => {
+    const kc = project({
+      id: 'kc',
+      name: 'kube-coder',
+      last_seen_at: 100,
+      pulse: { running: 2, waiting: 1, last_activity_at: 200 },
+    });
+    const groups = groupByProject([thread({ id: '1', project_id: 'kc' })], [kc]);
+    expect(groups[0].project).toBe(kc);
+  });
+
+  it('leaves it absent for the unfiled group', () => {
+    const groups = groupByProject([thread({ id: '1', project_id: '' })], PROJECTS);
+    expect(groups[0].project).toBeUndefined();
+  });
+
+  it('leaves it absent when the project was archived out from under its chats', () => {
+    const groups = groupByProject([thread({ id: '1', project_id: 'gone' })], PROJECTS);
+    expect(groups[0].label).toBe('gone');
+    expect(groups[0].project).toBeUndefined();
+  });
+});

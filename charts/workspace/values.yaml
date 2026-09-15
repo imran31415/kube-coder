@@ -474,10 +474,15 @@ hypervisor:
   # Working directory for hypervisor chat sessions.
   workdir: "/home/dev"
 
-# AI CTO (#468) — the /cto page: a project registry, a CTO-persona chat, and a
+# AI CTO (#468) — a project registry, a CTO-persona chat mode, and a
 # deterministic project brief. It rides the Hypervisor (no new runner), so it's
 # only usable when `hypervisor.enabled` is also true. Set `enabled: false` to
-# hide the nav item + CTO route and 404 the projects API without touching chat.
+# hide Chat's Mode picker and the Feed, and to 404 the projects API, without
+# touching chat itself.
+#
+# It had its own /cto page until #683 folded that into Chat as a switchable
+# mode; the flag now gates a capability rather than a route, and /cto survives
+# only as a redirect.
 cto:
   enabled: true
 

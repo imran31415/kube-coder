@@ -5,7 +5,6 @@ import {
   brief,
   refreshProjects,
   selectProject,
-  mostActive,
   activeProject,
   defaultMemoryNamespace,
   USER_NAMESPACE,
@@ -56,13 +55,6 @@ afterEach(() => {
 });
 
 describe('store/projects', () => {
-  it('mostActive picks the highest last_activity_at', () => {
-    const a = project({ id: 'a', pulse: { running: 0, waiting: 0, last_activity_at: 100 } });
-    const b = project({ id: 'b', pulse: { running: 0, waiting: 0, last_activity_at: 999 } });
-    expect(mostActive([a, b])?.id).toBe('b');
-    expect(mostActive([])).toBeNull();
-  });
-
   it('refreshProjects loads the registry', async () => {
     mockFetch(() => ({ projects: [project({ id: 'kc', name: 'kube-coder' })] }));
     await refreshProjects();
