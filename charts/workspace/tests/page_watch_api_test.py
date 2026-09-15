@@ -17,6 +17,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -631,6 +632,213 @@ class SvgBadgeEndToEndTests(PageWatchTestBase):
         self.assertEqual(self.cycle('ci', green), 'changed')
         self.assertEqual(self.cycle('ci', green), 'unchanged')
         self.assertEqual(self.cycle('ci', green), 'unchanged')
+
+
+# ── concurrency: two threads, one watch ──────────────────────────────────
+#
+# These are the only tests in the suite that run two checks at once, and they
+# are the reason PageWatchManager carries locks at all. Everything else here
+# runs one check at a time, which is exactly the shape that lets a
+# read-fetch-compare-write race hide.
+
+class ConcurrencyTests(PageWatchTestBase):
+    """A check reads, spends up to 12s on the network, then writes.
+
+    Two things can go wrong in that window, and both are silent:
+
+      * another check reads the same last_hash, reaches the same "changed"
+        verdict, and spawns a SECOND task for ONE content change; and
+      * an edit lands mid-fetch and is then reverted by the check writing
+        back the snapshot it read before the edit — including `suspended`,
+        which would make Pause un-pause itself.
+
+    concurrencyPolicy: Forbid on the CronJob covers neither: it serialises
+    scheduled runs against each other and knows nothing about the dashboard's
+    "Check now" button.
+    """
+
+    def _mid_fetch(self, body='<p>passing</p>'):
+        """Returns (entered, release, fetch) for a fetch that parks mid-flight."""
+        entered = threading.Event()
+        release = threading.Event()
+
+        def fetch(url, **kw):
+            entered.set()
+            self.assertTrue(release.wait(10), 'test never released the fetch')
+            return R(body)
+
+        return entered, release, fetch
+
+    def _start_check(self, fetch):
+        """Run check_once on a thread and hand back (thread, results dict)."""
+        out = {}
+
+        def run():
+            out['outcome'], out['cfg'], out['detail'] = \
+                server.PageWatchManager.check_once('ci', fetch=fetch)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t, out
+
+    def test_two_overlapping_checks_yield_exactly_one_changed(self):
+        """The double-fire. Without the check lock BOTH return 'changed'."""
+        self.make()
+        self.assertEqual(self.cycle('ci', R('<p>failing</p>')), 'baseline')
+
+        entered, release, slow = self._mid_fetch()
+        thread, scheduled = self._start_check(slow)
+        self.assertTrue(entered.wait(10), 'the slow check never started fetching')
+
+        # The scheduled check is parked mid-fetch; "Check now" lands now.
+        manual, _, detail = server.PageWatchManager.check_once(
+            'ci', fetch=lambda url, **kw: R('<p>passing</p>'))
+
+        release.set()
+        thread.join(10)
+
+        self.assertEqual(manual, 'busy',
+                         'a second concurrent check must decline, not re-run — '
+                         'two "changed" verdicts for one change is two agent runs')
+        self.assertIn('already running', detail['error'])
+        self.assertEqual(scheduled['outcome'], 'changed')
+
+    def test_the_declined_check_leaves_the_record_untouched(self):
+        """'busy' is a no-op: it must not stamp last_checked_at or clear an error."""
+        self.make()
+        self.cycle('ci', R('<p>failing</p>'))
+        before = self.stored()
+
+        entered, release, slow = self._mid_fetch(body='<p>failing</p>')
+        thread, _ = self._start_check(slow)
+        self.assertTrue(entered.wait(10))
+        outcome, cfg, _ = server.PageWatchManager.check_once(
+            'ci', fetch=lambda url, **kw: R('<p>failing</p>'))
+        self.assertEqual(outcome, 'busy')
+        self.assertIsNone(cfg, 'a declined check must not hand back a config — '
+                               'it holds the fire_token')
+        release.set()
+        thread.join(10)
+        self.assertEqual(before['last_hash'], self.stored()['last_hash'])
+
+    def test_pausing_mid_check_is_not_reverted(self):
+        """Pause during an in-flight check. The check must not un-pause it."""
+        self.make()
+        self.cycle('ci', R('<p>failing</p>'))
+
+        entered, release, slow = self._mid_fetch()
+        thread, result = self._start_check(slow)
+        self.assertTrue(entered.wait(10))
+
+        # The user hits Pause while the fetch is still open.
+        self.assertIsNotNone(server.PageWatchManager.set_suspended('ci', True))
+        self.assertTrue(self.stored()['suspended'])
+
+        release.set()
+        thread.join(10)
+
+        self.assertTrue(
+            self.stored()['suspended'],
+            'a check that finished after the pause wrote back its own stale '
+            'snapshot and silently resumed the watch')
+        # ...and the check still recorded its own findings.
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertIsNotNone(self.stored()['last_checked_at'])
+
+    def test_a_pause_that_lands_mid_check_is_visible_to_the_caller(self):
+        """check_once returns the record as it now stands on disk, not its own
+        copy — which is what lets the fire path skip a watch paused mid-fetch."""
+        self.make()
+        self.cycle('ci', R('<p>failing</p>'))
+
+        entered, release, slow = self._mid_fetch()
+        thread, result = self._start_check(slow)
+        self.assertTrue(entered.wait(10))
+        server.PageWatchManager.set_suspended('ci', True)
+        release.set()
+        thread.join(10)
+
+        self.assertEqual(result['outcome'], 'changed')
+        self.assertTrue(result['cfg']['suspended'])
+
+    def test_an_edit_mid_check_survives(self):
+        """Same lost-update shape, on a field the user can see."""
+        self.make()
+        self.cycle('ci', R('<p>failing</p>'))
+
+        entered, release, slow = self._mid_fetch()
+        thread, _ = self._start_check(slow)
+        self.assertTrue(entered.wait(10))
+
+        cfg, err = server.PageWatchManager.create_or_update(
+            {'id': 'ci', 'url': 'https://example.test/build',
+             'schedule': '*/5 * * * *', 'prompt_template': 'retyped mid-check'},
+            existing_id='ci', fetch=lambda url, **kw: R('<p>failing</p>'))
+        self.assertIsNone(err, msg=err)
+
+        release.set()
+        thread.join(10)
+
+        self.assertEqual(self.stored()['prompt_template'], 'retyped mid-check')
+        # The check's own fields landed too — a merge, not a last-writer-wins.
+        self.assertIsNotNone(self.stored()['last_changed_at'])
+
+
+# ── editing a watch must not quietly reset what the checks recorded ──────
+
+class EditPreservesCheckStateTests(PageWatchTestBase):
+    def _edit(self, **over):
+        data = {'id': 'ci', 'url': 'https://example.test/build',
+                'schedule': '*/5 * * * *', 'prompt_template': 'edited'}
+        data.update(over)
+        cfg, err = server.PageWatchManager.create_or_update(
+            data, existing_id='ci', fetch=lambda url, **kw: R('<p>x</p>'))
+        self.assertIsNone(err, msg=err)
+        return cfg
+
+    def test_an_owed_fire_survives_an_edit(self):
+        self.make()
+        self.check('ci', R('<p>failing</p>'))          # baseline
+        self.assertEqual(self.check('ci', R('<p>passing</p>'))[0], 'changed')
+        self.assertTrue(self.stored()['pending_fire'],
+                        'precondition: the fire was never delivered')
+
+        self._edit(prompt_template='a different prompt')
+
+        self.assertTrue(
+            self.stored()['pending_fire'],
+            'editing the prompt silently dropped a change the user was owed a '
+            'notification for')
+
+    def test_failure_state_survives_an_edit(self):
+        self.make()
+        self.check('ci', R('<p>ok</p>'))
+        for _ in range(3):
+            self.check('ci', R('boom', status=503))
+        self.assertEqual(self.stored()['consecutive_failures'], 3)
+        self.assertIsNotNone(self.stored()['last_error'])
+
+        self._edit(prompt_template='a different prompt')
+
+        self.assertEqual(
+            self.stored()['consecutive_failures'], 3,
+            'a watch that has been failing for days must not read as healthy '
+            'just because its prompt was retyped')
+        self.assertIsNotNone(self.stored()['last_error'])
+
+    def test_changing_the_url_drops_the_owed_fire_with_the_baseline(self):
+        """The one case where resetting IS right: the owed fire described a
+        page the user has just stopped watching."""
+        self.make()
+        self.check('ci', R('<p>failing</p>'))
+        self.assertEqual(self.check('ci', R('<p>passing</p>'))[0], 'changed')
+        self.assertTrue(self.stored()['pending_fire'])
+
+        self._edit(url='https://example.test/somewhere-else')
+
+        self.assertFalse(self.stored()['pending_fire'])
+        self.assertIsNone(self.stored()['last_hash'])
+        self.assertEqual(self.stored()['pending_fire_attempts'], 0)
 
 
 if __name__ == '__main__':

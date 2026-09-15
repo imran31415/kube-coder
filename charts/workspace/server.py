@@ -9281,6 +9281,80 @@ class PageWatchManager:
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
 
+    # -- per-watch locking -------------------------------------------------
+    #
+    # The workspace runs ONE ThreadingHTTPServer process, so the dashboard's
+    # "Check now" and the CronJob pod's scheduled POST arrive as two threads
+    # inside this interpreter, and plain threading locks close the races
+    # between them. CronManager needs none of this: a cron keeps no state to
+    # compare against, so it has no read-modify-write to lose.
+    #
+    # Two locks per watch rather than one, because they guard different things
+    # and merging them would trade a correctness bug for a UI stall:
+    #
+    #   'check'  serialises whole checks, network I/O included (up to
+    #            FETCH_TIMEOUT seconds). Acquired non-blocking.
+    #   'write'  guards a single read-modify-write of the config file. Held
+    #            for microseconds and never across a fetch, so Pause never
+    #            waits on the network.
+    _LOCKS = {}
+    _LOCKS_GUARD = threading.Lock()
+
+    @staticmethod
+    def _lock_pair(watch_id):
+        with PageWatchManager._LOCKS_GUARD:
+            pair = PageWatchManager._LOCKS.get(watch_id)
+            if pair is None:
+                # RLock for writes: _update_check_state re-reads and saves
+                # inside a section its caller may already hold.
+                pair = (threading.Lock(), threading.RLock())
+                PageWatchManager._LOCKS[watch_id] = pair
+            return pair
+
+    @staticmethod
+    def _check_lock(watch_id):
+        return PageWatchManager._lock_pair(watch_id)[0]
+
+    @staticmethod
+    def _write_lock(watch_id):
+        return PageWatchManager._lock_pair(watch_id)[1]
+
+    # The fields a check owns. Everything else on the record belongs to
+    # whoever edited the watch, and a check must never write those back.
+    _CHECK_OWNED_FIELDS = (
+        'last_hash', 'last_checked_at', 'last_changed_at', 'last_error',
+        'consecutive_failures', 'normalizer_version', 'pending_fire',
+        'pending_fire_attempts',
+    )
+
+    @staticmethod
+    def _update_check_state(cfg):
+        """Persist only the check-owned fields, onto the record as it is on
+        disk right now.
+
+        A check reads the config, then spends up to FETCH_TIMEOUT seconds on
+        the network before it has anything to write. Saving the whole object
+        at that point would silently revert every edit made during the fetch
+        - including `suspended`, so pausing a watch while a check was in
+        flight would quietly un-pause it. Re-reading under the write lock and
+        merging back only this check's own fields makes that impossible.
+
+        Returns the merged record, so the caller reports what is actually on
+        disk rather than its own stale snapshot. That is what lets the fire
+        path notice a pause that landed mid-check.
+        """
+        with PageWatchManager._write_lock(cfg['id']):
+            current = PageWatchManager.get_page_watch(
+                cfg['id'], include_secrets=True)
+            if current is None:
+                # Deleted mid-check. Writing here would resurrect it.
+                return cfg
+            for key in PageWatchManager._CHECK_OWNED_FIELDS:
+                if key in cfg:
+                    current[key] = cfg[key]
+            PageWatchManager._save(current)
+            return current
+
     @staticmethod
     def list_page_watches():
         PageWatchManager.ensure_dir()
@@ -9445,27 +9519,41 @@ class PageWatchManager:
         if redirected_from:
             cfg['redirected_from'] = redirected_from
 
-        prior = None
-        if existing_id:
-            prior = PageWatchManager.get_page_watch(
-                existing_id, include_secrets=True) or {}
-            for k in ('created_at', 'fire_token', 'last_hash',
-                      'last_checked_at', 'last_changed_at',
-                      'normalizer_version'):
-                if prior.get(k) is not None:
-                    cfg[k] = prior[k]
-            # A changed url or selector invalidates the baseline: the next
-            # check must re-baseline silently rather than report the switch
-            # as a content change.
-            if prior.get('url') != cfg['url'] or \
-                    prior.get('selector') != cfg['selector']:
-                cfg['last_hash'] = None
-                cfg['last_changed_at'] = None
+        # Under the write lock so an edit and an in-flight check cannot
+        # interleave their reads and writes of the same record.
+        with PageWatchManager._write_lock(watch_id):
+            prior = None
+            if existing_id:
+                prior = PageWatchManager.get_page_watch(
+                    existing_id, include_secrets=True) or {}
+                # Check-owned state is preserved across an edit as well as the
+                # baseline. Dropping it would lose an owed fire, and would
+                # reset consecutive_failures so a watch that has been failing
+                # for days reads as healthy the moment its prompt is retyped.
+                for k in ('created_at', 'fire_token', 'last_hash',
+                          'last_checked_at', 'last_changed_at',
+                          'normalizer_version', 'last_error',
+                          'consecutive_failures', 'pending_fire',
+                          'pending_fire_attempts'):
+                    if prior.get(k) is not None:
+                        cfg[k] = prior[k]
+                # A changed url or selector invalidates the baseline: the next
+                # check must re-baseline silently rather than report the switch
+                # as a content change.
+                if prior.get('url') != cfg['url'] or \
+                        prior.get('selector') != cfg['selector']:
+                    cfg['last_hash'] = None
+                    cfg['last_changed_at'] = None
+                    # An owed fire referred to the OLD target. Carrying it over
+                    # would announce a change on a page the user just stopped
+                    # watching.
+                    cfg['pending_fire'] = False
+                    cfg['pending_fire_attempts'] = 0
 
-        if not cfg.get('fire_token'):
-            cfg['fire_token'] = secrets.token_urlsafe(32)
+            if not cfg.get('fire_token'):
+                cfg['fire_token'] = secrets.token_urlsafe(32)
 
-        PageWatchManager._save(cfg)
+            PageWatchManager._save(cfg)
 
         try:
             PageWatchManager._apply_k8s(cfg)
@@ -9486,17 +9574,28 @@ class PageWatchManager:
             )
         try:
             os.remove(PageWatchManager._config_path(watch_id))
-            return True
+            removed = True
         except FileNotFoundError:
-            return False
+            removed = False
+        # Drop the lock pair too, so a workspace that creates and deletes many
+        # watches does not accumulate one entry per id it has ever seen.
+        with PageWatchManager._LOCKS_GUARD:
+            PageWatchManager._LOCKS.pop(watch_id, None)
+        return removed
 
     @staticmethod
     def set_suspended(watch_id, suspended):
-        cfg = PageWatchManager.get_page_watch(watch_id, include_secrets=True)
-        if cfg is None:
-            return None
-        cfg['suspended'] = bool(suspended)
-        PageWatchManager._save(cfg)
+        # The write lock, not the check lock: pausing must take effect at once
+        # even while a check is mid-fetch. The check will not clobber it,
+        # because _update_check_state merges rather than overwrites.
+        with PageWatchManager._write_lock(watch_id):
+            cfg = PageWatchManager.get_page_watch(watch_id, include_secrets=True)
+            if cfg is None:
+                return None
+            cfg['suspended'] = bool(suspended)
+            PageWatchManager._save(cfg)
+        # kubectl stays outside the lock - it can take up to 30 seconds, and
+        # nothing it does touches the config file.
         name = PageWatchManager.k8s_object_name(watch_id)
         ns = CronManager.detect_namespace()
         patch = json.dumps({'spec': {'suspend': bool(suspended)}})
@@ -9625,7 +9724,7 @@ spec:
         cfg['last_checked_at'] = now
         cfg['last_error'] = message
         cfg['consecutive_failures'] = int(cfg.get('consecutive_failures') or 0) + 1
-        PageWatchManager._save(cfg)
+        cfg = PageWatchManager._update_check_state(cfg)
         return 'error', cfg, {'error': message}
 
     @staticmethod
@@ -9634,6 +9733,7 @@ spec:
 
         Outcomes:
           'missing'   — no such watch
+          'busy'      — a check for this watch is already running
           'error'     — fetch or extraction failed; nothing fired, baseline kept
           'baseline'  — first successful check (or a re-baseline); nothing fired
           'unchanged' — content identical to the stored hash; nothing fired
@@ -9646,11 +9746,42 @@ spec:
         missed notification rather than a repeated agent run — and
         `pending_fire` recovers the one case that happens in practice (the
         task-capacity 429).
+
+        SERIALISED PER WATCH. The dashboard's "Check now" and the CronJob
+        pod's scheduled POST are two threads in this one process. Without
+        mutual exclusion both can read the same last_hash, both fetch, both
+        conclude "changed", and both spawn a task — two agent runs for one
+        change, which is exactly what "fires exactly once per change" forbids.
+        concurrencyPolicy: Forbid only covers scheduled-vs-scheduled; it knows
+        nothing about the button.
+
+        The acquire is non-blocking on purpose. A check already in flight is
+        going to store its own result, so a second one has nothing to add, and
+        queueing it behind up to FETCH_TIMEOUT seconds of network I/O would
+        only risk blowing the CronJob curl's --max-time budget.
         """
+        # Cheap existence probe before taking a lock, so an unknown id cannot
+        # mint a lock entry for an id that will never exist.
+        if PageWatchManager.get_page_watch(watch_id) is None:
+            return 'missing', None, {'error': 'unknown page-watch'}
+        lock = PageWatchManager._check_lock(watch_id)
+        if not lock.acquire(blocking=False):
+            return 'busy', None, {
+                'error': 'a check for this page-watch is already running'}
+        try:
+            return PageWatchManager._check_once_locked(
+                watch_id, fetch=fetch, now=now)
+        finally:
+            lock.release()
+
+    @staticmethod
+    def _check_once_locked(watch_id, *, fetch=None, now=None):
+        """The body of check_once, run with that watch's check lock held."""
         fetch = fetch or safe_http.fetch
         now = time.time() if now is None else now
         cfg = PageWatchManager.get_page_watch(watch_id, include_secrets=True)
         if cfg is None:
+            # Deleted between the probe above and the lock.
             return 'missing', None, {'error': 'unknown page-watch'}
 
         try:
@@ -9699,7 +9830,7 @@ spec:
         # once.
         if prior_hash is None or prior_version != page_watch.NORMALIZER_VERSION:
             cfg['last_hash'] = new_hash
-            PageWatchManager._save(cfg)
+            cfg = PageWatchManager._update_check_state(cfg)
             return 'baseline', cfg, {'text': text, 'hash': new_hash}
 
         retry = bool(cfg.get('pending_fire')) and new_hash == prior_hash
@@ -9717,11 +9848,11 @@ spec:
                 'a change was detected but the task could not be started after '
                 f'{PageWatchManager.MAX_PENDING_RETRIES} attempts; that change '
                 'was dropped')
-            PageWatchManager._save(cfg)
+            cfg = PageWatchManager._update_check_state(cfg)
             return 'unchanged', cfg, {'hash': new_hash, 'gave_up': True}
 
         if new_hash == prior_hash and not cfg.get('pending_fire'):
-            PageWatchManager._save(cfg)
+            cfg = PageWatchManager._update_check_state(cfg)
             return 'unchanged', cfg, {'hash': new_hash}
 
         # Changed (or a previous fire never made it out). Store first, then let
@@ -9733,20 +9864,21 @@ spec:
         cfg['pending_fire'] = True
         cfg['pending_fire_attempts'] = int(
             cfg.get('pending_fire_attempts') or 0) + 1
-        PageWatchManager._save(cfg)
+        cfg = PageWatchManager._update_check_state(cfg)
         return 'changed', cfg, {'text': text, 'hash': new_hash, 'retry': retry}
 
     @staticmethod
     def clear_pending_fire(watch_id):
         """Called after a task spawns successfully, so the next unchanged check
         stays quiet."""
-        cfg = PageWatchManager.get_page_watch(watch_id, include_secrets=True)
-        if cfg is None:
-            return None
-        cfg['pending_fire'] = False
-        cfg['pending_fire_attempts'] = 0
-        PageWatchManager._save(cfg)
-        return cfg
+        with PageWatchManager._write_lock(watch_id):
+            cfg = PageWatchManager.get_page_watch(watch_id, include_secrets=True)
+            if cfg is None:
+                return None
+            cfg['pending_fire'] = False
+            cfg['pending_fire_attempts'] = 0
+            PageWatchManager._save(cfg)
+            return cfg
 
     # -- prompt ------------------------------------------------------------
 
@@ -15753,7 +15885,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if action == 'check':
             # "Check now" from the dashboard. Same code path as the scheduled
             # check, so what the button does and what the CronJob does can
-            # never drift apart.
+            # never drift apart — including the suspend guard. Without this,
+            # Pause would mean "pause the timer" while the button still fired
+            # tasks, which is not what the row says it does.
+            cfg = PageWatchManager.get_page_watch(self._page_watch_id)
+            if cfg is None:
+                self.send_json({'error': 'Not found'}, 404)
+                return
+            if cfg.get('suspended'):
+                self.send_json({'error': 'page-watch is suspended'}, 409)
+                return
             self._run_page_watch_check(manual=True)
             return
         self.send_json({'error': 'unknown action'}, 400)
@@ -15785,6 +15926,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if outcome == 'missing':
             self.send_json({'error': 'Not found'}, 404)
             return
+        if outcome == 'busy':
+            # Another check for this watch is already in flight — the schedule
+            # and the button landed together. That check stores its own
+            # result, so there is nothing for this one to add, and running it
+            # anyway is precisely how one change becomes two agent runs.
+            # 200 for the same reason 'error' is 200: nothing went wrong, so
+            # failing the CronJob's `curl -f` over it would be noise.
+            self.send_json({
+                'page_watch_id': watch_id,
+                'outcome': 'busy',
+                'error': 'a check for this page-watch is already running',
+            })
+            return
         if outcome == 'error':
             # 200, not 5xx: the check ran correctly and its answer is "the page
             # could not be read". A non-2xx would make the CronJob's `curl -f`
@@ -15806,6 +15960,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
         # outcome == 'changed' — the new hash is already persisted, so a
         # failure from here on costs a notification, never a repeat.
+        if cfg.get('suspended'):
+            # Paused while this check was mid-fetch. cfg here is the record as
+            # it now stands on disk (check_once merges rather than writes back
+            # its own stale copy), so this sees the pause. pending_fire is
+            # already set, which means resuming re-offers this change rather
+            # than losing it.
+            self.send_json({
+                'page_watch_id': cfg['id'],
+                'outcome': 'changed',
+                'pending': True,
+                'error': 'page-watch is suspended',
+            }, 409)
+            return
         payload = PageWatchManager.build_payload(
             cfg, detail.get('text'), now=cfg.get('last_changed_at'))
         prompt = PageWatchManager.render_prompt(cfg, payload)
