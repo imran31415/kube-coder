@@ -1,6 +1,6 @@
 import { apiGet, apiPost, apiDelete } from './client';
 
-export type TriggerKind = 'webhook' | 'cron';
+export type TriggerKind = 'webhook' | 'cron' | 'page-watch';
 
 export interface WebhookRecord {
   id: string;
@@ -26,22 +26,59 @@ export interface CronRecord {
   last_fire_at?: number;
 }
 
+/** A page-watch (#681): a cron whose fire is conditional on a URL's content
+ *  changing. `last_hash` is server-side state, surfaced only so the UI can
+ *  show whether a baseline has been taken yet. */
+export interface PageWatchRecord {
+  id: string;
+  url: string;
+  selector?: string | null;
+  schedule: string;
+  prompt_template: string;
+  workdir?: string;
+  timezone?: string;
+  interpolate_mode?: 'attach' | 'interpolate';
+  include_content?: boolean;
+  /** Reserved for a future Playwright path — always false in this version. */
+  render?: boolean;
+  suspended?: boolean;
+  created_at?: number;
+  fire_token_set?: boolean;
+  redirected_from?: string;
+  last_hash?: string | null;
+  last_checked_at?: number | null;
+  last_changed_at?: number | null;
+  last_error?: string | null;
+  consecutive_failures?: number;
+}
+
 export interface Trigger {
   kind: TriggerKind;
   id: string;
   name: string;
-  schedule?: string;       // cron only
+  schedule?: string;       // cron + page-watch
   prompt: string;
   workdir?: string;
   timezone?: string;
   suspended?: boolean;
   created_at?: number;
+  // page-watch only
+  url?: string;
+  selector?: string | null;
+  last_checked_at?: number | null;
+  last_changed_at?: number | null;
+  last_error?: string | null;
+  /** null until the first successful check has taken a baseline. */
+  last_hash?: string | null;
 }
 
 export async function listTriggers(): Promise<Trigger[]> {
-  const [wh, cr] = await Promise.all([
+  // Each list is caught independently so one failing endpoint blanks only its
+  // own kind rather than emptying the whole Triggers tab.
+  const [wh, cr, pw] = await Promise.all([
     apiGet<{ webhooks: WebhookRecord[] }>('/api/webhooks').catch(() => ({ webhooks: [] as WebhookRecord[] })),
     apiGet<{ crons: CronRecord[] }>('/api/crons').catch(() => ({ crons: [] as CronRecord[] })),
+    apiGet<{ page_watches: PageWatchRecord[] }>('/api/page-watches').catch(() => ({ page_watches: [] as PageWatchRecord[] })),
   ]);
   const triggers: Trigger[] = [];
   for (const w of wh.webhooks) {
@@ -65,6 +102,25 @@ export async function listTriggers(): Promise<Trigger[]> {
       timezone: c.timezone,
       suspended: c.suspended,
       created_at: c.created_at,
+    });
+  }
+  for (const p of pw.page_watches) {
+    triggers.push({
+      kind: 'page-watch',
+      id: p.id,
+      name: p.id,
+      schedule: p.schedule,
+      prompt: p.prompt_template,
+      workdir: p.workdir,
+      timezone: p.timezone,
+      suspended: p.suspended,
+      created_at: p.created_at,
+      url: p.url,
+      selector: p.selector,
+      last_checked_at: p.last_checked_at,
+      last_changed_at: p.last_changed_at,
+      last_error: p.last_error,
+      last_hash: p.last_hash,
     });
   }
   triggers.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
@@ -99,3 +155,28 @@ export const createWebhook = (input: CreateWebhookInput) =>
 
 export const testWebhook = (id: string) => apiPost<{ ok: true }>(`/api/webhooks/${id}/test`, {});
 export const deleteWebhook = (id: string) => apiDelete<{ ok: true }>(`/api/webhooks/${id}`);
+
+export interface CreatePageWatchInput {
+  id: string;
+  url: string;
+  schedule: string;
+  prompt_template: string;
+  selector?: string;
+  workdir?: string;
+  timezone?: string;
+  include_content?: boolean;
+}
+
+/** The server may answer 202 with a `warning` when the config saved but the
+ *  CronJob did not apply — a watch with no timer never fires, so the caller
+ *  must surface it rather than treat 202 as success. */
+export const createPageWatch = (input: CreatePageWatchInput) =>
+  apiPost<PageWatchRecord & { warning?: string }>('/api/page-watches', input);
+
+/** Runs the same code path as the scheduled check, so what the button does and
+ *  what the CronJob does cannot drift apart. */
+export const checkPageWatch = (id: string) =>
+  apiPost<{ outcome: string; error?: string }>(`/api/page-watches/${id}/check`, {});
+export const suspendPageWatch = (id: string) => apiPost<{ ok: true }>(`/api/page-watches/${id}/suspend`, {});
+export const resumePageWatch = (id: string) => apiPost<{ ok: true }>(`/api/page-watches/${id}/resume`, {});
+export const deletePageWatch = (id: string) => apiDelete<{ ok: true }>(`/api/page-watches/${id}`);

@@ -31,7 +31,9 @@
       "id": "triggers",
       "title": "Triggers",
       "pages": [
-        { "id": "triggers-webhooks", "title": "Webhooks", "file": "in-app/triggers-webhooks.md", "summary": "Signed webhooks, payload templating, response URLs, replay protection." }
+        { "id": "triggers-webhooks", "title": "Webhooks", "file": "in-app/triggers-webhooks.md", "summary": "Signed webhooks, payload templating, response URLs, replay protection." },
+        { "id": "triggers-page-watch", "title": "Page watch", "file": "in-app/triggers-page-watch.md",
+          "summary": "Watch a URL or one element on it, and run a prompt only when it changes." }
       ]
     },
     {

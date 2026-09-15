@@ -13,7 +13,7 @@ import {
 } from '../../store/triggers';
 import { drawerOpen, type DrawerKey } from '../../store/ui';
 import { useIsMobile } from '../../hooks/useMediaQuery';
-import { createCron, createWebhook, type Trigger, type TriggerKind } from '../../api/triggers';
+import { createCron, createWebhook, createPageWatch, type Trigger, type TriggerKind } from '../../api/triggers';
 import { Button } from '../../components/primitives/Button';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { Input } from '../../components/primitives/Input';
@@ -42,7 +42,7 @@ export function TriggersRoute() {
         <div>
           <h1 class="route-title">Triggers</h1>
           <p class="route-subtitle muted">
-            Webhooks and crons in one list. {triggers.value.length} trigger{triggers.value.length === 1 ? '' : 's'}.
+            Webhooks, crons and page watches in one list. {triggers.value.length} trigger{triggers.value.length === 1 ? '' : 's'}.
           </p>
         </div>
         <MutatorOnly>
@@ -55,7 +55,7 @@ export function TriggersRoute() {
       <div class="trig-toolbar">
         <Input
           fullWidth
-          placeholder="Filter by id, prompt, or schedule…"
+          placeholder="Filter by id, prompt, schedule, or URL…"
           value={triggerFilter.value}
           onInput={(e) => (triggerFilter.value = (e.target as HTMLInputElement).value)}
           aria-label="Filter triggers"
@@ -71,7 +71,7 @@ export function TriggersRoute() {
           description={
             triggerFilter.value
               ? 'Try clearing the filter.'
-              : 'Triggers fire Claude tasks automatically — on a schedule, via webhook, or manually.'
+              : 'Triggers fire Claude tasks automatically — on a schedule, via webhook, when a watched page changes, or manually.'
           }
           action={
             !triggerFilter.value && (
@@ -116,10 +116,49 @@ export function TriggersRoute() {
   );
 }
 
+/** Short "5m ago" gloss. Local because the dashboard has no shared relative-time
+ *  util yet — TaskList carries its own copy of the same idea. */
+function since(ts?: number | null): string {
+  if (!ts) return 'never';
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+/** Per-kind presentation. A table rather than nested ternaries: with three
+ *  kinds a `cron ? … : …` silently routes anything new down the webhook
+ *  branch, which is how a new kind ends up mislabelled and unpausable. */
+const KIND_META: Record<
+  TriggerKind,
+  { label: string; tone: 'accent' | 'info' | 'success'; pausable: boolean; deleteBody: string }
+> = {
+  cron: {
+    label: 'cron',
+    tone: 'accent',
+    pausable: true,
+    deleteBody: 'The CronJob and its in-cluster Secret will be deleted.',
+  },
+  webhook: {
+    label: 'webhook',
+    tone: 'info',
+    pausable: false,
+    deleteBody: 'The webhook config will be deleted and any external sender will start getting 404s.',
+  },
+  'page-watch': {
+    label: 'page watch',
+    tone: 'success',
+    pausable: true,
+    deleteBody: 'The watch, its CronJob and its in-cluster Secret will be deleted. The page itself is untouched.',
+  },
+};
+
 function TriggerRow({ t }: { t: Trigger }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const tone = t.kind === 'cron' ? (t.suspended ? 'warn' : 'accent') : 'info';
-  const label = t.kind === 'cron' ? (t.suspended ? 'cron · paused' : 'cron') : 'webhook';
+  const meta = KIND_META[t.kind] ?? KIND_META.webhook;
+  const tone = t.suspended ? 'warn' : meta.tone;
+  const label = t.suspended ? `${meta.label} · paused` : meta.label;
   return (
     <article class="trig-row">
       <div class="trig-row-head">
@@ -128,10 +167,22 @@ function TriggerRow({ t }: { t: Trigger }) {
         {t.schedule && <span class="trig-row-sched mono">{t.schedule}</span>}
         <div class="trig-row-actions">
           <MutatorOnly>
-            <Button size="sm" variant="ghost" onClick={() => fire(t)}>
-              <Icon name="play" size={12} /> Fire now
+            {/* A paused page-watch refuses the check server-side, so the
+                button says so up front rather than handing back a 409. */}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => fire(t)}
+              disabled={t.kind === 'page-watch' && t.suspended}
+              title={
+                t.kind === 'page-watch' && t.suspended
+                  ? 'This watch is paused - resume it to check now'
+                  : undefined
+              }
+            >
+              <Icon name="play" size={12} /> {t.kind === 'page-watch' ? 'Check now' : 'Fire now'}
             </Button>
-            {t.kind === 'cron' && (
+            {meta.pausable && (
               <Button size="sm" variant="ghost" onClick={() => toggleSuspend(t)}>
                 {t.suspended ? 'Resume' : 'Pause'}
               </Button>
@@ -146,9 +197,7 @@ function TriggerRow({ t }: { t: Trigger }) {
             <ConfirmDialog
               open={confirmDelete}
               title={`Delete ${t.id}?`}
-              body={t.kind === 'cron'
-                ? 'The CronJob and its in-cluster Secret will be deleted.'
-                : 'The webhook config will be deleted and any external sender will start getting 404s.'}
+              body={meta.deleteBody}
               confirmLabel="Delete"
               destructive
               onConfirm={() => {
@@ -160,6 +209,25 @@ function TriggerRow({ t }: { t: Trigger }) {
           </MutatorOnly>
         </div>
       </div>
+      {t.kind === 'page-watch' && (
+        <div class="trig-row-watch">
+          <span class="trig-row-url mono" title={t.url}>{t.url}</span>
+          {t.selector && <span class="trig-row-sched mono">{t.selector}</span>}
+        </div>
+      )}
+      {t.kind === 'page-watch' && (
+        <div class="trig-row-status">
+          {t.last_error
+            ? <Pill tone="danger">check failed</Pill>
+            : !t.last_hash
+              ? <Pill tone="neutral">waiting for first check</Pill>
+              : <Pill tone="neutral" mono>{`checked ${since(t.last_checked_at)}`}</Pill>}
+          {!t.last_error && t.last_changed_at && (
+            <span class="muted mono">changed {since(t.last_changed_at)}</span>
+          )}
+          {t.last_error && <span class="trig-row-err muted">{t.last_error}</span>}
+        </div>
+      )}
       <p class="trig-row-prompt muted">{t.prompt}</p>
       {(t.workdir || t.timezone) && (
         <div class="trig-row-meta muted mono">
@@ -178,10 +246,23 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
   const [schedule, setSchedule] = useState('0 * * * *');
   const [timezone, setTimezone] = useState('UTC');
   const [workdir, setWorkdir] = useState('/home/dev');
+  const [url, setUrl] = useState('');
+  const [selector, setSelector] = useState('');
+  const [includeContent, setIncludeContent] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const idOk = /^[a-z0-9-]+$/.test(id);
-  const valid = idOk && prompt.trim().length > 0 && (kind === 'webhook' || schedule.trim().split(/\s+/).length === 5);
+  const scheduleOk = schedule.trim().split(/\s+/).length === 5 || /^@\w+$/.test(schedule.trim());
+  // http(s) only, mirroring PageWatchManager.validate_url. The server is still
+  // the authority — this only saves the user a round-trip.
+  const urlOk = /^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(url.trim());
+  // Explicitly per-kind. The old `kind === 'webhook' || scheduleOk` shape would
+  // have quietly held a page-watch to the cron rule and nothing else.
+  const kindValid =
+    kind === 'webhook' ? true
+      : kind === 'cron' ? scheduleOk
+        : scheduleOk && urlOk;
+  const valid = idOk && prompt.trim().length > 0 && kindValid;
 
   async function onSubmit(e: Event) {
     e.preventDefault();
@@ -191,6 +272,20 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
       if (kind === 'cron') {
         await createCron({ id, schedule, prompt_template: prompt, workdir, timezone });
         pushToast('Cron created', { kind: 'success' });
+      } else if (kind === 'page-watch') {
+        const w = await createPageWatch({
+          id, url: url.trim(), schedule, prompt_template: prompt, workdir, timezone,
+          selector: selector.trim() || undefined,
+          include_content: includeContent,
+        });
+        if (w.warning) {
+          // Saved, but with no CronJob it will never check. Never silent.
+          pushToast(`Saved, but the schedule did not apply: ${w.warning}`, { kind: 'warn', ttl: 12000 });
+        } else if (w.redirected_from) {
+          pushToast(`Watching ${w.url} (followed a redirect)`, { kind: 'success', ttl: 10000 });
+        } else {
+          pushToast('Page watch created. The first check records a baseline.', { kind: 'success' });
+        }
       } else {
         const w = await createWebhook({ id, prompt_template: prompt, workdir });
         const secret = (w as { secret?: string }).secret;
@@ -214,13 +309,23 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
       <div class="tf-kind-row">
         <span class="tf-label">Kind</span>
         <div class="seg" role="group" aria-label="Trigger kind">
-          {(['cron', 'webhook'] as TriggerKind[]).map((k) => (
+          {(['cron', 'webhook', 'page-watch'] as TriggerKind[]).map((k) => (
             <button
               key={k}
               type="button"
               class={`seg-item ${kind === k ? 'seg-item-active' : ''}`}
               aria-pressed={kind === k}
-              onClick={() => setKind(k)}
+              onClick={() => {
+                // A watch polls; a cron reports. Carry the sensible default
+                // across the switch, but never clobber a schedule the user
+                // has already typed. Mirrors emptyDraft() on mobile.
+                setSchedule((cur) =>
+                  cur === '0 * * * *' && k === 'page-watch' ? '*/5 * * * *'
+                    : cur === '*/5 * * * *' && k !== 'page-watch' ? '0 * * * *'
+                      : cur,
+                );
+                setKind(k);
+              }}
             >
               {k}
             </button>
@@ -252,17 +357,71 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
         />
       </label>
 
-      {kind === 'cron' && (
+      {kind === 'page-watch' && (
+        <>
+          <label class="tf-field">
+            <span class="tf-label">Page to watch</span>
+            <Input
+              fullWidth
+              type="url"
+              value={url}
+              placeholder="https://github.com/you/repo/actions/workflows/ci.yml/badge.svg"
+              onInput={(e) => setUrl((e.target as HTMLInputElement).value)}
+            />
+            {url && !urlOk && <span class="tf-error">Must start with http:// or https://</span>}
+            <span class="tf-hint muted">
+              Public pages only — internal and loopback addresses are refused. This
+              version reads the page as sent, without running its JavaScript, so a
+              status badge URL works where a JS dashboard may not.
+            </span>
+          </label>
+          <label class="tf-field">
+            <span class="tf-label">CSS selector <span class="muted">(optional)</span></span>
+            <Input
+              fullWidth
+              value={selector}
+              placeholder=".build-status"
+              onInput={(e) => setSelector((e.target as HTMLInputElement).value)}
+            />
+            <span class="tf-hint muted">
+              Narrows the watch to one part of the page, so clocks and ads elsewhere
+              don't wake it. Supports tag, #id, .class, [attr="value"] and descendant
+              chains.
+            </span>
+          </label>
+          <label class="tf-check">
+            <input
+              type="checkbox"
+              checked={includeContent}
+              onChange={(e) => setIncludeContent((e.target as HTMLInputElement).checked)}
+            />
+            <span>
+              Include page text in the prompt
+              <span class="tf-hint muted">
+                Off by default. The prompt gets the URL and what changed, but not the
+                page's own words — a watched page is written by someone else, and its
+                text reaches an agent that acts on it.
+              </span>
+            </span>
+          </label>
+        </>
+      )}
+
+      {(kind === 'cron' || kind === 'page-watch') && (
         <div class="tf-row">
           <label class="tf-field">
-            <span class="tf-label">Cron schedule</span>
+            <span class="tf-label">{kind === 'page-watch' ? 'Check every' : 'Cron schedule'}</span>
             <Input
               fullWidth
               value={schedule}
               onInput={(e) => setSchedule((e.target as HTMLInputElement).value)}
               placeholder="0 * * * *"
             />
-            <span class="tf-hint muted">Five fields: minute hour dom month dow.</span>
+            <span class="tf-hint muted">
+              {kind === 'page-watch'
+                ? 'Cron syntax. */5 * * * * checks every five minutes.'
+                : 'Five fields: minute hour dom month dow.'}
+            </span>
           </label>
           <label class="tf-field">
             <span class="tf-label">Timezone</span>
