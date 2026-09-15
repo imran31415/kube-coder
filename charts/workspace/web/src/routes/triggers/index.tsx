@@ -42,7 +42,7 @@ export function TriggersRoute() {
         <div>
           <h1 class="route-title">Triggers</h1>
           <p class="route-subtitle muted">
-            Webhooks and crons in one list. {triggers.value.length} trigger{triggers.value.length === 1 ? '' : 's'}.
+            Webhooks, crons and page watches in one list. {triggers.value.length} trigger{triggers.value.length === 1 ? '' : 's'}.
           </p>
         </div>
         <MutatorOnly>
@@ -55,7 +55,7 @@ export function TriggersRoute() {
       <div class="trig-toolbar">
         <Input
           fullWidth
-          placeholder="Filter by id, prompt, or schedule…"
+          placeholder="Filter by id, prompt, schedule, or URL…"
           value={triggerFilter.value}
           onInput={(e) => (triggerFilter.value = (e.target as HTMLInputElement).value)}
           aria-label="Filter triggers"
@@ -71,7 +71,7 @@ export function TriggersRoute() {
           description={
             triggerFilter.value
               ? 'Try clearing the filter.'
-              : 'Triggers fire Claude tasks automatically — on a schedule, via webhook, or manually.'
+              : 'Triggers fire Claude tasks automatically — on a schedule, via webhook, when a watched page changes, or manually.'
           }
           action={
             !triggerFilter.value && (
@@ -303,7 +303,17 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
               type="button"
               class={`seg-item ${kind === k ? 'seg-item-active' : ''}`}
               aria-pressed={kind === k}
-              onClick={() => setKind(k)}
+              onClick={() => {
+                // A watch polls; a cron reports. Carry the sensible default
+                // across the switch, but never clobber a schedule the user
+                // has already typed. Mirrors emptyDraft() on mobile.
+                setSchedule((cur) =>
+                  cur === '0 * * * *' && k === 'page-watch' ? '*/5 * * * *'
+                    : cur === '*/5 * * * *' && k !== 'page-watch' ? '0 * * * *'
+                      : cur,
+                );
+                setKind(k);
+              }}
             >
               {k}
             </button>
