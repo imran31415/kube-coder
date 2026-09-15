@@ -31,12 +31,22 @@ import {
   deleteCron,
   deleteWebhook,
   listCrons,
+  listPageWatches,
+  savePageWatch,
+  deletePageWatch,
+  pageWatchAction,
   listWebhooks,
   saveCron,
   saveWebhook,
   testWebhook,
 } from '../api/client';
-import type { CronRecord, Trigger, TriggerKind, WebhookRecord } from '../api/types';
+import type {
+  CronRecord,
+  PageWatchRecord,
+  Trigger,
+  TriggerKind,
+  WebhookRecord,
+} from '../api/types';
 import { Button, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
@@ -44,6 +54,9 @@ import {
   describeSchedule,
   filterTriggers,
   isValidSchedule,
+  isValidWatchUrl,
+  isValidSelector,
+  selectorHint,
   isValidTimezone,
   isValidTriggerId,
   mergeTriggers,
@@ -51,11 +64,14 @@ import {
 } from '../util/triggers';
 import { colors, font, gradients, radius, space } from '../theme';
 
-type Scope = 'all' | 'webhook' | 'cron';
+type Scope = 'all' | 'webhook' | 'cron' | 'page-watch';
+// Four chips share one flex:1 row, so the labels stay short — "Page watches"
+// would wrap or clip at 390pt.
 const SCOPES: { key: Scope; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'webhook', label: 'Webhooks' },
+  { key: 'webhook', label: 'Hooks' },
   { key: 'cron', label: 'Crons' },
+  { key: 'page-watch', label: 'Watches' },
 ];
 
 /** The editor's working copy. `original` is set when editing an existing
@@ -68,6 +84,10 @@ interface Draft {
   schedule: string;
   timezone: string;
   workdir: string;
+  /** page-watch only */
+  url: string;
+  selector: string;
+  includeContent: boolean;
   original: Trigger | null;
 }
 
@@ -75,9 +95,13 @@ const emptyDraft = (kind: TriggerKind): Draft => ({
   kind,
   id: '',
   prompt: '',
-  schedule: '0 9 * * *',
+  // A watch polls; an hourly cron reports. Different sensible defaults.
+  schedule: kind === 'page-watch' ? '*/5 * * * *' : '0 9 * * *',
   timezone: 'UTC',
   workdir: '/home/dev',
+  url: '',
+  selector: '',
+  includeContent: false,
   original: null,
 });
 
@@ -86,6 +110,7 @@ const rowKey = (t: Trigger) => `${t.kind}:${t.id}`;
 export default function TriggersScreen() {
   const [webhooks, setWebhooks] = useState<WebhookRecord[] | null>(null);
   const [crons, setCrons] = useState<CronRecord[] | null>(null);
+  const [pageWatches, setPageWatches] = useState<PageWatchRecord[] | null>(null);
   const [scope, setScope] = useState<Scope>('all');
   const [query, setQuery] = useState('');
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -99,15 +124,17 @@ export default function TriggersScreen() {
 
   const load = useCallback(async () => {
     try {
-      const [w, c] = await Promise.all([listWebhooks(), listCrons()]);
+      const [w, c, p] = await Promise.all([listWebhooks(), listCrons(), listPageWatches()]);
       setWebhooks(w);
       setCrons(c);
+      setPageWatches(p);
       setError(null);
     } catch (e) {
       // A failed load must not masquerade as "no triggers".
       setError((e as Error).message);
       setWebhooks((prev) => prev ?? []);
       setCrons((prev) => prev ?? []);
+      setPageWatches((prev) => prev ?? []);
     }
   }, []);
 
@@ -125,10 +152,10 @@ export default function TriggersScreen() {
     setRefreshing(false);
   };
 
-  const loaded = webhooks !== null && crons !== null;
+  const loaded = webhooks !== null && crons !== null && pageWatches !== null;
   const all = useMemo(
-    () => (loaded ? mergeTriggers(webhooks!, crons!) : []),
-    [loaded, webhooks, crons],
+    () => (loaded ? mergeTriggers(webhooks!, crons!, pageWatches!) : []),
+    [loaded, webhooks, crons, pageWatches],
   );
   const visible = useMemo(() => {
     const scoped = scope === 'all' ? all : all.filter((t) => t.kind === scope);
@@ -153,15 +180,41 @@ export default function TriggersScreen() {
     run(
       t,
       async () => {
-        if (t.kind === 'cron') await cronAction(t.id, 'run');
-        else await testWebhook(t.id);
-        Alert.alert('Fired', `${t.id} started a build. Watch it under Builds.`);
+        if (t.kind === 'cron') {
+          await cronAction(t.id, 'run');
+          Alert.alert('Fired', `${t.id} started a build. Watch it under Builds.`);
+        } else if (t.kind === 'page-watch') {
+          // A check is conditional — report what happened rather than
+          // claiming a build started when usually nothing did.
+          const res = await pageWatchAction(t.id, 'check');
+          const said: Record<string, string> = {
+            changed: 'The page changed — a build has started. Watch it under Builds.',
+            unchanged: 'Checked. The page has not changed.',
+            baseline: 'Baseline recorded. Future changes will start a build.',
+            error: res.error ? `Could not read the page: ${res.error}` : 'Could not read the page.',
+          };
+          Alert.alert(
+            res.outcome === 'changed' ? 'Page changed' : 'Checked',
+            said[res.outcome ?? ''] ?? 'Checked.',
+          );
+        } else {
+          await testWebhook(t.id);
+          Alert.alert('Fired', `${t.id} started a build. Watch it under Builds.`);
+        }
       },
       'Could not fire',
     );
 
   const onToggleSuspend = (t: Trigger) =>
-    run(t, () => cronAction(t.id, t.suspended ? 'resume' : 'suspend'), 'Could not update');
+    run(
+      t,
+      async () => {
+        const action = t.suspended ? 'resume' : 'suspend';
+        if (t.kind === 'page-watch') await pageWatchAction(t.id, action);
+        else await cronAction(t.id, action);
+      },
+      'Could not update',
+    );
 
   const onDelete = (t: Trigger) =>
     confirmAction({
@@ -169,23 +222,38 @@ export default function TriggersScreen() {
       message:
         t.kind === 'cron'
           ? 'The CronJob and its in-cluster Secret are deleted too. This cannot be undone.'
-          : 'Anything still posting to this webhook starts getting 404s. This cannot be undone.',
+          : t.kind === 'page-watch'
+            ? 'The watch and its CronJob are deleted. The page itself is untouched. This cannot be undone.'
+            : 'Anything still posting to this webhook starts getting 404s. This cannot be undone.',
       confirmLabel: 'Delete',
       destructive: true,
       onConfirm: () => {
-        void run(t, () => (t.kind === 'cron' ? deleteCron(t.id) : deleteWebhook(t.id)), 'Delete failed');
+        void run(
+          t,
+          () =>
+            t.kind === 'cron'
+              ? deleteCron(t.id)
+              : t.kind === 'page-watch'
+                ? deletePageWatch(t.id)
+                : deleteWebhook(t.id),
+          'Delete failed',
+        );
       },
     });
 
   const onEdit = (t: Trigger) => {
     const cron = t.kind === 'cron' ? crons?.find((c) => c.id === t.id) : undefined;
+    const pw = t.kind === 'page-watch' ? pageWatches?.find((p) => p.id === t.id) : undefined;
     setDraft({
       kind: t.kind,
       id: t.id,
       prompt: t.prompt,
-      schedule: cron?.schedule ?? '0 9 * * *',
-      timezone: cron?.timezone ?? 'UTC',
+      schedule: pw?.schedule ?? cron?.schedule ?? '0 9 * * *',
+      timezone: pw?.timezone ?? cron?.timezone ?? 'UTC',
       workdir: t.workdir ?? '/home/dev',
+      url: pw?.url ?? '',
+      selector: pw?.selector ?? '',
+      includeContent: !!pw?.include_content,
       original: t,
     });
   };
@@ -196,7 +264,16 @@ export default function TriggersScreen() {
     !!draft &&
     isValidTriggerId(draft.kind, draft.id) &&
     draft.prompt.trim().length > 0 &&
-    (draft.kind === 'webhook' || (isValidSchedule(draft.schedule) && isValidTimezone(draft.timezone)));
+    // Explicitly per kind. `kind === 'webhook' || cronRules` would have held a
+    // page-watch to the cron rule and checked its URL not at all.
+    (draft.kind === 'webhook'
+      ? true
+      : draft.kind === 'cron'
+        ? isValidSchedule(draft.schedule) && isValidTimezone(draft.timezone)
+        : isValidSchedule(draft.schedule) &&
+          isValidTimezone(draft.timezone) &&
+          isValidWatchUrl(draft.url) &&
+          isValidSelector(draft.selector));
 
   const onSave = async () => {
     if (!draft || !draftValid) return;
@@ -212,6 +289,23 @@ export default function TriggersScreen() {
         });
         setDraft(null);
         if (rec.warning) Alert.alert('Saved with a warning', rec.warning);
+      } else if (draft.kind === 'page-watch') {
+        const rec = await savePageWatch({
+          id: draft.id,
+          url: draft.url.trim(),
+          schedule: draft.schedule.trim(),
+          prompt_template: draft.prompt.trim(),
+          workdir: draft.workdir.trim() || '/home/dev',
+          timezone: draft.timezone.trim() || 'UTC',
+          selector: draft.selector.trim() || undefined,
+          include_content: draft.includeContent,
+        });
+        setDraft(null);
+        // A watch whose CronJob did not apply never checks — never silent.
+        if (rec.warning) Alert.alert('Saved with a warning', rec.warning);
+        else if (rec.redirected_from) {
+          Alert.alert('Redirect followed', `Watching ${rec.url}`);
+        }
       } else {
         const rec = await saveWebhook({
           id: draft.id,
@@ -387,7 +481,7 @@ export default function TriggersScreen() {
                   <View style={styles.field}>
                     <Text style={styles.fieldLabel}>Kind</Text>
                     <View style={styles.segment}>
-                      {(['cron', 'webhook'] as TriggerKind[]).map((k) => (
+                      {(['cron', 'webhook', 'page-watch'] as TriggerKind[]).map((k) => (
                         <Pressable
                           key={k}
                           accessibilityRole="button"
@@ -396,7 +490,7 @@ export default function TriggersScreen() {
                           onPress={() => setDraft({ ...draft, kind: k })}
                         >
                           <Text style={[styles.segText, draft.kind === k && styles.segTextActive]}>
-                            {k === 'cron' ? 'Cron' : 'Webhook'}
+                            {k === 'cron' ? 'Cron' : k === 'webhook' ? 'Hook' : 'Watch'}
                           </Text>
                         </Pressable>
                       ))}
@@ -404,7 +498,9 @@ export default function TriggersScreen() {
                     <Text style={styles.hint}>
                       {draft.kind === 'cron'
                         ? 'Runs on a schedule, as a Kubernetes CronJob.'
-                        : 'Runs when a signed HTTP POST arrives from another service.'}
+                        : draft.kind === 'webhook'
+                          ? 'Runs when a signed HTTP POST arrives from another service.'
+                          : 'Checks a web page on a schedule and runs only when it changes.'}
                     </Text>
                   </View>
                 ) : null}
@@ -415,7 +511,13 @@ export default function TriggersScreen() {
                     value={draft.id}
                     editable={!draft.original}
                     onChangeText={(v) => setDraft({ ...draft, id: v })}
-                    placeholder={draft.kind === 'cron' ? 'nightly-tests' : 'github-ci'}
+                    placeholder={
+                      draft.kind === 'cron'
+                        ? 'nightly-tests'
+                        : draft.kind === 'page-watch'
+                          ? 'ci-green'
+                          : 'github-ci'
+                    }
                     placeholderTextColor={colors.textFaint}
                     autoCapitalize="none"
                     autoCorrect={false}
@@ -442,10 +544,77 @@ export default function TriggersScreen() {
                   />
                 </View>
 
-                {draft.kind === 'cron' ? (
+                {draft.kind === 'page-watch' ? (
                   <>
                     <View style={styles.field}>
-                      <Text style={styles.fieldLabel}>Schedule</Text>
+                      <Text style={styles.fieldLabel}>Page to watch</Text>
+                      <TextInput
+                        value={draft.url}
+                        onChangeText={(v) => setDraft({ ...draft, url: v })}
+                        placeholder="https://github.com/you/repo/actions/workflows/ci.yml/badge.svg"
+                        placeholderTextColor={colors.textFaint}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="url"
+                        style={styles.input}
+                      />
+                      {draft.url.length > 0 && !isValidWatchUrl(draft.url) ? (
+                        <Text style={styles.errText}>Must start with http:// or https://</Text>
+                      ) : (
+                        <Text style={styles.hint}>
+                          Public pages only — internal addresses are refused. The page is read
+                          as sent, without running its JavaScript, so a status badge works
+                          where a JS dashboard may not.
+                        </Text>
+                      )}
+                    </View>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>CSS selector (optional)</Text>
+                      <TextInput
+                        value={draft.selector}
+                        onChangeText={(v) => setDraft({ ...draft, selector: v })}
+                        placeholder=".build-status"
+                        placeholderTextColor={colors.textFaint}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        style={styles.input}
+                      />
+                      {draft.selector.length > 0 && !isValidSelector(draft.selector) ? (
+                        <Text style={styles.errText}>{selectorHint()}</Text>
+                      ) : (
+                        <Text style={styles.hint}>
+                          Narrows the watch so clocks and ads elsewhere on the page don't wake it.
+                        </Text>
+                      )}
+                    </View>
+                    <Pressable
+                      style={styles.checkRow}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: draft.includeContent }}
+                      onPress={() => setDraft({ ...draft, includeContent: !draft.includeContent })}
+                    >
+                      <Ionicons
+                        name={draft.includeContent ? 'checkbox' : 'square-outline'}
+                        size={22}
+                        color={draft.includeContent ? colors.accent : colors.textMuted}
+                      />
+                      <View style={styles.checkBody}>
+                        <Text style={styles.checkLabel}>Include page text in the prompt</Text>
+                        <Text style={styles.hint}>
+                          Off by default. A watched page is written by someone else, and its
+                          text would reach an agent that acts on it.
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </>
+                ) : null}
+
+                {draft.kind === 'cron' || draft.kind === 'page-watch' ? (
+                  <>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>
+                        {draft.kind === 'page-watch' ? 'Check every' : 'Schedule'}
+                      </Text>
                       <TextInput
                         value={draft.schedule}
                         onChangeText={(v) => setDraft({ ...draft, schedule: v })}
@@ -463,7 +632,10 @@ export default function TriggersScreen() {
                         </Text>
                       )}
                       <View style={styles.presets}>
-                        {['@hourly', '0 9 * * *', '30 2 * * *', '0 9 * * 1'].map((p) => (
+                        {(draft.kind === 'page-watch'
+                          ? ['*/5 * * * *', '*/15 * * * *', '0 * * * *', '@daily']
+                          : ['@hourly', '0 9 * * *', '30 2 * * *', '0 9 * * 1']
+                        ).map((p) => (
                           <Pressable
                             key={p}
                             style={styles.preset}
@@ -598,14 +770,32 @@ function TriggerRow({
   onDelete: () => void;
 }) {
   const isCron = t.kind === 'cron';
-  const paused = isCron && t.suspended;
-  const tint = paused ? colors.warning : isCron ? colors.accent : colors.info;
+  const isWatch = t.kind === 'page-watch';
+  // Both scheduled kinds can be paused; only webhooks cannot.
+  const paused = (isCron || isWatch) && t.suspended;
+  const failing = isWatch && !!t.last_error;
+  const tint = paused
+    ? colors.warning
+    : failing
+      ? colors.danger
+      : isCron
+        ? colors.accent
+        : isWatch
+          ? colors.success
+          : colors.info;
+  const kindLabel = isWatch ? 'page watch' : t.kind;
   return (
     <Pressable style={styles.row} onPress={onToggle}>
       <View style={styles.rowTop}>
         <View style={[styles.kindPill, { borderColor: tint + '59' }]}>
-          <Ionicons name={isCron ? 'time-outline' : 'flash-outline'} size={12} color={tint} />
-          <Text style={[styles.kindText, { color: tint }]}>{paused ? 'cron · paused' : t.kind}</Text>
+          <Ionicons
+            name={isCron ? 'time-outline' : isWatch ? 'eye-outline' : 'flash-outline'}
+            size={12}
+            color={tint}
+          />
+          <Text style={[styles.kindText, { color: tint }]}>
+            {paused ? `${kindLabel} · paused` : kindLabel}
+          </Text>
         </View>
         <Text style={styles.rowId} numberOfLines={1}>
           {t.id}
@@ -616,11 +806,32 @@ function TriggerRow({
       <Text style={styles.rowMeta} numberOfLines={1}>
         {isCron
           ? `${describeSchedule(t.schedule ?? '')}${t.timezone ? ` · ${t.timezone}` : ''}`
-          : t.unsigned
-            ? 'unsigned — the receiver rejects everything'
-            : 'signed · HMAC'}
+          : isWatch
+            ? `${describeSchedule(t.schedule ?? '')} · ${
+                t.last_error
+                  ? 'check failed'
+                  : !t.last_hash
+                    ? 'waiting for first check'
+                    : `checked ${relativeTime(t.last_checked_at ?? 0)}`
+              }`
+            : t.unsigned
+              ? 'unsigned — the receiver rejects everything'
+              : 'signed · HMAC'}
         {t.created_at ? ` · added ${relativeTime(t.created_at)}` : ''}
       </Text>
+
+      {isWatch ? (
+        <Text style={styles.rowUrl} numberOfLines={open ? undefined : 1}>
+          {t.url}
+          {t.selector ? `  ${t.selector}` : ''}
+        </Text>
+      ) : null}
+
+      {isWatch && t.last_error ? (
+        <Text style={styles.rowErr} numberOfLines={open ? undefined : 2}>
+          {t.last_error}
+        </Text>
+      ) : null}
 
       <Text style={[styles.rowPrompt, open && styles.rowPromptOpen]} numberOfLines={open ? undefined : 2}>
         {t.prompt}
@@ -628,11 +839,19 @@ function TriggerRow({
 
       {open ? (
         <>
-          {isCron && t.schedule ? <Text style={styles.rowSub}>{t.schedule}</Text> : null}
+          {(isCron || isWatch) && t.schedule ? <Text style={styles.rowSub}>{t.schedule}</Text> : null}
+          {isWatch && t.last_changed_at ? (
+            <Text style={styles.rowSub}>last changed {relativeTime(t.last_changed_at)}</Text>
+          ) : null}
           {t.workdir ? <Text style={styles.rowSub}>{t.workdir}</Text> : null}
           <View style={styles.rowActions}>
-            <RowAction icon="play-outline" label="Fire now" onPress={onFire} disabled={busy} />
-            {isCron ? (
+            <RowAction
+              icon={isWatch ? 'refresh-outline' : 'play-outline'}
+              label={isWatch ? 'Check now' : 'Fire now'}
+              onPress={onFire}
+              disabled={busy}
+            />
+            {isCron || isWatch ? (
               <RowAction
                 icon={paused ? 'play-circle-outline' : 'pause-outline'}
                 label={paused ? 'Resume' : 'Pause'}
@@ -747,6 +966,25 @@ const styles = StyleSheet.create({
   },
   kindText: { fontSize: font.size.xs, fontWeight: '600', letterSpacing: 0.3 },
   rowId: { flex: 1, color: colors.text, fontSize: font.size.md, fontWeight: '700', fontFamily: font.mono },
+  rowUrl: {
+    color: colors.textMuted,
+    fontSize: font.size.xs,
+    fontFamily: font.mono,
+    marginTop: 2,
+  },
+  rowErr: {
+    color: colors.danger,
+    fontSize: font.size.xs,
+    marginTop: 2,
+  },
+  checkRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.sm,
+    paddingVertical: space.xs,
+  },
+  checkBody: { flex: 1 },
+  checkLabel: { color: colors.text, fontSize: font.size.sm },
   rowMeta: { color: colors.textFaint, fontSize: font.size.xs },
   rowPrompt: { color: colors.textMuted, fontSize: font.size.sm, lineHeight: 19, marginTop: 2 },
   rowPromptOpen: { color: colors.text },

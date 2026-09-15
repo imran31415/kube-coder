@@ -37,6 +37,7 @@ import {
   mockFeed,
   mockWebhooks,
   mockCrons,
+  mockPageWatches,
   mockDocsManifest,
   mockDocsPage,
   mockBoards,
@@ -76,6 +77,8 @@ import type {
   FeedItem,
   FeedKind,
   CreateCronInput,
+  CreatePageWatchInput,
+  PageWatchRecord,
   CreateWebhookInput,
   CronRecord,
   DocsManifest,
@@ -1431,6 +1434,84 @@ export async function deleteCron(id: string): Promise<void> {
 }
 
 /** suspend | resume | run — the cron row's pause/resume and "Fire now". */
+// ---- Page watches (#681) ---------------------------------------------------
+// A page-watch is a cron whose fire is conditional on a URL's content
+// changing, so its surface mirrors the cron one above.
+
+export async function listPageWatches(): Promise<PageWatchRecord[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    return [...mockPageWatches];
+  }
+  const d = await request<{ page_watches?: PageWatchRecord[] }>('/api/page-watches');
+  return d.page_watches ?? [];
+}
+
+export async function savePageWatch(
+  input: CreatePageWatchInput,
+): Promise<PageWatchRecord & { warning?: string }> {
+  if (getConfig().mock) {
+    await delay(150);
+    const rec: PageWatchRecord = {
+      id: input.id,
+      url: input.url,
+      selector: input.selector || null,
+      schedule: input.schedule,
+      prompt_template: input.prompt_template,
+      workdir: input.workdir || '/home/dev',
+      timezone: input.timezone || 'UTC',
+      include_content: !!input.include_content,
+      render: false,
+      suspended: false,
+      created_at: Math.floor(Date.now() / 1000),
+      fire_token_set: true,
+      // A new watch has taken no baseline yet, so the row reads
+      // "waiting for first check" rather than claiming it is healthy.
+      last_hash: null,
+      last_checked_at: null,
+      last_changed_at: null,
+      last_error: null,
+      consecutive_failures: 0,
+    };
+    const i = mockPageWatches.findIndex((c) => c.id === input.id);
+    if (i >= 0) mockPageWatches[i] = rec;
+    else mockPageWatches.unshift(rec);
+    return rec;
+  }
+  return request<PageWatchRecord & { warning?: string }>('/api/page-watches', {
+    method: 'POST',
+    body: input,
+  });
+}
+
+export async function deletePageWatch(id: string): Promise<void> {
+  if (getConfig().mock) {
+    await delay(120);
+    const i = mockPageWatches.findIndex((c) => c.id === id);
+    if (i >= 0) mockPageWatches.splice(i, 1);
+    return;
+  }
+  await request(`/api/page-watches/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** 'check' runs the same code path as the scheduled check and returns what
+ *  actually happened — it does not necessarily fire anything. */
+export async function pageWatchAction(
+  id: string,
+  action: 'suspend' | 'resume' | 'check',
+): Promise<{ outcome?: string; error?: string }> {
+  if (getConfig().mock) {
+    await delay(150);
+    const c = mockPageWatches.find((x) => x.id === id);
+    if (c && action !== 'check') c.suspended = action === 'suspend';
+    return { outcome: action === 'check' ? 'unchanged' : undefined };
+  }
+  return request<{ outcome?: string; error?: string }>(
+    `/api/page-watches/${encodeURIComponent(id)}/${action}`,
+    { method: 'POST', body: {} },
+  );
+}
+
 export async function cronAction(id: string, action: 'suspend' | 'resume' | 'run'): Promise<void> {
   if (getConfig().mock) {
     await delay(150);

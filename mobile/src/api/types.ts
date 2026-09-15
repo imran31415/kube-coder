@@ -537,7 +537,7 @@ export interface FeedItem {
 // returned by the list endpoints — only `*_set` booleans — except once at
 // create time (`hmac_secret_once` / `fire_token_once`).
 
-export type TriggerKind = 'webhook' | 'cron';
+export type TriggerKind = 'webhook' | 'cron' | 'page-watch';
 
 export interface WebhookRecord {
   id: string;
@@ -571,20 +571,52 @@ export interface CronRecord {
   active?: number;
 }
 
-/** Webhooks and crons folded into one list, the way both UIs present them. */
+/** A page-watch (#681): a cron whose fire is conditional on a URL's content
+ *  changing. Mirrors charts/workspace/web/src/api/triggers.ts. */
+export interface PageWatchRecord {
+  id: string;
+  url: string;
+  selector?: string | null;
+  schedule: string;
+  prompt_template: string;
+  workdir?: string;
+  timezone?: string;
+  include_content?: boolean;
+  /** Reserved for a future JS-rendering path — always false in this version. */
+  render?: boolean;
+  suspended?: boolean;
+  created_at?: number;
+  fire_token_set?: boolean;
+  redirected_from?: string;
+  /** null until the first successful check has taken a baseline. */
+  last_hash?: string | null;
+  last_checked_at?: number | null;
+  last_changed_at?: number | null;
+  last_error?: string | null;
+  consecutive_failures?: number;
+}
+
+/** All three trigger kinds folded into one list, the way both UIs present them. */
 export interface Trigger {
   kind: TriggerKind;
   id: string;
   prompt: string;
   workdir?: string;
   created_at?: number;
-  /** cron only */
+  /** cron + page-watch */
   schedule?: string;
   timezone?: string;
   suspended?: boolean;
   /** webhook only */
   unsigned?: boolean;
   receive_url?: string;
+  /** page-watch only */
+  url?: string;
+  selector?: string | null;
+  last_hash?: string | null;
+  last_checked_at?: number | null;
+  last_changed_at?: number | null;
+  last_error?: string | null;
 }
 
 export interface CreateWebhookInput {
@@ -599,6 +631,17 @@ export interface CreateCronInput {
   prompt_template: string;
   workdir?: string;
   timezone?: string;
+}
+
+export interface CreatePageWatchInput {
+  id: string;
+  url: string;
+  schedule: string;
+  prompt_template: string;
+  selector?: string;
+  workdir?: string;
+  timezone?: string;
+  include_content?: boolean;
 }
 
 // ---- Docs (in-app documentation site, #250) --------------------------------

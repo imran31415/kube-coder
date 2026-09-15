@@ -8,7 +8,13 @@
  * them here (no react-native imports) also lets the node-side vitest suite
  * cover them without a RN runtime.
  */
-import type { CronRecord, Trigger, TriggerKind, WebhookRecord } from '../api/types';
+import type {
+  CronRecord,
+  PageWatchRecord,
+  Trigger,
+  TriggerKind,
+  WebhookRecord,
+} from '../api/types';
 
 /** WebhookManager._ID_RE — 1-64 chars of [A-Za-z0-9_-]. */
 const WEBHOOK_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -22,14 +28,46 @@ const SCHEDULE_RE = new RegExp(
 /** CronManager._TIMEZONE_RE — IANA-ish name. */
 const TIMEZONE_RE = /^[A-Za-z0-9_/+-]{1,64}$/;
 
+/** PageWatchManager reuses CronManager._ID_RE — a page-watch is backed by a
+ *  CronJob too, so its id is bound by the same Kubernetes name rule. */
+const PAGE_WATCH_ID_RE = CRON_ID_RE;
+
 export function isValidTriggerId(kind: TriggerKind, id: string): boolean {
-  return kind === 'cron' ? CRON_ID_RE.test(id) : WEBHOOK_ID_RE.test(id);
+  if (kind === 'cron') return CRON_ID_RE.test(id);
+  if (kind === 'page-watch') return PAGE_WATCH_ID_RE.test(id);
+  return WEBHOOK_ID_RE.test(id);
 }
 
 export function triggerIdHint(kind: TriggerKind): string {
-  return kind === 'cron'
-    ? 'Lowercase letters, digits and hyphens (max 40) — it becomes a Kubernetes CronJob name.'
-    : 'Letters, digits, hyphens and underscores (max 64).';
+  if (kind === 'webhook') return 'Letters, digits, hyphens and underscores (max 64).';
+  const thing = kind === 'page-watch' ? 'CronJob' : 'CronJob';
+  return `Lowercase letters, digits and hyphens (max 40) — it becomes a Kubernetes ${thing} name.`;
+}
+
+/** PageWatchManager.validate_url — http(s) only, with a host, length-capped.
+ *  The server is still the authority (it also refuses internal addresses,
+ *  which needs DNS); this just saves a round-trip on an obvious mistake. */
+export function isValidWatchUrl(url: string): boolean {
+  const u = (url || '').trim();
+  if (!u || u.length > 2000) return false;
+  return /^https?:\/\/[^\s/$.?#][^\s]*$/i.test(u);
+}
+
+/** page_watch.parse_selector's supported subset. Rejecting here means the user
+ *  learns the limit while typing rather than from a failed save. */
+export function isValidSelector(selector: string): boolean {
+  const sel = (selector || '').trim();
+  if (!sel) return true; // optional — no selector means the whole page
+  if (sel.length > 200) return false;
+  if (/[,>+~]/.test(sel)) return false;
+  if (/:(?![^[\]]*\])/.test(sel)) return false; // pseudo-classes, but ':' is ok inside [attr]
+  return sel
+    .split(/\s+/)
+    .every((part) => /^([A-Za-z][-\w]*|\*)?((#[-\w]+)|(\.[-\w]+)|(\[[^\]]+\]))*$/.test(part) && part.length > 0);
+}
+
+export function selectorHint(): string {
+  return 'Optional. tag, #id, .class, [attr="value"] and descendant chains (.build .status). No > + ~ or :pseudo-classes.';
 }
 
 export function isValidSchedule(schedule: string): boolean {
@@ -94,7 +132,11 @@ function ordinal(n: number): string {
 
 /** Fold the two backend lists into one newest-first stream (matches the web
  *  dashboard's Triggers route, which presents both kinds in a single list). */
-export function mergeTriggers(webhooks: WebhookRecord[], crons: CronRecord[]): Trigger[] {
+export function mergeTriggers(
+  webhooks: WebhookRecord[],
+  crons: CronRecord[],
+  pageWatches: PageWatchRecord[] = [],
+): Trigger[] {
   const out: Trigger[] = [
     ...webhooks.map(
       (w): Trigger => ({
@@ -119,6 +161,24 @@ export function mergeTriggers(webhooks: WebhookRecord[], crons: CronRecord[]): T
         suspended: c.suspended,
       }),
     ),
+    ...pageWatches.map(
+      (p): Trigger => ({
+        kind: 'page-watch',
+        id: p.id,
+        prompt: p.prompt_template,
+        workdir: p.workdir,
+        created_at: p.created_at,
+        schedule: p.schedule,
+        timezone: p.timezone,
+        suspended: p.suspended,
+        url: p.url,
+        selector: p.selector,
+        last_hash: p.last_hash,
+        last_checked_at: p.last_checked_at,
+        last_changed_at: p.last_changed_at,
+        last_error: p.last_error,
+      }),
+    ),
   ];
   out.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
   return out;
@@ -130,6 +190,8 @@ export function filterTriggers(list: Trigger[], query: string): Trigger[] {
   const q = query.trim().toLowerCase();
   if (!q) return list;
   return list.filter((t) =>
-    `${t.kind} ${t.id} ${t.prompt} ${t.schedule ?? ''} ${t.workdir ?? ''}`.toLowerCase().includes(q),
+    `${t.kind} ${t.id} ${t.prompt} ${t.schedule ?? ''} ${t.workdir ?? ''} ${t.url ?? ''} ${t.selector ?? ''}`
+      .toLowerCase()
+      .includes(q),
   );
 }
