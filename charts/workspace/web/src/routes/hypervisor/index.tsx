@@ -18,6 +18,7 @@ import {
   selectedEffort,
   selectedProject,
   selectedWorkdir,
+  newChatMode,
   assistantModels,
   assistantEfforts,
   assistantEffortDefault,
@@ -41,6 +42,7 @@ import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
 import { projects, refreshProjects } from '../../store/projects';
+import { serverMode } from '../../store/server-mode';
 import { SearchSelect } from '../../components/primitives/SearchSelect';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
@@ -190,6 +192,16 @@ export function HypervisorRoute() {
   const activeThread = list.find((t) => t.id === active) ?? null;
   const status = activeStatus.value;
 
+  // Mode (#683). `ctoEnabled` no longer means "the /cto page exists" — it means
+  // "CTO mode is offered". With the flag off the picker never renders and the
+  // workspace behaves exactly as it does with the feature disabled today.
+  const modeOffered = serverMode.value.ctoEnabled !== false;
+  // A thread's mode is fixed at creation (its preamble is delivered once, on
+  // turn 1), so with a chat open the control shows THAT chat's mode read-only —
+  // same two-mode shape as the Folder picker (#637).
+  const newMode = newChatMode.value;
+  const ctoComposing = !active && newMode === 'cto';
+
   // Model switcher (#308): an open thread uses its own assistant + stored model;
   // a not-yet-created chat uses the sidebar's assistant + new-thread default.
   const effectiveAssistant = activeThread?.assistant || selectedAssistant.value;
@@ -250,6 +262,12 @@ export function HypervisorRoute() {
   useEffect(() => {
     if (trashOpen) void refreshDeletedThreads();
   }, [trashOpen]);
+
+  // Never leave the picker holding a mode the workspace does not offer — the
+  // flag is read at boot, so a stale 'cto' would otherwise survive it (#683).
+  useEffect(() => {
+    if (!modeOffered && newChatMode.value) newChatMode.value = '';
+  }, [modeOffered]);
 
   if (cfg && cfg.enabled === false) {
     return (
@@ -485,6 +503,45 @@ export function HypervisorRoute() {
           )}
         </label>
 
+        {/* Mode (#683) — which preamble a NEW chat is created with. Maps 1:1
+            onto the server's existing `persona` field: no new server concept,
+            and existing CTO threads need no migration. Applied at creation,
+            because the preamble is delivered once, on turn 1 — so with a chat
+            open this shows THAT chat's mode, read-only, exactly like the Folder
+            picker below. Hidden entirely when the workspace doesn't offer CTO
+            mode. Board Processor personas are deliberately absent: those
+            threads are machine-created, so they get a badge, not an option. */}
+        {modeOffered && (
+          <label class="hv-agent-picker">
+            <span class="hv-eyebrow">Mode</span>
+            {active && activeThread ? (
+              <input
+                class="hv-agent-select"
+                value={personaLabel(activeThread.persona) || 'Workspace'}
+                disabled
+                aria-label="This chat's mode"
+                title={
+                  personaHint(activeThread.persona) ||
+                  'A plain workspace chat. Chats keep the mode they were created in — start a New chat to pick a different one.'
+                }
+              />
+            ) : (
+              <select
+                class="hv-agent-select"
+                value={newMode}
+                aria-label="Mode for new chats"
+                title="The mode a new chat is created in — CTO starts it with the AI CTO's preamble"
+                onChange={(e) =>
+                  (newChatMode.value = (e.target as HTMLSelectElement).value)
+                }
+              >
+                <option value="">Workspace</option>
+                <option value="cto">CTO</option>
+              </select>
+            )}
+          </label>
+        )}
+
         {/* Where a NEW chat starts (#345). The backend has always accepted a
             per-thread workdir; this picker finally passes it, so starting an
             agent in a repo no longer burns a first message on `cd`. An open
@@ -501,6 +558,17 @@ export function HypervisorRoute() {
               disabled
               aria-label="This chat's folder"
               title={`This chat runs in ${activeThread.workdir || 'its creation folder'}. Chats keep the folder they were created in — start a New chat to pick a different one.`}
+            />
+          ) : ctoComposing ? (
+            // A CTO chat starts in its bound project's folder — the server
+            // resolves it from the project record, so this picker has nothing
+            // to say. Showing a folder we deliberately don't send would lie.
+            <input
+              class="hv-agent-select"
+              value="Project folder"
+              disabled
+              aria-label="Folder for new chats"
+              title="A CTO chat starts in its project's folder, chosen from the project record."
             />
           ) : dirs.length > 0 ? (
             <SearchSelect

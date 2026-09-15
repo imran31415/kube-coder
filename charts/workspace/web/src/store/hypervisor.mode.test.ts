@@ -1,0 +1,169 @@
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+
+/**
+ * Chat's Mode picker (#683) — creation-time persona selection.
+ *
+ * The AI CTO was only ever a thread with a different preamble, delivered once
+ * via --append-system-prompt on turn 1. Picking "CTO" in Chat therefore has to
+ * mean exactly one thing: the NEXT thread is created with persona='cto'. This
+ * pins that, plus the two rules that ride along with it (the Claude-credential
+ * gate and the project-resolved workdir), and pins that the #483 page-scoped
+ * assistant split does NOT leak into Chat's own pickers.
+ */
+
+const { createThread, listThreads, getThread } = vi.hoisted(() => ({
+  createThread: vi.fn(),
+  listThreads: vi.fn(),
+  getThread: vi.fn(),
+}));
+
+vi.mock('../api/hypervisor', () => ({
+  createThread: (...a: unknown[]) => createThread(...a),
+  listThreads: (...a: unknown[]) => listThreads(...a),
+  getThread: (...a: unknown[]) => getThread(...a),
+  getHypervisorConfig: vi.fn(),
+  renameThread: vi.fn(),
+  sendThreadMessage: vi.fn(),
+  stopThread: vi.fn(),
+  deleteThread: vi.fn(),
+  listDeletedThreads: vi.fn(),
+  restoreThread: vi.fn(),
+  setThreadModel: vi.fn(),
+  setThreadEffort: vi.fn(),
+  setThreadProject: vi.fn(),
+}));
+vi.mock('../api/tasks', () => ({ listTasks: vi.fn() }));
+vi.mock('./router', () => ({
+  navigate: vi.fn(),
+  currentPath: { value: '/hypervisor' },
+}));
+
+import {
+  activeThreadId,
+  chatError,
+  config,
+  ctoAssistant,
+  ctoModel,
+  isCtoChat,
+  isCtoSurface,
+  newChatMode,
+  selectedAssistant,
+  selectedModel,
+  selectedProject,
+  selectedWorkdir,
+  sendMessage,
+  setChatContext,
+  surfacePersona,
+  threads,
+} from './hypervisor';
+import { claudeReady } from './claude';
+
+const CONFIG = {
+  enabled: true,
+  defaultAssistant: 'claude',
+  workdir: '/home/dev',
+  readOnly: false,
+  assistants: [{ id: 'claude', label: 'Claude Code', models: ['default', 'opus'] }],
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config.value = CONFIG as any;
+  threads.value = [];
+  activeThreadId.value = null;
+  chatError.value = null;
+  newChatMode.value = '';
+  selectedAssistant.value = 'claude';
+  selectedModel.value = 'default';
+  selectedProject.value = '';
+  selectedWorkdir.value = '/home/dev/kube-coder';
+  ctoAssistant.value = 'ante';
+  ctoModel.value = 'opus';
+  claudeReady.value = true;
+  setChatContext('', null);
+  listThreads.mockResolvedValue([]);
+  getThread.mockResolvedValue({ thread: { status: 'idle' }, events: [] });
+  createThread.mockResolvedValue({ id: 't1' });
+});
+
+describe('the mode a new chat is created with', () => {
+  it('is a plain chat by default — no persona goes to the server', async () => {
+    await sendMessage('hello');
+    expect(createThread.mock.calls[0][0].persona).toBeUndefined();
+  });
+
+  it('creates a CTO thread when the picker is on CTO', async () => {
+    newChatMode.value = 'cto';
+    await sendMessage('what should I focus on?');
+    expect(createThread.mock.calls[0][0].persona).toBe('cto');
+  });
+
+  it('still lets the CTO page set the persona itself', async () => {
+    setChatContext('cto', 'kc');
+    expect(surfacePersona()).toBe('cto');
+    await sendMessage('hi');
+    expect(createThread.mock.calls[0][0]).toMatchObject({
+      persona: 'cto',
+      project_id: 'kc',
+    });
+  });
+});
+
+describe('what riding on the mode actually changes', () => {
+  it('binds the project from Chat’s own picker, not the CTO page’s', async () => {
+    // The #483 split is about the CTO PAGE's separate pickers. Chat's Mode
+    // picker adds no second set, so a CTO-mode chat from Chat must use the
+    // project the user chose in Chat — not the page context's null.
+    newChatMode.value = 'cto';
+    selectedProject.value = 'pool';
+    await sendMessage('plan it');
+    expect(createThread.mock.calls[0][0].project_id).toBe('pool');
+  });
+
+  it('uses Chat’s own assistant selection, not the CTO page’s', async () => {
+    newChatMode.value = 'cto';
+    expect(isCtoSurface()).toBe(false); // the PAGE is not driving
+    expect(isCtoChat()).toBe(true); // but the chat is a CTO one
+    await sendMessage('plan it');
+    expect(createThread.mock.calls[0][0]).toMatchObject({
+      assistant: 'claude',
+      model: 'default',
+    });
+  });
+
+  it('lets the server resolve the folder from the project', async () => {
+    // A CTO chat starts in its project's folder; sending the picker's default
+    // would defeat the server's `not workdir` guard.
+    newChatMode.value = 'cto';
+    await sendMessage('plan it');
+    expect(createThread.mock.calls[0][0].workdir).toBeUndefined();
+  });
+
+  it('sends the picker’s folder for a plain chat', async () => {
+    await sendMessage('and a plain one');
+    expect(createThread.mock.calls[0][0].workdir).toBe('/home/dev/kube-coder');
+  });
+
+  it('refuses a CTO send with no Claude credential, wherever it came from', async () => {
+    claudeReady.value = false;
+    newChatMode.value = 'cto';
+    await sendMessage('build me a site');
+    expect(createThread).not.toHaveBeenCalled();
+    expect(chatError.value).toContain('Connect your Claude account');
+  });
+
+  it('does not gate a plain chat on the Claude credential', async () => {
+    claudeReady.value = false;
+    await sendMessage('hello');
+    expect(createThread).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the picker is a new-chat default, like Agent and Folder', () => {
+  it('survives sending — the next new chat keeps the mode', async () => {
+    newChatMode.value = 'cto';
+    await sendMessage('one');
+    expect(newChatMode.value).toBe('cto');
+  });
+});
