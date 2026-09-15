@@ -33,7 +33,7 @@ import {
   mockWorkdirs,
   mockProjects,
   mockProjectBrief,
-  mockCtoThreads,
+  mockThreads,
   mockFeed,
   mockWebhooks,
   mockCrons,
@@ -828,7 +828,13 @@ export async function listThreads(filter?: {
 }): Promise<HypervisorThread[]> {
   if (getConfig().mock) {
     await delay(80);
-    return filter?.persona === 'cto' ? mockCtoThreads() : [];
+    // One list (#683): no filter → every thread, whatever its persona. The
+    // server-side filter is still honoured so the mock and the real endpoint
+    // answer the same question the same way.
+    const all = mockThreads();
+    if (filter?.persona === 'cto') return all.filter((t) => t.persona === 'cto');
+    if (filter?.persona === 'default') return all.filter((t) => !t.persona);
+    return all;
   }
   const d = await request<{ threads?: HypervisorThread[] }>('/api/hypervisor/threads', {
     query: { persona: filter?.persona, project: filter?.project },

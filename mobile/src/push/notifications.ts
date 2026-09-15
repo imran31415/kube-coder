@@ -119,7 +119,10 @@ export function handleNotificationTap(data: PushData | undefined): void {
       );
       break;
     case 'thread':
-      navigateTo('Cto');
+      // Opens THAT chat (#683). It used to open the AI CTO screen and drop the
+      // id, because that screen had no way to open a thread by reference.
+      // @ts-expect-error — tab params are validated at the navigator
+      navigationRef.navigate('Hypervisor', { openThreadId: target.id });
       break;
     case 'memory':
       navigateTo('Memory');

@@ -14,7 +14,8 @@ export type FeedRefTarget =
   | { kind: 'none' };
 
 /** Resolve a feed link to a native navigation target. task: → TaskDetail,
- *  thread: → CtoScreen, memory: → MemoryScreen, href → in-app browser. */
+ *  thread: → that chat in HypervisorScreen, memory: → MemoryScreen,
+ *  href → in-app browser. */
 export function resolveFeedRef(link: FeedLink): FeedRefTarget {
   if (link.href) return { kind: 'external', url: link.href };
   const ref = link.ref || '';

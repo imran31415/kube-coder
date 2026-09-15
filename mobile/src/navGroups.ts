@@ -41,13 +41,14 @@ export const NAV_GROUPS: NavGroupDef[] = [
     title: 'Mission Control',
     items: [
       { name: 'MissionControl', label: 'Overview', icon: 'file-tray-full-outline' },
-      { name: 'Cto', label: 'AI CTO', icon: 'compass-outline' },
+      // The AI CTO had its own entry until #683 folded it into Chat as a mode;
+      // Chat moves up to take its place in the group.
+      { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' },
       { name: 'Feed', label: 'Feed', icon: 'newspaper-outline' },
       // Board review (#588). Mission Control, beside Feed: both answer
       // "what needs me?" — Feed for this workspace, Board for someone
       // else's tracker.
       { name: 'Board', label: 'Board', icon: 'clipboard-outline' },
-      { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' },
       { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
       { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },
       // Triggers fire builds — agent ops, not workspace plumbing (same
