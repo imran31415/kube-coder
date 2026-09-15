@@ -322,6 +322,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Project pulse on a group header (#683) — the AI CTO rail's card dots, moved
+   to the headers that replaced the rail. `.cto-dot*` come from brief.css. */
+.hv-group-pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+/* Unseen delta: this project moved since you last opened one of its chats.
+   Hollow so it reads as "news", not as another status light. */
+.hv-group-unseen {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1.5px solid var(--accent);
+  flex: none;
+}
+
 /* The thread's mode (#683) — a badge, not a control: a thread's persona is
    fixed at creation because its preamble is delivered once, on turn 1. */
 .hv-thread-mode {
@@ -674,6 +693,28 @@
   transition: color var(--motion-fast), border-color var(--motion-fast);
 }
 .hv-brief-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* "Set as project default" (#483 → #683) — a quiet text button, not a CTA. It
+   persists a choice the user has already made with the pickers beside it, so
+   it should never compete with them for attention. */
+.hv-project-default {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-subtle);
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.hv-project-default:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.hv-project-default:disabled { cursor: default; opacity: 0.6; }
 
 /* ── Chat body ───────────────────────────────────────────────────────── */
 /* "How the Hypervisor works" guide sits between the topbar and the chat,

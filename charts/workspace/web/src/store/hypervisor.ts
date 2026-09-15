@@ -190,36 +190,64 @@ export function setCtoAssistant(assistantId: string): void {
   ctoEffort.value = assistantEffortDefault(assistantId);
 }
 
+/** A project's stored assistant configuration (#483/#362) — the three fields on
+ *  the project record, absent/'' meaning "inherit the workspace default". */
+export interface ProjectDefaults {
+  default_assistant?: string;
+  default_model?: string;
+  default_effort?: string;
+}
+
 /**
- * Seed the CTO's selection from a project's stored defaults (#483), falling back
- * to the workspace default when the project has none — which is the state every
- * project starts in, so nothing is written until the user explicitly sets one.
- * A stored value the workspace can no longer offer (a provider whose key is
- * gone, a model dropped from the curated list) falls back too, so the picker
- * never shows a dead option. Called whenever the selected project changes.
+ * Resolve a project's stored defaults into a selection this workspace can
+ * actually offer (#483), falling back to the workspace default when the project
+ * has none — which is the state every project starts in, so nothing is written
+ * until the user explicitly sets one. A stored value the workspace can no
+ * longer offer (a provider whose key is gone, a model dropped from the curated
+ * list) falls back too, so a picker never shows a dead option.
  */
-export function seedCtoConfig(
-  project: {
-    default_assistant?: string;
-    default_model?: string;
-    default_effort?: string;
-  } | null,
-): void {
+export function resolveProjectDefaults(project: ProjectDefaults | null): {
+  assistant: string;
+  model: string;
+  effort: string;
+} {
   const wantAssistant = project?.default_assistant || '';
   const known = (config.value?.assistants ?? []).some((a) => a.id === wantAssistant);
   const assistant =
     (known ? wantAssistant : '') || config.value?.defaultAssistant || 'claude';
-  ctoAssistant.value = assistant;
   const models = assistantModels(assistant);
   const wantModel = project?.default_model || '';
-  ctoModel.value =
-    (wantModel && models.includes(wantModel) ? wantModel : models[0]) ?? '';
+  const model = (wantModel && models.includes(wantModel) ? wantModel : models[0]) ?? '';
   const levels = assistantEfforts(assistant);
   const wantEffort = project?.default_effort || '';
-  ctoEffort.value =
+  const effort =
     wantEffort && levels.includes(wantEffort)
       ? wantEffort
       : assistantEffortDefault(assistant);
+  return { assistant, model, effort };
+}
+
+/** Seed the CTO page's own selection from a project (#483). Called whenever the
+ *  rail's selected project changes. */
+export function seedCtoConfig(project: ProjectDefaults | null): void {
+  const next = resolveProjectDefaults(project);
+  ctoAssistant.value = next.assistant;
+  ctoModel.value = next.model;
+  ctoEffort.value = next.effort;
+}
+
+/**
+ * Seed CHAT's new-chat selection from a project (#683) — the same idea, applied
+ * to the pickers a user actually has in front of them now that the CTO page's
+ * gear is going away. Only meaningful with no chat open: an existing chat
+ * carries its own assistant and model, and re-seeding would silently overrule
+ * them.
+ */
+export function seedChatConfig(project: ProjectDefaults | null): void {
+  const next = resolveProjectDefaults(project);
+  selectedAssistant.value = next.assistant;
+  selectedModel.value = next.model;
+  selectedEffort.value = next.effort;
 }
 
 /** True when the AI CTO PAGE is driving this store — which is what the #483

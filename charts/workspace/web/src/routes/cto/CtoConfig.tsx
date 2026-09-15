@@ -11,7 +11,10 @@ import {
   setActiveThreadModel,
   setActiveThreadEffort,
 } from '../../store/hypervisor';
-import { setProjectAssistantDefaults } from '../../store/projects';
+import {
+  matchesProjectDefaults,
+  setProjectAssistantDefaults,
+} from '../../store/projects';
 import type { Project } from '../../api/projects';
 
 /**
@@ -27,20 +30,6 @@ import type { Project } from '../../api/projects';
  * picker still works for the session and the save affordance explains why it
  * can't stick.
  */
-
-/** True when the live selection already matches what the project stores — the
- *  save button is pointless then, and the dirty dot must stay off. */
-export function matchesProjectDefaults(
-  project: Project | null,
-  sel: { assistant: string; model: string; effort: string },
-): boolean {
-  if (!project) return false;
-  return (
-    (project.default_assistant || '') === sel.assistant &&
-    (project.default_model || '') === sel.model &&
-    (project.default_effort || '') === sel.effort
-  );
-}
 
 export function CtoConfig({ project }: { project: Project | null }) {
   const [saving, setSaving] = useState(false);

@@ -181,6 +181,24 @@ export async function initCto(): Promise<void> {
 }
 
 /**
+ * True when a live assistant selection already matches what the project stores
+ * (#483). The "Set as project default" control is pointless then, so it says so
+ * rather than offering a write that would change nothing. Lives beside the
+ * writer it pairs with since the AI CTO's gear folded into Chat (#683).
+ */
+export function matchesProjectDefaults(
+  project: Project | null,
+  sel: { assistant: string; model: string; effort: string },
+): boolean {
+  if (!project) return false;
+  return (
+    (project.default_assistant || '') === sel.assistant &&
+    (project.default_model || '') === sel.model &&
+    (project.default_effort || '') === sel.effort
+  );
+}
+
+/**
  * Persist a project's assistant configuration (#483/#362) — the provider,
  * model and reasoning effort its CTO threads and dispatched builds default to.
  * Written through the same PUT /api/projects/{id} the CTO's own `update_project`

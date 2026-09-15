@@ -36,15 +36,18 @@ import {
   refreshDeletedThreads,
   renameThreadTitle,
   closeThread,
+  seedChatConfig,
 } from '../../store/hypervisor';
 import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
 import {
+  matchesProjectDefaults,
   projects,
   refreshProjects,
   selectProject,
+  setProjectAssistantDefaults,
   startProjectsPolling,
   stopProjectsPolling,
 } from '../../store/projects';
@@ -64,6 +67,7 @@ import {
   type ThreadModeFilter,
 } from './threadMode';
 import { groupByProject, isUngrouped } from './projectGroups';
+import { hasUnseenActivity, pulseLabel, pulseOf } from './projectPulse';
 import {
   BRIEF_AUTO_COLLAPSE_MAX,
   BRIEF_COLLAPSED_KEY,
@@ -122,6 +126,10 @@ export function HypervisorRoute() {
   );
   // Mobile shows the brief as a bottom sheet rather than a third column.
   const [briefSheetOpen, setBriefSheetOpen] = useState(false);
+  // Transient feedback for "Set as project default" — the write is a one-shot
+  // with no other visible result, so it has to say something.
+  const [savingDefault, setSavingDefault] = useState(false);
+  const [savedDefault, setSavedDefault] = useState(false);
   // The chat awaiting delete-confirmation (null when the dialog is closed).
   const [pendingDelete, setPendingDelete] = useState<HypervisorThread | null>(null);
   // "Recently deleted" is collapsed by default; expanding it lazy-loads the
@@ -309,6 +317,38 @@ export function HypervisorRoute() {
   // Sub-group the visible tab by project so chats from different projects don't
   // interleave. Headers are dropped when nothing is filed (single empty group).
   const groups = groupByProject(shown, projectList);
+
+  // Per-project assistant defaults (#483), moved off the AI CTO page's gear and
+  // beside the pickers they describe (#683). The record to write to is the one
+  // this chat is filed into — the open chat's project, or what the next new
+  // chat will be filed into.
+  const boundRecord = projectList.find((p) => p.id === currentProject) ?? null;
+  const liveSelection = {
+    assistant: effectiveAssistant,
+    model: currentModel,
+    effort: currentEffort,
+  };
+  const isProjectDefault = matchesProjectDefaults(boundRecord, liveSelection);
+
+  // Seed the next new chat's dials from the project it will be filed into, the
+  // way the CTO page seeded its own from the rail's selection. Only with no
+  // chat open: an open chat carries its own assistant and model, and re-seeding
+  // would silently overrule them.
+  const boundDefaults = boundRecord
+    ? [
+        boundRecord.default_assistant ?? '',
+        boundRecord.default_model ?? '',
+        boundRecord.default_effort ?? '',
+      ].join('\u0000')
+    : '';
+  const cfgLoaded = !!cfg;
+  useEffect(() => {
+    if (active || !cfgLoaded || !boundRecord) return;
+    seedChatConfig(boundRecord);
+    // Keyed on the stored fields (plus the config's arrival, which is what makes
+    // the per-assistant model/effort lists knowable) so switching projects
+    // re-seeds without stomping an in-session pick on every render.
+  }, [active, cfgLoaded, currentProject, boundDefaults]);
   const flatList = isUngrouped(groups);
 
   // If there's nothing to show under Active but there is history, land the user
@@ -352,6 +392,24 @@ export function HypervisorRoute() {
     // the path effect above calls openThread(id).
     navigate(`/hypervisor/${encodeURIComponent(id)}`);
     setSidebarOpen(false);
+  }
+
+  async function saveProjectDefaults() {
+    if (!boundRecord) return;
+    setSavingDefault(true);
+    try {
+      await setProjectAssistantDefaults(boundRecord.id, {
+        default_assistant: liveSelection.assistant,
+        default_model: liveSelection.model,
+        default_effort: liveSelection.effort,
+      });
+      setSavedDefault(true);
+      window.setTimeout(() => setSavedDefault(false), 2000);
+    } catch {
+      /* setProjectAssistantDefaults rolls the list back; the button re-enables */
+    } finally {
+      setSavingDefault(false);
+    }
   }
 
   function toggleBrief() {
@@ -694,16 +752,38 @@ export function HypervisorRoute() {
           )}
           {flatList
             ? shown.map(renderThread)
-            : groups.map((g) => (
-                <section key={g.id || '_none'} class="hv-thread-group">
-                  <h3 class="hv-thread-group-head">
-                    <Icon name={g.id ? 'cto' : 'chat'} size={11} />
-                    <span class="hv-thread-group-name">{g.label}</span>
-                    <span class="hv-tab-count">{g.threads.length}</span>
-                  </h3>
-                  {g.threads.map(renderThread)}
-                </section>
-              ))}
+            : groups.map((g) => {
+                // Pulse + unseen delta (#683), off the AI CTO rail's cards and
+                // onto the headers that replaced them. Both read straight off
+                // the registry record the list endpoint already returns.
+                const pulse = pulseOf(g.project);
+                const unseen = hasUnseenActivity(g.project);
+                const label = pulseLabel(pulse, unseen);
+                return (
+                  <section key={g.id || '_none'} class="hv-thread-group">
+                    <h3 class="hv-thread-group-head">
+                      <Icon name={g.id ? 'cto' : 'chat'} size={11} />
+                      <span class="hv-thread-group-name">{g.label}</span>
+                      {label && (
+                        <span class="hv-group-pulse" title={label}>
+                          {pulse.running > 0 && (
+                            <span class="cto-dot cto-dot-running" aria-hidden="true" />
+                          )}
+                          {pulse.waiting > 0 && (
+                            <span class="cto-dot cto-dot-waiting" aria-hidden="true" />
+                          )}
+                          {unseen && (
+                            <span class="hv-group-unseen" aria-hidden="true" />
+                          )}
+                          <span class="sr-only">{label}</span>
+                        </span>
+                      )}
+                      <span class="hv-tab-count">{g.threads.length}</span>
+                    </h3>
+                    {g.threads.map(renderThread)}
+                  </section>
+                );
+              })}
         </div>
 
         {/* Recently deleted — a collapsible trash so an accidental delete is
@@ -941,6 +1021,31 @@ export function HypervisorRoute() {
                   ]}
                 />
               </label>
+            )}
+            {/* The one thing the AI CTO's gear had that Chat didn't (#483):
+                persist this agent/model/effort on the project, so every chat
+                filed into it — and every build it dispatches — starts there.
+                Same PUT /api/projects/{id} field the CTO writes through its own
+                `update_project` tool, so a choice made here and one the agent
+                makes for itself land in the same place. */}
+            {boundRecord && (
+              <button
+                type="button"
+                class="hv-project-default"
+                disabled={savingDefault || isProjectDefault}
+                onClick={() => void saveProjectDefaults()}
+                title={
+                  isProjectDefault
+                    ? `This is already ${boundRecord.name}'s default`
+                    : `Make this ${boundRecord.name}'s default agent, model and effort`
+                }
+              >
+                {savedDefault
+                  ? 'Saved'
+                  : isProjectDefault
+                    ? 'Project default'
+                    : 'Set as project default'}
+              </button>
             )}
             {active && status && (
               <Pill tone={STATUS_TONE[status] ?? 'neutral'}>

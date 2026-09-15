@@ -17,6 +17,10 @@ export interface ThreadGroup {
   /** Display name: the project's `name`, or its id when the registry has no
    *  record for it (a project archived/deleted out from under its chats). */
   label: string;
+  /** The registry record, when there is one — carries the pulse counts and the
+   *  `last_seen_at` baseline the header renders (#683). Absent for the unfiled
+   *  group and for a project archived out from under its chats. */
+  project?: Project;
   threads: HypervisorThread[];
 }
 
@@ -36,13 +40,19 @@ export function groupByProject(
   list: HypervisorThread[],
   projects: Project[],
 ): ThreadGroup[] {
-  const names = new Map(projects.map((p) => [p.id, p.name || p.id]));
+  const byProjectId = new Map(projects.map((p) => [p.id, p]));
   const byId = new Map<string, ThreadGroup>();
   for (const t of list) {
     const id = t.project_id || '';
     let g = byId.get(id);
     if (!g) {
-      g = { id, label: id ? names.get(id) ?? id : 'No project', threads: [] };
+      const p = id ? byProjectId.get(id) : undefined;
+      g = {
+        id,
+        label: id ? p?.name || id : 'No project',
+        project: p,
+        threads: [],
+      };
       byId.set(id, g);
     }
     g.threads.push(t);
