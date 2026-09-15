@@ -1483,7 +1483,12 @@ export async function getBoardReview(
 ): Promise<BoardReviewGroup[]> {
   if (getConfig().mock) {
     await delay(150);
-    const items = mockBoardReview.filter((i) => !openOnly || i.open);
+    // Filter by BOARD as the real endpoint does. Returning every board's items
+    // made switching boards look like a no-op in the demo build, and hid the
+    // cross-board deep link the Playwright gate now exercises.
+    const items = mockBoardReview.filter(
+      (i) => i.board_id === boardId && (!openOnly || i.open),
+    );
     const byDisposition = new Map<string, BoardReviewItem[]>();
     for (const item of items) {
       const key = item.disposition ?? 'unreported';

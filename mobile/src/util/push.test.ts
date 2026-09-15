@@ -29,3 +29,32 @@ describe('pushTargetFromData', () => {
     expect(pushTargetFromData({ ref: '  task:7  ' })).toEqual({ kind: 'task', id: '7' });
   });
 });
+
+describe('pushTargetFromData · board review pushes (#692)', () => {
+  /* The server already pushes these: push_notify._build_messages copies the
+     feed link's ref into data.ref, and BoardReview emits
+     "board:<board_id>:<item_id>". Mobile was the only side that could not read
+     it, so every board review push landed on the Feed. */
+  it('maps a board ref to the board target', () => {
+    expect(pushTargetFromData({ ref: 'board:acme:412', waiting: true })).toEqual({
+      kind: 'board', boardId: 'acme', itemId: '412',
+    });
+  });
+
+  it('keeps a colon-bearing item id whole', () => {
+    expect(pushTargetFromData({ ref: 'board:kube-coder-gh:I_kwDOA:4102' })).toEqual({
+      kind: 'board', boardId: 'kube-coder-gh', itemId: 'I_kwDOA:4102',
+    });
+  });
+
+  it('falls back to none for a malformed board ref, so the tap lands on the Feed', () => {
+    expect(pushTargetFromData({ ref: 'board:acme' })).toEqual({ kind: 'none' });
+    expect(pushTargetFromData({ ref: 'board:' })).toEqual({ kind: 'none' });
+  });
+
+  it('trims whitespace around a board ref too', () => {
+    expect(pushTargetFromData({ ref: '  board:acme:412 ' })).toEqual({
+      kind: 'board', boardId: 'acme', itemId: '412',
+    });
+  });
+});

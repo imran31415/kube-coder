@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { resolveFeedRef, feedSourceLabel, dayLabel, groupByDay, discussPrefix } from './feed';
+import {
+  resolveFeedRef,
+  feedSourceLabel,
+  dayLabel,
+  groupByDay,
+  discussPrefix,
+  countBoardsAwaitingReview,
+} from './feed';
 import type { FeedItem } from '../api/types';
 
 const now = 1_700_000_000_000; // fixed ms
@@ -31,6 +38,9 @@ describe('feedSourceLabel', () => {
     expect(feedSourceLabel('agent:th1')).toBe('CTO');
     expect(feedSourceLabel('system:task')).toBe('task');
     expect(feedSourceLabel('cron:dep-scout')).toBe('cron · dep-scout');
+    // The server sources a board review item as "board:<board_id>", which used
+    // to render as the shouty raw ref in the Feed meta line.
+    expect(feedSourceLabel('board:kube-coder-gh')).toBe('board · kube-coder-gh');
   });
 });
 
@@ -64,5 +74,66 @@ describe('discussPrefix', () => {
     const text = discussPrefix(item({ title: 'No refs here', links: [] }));
     expect(text).toContain('No refs here');
     expect(text).not.toContain('(');
+  });
+});
+
+describe('resolveFeedRef · board refs (#692)', () => {
+  it('resolves a board review ref to the board and the item', () => {
+    expect(resolveFeedRef({ label: '', ref: 'board:acme:412' })).toEqual({
+      kind: 'board', boardId: 'acme', itemId: '412',
+    });
+  });
+
+  it('keeps an item id that itself contains colons intact', () => {
+    /* GitHub GraphQL global ids look like `gid://…`, and the server puts them
+       in the ref verbatim. Splitting on every colon would hand the screen a
+       truncated id that matches no card in the queue. */
+    expect(resolveFeedRef({ label: '', ref: 'board:kube-coder-gh:I_kwDOA:4102' })).toEqual({
+      kind: 'board', boardId: 'kube-coder-gh', itemId: 'I_kwDOA:4102',
+    });
+    expect(resolveFeedRef({ label: '', ref: 'board:gh:gid://issue/46' })).toEqual({
+      kind: 'board', boardId: 'gh', itemId: 'gid://issue/46',
+    });
+  });
+
+  it('returns none for a malformed board ref rather than a half target', () => {
+    // Each of these would otherwise navigate to a board that cannot be found,
+    // leaving the screen spinning on a card that will never arrive.
+    expect(resolveFeedRef({ label: '', ref: 'board' })).toEqual({ kind: 'none' });
+    expect(resolveFeedRef({ label: '', ref: 'board:' })).toEqual({ kind: 'none' });
+    expect(resolveFeedRef({ label: '', ref: 'board:acme' })).toEqual({ kind: 'none' });
+    expect(resolveFeedRef({ label: '', ref: 'board:acme:' })).toEqual({ kind: 'none' });
+    expect(resolveFeedRef({ label: '', ref: 'board::412' })).toEqual({ kind: 'none' });
+  });
+
+  it('still prefers an explicit href over the ref', () => {
+    expect(resolveFeedRef({ label: '', ref: 'board:acme:412', href: 'https://x/y' })).toEqual({
+      kind: 'external', url: 'https://x/y',
+    });
+  });
+});
+
+describe('countBoardsAwaitingReview', () => {
+  const boardLink = { label: 'Open item', ref: 'board:acme:412' };
+
+  it('counts only unread board items that are waiting on a decision', () => {
+    const items = [
+      item({ id: 'a', waiting: true, read: false, links: [boardLink] }),
+      item({ id: 'b', waiting: true, read: true, links: [boardLink] }),   // already seen
+      item({ id: 'c', waiting: false, read: false, links: [boardLink] }), // not waiting
+      item({ id: 'd', waiting: true, read: false, links: [{ label: '', ref: 'task:t1' }] }),
+      item({ id: 'e', waiting: true, read: false, links: [] }),
+      item({ id: 'f', waiting: true, read: false, links: [boardLink] }),
+    ];
+    expect(countBoardsAwaitingReview(items)).toBe(2);
+  });
+
+  it('is zero for an empty feed, so a quiet board shows no badge', () => {
+    expect(countBoardsAwaitingReview([])).toBe(0);
+  });
+
+  it('does not count a malformed board ref it could not route to', () => {
+    const items = [item({ waiting: true, read: false, links: [{ label: '', ref: 'board:acme' }] })];
+    expect(countBoardsAwaitingReview(items)).toBe(0);
   });
 });

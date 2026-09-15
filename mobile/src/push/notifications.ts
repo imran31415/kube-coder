@@ -22,6 +22,7 @@ import { Linking, Platform } from 'react-native';
 import { registerPushToken, unregisterPushToken } from '../api/client';
 import { getConfig } from '../store/config';
 import { navigateTo, navigationRef } from '../store/nav';
+import { requestBoardFocus } from '../store/boardFocus';
 import { pushTargetFromData, type PushData } from '../util/push';
 
 let handlerConfigured = false;
@@ -126,6 +127,13 @@ export function handleNotificationTap(data: PushData | undefined): void {
       break;
     case 'memory':
       navigateTo('Memory');
+      break;
+    case 'board':
+      // Park the target BEFORE navigating. Board is a tab screen that stays
+      // mounted, so it may never re-mount to read a route param — it reads
+      // the request from the store and clears it once the card is in view.
+      requestBoardFocus(target.boardId, target.itemId);
+      navigateTo('Board');
       break;
     case 'external':
       Linking.openURL(target.url).catch(() => {});
