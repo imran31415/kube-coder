@@ -127,8 +127,8 @@ async function mockChat(page, opts = {}) {
 const browser = await chromium.launch({ executablePath: CHROMIUM, headless: true });
 try {
   const shots = [
-    { name: 'chat-brief-desktop-dark', path: '/hypervisor/c_plan', viewport: { width: 1440, height: 900 }, theme: 'dark' },
-    { name: 'chat-brief-desktop-light', path: '/hypervisor/c_plan', viewport: { width: 1440, height: 900 }, theme: 'light' },
+    { name: 'chat-brief-desktop-dark', path: '/hypervisor/c_plan', viewport: { width: 1680, height: 960 }, theme: 'dark' },
+    { name: 'chat-brief-desktop-light', path: '/hypervisor/c_plan', viewport: { width: 1680, height: 960 }, theme: 'light' },
     { name: 'chat-brief-mobile-dark', path: '/hypervisor/c_plan', viewport: { width: 390, height: 844 }, theme: 'dark' },
     // The brief is a bottom sheet on a phone rather than a third column, so
     // open it — a shot of the closed sheet shows nothing about the brief.
@@ -136,8 +136,8 @@ try {
     // The AI CTO's front door, now reached by the /cto redirect rather than by
     // a page of its own: Chat, CTO mode pre-selected, its welcome in the
     // transcript's centring slot.
-    { name: 'chat-cto-welcome-desktop-dark', path: '/cto', viewport: { width: 1440, height: 900 }, theme: 'dark', threads: [] },
-    { name: 'chat-cto-welcome-desktop-light', path: '/cto', viewport: { width: 1440, height: 900 }, theme: 'light', threads: [] },
+    { name: 'chat-cto-welcome-desktop-dark', path: '/cto', viewport: { width: 1680, height: 960 }, theme: 'dark', threads: [] },
+    { name: 'chat-cto-welcome-desktop-light', path: '/cto', viewport: { width: 1680, height: 960 }, theme: 'light', threads: [] },
   ];
   for (const s of shots) {
     const ctx = await browser.newContext({

@@ -27,7 +27,7 @@ Each **kube-coder workspace** is an isolated pod with a persistent home director
 - **VS Code** in the browser (`code-server`)
 - a **persistent tmux terminal** that keeps running when you close the tab
 - an **in-pod Chrome** you can watch over VNC (for previewing web apps, or letting an agent drive a browser)
-- a **dashboard** that ties it together — plus **Chat** that operates the pod *for* you and an **AI CTO** that keeps track of your projects
+- a **dashboard** that ties it together — plus **Chat** that operates the pod *for* you, with an **AI CTO** mode that keeps track of your projects
 - **pluggable coding agents** — Claude Code, Codex, Gemini, Ante, OpenCode — that you can spawn, message, and fan out in parallel
 
 Because it's just Kubernetes underneath, a single chart deploys as many of these as your cluster can hold — each with its own namespace, ingress, TLS certificate, persistent volume, and OAuth allowlist. Onboarding a new teammate is a form in the admin console; their workspace resolves and issues its own TLS on first request.
@@ -76,6 +76,9 @@ Three screenshots that capture the whole idea — a workspace home you drive fro
 
 <img width="100%" alt="Hypervisor chat rendering a screenshot it captured inline" src="docs/screenshots/hypervisor-inline-media.png" />
 <p align="center"><sub><b>Hypervisor</b> — chat with the workspace and it acts; here it captured a screenshot and rendered it right in the thread</sub></p>
+
+<img width="100%" alt="Chat in AI CTO mode, with the project brief open beside it" src="docs/screenshots/chat-brief-desktop-dark.png" />
+<p align="center"><sub><b>One chat surface</b> — Workspace and CTO chats in one list with a mode badge each, the Mode picker beside Agent and Folder, and the project brief as a pane of any chat filed into a project</sub></p>
 
 ### More surfaces
 
@@ -126,13 +129,15 @@ Destructive actions (`kill_task`, `delete_memory`) ask for confirmation right in
 
 ## AI CTO & Feed — someone minding the whole thing
 
-**Chat** operates the pod. The **AI CTO** (`/cto`) works a level up: it holds a picture of your *projects*.
+Chat operates the pod. The **AI CTO** works a level up: it holds a picture of your *projects*. It isn't a separate page — it's a **mode of Chat**. Start a new chat with **Mode: CTO** and it opens with your CTO's preamble; the mode is fixed at creation, and every chat carries a badge saying which it is.
 
-Projects are discovered automatically — no forms. Each carries its own north star, decision log, goals and memory namespace, and the CTO answers from a live brief (running builds, recent activity, open threads) rather than from whatever happens to be in context. Ask it what to work on next and it argues from the actual state of the repo.
+Projects are discovered automatically — no forms. Each carries its own north star, decision log, goals and memory namespace, and the CTO answers from a live **brief** (running builds, recent activity, open threads) rather than from whatever happens to be in context. Ask it what to work on next and it argues from the actual state of the repo.
 
-The **Feed** (`/feed`) is the single stream of what changed and what needs you: build outcomes, decisions recorded, trigger fires, plus anything an agent judged worth surfacing. Anything in it can be handed straight to the CTO with **"Discuss with CTO."**
+That brief is a pane of Chat, shown for **any** chat filed into a project — CTO mode or not. Beside it sit the dev container card and a "set as project default" for the agent, model and effort every chat in that project starts with.
 
-Both are on the phone app too.
+The **Feed** (`/feed`) is the single stream of what changed and what needs you: build outcomes, decisions recorded, trigger fires, plus anything an agent judged worth surfacing. Anything in it can be handed straight to the CTO with **"Discuss with CTO"** — which opens a CTO chat filed into that item's project, with the context already said.
+
+Both are on the phone app too. (`/cto` still resolves, as a redirect into Chat with CTO mode pre-selected.)
 
 ---
 
@@ -424,7 +429,7 @@ charts/
     ├── hypervisor_session.py  # structured agent-session runner + per-CLI adapters
     ├── mcp_dashboard.py   # dashboard MCP server (read/act on the pod)
     └── web/               # Vite + Preact SPA (the dashboard at /)
-        ├── src/routes/    # desktop, cto, feed, hypervisor, mission, tasks, memory, triggers, apps, files, docs, skills, walkie, settings
+        ├── src/routes/    # desktop, feed, hypervisor (Chat — the AI CTO is a mode of it), mission, tasks, memory, triggers, apps, files, docs, skills, walkie, settings
         ├── src/store/     # signals: tasks, ui, metrics, router
         └── scripts/shoot.mjs   # playwright screenshots
 deployments/               # public sample per-user values.yaml + secrets

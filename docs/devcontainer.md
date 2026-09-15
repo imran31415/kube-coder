@@ -54,9 +54,10 @@ write to `/usr` has to go into the workspace image instead.
 
 ## Using it
 
-The **Dev container** card appears in the project brief on `/cto` for any
-workdir that has a `devcontainer.json`. It shows what the file declares, what
-has already run, and what cannot be applied.
+The **Dev container** card appears in the project brief — Chat's right-hand
+pane, shown for any chat filed into a project (#683; it used to live on the
+`/cto` page) — for every workdir that has a `devcontainer.json`. It shows what
+the file declares, what has already run, and what cannot be applied.
 
 Click **Apply…** and you get a dialog with:
 
