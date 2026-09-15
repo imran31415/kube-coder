@@ -4,6 +4,7 @@ import { brief, briefLoading, selectedProjectId } from '../../store/projects';
 import { serverMode } from '../../store/server-mode';
 import { DevcontainerPanel } from './DevcontainerPanel';
 import type { BriefMemory } from '../../api/projects';
+import './brief.css';
 
 /**
  * The deterministic project-brief panel (#466). Renders the /brief JSON —

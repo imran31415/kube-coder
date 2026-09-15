@@ -38,7 +38,7 @@ import { claudeReady, claudeProbed, refreshClaudeReady } from '../../store/claud
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { ProjectRail } from './ProjectRail';
 import { CtoConfig } from './CtoConfig';
-import { BriefPanel, BriefTab } from './BriefPanel';
+import { BriefPanel, BriefTab } from '../hypervisor/BriefPanel';
 import {
   clampCtoRailW,
   initialCtoRailW,

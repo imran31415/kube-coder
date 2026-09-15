@@ -502,7 +502,17 @@
   padding: 0 var(--size-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  /* Scroll rather than spill (#506, generalised in #683). The pill row —
+     Walkie link, speaker, Model, Effort, Project, status pills — is wider than
+     the chat column whenever that column is squeezed: at ≤390px by the
+     viewport, and at any width once the brief pane claims its own track. With
+     the brief beside it, an overflowing row painted OVER the brief; scrolling
+     keeps every control reachable and inside the column. SearchSelect's
+     popover is position:fixed precisely so this overflow can't clip it. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.hv-topbar::-webkit-scrollbar { display: none; }
 /* Mobile "past chats" trigger — a labeled chip with a live count, so it reads
    as "open my chat history" rather than an anonymous ••• menu. */
 .hv-topbar-menu {
@@ -644,6 +654,26 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+
+/* Brief sheet trigger (#683) — phones only; on desktop the brief is a column
+   with its own collapse tab, so this button doesn't exist there. */
+.hv-brief-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px; /* WCAG 2.5.5 tap target, matching the mobile chip sizes */
+  padding: 0 10px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.hv-brief-toggle:hover { color: var(--text); border-color: var(--border-strong); }
 
 /* ── Chat body ───────────────────────────────────────────────────────── */
 /* "How the Hypervisor works" guide sits between the topbar and the chat,
@@ -1283,6 +1313,8 @@
 /* ── Mobile ──────────────────────────────────────────────────────────── */
 @media (max-width: 720px) {
   .route-hypervisor {
+    /* index.tsx only sets the inline multi-column template on desktop, so the
+       brief never claims a track here — it renders as a bottom sheet. */
     grid-template-columns: 1fr;
     height: calc(100dvh - var(--topbar-total) - var(--bottomnav-total));
   }
@@ -1347,15 +1379,9 @@
   .hv-topbar-menu { display: inline-flex; }
   .hv-sidebar-close { display: inline-flex; }
   /* Chat toolbar (#506): at ≤390px the pill row (Chats · Walkie · speaker ·
-     model select) is wider than the viewport and the model <select> gets
-     clipped off the right edge. Let the row scroll horizontally instead of
-     hard-clipping, keep the title from hogging space, and let the select
-     shrink so it stays reachable. */
-  .hv-topbar {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .hv-topbar::-webkit-scrollbar { display: none; }
+     model select) is wider than the viewport. The row scrolls at every width
+     now (see .hv-topbar); here the title additionally stops hogging space so
+     the controls get what's left. */
   .hv-topbar-title { flex: 0 1 auto; }
   .hv-model-select { min-width: 0; }
   .hv-msg { max-width: 92%; }
