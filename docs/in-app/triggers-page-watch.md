@@ -123,6 +123,25 @@ Pause stops the checks without deleting the watch, and keeps the
 baseline. Resuming picks up where it left off — if the page changed while
 paused, the next check sees it and fires once.
 
+Pause covers **Check now** as well as the schedule, so the button is
+greyed out while a watch is paused. If you pause a watch while a check is
+already running, that check finishes and records what it found, but
+starts nothing; the change it saw is still owed to you and fires on the
+first check after you resume.
+
+Editing a watch keeps everything the checks have recorded — the baseline,
+the failure count, and any change still waiting to start a task. The one
+exception is changing the URL or the selector, which starts the watch
+over: you are watching something else now, so the old baseline and any
+change owed against it are dropped.
+
+## Two checks at once
+
+Only one check runs per watch at a time. If you press **Check now** while
+the scheduled check is still running, you are told a check is already in
+progress rather than a second one starting — one change must never
+produce two builds.
+
 ## Common failures
 
 - **`that address is not publicly reachable`** — the URL points at

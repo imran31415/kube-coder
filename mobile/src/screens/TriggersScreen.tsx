@@ -192,6 +192,9 @@ export default function TriggersScreen() {
             unchanged: 'Checked. The page has not changed.',
             baseline: 'Baseline recorded. Future changes will start a build.',
             error: res.error ? `Could not read the page: ${res.error}` : 'Could not read the page.',
+            // The scheduled check beat the button to it. Its result lands on
+            // the next refresh, so say that rather than guess an answer.
+            busy: 'A check is already running. Its result will appear shortly.',
           };
           Alert.alert(
             res.outcome === 'changed' ? 'Page changed' : 'Checked',
@@ -849,7 +852,9 @@ function TriggerRow({
               icon={isWatch ? 'refresh-outline' : 'play-outline'}
               label={isWatch ? 'Check now' : 'Fire now'}
               onPress={onFire}
-              disabled={busy}
+              // A paused watch refuses the check server-side. Greying the
+              // control out is kinder than letting the tap return a 409.
+              disabled={busy || (isWatch && paused)}
             />
             {isCron || isWatch ? (
               <RowAction

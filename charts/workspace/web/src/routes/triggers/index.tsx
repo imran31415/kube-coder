@@ -167,7 +167,19 @@ function TriggerRow({ t }: { t: Trigger }) {
         {t.schedule && <span class="trig-row-sched mono">{t.schedule}</span>}
         <div class="trig-row-actions">
           <MutatorOnly>
-            <Button size="sm" variant="ghost" onClick={() => fire(t)}>
+            {/* A paused page-watch refuses the check server-side, so the
+                button says so up front rather than handing back a 409. */}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => fire(t)}
+              disabled={t.kind === 'page-watch' && t.suspended}
+              title={
+                t.kind === 'page-watch' && t.suspended
+                  ? 'This watch is paused - resume it to check now'
+                  : undefined
+              }
+            >
               <Icon name="play" size={12} /> {t.kind === 'page-watch' ? 'Check now' : 'Fire now'}
             </Button>
             {meta.pausable && (

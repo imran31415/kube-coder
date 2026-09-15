@@ -62,6 +62,9 @@ export async function fire(t: Trigger): Promise<void> {
         unchanged: 'Checked — no change',
         baseline: 'Baseline recorded — future changes will fire',
         error: res.error ? `Could not read the page: ${res.error}` : 'Could not read the page',
+        // The scheduled check got there first. Saying nothing would look like
+        // the button did nothing, and claiming "no change" would be a guess.
+        busy: 'A check is already running - the result will appear in a moment',
       };
       pushToast(said[res.outcome] ?? `Checked ${t.id}`, {
         kind: res.outcome === 'error' ? 'danger' : res.outcome === 'changed' ? 'success' : 'info',
