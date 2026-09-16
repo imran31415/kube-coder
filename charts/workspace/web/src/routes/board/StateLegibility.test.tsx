@@ -310,7 +310,7 @@ describe('the standing strip tells you where you are', () => {
     const { BoardRoute } = await import('./index');
     boards.value = [mkBoard()];
     selectedBoardId.value = 'b1';
-    reviewGroups.value = [
+    const groups = [
       {
         disposition: 'needs_review',
         count: 1,
@@ -325,10 +325,20 @@ describe('the standing strip tells you where you are', () => {
         ],
       },
     ];
+    // The route reads the queue itself on arrival (#704), so it has to come
+    // from the server rather than be planted in the store.
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({
+        boards: [mkBoard()], runs: [], strategies: {}, orders: [], groups,
+      }),
+    })) as unknown as typeof fetch;
 
     const { container } = render(<BoardRoute />);
     // Items tab is the landing tab, so the strip should point at Review.
-    expect(screen.getByText(/waiting on your decision/i)).toBeTruthy();
+    expect(await screen.findByText(/waiting on your decision/i)).toBeTruthy();
     const go = container.querySelector('.board-standing-go') as HTMLButtonElement;
     expect(go?.textContent).toBe('Open Review');
 

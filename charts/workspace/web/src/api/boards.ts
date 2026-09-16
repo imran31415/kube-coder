@@ -216,6 +216,9 @@ export interface StagedRecord {
 export interface ReviewGroup {
   disposition: string;
   count: number;
+  /** Cards in this group still waiting on a decision. Absent from servers
+   *  that predate #704. */
+  open?: number;
   items: StagedRecord[];
 }
 

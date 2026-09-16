@@ -145,6 +145,13 @@ export async function loadItems(boardId: string, quiet = false): Promise<void> {
 }
 
 export async function selectBoard(id: string | null): Promise<void> {
+  // The review queue belongs to one board. Keeping it across a switch showed
+  // the previous board's count on the Review badge until something happened to
+  // reload it (#704). The route reloads it for the new board.
+  if (id !== selectedBoardId.value) {
+    reviewGroups.value = [];
+    reviewBoardId.value = null;
+  }
   selectedBoardId.value = id;
   selectedItemId.value = null;
   itemFilter.value = '';
@@ -416,6 +423,11 @@ export function startRunPolling(boardId: string): void {
     });
     const open = activeRun.value;
     if (open && open.status === 'running') void openRun(boardId, open.id);
+    // Reports and decisions reach the Review badge through `boards.review`
+    // events. With the stream down, a live run would otherwise add cards the
+    // badge never counts, so ride this tick. Only while the stream is down:
+    // with it up, the event already did this and a second read is waste.
+    if (hasLiveRun.value && !boardsLive.value) void refreshReview(boardId);
   }, RUN_POLL_MS);
 }
 
@@ -431,19 +443,76 @@ export function stopRunPolling(): void {
 
 export const reviewGroups = signal<ReviewGroup[]>([]);
 export const reviewError = signal<string | null>(null);
-/** Item the user arrived to review (from a feed link or the waiting badge). */
+/** Which board `reviewGroups` was read for, or null before the first read. A
+ *  queue on screen for one board must never be counted, or linked to, as if it
+ *  belonged to another. */
+export const reviewBoardId = signal<string | null>(null);
+/** Item the user arrived to review (from a feed link, the waiting badge, or a
+ *  run item's outcome). */
 export const reviewFocusItemId = signal<string | null>(null);
 
-export const openReviewCount = computed(
-  () => reviewGroups.value.flatMap((g) => g.items).filter((r) => r.open).length,
+/**
+ * Which tab of /board is showing.
+ *
+ * A store signal rather than the route's own state for two reasons (#704). The
+ * Runs table has to be able to send someone to one card on the Review tab. And
+ * following a run item's "View session" link leaves the route: coming back
+ * should land on the Runs table that link was clicked from, not reset to Items.
+ */
+export const boardTab = signal<BoardTab>('items');
+
+/** Open the Review tab on one item's card. */
+export function openReviewFor(itemId: string): void {
+  reviewFocusItemId.value = String(itemId);
+  boardTab.value = 'review';
+}
+
+/** Open review cards on the selected board — the Review badge. Zero while the
+ *  queue on hand was read for some other board. */
+export const openReviewCount = computed(() => {
+  if (reviewBoardId.value !== selectedBoardId.value) return 0;
+  return reviewGroups.value.flatMap((g) => g.items).filter((r) => r.open).length;
+});
+
+/** Open cards per disposition, for the badge's spoken and hover label. */
+export const openReviewBreakdown = computed<{ disposition: string; open: number }[]>(
+  () => {
+    if (reviewBoardId.value !== selectedBoardId.value) return [];
+    return reviewGroups.value
+      .map((g) => ({
+        disposition: g.disposition,
+        open: g.items.filter((r) => r.open).length,
+      }))
+      .filter((g) => g.open > 0);
+  },
 );
 
+/** Bumped per read, so only the newest read may land. */
+let reviewSeq = 0;
+
+/**
+ * Read the review queue for a board.
+ *
+ * Reads overlap routinely: a run whose agents report together publishes a
+ * burst of `boards.review` events, each starting a read, and nothing makes the
+ * responses come back in order. Letting whichever answer arrived last win meant
+ * an older queue could overwrite a newer one — a count that went backwards. A
+ * read for a board that is no longer selected is dropped too, so switching
+ * boards mid-read cannot put one board's queue under another's name.
+ */
 export async function refreshReview(boardId: string): Promise<void> {
+  const seq = ++reviewSeq;
+  const stale = () =>
+    seq !== reviewSeq ||
+    (selectedBoardId.value !== null && selectedBoardId.value !== boardId);
   try {
     const res = await getBoardReview(boardId);
+    if (stale()) return;
     reviewGroups.value = res.groups ?? [];
+    reviewBoardId.value = boardId;
     reviewError.value = null;
   } catch (err) {
+    if (stale()) return;
     reviewError.value = err instanceof Error ? err.message : String(err);
   }
 }
@@ -999,7 +1068,12 @@ export function _resetBoardsForTest(): void {
   runsError.value = null;
   reviewGroups.value = [];
   reviewError.value = null;
+  reviewBoardId.value = null;
   reviewFocusItemId.value = null;
+  // Bumped, never rewound: a read still in flight from before the reset must
+  // not be able to land in the next test.
+  reviewSeq++;
+  boardTab.value = 'items';
   boardsInFlight = null;
   itemsInFlight.clear();
   strategies.value = {};
