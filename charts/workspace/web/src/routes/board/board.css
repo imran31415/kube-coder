@@ -1059,6 +1059,14 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* In a table cell a disposition is a value, not a group heading: without this
+   the heading's bottom margin lifted plain outcomes above their row, next to
+   outcome buttons that sit on it. */
+.board-run-items .board-disposition {
+  display: inline-flex;
+  margin: 0;
+}
+
 /* The way from a run item to the agent that worked it (#704). */
 .board-run-item-session { white-space: nowrap; }
 .board-run-session-link {
