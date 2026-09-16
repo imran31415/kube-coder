@@ -1016,11 +1016,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.board-run-item-elapsed {
-  margin-left: var(--size-2);
-  font-size: var(--text-2xs);
-  color: var(--text-subtle);
-}
 .board-run-item-waiting { color: var(--text-subtle); }
 /* A live row is the one the eye should land on first. */
 .board-run-item-working td { background: color-mix(in srgb, var(--accent) 7%, transparent); }

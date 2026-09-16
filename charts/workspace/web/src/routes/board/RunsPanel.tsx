@@ -26,7 +26,6 @@ import {
   runItemOrder,
   isRunItemLive,
   dispositionLabel,
-  elapsedLabel,
 } from '../../api/boards';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import type { BoardRun, BoardRunSummary } from '../../api/boards';
@@ -427,19 +426,14 @@ function RunTally({ run }: { run: BoardRunSummary }) {
  *
  * Sorting live work to the top and giving each state a pill means the answer
  * to "what is happening right now" is the top of the table, every time.
+ *
+ * There is deliberately no elapsed time (#704). The only timestamp a row has is
+ * `updated_at`, which the server rewrites on every change to the row, so a
+ * clock built on it measured "since this row last changed" rather than "time
+ * spent on this ticket" — a number that looked like progress and was not.
  */
 function RunItemTable({ run }: { run: BoardRun }) {
-  // Elapsed times only tick while something is actually live; a settled run
-  // must not hold a timer open for a table nobody is watching change.
   const items = Object.values(run.items ?? {});
-  const anyLive = items.some((i) => isRunItemLive(i.state));
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!anyLive) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [anyLive]);
 
   if (items.length === 0) {
     return <p class="board-empty">This run has no items.</p>;
@@ -477,13 +471,6 @@ function RunItemTable({ run }: { run: BoardRun }) {
                   )}
                   {runItemStateLabel(item.state)}
                 </span>
-                {/* Elapsed only while it is live: on a settled item the
-                    number would keep climbing forever and mean nothing. */}
-                {live && item.updated_at > 0 && (
-                  <span class="board-run-item-elapsed mono">
-                    {elapsedLabel(item.updated_at, now)}
-                  </span>
-                )}
               </td>
               <td>
                 {/* A `failed` disposition next to a FAILED state pill says the

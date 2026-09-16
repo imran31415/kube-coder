@@ -200,14 +200,26 @@ describe('a run in flight is readable at a glance', () => {
     expect(screen.queryByText('needs_rescoping')).toBeNull();
   });
 
-  it('keeps an elapsed time only on rows that are still moving', () => {
-    seedRun();
-    const { container } = render(<RunsPanel />);
-    const working = container.querySelector('.board-run-item-working');
-    const done = container.querySelector('.board-run-item-done');
-    expect(working?.querySelector('.board-run-item-elapsed')).toBeTruthy();
-    // A settled row's timer would climb forever and mean nothing.
-    expect(done?.querySelector('.board-run-item-elapsed')).toBeNull();
+  it('shows no timer on any row, and runs none behind the table (#704)', () => {
+    // The only clock a row had was `updated_at`, which resets on every change
+    // to the row — it measured nothing a reader could use.
+    vi.useFakeTimers();
+    try {
+      seedRun();
+      const { container } = render(<RunsPanel />);
+      expect(container.querySelector('.board-run-item-working')).toBeTruthy();
+      expect(container.querySelector('.board-run-item-elapsed')).toBeNull();
+      // No per-second re-render ticking while work is live.
+      expect(vi.getTimerCount()).toBe(0);
+      // Nothing that reads as a duration next to any state pill.
+      const stateCells = Array.from(container.querySelectorAll('tbody tr'))
+        .map((row) => row.querySelectorAll('td')[2]?.textContent ?? '');
+      for (const text of stateCells) {
+        expect(text).not.toMatch(/\d+\s*[smh]\b/);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
