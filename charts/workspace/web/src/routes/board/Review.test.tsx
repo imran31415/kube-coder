@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/preact';
 import { ReviewPanel } from './ReviewPanel';
 import { RunsPanel } from './RunsPanel';
 import { CredentialsPanel } from './CredentialsPanel';
 import {
   reviewGroups,
+  reviewFocusItemId,
   selectedBoardId,
   boards,
   boardRuns,
@@ -380,5 +381,150 @@ describe('/board Credentials', () => {
   it('explains the reference form when nothing is stored', () => {
     render(<CredentialsPanel />);
     expect(screen.getByText('@board-creds/NAME')).toBeInTheDocument();
+  });
+});
+
+describe('arriving for one card (#704)', () => {
+  // A highlight alone left the card wherever the queue put it — often below
+  // the fold. Arriving from a run item's outcome, a feed link or the waiting
+  // badge has to put that card where the eye (and keyboard focus) lands.
+  let scrolled: { id: string | null; behavior: unknown }[];
+  const originalScroll = HTMLElement.prototype.scrollIntoView;
+  const originalMatchMedia = window.matchMedia;
+
+  function reduceMotion(on: boolean) {
+    window.matchMedia = ((query: string) => ({
+      matches: on && query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  const three = () => [
+    mkRecord({ item_id: '46', item_key: 'SUP-46' }),
+    mkRecord({ item_id: '47', item_key: 'SUP-47' }),
+    mkRecord({ item_id: '48', item_key: 'SUP-48' }),
+  ];
+
+  beforeEach(() => {
+    _resetBoardsForTest();
+    writable();
+    scrolled = [];
+    HTMLElement.prototype.scrollIntoView = function (
+      this: HTMLElement,
+      arg?: boolean | ScrollIntoViewOptions,
+    ) {
+      scrolled.push({
+        id: this.getAttribute('data-item-id'),
+        behavior: typeof arg === 'object' ? arg.behavior : undefined,
+      });
+    };
+    reduceMotion(false);
+  });
+
+  afterEach(() => {
+    HTMLElement.prototype.scrollIntoView = originalScroll;
+    window.matchMedia = originalMatchMedia;
+    _resetBoardsForTest();
+    globalThis.fetch = realFetch;
+  });
+
+  it('scrolls that card into view and moves focus to it', () => {
+    const records = three();
+    stubFetch(200, { groups: [{ disposition: 'needs_review', count: 3, items: records }] });
+    seedReview(records);
+    reviewFocusItemId.value = '47';
+
+    const { container } = render(<ReviewPanel />);
+
+    expect(scrolled.map((s) => s.id)).toEqual(['47']);
+    expect(scrolled[0].behavior).toBe('smooth');
+    const card = container.querySelector('[data-item-id="47"]');
+    expect(document.activeElement).toBe(card);
+    // Only the card someone was sent to joins the focus order.
+    expect(container.querySelector('[data-item-id="46"]')?.getAttribute('tabindex')).toBeNull();
+  });
+
+  it('does not scroll when nobody was sent to a card', () => {
+    const records = three();
+    stubFetch(200, { groups: [{ disposition: 'needs_review', count: 3, items: records }] });
+    seedReview(records);
+    render(<ReviewPanel />);
+    expect(scrolled).toEqual([]);
+  });
+
+  it('scrolls once per request, not on every refresh of the queue', async () => {
+    const records = three();
+    stubFetch(200, { groups: [{ disposition: 'needs_review', count: 3, items: records }] });
+    seedReview(records);
+    reviewFocusItemId.value = '47';
+    render(<ReviewPanel />);
+
+    // An event-driven refresh while the reviewer reads further down must not
+    // drag the page back up to the card.
+    await act(async () => {
+      reviewGroups.value = [
+        { disposition: 'needs_review', count: 3, items: three() },
+      ];
+    });
+    expect(scrolled.map((s) => s.id)).toEqual(['47']);
+  });
+
+  it('scrolls again when sent to a different card', async () => {
+    const records = three();
+    stubFetch(200, { groups: [{ disposition: 'needs_review', count: 3, items: records }] });
+    seedReview(records);
+    reviewFocusItemId.value = '47';
+    render(<ReviewPanel />);
+
+    await act(async () => {
+      reviewFocusItemId.value = '48';
+    });
+    expect(scrolled.map((s) => s.id)).toEqual(['47', '48']);
+  });
+
+  it('waits for a card that has not loaded yet, then scrolls to it', async () => {
+    stubFetch(200, { groups: [] });
+    seedReview([]);
+    reviewGroups.value = [];
+    reviewFocusItemId.value = '48';
+    render(<ReviewPanel />);
+    expect(scrolled).toEqual([]);
+
+    await act(async () => {
+      reviewGroups.value = [
+        { disposition: 'needs_review', count: 3, items: three() },
+      ];
+    });
+    expect(scrolled.map((s) => s.id)).toEqual(['48']);
+  });
+
+  it('jumps instead of animating for someone who asked for reduced motion', () => {
+    reduceMotion(true);
+    const records = three();
+    stubFetch(200, { groups: [{ disposition: 'needs_review', count: 3, items: records }] });
+    seedReview(records);
+    reviewFocusItemId.value = '46';
+    render(<ReviewPanel />);
+    expect(scrolled).toEqual([{ id: '46', behavior: 'auto' }]);
+  });
+
+  it('finds a card whose id is not a plain number', () => {
+    // GitHub GraphQL global ids carry colons, which a hand-built CSS selector
+    // would have to escape.
+    const records = [
+      mkRecord({ item_id: 'I_kwDOA:4102', item_key: '4102' }),
+      mkRecord({ item_id: '47', item_key: 'SUP-47' }),
+    ];
+    stubFetch(200, { groups: [{ disposition: 'needs_review', count: 2, items: records }] });
+    seedReview(records);
+    reviewFocusItemId.value = 'I_kwDOA:4102';
+    render(<ReviewPanel />);
+    expect(scrolled.map((s) => s.id)).toEqual(['I_kwDOA:4102']);
   });
 });

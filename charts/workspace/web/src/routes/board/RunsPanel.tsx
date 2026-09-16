@@ -18,6 +18,9 @@ import {
   refreshBoardMetrics,
   runFormFor,
   setRunForm,
+  reviewGroups,
+  reviewBoardId,
+  openReviewFor,
 } from '../../store/boards';
 import {
   clampLabel,
@@ -435,6 +438,15 @@ function RunTally({ run }: { run: BoardRunSummary }) {
 function RunItemTable({ run }: { run: BoardRun }) {
   const items = Object.values(run.items ?? {});
 
+  // Items that have a review card on THIS board — the only outcomes that can
+  // open one. A build that failed before reporting has none, and a queue read
+  // for another board must not make this board's rows look clickable.
+  const reviewable = new Set(
+    reviewBoardId.value === run.board_id
+      ? reviewGroups.value.flatMap((g) => g.items).map((r) => String(r.item_id))
+      : [],
+  );
+
   if (items.length === 0) {
     return <p class="board-empty">This run has no items.</p>;
   }
@@ -476,13 +488,29 @@ function RunItemTable({ run }: { run: BoardRun }) {
                 {/* A `failed` disposition next to a FAILED state pill says the
                     same word twice; the error underneath is the part that
                     carries information. */}
-                {item.disposition && item.disposition !== item.state && (
-                  <span
-                    class={`board-disposition board-disposition-${item.disposition}`}
-                  >
-                    {dispositionLabel(item.disposition)}
-                  </span>
-                )}
+                {item.disposition &&
+                  item.disposition !== item.state &&
+                  (reviewable.has(String(item.id)) ? (
+                    // The outcome is where a reviewer's next step starts, so
+                    // it opens that ticket's card rather than leaving them to
+                    // find it in the queue (#704). It appears as soon as the
+                    // review read that follows the agent's report lands.
+                    <button
+                      type="button"
+                      class={`board-disposition board-disposition-${item.disposition} board-outcome-link`}
+                      aria-label={`Open the review for ${item.key || item.id}: ${dispositionLabel(item.disposition)}`}
+                      onClick={() => openReviewFor(item.id)}
+                    >
+                      {dispositionLabel(item.disposition)}
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  ) : (
+                    <span
+                      class={`board-disposition board-disposition-${item.disposition}`}
+                    >
+                      {dispositionLabel(item.disposition)}
+                    </span>
+                  ))}
                 {item.error && (
                   <span class="board-run-item-error">{item.error}</span>
                 )}
