@@ -29,6 +29,8 @@ export interface HvEvent {
   tool_id?: string;
   tool_use_id?: string;
   is_error?: boolean;
+  auth_required?: boolean;
+  setup_required?: boolean;
   status?: string;
   // choice events: a multiple-choice prompt the agent emitted (backend splits a
   // ```choice fence into this — see hypervisor_session.py). Rendered as buttons.
@@ -42,7 +44,7 @@ export interface HvEvent {
  *  `file` blocks here. */
 export type Block =
   | { kind: 'prose'; text: string }
-  | { kind: 'activity'; label: string; detail: string; error?: boolean; ok?: boolean }
+  | { kind: 'activity'; label: string; detail: string; error?: boolean; ok?: boolean; authRequired?: boolean }
   | { kind: 'embed'; port: number; title?: string; height?: number }
   | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number }
   | { kind: 'file'; path: string; title?: string; height?: number }
@@ -186,9 +188,17 @@ export function buildTurns(events: HvEvent[]): Turn[] {
         blocks.push({ kind: 'activity', label: 'Result', detail: result, error: e.is_error, ok: !e.is_error });
       }
     } else if (e.type === 'error') {
+      const recovery = e.auth_required || e.setup_required;
+      const previous = recovery && openAgent().blocks.find(
+        (b): b is Extract<Block, { kind: 'activity' }> => b.kind === 'activity' && !!b.authRequired);
+      if (previous) {
+        if (e.text && !previous.detail.includes(e.text)) previous.detail += '\n' + e.text;
+        continue;
+      }
       openAgent().blocks.push({
         kind: 'activity',
-        label: 'Error',
+        label: e.auth_required ? 'Authentication required' : e.setup_required ? 'Agent setup required' : 'Error',
+        ...(recovery ? { authRequired: true } : {}),
         detail: e.text || 'unknown error',
         error: true,
       });
@@ -266,7 +276,7 @@ export function groupActivity(blocks: Block[]): RenderBlock[] {
     run = [];
   };
   for (const b of blocks) {
-    if (b.kind === 'activity') {
+    if (b.kind === 'activity' && !b.authRequired) {
       run.push(b);
       continue;
     }

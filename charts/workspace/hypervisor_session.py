@@ -69,6 +69,44 @@ from typing import Any, Callable, Dict, List, Optional
 # marker, schema version). Colocated module, same delivery as this file.
 import token_usage as tu
 
+# Explicit provider failures only. A generic exit, timeout, or failing tool
+# does not establish that this agent needs credentials. Do not probe files:
+# runtimes may authenticate through their own keychains or local providers.
+_AUTH_FAILURE = re.compile(
+    r'\b401\s+(?:unauthorized|unauthenticated)\b'
+    r'|\b(?:authentication|authorization)[ _-]*(?:required|failed|fails|error)\b'
+    r'|\b(?:missing|invalid|incorrect|expired|revoked)[ _-]+(?:an?\s+)?'
+    r'(?:api[ _-]?key|credentials?|(?:access |auth |oauth )?token|bearer)\b'
+    r'|\b(?:api[ _-]?key|credentials?|(?:access |auth |oauth )token)\s+'
+    r'(?:is |are |has |have )?(?:missing|invalid|expired|required|not (?:set|found|configured))\b'
+    r'|\bno (?:api[ _-]?key|credentials?) (?:provided|found|configured)\b'
+    r'|\bProviderAuthError\b'
+    r'|\bmissing authentication header\b'
+    r'|^\s*(?:unauthorized|unauthenticated)[.!]?\s*$'
+    r'|\bnot (?:logged|signed) in\b'
+    r'|\bplease (?:log in|login|sign in|authenticate)\b', re.IGNORECASE)
+
+
+def is_auth_failure(text):
+    return isinstance(text, str) and bool(_AUTH_FAILURE.search(text))
+
+
+def annotate_auth_error(event):
+    if event.get('type') == 'error' and is_auth_failure(event.get('text')):
+        return dict(event, auth_required=True)
+    return event
+
+
+def auth_failure_events(events, returncode, auth_failed):
+    """Add recovery metadata without throwing away the adapter's diagnostics."""
+    if not returncode or not auth_failed:
+        return events
+    if any(event.get('type') == 'error' for event in events):
+        return [dict(event, auth_required=True) if event.get('type') == 'error'
+                else event for event in events]
+    return [*events, {'role': 'system', 'type': 'error', 'auth_required': True,
+                     'text': 'Authentication required. Sign in or update the agent credentials.'}]
+
 # ───────────────────────────────────────────────────────────────────────────
 # Paths / constants
 # ───────────────────────────────────────────────────────────────────────────
@@ -918,11 +956,13 @@ class CodexAdapter(_StructuredCliAdapter):
     """
 
     kind = 'codex'
-    # Shared exec options for both the first turn and a resume.
-    def _opts(self, ctx):
+    def _opts(self, ctx, resume=False):
         opts = ['--json', '--skip-git-repo-check',
-                '--dangerously-bypass-approvals-and-sandbox',
-                '-C', ctx.get('workdir') or WORKSPACE_HOME]
+                '--dangerously-bypass-approvals-and-sandbox']
+        # exec resume has no -C option. Popen's cwd keeps both paths in the
+        # thread's folder without passing an unsupported resume flag.
+        if not resume:
+            opts += ['-C', ctx.get('workdir') or WORKSPACE_HOME]
         # A per-thread model (#308) wins over the pod default (KC_CODEX_MODEL);
         # read fresh each turn so a mid-session switch takes effect. Codex has no
         # in-chat model list by default (its ids move fast) — this only fires
@@ -942,7 +982,7 @@ class CodexAdapter(_StructuredCliAdapter):
         self._reset_turn(ctx)
         sid = ctx.get('codex_session_id')
         if sid:
-            argv = ['codex', 'exec', 'resume', *self._opts(ctx), sid, text]
+            argv = ['codex', 'exec', 'resume', *self._opts(ctx, resume=True), sid, text]
         else:
             prompt = (ctx['preamble'] + '\n\n' + text) \
                 if (first and ctx.get('preamble')) else text
@@ -2089,7 +2129,7 @@ class HypervisorSession:
                     except json.JSONDecodeError:
                         continue
                     if e.get('seq', 0) > since_seq:
-                        out.append(e)
+                        out.append(annotate_auth_error(e))
         except OSError:
             pass
         return out
@@ -2382,7 +2422,7 @@ class HypervisorSession:
                 data = data[nl + 1:]
         return data.decode('utf-8', errors='replace')
 
-    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+    def _drain_stderr(self, proc: subprocess.Popen, auth_failed=None, provider_unavailable=None) -> None:
         """Continuously drain the CLI subprocess's stderr into runner.log.
 
         REQUIRED for the streaming path: the caller consumes proc.stdout in a
@@ -2394,6 +2434,11 @@ class HypervisorSession:
         try:
             for line in proc.stderr:
                 self.append_runner_log(line.rstrip('\n'))
+                if auth_failed is not None and is_auth_failure(line):
+                    auth_failed.set()
+                if provider_unavailable is not None and re.search(
+                        r"Provider '[^']+' is unavailable; using 'local' instead", line):
+                    provider_unavailable.set()
         except (OSError, ValueError):
             pass
 
@@ -2469,10 +2514,12 @@ class HypervisorSession:
                 # drains BOTH pipes, so stderr can't deadlock here — capture it
                 # into runner.log instead of discarding it. Passing input=
                 # feeds+closes stdin exactly once (fixes the double-close above).
+                timed_out = False
                 try:
                     out, err = proc.communicate(input=stdin_data,
                                                 timeout=spec.get('timeout'))
                 except subprocess.TimeoutExpired:
+                    timed_out = True
                     proc.kill()
                     out, err = proc.communicate()
                     self._append([{'role': 'system', 'type': 'error',
@@ -2483,21 +2530,38 @@ class HypervisorSession:
                 # A user stop kills the process; its partial/garbled output isn't
                 # a real answer, so skip finalize and let the stopped marker land.
                 if not self._stop_requested():
-                    self._append(adapter.finalize_buffered(ctx, proc.returncode, out))
+                    final = adapter.finalize_buffered(ctx, proc.returncode, out)
+                    self._append(auth_failure_events(
+                        final, proc.returncode, not timed_out and is_auth_failure(err)))
             else:
                 # Streaming path: parse each stdout line into canonical events.
                 # We consume stdout here and NEVER read stderr in this loop, so a
                 # chatty CLI could fill the stderr pipe and deadlock — drain it
                 # concurrently into runner.log (see _drain_stderr).
+                auth_failed = threading.Event()
+                provider_unavailable = threading.Event() if isinstance(adapter, AnteAdapter) else None
                 stderr_thread = threading.Thread(
-                    target=self._drain_stderr, args=(proc,), daemon=True)
+                    target=self._drain_stderr, args=(proc, auth_failed, provider_unavailable), daemon=True)
                 stderr_thread.start()
+                tool_activity = False
                 for line in proc.stdout:
-                    self._append(adapter.parse(ctx, line))
+                    partials = adapter.parse(ctx, line)
+                    tool_activity = tool_activity or any(
+                        e.get('type') in ('tool_call', 'tool_result') for e in partials)
+                    self._append(partials)
                 proc.wait()
                 stderr_thread.join(timeout=2)
                 if not self._stop_requested():
-                    self._append(adapter.finalize(ctx, proc.returncode))
+                    final = adapter.finalize(ctx, proc.returncode)
+                    if (proc.returncode and provider_unavailable is not None
+                            and provider_unavailable.is_set() and not tool_activity):
+                        final.append({'role': 'system', 'type': 'error', 'setup_required': True,
+                                      'text': 'Ante could not use its configured provider and its local fallback failed. Check the provider and credentials in Ante setup.'})
+                    # stderr can include a tool's own login failure. Once tools
+                    # ran, rely on structured provider errors rather than
+                    # inferring agent authentication from incidental stderr.
+                    self._append(auth_failure_events(
+                        final, proc.returncode, auth_failed.is_set() and not tool_activity))
         except FileNotFoundError:
             self._append([{'role': 'system', 'type': 'error',
                            'text': f'assistant binary not found: {meta.get("assistant")}'}])

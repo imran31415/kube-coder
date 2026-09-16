@@ -6,6 +6,7 @@ export type ProviderVar =
   | 'OPENROUTER_API_KEY'
   | 'DEEPSEEK_API_KEY'
   | 'ANTHROPIC_API_KEY'
+  | 'OPENCODE_API_KEY'
   | 'OPENAI_API_KEY';
 
 export interface ProviderKeyStatus {

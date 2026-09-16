@@ -311,7 +311,7 @@ export function HypervisorRoute() {
 
   // Model switcher (#308): an open thread uses its own assistant + stored model;
   // a not-yet-created chat uses the sidebar's assistant + new-thread default.
-  const effectiveAssistant = activeThread?.assistant || selectedAssistant.value;
+  const effectiveAssistant = active ? activeThread?.assistant || '' : selectedAssistant.value;
   const models = assistantModels(effectiveAssistant);
   const currentModel = active
     ? activeThread?.model || models[0] || ''
@@ -663,7 +663,9 @@ export function HypervisorRoute() {
           <SearchSelect
             class="hv-agent-select"
             ariaLabel="Chat agent"
-            value={selectedAssistant.value}
+            value={activeThreadId.value ? activeThread?.assistant || '' : selectedAssistant.value}
+            disabled={!!activeThreadId.value}
+            placeholder={activeThreadId.value ? activeThread?.assistant || 'Loading agent…' : undefined}
             onChange={(v) => setSelectedAssistant(v)}
             options={(cfg?.assistants ?? []).map((a) => ({
               value: a.id,
@@ -671,6 +673,7 @@ export function HypervisorRoute() {
               hint: [a.free ? 'free' : '', a.model || ''].filter(Boolean).join(' · '),
             }))}
           />
+          {activeThreadId.value && <span class="muted">Start a new chat to change agents.</span>}
           {assistantNeedsDisclosure(effectiveAssistant) && (
             <span class="hv-agent-disclosure" role="note">
               ⚠️ Free models may use your prompts + code for training — avoid
@@ -1095,8 +1098,8 @@ export function HypervisorRoute() {
                 {personaLabel(activeThread.persona)}
               </Pill>
             )}
-            {(activeThread?.assistant || selectedAssistant.value) && (
-              <Pill mono>{activeThread?.assistant || selectedAssistant.value}</Pill>
+            {effectiveAssistant && (
+              <Pill mono>{effectiveAssistant}</Pill>
             )}
           </div>
         </header>

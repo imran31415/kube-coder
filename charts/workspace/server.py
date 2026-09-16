@@ -14137,6 +14137,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'workdir': HYPERVISOR_WORKDIR,
             'readOnly': READONLY_MODE,
             'assistants': ClaudeTaskManager.available_assistants(),
+            'authHelp': {rid: {'label': entry['label'], 'instructions': entry['auth_help']}
+                         for rid, entry in runtimes.RUNTIMES.items()},
             # Invocable skills + custom slash commands the composer's `/` picker
             # offers (issue #302). Claude-scoped: the Hypervisor runs Claude at
             # /home/dev and that adapter is the one confirmed to expand `/name`

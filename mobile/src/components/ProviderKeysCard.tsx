@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -16,6 +17,8 @@ import {
 } from 'react-native';
 import {
   listProviderKeys,
+  getHypervisorConfig,
+  dashboardUrl,
   setProviderKey,
   deleteProviderKey,
   type ProviderVar,
@@ -23,8 +26,10 @@ import {
 } from '../api/client';
 import { colors, font, radius, space } from '../theme';
 import { Button, Card, Label } from './ui';
+import type { HypervisorConfig } from '../api/types';
 
 const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
+  { var: 'OPENCODE_API_KEY', label: 'OpenCode Zen', hint: 'OpenCode Zen gateway' },
   { var: 'OPENROUTER_API_KEY', label: 'OpenRouter', hint: 'OpenCode + OpenRouter-backed models' },
   { var: 'DEEPSEEK_API_KEY', label: 'DeepSeek', hint: 'DeepSeek API' },
   { var: 'ANTHROPIC_API_KEY', label: 'Anthropic', hint: 'Overrides the Claude oauth default' },
@@ -32,6 +37,9 @@ const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
 ];
 
 export function ProviderKeysCard({ readOnly }: { readOnly?: boolean }) {
+  const [authHelp, setAuthHelp] = useState<HypervisorConfig['authHelp']>();
+  const [helpAgent, setHelpAgent] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const [view, setView] = useState<ProviderKeysView | null>(null);
   const [editing, setEditing] = useState<ProviderVar | null>(null);
 
@@ -43,12 +51,32 @@ export function ProviderKeysCard({ readOnly }: { readOnly?: boolean }) {
     }
   }
   useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    let live = true;
+    void getHypervisorConfig().then((cfg) => { if (live) setAuthHelp(cfg.authHelp); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const active = PROVIDERS.find((p) => p.var === editing) ?? null;
 
   return (
     <Card style={{ gap: space.md, marginTop: space.lg }}>
       <Label>Provider API keys</Label>
+      <Button title="Workspace sign-in options" onPress={() => {
+        setLinkError(null);
+        void Linking.openURL(dashboardUrl('/settings/providers#providers'))
+          .catch(() => setLinkError('Could not open the browser. Open your workspace dashboard and go to Settings → Providers.'));
+      }} />
+      {linkError && <Text accessibilityRole="alert" style={styles.help}>{linkError}</Text>}
+      {Object.entries(authHelp ?? {}).map(([id, help]) => (
+        <View key={id}>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: helpAgent === id }}
+            onPress={() => setHelpAgent(helpAgent === id ? null : id)}>
+            <Text style={styles.provName}>{help.label} authentication</Text>
+          </Pressable>
+          {helpAgent === id && <Text style={styles.help}>{help.instructions.replaceAll('below', 'in Provider settings')}</Text>}
+        </View>
+      ))}
       <Text style={styles.help}>
         Set your own model-provider keys for this workspace. Used the next time an assistant runs — no
         redeploy. Leave unset to use the workspace default.

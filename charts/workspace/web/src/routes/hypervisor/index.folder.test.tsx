@@ -5,6 +5,7 @@ import {
   activeThreadId,
   closeThread,
   selectedProject,
+  selectedAssistant,
   threads as threadStore,
 } from '../../store/hypervisor';
 import { _resetProjectsForTest } from '../../store/projects';
@@ -78,6 +79,17 @@ afterEach(() => {
 });
 
 describe('per-thread folder visibility (#637)', () => {
+  it('shows the existing agent read-only even when the new-chat default differs', async () => {
+    currentPath.value = '/hypervisor/1';
+    activeThreadId.value = '1';
+    selectedAssistant.value = 'antigravity';
+    render(<HypervisorRoute />);
+    await screen.findByTitle('platform audit');
+    const picker = screen.getByLabelText('Chat agent') as HTMLButtonElement;
+    expect(picker.disabled).toBe(true);
+    expect(picker.textContent).toContain('Claude Code');
+    expect(screen.getByText('Start a new chat to change agents.')).toBeTruthy();
+  });
   it('shows each chat’s folder, home-abbreviated, in the sidebar list', async () => {
     render(<HypervisorRoute />);
     const item = await screen.findByTitle('platform audit');

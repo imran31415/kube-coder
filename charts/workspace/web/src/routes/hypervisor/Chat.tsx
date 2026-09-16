@@ -18,6 +18,7 @@ import {
   stopMessage,
 } from '../../store/hypervisor';
 import type { HypervisorCommand } from '../../api/hypervisor';
+import { refreshClaudeReady } from '../../store/claude';
 import { supportsSlash, slashToken, matchCommands } from './slashPicker';
 import { WorkspaceContext } from './WorkspaceContext';
 import { ActivityPanel } from './ActivityPanel';
@@ -85,17 +86,23 @@ const SUGGESTIONS = [
 /** One tool/command run — collapsed by default, expandable to the raw detail.
  *  A resolved call shows a ✓/✗ outcome so tool activity reads distinctly from
  *  plain messages (and from a still-running call). */
-function ActivityChip({ label, detail, error, ok }: { label: string; detail: string; error?: boolean; ok?: boolean }) {
+function ActivityChip({ label, detail, error, ok, authRequired }: Omit<ActivityBlock, 'kind'>) {
   const [open, setOpen] = useState(false);
   return (
     <div class={`hv-activity ${open ? 'is-open' : ''} ${error ? 'is-error' : ''} ${ok ? 'is-ok' : ''}`}>
-      <button type="button" class="hv-activity-head" onClick={() => setOpen((v) => !v)}>
+      <button type="button" class="hv-activity-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span class="hv-activity-icon">
           <Icon name={error ? 'close' : ok ? 'check' : 'terminal'} size={12} />
         </span>
         <span class="hv-activity-label">{label}</span>
         <Icon name="chevron-down" size={13} class="hv-activity-caret" />
       </button>
+      {authRequired && (
+        <div class="hv-activity-detail" role="alert">
+          Check this agent's authentication and provider setup in{' '}
+          <a href={routeHref('/settings/providers#providers')} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'underline' }}>Provider settings</a>, then retry your message.
+        </div>
+      )}
       {open && detail && <pre class="hv-activity-detail">{detail}</pre>}
     </div>
   );
@@ -461,7 +468,7 @@ function AgentBlocks({
               />
             );
           default:
-            return <ActivityChip key={i} label={b.label} detail={b.detail} error={b.error} ok={b.ok} />;
+            return <ActivityChip key={i} {...b} />;
         }
       })}
     </>
@@ -882,11 +889,14 @@ export function Chat({
       .map((a) => a.path as string);
     if (!value && paths.length === 0) return;
     const finalText = [value, ...paths].filter(Boolean).join('\n');
+    // The credential guard runs synchronously, before any request. Keep the
+    // composer and attachments intact when it refuses the send.
+    void sendMessage(finalText);
+    if (chatError.value) return;
     setDraft('');
     attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);
     setAttachError(null);
-    void sendMessage(finalText);
     taRef.current?.focus();
   }
 
@@ -898,7 +908,17 @@ export function Chat({
   const blocked = busy || working;
   const readOnly = config.value?.readOnly;
   const empty = !active && evts.length === 0;
-  const cli = selectedAssistant.value || 'agent';
+  const cli = (active
+    ? threads.value.find((t) => t.id === active)?.assistant
+    : selectedAssistant.value) || 'agent';
+  useEffect(() => {
+    if (cli !== 'claude') return;
+    // Setup opens separately so the draft survives. Refresh readiness when
+    // returning from sign-in rather than retaining a stale connection gate.
+    const refresh = () => { void refreshClaudeReady(); };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [cli]);
   // Show the thinking indicator while the agent is working, or right after we
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
@@ -1128,6 +1148,14 @@ export function Chat({
                       live={i === turns.length - 1 && thinking}
                       onChoose={submit}
                     />
+                    {!readOnly && !blocked && t.blocks.some((b) => b.kind === 'activity' && b.authRequired) &&
+                      turns[i - 1]?.role === 'user' && (
+                      <Button variant="secondary" type="button" onClick={() => {
+                        const previous = turns[i - 1];
+                        if (previous?.role === 'user') setDraft(previous.text);
+                        taRef.current?.focus();
+                      }}>Use prompt again</Button>
+                    )}
                   </div>
                 </div>
               );
@@ -1157,7 +1185,12 @@ export function Chat({
         )}
       </div>
 
-      {chatError.value && <div class="hv-banner hv-banner-error" role="alert">{chatError.value}</div>}
+      {chatError.value && <div class="hv-banner hv-banner-error" role="alert">
+        {chatError.value}
+        {chatError.value.startsWith('Authentication required:') && (
+          <> <a href={routeHref('/settings/providers#providers')} target="_blank" rel="noopener noreferrer">Provider settings</a></>
+        )}
+      </div>}
 
       {attachError && (
         <div class="hv-banner hv-banner-error" role="alert">

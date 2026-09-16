@@ -97,6 +97,7 @@ _ACP = ('--mcp', 'default')
 RUNTIMES = {
     'claude': {
         'label': 'Claude Code',
+        'auth_help': 'Connect Claude below using a subscription, or save an Anthropic API key.',
         # No env default and no prefix: Claude Code picks its own model unless a
         # per-launch pick arrives. `default` is the "let the CLI decide"
         # sentinel from the model list, so it must never become a --model flag.
@@ -114,6 +115,7 @@ RUNTIMES = {
     },
     'ante': {
         'label': 'Ante CLI',
+        'auth_help': 'Save the key for the provider configured in Ante. To select a provider or sign in, open the workspace terminal and run ante.',
         'model_env': None,
         'model_default': None,
         'skip_permissions_flag': '--yolo',
@@ -124,6 +126,7 @@ RUNTIMES = {
     # listed whenever its binary is resolvable.
     'antigravity': {
         'label': 'Antigravity',
+        'auth_help': 'Antigravity uses its own sign-in. Open the workspace terminal, run agy, and complete its login flow.',
         'model_env': 'KC_ANTIGRAVITY_MODEL',
         'model_default': None,
         'skip_permissions_flag': '--dangerously-skip-permissions',
@@ -135,6 +138,7 @@ RUNTIMES = {
     # skip flag is the documented bypass rather than a permissions opt-out.
     'codex': {
         'label': 'Codex',
+        'auth_help': 'Open the workspace terminal and run codex login to connect your ChatGPT account, or use codex login --with-api-key to configure an OpenAI API key through stdin.',
         'model_env': 'KC_CODEX_MODEL',
         'model_default': None,
         'skip_permissions_flag': '--dangerously-bypass-approvals-and-sandbox',
@@ -176,6 +180,7 @@ RUNTIMES = {
     # docs/llm-setup.md so it isn't a surprise.
     'deepseek-harness': {
         'label': 'DeepSeek Harness',
+        'auth_help': 'Save or replace your DeepSeek API key below.',
         'model_env': 'KC_DSH_MODEL',
         'model_default': DSH_DEFAULT_MODEL,
         # DIVERGENCE (pre-existing, frozen deliberately): the orchestrator omits
@@ -209,6 +214,7 @@ RUNTIMES = {
     # manifest. The CLI picks up whatever provider key is in the environment.
     'librefang': {
         'label': 'LibreFang',
+        'auth_help': 'Save the key for the provider used by your LibreFang agent. If the provider needs changing, configure it in the workspace terminal.',
         'model_env': None,
         'model_default': None,
         'arg_env': 'KC_LIBREFANG_AGENT',
@@ -220,6 +226,7 @@ RUNTIMES = {
     },
     'opencode-openrouter': {
         'label': 'OpenRouter',
+        'auth_help': 'Save or replace your OpenRouter API key below. This agent runs OpenCode with OpenRouter.',
         'model_env': 'KC_OPENROUTER_MODEL',
         'model_default': 'anthropic/claude-sonnet-4',
         'model_prefix': 'openrouter/',
@@ -229,6 +236,7 @@ RUNTIMES = {
     },
     'opencode-deepseek': {
         'label': 'DeepSeek',
+        'auth_help': 'Save or replace your DeepSeek API key below. This agent runs OpenCode with DeepSeek.',
         'model_env': 'KC_DEEPSEEK_MODEL',
         'model_default': 'deepseek-chat',
         'model_prefix': 'deepseek/',
@@ -242,6 +250,7 @@ RUNTIMES = {
     # `training_disclosure` drives the UI note that Zen may train on submissions.
     'opencode-zen': {
         'label': 'OpenCode Zen',
+        'auth_help': 'Save or replace your OpenCode Zen API key below. If Zen was not enabled when the workspace started, ask the workspace administrator to enable its gateway configuration.',
         'free': True,
         'training_disclosure': True,
         'model_env': 'KC_OPENCODE_ZEN_MODEL',
@@ -257,6 +266,7 @@ RUNTIMES = {
     # argv form to offer. The orchestrator pastes instead of pretending.
     'kc-harness': {
         'label': 'Opensource GPU',
+        'auth_help': 'This agent uses the workspace fallback endpoint. If that endpoint requires authentication, ask the workspace administrator to update its provider configuration.',
         'model_env': None,
         'model_default': None,
         'skip_permissions_flag': None,

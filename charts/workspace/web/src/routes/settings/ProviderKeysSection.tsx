@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
+import { getHypervisorConfig, type HypervisorConfig } from '../../api/hypervisor';
+import { terminalUrl } from '../../api/tasks';
 import {
   listProviderKeys,
   setProviderKey,
@@ -21,6 +23,7 @@ import { ClaudeConnect } from '../../components/ClaudeConnect';
 import { pushToast } from '../../store/ui';
 
 const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
+  { var: 'OPENCODE_API_KEY', label: 'OpenCode Zen', hint: 'API key for the OpenCode Zen gateway.' },
   { var: 'OPENROUTER_API_KEY', label: 'OpenRouter', hint: 'Powers OpenCode + OpenRouter-backed models.' },
   { var: 'DEEPSEEK_API_KEY', label: 'DeepSeek', hint: 'DeepSeek API key.' },
   { var: 'ANTHROPIC_API_KEY', label: 'Anthropic', hint: 'Overrides the Claude subscription/oauth default when set.' },
@@ -42,6 +45,7 @@ function formatExpiry(ms: number | null | undefined): string {
 }
 
 export function ProviderKeysSection() {
+  const [authHelp, setAuthHelp] = useState<HypervisorConfig['authHelp']>();
   const [view, setView] = useState<ProviderKeysView | null>(null);
   const [subs, setSubs] = useState<SubscriptionsView | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -65,6 +69,11 @@ export function ProviderKeysSection() {
     }
   }
   useEffect(() => { void refresh(); void refreshSubs(); }, []);
+  useEffect(() => {
+    let live = true;
+    void getHypervisorConfig().then((cfg) => { if (live) setAuthHelp(cfg.authHelp); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   async function onSave(p: ProviderVar) {
     const key = (drafts[p] ?? '').trim();
@@ -116,6 +125,16 @@ export function ProviderKeysSection() {
   return (
     <section class="settings-section">
       <h2 class="settings-section-title">Provider API keys</h2>
+      <p class="settings-row-hint muted">
+        Agent sign-ins belong to this workspace. A login on another computer does not connect it here.
+        {' '}<a href={terminalUrl()} target="_blank" rel="noopener noreferrer">Open workspace terminal</a>
+      </p>
+      {Object.entries(authHelp ?? {}).map(([id, help]) => (
+        <details key={id} class="settings-row-hint">
+          <summary>{help.label} authentication</summary>
+          <p>{help.instructions}</p>
+        </details>
+      ))}
       <p class="settings-row-hint muted">
         Set your own model-provider keys for this workspace. Stored securely on your workspace disk
         and used the next time an assistant runs — no redeploy. Leave blank to use the workspace default.

@@ -9,7 +9,7 @@ import type { HvEvent, TranscriptSource } from '../api/types';
 
 export type HvBlock =
   | { kind: 'prose'; text: string }
-  | { kind: 'activity'; label: string; detail: string; error?: boolean }
+  | { kind: 'activity'; label: string; detail: string; error?: boolean; authRequired?: boolean }
   | { kind: 'embed'; port: number; title?: string; height?: number }
   | { kind: 'media'; mediaKind: 'image' | 'video'; path?: string; url?: string; title?: string; height?: number }
   | { kind: 'file'; path: string; title?: string; height?: number }
@@ -86,7 +86,7 @@ export function groupActivity(blocks: HvBlock[]): HvRenderBlock[] {
     run = [];
   };
   for (const b of blocks) {
-    if (b.kind === 'activity') {
+    if (b.kind === 'activity' && !b.authRequired) {
       run.push(b);
       continue;
     }
@@ -282,9 +282,17 @@ export function buildTurns(events: HvEvent[]): HvTurn[] {
         blocks.push({ kind: 'activity', label: 'Result', detail: result, error: e.is_error });
       }
     } else if (e.type === 'error') {
+      const recovery = e.auth_required || e.setup_required;
+      const previous = recovery && openAgent().blocks.find(
+        (b): b is Extract<HvBlock, { kind: 'activity' }> => b.kind === 'activity' && !!b.authRequired);
+      if (previous) {
+        if (e.text && !previous.detail.includes(e.text)) previous.detail += '\n' + e.text;
+        continue;
+      }
       openAgent().blocks.push({
         kind: 'activity',
-        label: 'Error',
+        label: e.auth_required ? 'Authentication required' : e.setup_required ? 'Agent setup required' : 'Error',
+        ...(recovery ? { authRequired: true } : {}),
         detail: e.text || 'unknown error',
         error: true,
       });

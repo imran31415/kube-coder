@@ -1,6 +1,6 @@
 import { ClaudeCredentialSetup } from '../../components/ClaudeCredentialSetup';
 import { claudeProbed, claudeReady, refreshClaudeReady } from '../../store/claude';
-import { sending, sendMessage } from '../../store/hypervisor';
+import { sending, sendMessage, selectedAssistant, config } from '../../store/hypervisor';
 import './ctoWelcome.css';
 
 /**
@@ -55,9 +55,10 @@ export function CtoWelcome({
   // *settles*; `claudeProbed` (not `claudeReady !== null`) is the condition, so
   // a failed probe — which deliberately leaves the value unknown — releases them
   // rather than disabling them forever.
-  const chipsPending = !claudeProbed.value;
+  const usesClaude = (selectedAssistant.value || config.value?.defaultAssistant || 'claude') === 'claude';
+  const chipsPending = usesClaude && !claudeProbed.value;
 
-  if (claudeReady.value === false) {
+  if (usesClaude && claudeReady.value === false) {
     return (
       <div class="cto-welcome">
         <p class="cto-welcome-lead">

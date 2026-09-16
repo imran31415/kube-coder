@@ -821,6 +821,9 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(spec2['argv'][:3], ['codex', 'exec', 'resume'])
         self.assertIn('tid-9', spec2['argv'])
         self.assertEqual(spec2['argv'][-1], 'again')
+        self.assertNotIn('-C', spec2['argv'])
+        self.assertEqual(spec2['cwd'], ctx['workdir'])
+        self.assertIn('-C', spec['argv'])
 
     def test_build_prefers_ctx_model_over_env(self):
         # A per-thread model (#308) beats KC_CODEX_MODEL.
@@ -1043,6 +1046,21 @@ class TurnStopNoticeTest(unittest.TestCase):
         # …and the assistant's real answer survived.
         self.assertTrue(any(e.get('role') == 'assistant' and 'hello' in e.get('text', '')
                             for e in s.read_events()))
+
+    def test_stderr_auth_failure_has_actionable_event(self):
+        s = self._mk('echo "401 Unauthorized: Missing bearer authentication" >&2; exit 1')
+        s.send('hello')
+        self.assertTrue(self._wait_idle(s))
+        errors = [e for e in s.read_events() if e['type'] == 'error']
+        self.assertTrue(any(e.get('auth_required') for e in errors))
+
+    def test_plain_exit_is_not_reported_as_missing_credentials(self):
+        s = self._mk('echo "unsupported option -C" >&2; exit 2')
+        s.send('hello')
+        self.assertTrue(self._wait_idle(s))
+        errors = [e for e in s.read_events() if e['type'] == 'error']
+        self.assertTrue(errors)
+        self.assertFalse(any(e.get('auth_required') for e in errors))
 
     def test_midflight_stop_emits_the_notice_exactly_once(self):
         s = self._mk('sleep 30')

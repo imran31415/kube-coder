@@ -262,6 +262,8 @@ export type HvEventRole = 'user' | 'assistant' | 'system';
 export type HvEventType = 'message' | 'tool_call' | 'tool_result' | 'error' | 'status' | 'choice';
 
 export interface HvEvent {
+  auth_required?: boolean;
+  setup_required?: boolean;
   seq: number;
   ts: number;
   role: HvEventRole;
@@ -295,6 +297,7 @@ export interface HypervisorAssistant {
 }
 
 export interface HypervisorConfig {
+  authHelp?: Record<string, { label: string; instructions: string }>;
   enabled: boolean;
   defaultAssistant: string;
   workdir: string;
