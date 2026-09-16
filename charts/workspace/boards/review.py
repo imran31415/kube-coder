@@ -245,10 +245,44 @@ def public_view(record):
     return out
 
 
+def _natural_key(value):
+    """Sort key that compares the digit runs in a ticket key as numbers.
+
+    Plain string order puts `10` before `9` and `SUP-10` before `SUP-9`, which
+    is not the order anyone reads a ticket list in. Each run is tagged with its
+    type so a digit run is never compared with a text run — `SUP-9` against
+    `9` would otherwise raise instead of sorting.
+    """
+    return tuple((0, int(part), '') if part.isdigit() else (1, 0, part.lower())
+                 for part in re.split(r'(\d+)', str(value or '')) if part)
+
+
+def _card_order(record):
+    """Waiting cards first, then ticket order. `item_id` breaks ties so two
+    boards' worth of equal keys still come out in a stable order."""
+    return (record.get('state') not in OPEN_STATES,
+            _natural_key(record.get('item_key') or record.get('item_id')),
+            str(record.get('item_id') or ''))
+
+
 def group_by_disposition(records):
-    """The review queue's shape. `needs_review` first, deliberately — Mission
+    """The review queue's shape, and its order.
+
+    Groups follow a fixed disposition order with `needs_review` first — Mission
     Control puts `waiting` first for the same reason: the column that needs a
-    human is the one you opened the page for."""
+    human is the one you opened the page for. On top of that, any group that
+    still holds a waiting card is lifted above the groups that are fully
+    decided, so a `needs_review` group whose every card was approved does not
+    push waiting `blocked` cards down the page.
+
+    Within a group, waiting cards come first and then ticket order. This used to
+    be `created_at`, the moment the agent first staged — which on a concurrent
+    run is whichever agent happened to finish first, and which left decided
+    cards interleaved with the ones still needing a decision.
+
+    The order is decided here, not by a client, so the web queue and the mobile
+    card list cannot disagree about it.
+    """
     order = ['needs_review', 'needs_rescoping', 'blocked', 'failed',
              'completed', 'rejected', None]
     groups = {}
@@ -260,9 +294,13 @@ def group_by_disposition(records):
         items = groups.get(key)
         if not items:
             continue
-        items.sort(key=lambda r: r.get('created_at', 0))
+        items.sort(key=_card_order)
         out.append({'disposition': key or 'unreported', 'items': items,
-                    'count': len(items)})
+                    'count': len(items),
+                    'open': sum(1 for r in items
+                                if r.get('state') in OPEN_STATES)})
+    # Stable, so the fixed disposition order survives inside each band.
+    out.sort(key=lambda g: g['open'] == 0)
     return out
 
 
