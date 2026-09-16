@@ -153,16 +153,23 @@ assistant:
     effort: ""              # optional; low/medium/high/xhigh/max
 ```
 
-The entry appears in the picker only when **both** are true:
+The entry appears in the picker whenever the `dsh` binary resolves on
+PATH, so it can be discovered before a key exists. What it can do depends
+on the key:
 
-- `DEEPSEEK_API_KEY` is set, **and**
-- the `dsh` binary resolves on PATH.
+- **`DEEPSEEK_API_KEY` set** (pod env or Settings → Provider API keys):
+  the entry is ready and works like any other agent.
+- **No key:** the entry is marked "needs API key". Selecting it shows a
+  note linking to Settings → Provider API keys, and Start build / Send
+  stay disabled. The server refuses a build, chat or sub-agent on it with
+  `400 {"code": "assistant_not_ready", "needs": ["DEEPSEEK_API_KEY"]}`,
+  and never picks it as a default or fallback, so nothing starts a turn
+  that would fail with `Authentication Fails`. Saving a key in Settings
+  makes it ready straight away, with no redeploy.
 
-Binary presence alone is not enough. That is the right signal only for
-the OAuth CLIs (`agy`, `codex`); `dsh` authenticates with an API key, so
-listing it without one would offer an entry whose every turn fails with
-`Authentication Fails`. On a workspace image predating the install, the
-entry is simply absent — nothing else is affected.
+On a workspace image predating the install, the entry is simply absent —
+nothing else is affected. The plain **DeepSeek** (OpenCode) entry is
+unchanged: it is listed only when the key is set.
 
 ### Wiring
 

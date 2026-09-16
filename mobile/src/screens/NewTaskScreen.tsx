@@ -18,6 +18,7 @@ import { createTask, listAssistants, type Assistant } from '../api/client';
 import { Button, Label } from '../components/ui';
 import type { TasksNav } from '../navigation';
 import { colors, font, radius, space } from '../theme';
+import { isNotReady, notReadyMessage, pickDefault } from '../util/assistants';
 
 // Shown until the backend list loads (or if it fails) so the picker is never
 // empty. The live list from /api/claude/assistants replaces this and reflects
@@ -30,6 +31,8 @@ const FALLBACK_ASSISTANTS: Assistant[] = [
 
 export default function NewTaskScreen() {
   const nav = useNavigation<TasksNav>();
+  // Settings is a sibling tab; navigate() bubbles up from this stack to it.
+  const settingsNav = useNavigation<{ navigate: (tab: string) => void }>();
   const headerHeight = useHeaderHeight();
   const [prompt, setPrompt] = useState('');
   const [workdir, setWorkdir] = useState('/home/dev');
@@ -43,17 +46,19 @@ export default function NewTaskScreen() {
       .then((list) => {
         if (list.length === 0) return;
         setAssistants(list);
-        // Default the selection to the backend's default (or first) assistant.
-        setAssistant(list.find((a) => a.default)?.id ?? list[0].id);
+        // Default to the backend's default (or first) assistant — never one
+        // that is listed but not ready yet (#702).
+        setAssistant(pickDefault(list)?.id ?? list[0].id);
       })
       .catch(() => {/* keep the fallback list */});
   }, []);
 
   const selected = assistants.find((a) => a.id === assistant);
   const assistantName = selected?.label || 'the assistant';
+  const notReady = notReadyMessage(selected);
 
   async function submit() {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || notReady) return;
     setBusy(true);
     setError(null);
     try {
@@ -109,11 +114,24 @@ export default function NewTaskScreen() {
                 style={[styles.chip, assistant === a.id && styles.chipActive]}
               >
                 <Text style={[styles.chipText, assistant === a.id && styles.chipTextActive]}>
-                  {a.label || a.id}{a.free ? ' · free' : ''}
+                  {a.label || a.id}{a.free ? ' · free' : ''}{isNotReady(a) ? ' · needs API key' : ''}
                 </Text>
               </Pressable>
             ))}
           </View>
+
+          {notReady ? (
+            <View style={styles.notReady} accessibilityRole="alert">
+              <Text style={styles.notReadyText}>{notReady}</Text>
+              <Pressable
+                onPress={() => settingsNav.navigate('Settings')}
+                accessibilityRole="link"
+                hitSlop={8}
+              >
+                <Text style={styles.notReadyLink}>Open Settings</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           {selected?.trainingDisclosure ? (
             <Text style={styles.disclosure} accessibilityRole="text">
@@ -133,7 +151,7 @@ export default function NewTaskScreen() {
             icon="rocket-outline"
             onPress={submit}
             loading={busy}
-            disabled={!prompt.trim()}
+            disabled={!prompt.trim() || !!notReady}
             style={{ marginTop: error ? space.md : space.xxl }}
           />
         </ScrollView>
@@ -186,4 +204,15 @@ const styles = StyleSheet.create({
     marginTop: space.lg,
     lineHeight: 19,
   },
+  notReady: {
+    marginTop: space.lg,
+    padding: space.md,
+    borderWidth: 1,
+    borderColor: colors.warning + '55',
+    backgroundColor: colors.warning + '18',
+    borderRadius: radius.md,
+    gap: space.sm,
+  },
+  notReadyText: { color: colors.text, fontSize: font.size.sm, lineHeight: 19 },
+  notReadyLink: { color: colors.accent, fontSize: font.size.sm, fontWeight: '700' },
 });

@@ -578,8 +578,10 @@ assistant:
   # harness's ACP JSON-RPC server. Both coexist; pick per task.
   #
   # There is NO key to set here — it reuses assistant.deepseek.apiKey (the same
-  # DEEPSEEK_API_KEY). The dashboard lists it only when that key is set AND the
-  # `dsh` binary resolves, so an older image simply doesn't offer it.
+  # DEEPSEEK_API_KEY). The dashboard lists it whenever the `dsh` binary
+  # resolves; without the key it is marked "needs API key" and can't be
+  # started until one is set (here or in Settings). An older image simply
+  # doesn't offer it.
   deepseekHarness:
     model: ""                             # KC_DSH_MODEL (blank => deepseek-v4-flash)
     # Optional: comma-separated list that fully REPLACES the built-in model

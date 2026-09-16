@@ -67,6 +67,7 @@ import {
   type HvBlock,
   type HvRenderBlock,
 } from '../util/hvTranscript';
+import { isNotReady, notReadyMessage, readyOr } from '../util/assistants';
 import {
   readSpeakPref,
   writeSpeakPref,
@@ -343,11 +344,13 @@ export default function HypervisorScreen() {
     void getHypervisorConfig()
       .then((c) => {
         setConfig(c);
-        // Seed the new-chat assistant picker with the workspace default.
-        setSelectedAssistant((prev) => prev ?? c.defaultAssistant);
+        // Seed the new-chat assistant picker with the workspace default —
+        // never an agent that is listed but not ready yet (#702).
+        const seeded = readyOr(c.assistants ?? [], c.defaultAssistant);
+        setSelectedAssistant((prev) => prev ?? seeded);
         // Seed the new-chat model to that assistant's default (first of its
         // `models`) now that the per-assistant lists are loaded (#308).
-        setSelectedModel((prev) => prev || modelsFor(c, c.defaultAssistant)[0] || '');
+        setSelectedModel((prev) => prev || modelsFor(c, seeded)[0] || '');
         // Seed the folder picker with the server default (HYPERVISOR_WORKDIR).
         setSelectedWorkdir((prev) => prev || c.workdir || '');
       })
@@ -358,6 +361,18 @@ export default function HypervisorScreen() {
       .catch(() => setDirs([]));
     void refreshThreads();
   }, [refreshThreads]);
+
+  // Re-read the config when the tab regains focus, so a provider key saved in
+  // Settings flips a not-ready agent to ready without an app restart (#702).
+  useEffect(
+    () =>
+      navigation.addListener('focus', () => {
+        void getHypervisorConfig()
+          .then(setConfig)
+          .catch(() => {/* keep the last-good config */});
+      }),
+    [navigation],
+  );
 
   // Poll the open thread's canonical events while it's active.
   useEffect(() => {
@@ -593,6 +608,12 @@ export default function HypervisorScreen() {
       .filter((a) => a.status === 'ready' && a.path)
       .map((a) => a.path as string);
     if (!msg && paths.length === 0) return;
+    // A new chat on an agent that can't run yet (#702) would only fail on its
+    // first turn — refuse with the reason the picker already shows.
+    if (newChatBlocked) {
+      setError(newChatBlocked);
+      return;
+    }
     // Append each uploaded image's absolute path on its own line — Claude reads
     // the image by path (same as the Build tab composer).
     const finalText = [msg, ...paths].filter(Boolean).join('\n');
@@ -669,6 +690,15 @@ export default function HypervisorScreen() {
   const { start: turnStart, hidden: hiddenTurns } = turnWindow(turns.length, visibleTurns);
   const agentName = config?.defaultAssistant || 'claude';
   const activeThread = threads.find((t) => t.id === activeId) || null;
+  // Why a NEW chat can't start on the picked agent (#702), or null. An open
+  // thread is never blocked here — the server refuses its send if needed.
+  const newChatBlocked = activeId
+    ? null
+    : notReadyMessage(
+        config?.assistants?.find(
+          (a) => a.id === (selectedAssistant || config?.defaultAssistant),
+        ),
+      );
   const working = status === 'running';
   const blocked = sending || working;
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
@@ -938,8 +968,21 @@ export default function HypervisorScreen() {
               options={config!.assistants.map((a) => ({
                 value: a.id,
                 label: a.label || a.id,
+                hint: isNotReady(a) ? 'needs API key' : undefined,
               }))}
             />
+            {newChatBlocked ? (
+              <View style={styles.notReady} accessibilityRole="alert">
+                <Text style={styles.notReadyText}>{newChatBlocked}</Text>
+                <Pressable
+                  onPress={() => navigation.navigate('Settings' as never)}
+                  accessibilityRole="link"
+                  hitSlop={8}
+                >
+                  <Text style={styles.notReadyLink}>Open Settings</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         )}
 
@@ -1167,8 +1210,11 @@ export default function HypervisorScreen() {
           ) : (
             <Pressable
               onPress={() => void send()}
-              disabled={blocked || !canSend}
-              style={[styles.sendBtn, (blocked || !canSend) && styles.sendBtnOff]}
+              disabled={blocked || !canSend || !!newChatBlocked}
+              style={[
+                styles.sendBtn,
+                (blocked || !canSend || !!newChatBlocked) && styles.sendBtnOff,
+              ]}
             >
               <Ionicons name="arrow-up" size={20} color={colors.accentText} />
             </Pressable>
@@ -2027,6 +2073,17 @@ const styles = StyleSheet.create({
   // One picker per row: the pickers are self-labelling, and stacking them
   // keeps each at a full touch height instead of competing for a rail.
   pickerRow: { paddingHorizontal: space.md, paddingBottom: space.xs },
+  notReady: {
+    marginTop: space.xs,
+    padding: space.sm,
+    borderWidth: 1,
+    borderColor: colors.warning + '55',
+    backgroundColor: colors.warning + '18',
+    borderRadius: radius.md,
+    gap: space.xs,
+  },
+  notReadyText: { color: colors.text, fontSize: font.size.sm, lineHeight: 19 },
+  notReadyLink: { color: colors.accent, fontSize: font.size.sm, fontWeight: '700' },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',

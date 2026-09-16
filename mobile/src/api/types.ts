@@ -292,6 +292,11 @@ export interface HypervisorAssistant {
   /** Provider may train on submitted data (Zen free models) — drives the
    *  data-training disclosure note. */
   trainingDisclosure?: boolean;
+  /** False when installed but not usable yet (#702, e.g. no API key); absent
+   *  means ready. `needs` / `notReadyReason` explain what's missing. */
+  ready?: boolean;
+  needs?: string[];
+  notReadyReason?: string;
 }
 
 export interface HypervisorConfig {

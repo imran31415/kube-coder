@@ -772,6 +772,7 @@ export async function getHypervisorConfig(): Promise<HypervisorConfig> {
           default: true,
           models: ['default', 'opus', 'sonnet', 'haiku', 'claude-fable-5'],
         },
+        MOCK_DSH_NOT_READY,
       ],
       stt: true,
     };
@@ -1211,7 +1212,21 @@ export interface Assistant {
   /** Provider may train on submitted data (Zen free models) — drives the
    *  data-training disclosure note near the picker. */
   trainingDisclosure?: boolean;
+  /** False when installed but not usable yet (#702, e.g. no API key); absent
+   *  means ready. `needs` / `notReadyReason` explain what's missing. */
+  ready?: boolean;
+  needs?: string[];
+  notReadyReason?: string;
 }
+
+const MOCK_DSH_NOT_READY = {
+  id: 'deepseek-harness',
+  label: 'DeepSeek Harness',
+  ready: false,
+  needs: ['DEEPSEEK_API_KEY'],
+  notReadyReason:
+    'DeepSeek Harness needs a DeepSeek API key. Add it in Settings → Provider API keys.',
+};
 
 export async function listAssistants(): Promise<Assistant[]> {
   if (getConfig().mock) {
@@ -1219,6 +1234,7 @@ export async function listAssistants(): Promise<Assistant[]> {
       { id: 'claude', label: 'Claude Code', default: true },
       { id: 'ante', label: 'Ante CLI' },
       { id: 'codex', label: 'Codex' },
+      MOCK_DSH_NOT_READY,
     ];
   }
   const r = await request<{ assistants?: Assistant[] }>('/api/claude/assistants');
