@@ -1059,8 +1059,30 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The way from a run item to the agent that worked it (#704). */
+.board-run-item-session { white-space: nowrap; }
+.board-run-session-link {
+  color: var(--accent);
+  font-size: var(--text-xs);
+  text-decoration: none;
+}
+.board-run-session-link:hover { text-decoration: underline; }
+.board-run-session-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 @media (max-width: 860px) {
   .board-outcome-link { min-height: 44px; }
+  .board-run-session-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  /* Five columns do not fit a phone. The table scrolls inside its own box
+     rather than pushing the whole page sideways, and titles give up width
+     first. */
+  .board-run-detail { overflow-x: auto; }
+  .board-run-item-title { max-width: 12rem; }
 }
 
 /* A decision in flight, and the decision once it has landed. */

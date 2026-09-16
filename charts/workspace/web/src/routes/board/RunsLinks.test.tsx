@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/preact';
+
+// Record where a View session click tries to go, without leaving the page.
+const router = vi.hoisted(() => ({ navigate: vi.fn() }));
+vi.mock('../../store/router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../store/router')>();
+  return { ...actual, navigate: router.navigate };
+});
+
 import { RunsPanel } from './RunsPanel';
 import { BoardRoute } from './index';
 import {
@@ -97,6 +105,8 @@ function mkRun(): BoardRun {
       // Reported, but the review read that follows has not landed yet.
       '4': mkRunItem('4', 'done', { disposition: 'completed', task_id: 'task-4' }),
       '5': mkRunItem('5', 'working', { task_id: 'task-5' }),
+      // Queued: no Build has been started for it yet.
+      '6': mkRunItem('6', 'pending'),
     },
   };
 }
@@ -180,6 +190,89 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   localStorage.clear();
   vi.restoreAllMocks();
+  router.navigate.mockReset();
+});
+
+describe('View session (#704)', () => {
+  function link(key: string) {
+    return within(row(key)).getByRole('link', { name: `View the session for ${key}` });
+  }
+
+  it('links every row that has a Build to that Build’s page', () => {
+    seed();
+    render(<RunsPanel />);
+    // Finished, failed and working rows alike: the Build page has the live
+    // terminal while the agent works and its history once it has stopped.
+    for (const [key, task] of [['1', 'task-1'], ['3', 'task-3'], ['5', 'task-5']]) {
+      expect(link(key).getAttribute('href')).toMatch(new RegExp(`/tasks/${task}$`));
+      expect(link(key).textContent).toBe('View session');
+    }
+  });
+
+  it('shows a dash for an item that has no Build yet', () => {
+    seed();
+    render(<RunsPanel />);
+    expect(within(row('6')).queryByRole('link')).toBeNull();
+    expect(row('6').querySelector('td.board-run-item-session')?.textContent).toBe('—');
+    expect(screen.getByRole('columnheader', { name: 'Session' })).toBeTruthy();
+  });
+
+  it('stays in the dashboard on an ordinary click', () => {
+    seed();
+    render(<RunsPanel />);
+    const notPrevented = fireEvent.click(link('5'));
+    expect(notPrevented).toBe(false);
+    expect(router.navigate).toHaveBeenCalledWith('/tasks/task-5');
+  });
+
+  it('leaves a new-tab click to the browser', () => {
+    seed();
+    render(<RunsPanel />);
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { button: 1 }]) {
+      const notPrevented = fireEvent.click(link('1'), modifier);
+      expect(notPrevented).toBe(true);
+    }
+    expect(router.navigate).not.toHaveBeenCalled();
+  });
+
+  it('encodes a task id before putting it in a path', () => {
+    seed();
+    activeRun.value = {
+      ...mkRun(),
+      items: { '1': mkRunItem('1', 'working', { task_id: 'odd id/with?chars' }) },
+    };
+    render(<RunsPanel />);
+    const encoded = '/tasks/odd%20id%2Fwith%3Fchars';
+    expect(link('1').getAttribute('href')).toMatch(new RegExp(`${encoded.replace(/\?/g, '\\?')}$`));
+    fireEvent.click(link('1'));
+    expect(router.navigate).toHaveBeenCalledWith(encoded);
+  });
+
+  it('is there on a read-only deploy too — looking is not changing anything', () => {
+    seed();
+    serverMode.value = {
+      readOnly: true, authed: true, authMode: 'basic', demoShowAll: false,
+    };
+    render(<RunsPanel />);
+    expect(link('1')).toBeTruthy();
+  });
+
+  it('appears on a row as soon as its Build exists', async () => {
+    seed();
+    const run = mkRun();
+    activeRun.value = { ...run, items: { ...run.items, '6': mkRunItem('6', 'pending') } };
+    render(<RunsPanel />);
+    expect(within(row('6')).queryByRole('link')).toBeNull();
+
+    // The next poll or `boards.run` event carries the dispatched row.
+    await act(async () => {
+      activeRun.value = {
+        ...run,
+        items: { ...run.items, '6': mkRunItem('6', 'working', { task_id: 'task-6' }) },
+      };
+    });
+    expect(link('6').getAttribute('href')).toMatch(/\/tasks\/task-6$/);
+  });
 });
 
 describe('a run item outcome opens its review card', () => {

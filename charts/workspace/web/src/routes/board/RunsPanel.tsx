@@ -31,7 +31,8 @@ import {
   dispositionLabel,
 } from '../../api/boards';
 import { MutatorOnly } from '../../components/MutatorOnly';
-import type { BoardRun, BoardRunSummary } from '../../api/boards';
+import { navigate, routeHref } from '../../store/router';
+import type { BoardRun, BoardRunItem, BoardRunSummary } from '../../api/boards';
 
 /**
  * Runs (#588 Phase 4/6) — start N items working in parallel and watch them.
@@ -467,6 +468,7 @@ function RunItemTable({ run }: { run: BoardRun }) {
           <th scope="col">Title</th>
           <th scope="col">State</th>
           <th scope="col">Outcome</th>
+          <th scope="col">Session</th>
         </tr>
       </thead>
       <tbody>
@@ -518,10 +520,48 @@ function RunItemTable({ run }: { run: BoardRun }) {
                   <span class="board-run-item-waiting">—</span>
                 )}
               </td>
+              <td class="board-run-item-session">
+                <SessionLink item={item} />
+              </td>
             </tr>
           );
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * The way from a run item to the agent that worked it (#704).
+ *
+ * Every dispatched item is a Build, and its page is where the agent's live
+ * terminal and its history are. The table used to stop at the agent's
+ * conclusion, so "where is it working on this?" had no answer on screen.
+ *
+ * A real link, so it can be opened in a new tab; an ordinary click stays in
+ * the dashboard, and coming back returns to this tab (the tab lives in the
+ * store). An item with no Build yet — queued, or refused before it started —
+ * has nothing to link to and says so with a dash.
+ */
+function SessionLink({ item }: { item: BoardRunItem }) {
+  if (!item.task_id) {
+    return <span class="board-run-item-waiting">—</span>;
+  }
+  const path = `/tasks/${encodeURIComponent(item.task_id)}`;
+  return (
+    <a
+      class="board-run-session-link"
+      href={routeHref(path)}
+      aria-label={`View the session for ${item.key || item.id}`}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+          return;
+        }
+        e.preventDefault();
+        navigate(path);
+      }}
+    >
+      View session
+    </a>
   );
 }
