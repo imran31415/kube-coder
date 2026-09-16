@@ -112,6 +112,13 @@ export interface AssistantOption {
   /** Provider may train on submitted data (Zen free models, #395) — drives the
    *  data-training disclosure note near the picker. */
   trainingDisclosure?: boolean;
+  /** False when the assistant is installed but can't run yet (#702, e.g. no
+   *  API key). Absent means ready — older servers never send it. */
+  ready?: boolean;
+  /** Env var names still missing when `ready` is false. */
+  needs?: string[];
+  /** Human-readable "what to do" when `ready` is false. */
+  notReadyReason?: string;
 }
 
 export interface WorkdirOption {

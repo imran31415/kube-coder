@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/preact';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NewTaskForm } from './NewTaskForm';
 import { createTask } from '../../store/tasks';
-import { renameTask } from '../../api/tasks';
+import { listAssistants, renameTask } from '../../api/tasks';
 import { promptTemplates, saveTemplate } from '../../store/promptTemplates';
 
 vi.mock('../../store/tasks', () => ({
@@ -61,6 +61,70 @@ describe('NewTaskForm — seed prompt', () => {
     // a failure no longer leaves the user silently on the random name.
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(renameTaskMock).toHaveBeenCalledWith('task-1', expect.any(String));
+  });
+});
+
+describe('NewTaskForm — an assistant that needs an API key (#702)', () => {
+  const DSH = {
+    id: 'deepseek-harness',
+    label: 'DeepSeek Harness',
+    ready: false,
+    needs: ['DEEPSEEK_API_KEY'],
+    notReadyReason:
+      'DeepSeek Harness needs a DeepSeek API key. Add it in Settings → Provider API keys.',
+  };
+  const CLAUDE = { id: 'claude', label: 'Claude Code', default: true, ready: true };
+
+  function assistantSelect() {
+    return screen.getAllByRole('combobox').find((el) =>
+      [...(el as HTMLSelectElement).options].some((o) => o.value === 'claude'),
+    ) as HTMLSelectElement;
+  }
+
+  it('lists it with a marker but pre-selects a ready one', async () => {
+    vi.mocked(listAssistants).mockResolvedValueOnce([CLAUDE, DSH]);
+    render(<NewTaskForm onClose={() => undefined} />);
+    await waitFor(() => expect(assistantSelect().value).toBe('claude'));
+    const dshOption = [...assistantSelect().options].find((o) => o.value === DSH.id);
+    expect(dshOption?.textContent).toContain('needs API key');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('never pre-selects it, even when the server lists it first as default', async () => {
+    vi.mocked(listAssistants).mockResolvedValueOnce([
+      { ...DSH, default: true },
+      { ...CLAUDE, default: false },
+    ]);
+    render(<NewTaskForm onClose={() => undefined} />);
+    await waitFor(() => expect(assistantSelect().value).toBe('claude'));
+  });
+
+  it('shows the reason with a Settings link and blocks Start build when picked', async () => {
+    vi.mocked(listAssistants).mockResolvedValueOnce([CLAUDE, DSH]);
+    render(<NewTaskForm onClose={() => undefined} />);
+    await waitFor(() => expect(assistantSelect().value).toBe('claude'));
+
+    fireEvent.change(assistantSelect(), { target: { value: DSH.id } });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('needs a DeepSeek API key');
+    expect(screen.getByRole('link', { name: 'Open Provider API keys' })).toHaveAttribute(
+      'href',
+      '/settings/providers#providers',
+    );
+    const start = screen.getByText(/Start build/).closest('button') as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    // The "starts right away" note would contradict the block, so it's hidden.
+    expect(screen.queryByText(/terminal —|starts on this prompt/)).toBeNull();
+
+    // Enter in a field submits the form even with the button disabled.
+    fireEvent.submit(start.closest('form') as HTMLFormElement);
+    expect(createTaskMock).not.toHaveBeenCalled();
+
+    // Switching back to a ready agent clears the note and re-enables Start.
+    fireEvent.change(assistantSelect(), { target: { value: 'claude' } });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(start.disabled).toBe(false);
   });
 });
 

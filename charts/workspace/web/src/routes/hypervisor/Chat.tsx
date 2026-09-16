@@ -16,6 +16,7 @@ import {
   transcriptSource,
   sendMessage,
   stopMessage,
+  newChatBlockedReason,
 } from '../../store/hypervisor';
 import type { HypervisorCommand } from '../../api/hypervisor';
 import { supportsSlash, slashToken, matchCommands } from './slashPicker';
@@ -903,6 +904,9 @@ export function Chat({
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
+  // A new chat on a not-ready agent (#702, e.g. no API key) can't start; the
+  // reason is shown under the Agent picker and as the button's tooltip.
+  const newChatBlocked = newChatBlockedReason();
 
   // New events re-pin, and so does the thinking placeholder appearing or being
   // replaced by the real turn — it is rendered outside `turns`, so on its own
@@ -1330,7 +1334,12 @@ export function Chat({
             <Icon name="close" size={12} /> {stopping.value ? 'Stopping…' : 'Stop'}
           </Button>
         ) : (
-          <Button type="submit" variant="primary" disabled={blocked || !canSend} title="Send (Enter)">
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={blocked || !canSend || !!newChatBlocked}
+            title={newChatBlocked ?? 'Send (Enter)'}
+          >
             <Icon name="play" size={12} /> Send
           </Button>
         )}

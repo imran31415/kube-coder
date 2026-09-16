@@ -22,6 +22,7 @@ import { listTasks, type TaskSummary } from '../api/tasks';
 import { navigate, currentPath } from './router';
 import { rememberLastSession, forgetLastSession } from './lastSession';
 import { claudeReady } from './claude';
+import { isNotReady, readyOr } from '../util/assistants';
 
 /**
  * State for the Hypervisor chat tab. A thread is a structured agent session; the
@@ -136,6 +137,26 @@ export function assistantNeedsDisclosure(assistantId: string | null | undefined)
   return !!assistantInfo(assistantId)?.trainingDisclosure;
 }
 
+/** Why a NEW chat can't start on the selected assistant (#702) — its
+ *  not-ready reason, e.g. a missing API key — or null when it can. An open
+ *  thread is never blocked here; the server refuses its send if needed. */
+export function newChatBlockedReason(): string | null {
+  if (activeThreadId.value) return null;
+  const a = assistantInfo(selectedAssistant.value);
+  if (!isNotReady(a)) return null;
+  return a?.notReadyReason || `${a?.label ?? 'This agent'} isn't set up yet.`;
+}
+
+/** Re-read the Hypervisor config, e.g. after a provider key was saved, so a
+ *  not-ready assistant flips to ready without a page reload (#702). */
+export async function refreshHypervisorConfig(): Promise<void> {
+  try {
+    config.value = await getHypervisorConfig();
+  } catch {
+    /* keep last-good config */
+  }
+}
+
 /** Pick the assistant a new chat will use, resetting the model to that
  *  assistant's default so the switcher never shows an off-list model. */
 export function setSelectedAssistant(assistantId: string): void {
@@ -168,9 +189,12 @@ export function resolveProjectDefaults(project: ProjectDefaults | null): {
   effort: string;
 } {
   const wantAssistant = project?.default_assistant || '';
-  const known = (config.value?.assistants ?? []).some((a) => a.id === wantAssistant);
+  const list = config.value?.assistants ?? [];
+  // Listed-but-not-ready (#702) counts as unavailable for a default.
+  const usable = list.some((a) => a.id === wantAssistant && !isNotReady(a));
   const assistant =
-    (known ? wantAssistant : '') || config.value?.defaultAssistant || 'claude';
+    (usable ? wantAssistant : '') ||
+    readyOr(list, config.value?.defaultAssistant || 'claude');
   const models = assistantModels(assistant);
   const wantModel = project?.default_model || '';
   const model = (wantModel && models.includes(wantModel) ? wantModel : models[0]) ?? '';
@@ -224,7 +248,8 @@ export async function initHypervisor(): Promise<void> {
     const cfg = await getHypervisorConfig();
     config.value = cfg;
     if (!selectedAssistant.value) {
-      selectedAssistant.value = cfg.defaultAssistant || 'claude';
+      // Never pre-select a listed-but-not-ready agent (#702).
+      selectedAssistant.value = readyOr(cfg.assistants ?? [], cfg.defaultAssistant || 'claude');
     }
     // Seed the model to the selected assistant's default now that the config
     // (and its per-assistant model lists) is loaded (#308).
@@ -364,6 +389,13 @@ export async function sendMessage(text: string): Promise<void> {
   if (isCtoChat() && claudeReady.value === false) {
     chatError.value =
       'Connect your Claude account to start building — use the connect options above.';
+    return;
+  }
+  // A new chat on an agent that can't run yet (#702) would only fail on its
+  // first turn — refuse with the reason the picker already shows.
+  const blocked = newChatBlockedReason();
+  if (blocked) {
+    chatError.value = blocked;
     return;
   }
   sending.value = true;

@@ -184,6 +184,14 @@
   padding: 0 var(--size-3) var(--size-3);
 }
 
+/* Listed-but-not-ready agent note (#702) — sized for the narrow sidebar. */
+.hv-agent-not-ready {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
 /* Data-training disclosure for free Zen models (#395). */
 .hv-agent-disclosure {
   font-size: var(--text-xs);

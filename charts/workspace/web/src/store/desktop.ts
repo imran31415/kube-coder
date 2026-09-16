@@ -14,6 +14,7 @@ import { navigate } from './router';
 import { createTask } from './tasks';
 import { createThread, getHypervisorConfig } from '../api/hypervisor';
 import { config as hypervisorConfig, refreshThreads } from './hypervisor';
+import { readyOr } from '../util/assistants';
 
 export const desktopItems = signal<DesktopItem[]>([]);
 export const desktopError = signal<string | null>(null);
@@ -125,7 +126,8 @@ export async function startChatFromPrompt(
     if (!agent) {
       const cfg = hypervisorConfig.value ?? (await getHypervisorConfig());
       hypervisorConfig.value = cfg;
-      agent = cfg.defaultAssistant || undefined;
+      // Never default into a listed-but-not-ready agent (#702).
+      agent = readyOr(cfg.assistants ?? [], cfg.defaultAssistant || '') || undefined;
     }
     const thread = await createThread({ message: text, assistant: agent, workdir });
     if (!thread || !thread.id) return false;

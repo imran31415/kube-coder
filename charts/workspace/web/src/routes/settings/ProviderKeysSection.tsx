@@ -19,6 +19,7 @@ import { Icon } from '../../components/Icon';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { ClaudeConnect } from '../../components/ClaudeConnect';
 import { pushToast } from '../../store/ui';
+import { refreshHypervisorConfig } from '../../store/hypervisor';
 
 const PROVIDERS: { var: ProviderVar; label: string; hint: string }[] = [
   { var: 'OPENROUTER_API_KEY', label: 'OpenRouter', hint: 'Powers OpenCode + OpenRouter-backed models.' },
@@ -78,6 +79,8 @@ export function ProviderKeysSection() {
       // A new ANTHROPIC_API_KEY changes whether the Claude subscription is
       // overridden — keep the subscription block in sync.
       await refreshSubs();
+      // A key can make a listed agent ready (#702) — refresh the Chat picker.
+      void refreshHypervisorConfig();
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Save failed', { kind: 'danger' });
     } finally {
@@ -92,6 +95,7 @@ export function ProviderKeysSection() {
       pushToast('Key cleared', { kind: 'info' });
       await refresh();
       await refreshSubs();
+      void refreshHypervisorConfig();
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Clear failed', { kind: 'danger' });
     } finally {

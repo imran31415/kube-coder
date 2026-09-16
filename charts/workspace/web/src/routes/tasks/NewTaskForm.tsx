@@ -14,6 +14,8 @@ import {
   suggestTemplateName,
 } from '../../store/promptTemplates';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { AssistantNotReady } from '../../components/AssistantNotReady';
+import { isNotReady, pickDefault } from '../../util/assistants';
 import './new-task.css';
 
 /**
@@ -42,13 +44,15 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
     listAssistants().then((list) => {
       setAssistants(list);
-      const def = list.find((a) => a.default) ?? list[0];
+      const def = pickDefault(list);
       if (def) setAssistant(def.id);
     }).catch(() => setAssistants([]));
   }, []);
 
   async function onSubmit(e: Event) {
     e.preventDefault();
+    // Enter in a field submits even with the button disabled.
+    if (notReady) return;
     setBusy(true);
     setError(null);
     // A non-empty prompt boots the session already working on it; an empty
@@ -114,8 +118,8 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   // and the label to show as the default before the list resolves. Falls back
   // to 'claude' only when the server list hasn't loaded yet.
   const selectedAssistant = assistants.find((a) => a.id === assistant);
-  const defaultAssistantLabel =
-    (assistants.find((a) => a.default) ?? assistants[0])?.label ?? 'claude';
+  const notReady = isNotReady(selectedAssistant);
+  const defaultAssistantLabel = pickDefault(assistants)?.label ?? 'claude';
 
   return (
     <form class="ntf" onSubmit={onSubmit}>
@@ -183,11 +187,14 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
                 {a.label || a.id}
                 {a.free ? ' · free' : ''}
                 {a.default ? ' · default' : ''}
+                {isNotReady(a) ? ' · needs API key' : ''}
               </option>
             ))}
           </select>
         </label>
       </div>
+
+      <AssistantNotReady assistant={selectedAssistant} />
 
       <label class="ntf-field">
         <span class="ntf-label">First prompt <span class="muted">(optional)</span></span>
@@ -282,19 +289,21 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
         )}
       </div>
 
-      <p class="ntf-note muted">
-        {prompt.trim() ? (
-          <>
-            <strong>{assistant || defaultAssistantLabel}</strong> starts on this prompt right away —
-            you can watch and steer it from the build's terminal.
-          </>
-        ) : (
-          <>
-            You'll be dropped straight into a live <strong>{assistant || defaultAssistantLabel}</strong> terminal —
-            type your first prompt there.
-          </>
-        )}
-      </p>
+      {!notReady && (
+        <p class="ntf-note muted">
+          {prompt.trim() ? (
+            <>
+              <strong>{assistant || defaultAssistantLabel}</strong> starts on this prompt right away —
+              you can watch and steer it from the build's terminal.
+            </>
+          ) : (
+            <>
+              You'll be dropped straight into a live <strong>{assistant || defaultAssistantLabel}</strong> terminal —
+              type your first prompt there.
+            </>
+          )}
+        </p>
+      )}
 
       {selectedAssistant?.trainingDisclosure && (
         <p class="ntf-note ntf-disclosure" role="note">
@@ -312,7 +321,7 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
 
       <div class="ntf-actions">
         <Button variant="ghost" onClick={onClose} type="button">Cancel</Button>
-        <Button variant="primary" type="submit" disabled={busy}>
+        <Button variant="primary" type="submit" disabled={busy || notReady}>
           <Icon name="play" size={14} /> {busy ? 'Starting…' : 'Start build'}
         </Button>
       </div>

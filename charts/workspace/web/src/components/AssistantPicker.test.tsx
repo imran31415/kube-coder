@@ -91,6 +91,36 @@ describe('AssistantPicker', () => {
     ]);
   });
 
+  it('marks a listed-but-not-ready assistant and explains it when selected (#702)', () => {
+    const DSH: HypervisorAssistant = {
+      id: 'deepseek-harness',
+      label: 'DeepSeek Harness',
+      ready: false,
+      notReadyReason: 'DeepSeek Harness needs a DeepSeek API key.',
+    };
+    const { getByLabelText, getByRole, queryByRole, rerender } = renderPicker({
+      assistants: [CLAUDE, DSH],
+    });
+    const select = getByLabelText('Assistant') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toContain(
+      'DeepSeek Harness · needs API key',
+    );
+    expect(queryByRole('alert')).toBeNull();
+
+    rerender(
+      <AssistantPicker
+        assistants={[CLAUDE, DSH]}
+        assistant="deepseek-harness"
+        model=""
+        effort=""
+        onAssistant={noop}
+        onModel={noop}
+        onEffort={noop}
+      />,
+    );
+    expect(getByRole('alert')).toHaveTextContent('needs a DeepSeek API key');
+  });
+
   it('keeps a stored-but-unavailable choice visible instead of lying', () => {
     // A project can name a provider this workspace no longer has a key for.
     const { getByLabelText } = renderPicker({ assistant: 'gone-provider' });

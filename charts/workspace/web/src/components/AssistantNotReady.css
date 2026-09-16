@@ -1,0 +1,18 @@
+/* Listed-but-not-ready assistant note (#702) — warm like the Zen disclosure,
+   since it blocks starting rather than merely advising. */
+.assistant-not-ready {
+  margin: 0;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.assistant-not-ready a {
+  color: var(--accent);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}

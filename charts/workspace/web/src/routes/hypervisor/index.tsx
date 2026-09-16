@@ -25,6 +25,7 @@ import {
   assistantEffortDefault,
   assistantEffortCap,
   assistantNeedsDisclosure,
+  assistantInfo,
   setSelectedAssistant,
   setActiveThreadModel,
   setActiveThreadEffort,
@@ -61,6 +62,8 @@ import { BottomSheet } from '../../components/BottomSheet';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { BriefPanel, BriefTab } from './BriefPanel';
 import { SearchSelect } from '../../components/primitives/SearchSelect';
+import { AssistantNotReady } from '../../components/AssistantNotReady';
+import { isNotReady } from '../../util/assistants';
 import { Chat } from './Chat';
 import { ttsSupported, speakReplies, setSpeakReplies } from './voice';
 import { partitionThreads, type ChatTab } from './chatTabs';
@@ -668,9 +671,17 @@ export function HypervisorRoute() {
             options={(cfg?.assistants ?? []).map((a) => ({
               value: a.id,
               label: a.label,
-              hint: [a.free ? 'free' : '', a.model || ''].filter(Boolean).join(' · '),
+              hint: isNotReady(a)
+                ? 'needs API key'
+                : [a.free ? 'free' : '', a.model || ''].filter(Boolean).join(' · '),
             }))}
           />
+          {!activeThreadId.value && (
+            <AssistantNotReady
+              class="hv-agent-not-ready"
+              assistant={assistantInfo(selectedAssistant.value)}
+            />
+          )}
           {assistantNeedsDisclosure(effectiveAssistant) && (
             <span class="hv-agent-disclosure" role="note">
               ⚠️ Free models may use your prompts + code for training — avoid

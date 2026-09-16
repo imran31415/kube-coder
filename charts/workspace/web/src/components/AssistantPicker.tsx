@@ -1,4 +1,6 @@
 import type { HypervisorAssistant } from '../api/hypervisor';
+import { isNotReady } from '../util/assistants';
+import { AssistantNotReady } from './AssistantNotReady';
 import './AssistantPicker.css';
 
 /**
@@ -137,11 +139,14 @@ export function AssistantPicker({
               <option key={a.id} value={a.id}>
                 {a.label}
                 {a.free ? ' · free' : ''}
+                {isNotReady(a) ? ' · needs API key' : ''}
               </option>
             ))}
           </select>
         </label>
       )}
+
+      <AssistantNotReady assistant={current} />
 
       {models.length > 0 && (
         <label class="ap-field">
