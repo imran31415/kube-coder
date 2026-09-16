@@ -31,9 +31,11 @@ whole connect flow screen by screen (`board-connect-*`, walked through
 [below](#connecting-a-board)), the items list with vendor statuses normalized
 (`board-items`), a run with its selection strategy and the "what would this
 work?" preview (`board-runs`, `board-preview`), a run **mid-flight** with live
-work sorted to the top of its item table (`board-run-live`), the credential
-store that never shows a value (`board-credentials`), and the review queue on a
-phone (`board-review-mobile`). Regenerate with
+work sorted to the top of its item table, a View session link per Build and
+outcomes that open their review card (`board-run-live`), the card that opens
+when you click one (`board-review-focused`), the credential store that never
+shows a value (`board-credentials`), and the review queue on a phone
+(`board-review-mobile`). Regenerate with
 `node scripts/shoot-board.mjs <out-dir>` from `charts/workspace/web`.
 
 ---
@@ -420,6 +422,23 @@ polls that source rather than arming a watcher per item (`WatcherManager` caps
 at 8 per thread). `waiting-for-input` counts as terminal, because an interactive
 Build keeps its REPL alive after finishing the work.
 
+The run's item table on `/board` goes from each row to what happens next
+(#704):
+
+![A run mid-flight: View session per Build, and outcomes that open their card](screenshots/board-processor/board-run-live.png)
+
+- **Session** links every item that has a Build to its page, `/tasks/<task_id>`:
+  the live terminal while the agent works, its history once it has stopped. It
+  is a real link, so Ctrl/Cmd-click opens a new tab. A queued item has no Build
+  yet and shows a dash.
+- **Outcome** is a button when the item has a review card on this board. It
+  opens the Review tab on that card, scrolled into view and focused. An item
+  whose build failed before reporting has no card, and its outcome stays text.
+- There is **no elapsed timer**. The only timestamp a row carries is
+  `updated_at`, which the server rewrites on every change to the row, so any
+  clock built on it measures "since this row last changed", not time spent on
+  the ticket.
+
 ---
 
 ## Dispositions and staged actions
@@ -465,6 +484,23 @@ Desktop `/board` has four tabs — Items, Runs, Review, Credentials. The unit of
 review is the **staged action diff**, not a transcript: proposed writes, the
 reason, evidence chips, and a deep link out to the real ticket. If a decision
 needs the agent's full log, the agent has not summarised well enough.
+
+**Order.** `boards.review.group_by_disposition` decides it, on the server, so
+web and mobile agree (#704). Groups keep a fixed disposition order (needs
+review, needs rescoping, blocked, failed, completed, rejected), but any group
+still holding a waiting card rises above the fully decided ones. Inside a
+group, waiting cards (`pending`, `partial`) come first, then ticket order, with
+digit runs compared as numbers: `9` before `10`, `SUP-9` before `SUP-10`. Each
+group reports how many of its cards are `open`.
+
+**The Review badge** counts waiting cards on the selected board, on every tab.
+The route reads the queue on arrival and on every board switch (a local file,
+not a vendor call). After that, `boards.review` events keep it current, and
+while a run is live with the event stream down, the 3s run poll does. A read
+that answers after a newer one, or for a board no longer selected, is dropped,
+so the count cannot go backwards or show another board's number.
+
+![Arriving from a run item's outcome: the card is in view and focused](screenshots/board-processor/board-review-focused.png)
 
 An item needing a human emits a waiting `FeedManager` item, which drives both
 the feed row and the topbar waiting badge. `board:<board_id>:<item_id>` links
