@@ -176,6 +176,9 @@ RUNTIMES = {
     # docs/llm-setup.md so it isn't a surprise.
     'deepseek-harness': {
         'label': 'DeepSeek Harness',
+        # Listed whenever `dsh` is installed, but not launchable until these are
+        # set (pod env or Settings → Provider API keys) — see missing_keys().
+        'requires_keys': ('DEEPSEEK_API_KEY',),
         'model_env': 'KC_DSH_MODEL',
         'model_default': DSH_DEFAULT_MODEL,
         # DIVERGENCE (pre-existing, frozen deliberately): the orchestrator omits
@@ -275,6 +278,15 @@ def is_headless_capable(assistant):
     """
     entry = RUNTIMES.get(assistant)
     return bool(entry and entry.get('headless_args'))
+
+
+def missing_keys(assistant, keys):
+    """The runtime's declared `requires_keys` that are blank in `keys` (a
+    mapping of env var name → value). [] when nothing is missing or the runtime
+    declares none; a whitespace-only value counts as missing."""
+    entry = RUNTIMES.get(assistant) or {}
+    return [k for k in entry.get('requires_keys') or ()
+            if not str(keys.get(k) or '').strip()]
 
 
 def resolve_model(assistant, override='', *, env=None, orchestrator=False):

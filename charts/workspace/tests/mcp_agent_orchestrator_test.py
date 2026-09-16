@@ -197,6 +197,18 @@ class SpawnGuardTests(unittest.TestCase):
         res = orch._tool_spawn_agent({'prompt': '   '})
         self.assertTrue(res.get('isError'))
 
+    def test_refuses_a_harness_with_no_deepseek_key(self):
+        # #702: the sub-agent inherits this env, so a missing key here would
+        # be a run that fails on authentication. Nothing is spawned.
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(orch.subprocess, 'run') as run:
+            os.environ.pop('DEEPSEEK_API_KEY', None)
+            res = orch._tool_spawn_agent(
+                {'prompt': 'go', 'assistant': 'deepseek-harness'})
+        self.assertTrue(res.get('isError'))
+        self.assertIn('DEEPSEEK_API_KEY', res['content'][0]['text'])
+        run.assert_not_called()
+
     def test_headless_spawn_writes_meta_and_no_paste(self):
         with mock.patch.object(orch.subprocess, 'run', side_effect=_tmux_alive), \
              mock.patch.object(orch, '_count_live_agent_sessions', return_value=0), \

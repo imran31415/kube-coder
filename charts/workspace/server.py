@@ -2204,16 +2204,27 @@ class ClaudeTaskManager:
                 ClaudeTaskManager.ASSISTANTS['codex'],
                 model=os.environ.get('KC_CODEX_MODEL', ''),
             ))
-        # DeepSeek Harness — gated on BOTH signals. Binary presence alone is
-        # the right test only for OAuth CLIs (agy, codex); `dsh` authenticates
-        # with an API key, so listing it without one would offer an entry whose
-        # every turn fails with "Authentication Fails". An older image without
-        # the binary simply doesn't list it — nothing else is affected.
-        if shutil.which('dsh') and keys.get('DEEPSEEK_API_KEY'):
-            out.append(dict(
+        # DeepSeek Harness — listed whenever `dsh` is installed (#702), so a
+        # user can discover it, but flagged ready=False until its API key is
+        # set. Hiding it made the install look broken; launching it keyless
+        # fails every turn with "Authentication Fails", so resolve_assistant
+        # and the launch handlers refuse a not-ready entry. An older image
+        # without the binary simply doesn't list it.
+        if shutil.which('dsh'):
+            dsh = dict(
                 ClaudeTaskManager.ASSISTANTS['deepseek-harness'],
                 model=os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL),
-            ))
+            )
+            missing = runtimes.missing_keys('deepseek-harness', keys)
+            if missing:
+                dsh.update(
+                    ready=False,
+                    needs=missing,
+                    notReadyReason=(
+                        'DeepSeek Harness needs a DeepSeek API key. Add it in '
+                        'Settings → Provider API keys.'),
+                )
+            out.append(dsh)
         # LibreFang — listed only when its CLI is actually resolvable (older
         # images predate it, and /usr/local/bin/librefang is a symlink to a
         # PVC path that start.sh seeds), so the dropdown never advertises a
@@ -2251,6 +2262,7 @@ class ClaudeTaskManager:
         # non-empty list; the frontend shows the switcher only then. First entry
         # is the default.
         for a in out:
+            a.setdefault('ready', True)
             a['models'] = ClaudeTaskManager.available_models(a['id'])
             # Reasoning-effort axis (#362): the 5-stop list (empty → SPA hides
             # the selector), the assistant's default, and its native ceiling so
@@ -2266,8 +2278,9 @@ class ClaudeTaskManager:
         with default=True and sort it to the front; every other entry gets
         default=False. When the configured default isn't in the enabled set
         (e.g. opencode-zen selected but no OPENCODE_API_KEY provisioned) we log
-        loudly and fall back to claude instead of silently mis-defaulting."""
-        ids = {a['id'] for a in assistants}
+        loudly and fall back to claude instead of silently mis-defaulting.
+        A listed-but-not-ready entry (#702) is never the default."""
+        ids = {a['id'] for a in assistants if a.get('ready', True)}
         target = WORKSPACE_DEFAULT_ASSISTANT
         if target not in ids:
             if target != 'claude':
@@ -2540,8 +2553,11 @@ class ClaudeTaskManager:
         or disabled (the dashboard hides disabled options, but webhooks/crons/
         CLI clients are free-form so we defend the boundary). Logs loudly on
         every fallback so a mis-provisioned default is visible instead of
-        silently reverting to claude."""
-        enabled = {a['id'] for a in ClaudeTaskManager.available_assistants()}
+        silently reverting to claude. Listed-but-not-ready entries (#702) are
+        not enabled here; explicit human picks are refused earlier, in the
+        handlers, via not_ready_reason."""
+        enabled = {a['id'] for a in ClaudeTaskManager.available_assistants()
+                   if a.get('ready', True)}
         if requested and requested in enabled:
             return requested
         if requested:
@@ -2559,6 +2575,24 @@ class ClaudeTaskManager:
                 f'(available: {sorted(enabled)}); falling back to claude.',
                 file=sys.stderr)
         return 'claude'
+
+    @staticmethod
+    def not_ready_reason(assistant_id):
+        """The 400 body for an assistant that is listed but not launchable yet
+        (#702, e.g. DeepSeek Harness with no API key), else None. Unknown and
+        unlisted ids return None — they keep resolve_assistant's fallback."""
+        if not assistant_id:
+            return None
+        for a in ClaudeTaskManager.available_assistants():
+            if a['id'] == assistant_id and not a.get('ready', True):
+                return {
+                    'error': a.get('notReadyReason')
+                             or f"{a['label']} is not set up yet.",
+                    'code': 'assistant_not_ready',
+                    'assistant': assistant_id,
+                    'needs': a.get('needs') or [],
+                }
+        return None
 
     # Unattended task sources — no human is watching the live terminal, so the
     # CLI must launch in auto-approve/skip-permissions mode or it stalls on the
@@ -13927,6 +13961,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         source = data.get('source') or None
         disable_memory_injection = bool(data.get('disable_memory_injection'))
         assistant = data.get('assistant') or None
+        # An explicit pick of a listed-but-not-ready assistant (#702) is refused
+        # with a readable reason rather than launching a build that is sure to
+        # fail, or silently running a different agent than the one asked for.
+        not_ready = ClaudeTaskManager.not_ready_reason(assistant)
+        if not_ready:
+            self.send_json(not_ready, 400)
+            return
         # Optional per-build model / reasoning effort (#483, #362). Omitted →
         # create_task falls back to the bound project's defaults, then the
         # workspace ones; both are validated there, so a bad value degrades
@@ -14237,6 +14278,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         message = (data.get('message') or '').strip()
+        # Same refusal as a Build (#702): an explicit not-ready pick gets its
+        # reason, not a thread whose first turn fails on a missing key.
+        not_ready = ClaudeTaskManager.not_ready_reason(data.get('assistant'))
+        if not_ready:
+            self.send_json(not_ready, 400)
+            return
         # AI CTO persona (#465): a 'cto' thread swaps in CTO_PREAMBLE + the
         # project's markdown brief (injected on turn 1 via the adapter's
         # preamble path) and binds a project_id. Any other/absent persona is a
@@ -14420,6 +14467,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         if session.status() == 'running':
             self.send_json({'error': 'assistant is still responding'}, 409)
+            return
+        # The key can be removed after a chat started (#702): refuse the turn
+        # with the reason instead of running one that fails on authentication.
+        not_ready = ClaudeTaskManager.not_ready_reason(
+            (session.read_meta() or {}).get('assistant'))
+        if not_ready:
+            self.send_json(not_ready, 400)
             return
         session.send(message)
         self.send_json({'ok': True})

@@ -333,6 +333,14 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     # Only set on workspaces that opted in; vanilla leaves it unset and keeps the
     # historical 'ante' fallback (a keyless, always-available CLI).
     assistant = args.get('assistant') or os.environ.get('KC_DEFAULT_ASSISTANT') or 'ante'
+    # A sub-agent inherits this process's env, so a key missing here is missing
+    # there too — refuse with the reason rather than spawn a run that fails on
+    # authentication (#702).
+    missing = runtimes.missing_keys(assistant, os.environ)
+    if missing:
+        return {'isError': True, 'content': [{'type': 'text', 'text':
+            f"spawn refused: {assistant} needs {', '.join(missing)}. Add it in "
+            'Settings → Provider API keys, or pick another assistant.'}]}
     # Default the sub-agent's working directory to the SPAWNING agent's cwd.
     # This MCP server is a stdio subprocess of the parent CLI, so os.getcwd()
     # is the directory the parent was launched in (its project) — a far better
