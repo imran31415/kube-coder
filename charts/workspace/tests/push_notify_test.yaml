@@ -17,6 +17,11 @@ tests:
           content:
             name: EXPO_ACCESS_TOKEN
         any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_PUSH_MIN_INTERVAL
+        any: true
 
   - it: projects KC_PUSH_ENABLED=false when push is disabled
     template: templates/deployment.yaml
@@ -40,3 +45,27 @@ tests:
           content:
             name: EXPO_ACCESS_TOKEN
             value: expo-tok-123
+
+  # How often one alert may repeat (#685).
+  - it: projects KC_PUSH_MIN_INTERVAL when set
+    template: templates/deployment.yaml
+    set:
+      push.minIntervalSeconds: 3600
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_PUSH_MIN_INTERVAL
+            value: "3600"
+
+  # 0 is meaningful (timer off) — a `with` block would silently drop it.
+  - it: projects KC_PUSH_MIN_INTERVAL=0 rather than dropping it
+    template: templates/deployment.yaml
+    set:
+      push.minIntervalSeconds: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_PUSH_MIN_INTERVAL
+            value: "0"

@@ -47,7 +47,10 @@ helm unittest charts/workspace/
 
 ```bash
 make python-tests
-# equivalently: cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py'
+# Prefer the make target: it points KC_FEED_DIR / KC_PUSH_DIR at a temp dir, so
+# a test can't write this workspace's live Feed or page its phone (#685). By hand:
+# t=$(mktemp -d) && cd charts/workspace && KC_FEED_DIR=$t/feed KC_PUSH_DIR=$t/push \
+#   python3 -m unittest discover -s tests -p '*_test.py'
 ```
 
 ## `web` — SPA typecheck, build, and vitest (BOTH apps)

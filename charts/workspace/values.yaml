@@ -691,6 +691,11 @@ push:
   # enhanced security ("push security") switched on. Projected as
   # EXPO_ACCESS_TOKEN. Supply via a gitignored per-user overlay.
   expoAccessToken: ""
+  # Projected as KC_PUSH_MIN_INTERVAL. The same alert (e.g. one task flipping
+  # back to "waiting") is pushed again only after you have read or dismissed
+  # it, and never more often than this many seconds. Empty keeps the default
+  # (1800); 0 turns the timer off and leaves only the read-or-dismissed rule.
+  minIntervalSeconds: ""
 
 # GitHub App configuration for automatic git/gh authentication.
 # Two ways to supply credentials:

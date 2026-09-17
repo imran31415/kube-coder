@@ -5314,6 +5314,20 @@ class ProjectsManager:
         return md
 
 
+DEFAULT_FEED_DIR = '/home/dev/.claude-feed'
+
+
+def _resolve_feed_dir(env=None):
+    """`$KC_FEED_DIR`, or the deployment default when unset/blank (#685).
+
+    Exists so a test run can never write the live feed: the Makefile's
+    python-tests target points it at a throwaway directory. Same
+    blank-means-default contract as `$KC_MEMORY_DB`; leave it unset in every
+    deployment, or that workspace starts with an empty Feed."""
+    src = os.environ if env is None else env
+    return ((src.get('KC_FEED_DIR') or '').strip()) or DEFAULT_FEED_DIR
+
+
 class FeedManager:
     """The Feed (#469): one reverse-chronological stream of what changed and
     what matters — workspace activity, decisions, and agent-authored briefings.
@@ -5332,7 +5346,7 @@ class FeedManager:
     append-only log.
     """
 
-    FEED_DIR = '/home/dev/.claude-feed'
+    FEED_DIR = _resolve_feed_dir()
     ITEMS_PATH = FEED_DIR + '/items.jsonl'
     STATE_PATH = FEED_DIR + '/state.json'
     KINDS = ('briefing', 'news', 'activity', 'decision')
@@ -5451,14 +5465,18 @@ class FeedManager:
         try:
             with FeedManager._lock:
                 item_id = None
+                seen = False
                 if dedupe_key:
                     # Reuse a live (non-dismissed) item's id so it updates in
                     # place rather than stacking duplicates.
-                    dismissed = FeedManager._load_state()['dismissed']
+                    state = FeedManager._load_state()
                     for it in FeedManager._collapse(FeedManager._read_raw()):
                         if it.get('dedupe_key') == dedupe_key \
-                                and it.get('id') not in dismissed:
+                                and it.get('id') not in state['dismissed']:
                             item_id = it['id']
+                            # Had the user read this row before it came back?
+                            # That is what lets its alert push again (#685).
+                            seen = item_id in state['read']
                             break
                 item = {
                     'id': item_id or FeedManager._new_id(),
@@ -5483,11 +5501,20 @@ class FeedManager:
             pass
         # Mobile push (#push): same signal as the in-app feed, delivered to the
         # phone. Fire-and-forget and self-gating — only high-signal items
-        # (waiting / decision) with a registered device actually send.
+        # (waiting / decision) with a registered device actually send, and a
+        # coalesced repeat only once the user has read the row (#685).
         try:
-            push_notify.dispatch(item)
+            sent = push_notify.dispatch(item, seen=seen)
         except Exception:
-            pass
+            sent = False
+        if sent and seen:
+            # The phone was just told again, so the row is news again: mark it
+            # unread. Otherwise it would stay read forever and every later
+            # repeat would look acknowledged, which is the spam #685 removes.
+            try:
+                FeedManager._clear_flag(item['id'], 'read')
+            except Exception:
+                pass
         return item
 
     # ── deterministic system emitters (called from known-fact sites) ─────
@@ -5631,6 +5658,17 @@ class FeedManager:
                 return False
             state = FeedManager._load_state()
             state[flag].add(item_id)
+            FeedManager._save_state(state)
+            return True
+
+    @staticmethod
+    def _clear_flag(item_id, flag):
+        """Drop `item_id` from an overlay. Returns whether it was set."""
+        with FeedManager._lock:
+            state = FeedManager._load_state()
+            if item_id not in state[flag]:
+                return False
+            state[flag].discard(item_id)
             FeedManager._save_state(state)
             return True
 

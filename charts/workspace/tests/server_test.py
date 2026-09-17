@@ -34,6 +34,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 
+sys.path.insert(0, HERE)
+from live_state import isolate_feed_and_push  # noqa: E402
+
 
 def _fake_tmux_alive(*args, **kwargs):
     """subprocess.run stub: pretend tmux operations always succeed and the
@@ -69,6 +72,9 @@ class CompletionHookTests(unittest.TestCase):
     in step 1 of the triggers feature."""
 
     def setUp(self):
+        # A reconcile that finds the session gone emits a "Task finished" Feed
+        # item — keep it out of the live Feed (#685).
+        isolate_feed_and_push(self)
         self.tmpdir = tempfile.mkdtemp(prefix='kctest-')
         self._orig_tasks_dir = server.ClaudeTaskManager.TASKS_DIR
         self._orig_token_file = server.ClaudeTaskManager.TOKEN_FILE
@@ -1753,6 +1759,7 @@ class WebhookReceiverTests(unittest.TestCase):
     plumbing without going through the actual HTTP server."""
 
     def setUp(self):
+        isolate_feed_and_push(self)  # a fired webhook emits a Feed item (#685)
         self.tmpdir = tempfile.mkdtemp(prefix='kctest-recv-')
         self.tasks_dir = os.path.join(self.tmpdir, 'tasks')
         self.webhooks_dir = os.path.join(self.tmpdir, 'webhooks')
@@ -1922,6 +1929,10 @@ class WaitingQuiescenceTests(unittest.TestCase):
     """
 
     def setUp(self):
+        # The flip to waiting emits a "Task waiting on you" Feed item, which is
+        # push-worthy. Before #685 only TASKS_DIR was redirected, so every run
+        # of this class wrote the live Feed and paged the workspace's phone.
+        isolate_feed_and_push(self)
         self.tmpdir = tempfile.mkdtemp()
         self._orig_tasks_dir = server.ClaudeTaskManager.TASKS_DIR
         server.ClaudeTaskManager.TASKS_DIR = self.tmpdir
@@ -1962,6 +1973,9 @@ class WaitingQuiescenceTests(unittest.TestCase):
             server.ClaudeTaskManager._reconcile_status(meta, task_dir)
         self.assertEqual(meta['status'], 'waiting-for-input')
         self.assertTrue(meta.get('waiting_for_input'))
+        # The flag reached the (isolated) Feed as a waiting item.
+        items = server.FeedManager.list()
+        self.assertEqual([i['waiting'] for i in items], [True])
 
     def test_stable_screen_within_threshold_stays_running(self):
         screen = 'idle input box\n> '

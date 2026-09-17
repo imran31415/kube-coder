@@ -259,6 +259,14 @@ spec:
         - name: EXPO_ACCESS_TOKEN
           value: {{ . | quote }}
         {{- end }}
+        {{- /* How often one alert may repeat (#685). Unset keeps the 1800s
+               default in push_notify.py. Not `with`: 0 is a real value (it
+               turns the timer off) and `with` would drop it. */}}
+        {{- $pushMinInterval := (.Values.push | default dict).minIntervalSeconds }}
+        {{- if and (not (kindIs "invalid" $pushMinInterval)) (ne (toString $pushMinInterval) "") }}
+        - name: KC_PUSH_MIN_INTERVAL
+          value: {{ $pushMinInterval | toString | quote }}
+        {{- end }}
         {{- if .Values.github.app.appId }}
         # GITHUB_APP_PRIVATE_KEY is deliberately NOT here (issue #558). The
         # agent runs in this container and every process it spawns inherits
