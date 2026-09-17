@@ -6,6 +6,7 @@ import { Button, Card, Label, ScreenHeader } from '../components/ui';
 import { ControllerConnectModal } from '../components/ControllerConnectModal';
 import { GitIdentityCard } from '../components/GitIdentityCard';
 import { McpServersCard } from '../components/McpServersCard';
+import { NotificationsCard } from '../components/NotificationsCard';
 import { ProviderKeysCard } from '../components/ProviderKeysCard';
 import { MessagingCard } from '../components/MessagingCard';
 import { UpdatesCard } from '../components/UpdatesCard';
@@ -85,6 +86,10 @@ export default function SettingsScreen() {
             style={{ marginTop: space.sm }}
           />
         ) : null}
+
+        {/* Push on/off for this phone (#685). Not on the public demo, which
+            refuses registration; shown in the mock build, where it is inert. */}
+        {!isDemo ? <NotificationsCard /> : null}
 
         {!cfg.mock ? <ProviderKeysCard readOnly={isDemo} /> : null}
 

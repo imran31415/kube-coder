@@ -16,6 +16,10 @@ const TOKEN_KEY = 'kc.devToken';
 // appears once both are set.
 const CTRL_HOST_KEY = 'kc.controllerBase';
 const CTRL_TOKEN_KEY = 'kc.controllerToken';
+// Settings → Notifications (#685). A preference of this phone, not of the
+// connection, so disconnecting or switching workspaces leaves it as it was.
+// Stored as '0' / '1'; anything else (including never set) means on.
+const PUSH_KEY = 'kc.pushEnabled';
 
 // The project's public, read-only demo workspace (AUTH_MODE=none) — reached via
 // the "Explore the public demo" button on onboarding. Override for a fork with
@@ -36,6 +40,7 @@ export interface Config {
   controllerHost: string; // admin controller host ('' when unset)
   controllerToken: string; // admin controller Bearer token ('' when unset)
   mock: boolean; // demo mode — serve fake data, no network
+  pushEnabled: boolean; // OS push notifications on this phone (default on)
   loaded: boolean; // hydrated from storage yet?
 }
 
@@ -64,6 +69,9 @@ let state: Config = {
   controllerHost: FORCE_MOCK ? 'https://controller.kube-coder.app' : '',
   controllerToken: FORCE_MOCK ? 'demo-controller-token' : '',
   mock: FORCE_MOCK,
+  // Until hydrate() reads the saved choice — which it does even for a seeded
+  // build, so a kiosk phone that switched push off stays off.
+  pushEnabled: true,
   loaded: FORCE_MOCK || FORCE_CONN, // a seeded build needs no async hydration
 };
 
@@ -84,12 +92,21 @@ export function subscribe(l: Listener): () => void {
 }
 
 export async function hydrate(): Promise<void> {
-  if (state.loaded) return;
-  const [host, token, ctrlHost, ctrlToken] = await Promise.all([
+  if (state.loaded) {
+    // A mock or pre-seeded build has its connection already, but the
+    // Notifications switch is still the phone's own saved choice.
+    if ((await getItem(PUSH_KEY)) === '0' && state.pushEnabled) {
+      state = { ...state, pushEnabled: false };
+      emit();
+    }
+    return;
+  }
+  const [host, token, ctrlHost, ctrlToken, push] = await Promise.all([
     getItem(HOST_KEY),
     getSecret(TOKEN_KEY),
     getItem(CTRL_HOST_KEY),
     getSecret(CTRL_TOKEN_KEY),
+    getItem(PUSH_KEY),
   ]);
   state = {
     host: host ?? '',
@@ -97,9 +114,19 @@ export async function hydrate(): Promise<void> {
     controllerHost: ctrlHost ?? '',
     controllerToken: ctrlToken ?? '',
     mock: false,
+    pushEnabled: push !== '0',
     loaded: true,
   };
   emit();
+}
+
+/** Save the Notifications switch. The in-memory value flips BEFORE the write,
+ *  so a registration already in flight sees "off" at its next check rather
+ *  than after storage settles. */
+export async function setPushEnabled(on: boolean): Promise<void> {
+  state = { ...state, pushEnabled: on };
+  emit();
+  await setItem(PUSH_KEY, on ? '1' : '0');
 }
 
 export async function saveConnection(host: string, token: string): Promise<void> {
