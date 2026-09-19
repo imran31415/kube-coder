@@ -1667,10 +1667,14 @@ def fleet_spend(window_seconds=None):
 
     if not out['workspacesReporting']:
         out['scrapeHint'] = (
-            f'Prometheus has no {SPEND_TOKENS} series for any workspace. The '
-            'workspaces expose them at /metrics/prometheus, but that endpoint '
-            'is authenticated and nothing scrapes it by default — see '
-            'docs/prometheus-metrics.md for the ServiceMonitor.')
+            f'Prometheus has no {SPEND_TOKENS} series for any workspace. '
+            'Scraping is opt-in: set controller.metricsScrapeToken.enabled and '
+            "each workspace's metrics.podMonitor.enabled + "
+            'metrics.scrapeSecretName, then re-run '
+            'scripts/ensure-workspace-namespace.sh to seed the namespace. If '
+            'those are already on, the two silent failures are a '
+            'podMonitorSelector label mismatch and the ingress NetworkPolicy '
+            '— see docs/prometheus-metrics.md.')
     return out
 
 
