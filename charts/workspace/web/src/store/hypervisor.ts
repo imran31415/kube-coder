@@ -1,4 +1,5 @@
 import { signal } from '@preact/signals';
+import { missingKeyMessage } from '../util/assistantReady';
 import {
   getHypervisorConfig,
   listThreads,
@@ -134,6 +135,16 @@ export function assistantEffortCap(assistantId: string | null | undefined): stri
  *  (Zen free models, #395) — drives the in-chat disclosure note. */
 export function assistantNeedsDisclosure(assistantId: string | null | undefined): boolean {
   return !!assistantInfo(assistantId)?.trainingDisclosure;
+}
+
+/** The "needs an API key" sentence for an installed-but-unauthenticated agent
+ *  (#702), or null when it is ready. Unknown ids read as ready: a thread can
+ *  name an agent this workspace no longer lists, and blocking that chat on a
+ *  key we cannot name would be worse than letting the turn report its own
+ *  error. */
+export function assistantMissingKey(assistantId: string | null | undefined): string | null {
+  const info = assistantInfo(assistantId);
+  return info ? missingKeyMessage(info) : null;
 }
 
 /** Pick the assistant a new chat will use, resetting the model to that

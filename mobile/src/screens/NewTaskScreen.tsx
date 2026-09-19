@@ -16,6 +16,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createTask, listAssistants, type Assistant } from '../api/client';
 import { Button, Label } from '../components/ui';
+import {
+  assistantMarker,
+  isAssistantReady,
+  missingKeyMessage,
+} from '../util/assistantReady';
 import type { TasksNav } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 
@@ -51,9 +56,15 @@ export default function NewTaskScreen() {
 
   const selected = assistants.find((a) => a.id === assistant);
   const assistantName = selected?.label || 'the assistant';
+  // Installed but keyless (#702): the chip stays so the agent is discoverable,
+  // and says what it wants — but it cannot start a task, or the user lands in a
+  // terminal that fails on its first turn. The list reloads on every mount, so
+  // saving the key in Settings makes it startable next time, no redeploy.
+  const missingKey = missingKeyMessage(selected);
+  const notReady = !isAssistantReady(selected);
 
   async function submit() {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || notReady) return;
     setBusy(true);
     setError(null);
     try {
@@ -109,11 +120,17 @@ export default function NewTaskScreen() {
                 style={[styles.chip, assistant === a.id && styles.chipActive]}
               >
                 <Text style={[styles.chipText, assistant === a.id && styles.chipTextActive]}>
-                  {a.label || a.id}{a.free ? ' · free' : ''}
+                  {a.label || a.id}{a.free ? ' · free' : ''}{assistantMarker(a)}
                 </Text>
               </Pressable>
             ))}
           </View>
+
+          {missingKey ? (
+            <Text style={styles.disclosure} accessibilityRole="alert">
+              {missingKey}
+            </Text>
+          ) : null}
 
           {selected?.trainingDisclosure ? (
             <Text style={styles.disclosure} accessibilityRole="text">
@@ -133,7 +150,7 @@ export default function NewTaskScreen() {
             icon="rocket-outline"
             onPress={submit}
             loading={busy}
-            disabled={!prompt.trim()}
+            disabled={!prompt.trim() || notReady}
             style={{ marginTop: error ? space.md : space.xxl }}
           />
         </ScrollView>

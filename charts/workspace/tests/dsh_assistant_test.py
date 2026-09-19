@@ -1,13 +1,16 @@
 """Server-side registry for the DeepSeek Harness assistant (issue #639).
 
-The acceptance criteria that matter here are the gating ones: the entry must
-appear only when the binary AND the key are both present, and be *absent*
-rather than broken otherwise — an older image, or a workspace with no DeepSeek
-key, must not be offered an assistant whose every turn fails.
+The acceptance criteria that matter here are the gating ones. Since #702 they
+split in two: the entry is LISTED on binary presence alone (an older image
+without `dsh` still doesn't offer it), but it is only LAUNCHABLE once the key
+exists. A keyless workspace therefore sees the entry marked ready=False with
+the key it needs, and every launch path refuses it — discoverable, never
+broken.
 
 Run with:   python3 -m unittest tests.dsh_assistant_test   (from charts/workspace/)
 """
 
+import contextlib
 import os
 import shlex
 import sys
@@ -27,6 +30,10 @@ DSH = 'deepseek-harness'
 
 def _ids(assistants):
     return [a['id'] for a in assistants]
+
+
+def _entry(assistants, aid):
+    return next((a for a in assistants if a['id'] == aid), None)
 
 
 class _GateBase(unittest.TestCase):
@@ -51,15 +58,29 @@ class _GateBase(unittest.TestCase):
 
 
 class GatingTest(_GateBase):
-    def test_listed_with_binary_and_key(self):
+    def test_listed_and_ready_with_binary_and_key(self):
         out = self.listed({'DEEPSEEK_API_KEY': 'sk-x'}, {'dsh'})
         self.assertIn(DSH, _ids(out))
+        self.assertTrue(_entry(out, DSH)['ready'])
+        self.assertNotIn('needs', _entry(out, DSH))
 
-    def test_absent_with_binary_but_no_key(self):
-        # `dsh` authenticates with an API key — unlike agy/codex, binary
-        # presence alone is NOT enough. Listing it here would offer an entry
-        # whose every turn fails with "Authentication Fails".
-        self.assertNotIn(DSH, _ids(self.listed({}, {'dsh'})))
+    def test_listed_but_not_ready_with_binary_and_no_key(self):
+        # #702: the entry stays visible so the user can discover it, and
+        # carries the key it is waiting for. Hiding it made a correct install
+        # look like a failed one.
+        out = self.listed({}, {'dsh'})
+        self.assertIn(DSH, _ids(out))
+        self.assertIs(_entry(out, DSH)['ready'], False)
+        self.assertEqual(_entry(out, DSH)['needs'], 'DEEPSEEK_API_KEY')
+
+    def test_every_other_entry_is_ready(self):
+        # The uniform wire shape: a client tests `ready`, never "field absent
+        # means ready".
+        for a in self.listed({}, {'dsh', 'codex', 'agy'}):
+            with self.subTest(assistant=a['id']):
+                self.assertIn('ready', a)
+                if a['id'] not in (DSH, 'opencode-deepseek'):
+                    self.assertTrue(a['ready'])
 
     def test_absent_with_key_but_no_binary(self):
         # An older image that predates the install: the entry is simply not
@@ -70,7 +91,15 @@ class GatingTest(_GateBase):
         self.assertIn('ante', _ids(out))
 
     def test_absent_with_neither(self):
+        # No binary => nothing to offer, not even a not-ready entry.
         self.assertNotIn(DSH, _ids(self.listed({}, set())))
+
+    def test_a_not_ready_entry_is_never_the_default(self):
+        # Flagging it default would seed every picker with an agent that
+        # cannot run a turn.
+        out = self.listed({}, {'dsh'})
+        self.assertIs(_entry(out, DSH)['default'], False)
+        self.assertTrue(_entry(out, 'claude')['default'])
 
     def test_an_older_image_leaves_the_other_assistants_alone(self):
         with_dsh = self.listed({'DEEPSEEK_API_KEY': 'sk-x'}, {'dsh', 'codex'})
@@ -84,6 +113,22 @@ class GatingTest(_GateBase):
         out = _ids(self.listed({'DEEPSEEK_API_KEY': 'sk-x'}, {'dsh'}))
         self.assertIn('opencode-deepseek', out)
         self.assertIn(DSH, out)
+
+    def test_the_opencode_entry_is_listed_not_ready_too(self):
+        # Both DeepSeek entries disappeared together; both come back together.
+        out = self.listed({}, {'opencode'})
+        self.assertIn('opencode-deepseek', _ids(out))
+        self.assertIs(_entry(out, 'opencode-deepseek')['ready'], False)
+
+    def test_the_opencode_entry_needs_its_binary_to_appear_keyless(self):
+        self.assertNotIn('opencode-deepseek', _ids(self.listed({}, set())))
+
+    def test_a_stored_key_lists_the_opencode_entry_without_the_binary(self):
+        # No regression for a workspace that already had it: the key alone
+        # keeps the entry exactly as before.
+        out = self.listed({'DEEPSEEK_API_KEY': 'sk-x'}, set())
+        self.assertIn('opencode-deepseek', _ids(out))
+        self.assertTrue(_entry(out, 'opencode-deepseek')['ready'])
 
     def test_carries_a_model_and_a_switcher_list(self):
         out = self.listed({'DEEPSEEK_API_KEY': 'sk-x'}, {'dsh'})
@@ -127,6 +172,16 @@ class SelfServiceKeyTest(_GateBase):
         out = self.listed({}, set(), stored={'DEEPSEEK_API_KEY': 'sk-x'})
         self.assertNotIn(DSH, _ids(out))
 
+    def test_a_stored_key_flips_a_listed_entry_to_ready(self):
+        # Acceptance: saving the key in Settings makes it usable on the next
+        # picker load, with no redeploy — ProviderKeysManager persists it and
+        # _provider_keys() merges it, so nothing has to restart.
+        self.assertIs(_entry(self.listed({}, {'dsh'}, stored={}), DSH)['ready'],
+                      False)
+        self.assertTrue(_entry(
+            self.listed({}, {'dsh'}, stored={'DEEPSEEK_API_KEY': 'sk-x'}),
+            DSH)['ready'])
+
     def test_stored_openrouter_and_zen_keys_list_their_entries(self):
         out = _ids(self.listed({}, set(), stored={
             'OPENROUTER_API_KEY': 'sk-or', 'OPENCODE_API_KEY': 'sk-oc'}))
@@ -138,9 +193,9 @@ class SelfServiceKeyTest(_GateBase):
                           stored={'DEEPSEEK_API_KEY': 'sk-user'})
         self.assertIn(DSH, _ids(out))
 
-    def test_no_key_anywhere_still_hides_it(self):
+    def test_no_key_anywhere_lists_it_as_not_ready(self):
         out = self.listed({}, {'dsh'}, stored={})
-        self.assertNotIn(DSH, _ids(out))
+        self.assertIs(_entry(out, DSH)['ready'], False)
 
 
 class ModelListTest(unittest.TestCase):
@@ -284,6 +339,46 @@ class AssistantCommandTest(unittest.TestCase):
 
 
 class ResolveAssistantTest(unittest.TestCase):
+    """Listing is for discovery; LAUNCHING still requires the key (#702)."""
+
+    @staticmethod
+    def _pod(env, which):
+        return (mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                                  return_value={}),
+                mock.patch.object(server.shutil, 'which',
+                                  side_effect=lambda n: '/x/' + n
+                                  if n in which else None))
+
+    def test_a_listed_but_keyless_harness_is_not_launchable(self):
+        # The regression this pair guards: making the entry visible must not
+        # make a webhook/cron able to spawn a doomed run.
+        with contextlib.ExitStack() as st:
+            for cm in self._pod({}, {'dsh'}):
+                st.enter_context(cm)
+            self.assertNotEqual(CTM.resolve_assistant(DSH), DSH)
+            self.assertEqual(CTM.assistant_needs(DSH), 'DEEPSEEK_API_KEY')
+            msg = CTM.assistant_not_ready_error(DSH)
+            self.assertIn('DeepSeek Harness', msg)
+            self.assertIn('DEEPSEEK_API_KEY', msg)
+            self.assertIn('Settings', msg)
+
+    def test_a_ready_harness_reports_no_missing_key(self):
+        with contextlib.ExitStack() as st:
+            for cm in self._pod({'DEEPSEEK_API_KEY': 'sk-x'}, {'dsh'}):
+                st.enter_context(cm)
+            self.assertEqual(CTM.assistant_needs(DSH), '')
+            self.assertIsNone(CTM.assistant_not_ready_error(DSH))
+
+    def test_an_unlisted_assistant_is_not_a_missing_key(self):
+        # No binary: that is "this workspace cannot run it", which falls back
+        # rather than telling the user to go buy a key.
+        with contextlib.ExitStack() as st:
+            for cm in self._pod({}, set()):
+                st.enter_context(cm)
+            self.assertEqual(CTM.assistant_needs(DSH), '')
+            self.assertIsNone(CTM.assistant_not_ready_error(DSH))
+
     def test_selectable_when_enabled(self):
         with mock.patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'sk-x'},
                              clear=True), \
@@ -296,8 +391,106 @@ class ResolveAssistantTest(unittest.TestCase):
         # A webhook or cron asking for an assistant this workspace cannot run
         # must fall back loudly, not launch a broken task.
         with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                                  return_value={}), \
                 mock.patch.object(server.shutil, 'which', return_value=None):
             self.assertNotEqual(CTM.resolve_assistant(DSH), DSH)
+
+
+class LaunchPathRejectionTest(unittest.TestCase):
+    """The launch paths refuse a listed-but-keyless assistant (#702).
+
+    Making the entry visible is only half the fix; the other half is that
+    choosing it cannot produce a build or a chat whose first turn dies with
+    "Authentication Fails". Both create handlers answer 400 naming the key
+    instead of silently substituting a different agent — a substitution would
+    be worse than the error, because the user would watch some other agent do
+    the work and never learn why.
+    """
+
+    def _handler(self, body):
+        h = mock.Mock(spec=server.BrowserHandler)
+        h.check_claude_auth.return_value = True
+        h.read_json_body.return_value = body
+        h._readonly_block.return_value = False
+        self.responses = []
+        h.send_json.side_effect = lambda o, s=200: self.responses.append((o, s))
+        return h
+
+    @staticmethod
+    def _keyless_pod():
+        """A pod with `dsh` installed and no DeepSeek key anywhere."""
+        return (mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(server.ProviderKeysManager, 'env_overlay',
+                                  return_value={}),
+                mock.patch.object(server.shutil, 'which',
+                                  side_effect=lambda n: '/x/' + n
+                                  if n == 'dsh' else None))
+
+    def test_build_create_rejects_it_and_names_the_key(self):
+        with contextlib.ExitStack() as st:
+            for cm in self._keyless_pod():
+                st.enter_context(cm)
+            create = st.enter_context(mock.patch.object(
+                server.ClaudeTaskManager, 'create_task'))
+            h = self._handler({'prompt': 'hi', 'assistant': DSH})
+            server.BrowserHandler.handle_claude_create_task(h)
+        body, status = self.responses[-1]
+        self.assertEqual(status, 400)
+        self.assertIn('DEEPSEEK_API_KEY', body['error'])
+        # The decisive assertion: no build was started at all.
+        create.assert_not_called()
+
+    def test_build_create_still_starts_a_ready_assistant(self):
+        with contextlib.ExitStack() as st:
+            for cm in (mock.patch.dict(os.environ,
+                                       {'DEEPSEEK_API_KEY': 'sk-x'}, clear=True),
+                       mock.patch.object(server.ProviderKeysManager,
+                                         'env_overlay', return_value={}),
+                       mock.patch.object(server.shutil, 'which',
+                                         side_effect=lambda n: '/x/' + n
+                                         if n == 'dsh' else None)):
+                st.enter_context(cm)
+            create = st.enter_context(mock.patch.object(
+                server.ClaudeTaskManager, 'create_task',
+                return_value={'task_id': 't1'}))
+            h = self._handler({'prompt': 'hi', 'assistant': DSH})
+            server.BrowserHandler.handle_claude_create_task(h)
+        self.assertEqual(self.responses[-1][1], 201)
+        self.assertEqual(create.call_args.kwargs['assistant'], DSH)
+
+    def test_build_create_leaves_other_assistants_alone(self):
+        # An unrelated request must not pay for this gate.
+        with contextlib.ExitStack() as st:
+            for cm in self._keyless_pod():
+                st.enter_context(cm)
+            create = st.enter_context(mock.patch.object(
+                server.ClaudeTaskManager, 'create_task',
+                return_value={'task_id': 't1'}))
+            h = self._handler({'prompt': 'hi', 'assistant': 'claude'})
+            server.BrowserHandler.handle_claude_create_task(h)
+        self.assertEqual(self.responses[-1][1], 201)
+        create.assert_called_once()
+
+    def test_chat_create_rejects_it_and_opens_no_thread(self):
+        with contextlib.ExitStack() as st:
+            for cm in self._keyless_pod():
+                st.enter_context(cm)
+            for cm in (mock.patch.object(server, 'HYPERVISOR_ENABLED', True),
+                       mock.patch.object(server, '_HYPERVISOR_AVAILABLE', True),
+                       mock.patch.object(server, 'cto_available',
+                                         return_value=True),
+                       mock.patch.object(server.ProjectsManager, 'get_project',
+                                         return_value=None)):
+                st.enter_context(cm)
+            create = st.enter_context(mock.patch.object(
+                server.HypervisorSession, 'create'))
+            h = self._handler({'message': 'hi', 'assistant': DSH})
+            server.BrowserHandler.handle_hypervisor_create_thread(h)
+        body, status = self.responses[-1]
+        self.assertEqual(status, 400)
+        self.assertIn('DEEPSEEK_API_KEY', body['error'])
+        create.assert_not_called()
 
 
 class RegistryEntryTest(unittest.TestCase):

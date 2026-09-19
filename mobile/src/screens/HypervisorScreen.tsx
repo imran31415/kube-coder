@@ -83,6 +83,7 @@ import { useKeyboardHeight, useKeyboardVisible } from '../util/useKeyboard';
 import { SearchPicker } from '../components/SearchPicker';
 import { ProjectBriefSheet } from '../components/ProjectBriefSheet';
 import { MODE_OPTIONS, personaLabel } from '../util/threadMode';
+import { assistantMarker, missingKeyMessage } from '../util/assistantReady';
 import { colors, font, radius, space } from '../theme';
 
 const SUGGESTIONS = [
@@ -588,6 +589,9 @@ export default function HypervisorScreen() {
    *  preamble — the one thing a creation-time mode cannot recover from. */
   async function send(text?: string, override?: { mode?: string; projectId?: string }) {
     if (sending || attachments.some((a) => a.status === 'uploading')) return;
+    // The button is disabled for this case; the gate lives here too because the
+    // suggestion chips call send() directly (#702).
+    if (!activeId && agentMissingKey) return;
     const msg = (text ?? draft).trim();
     const paths = attachments
       .filter((a) => a.status === 'ready' && a.path)
@@ -671,7 +675,20 @@ export default function HypervisorScreen() {
   const agentName = (activeId ? activeThread?.assistant : selectedAssistant || config?.defaultAssistant) || 'agent';
   const working = status === 'running';
   const blocked = sending || working;
-  const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
+  // The agent a NEW chat would open on is installed but has no provider key
+  // (#702). The composer stays typeable — losing a half-written draft to a
+  // missing key would be its own bug — but Send is off and the notice says
+  // which key to save. An OPEN thread is exempt: it exists already, and its
+  // turns surface their own auth errors.
+  const agentMissingKey = activeId
+    ? null
+    : missingKeyMessage(
+        config?.assistants?.find(
+          (a) => a.id === (selectedAssistant || config?.defaultAssistant),
+        ),
+      );
+  const canSend =
+    !agentMissingKey && (!!draft.trim() || attachments.some((a) => a.status === 'ready'));
   const empty = !activeId && events.length === 0;
   // Model switcher (#308): an open thread uses its own assistant + stored model;
   // a not-yet-created chat uses the new-chat assistant + its default. The picker
@@ -946,11 +963,21 @@ export default function HypervisorScreen() {
               onChange={chooseAssistant}
               options={config!.assistants.map((a) => ({
                 value: a.id,
-                label: a.label || a.id,
+                label: `${a.label || a.id}${assistantMarker(a)}`,
               }))}
             />
           </View>
         )}
+
+        {/* Installed but unauthenticated (#702) — the agent is offered so it can
+            be found, and says what it wants instead of opening a chat whose
+            every turn fails with "Authentication Fails". Send stays disabled
+            while this is showing (see canSend above). */}
+        {agentMissingKey ? (
+          <Text style={styles.agentNeedsKey} accessibilityRole="alert">
+            {agentMissingKey}
+          </Text>
+        ) : null}
 
         {/* Mode picker (#683) — which preamble a NEW chat is created with, the
             phone's half of the web sidebar's Mode control. It maps 1:1 onto the
@@ -2042,6 +2069,15 @@ const styles = StyleSheet.create({
   // One picker per row: the pickers are self-labelling, and stacking them
   // keeps each at a full touch height instead of competing for a rail.
   pickerRow: { paddingHorizontal: space.md, paddingBottom: space.xs },
+  // Installed-but-unauthenticated agent (#702) — sits under the Agent picker
+  // and explains why Send is off. Warning hue, not the error red: it is an
+  // action the user can take in Settings, not a failure that already happened.
+  agentNeedsKey: {
+    paddingHorizontal: space.md,
+    paddingBottom: space.xs,
+    color: colors.warning,
+    fontSize: font.size.sm,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',

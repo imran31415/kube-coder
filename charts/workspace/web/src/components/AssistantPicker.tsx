@@ -1,4 +1,10 @@
 import type { HypervisorAssistant } from '../api/hypervisor';
+import { routeHref } from '../store/router';
+import {
+  assistantMarker,
+  missingKeyMessage,
+  PROVIDER_KEYS_PATH,
+} from '../util/assistantReady';
 import './AssistantPicker.css';
 
 /**
@@ -13,8 +19,10 @@ import './AssistantPicker.css';
  * the effort dial alone without re-deriving the gating rules.
  *
  * Gating is entirely server-driven and identical for all three:
- *   • only assistants the server lists are offered (binary/key gated), so a
- *     keyless deployment never shows a dead provider;
+ *   • only assistants the server lists are offered (binary gated), so a
+ *     deployment never shows an agent it hasn't installed — one it HAS
+ *     installed but has no key for is listed and marked instead of hidden
+ *     (#702), because a silently missing option reads as a broken install;
  *   • the model select renders only when that assistant has a model list;
  *   • the effort select renders only when that assistant's CLI has an effort
  *     knob (`efforts` non-empty) — the rest simply never see the control.
@@ -112,6 +120,8 @@ export function AssistantPicker({
   const current = assistants.find((a) => a.id === assistant);
   const models = current?.models ?? [];
   const efforts = current?.efforts ?? [];
+  // Non-null when the picked agent is installed but has no provider key (#702).
+  const needsKey = missingKeyMessage(current);
 
   return (
     <div class="assistant-picker">
@@ -137,10 +147,20 @@ export function AssistantPicker({
               <option key={a.id} value={a.id}>
                 {a.label}
                 {a.free ? ' · free' : ''}
+                {assistantMarker(a)}
               </option>
             ))}
           </select>
         </label>
+      )}
+
+      {needsKey && (
+        <p class="ap-note ap-note-warn" role="alert">
+          {needsKey}{' '}
+          <a href={routeHref(PROVIDER_KEYS_PATH)} target="_blank" rel="noopener noreferrer">
+            Open provider settings
+          </a>
+        </p>
       )}
 
       {models.length > 0 && (

@@ -578,8 +578,11 @@ assistant:
   # harness's ACP JSON-RPC server. Both coexist; pick per task.
   #
   # There is NO key to set here — it reuses assistant.deepseek.apiKey (the same
-  # DEEPSEEK_API_KEY). The dashboard lists it only when that key is set AND the
-  # `dsh` binary resolves, so an older image simply doesn't offer it.
+  # DEEPSEEK_API_KEY). The dashboard lists it whenever the `dsh` binary
+  # resolves, so an older image simply doesn't offer it. Without the key it is
+  # listed as "needs API key" and cannot be started (#702) — visible so the
+  # user can discover it, blocked so they never land in a failing turn. Saving
+  # the key in Settings makes it usable on the next picker load, no redeploy.
   deepseekHarness:
     model: ""                             # KC_DSH_MODEL (blank => deepseek-v4-flash)
     # Optional: comma-separated list that fully REPLACES the built-in model

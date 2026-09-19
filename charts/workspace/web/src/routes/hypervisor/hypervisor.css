@@ -1897,3 +1897,16 @@
 .hv-ap-row--build, .hv-ap-row--subagent { padding-left: 6px; border-left: 2px solid transparent; }
 .hv-ap-row--build { border-left-color: color-mix(in srgb, var(--success) 55%, transparent); }
 .hv-ap-row--subagent { border-left-color: color-mix(in srgb, var(--hv-ap-agent) 55%, transparent); }
+
+/* Installed-but-unauthenticated agent (#702) — an action to take, not a
+   failure that already happened, so it is the warning hue and carries a link
+   to the section that fixes it. */
+.hv-banner-warn {
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--warning-text);
+}
+.hv-banner-warn a {
+  color: inherit;
+  text-decoration: underline;
+}

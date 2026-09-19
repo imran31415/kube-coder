@@ -52,3 +52,14 @@
   line-height: 1.4;
   color: var(--text-subtle);
 }
+
+/* Installed-but-unauthenticated agent (#702) — reads as an action to take,
+   not as an error, so it is the warning hue rather than the danger one. */
+.ap-note-warn {
+  color: var(--warning-text);
+}
+
+.ap-note-warn a {
+  color: inherit;
+  text-decoration: underline;
+}

@@ -25,6 +25,7 @@ import {
   assistantEffortDefault,
   assistantEffortCap,
   assistantNeedsDisclosure,
+  assistantMissingKey,
   setSelectedAssistant,
   setActiveThreadModel,
   setActiveThreadEffort,
@@ -43,6 +44,7 @@ import type { ThreadStatus, HypervisorThread } from '../../api/hypervisor';
 import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { restoreTarget } from '../../store/lastSession';
+import { assistantMarker, PROVIDER_KEYS_PATH } from '../../util/assistantReady';
 import {
   initProjects,
   matchesProjectDefaults,
@@ -317,6 +319,12 @@ export function HypervisorRoute() {
     ? activeThread?.model || models[0] || ''
     : selectedModel.value || models[0] || '';
 
+  // Non-null when the agent a NEW chat would use is installed but keyless
+  // (#702). An OPEN thread is left alone: it already exists, and its own turns
+  // report their own errors.
+  const agentMissingKey = activeThreadId.value
+    ? null
+    : assistantMissingKey(effectiveAssistant);
   // Effort selector (#362), twin of the model switcher. Same 5-stop list for
   // every assistant that has a knob (empty → hidden); a pick above the
   // assistant's native cap is honestly shown as "→ <cap>".
@@ -669,11 +677,27 @@ export function HypervisorRoute() {
             onChange={(v) => setSelectedAssistant(v)}
             options={(cfg?.assistants ?? []).map((a) => ({
               value: a.id,
-              label: a.label,
+              label: `${a.label}${assistantMarker(a)}`,
               hint: [a.free ? 'free' : '', a.model || ''].filter(Boolean).join(' · '),
             }))}
           />
           {activeThreadId.value && <span class="muted">Start a new chat to change agents.</span>}
+          {/* Installed but unauthenticated (#702) — the entry is offered so the
+              user can find it, and says what it wants instead of opening a chat
+              whose every turn fails with "Authentication Fails". The composer
+              refuses to send while this is showing (see Chat.tsx). */}
+          {agentMissingKey && (
+            <span class="hv-agent-disclosure" role="alert">
+              {agentMissingKey}{' '}
+              <a
+                href={routeHref(PROVIDER_KEYS_PATH)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open provider settings
+              </a>
+            </span>
+          )}
           {assistantNeedsDisclosure(effectiveAssistant) && (
             <span class="hv-agent-disclosure" role="note">
               ⚠️ Free models may use your prompts + code for training — avoid

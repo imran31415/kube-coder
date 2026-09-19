@@ -5,7 +5,6 @@ import { Button } from '../../components/primitives/Button';
 import { Input } from '../../components/primitives/Input';
 import { Icon } from '../../components/Icon';
 import { randomBuildName } from '../../util/randomName';
-import { navigate, currentPath } from '../../store/router';
 import { pushToast, sheetOpen } from '../../store/ui';
 import {
   deleteTemplate,
@@ -14,6 +13,13 @@ import {
   suggestTemplateName,
 } from '../../store/promptTemplates';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import {
+  assistantMarker,
+  isAssistantReady,
+  missingKeyMessage,
+  PROVIDER_KEYS_PATH,
+} from '../../util/assistantReady';
+import { navigate, currentPath, routeHref } from '../../store/router';
 import './new-task.css';
 
 /**
@@ -49,6 +55,13 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
 
   async function onSubmit(e: Event) {
     e.preventDefault();
+    // The button is disabled for this case, but a form can still submit via
+    // Enter in some browsers — and the key can be cleared in another tab
+    // between load and submit. Refuse rather than start a doomed build.
+    if (notReady) {
+      setError(missingKey);
+      return;
+    }
     setBusy(true);
     setError(null);
     // A non-empty prompt boots the session already working on it; an empty
@@ -116,6 +129,14 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const selectedAssistant = assistants.find((a) => a.id === assistant);
   const defaultAssistantLabel =
     (assistants.find((a) => a.default) ?? assistants[0])?.label ?? 'claude';
+  // An agent that is installed but has no provider key (#702) stays in the
+  // list — hiding it made a working install look broken — but it must not be
+  // able to start a build, or the user lands in a terminal that fails on its
+  // first turn with "Authentication Fails". The list is re-fetched on every
+  // mount, so saving the key in Settings makes it startable next time the
+  // dialog opens, with no redeploy.
+  const missingKey = missingKeyMessage(selectedAssistant);
+  const notReady = !isAssistantReady(selectedAssistant);
 
   return (
     <form class="ntf" onSubmit={onSubmit}>
@@ -183,9 +204,22 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
                 {a.label || a.id}
                 {a.free ? ' · free' : ''}
                 {a.default ? ' · default' : ''}
+                {assistantMarker(a)}
               </option>
             ))}
           </select>
+          {missingKey && (
+            <span class="ntf-hint ntf-needs-key" role="alert">
+              {missingKey}{' '}
+              <a
+                href={routeHref(PROVIDER_KEYS_PATH)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open provider settings
+              </a>
+            </span>
+          )}
         </label>
       </div>
 
@@ -312,7 +346,12 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
 
       <div class="ntf-actions">
         <Button variant="ghost" onClick={onClose} type="button">Cancel</Button>
-        <Button variant="primary" type="submit" disabled={busy}>
+        <Button
+          variant="primary"
+          type="submit"
+          disabled={busy || notReady}
+          title={missingKey ?? undefined}
+        >
           <Icon name="play" size={14} /> {busy ? 'Starting…' : 'Start build'}
         </Button>
       </div>

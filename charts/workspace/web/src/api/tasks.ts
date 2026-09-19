@@ -112,6 +112,13 @@ export interface AssistantOption {
   /** Provider may train on submitted data (Zen free models, #395) — drives the
    *  data-training disclosure note near the picker. */
   trainingDisclosure?: boolean;
+  /** False when the assistant is installed but not authenticated (#702). The
+   *  entry is still listed — hiding it made a working install look broken —
+   *  but it cannot start a build until `needs` is saved in Settings. Absent is
+   *  read as ready so an older server's payload still works. */
+  ready?: boolean;
+  /** The provider key a not-ready entry is waiting for, e.g. DEEPSEEK_API_KEY. */
+  needs?: string;
 }
 
 export interface WorkdirOption {
