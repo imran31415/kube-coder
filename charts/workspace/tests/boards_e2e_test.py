@@ -643,6 +643,257 @@ class RoundTripTests(ReviewTests):
         self.assertEqual(row['resume_tier'], 'fresh')
 
 
+# ── 4b. queue order under concurrency (#704) ───────────────────────────────
+
+DISPOSITION_RANK = {d: i for i, d in enumerate(
+    ['needs_review', 'needs_rescoping', 'blocked', 'failed', 'completed',
+     'rejected', 'unreported'])}
+
+
+class ReviewOrderAndConcurrencyTests(_E2E):
+    """The review queue's order, and the ids the Runs table links by, while
+    agents report and a human decides at the same time (#704).
+
+    A run works its items in waves of `concurrency`. Inside a wave every agent
+    stages and reports at the same instant, behind a barrier, and in the middle
+    wave a human approves and rejects earlier cards too. After each wave the
+    queue must be complete, have no duplicates, be in order — and already
+    include that wave. It is read straight after the last write with no sleep,
+    because the UI refreshes on the event that write publishes; a queue that
+    only caught up later would show a stale count.
+    """
+
+    #: What each ticket's agent concludes. Staged and unstaged, needing a human
+    #: and not. An unstaged `completed` or `failed` settles itself, so `completed`
+    #: ends up with a decided card between two waiting ones, and `failed` is a
+    #: fully decided group that must drop below `completed`.
+    PLAN = {
+        1: 'needs_review', 2: 'needs_rescoping', 3: 'blocked',
+        4: 'completed+staged', 5: 'needs_review', 6: 'failed',
+        7: 'needs_review', 8: 'blocked', 9: 'completed',
+        10: 'needs_review', 11: 'completed+staged', 12: 'needs_review',
+    }
+    #: Conclusions that need no human, so their card is decided on arrival.
+    SETTLES_ITSELF = ('completed', 'failed')
+
+    def setUp(self):
+        super().setUp()
+        # Six more tickets, so two-digit numbers sort against one-digit ones
+        # for real. The stock `2026-02-0{n}` date stops being a date past 9.
+        for n in range(7, 13):
+            issue = VENDOR._issue(n, f'Ticket {n}', state='open')
+            issue['updated_at'] = f'2026-03-{n:02d}T00:00:00Z'
+            VENDOR.issues.append(issue)
+            VENDOR.comments[n] = []
+        # A build finishes when the test says so, not on a timer.
+        self.finished = set()
+        p = mock.patch.object(
+            CTM, 'task_status',
+            lambda t: 'waiting-for-input' if t in self.finished else 'running')
+        p.start()
+        self.addCleanup(p.stop)
+
+    # -- helpers --
+    def work(self, row):
+        """One agent: stage a write when its conclusion needs one, then report."""
+        n = int(row['key'])
+        plan = self.PLAN[n]
+        disposition = plan.split('+')[0]
+        calls = []
+        if disposition == 'needs_review' or plan.endswith('+staged'):
+            calls.append(self.agent_stages(row['id'], f'Reply for ticket {n}.'))
+        reason = '' if disposition == 'completed' else f'Question about {n}.'
+        calls.append(self.agent_reports(row['id'], disposition, reason=reason))
+        return calls
+
+    def concurrently(self, jobs):
+        """Start every job at the same instant; return their results in order."""
+        barrier = threading.Barrier(len(jobs))
+        results = [None] * len(jobs)
+        errors = []
+
+        def go(i, job):
+            try:
+                barrier.wait(timeout=10)
+                results[i] = job()
+            except Exception as e:      # surfaced below, not lost in a thread
+                errors.append(e)
+
+        threads = [threading.Thread(target=go, args=(i, job))
+                   for i, job in enumerate(jobs)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        self.assertEqual(errors, [])
+        return results
+
+    def queue(self):
+        status, body = self.req('GET', '/api/boards/e2e/review')
+        self.assertEqual(status, 200, body)
+        return body
+
+    def assert_in_order(self, body):
+        groups = body['groups']
+        cards = [r for g in groups for r in g['items']]
+        ids = [r['item_id'] for r in cards]
+        self.assertEqual(len(ids), len(set(ids)), 'an item is in the queue twice')
+        self.assertEqual(body['total'], len(cards))
+        self.assertEqual(body['open'], sum(1 for r in cards if r['open']))
+
+        # Every group holding a waiting card comes before every group without.
+        banded = [g['open'] > 0 for g in groups]
+        self.assertEqual(banded, sorted(banded, reverse=True), groups)
+        # ...and the fixed disposition order holds inside each band.
+        for band in (True, False):
+            ranks = [DISPOSITION_RANK[g['disposition']]
+                     for g in groups if (g['open'] > 0) is band]
+            self.assertEqual(ranks, sorted(ranks))
+
+        for g in groups:
+            self.assertEqual(g['open'], sum(1 for r in g['items'] if r['open']))
+            decided = [not r['open'] for r in g['items']]
+            self.assertEqual(decided, sorted(decided),
+                             f'{g["disposition"]}: a decided card is above a '
+                             f'waiting one')
+            for waiting in (True, False):
+                numbers = [int(r['item_key']) for r in g['items']
+                           if r['open'] is waiting]
+                self.assertEqual(numbers, sorted(numbers),
+                                 f'{g["disposition"]}: not in ticket order')
+        return cards
+
+    def decisions(self):
+        """A human approving one waiting card and rejecting another, as jobs
+        that can race a wave of agents."""
+        waiting = [r for r in VM.list_records('e2e') if r['state'] == 'pending']
+        approve = next(r for r in waiting if r['pending_actions'])
+        reject = next(r for r in waiting if r['item_id'] != approve['item_id'])
+        self.decided = {'approved': approve, 'rejected': reject}
+        return [
+            lambda: [self.req(
+                'POST', f'/api/boards/e2e/staged/{approve["item_id"]}/approve',
+                {'content_hash': approve['content_hash'],
+                 'approval_id': APPROVAL})],
+            lambda: [self.req(
+                'POST', f'/api/boards/e2e/staged/{reject["item_id"]}/reject',
+                {'approval_id': OTHER_APPROVAL, 'reason': 'not this one'})],
+        ]
+
+    # -- tests --
+    @unittest.skipUnless(bstore.real_flock(), 'fcntl.flock is shimmed here')
+    def test_the_queue_stays_complete_and_ordered_while_agents_and_a_human_race(self):
+        self.board()
+        status, run = self.req('POST', '/api/boards/e2e/runs',
+                               {'mode': 'propose', 'concurrency': 4,
+                                'select': {'limit': 12, 'order': 'key'}})
+        self.assertEqual(status, 201, run)
+        self.assertEqual(len(run['items']), 12)
+
+        reported, waves = {}, 0
+        while True:
+            RM._reap(run['id'])
+            RM._dispatch(run['id'])
+            working = [r for r in RM.get(run['id'])['items'].values()
+                       if r['state'] == 'working' and r['id'] not in reported]
+            if not working:
+                break
+            waves += 1
+            self.assertLessEqual(len(working), 4)
+            # View session links to the Build — so a working row always has one.
+            for r in working:
+                self.assertTrue(r['task_id'], f'{r["key"]} is working with no task')
+
+            jobs = [lambda r=r: self.work(r) for r in working]
+            if waves == 2:
+                jobs += self.decisions()
+            results = self.concurrently(jobs)
+            for calls in results:
+                for code, body in calls:
+                    self.assertIn(code, (200, 202), body)
+
+            for r in working:
+                reported[r['id']] = r
+                self.finished.add(r['task_id'])
+            # No lag: the read straight after the wave already has all of it.
+            cards = self.assert_in_order(self.queue())
+            self.assertTrue(set(reported) <= {c['item_id'] for c in cards})
+
+        self.assertEqual(waves, 3)
+        self.assertEqual(len(reported), 12)
+
+        # Exactly the cards that should be waiting are — the decisions landed
+        # even though agents were writing to the same board at the same time.
+        body = self.queue()
+        cards = self.assert_in_order(body)
+        decided = {r['item_id'] for r in self.decided.values()}
+        expected_open = {r['id'] for r in reported.values()
+                         if self.PLAN[int(r['key'])] not in self.SETTLES_ITSELF
+                         } - decided
+        self.assertEqual({c['item_id'] for c in cards if c['open']}, expected_open)
+        self.assertEqual(body['open'], len(expected_open))
+        # The fully decided `failed` group sits below `completed`, which still
+        # has waiting cards, even though it comes first in disposition order.
+        order = [g['disposition'] for g in body['groups']]
+        self.assertLess(order.index('completed'), order.index('failed'))
+
+        approved = int(self.decided['approved']['item_key'])
+        rejected = int(self.decided['rejected']['item_key'])
+        self.assertEqual(len(self.comments_on(approved)), 1)
+        self.assertEqual(self.comments_on(rejected), [])
+
+        # The Runs table links an outcome to its card by id, so every row that
+        # reported must have exactly that card.
+        by_id = {c['item_id']: c for c in cards}
+        for row in RM.get(run['id'])['items'].values():
+            self.assertTrue(row.get('disposition'), row)
+            self.assertIn(row['id'], by_id)
+            self.assertEqual(by_id[row['id']]['item_key'], row['key'])
+
+    def test_ticket_order_puts_nine_before_ten_through_the_api(self):
+        """The same rule without the concurrency, so a failure here points at
+        the sort rather than at a race."""
+        self.board()
+        _s, run = self.req('POST', '/api/boards/e2e/runs',
+                           {'mode': 'propose', 'concurrency': 4,
+                            'select': {'limit': 12, 'order': 'key'}})
+        wanted = {12, 10, 9, 1}
+        while True:
+            RM._reap(run['id'])
+            RM._dispatch(run['id'])
+            working = [r for r in RM.get(run['id'])['items'].values()
+                       if r['state'] == 'working'
+                       and r['task_id'] not in self.finished]
+            if not working:
+                break
+            for r in working:
+                n = int(r['key'])
+                if n in wanted:
+                    self.agent_stages(r['id'], f'Reply for ticket {n}.')
+                    self.agent_reports(r['id'], 'needs_review',
+                                       reason=f'Check ticket {n}.')
+                self.finished.add(r['task_id'])
+        groups = self.queue()['groups']
+        self.assertEqual([r['item_key'] for r in groups[0]['items']],
+                         ['1', '9', '10', '12'])
+
+    def test_reporting_the_same_item_twice_still_makes_one_card(self):
+        self.board()
+        _s, run = self.req('POST', '/api/boards/e2e/runs',
+                           {'mode': 'propose', 'concurrency': 1,
+                            'select': {'limit': 1, 'order': 'key'}})
+        RM._dispatch(run['id'])
+        row = next(r for r in RM.get(run['id'])['items'].values()
+                   if r['state'] == 'working')
+        self.agent_reports(row['id'], 'needs_rescoping', reason='Which invoice?')
+        self.agent_reports(row['id'], 'needs_rescoping',
+                           reason='Which invoice, again?')
+        body = self.queue()
+        self.assertEqual([r['item_id'] for g in body['groups']
+                          for r in g['items']], [row['id']])
+        self.assertEqual(body['open'], 1)
+
+
 # ── 5. idempotency across runs ─────────────────────────────────────────────
 
 class IdempotencyTests(_E2E):

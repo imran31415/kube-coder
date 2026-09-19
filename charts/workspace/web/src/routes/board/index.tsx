@@ -3,11 +3,13 @@ import {
   boardsError,
   boardsLive,
   boardStanding,
+  boardTab,
   lastRunSync,
+  openReviewBreakdown,
   openReviewCount,
+  openReviewFor,
   refreshBoards,
   refreshReview,
-  reviewFocusItemId,
   selectBoard,
   selectedBoardId,
   selectedItemId,
@@ -17,7 +19,7 @@ import {
   stopRunPolling,
   type BoardTab,
 } from '../../store/boards';
-import { elapsedLabel } from '../../api/boards';
+import { dispositionLabel, elapsedLabel } from '../../api/boards';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { BoardRail } from './BoardRail';
 import { ItemList } from './ItemList';
@@ -63,7 +65,12 @@ function readCollapsed(): boolean {
 export function BoardRoute() {
   const narrow = useMediaQuery('(max-width: 860px)');
   const [railCollapsed, setRailCollapsed] = useState(readCollapsed);
-  const [tab, setTab] = useState<Tab>('items');
+  // In the store, not here: the Runs table opens a Review card, and a trip out
+  // through "View session" should come back to the tab it left from (#704).
+  const tab = boardTab.value;
+  const setTab = (t: Tab) => {
+    boardTab.value = t;
+  };
   const [connecting, setConnecting] = useState(false);
 
   useEffect(() => {
@@ -77,13 +84,9 @@ export function BoardRoute() {
     const boardId = params.get('board');
     const reviewItem = params.get('review');
     if (boardId) {
-      void selectBoard(boardId).then(() => {
-        if (reviewItem !== null) void refreshReview(boardId);
-      });
-      if (reviewItem !== null) {
-        reviewFocusItemId.value = reviewItem;
-        setTab('review');
-      }
+      // The queue itself is loaded by the board effect below.
+      void selectBoard(boardId);
+      if (reviewItem !== null) openReviewFor(reviewItem);
     }
     return () => stopBoardsEvents();
   }, []);
@@ -99,6 +102,15 @@ export function BoardRoute() {
     return () => stopRunPolling();
   }, [boardId]);
 
+  // The review queue is read here too, on arrival and on every board switch.
+  // The Review badge and "awaiting you" sit on every tab; left to ReviewPanel,
+  // both said nothing was waiting until somebody happened to open Review
+  // (#704). The read is a local file, not a vendor call, and later changes
+  // arrive as `boards.review` events.
+  useEffect(() => {
+    if (boardId) void refreshReview(boardId);
+  }, [boardId]);
+
   function toggleRail() {
     setRailCollapsed((prev) => {
       const next = !prev;
@@ -112,6 +124,13 @@ export function BoardRoute() {
   }
 
   const pending = openReviewCount.value;
+  const pendingLabel =
+    pending === 0
+      ? ''
+      : `${pending} awaiting your decision: ` +
+        openReviewBreakdown.value
+          .map((g) => `${g.open} ${dispositionLabel(g.disposition)}`)
+          .join(' · ');
   const standing = boardStanding.value;
 
   // The detail column only earns its width once something is in it. With no
@@ -152,11 +171,18 @@ export function BoardRoute() {
                 type="button"
                 class={`board-tab ${tab === t.id ? 'is-active' : ''}`}
                 aria-current={tab === t.id ? 'page' : undefined}
+                aria-label={
+                  t.id === 'review' && pending > 0
+                    ? `${t.label}, ${pendingLabel}`
+                    : undefined
+                }
                 onClick={() => setTab(t.id)}
               >
                 {t.label}
                 {t.id === 'review' && pending > 0 && (
-                  <span class="board-tab-badge mono">{pending}</span>
+                  <span class="board-tab-badge mono" title={pendingLabel}>
+                    {pending}
+                  </span>
                 )}
                 {/* A run in flight is the one thing that changes while you are
                     looking at another tab, so it is the one thing the tab strip

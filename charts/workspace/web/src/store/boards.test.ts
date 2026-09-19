@@ -20,6 +20,7 @@ import {
   editStaged,
   refreshReview,
   reviewGroups,
+  reviewBoardId,
   reviewError,
   openReviewCount,
   newApprovalId,
@@ -307,8 +308,11 @@ describe('boards review store', () => {
       total: 2,
       open: 1,
     });
+    // The badge counts the SELECTED board's queue (#704).
+    selectedBoardId.value = 'b1';
     await refreshReview('b1');
     expect(reviewGroups.value).toHaveLength(1);
+    expect(reviewBoardId.value).toBe('b1');
     expect(openReviewCount.value).toBe(1);
   });
 
@@ -691,6 +695,7 @@ describe('boardStanding — what is happening and what to do next', () => {
         ],
       },
     ];
+    reviewBoardId.value = 'b1';
     expect(boardStanding.value.awaiting).toBe(1);
     expect(boardStanding.value.nextTab).toBe('review');
   });

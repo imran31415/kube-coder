@@ -18,6 +18,9 @@ import {
   refreshBoardMetrics,
   runFormFor,
   setRunForm,
+  reviewGroups,
+  reviewBoardId,
+  openReviewFor,
 } from '../../store/boards';
 import {
   clampLabel,
@@ -26,10 +29,10 @@ import {
   runItemOrder,
   isRunItemLive,
   dispositionLabel,
-  elapsedLabel,
 } from '../../api/boards';
 import { MutatorOnly } from '../../components/MutatorOnly';
-import type { BoardRun, BoardRunSummary } from '../../api/boards';
+import { navigate, routeHref } from '../../store/router';
+import type { BoardRun, BoardRunItem, BoardRunSummary } from '../../api/boards';
 
 /**
  * Runs (#588 Phase 4/6) — start N items working in parallel and watch them.
@@ -427,19 +430,23 @@ function RunTally({ run }: { run: BoardRunSummary }) {
  *
  * Sorting live work to the top and giving each state a pill means the answer
  * to "what is happening right now" is the top of the table, every time.
+ *
+ * There is deliberately no elapsed time (#704). The only timestamp a row has is
+ * `updated_at`, which the server rewrites on every change to the row, so a
+ * clock built on it measured "since this row last changed" rather than "time
+ * spent on this ticket" — a number that looked like progress and was not.
  */
 function RunItemTable({ run }: { run: BoardRun }) {
-  // Elapsed times only tick while something is actually live; a settled run
-  // must not hold a timer open for a table nobody is watching change.
   const items = Object.values(run.items ?? {});
-  const anyLive = items.some((i) => isRunItemLive(i.state));
-  const [now, setNow] = useState(() => Date.now());
 
-  useEffect(() => {
-    if (!anyLive) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [anyLive]);
+  // Items that have a review card on THIS board — the only outcomes that can
+  // open one. A build that failed before reporting has none, and a queue read
+  // for another board must not make this board's rows look clickable.
+  const reviewable = new Set(
+    reviewBoardId.value === run.board_id
+      ? reviewGroups.value.flatMap((g) => g.items).map((r) => String(r.item_id))
+      : [],
+  );
 
   if (items.length === 0) {
     return <p class="board-empty">This run has no items.</p>;
@@ -461,6 +468,7 @@ function RunItemTable({ run }: { run: BoardRun }) {
           <th scope="col">Title</th>
           <th scope="col">State</th>
           <th scope="col">Outcome</th>
+          <th scope="col">Session</th>
         </tr>
       </thead>
       <tbody>
@@ -477,25 +485,34 @@ function RunItemTable({ run }: { run: BoardRun }) {
                   )}
                   {runItemStateLabel(item.state)}
                 </span>
-                {/* Elapsed only while it is live: on a settled item the
-                    number would keep climbing forever and mean nothing. */}
-                {live && item.updated_at > 0 && (
-                  <span class="board-run-item-elapsed mono">
-                    {elapsedLabel(item.updated_at, now)}
-                  </span>
-                )}
               </td>
               <td>
                 {/* A `failed` disposition next to a FAILED state pill says the
                     same word twice; the error underneath is the part that
                     carries information. */}
-                {item.disposition && item.disposition !== item.state && (
-                  <span
-                    class={`board-disposition board-disposition-${item.disposition}`}
-                  >
-                    {dispositionLabel(item.disposition)}
-                  </span>
-                )}
+                {item.disposition &&
+                  item.disposition !== item.state &&
+                  (reviewable.has(String(item.id)) ? (
+                    // The outcome is where a reviewer's next step starts, so
+                    // it opens that ticket's card rather than leaving them to
+                    // find it in the queue (#704). It appears as soon as the
+                    // review read that follows the agent's report lands.
+                    <button
+                      type="button"
+                      class={`board-disposition board-disposition-${item.disposition} board-outcome-link`}
+                      aria-label={`Open the review for ${item.key || item.id}: ${dispositionLabel(item.disposition)}`}
+                      onClick={() => openReviewFor(item.id)}
+                    >
+                      {dispositionLabel(item.disposition)}
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  ) : (
+                    <span
+                      class={`board-disposition board-disposition-${item.disposition}`}
+                    >
+                      {dispositionLabel(item.disposition)}
+                    </span>
+                  ))}
                 {item.error && (
                   <span class="board-run-item-error">{item.error}</span>
                 )}
@@ -503,10 +520,48 @@ function RunItemTable({ run }: { run: BoardRun }) {
                   <span class="board-run-item-waiting">—</span>
                 )}
               </td>
+              <td class="board-run-item-session">
+                <SessionLink item={item} />
+              </td>
             </tr>
           );
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * The way from a run item to the agent that worked it (#704).
+ *
+ * Every dispatched item is a Build, and its page is where the agent's live
+ * terminal and its history are. The table used to stop at the agent's
+ * conclusion, so "where is it working on this?" had no answer on screen.
+ *
+ * A real link, so it can be opened in a new tab; an ordinary click stays in
+ * the dashboard, and coming back returns to this tab (the tab lives in the
+ * store). An item with no Build yet — queued, or refused before it started —
+ * has nothing to link to and says so with a dash.
+ */
+function SessionLink({ item }: { item: BoardRunItem }) {
+  if (!item.task_id) {
+    return <span class="board-run-item-waiting">—</span>;
+  }
+  const path = `/tasks/${encodeURIComponent(item.task_id)}`;
+  return (
+    <a
+      class="board-run-session-link"
+      href={routeHref(path)}
+      aria-label={`View the session for ${item.key || item.id}`}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+          return;
+        }
+        e.preventDefault();
+        navigate(path);
+      }}
+    >
+      View session
+    </a>
   );
 }

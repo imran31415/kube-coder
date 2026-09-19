@@ -1016,11 +1016,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.board-run-item-elapsed {
-  margin-left: var(--size-2);
-  font-size: var(--text-2xs);
-  color: var(--text-subtle);
-}
 .board-run-item-waiting { color: var(--text-subtle); }
 /* A live row is the one the eye should land on first. */
 .board-run-item-working td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
@@ -1028,6 +1023,75 @@
 /* Dispositions that had no colour and so read as ordinary text. */
 .board-disposition-needs_rescoping { color: var(--warn); }
 .board-disposition-rejected { color: var(--text-subtle); }
+
+/* A run item's outcome that has a review card is a way to that card (#704).
+   It keeps the disposition's own colour and casing, and adds just enough
+   outline and hover to read as something to press. */
+.board-outcome-link {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-1);
+  margin: 0;
+  padding: 2px var(--size-2);
+  background: none;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: var(--radius-pill);
+  font: inherit;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.board-outcome-link:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border-color: currentColor;
+}
+.board-outcome-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The card someone was sent to takes focus; show it without the browser's
+   default ring on a whole card. */
+.board-review-card.is-focused:focus { outline: none; }
+.board-review-card.is-focused:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* In a table cell a disposition is a value, not a group heading: without this
+   the heading's bottom margin lifted plain outcomes above their row, next to
+   outcome buttons that sit on it. */
+.board-run-items .board-disposition {
+  display: inline-flex;
+  margin: 0;
+}
+
+/* The way from a run item to the agent that worked it (#704). */
+.board-run-item-session { white-space: nowrap; }
+.board-run-session-link {
+  color: var(--accent);
+  font-size: var(--text-xs);
+  text-decoration: none;
+}
+.board-run-session-link:hover { text-decoration: underline; }
+.board-run-session-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 860px) {
+  .board-outcome-link { min-height: 44px; }
+  .board-run-session-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  /* Five columns do not fit a phone. The table scrolls inside its own box
+     rather than pushing the whole page sideways, and titles give up width
+     first. */
+  .board-run-detail { overflow-x: auto; }
+  .board-run-item-title { max-width: 12rem; }
+}
 
 /* A decision in flight, and the decision once it has landed. */
 .board-review-card.is-deciding {

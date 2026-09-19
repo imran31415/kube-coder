@@ -135,6 +135,124 @@ class DispositionTests(unittest.TestCase):
         self.assertEqual(groups[0]['disposition'], 'unreported')
 
 
+def card(key, *, disposition='needs_review', state='pending', item_id=None,
+         created_at=0):
+    """A review record identified by its ticket key, for ordering tests."""
+    return rec(item_id=item_id or f'id-{key}', item_key=key,
+               disposition=disposition, state=state, created_at=created_at)
+
+
+def keys(group):
+    return [r['item_key'] for r in group['items']]
+
+
+class QueueOrderTests(unittest.TestCase):
+    """The review queue is read top to bottom by someone looking for what is
+    still waiting on them. Waiting cards first, then ticket order — and that
+    order is decided on the server so web and mobile agree (#704)."""
+
+    def test_waiting_cards_come_before_decided_ones_in_a_group(self):
+        groups = review.group_by_disposition([
+            card('1', state='approved'),
+            card('2'),
+            card('3', state='rejected'),
+            card('4'),
+        ])
+        self.assertEqual(keys(groups[0]), ['2', '4', '1', '3'])
+
+    def test_a_partially_applied_card_still_counts_as_waiting(self):
+        """`partial` means some writes failed — a human still has to look."""
+        groups = review.group_by_disposition([
+            card('1', state='approved'),
+            card('2', state='partial'),
+        ])
+        self.assertEqual(keys(groups[0]), ['2', '1'])
+        self.assertEqual(groups[0]['open'], 1)
+
+    def test_ticket_numbers_compare_as_numbers(self):
+        groups = review.group_by_disposition(
+            [card('10'), card('9'), card('2'), card('100')])
+        self.assertEqual(keys(groups[0]), ['2', '9', '10', '100'])
+
+    def test_prefixed_keys_compare_by_their_number(self):
+        groups = review.group_by_disposition(
+            [card('SUP-10'), card('SUP-9'), card('sup-11'), card('ABC-2')])
+        self.assertEqual(keys(groups[0]), ['ABC-2', 'SUP-9', 'SUP-10', 'sup-11'])
+
+    def test_a_card_with_no_key_sorts_by_its_item_id(self):
+        groups = review.group_by_disposition([
+            card('', item_id='30'),
+            card('', item_id='4'),
+        ])
+        self.assertEqual([r['item_id'] for r in groups[0]['items']], ['4', '30'])
+
+    def test_mixed_digit_and_text_keys_never_raise(self):
+        """A digit run compared with a text run would be `int < str`."""
+        groups = review.group_by_disposition(
+            [card('SUP-9'), card('9'), card('#9'), card('9a'), card('')])
+        self.assertEqual(len(groups[0]['items']), 5)
+
+    def test_equal_keys_are_ordered_by_item_id(self):
+        groups = review.group_by_disposition([
+            card('7', item_id='b'),
+            card('7', item_id='a'),
+        ])
+        self.assertEqual([r['item_id'] for r in groups[0]['items']], ['a', 'b'])
+
+    def test_each_group_reports_how_many_cards_are_waiting(self):
+        groups = review.group_by_disposition([
+            card('1'), card('2', state='approved'),
+            card('3', disposition='blocked', state='rejected'),
+        ])
+        by = {g['disposition']: g for g in groups}
+        self.assertEqual((by['needs_review']['open'], by['needs_review']['count']),
+                         (1, 2))
+        self.assertEqual((by['blocked']['open'], by['blocked']['count']), (0, 1))
+
+    def test_a_group_with_waiting_cards_rises_above_a_fully_decided_one(self):
+        groups = review.group_by_disposition([
+            card('1', state='approved'),
+            card('2', state='rejected'),
+            card('3', disposition='blocked'),
+        ])
+        self.assertEqual([g['disposition'] for g in groups],
+                         ['blocked', 'needs_review'])
+
+    def test_disposition_order_is_kept_within_each_band(self):
+        groups = review.group_by_disposition([
+            card('1', disposition='completed', state='approved'),
+            card('2', disposition='needs_review', state='approved'),
+            card('3', disposition='blocked'),
+            card('4', disposition='needs_rescoping'),
+            card('5', disposition=None),
+        ])
+        self.assertEqual(
+            [g['disposition'] for g in groups],
+            ['needs_rescoping', 'blocked', 'unreported',
+             'needs_review', 'completed'])
+
+    def test_order_does_not_depend_on_input_order_or_created_at(self):
+        """On a concurrent run the records arrive in whatever order the agents
+        finished. The queue must come out the same regardless."""
+        import random
+        base = [
+            card(str(n),
+                 disposition=('needs_review', 'needs_rescoping', 'blocked',
+                              'completed')[n % 4],
+                 state=('pending', 'approved', 'partial', 'rejected')[n % 3])
+            for n in range(1, 25)
+        ]
+        expected = review.group_by_disposition([dict(r) for r in base])
+        rng = random.Random(704)
+        for _ in range(200):
+            shuffled = [dict(r, created_at=rng.random()) for r in base]
+            rng.shuffle(shuffled)
+            got = review.group_by_disposition(shuffled)
+            self.assertEqual(
+                [(g['disposition'], keys(g)) for g in got],
+                [(g['disposition'], keys(g)) for g in expected])
+
+
 class ApprovalGuardTests(unittest.TestCase):
     def approvable(self, r, *, echoed='hash-1', fresh='hash-1',
                    approval_id=APPROVAL):

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   reviewGroups,
   reviewError,
@@ -28,7 +28,9 @@ import type { StagedAction, StagedRecord } from '../../api/boards';
  *
  * `needs_review` comes first because Mission Control puts `waiting` first for
  * the same reason: the group that needs a human is the one the page was opened
- * for. Grouping is done server-side so the mobile card list agrees with this.
+ * for. Groups that still hold a waiting card rise above fully decided ones, and
+ * inside a group waiting cards come first, then ticket order (#704). All of
+ * that is done server-side so the mobile card list agrees with this.
  */
 
 /** What a card says about itself while its decision is in flight. */
@@ -60,15 +62,48 @@ export function ReviewPanel() {
     if (boardId) void refreshReview(boardId);
   }, [boardId]);
 
+  const groups = reviewGroups.value;
+  const focusId = reviewFocusItemId.value;
+  const sectionRef = useRef<HTMLElement>(null);
+  const scrolledFor = useRef<string | null>(null);
+
+  // Arriving for one card — from a run item's outcome, a feed link or the
+  // waiting badge — only helps if that card is where the eye lands (#704). The
+  // highlight alone left it wherever the queue happened to put it, often below
+  // the fold. Once per request: re-running on every queue refresh would drag
+  // the page back to the card while someone scrolls through the rest. It also
+  // re-runs when the queue arrives, for a card that was not loaded yet.
+  useEffect(() => {
+    if (!focusId) {
+      scrolledFor.current = null;
+      return;
+    }
+    if (scrolledFor.current === focusId || !sectionRef.current) return;
+    const card = Array.from(
+      sectionRef.current.querySelectorAll<HTMLElement>('[data-item-id]'),
+    ).find((el) => el.getAttribute('data-item-id') === focusId);
+    if (!card) return;
+    scrolledFor.current = focusId;
+    const reduceMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    card.scrollIntoView?.({
+      block: 'center',
+      behavior: reduceMotion ? 'auto' : 'smooth',
+    });
+    // Keyboard and screen-reader users arrive at the card too, not at the top
+    // of the page with a highlight they cannot see.
+    card.focus?.({ preventScroll: true });
+  }, [focusId, groups]);
+
   if (!boardId) {
     return <p class="board-empty">Select a board to review its items.</p>;
   }
 
-  const groups = reviewGroups.value;
   const open = groups.flatMap((g) => g.items).filter((r) => r.open).length;
 
   return (
-    <section class="board-review">
+    <section class="board-review" ref={sectionRef}>
       <header class="board-review-head">
         <h2>Review</h2>
         <p class="board-subtitle">
@@ -252,6 +287,9 @@ function ReviewCard({
         .join(' ')}
       data-item-id={record.item_id}
       aria-busy={isBusy ? 'true' : undefined}
+      // Focusable only while it is the card someone was sent to, so arriving
+      // can move focus here without adding every card to the tab order.
+      tabIndex={focused ? -1 : undefined}
     >
       <header class="board-review-card-head">
         <span class="board-review-key mono">

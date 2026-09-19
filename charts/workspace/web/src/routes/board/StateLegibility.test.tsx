@@ -200,14 +200,26 @@ describe('a run in flight is readable at a glance', () => {
     expect(screen.queryByText('needs_rescoping')).toBeNull();
   });
 
-  it('keeps an elapsed time only on rows that are still moving', () => {
-    seedRun();
-    const { container } = render(<RunsPanel />);
-    const working = container.querySelector('.board-run-item-working');
-    const done = container.querySelector('.board-run-item-done');
-    expect(working?.querySelector('.board-run-item-elapsed')).toBeTruthy();
-    // A settled row's timer would climb forever and mean nothing.
-    expect(done?.querySelector('.board-run-item-elapsed')).toBeNull();
+  it('shows no timer on any row, and runs none behind the table (#704)', () => {
+    // The only clock a row had was `updated_at`, which resets on every change
+    // to the row — it measured nothing a reader could use.
+    vi.useFakeTimers();
+    try {
+      seedRun();
+      const { container } = render(<RunsPanel />);
+      expect(container.querySelector('.board-run-item-working')).toBeTruthy();
+      expect(container.querySelector('.board-run-item-elapsed')).toBeNull();
+      // No per-second re-render ticking while work is live.
+      expect(vi.getTimerCount()).toBe(0);
+      // Nothing that reads as a duration next to any state pill.
+      const stateCells = Array.from(container.querySelectorAll('tbody tr'))
+        .map((row) => row.querySelectorAll('td')[2]?.textContent ?? '');
+      for (const text of stateCells) {
+        expect(text).not.toMatch(/\d+\s*[smh]\b/);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -310,7 +322,7 @@ describe('the standing strip tells you where you are', () => {
     const { BoardRoute } = await import('./index');
     boards.value = [mkBoard()];
     selectedBoardId.value = 'b1';
-    reviewGroups.value = [
+    const groups = [
       {
         disposition: 'needs_review',
         count: 1,
@@ -325,10 +337,20 @@ describe('the standing strip tells you where you are', () => {
         ],
       },
     ];
+    // The route reads the queue itself on arrival (#704), so it has to come
+    // from the server rather than be planted in the store.
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({
+        boards: [mkBoard()], runs: [], strategies: {}, orders: [], groups,
+      }),
+    })) as unknown as typeof fetch;
 
     const { container } = render(<BoardRoute />);
     // Items tab is the landing tab, so the strip should point at Review.
-    expect(screen.getByText(/waiting on your decision/i)).toBeTruthy();
+    expect(await screen.findByText(/waiting on your decision/i)).toBeTruthy();
     const go = container.querySelector('.board-standing-go') as HTMLButtonElement;
     expect(go?.textContent).toBe('Open Review');
 

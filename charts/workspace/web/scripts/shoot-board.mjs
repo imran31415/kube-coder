@@ -35,6 +35,14 @@ const BASE = process.env.SHOT_BASE || 'http://127.0.0.1:7073/next';
 const THEME = process.env.SHOT_THEME || 'light';
 const now = 1_754_900_000;
 
+/** Checks that fail are collected rather than thrown, so every screenshot is
+ *  still taken; the script exits non-zero at the end if any failed. */
+const failures = [];
+function fail(shot, message) {
+  failures.push(`${shot}: ${message}`);
+  console.error(`  FAIL ${shot}: ${message}`);
+}
+
 const BOARDS = [
   {
     id: 'github-billing-api', vendor: 'github',
@@ -190,9 +198,9 @@ const LIVE_RUN = {
   clamp_reason: 'the pod was already running 10 of 12 tasks, so this run got 2 workers',
   created_at: now - 260, updated_at: now - 3, finished_at: null,
   error: '', listing_complete: true, truncation_reason: '',
-  total: 5,
-  counts: { pending: 1, claimed: 0, working: 2, done: 1, failed: 1, skipped: 0 },
-  done: 1, failed: 1, skipped: 0,
+  total: 7,
+  counts: { pending: 1, claimed: 0, working: 2, done: 3, failed: 1, skipped: 0 },
+  done: 3, failed: 1, skipped: 0,
 };
 
 const RUNS = [LIVE_RUN, {
@@ -244,6 +252,22 @@ const LIVE_RUN_DETAIL = {
       task_id: 't3', disposition: 'failed',
       reason: '', error: 'the build ended without reporting a disposition',
       writes_used: 0, updated_at: now - 200,
+    },
+    // The two tickets waiting in the REVIEW mock below. Same ids, so their
+    // outcomes are buttons that open those cards (#704).
+    1841: {
+      id: '1841', key: '1841', title: 'Charged 20% VAT on an Irish billing address',
+      url: '', content_hash: 'h6', state: 'done', lease_owner: '',
+      task_id: 't6', disposition: 'needs_review',
+      reason: 'drafted an internal note; wants a human on the tax question',
+      error: '', writes_used: 0, updated_at: now - 150,
+    },
+    1838: {
+      id: '1838', key: '1838', title: 'Cannot download last month’s invoice',
+      url: '', content_hash: 'h7', state: 'done', lease_owner: '',
+      task_id: 't7', disposition: 'needs_rescoping',
+      reason: 'portal download or the emailed copy?',
+      error: '', writes_used: 0, updated_at: now - 90,
     },
   },
 };
@@ -521,9 +545,14 @@ try {
     { name: 'board-items', tab: 'Items', board: 'github-billing-api', viewport: WIDE },
     { name: 'board-runs', tab: 'Runs', board: 'zendesk-acme', viewport: WIDE },
     // A run actually in flight, opened: live work sorted to the top, each
-    // state as a pill, and the per-state tally above the table.
+    // state as a pill, the per-state tally above the table, a View session
+    // link per Build, and outcomes that open their review card (#704).
     { name: 'board-run-live', tab: 'Runs', board: 'zendesk-acme', openRun: true,
-      viewport: { width: 1440, height: 1000 } },
+      checkSession: true, viewport: { width: 1440, height: 1000 } },
+    // Clicking the second outcome from the Runs table. Short on purpose, so the
+    // card starts below the fold and the scroll is the thing being shown.
+    { name: 'board-review-focused', tab: 'Runs', board: 'zendesk-acme', openRun: true,
+      outcome: '1838', viewport: { width: 1440, height: 640 } },
     { name: 'board-review', tab: 'Review', board: 'zendesk-acme', viewport: WIDE },
     { name: 'board-credentials', tab: 'Credentials', board: 'zendesk-acme', viewport: WIDE },
     { name: 'board-review-mobile', tab: 'Review', board: 'zendesk-acme',
@@ -551,6 +580,28 @@ try {
       const row = page.locator('.board-run-row').first();
       if (await row.count()) { await row.click(); await page.waitForTimeout(800); }
     }
+    if (s.outcome) {
+      await page.getByRole('button', {
+        name: new RegExp(`^Open the review for ${s.outcome}:`),
+      }).click();
+      const started = Date.now();
+      // The tab switches straight away...
+      await page.waitForFunction(
+        () => /Review/.test(document.querySelector('.board-tab.is-active')?.textContent ?? ''),
+        null, { timeout: 1000 },
+      ).catch(() => fail(s.name, 'the Review tab was not active within 1s of the click'));
+      // ...and the card is highlighted, focused and inside the viewport once the
+      // smooth scroll settles.
+      await page.waitForFunction((id) => {
+        const card = document.querySelector('.board-review-card.is-focused');
+        if (!card || card.getAttribute('data-item-id') !== id) return false;
+        if (document.activeElement !== card) return false;
+        const r = card.getBoundingClientRect();
+        return r.top >= 0 && r.top < window.innerHeight;
+      }, s.outcome, { timeout: 1500 })
+        .catch(() => fail(s.name, `card ${s.outcome} was not focused and in view within 1.5s`));
+      console.log(`  ${s.name}: review card in view after ${Date.now() - started}ms`);
+    }
     if (s.preview) {
       const btn = page.getByRole('button', { name: /what would this work/i }).first();
       if (await btn.count()) { await btn.click(); await page.waitForTimeout(900); }
@@ -558,9 +609,24 @@ try {
     await page.waitForTimeout(400);
     const file = `${s.name}.png`;
     await page.screenshot({ path: `${out}/${file}` });
+    if (s.checkSession) {
+      // After the screenshot, since this leaves the page: an ordinary click on
+      // View session stays in the dashboard and lands on that Build.
+      const link = page.locator('.board-run-session-link').first();
+      const href = await link.getAttribute('href');
+      await link.click();
+      await page.waitForFunction(
+        (want) => window.location.pathname === want, href, { timeout: 1000 },
+      ).catch(() => fail(s.name, `View session did not open ${href} within 1s`));
+      console.log(`  ${s.name}: View session opened ${href}`);
+    }
     await ctx.close();
     console.log(file);
   }
 } finally {
   await browser.close();
+}
+if (failures.length) {
+  console.error(`\n${failures.length} check(s) failed:\n  ${failures.join('\n  ')}`);
+  process.exit(1);
 }
