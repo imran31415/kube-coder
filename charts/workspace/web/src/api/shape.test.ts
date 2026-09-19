@@ -78,4 +78,22 @@ describe('coerceTaskSummary', () => {
     expect(s.status).toBe('oops');
     expect(s.memory_injected).toEqual([]);
   });
+
+  it("keeps an isolated Build's worktree brief and leaves others without one (#701)", () => {
+    const plain = coerceTaskSummary({ task_id: 't1' });
+    expect('worktree' in plain).toBe(false);
+    const iso = coerceTaskSummary({
+      task_id: 't2',
+      worktree: {
+        branch: 'kc/t-2', port: 3101, path: '/home/dev/.worktrees/app/t-2', removed: false,
+        stat: { files_changed: 3, insertions: 40, deletions: 2, ahead: 1, dirty: 0, untracked: 1, branch: 'kc/t-2', at: 5 },
+      },
+    });
+    expect(iso.worktree?.branch).toBe('kc/t-2');
+    expect(iso.worktree?.stat?.files_changed).toBe(3);
+    // task.json (the detail view) records removal as `removed_at`.
+    expect(coerceTaskSummary({ worktree: { branch: 'kc/x', removed_at: 99 } }).worktree?.removed).toBe(true);
+    expect(coerceTaskSummary({ worktree: { branch: 5, stat: 'nope' } }).worktree)
+      .toEqual({ branch: null, port: null, path: null, removed: false, stat: null });
+  });
 });

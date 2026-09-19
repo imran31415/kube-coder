@@ -128,7 +128,10 @@ export function selectTask(id: string | null) {
   }
 }
 
-export async function createTask(input: CreateTaskInput): Promise<TaskDetail | null> {
+export async function createTask(
+  input: CreateTaskInput,
+  opts: { onError?: (message: string) => void } = {},
+): Promise<TaskDetail | null> {
   try {
     const t = await apiCreateTask(input);
     pushToast('Task created', { kind: 'success' });
@@ -136,10 +139,11 @@ export async function createTask(input: CreateTaskInput): Promise<TaskDetail | n
     selectTask(t.task_id);
     return t;
   } catch (err) {
-    pushToast(
-      err instanceof ApiError ? err.message : `Failed to create task: ${err}`,
-      { kind: 'danger' },
-    );
+    const message = err instanceof ApiError ? err.message : `Failed to create task: ${err}`;
+    pushToast(message, { kind: 'danger' });
+    // The server's own words ("… is not inside a git repository", "worktree
+    // limit reached …") are more useful next to the form than a generic line.
+    opts.onError?.(message);
     return null;
   }
 }

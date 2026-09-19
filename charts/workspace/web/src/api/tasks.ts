@@ -29,6 +29,32 @@ export interface TaskSummary {
   last_input_prompt?: string;
   /** Unix seconds the rendered screen last changed (drives idle/stale UI). */
   last_activity_at?: number | null;
+  /** Present only for a Build launched in an isolated worktree (#701). */
+  worktree?: WorktreeBrief;
+}
+
+/**
+ * What an isolated Build changed, as recorded in task.json when it stopped or
+ * when its Changes tab was last opened — lists never run git (#701).
+ */
+export interface WorktreeStat {
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  ahead: number | null;
+  dirty: number;
+  untracked: number;
+  branch: string;
+  at: number;
+}
+
+/** The list-safe summary of an isolated Build's worktree (#701). */
+export interface WorktreeBrief {
+  branch: string | null;
+  port: number | null;
+  path: string | null;
+  removed: boolean;
+  stat: WorktreeStat | null;
 }
 
 /**
@@ -124,7 +150,9 @@ export interface AssistantOption {
 export interface WorkdirOption {
   path: string;
   label?: string;
-  is_git?: boolean;
+  /** The server's field name. The SPA read `is_git` for a while, which the
+   *  server never sent — so "(git)" never showed (#701). */
+  is_git_repo?: boolean;
 }
 
 interface ListResponse {
@@ -145,8 +173,103 @@ export interface CreateTaskInput {
   workdir?: string;
   assistant?: string;
   disable_memory_injection?: boolean;
+  /** Run in an isolated git worktree on its own `kc/<slug>` branch (#701). */
+  isolate?: boolean;
+  /** Branch/tag/commit to start the worktree from (default: the folder's HEAD). */
+  base_ref?: string;
+  /** Name a worktree to continue in (e.g. `issue-701`) instead of a fresh one. */
+  worktree_slug?: string;
 }
 export const createTask = (input: CreateTaskInput) => apiPost<TaskDetail>('/api/claude/tasks', input);
+
+/** One file an isolated Build changed since its base (#701). */
+export interface WorktreeFile {
+  path: string;
+  /** git status letter: A added, M modified, D deleted, ? untracked. */
+  status: string;
+  added: number | null;
+  deleted: number | null;
+  binary: boolean;
+  /** Not committed yet (still only in the working tree). */
+  uncommitted: boolean;
+}
+
+export interface WorktreeStatus {
+  branch: string;
+  head_sha: string;
+  detached: boolean;
+  ahead: number | null;
+  behind: number | null;
+  dirty: number;
+  untracked: number;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  files: WorktreeFile[];
+  truncated: boolean;
+  base_known: boolean;
+  computed_at: number;
+}
+
+/** Where an isolated Build lives — fixed at launch. */
+export interface TaskWorktree {
+  path: string;
+  slug: string;
+  branch: string;
+  port: number | null;
+  repo_root: string;
+  repo_key: string;
+  source_workdir: string;
+  subdir: string;
+  base_ref: string;
+  base_sha: string;
+  created_at: number | null;
+  removed_at: number | null;
+  reused?: boolean;
+}
+
+/** Why Remove is unavailable, or '' when it is. `dirty` means "only with force". */
+export type WorktreeRemoveBlock = '' | 'live' | 'dirty' | 'repo_missing' | 'removed';
+
+export interface TaskWorktreeView {
+  task_id: string;
+  worktree: TaskWorktree;
+  exists: boolean;
+  repo_exists: boolean;
+  branch_exists: boolean;
+  owner_task_id: string;
+  live: boolean;
+  status: WorktreeStatus | null;
+  status_error: string;
+  push_remote: string | null;
+  push_command: string | null;
+  remove_blocked: WorktreeRemoveBlock;
+}
+
+export interface WorktreeDiff {
+  file: string;
+  diff: string;
+  truncated: boolean;
+  binary: boolean;
+  status: string;
+}
+
+export interface WorktreeRemoved {
+  removed: boolean;
+  already?: boolean;
+  branch?: string;
+  branch_kept?: boolean;
+  delete_branch_command?: string;
+}
+
+export const getTaskWorktree = (id: string, fresh = false) =>
+  apiGet<TaskWorktreeView>(`/api/claude/tasks/${id}/worktree`, fresh ? { fresh: 1 } : undefined);
+
+export const getTaskWorktreeDiff = (id: string, file: string) =>
+  apiGet<WorktreeDiff>(`/api/claude/tasks/${id}/worktree/diff`, { file });
+
+export const removeTaskWorktree = (id: string, force = false) =>
+  apiDelete<WorktreeRemoved>(`/api/claude/tasks/${id}/worktree${force ? '?force=1' : ''}`);
 
 // submit=false pastes `prompt` into the live session's input box without
 // pressing Enter (the "Paste from clipboard" flow); defaults to a normal send.

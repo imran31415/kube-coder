@@ -24,6 +24,7 @@ import { EmptyState } from '../../components/primitives/EmptyState';
 import type { TaskStatus, TaskSummary } from '../../api/tasks';
 import { isStaleWaiting, idleLabel } from '../../api/tasks';
 import { SessionPreview } from './SessionPreview';
+import { diffStatLabel } from '../../util/worktree';
 import './tasks.css';
 
 /** Alive = tmux session still exists, so a live tail is meaningful. */
@@ -208,6 +209,19 @@ export function TaskList() {
                   {t.kind && t.kind !== 'claude' && <span> · {t.kind}</span>}
                   {(t.memory_injected?.length ?? 0) > 0 && (
                     <span> · {t.memory_injected!.length} mem</span>
+                  )}
+                  {t.worktree?.branch && (
+                    <span
+                      class="tl-row-branch"
+                      title={t.worktree.removed
+                        ? 'Isolated worktree — removed; the branch is kept'
+                        : 'Runs in its own git worktree on this branch'}
+                    >
+                      {' '}· <span class="mono">⎇ {t.worktree.branch}</span>
+                      {t.worktree.stat && t.worktree.stat.files_changed > 0 && (
+                        <> · {diffStatLabel(t.worktree.stat)}</>
+                      )}
+                    </span>
                   )}
                 </div>
                 <SessionPreview taskId={t.task_id} alive={isAliveStatus(t.status)} />

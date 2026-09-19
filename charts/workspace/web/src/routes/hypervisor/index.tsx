@@ -793,7 +793,7 @@ export function HypervisorRoute() {
                 ...dirs.map((d) => ({
                   value: d.path,
                   label: d.label ?? d.path,
-                  hint: d.is_git ? 'git' : undefined,
+                  hint: d.is_git_repo ? 'git' : undefined,
                 })),
               ]}
             />

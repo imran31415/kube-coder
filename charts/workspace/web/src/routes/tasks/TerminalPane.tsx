@@ -16,6 +16,9 @@ export interface TerminalPaneProps {
    *  right. The preview source toggles between the in-app reverse-proxy
    *  iframe ('app') and the in-pod Chrome via noVNC ('browser'). */
   withVnc?: boolean;
+  /** An isolated Build's leased port (#701). Wins over the last port used
+   *  elsewhere, which belongs to some other Build's server. */
+  defaultPort?: number | null;
 }
 
 const LAST_PORT_KEY = 'kc.previewPort';
@@ -81,7 +84,7 @@ const APP_FRAME_SANDBOX = 'allow-same-origin allow-scripts allow-forms allow-pop
  * /api/open-localhost so the in-pod kiosk Chrome navigates to localhost:<port>
  * and the noVNC viewer reflects it. The dashboard never touches port-forwarding.
  */
-export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
+export function TerminalPane({ taskId, withVnc = false, defaultPort = null }: TerminalPaneProps) {
   const [phase, setPhase] = useState<'preparing' | 'ready' | 'error'>('preparing');
   const [err, setErr] = useState<string>('');
   const [termSrc, setTermSrc] = useState<string>('');
@@ -106,6 +109,7 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   // instead of just the host root. Both persisted to localStorage so
   // the next Preview open inherits the last setting per workspace.
   const [port, setPort] = useState<string>(() => {
+    if (defaultPort) return String(defaultPort);
     try { return localStorage.getItem(LAST_PORT_KEY) ?? '8080'; }
     catch { return '8080'; }
   });
@@ -125,6 +129,7 @@ export function TerminalPane({ taskId, withVnc = false }: TerminalPaneProps) {
   // input so typing doesn't reload the frame on every keystroke — only
   // "Open" (or the initial mount) commits. Seeded from the persisted port.
   const [appPort, setAppPort] = useState<number>(() => {
+    if (defaultPort) return defaultPort;
     try {
       const n = parseInt(localStorage.getItem(LAST_PORT_KEY) ?? '8080', 10);
       return n >= 1 && n <= 65535 ? n : 8080;

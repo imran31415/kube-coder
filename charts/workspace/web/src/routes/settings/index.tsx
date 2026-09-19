@@ -13,6 +13,7 @@ import { BrowserSection } from './BrowserSection';
 import { MetricsSection } from './MetricsSection';
 import { UpdatesSection } from './UpdatesSection';
 import { MobileSection } from './MobileSection';
+import { WorktreesSection } from './WorktreesSection';
 import './settings.css';
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -57,7 +58,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
   {
     slug: 'workspace',
     title: 'Workspace',
-    blurb: 'Updates, browser & desktop, system metrics.',
+    blurb: 'Updates, browser & desktop, system metrics, worktrees.',
     icon: 'desktop',
   },
 ];
@@ -72,6 +73,7 @@ const HASH_GROUP: Record<string, string> = {
   updates: 'workspace',
   browser: 'workspace',
   metrics: 'workspace',
+  worktrees: 'workspace',
 };
 
 function settingsPath(slug: string): string {
@@ -260,6 +262,7 @@ function GroupSections({ slug }: { slug: string }) {
           <Anchor id="updates"><UpdatesSection /></Anchor>
           <Anchor id="browser"><BrowserSection /></Anchor>
           <Anchor id="metrics"><MetricsSection /></Anchor>
+          <Anchor id="worktrees"><WorktreesSection /></Anchor>
         </>
       );
     default:

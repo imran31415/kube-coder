@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/preact';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NewTaskForm } from './NewTaskForm';
 import { createTask } from '../../store/tasks';
-import { renameTask } from '../../api/tasks';
+import { listWorkdirs, renameTask } from '../../api/tasks';
 import { promptTemplates, saveTemplate } from '../../store/promptTemplates';
 
 vi.mock('../../store/tasks', () => ({
@@ -18,6 +18,7 @@ vi.mock('../../api/tasks', () => ({
 
 const createTaskMock = vi.mocked(createTask);
 const renameTaskMock = vi.mocked(renameTask);
+const listWorkdirsMock = vi.mocked(listWorkdirs);
 
 function promptBox() {
   return screen.getByLabelText('First prompt') as HTMLTextAreaElement;
@@ -28,6 +29,8 @@ beforeEach(() => {
   promptTemplates.value = [];
   createTaskMock.mockClear();
   renameTaskMock.mockClear();
+  listWorkdirsMock.mockReset();
+  listWorkdirsMock.mockResolvedValue([]);
 });
 
 describe('NewTaskForm — seed prompt', () => {
@@ -102,5 +105,72 @@ describe('NewTaskForm — saved prompt templates', () => {
     fireEvent.click(screen.getByLabelText('Delete template Nightly'));
     await waitFor(() => expect(screen.queryByText('Nightly')).not.toBeInTheDocument());
     expect(promptTemplates.value).toHaveLength(0);
+  });
+});
+
+describe('NewTaskForm — isolated worktree (#701)', () => {
+  const DIRS = [
+    { path: '/home/dev', label: 'home', is_git_repo: false },
+    { path: '/home/dev/app', label: 'app', is_git_repo: true },
+  ];
+
+  function pickDir(path: string) {
+    const select = document.querySelector('select.ntf-select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: path } });
+  }
+
+  it('labels git folders and offers isolation only for them', async () => {
+    listWorkdirsMock.mockResolvedValue(DIRS);
+    render(<NewTaskForm onClose={() => undefined} />);
+    await screen.findByText(/app\s+\(git\)/);
+    expect(screen.queryByLabelText('Isolated worktree')).not.toBeInTheDocument();
+    pickDir('/home/dev/app');
+    expect(await screen.findByLabelText('Isolated worktree')).toBeInTheDocument();
+    pickDir('/home/dev');
+    await waitFor(() => expect(screen.queryByLabelText('Isolated worktree')).not.toBeInTheDocument());
+  });
+
+  it('sends isolate and the base ref when ticked', async () => {
+    listWorkdirsMock.mockResolvedValue(DIRS);
+    render(<NewTaskForm onClose={() => undefined} />);
+    await screen.findByText(/app\s+\(git\)/);
+    pickDir('/home/dev/app');
+    fireEvent.click(await screen.findByLabelText('Isolated worktree'));
+    fireEvent.input(screen.getByLabelText('Branch from'), { target: { value: ' origin/main ' } });
+    fireEvent.click(screen.getByText(/Start build/));
+
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalled());
+    expect(createTaskMock.mock.calls[0][0]).toMatchObject({
+      workdir: '/home/dev/app', isolate: true, base_ref: 'origin/main',
+    });
+  });
+
+  it('does not send isolate for a folder that cannot be isolated', async () => {
+    listWorkdirsMock.mockResolvedValue(DIRS);
+    render(<NewTaskForm onClose={() => undefined} />);
+    await screen.findByText(/app\s+\(git\)/);
+    pickDir('/home/dev/app');
+    fireEvent.click(await screen.findByLabelText('Isolated worktree'));
+    pickDir('/home/dev');
+    fireEvent.click(screen.getByText(/Start build/));
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalled());
+    expect(createTaskMock.mock.calls[0][0]).not.toHaveProperty('isolate');
+  });
+
+  it("shows the server's reason inline when the build is refused", async () => {
+    createTaskMock.mockImplementationOnce(async (_input, opts) => {
+      opts?.onError?.('worktree limit reached (20/20). Remove finished worktrees in Settings → Worktrees');
+      return null;
+    });
+    render(<NewTaskForm onClose={() => undefined} />);
+    fireEvent.click(screen.getByLabelText('Isolated worktree'));
+    fireEvent.click(screen.getByText(/Start build/));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/worktree limit reached/);
+  });
+
+  it('links to the in-app guide', async () => {
+    render(<NewTaskForm onClose={() => undefined} />);
+    const link = screen.getByText("What's this?") as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toMatch(/\/docs\/builds-worktrees$/);
   });
 });

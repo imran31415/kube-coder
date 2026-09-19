@@ -18,7 +18,7 @@
  */
 
 import type { MemoryRecord } from './memory';
-import type { TaskSummary, TaskDetail } from './tasks';
+import type { TaskSummary, TaskDetail, WorktreeBrief } from './tasks';
 
 /** Generic helpers — call when the server may omit array/string fields. */
 export function safeArray<T>(v: T[] | null | undefined): T[] {
@@ -83,6 +83,32 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
     waiting_for_input: r.waiting_for_input === true,
     last_input_prompt: typeof r.last_input_prompt === 'string' ? r.last_input_prompt : undefined,
     last_activity_at: typeof r.last_activity_at === 'number' ? r.last_activity_at : null,
+    // Only isolated Builds carry one (#701); absent means "not isolated".
+    ...(r.worktree && typeof r.worktree === 'object'
+      ? { worktree: coerceWorktreeBrief(r.worktree) }
+      : {}),
+  };
+}
+
+function coerceWorktreeBrief(raw: unknown): WorktreeBrief {
+  const w = raw as Record<string, unknown>;
+  const s = (w.stat && typeof w.stat === 'object') ? w.stat as Record<string, unknown> : null;
+  const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+  return {
+    branch: typeof w.branch === 'string' ? w.branch : null,
+    port: typeof w.port === 'number' ? w.port : null,
+    path: typeof w.path === 'string' ? w.path : null,
+    removed: w.removed === true || typeof w.removed_at === 'number',
+    stat: s ? {
+      files_changed: num(s.files_changed),
+      insertions: num(s.insertions),
+      deletions: num(s.deletions),
+      ahead: typeof s.ahead === 'number' ? s.ahead : null,
+      dirty: num(s.dirty),
+      untracked: num(s.untracked),
+      branch: typeof s.branch === 'string' ? s.branch : '',
+      at: num(s.at),
+    } : null,
   };
 }
 

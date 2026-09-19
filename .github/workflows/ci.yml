@@ -124,6 +124,11 @@ jobs:
       - name: Syntax-check backup-user.sh / restore-user.sh
         run: bash -n scripts/backup-user.sh && bash -n scripts/restore-user.sh
 
+      - name: Syntax-check the worktree / kc-issue skill scripts (#701)
+        # Behaviour is covered by tests.worktree_sh_test (delegated and bash
+        # fallback modes, against real git); this just fails fast.
+        run: bash -n .claude/skills/worktree/worktree.sh && bash -n .claude/skills/kc-issue/kc-issue.sh
+
       - name: backup/restore home-volume tests (#579)
         # backup-user.sh + restore-user.sh reach the cluster only through
         # kubectl, so the suite shims it on PATH and drives every branch from

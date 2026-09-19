@@ -102,6 +102,20 @@ This document describes all environment variables used by kube-coder components.
 | `KC_PROVIDER_KEYS_FILE` | `/home/dev/.claude-tasks/provider-keys.json` | Where the keys a user sets in **Settings → Provider keys** are stored (and read from by `hypervisor_session` too). Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir, so a test can neither read the owner's real API keys (the assistant list is gated on them, which made two tests fail on a keyed workspace and pass in CI) nor overwrite them. Leave it unset in every deployment, or that workspace forgets every self-service key. |
 | `KC_TRIGGER_RUNS_DIR` | `/home/dev/.claude-triggers/runs` | Where the per-trigger run ledger lives — one append-only, byte-capped JSONL log per webhook / cron / page-watch, read by the **Runs** panel on each trigger row. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test that fires a trigger cannot append to the owner's real history. Leave it unset in every deployment, or that workspace starts with no trigger history. |
 
+### Isolated worktrees (#701)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KC_MAX_WORKTREES` | `20` | Most isolated worktrees on the workspace at once (Builds, sub-agents and ones made with the `worktree` skill all count). At the limit a new isolated Build is refused with a readable reason — after dead, unchanged worktrees have been reclaimed. |
+| `KC_WORKTREE_ROOT` | `/home/dev/.worktrees` | Where worktrees live: `<root>/<repo>/<name>/`. |
+| `KC_WORKTREE_GC_DAYS` | `7` | A finished Build's worktree whose every commit is on a remote is removed this many days after the Build ended. Dirty or unpushed worktrees are never removed. |
+| `KC_WORKTREE_GRACE_S` | `600` | The cleanup never touches a worktree younger than this. |
+| `KC_WORKTREE_SWEEP_INTERVAL_S` | `600` | Seconds between cleanup passes (minimum 60). |
+| `KC_WORKTREE_SWEEP_KEEP_BRANCHES` | off | `1` keeps even the empty `kc/*` branch of a worktree that changed nothing. |
+| `KC_WT_PORT_LO` / `KC_WT_PORT_HI` | `3100` / `3999` | The range a worktree's `$PORT` is leased from (the workspace's own ports are always skipped). |
+| `KC_GIT_TIMEOUT` / `KC_GIT_ADD_TIMEOUT` | `15` / `180` | Seconds allowed for one git command, and for `git worktree add` on a large repository. |
+| `KC_WT_LOCK_TIMEOUT` | `60` | Seconds to wait for another worktree operation to finish before answering 503. |
+| `KC_WT`, `KC_WT_BRANCH`, `PORT`, `KC_PORT` | — | **Automatically set** inside an isolated Build: its worktree folder, branch and leased port. |
+
 ### Dashboard & UI
 | Variable | Default | Description |
 |----------|---------|-------------|

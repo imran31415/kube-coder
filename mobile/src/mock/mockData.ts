@@ -40,6 +40,8 @@ import type {
   BoardStanding,
   BoardSummary,
   BoardReviewItem,
+  TaskWorktreeView,
+  WorktreeDiff,
 } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -56,9 +58,17 @@ export const mockTasks: TaskSummary[] = [
     prompt: 'Add a /healthz endpoint to server.py and a unit test for it',
     status: 'running',
     assistant: 'claude',
-    workdir: '/home/dev/kube-coder',
+    workdir: '/home/dev/.worktrees/kube-coder/t-a1b2c3',
     created_at: NOW - 90,
     updated_at: NOW - 5,
+    // An isolated Build (#701), so the mock shows the worktree row.
+    worktree: {
+      branch: 'kc/t-a1b2c3',
+      port: 3101,
+      path: '/home/dev/.worktrees/kube-coder/t-a1b2c3',
+      removed: false,
+      stat: { files_changed: 2, insertions: 41, deletions: 3, ahead: 1, dirty: 1, untracked: 0 },
+    },
   },
   {
     id: 'd4e5f6',
@@ -161,6 +171,55 @@ export function mockTaskDetail(id: string): TaskDetail | null {
     ...t,
     output: mockOutputs[id] ?? `● Task ${id}\n\n  (no recent output captured)`,
     tmux_session: `claude-${id}`,
+  };
+}
+
+/** GET /api/claude/tasks/<id>/worktree for the mock isolated Build (#701). */
+export function mockWorktreeView(id: string): TaskWorktreeView | null {
+  const t = mockTasks.find((x) => x.id === id);
+  if (!t?.worktree?.path) return null;
+  return {
+    task_id: id,
+    worktree: {
+      path: t.worktree.path,
+      branch: t.worktree.branch ?? '',
+      port: t.worktree.port ?? null,
+      base_ref: 'main',
+      base_sha: '4f1c2a9d0e7b3c5a8f6d1e2b9c0a7d3e5f4b1c2a',
+      repo_root: '/home/dev/kube-coder',
+    },
+    exists: true,
+    branch_exists: true,
+    live: t.status === 'running' || t.status === 'waiting',
+    status: {
+      branch: t.worktree.branch ?? '',
+      behind: 0,
+      files_changed: 2, insertions: 41, deletions: 3, ahead: 1, dirty: 1, untracked: 0,
+      files: [
+        { path: 'charts/workspace/server.py', status: 'M', added: 18, deleted: 3, binary: false, uncommitted: true },
+        { path: 'charts/workspace/tests/healthz_test.py', status: 'A', added: 23, deleted: 0, binary: false, uncommitted: false },
+      ],
+      truncated: false,
+    },
+    status_error: '',
+    push_command: `git -C ${t.worktree.path} push -u fork ${t.worktree.branch}`,
+    remove_blocked: t.status === 'running' || t.status === 'waiting' ? 'live' : '',
+  };
+}
+
+export function mockWorktreeDiff(file: string): WorktreeDiff {
+  return {
+    file,
+    binary: false,
+    truncated: false,
+    diff: `--- a/${file}
++++ b/${file}
+@@ -1,3 +1,6 @@
+ import os
++
++def healthz():
++    return {'ok': True}
+`,
   };
 }
 
