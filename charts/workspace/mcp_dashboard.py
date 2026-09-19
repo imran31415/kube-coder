@@ -656,6 +656,21 @@ _BUILD_PREVIEW_CONTRACT = (
     "preview.]"
 )
 
+# The same contract for an ISOLATED build (#701): it has a port of its own in
+# $PORT, and parallel builds of the same repo would collide on 3000/5173/8000.
+_BUILD_PREVIEW_CONTRACT_ISOLATED = (
+    "\n\n[Build-preview contract: the dashboard auto-embeds a LIVE preview of "
+    "this app in the chat the instant a dev server starts listening — so after "
+    "you implement, actually RUN the app and LEAVE IT RUNNING. This build runs "
+    "in its own worktree with its OWN port in $PORT: bind the dev server to "
+    "loopback on $PORT, never a default like 3000 (other builds use those). "
+    "Start it detached so it survives this task ending: e.g. "
+    "`setsid nohup <run-command> > \"$KC_WT/devserver.log\" 2>&1 &` with the "
+    "port set from $PORT. For a static site: `setsid nohup python3 -m "
+    "http.server \"$PORT\" >/dev/null 2>&1 &`. Then CONFIRM it is listening "
+    "(curl the port) before you finish.]"
+)
+
 
 def _t_create_task(a):
     prompt = (a.get('prompt') or '').strip()
@@ -669,8 +684,11 @@ def _t_create_task(a):
     preview = a.get('preview')
     preview = True if preview is None else bool(preview)
     tid = _hv_thread_id()
+    # Isolation (#701): only a real true, like the HTTP route.
+    isolate = a.get('isolate') is True
     if preview:
-        prompt = prompt + _BUILD_PREVIEW_CONTRACT
+        prompt = prompt + (_BUILD_PREVIEW_CONTRACT_ISOLATED if isolate
+                           else _BUILD_PREVIEW_CONTRACT)
     # Hypervisor-spawned tasks are unattended — nobody is watching the live
     # terminal to answer the CLI's API-key dialog or per-tool permission
     # prompts — so launch in auto-approve/skip-permissions mode by default. A
@@ -687,6 +705,11 @@ def _t_create_task(a):
         body['workdir'] = a['workdir']
     if a.get('assistant'):
         body['assistant'] = a['assistant']
+    if isolate:
+        body['isolate'] = True
+        for key in ('base_ref', 'worktree_slug'):
+            if a.get(key):
+                body[key] = a[key]
     status, payload = _api('POST', '/api/claude/tasks', body=body)
     if status not in (200, 201, 202):
         detail = payload.get('error') if isinstance(payload, dict) else payload
@@ -1065,6 +1088,23 @@ TOOLS: Dict[str, Any] = {
                         'that embeds the running app in this chat when it comes '
                         'up. Set false for tasks that do not run a web app '
                         '(pure refactors, tests, docs).'},
+            'isolate': {'type': 'boolean',
+                        'description': 'true: run the task in its OWN git '
+                        'worktree of `workdir` (which must be inside a git '
+                        'repository), on its own kc/<name> branch with its own '
+                        'dev-server port. Use it whenever more than one task may '
+                        'work on the same repo at once, so they cannot overwrite '
+                        "each other's files. The user reviews and pushes the "
+                        "branch from the task's Changes tab."},
+            'base_ref': {'type': 'string',
+                         'description': 'With isolate: the branch, tag or '
+                         'commit to start from (default: the folder\'s current '
+                         'commit), e.g. origin/main.'},
+            'worktree_slug': {'type': 'string',
+                              'description': 'With isolate: continue in the '
+                              'named worktree (e.g. issue-701) instead of a '
+                              'fresh one. Refused while another running task '
+                              'uses it.'},
         }, required=['prompt'], kind='write'),
     'send_task_message': _tool(
         'send_task_message',

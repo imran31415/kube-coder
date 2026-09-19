@@ -1303,6 +1303,50 @@ def reclaimer(wt_root, *, is_owner_live, owner_meta, grace_s=600, gc_days=7):
     return _reclaim
 
 
+# ── what a Build is told and records (shared by server + orchestrator) ────
+
+def task_meta(info, source_workdir):
+    """task.json `worktree` for a Build launched in `info`'s worktree. One
+    shape for Builds and sub-agents, so the Changes tab, the task list and
+    Settings read them the same way."""
+    return {
+        'path': info['path'], 'slug': info['slug'], 'branch': info['branch'],
+        'port': info.get('port'), 'repo_root': info['repo_root'],
+        'repo_key': info.get('repo_key', ''),
+        'source_workdir': source_workdir,
+        'subdir': info.get('subdir', ''), 'base_ref': info.get('base_ref', ''),
+        'base_sha': info.get('base_sha', ''),
+        'created': bool(info.get('created')),
+        'branch_created': bool(info.get('branch_created')),
+        'reused': bool(info.get('reused')),
+        'created_at': time.time(), 'removed_at': None, 'stat': None,
+    }
+
+
+def session_env(info):
+    """The variables an isolated agent's session starts with."""
+    env = {'KC_WT': info['path'], 'KC_WT_BRANCH': info['branch']}
+    if info.get('port'):
+        env['PORT'] = str(info['port'])
+        env['KC_PORT'] = str(info['port'])
+    return env
+
+
+def isolation_note(info):
+    """Prepended to an isolated agent's first prompt."""
+    port = info.get('port')
+    serve = (f' If you run a dev server, bind port {port} (it is in $PORT) '
+             f'so it does not collide with other Builds.' if port else '')
+    return (
+        '[System: This Build runs in an ISOLATED git worktree at '
+        f'{info["path"]} on its own branch {info["branch"]}. Commit your '
+        'work on this branch. Do not check out or switch to another branch, '
+        f'and do not edit the original checkout at {info["repo_root"]}.'
+        f'{serve} Files git ignores (node_modules, .venv, .env) are not '
+        'copied into a worktree — install or create them here if you need '
+        'them.]\n\n')
+
+
 # ── push helpers ──────────────────────────────────────────────────────────
 
 def push_remote(root):

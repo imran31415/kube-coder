@@ -4860,41 +4860,17 @@ class WorktreeManager:
 
     @classmethod
     def meta_for(cls, info, source_workdir):
-        """task.json `worktree` for a freshly launched Build."""
-        return {
-            'path': info['path'], 'slug': info['slug'], 'branch': info['branch'],
-            'port': info.get('port'), 'repo_root': info['repo_root'],
-            'repo_key': info.get('repo_key', ''),
-            'source_workdir': source_workdir or cls.HOME_ROOT,
-            'subdir': info.get('subdir', ''), 'base_ref': info.get('base_ref', ''),
-            'base_sha': info.get('base_sha', ''),
-            'created': bool(info.get('created')),
-            'branch_created': bool(info.get('branch_created')),
-            'reused': bool(info.get('reused')),
-            'created_at': time.time(), 'removed_at': None, 'stat': None,
-        }
+        """task.json `worktree` for a freshly launched Build — the shape the
+        orchestrator's sub-agents record too (worktrees.task_meta)."""
+        return worktrees.task_meta(info, source_workdir or cls.HOME_ROOT)
 
     @staticmethod
     def session_env(info):
-        env = {'KC_WT': info['path'], 'KC_WT_BRANCH': info['branch']}
-        if info.get('port'):
-            env['PORT'] = str(info['port'])
-            env['KC_PORT'] = str(info['port'])
-        return env
+        return worktrees.session_env(info)
 
     @staticmethod
     def isolation_note(info):
-        port = info.get('port')
-        serve = (f' If you run a dev server, bind port {port} (it is in $PORT) '
-                 f'so it does not collide with other Builds.' if port else '')
-        return (
-            '[System: This Build runs in an ISOLATED git worktree at '
-            f'{info["path"]} on its own branch {info["branch"]}. Commit your '
-            'work on this branch. Do not check out or switch to another branch, '
-            f'and do not edit the original checkout at {info["repo_root"]}.'
-            f'{serve} Files git ignores (node_modules, .venv, .env) are not '
-            'copied into a worktree — install or create them here if you need '
-            'them.]\n\n')
+        return worktrees.isolation_note(info)
 
     @staticmethod
     def brief(meta):

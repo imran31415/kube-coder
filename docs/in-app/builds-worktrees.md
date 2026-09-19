@@ -34,6 +34,12 @@ files are copied.
   gets the same one — a sent-back ticket continues where it left off (see
   [Boards](/docs/board-processor)). The Review card shows each ticket's branch
   and a **View changes** link.
+- **From an agent** — the dashboard tool `create_task` takes `isolate: true`
+  (plus `base_ref` / `worktree_slug`), and the sub-agent tool `spawn_agent`
+  takes `isolate: true` to fan work out: each sub-agent gets its own worktree,
+  branched from the parent's current commit, and the parent merges their
+  branches when they finish. The `kc-issue` skill uses this for per-issue work
+  on any repository.
 - **The API** — `POST /api/claude/tasks` with `"isolate": true` (and
   optionally `base_ref`, or `worktree_slug` to continue in a named worktree).
 

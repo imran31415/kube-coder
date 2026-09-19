@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# kc-issue: deterministic "one issue -> one clean worktree" setup for kube-coder.
+# kc-issue: deterministic "one issue -> one clean worktree" setup for any repo.
 #
 # Does the filesystem/git half of the framework so it's reliable and testable:
-#   1. fetch a FRESH origin/main (never trust a stale/dirty local HEAD)
+#   1. fetch a FRESH origin/<default branch> (never trust a stale local HEAD)
 #   2. resolve the issue (gh) -> title/body/url/labels  (numeric arg = issue #)
 #   2b. LINT the body before spending anything on it (#569)
-#   3. create OR reuse an isolated worktree branched from origin/main
-#   4. write a ready-to-use agent prompt into the worktree
-#   5. print a JSON blob {issue,title,url,worktree,branch,port,prompt_file,lint}
+#   3. decide the worktree: on a #701 workspace the SERVER creates (or reuses)
+#      it at launch; otherwise this script creates it with the worktree skill
+#   4. write a ready-to-use agent prompt
+#   5. print a JSON blob {issue,title,url,worktree,branch,port,prompt_file,
+#      mode,repo_root,repo,slug,base_ref,lint,lint_blockers}
 #
 # It does NOT launch the agent -- the caller (the Hypervisor) reads the JSON and
-# launches a background task with workdir=<worktree>, so the agent is BORN inside
-# its worktree and cannot forget to use it.
+# launches a background task: with mode=server it passes isolate/worktree_slug/
+# base_ref to create_task, with mode=script it passes workdir=<worktree>. Either
+# way the agent is BORN inside its worktree and cannot forget to use it.
+#
+# Which repository: KC_REPO_ROOT, else the git checkout it is run from, else
+# /home/dev/kube-coder. The GitHub slug comes from that repo's `origin` remote
+# (KC_REPO_SLUG overrides).
 #
 # Usage:
 #   kc-issue.sh <issue-number>            # e.g. kc-issue.sh 284  (or "#284")
@@ -24,9 +31,35 @@
 #   KC_ISSUE_STRICT=1  refuse to spawn when the body trips a lint blocker
 set -euo pipefail
 
-REPO_ROOT="${KC_REPO_ROOT:-/home/dev/kube-coder}"
-REPO_SLUG="${KC_REPO_SLUG:-imran31415/kube-coder}"
-WT_HELPER="$REPO_ROOT/.claude/skills/worktree/worktree.sh"
+# The skills dir this script really lives in, even through the ~/.claude/skills
+# symlink start.sh makes — the worktree helper sits next to it.
+SKILL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+WT_HELPER="$SKILL_DIR/../worktree/worktree.sh"
+WT_PY="${KC_WORKTREES_PY:-/tmp/browser/worktrees.py}"
+
+# The MAIN checkout of the repository to work in (#701 made this repo-agnostic;
+# it used to be hardwired to /home/dev/kube-coder).
+detect_repo_root() {
+  if [ -n "${KC_REPO_ROOT:-}" ]; then printf '%s' "$KC_REPO_ROOT"; return; fi
+  local top
+  if top=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null); then
+    git -C "$top" worktree list --porcelain | sed -n '1s/^worktree //p'
+    return
+  fi
+  printf '%s' /home/dev/kube-coder
+}
+
+# owner/repo from the origin remote, https or ssh form.
+detect_repo_slug() {
+  if [ -n "${KC_REPO_SLUG:-}" ]; then printf '%s' "$KC_REPO_SLUG"; return; fi
+  local url
+  url=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)
+  printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#\.git$##; s#/$##'
+}
+
+REPO_ROOT="$(detect_repo_root)"
+REPO_SLUG="$(detect_repo_slug)"
+REPO_NAME="$(basename "$REPO_ROOT")"
 AUTO_PR="${KC_AUTO_PR:-0}"   # set to 1 to bake "open a PR" into the done-list
 # Refuse to spawn when the issue body trips a lint blocker (default: warn only).
 # Env rather than a flag to match KC_AUTO_PR / KC_REPO_* — the positional args
@@ -148,8 +181,23 @@ lint_json() {
 # pure text analysis, so it must stay runnable anywhere — including CI and a
 # laptop that has no pod layout.
 require_repo() {
-  [ -f "$WT_HELPER" ] || die "worktree helper missing at $WT_HELPER"
-  [ -d "$REPO_ROOT/.git" ] || die "$REPO_ROOT is not a git repo"
+  [ -e "$REPO_ROOT/.git" ] || die "$REPO_ROOT is not a git repo"
+  [ -n "$REPO_SLUG" ] || die "cannot tell the GitHub repo of $REPO_ROOT — set KC_REPO_SLUG=owner/repo"
+}
+
+# Whether this pod's dashboard creates worktrees itself (#701). When it does,
+# the SERVER makes the worktree at launch, so the Build is recorded with it —
+# its Changes tab and Settings → Worktrees both know about it.
+server_isolation() {
+  [ -f "$WT_PY" ] && python3 "$WT_PY" --api-version >/dev/null 2>&1
+}
+
+# The branch new issue work starts from: origin's default, else main.
+default_branch() {
+  local ref
+  ref=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  ref="${ref#origin/}"
+  printf '%s' "${ref:-main}"
 }
 
 cmd_list() {
@@ -191,9 +239,11 @@ cmd_new() {
     [ -n "$slug" ] || die "empty slug"
   fi
 
-  # 1. fresh main
-  git -C "$REPO_ROOT" fetch origin main --quiet \
-    || die "git fetch origin main failed (auth?)"
+  # 1. fresh default branch
+  local base_branch
+  base_branch="$(default_branch)"
+  git -C "$REPO_ROOT" fetch origin "$base_branch" --quiet \
+    || die "git fetch origin $base_branch failed (auth?)"
 
   # 2. resolve the issue text
   if [ "$is_gh_issue" = 1 ]; then
@@ -222,37 +272,79 @@ cmd_new() {
     die "refusing to spawn: $LINT_BLOCKERS lint blocker(s) and KC_ISSUE_STRICT=1 (unset it to proceed anyway)"
   fi
 
-  # 3. create OR reuse the worktree (branched from FRESH origin/main)
-  local wt branch port existing
-  existing=$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null \
-    | awk -v b="kc/$slug" '/^worktree /{p=$2} /^branch /{if($2=="refs/heads/"b)print p}')
-  if [ -n "$existing" ] && [ -d "$existing" ]; then
-    wt="$existing"
-    branch="kc/$slug"
-    port=$(jq -r '.port // empty' "$wt/.kc-worktree.json" 2>/dev/null || true)
-    echo "kc-issue: reusing existing worktree $wt" >&2
+  # 3. the worktree (branched from FRESH origin/<default>)
+  local wt branch port existing mode base_ref="origin/$base_branch"
+  branch="kc/$slug"
+  if server_isolation; then
+    # The server creates — or, for an issue already in progress, reuses — the
+    # worktree when the Build launches (#701). Nothing to make here; this path
+    # is where it will be, for display only.
+    mode=server
+    wt="${KC_WORKTREE_ROOT:-/home/dev/.worktrees}/$REPO_NAME/$slug"
+    port=""
   else
-    local env_block
-    # worktree.sh derives the repo from $PWD, so run it FROM the repo — never
-    # rely on the caller's cwd (that made this cwd-dependent and flaky).
-    env_block=$(cd "$REPO_ROOT" && bash "$WT_HELPER" new "$slug" origin/main) \
-      || die "worktree helper failed"
-    # env_block = export KC_WT=... KC_WT_BRANCH=... PORT=...
-    eval "$env_block"
-    wt="$KC_WT"; branch="$KC_WT_BRANCH"; port="$PORT"
+    mode=script
+    existing=$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null \
+      | awk -v b="$branch" '/^worktree /{p=$2} /^branch /{if($2=="refs/heads/"b)print p}')
+    if [ -n "$existing" ] && [ -d "$existing" ]; then
+      wt="$existing"
+      port=$(jq -r '.port // empty' "$wt/.kc-worktree.json" 2>/dev/null || true)
+      echo "kc-issue: reusing existing worktree $wt" >&2
+    else
+      [ -f "$WT_HELPER" ] || die "worktree helper missing at $WT_HELPER"
+      local env_block
+      # worktree.sh derives the repo from $PWD, so run it FROM the repo — never
+      # rely on the caller's cwd (that made this cwd-dependent and flaky).
+      env_block=$(cd "$REPO_ROOT" && bash "$WT_HELPER" new "$slug" "$base_ref") \
+        || die "worktree helper failed"
+      # env_block = export KC_WT=... KC_WT_BRANCH=... PORT=...
+      eval "$env_block"
+      wt="$KC_WT"; branch="$KC_WT_BRANCH"; port="$PORT"
+    fi
   fi
 
-  # 4. write the agent prompt INTO the worktree
-  local done_list prompt_file
+  # 4. the agent prompt. The kube-coder skills are named only in a repo that
+  # has them; anywhere else the agent is told to use the repo's own checks.
+  local done_list prompt_file checks ship where
+  if [ -d "$REPO_ROOT/.claude/skills/kc-preflight" ]; then
+    checks='Run the **kc-preflight** skill (local CI mirror) and fix every failure.'
+  else
+    checks="Run this repository's tests and linters (see its README, Makefile or CI config) and fix every failure."
+  fi
+  if [ -d "$REPO_ROOT/.claude/skills/kc-ship-pr" ]; then
+    ship="Run the **kc-ship-pr** skill to push and open a PR (base $base_branch)."
+  else
+    ship="Push your branch and open a PR against $base_branch."
+  fi
   if [ "$AUTO_PR" = 1 ]; then
-    done_list=$'3. Run the **kc-preflight** skill (local CI mirror) and fix every failure.\n4. Commit to your branch with a message referencing (#'"$n"$').\n5. Run the **kc-ship-pr** skill to push and open a PR (base main). Put `Fixes #'"$n"$'` in the PR body.\n6. Report the PR URL.'
+    done_list="3. $checks
+4. Commit to your branch with a message referencing (#$n).
+5. $ship Put \`Fixes #$n\` in the PR body.
+6. Report the PR URL."
   else
-    done_list=$'3. Run the **kc-preflight** skill (local CI mirror) and fix every failure.\n4. Commit to your branch with a message referencing (#'"$n"$').\n5. STOP. Do NOT push or open a PR. Report a concise summary and `git diff --stat`.'
+    done_list="3. $checks
+4. Commit to your branch with a message referencing (#$n).
+5. STOP. Do NOT push or open a PR. Report a concise summary and \`git diff --stat\`."
   fi
 
-  prompt_file="$wt/.kc-issue-prompt.md"
+  if [ "$mode" = server ]; then
+    # Outside the worktree: it does not exist until the Build launches.
+    prompt_file="${TMPDIR:-/tmp}/kc-issue-${REPO_NAME}-${slug}.md"
+    where="You are ALREADY inside your own isolated git worktree — the dashboard made
+it for this Build. Its folder is \$KC_WT, its branch is \$KC_WT_BRANCH (freshly
+branched from ${base_ref}), and \$PORT is the dev-server port reserved for it
+(preview at /api/app-proxy/<that port>/). Run \`echo \$KC_WT \$KC_WT_BRANCH \$PORT\`
+to see them."
+  else
+    prompt_file="$wt/.kc-issue-prompt.md"
+    where="You are ALREADY inside your own isolated git worktree:
+  path:   ${wt}
+  branch: ${branch}   (freshly branched from ${base_ref})
+Dev-server/preview port for THIS worktree: ${port}  ->  /api/app-proxy/${port}/"
+  fi
+
   cat > "$prompt_file" <<EOF
-You are an autonomous agent assigned to kube-coder issue #${n}.
+You are an autonomous agent assigned to issue #${n} of ${REPO_SLUG}.
 
 # Issue: ${title}
 ${url}
@@ -261,21 +353,17 @@ ${url}
 ${body}
 
 ## Your workspace — READ THIS FIRST
-You are ALREADY inside your own isolated git worktree:
-  path:   ${wt}
-  branch: ${branch}   (freshly branched from origin/main)
+${where}
 
 Do ALL work here. Do NOT \`cd\` to ${REPO_ROOT} or edit the shared clone.
-Do NOT check out \`main\`. The repo's skills (worktree, kc-preflight, kc-ship-pr)
-are in scope from this directory — use them.
+Do NOT check out \`${base_branch}\` or switch branches; commit on yours.
 
 ## Definition of done
-1. Understand the issue; read the relevant files (repo conventions live in ./CLAUDE.md).
+1. Understand the issue; read the relevant files (repo conventions live in ./CLAUDE.md, if there is one).
 2. Implement the change.
 ${done_list}
 
 ## Handy
-- Dev-server/preview port for THIS worktree: ${port}  ->  /api/app-proxy/${port}/
 - One fact per change; keep the branch focused on issue #${n} only.
 EOF
 
@@ -287,11 +375,14 @@ EOF
     --arg worktree "$wt" --arg branch "$branch" \
     --arg port "${port:-}" --arg prompt_file "$prompt_file" \
     --arg auto_pr "$AUTO_PR" \
+    --arg mode "$mode" --arg repo_root "$REPO_ROOT" --arg repo "$REPO_SLUG" \
+    --arg slug "$slug" --arg base_ref "$base_ref" \
     --argjson lint "$(lint_json)" \
     --argjson lint_blockers "$LINT_BLOCKERS" \
     '{issue:$issue, title:$title, url:$url, worktree:$worktree,
       branch:$branch, port:$port, prompt_file:$prompt_file, auto_pr:$auto_pr,
-      lint:$lint, lint_blockers:$lint_blockers}'
+      mode:$mode, repo_root:$repo_root, repo:$repo, slug:$slug,
+      base_ref:$base_ref, lint:$lint, lint_blockers:$lint_blockers}'
 }
 
 case "${1:-}" in

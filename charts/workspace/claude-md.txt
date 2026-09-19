@@ -170,6 +170,12 @@ Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t cla
 
 ### Isolated worktrees — when `$KC_WT` is set
 
+Fanning work out over one repository? Spawn each sub-agent with
+`spawn_agent(isolate=true)` (or `create_task(isolate=true)` for a Build): each
+gets its own worktree and branch, branched from your current commit — commit
+first, uncommitted work is not carried over. When they finish, merge their
+branches from your checkout (`git merge kc/sub-<id>`).
+
 Add `"isolate": true` to the create body (with a git `workdir`) and the Build
 runs in its own git worktree under `/home/dev/.worktrees/`, on its own
 `kc/<name>` branch, with its own port. If **you** are running in one, these are

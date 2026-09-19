@@ -147,6 +147,50 @@ class CreateTaskPreviewTest(unittest.TestCase):
         self.assertTrue(res.get('isError'))
         self.assertEqual(self._watcher_posts(), [])
 
+    # ── isolated worktrees (#701) ──────────────────────────────────────────
+
+    def test_isolate_is_forwarded_with_its_options(self):
+        m._t_create_task({'prompt': 'fix issue 701', 'workdir': '/home/dev/app',
+                          'isolate': True, 'base_ref': 'origin/main',
+                          'worktree_slug': 'issue-701'})
+        body = self._task_body()
+        self.assertEqual((body['isolate'], body['base_ref'], body['worktree_slug'],
+                          body['workdir']),
+                         (True, 'origin/main', 'issue-701', '/home/dev/app'))
+
+    def test_an_isolated_build_is_told_to_serve_on_its_own_port(self):
+        m._t_create_task({'prompt': 'build a page', 'isolate': True})
+        prompt = self._task_body()['prompt']
+        self.assertIn('$PORT', prompt)
+        self.assertIn('never a default like 3000', prompt)
+
+    def test_without_isolate_nothing_new_is_sent(self):
+        # Options that only mean something with isolation are dropped rather
+        # than silently turning it on; "true" as a string does not count.
+        m._t_create_task({'prompt': 'x', 'base_ref': 'main', 'worktree_slug': 's',
+                          'isolate': 'true'})
+        body = self._task_body()
+        for key in ('isolate', 'base_ref', 'worktree_slug'):
+            self.assertNotIn(key, body)
+        self.assertNotIn('$PORT', body['prompt'])
+
+    def test_a_refused_isolation_reads_as_an_error(self):
+        def refusing(method, path, body=None, query=None):
+            self.calls.append((method, path, body))
+            return 400, {'error': '/home/dev/notes is not inside a git '
+                                  'repository, so it cannot be isolated',
+                         'code': 'not_git'}
+        m._api = refusing
+        res = m._t_create_task({'prompt': 'x', 'workdir': '/home/dev/notes',
+                                'isolate': True})
+        self.assertTrue(res.get('isError'))
+        self.assertIn('cannot be isolated', res['content'][0]['text'])
+
+    def test_the_schema_offers_isolation(self):
+        props = m.TOOLS['create_task']['schema']['inputSchema']['properties']
+        for key in ('isolate', 'base_ref', 'worktree_slug'):
+            self.assertIn(key, props)
+
 
 class TokenPathTest(unittest.TestCase):
     """The MCP and the server must agree on where the bearer token lives.
