@@ -1,0 +1,225 @@
+suite: provisioning broker RBAC and the controller's grant in that namespace
+# This file IS the acceptance criteria of #421, expressed as assertions. Each
+# test below names the criterion it covers. What it cannot cover is a live
+# SubjectAccessReview — see docs/PROVISIONING_BROKER.md for the `kubectl auth
+# can-i` matrix an operator runs against a real cluster.
+templates:
+  - templates/broker-rbac.yaml
+values:
+  - test-values.yaml
+# Document order (provision.enabled=true):
+#   0 ServiceAccount  workspace-provision-broker
+#   1 Role            workspace-provision-broker            (broker ns)
+#   2 RoleBinding     workspace-provision-broker            (broker ns)
+#   3 Role            workspace-controller-provision        (broker ns)
+#   4 RoleBinding     workspace-controller-provision        (broker ns)
+tests:
+  - it: renders nothing unless provisioning is enabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: AC1/AC2 — the controller's only grant here is create on provisionrequests
+    set:
+      provision.enabled: true
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.name
+          value: workspace-controller-provision
+      - equal:
+          path: metadata.namespace
+          value: kube-coder-provision
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["kube-coder.dev"]
+              resources: ["provisionrequests"]
+              verbs: ["get", "list", "watch", "create"]
+
+  - it: AC1 — the controller cannot create a Job that uses the provisioner SA
+    set:
+      provision.enabled: true
+    documentIndex: 3
+    asserts:
+      # No batch verbs at all: there is no Job for it to create, in the one
+      # namespace where the provisioner ServiceAccount exists.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["batch"]
+            resources: ["jobs"]
+            verbs: ["create"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["batch"]
+            resources: ["jobs"]
+            verbs: ["get", "list", "watch", "create"]
+      # Nor can it read the credentials the Job runs with.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["serviceaccounts"]
+            verbs: ["get"]
+
+  - it: AC2 — the controller cannot create ANY workload in the provisioner namespace
+    set:
+      provision.enabled: true
+    documentIndex: 3
+    asserts:
+      # apps/batch/core-pod verbs are all absent. The only apiGroup present is
+      # the CRD's, which yields a request object, not a workload.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["apps"]
+            resources: ["deployments"]
+            verbs: ["create"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["create"]
+
+  - it: the controller cannot forge a provisioning outcome
+    set:
+      provision.enabled: true
+    documentIndex: 3
+    asserts:
+      # status is a separate RBAC resource; withholding it is what makes the
+      # broker the only writer of a request's result.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests/status"]
+            verbs: ["patch"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests/status"]
+            verbs: ["update"]
+      # …nor mutate a request in flight.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests"]
+            verbs: ["update"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests"]
+            verbs: ["patch"]
+
+  - it: binds that grant to the controller SA, which lives in another namespace
+    set:
+      provision.enabled: true
+    documentIndex: 4
+    asserts:
+      - equal:
+          path: kind
+          value: RoleBinding
+      - equal:
+          path: metadata.namespace
+          value: kube-coder-provision
+      - equal:
+          path: roleRef.kind
+          value: Role
+      - contains:
+          path: subjects
+          content:
+            kind: ServiceAccount
+            name: workspace-controller
+            namespace: test
+
+  - it: the broker reads requests and writes only their status
+    set:
+      provision.enabled: true
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.namespace
+          value: kube-coder-provision
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests"]
+            verbs: ["get", "list", "watch", "delete"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests/status"]
+            verbs: ["get", "update", "patch"]
+      # It must NOT be able to rewrite a request's spec — the slug it was asked
+      # for is the one it provisions.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["kube-coder.dev"]
+            resources: ["provisionrequests"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: the broker's Job verbs are namespaced, and it is not itself privileged
+    set:
+      provision.enabled: true
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["batch"]
+            resources: ["jobs"]
+            verbs: ["get", "list", "watch", "create", "delete"]
+      # A Role (not a ClusterRole): the broker can create workloads in its own
+      # namespace and nowhere else. The cluster-wide verbs belong to the SA the
+      # Job runs as (provisioner-rbac.yaml), never to this process.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["namespaces"]
+            verbs: ["create"]
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["rbac.authorization.k8s.io"]
+            resources: ["roles", "rolebindings"]
+            verbs: ["create"]
+
+  - it: the broker SA is distinct from the privileged provisioner SA
+    set:
+      provision.enabled: true
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: kind
+          value: ServiceAccount
+      - equal:
+          path: metadata.name
+          value: workspace-provision-broker
+      - notEqual:
+          path: metadata.name
+          value: workspace-provisioner
+      - equal:
+          path: metadata.namespace
+          value: kube-coder-provision
