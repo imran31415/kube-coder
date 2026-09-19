@@ -9,6 +9,12 @@
  *    register this device (a no-op until the app is connected).
  *  - `registerForPush()` is also called on onboarding success, so a freshly
  *    connected device registers without waiting for the next cold start.
+ *  - `setPushNotificationsEnabled()` is the Settings switch (#685): off drops
+ *    this phone's registration without disconnecting, on registers it again.
+ *    `registerForPush()` does nothing while it is off.
+ *  - A tap marks the alert's Feed row read. The server only re-sends a repeat
+ *    of an alert once its row has been read (#685), so a tap that did not count
+ *    would silence every later repeat of that alert.
  *
  * Everything here is best-effort: a permission denial, a simulator with no push
  * support, or a network hiccup must never break the app — the in-app Feed still
@@ -19,8 +25,8 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 
-import { registerPushToken, unregisterPushToken } from '../api/client';
-import { getConfig } from '../store/config';
+import { markFeedRead, registerPushToken, unregisterPushToken } from '../api/client';
+import { getConfig, setPushEnabled, subscribe } from '../store/config';
 import { navigateTo, navigationRef } from '../store/nav';
 import { requestBoardFocus } from '../store/boardFocus';
 import { pushTargetFromData, type PushData } from '../util/push';
@@ -54,12 +60,14 @@ function projectId(): string | undefined {
 
 /** Ask for permission (if needed), mint the Expo push token, and register it
  *  with the connected workspace. Safe to call repeatedly — it skips when not on
- *  a device, not connected, permission denied, or the token is unchanged. */
+ *  a device, not connected, switched off in Settings, permission denied, or the
+ *  token is unchanged. */
 export async function registerForPush(): Promise<void> {
   try {
     if (!Device.isDevice) return; // push isn't delivered to simulators/emulators
-    const { host, token } = getConfig();
+    const { host, token, pushEnabled } = getConfig();
     if (!host || !token) return; // not connected yet — register after onboarding
+    if (!pushEnabled) return; // switched off: don't even ask for permission
 
     const existing = await Notifications.getPermissionsAsync();
     let status = existing.status;
@@ -79,10 +87,62 @@ export async function registerForPush(): Promise<void> {
     const resp = await Notifications.getExpoPushTokenAsync(pid ? { projectId: pid } : undefined);
     const expoToken = resp.data;
     if (!expoToken || expoToken === lastRegistered) return;
+    // The switch can be turned off while we waited on permission or the token.
+    if (!getConfig().pushEnabled) return;
     await registerPushToken(expoToken, Platform.OS === 'ios' ? 'ios' : 'android');
     lastRegistered = expoToken;
+    // ...or while the register call itself was in flight. The switch's own
+    // unregister may already have run and been overtaken by this register, so
+    // undo it here rather than leave the workspace pushing to a phone that
+    // said no.
+    if (!getConfig().pushEnabled) {
+      lastRegistered = '';
+      await unregisterPushToken(expoToken);
+    }
   } catch {
     // best-effort; the feed still carries every signal
+  }
+}
+
+/** This device's Expo push token without prompting for permission: '' when
+ *  push was never granted or is unavailable here (simulator, web). */
+async function currentExpoToken(): Promise<string> {
+  try {
+    if (!Device.isDevice) return '';
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status !== 'granted') return '';
+    const pid = projectId();
+    const resp = await Notifications.getExpoPushTokenAsync(pid ? { projectId: pid } : undefined);
+    return resp.data || '';
+  } catch {
+    return '';
+  }
+}
+
+/** The Settings → Notifications switch (#685).
+ *
+ *  Off stops the connected workspace pushing to this phone without
+ *  disconnecting — before this, disconnecting was the only way. The choice is
+ *  saved first, so it holds even when the workspace is unreachable right now:
+ *  the unregister is best-effort, and every later launch skips registration.
+ *
+ *  Off must not depend on `lastRegistered`, which lives in memory only: on a
+ *  launch where registration never ran (or failed), it is empty although the
+ *  workspace still holds this phone's token. So when it is empty, ask Expo for
+ *  the token instead. */
+export async function setPushNotificationsEnabled(on: boolean): Promise<void> {
+  await setPushEnabled(on);
+  if (on) {
+    await registerForPush();
+    return;
+  }
+  const token = lastRegistered || (await currentExpoToken());
+  lastRegistered = '';
+  if (!token) return;
+  try {
+    await unregisterPushToken(token);
+  } catch {
+    // best-effort — the saved "off" already stops re-registration
   }
 }
 
@@ -106,9 +166,33 @@ export async function unregisterForPush(): Promise<void> {
   }
 }
 
+/** Mark a tapped alert's Feed row read. A tap that cold-starts the app arrives
+ *  before the saved connection is hydrated, when a request has no host or token
+ *  to use — so wait for hydration instead of sending one that cannot land. */
+function markTappedRead(feedId: string): void {
+  const send = () => {
+    Promise.resolve()
+      .then(() => markFeedRead(feedId))
+      .catch(() => {});
+  };
+  if (getConfig().loaded) {
+    send();
+    return;
+  }
+  const unsubscribe = subscribe((c) => {
+    if (!c.loaded) return;
+    unsubscribe();
+    send();
+  });
+}
+
 /** Route a notification tap to the screen its ref points at, reusing the Feed's
  *  mapping. Unknown/empty refs open the Feed so a tap is never a dead end. */
 export function handleNotificationTap(data: PushData | undefined): void {
+  // Reading happens even when navigation can't: the server re-sends a repeat of
+  // this alert only once its row has been read (#685).
+  const feedId = (data?.feedId || '').trim();
+  if (feedId) markTappedRead(feedId);
   if (!navigationRef.isReady()) return;
   const target = pushTargetFromData(data);
   switch (target.kind) {

@@ -97,6 +97,19 @@ EXPO_PUBLIC_HOST=https://imran.dev.scalebase.io \
 
 These are read only when set (production builds leave them unset → normal onboarding).
 
+### Push notifications
+
+Once connected, the app registers this phone with the workspace, which pushes
+the high-signal Feed items: an agent waiting on you, or a recorded decision.
+**Settings → Notifications** turns that off for this phone without
+disconnecting. The choice is saved on the device, and the Feed still shows
+every alert.
+
+The same alert (say, one task that keeps going back to "waiting") is not sent
+again until you have read or dismissed it, and then at most every 30 minutes.
+A repeat replaces the earlier notification instead of stacking beside it.
+Tapping a notification marks it read (#685).
+
 ## Screenshots (store assets)
 
 Generating the App Store / Play Store screenshots is a **single, reusable,
