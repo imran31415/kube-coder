@@ -1,0 +1,103 @@
+{{- if .Values.provision.enabled }}
+{{- $brokerNs := .Values.provision.broker.namespace }}
+{{- $broker := .Values.provision.broker.serviceAccount }}
+# RBAC for the provisioning broker (#421) — and, just as importantly, the
+# deliberately tiny grant the controller keeps.
+#
+# Read this file as the answer to "what exactly can the internet-facing
+# controller do now?". The answer is: create and read ProvisionRequests in the
+# broker's namespace. It cannot create a Job there, cannot select the
+# provisioner ServiceAccount, and cannot write a request's status. The Job is
+# stamped by the broker from a template the request has no access to.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $broker }}
+  namespace: {{ $brokerNs }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+---
+# The broker's own verbs, all namespace-local to its own namespace. It is NOT
+# the privileged identity — the Job it stamps is (provisioner-rbac.yaml). The
+# broker only needs to read requests, write their status, and manage Jobs here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $broker }}
+  namespace: {{ $brokerNs }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["kube-coder.dev"]
+  resources: ["provisionrequests"]
+  verbs: ["get", "list", "watch", "delete"]
+- apiGroups: ["kube-coder.dev"]
+  resources: ["provisionrequests/status"]
+  verbs: ["get", "update", "patch"]
+# Stamp + observe + clean up the privileged Jobs. Namespaced: the broker cannot
+# create workloads anywhere else in the cluster.
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+# Read pod status/logs for the message it writes back onto a failed request.
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $broker }}
+  namespace: {{ $brokerNs }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $broker }}
+subjects:
+- kind: ServiceAccount
+  name: {{ $broker }}
+  namespace: {{ $brokerNs }}
+---
+# THE CONTROLLER'S ENTIRE FOOTPRINT IN THE PRIVILEGED NAMESPACE.
+#
+# `create` is the capability that replaces the old `create jobs` Role (deleted
+# from serviceaccount.yaml by #421). The difference is what a compromise buys:
+# a Job manifest let the attacker choose image, command, env, volumes and
+# ServiceAccount; a ProvisionRequest lets them choose a slug. get/list/watch
+# back the console's status polling.
+#
+# Note what is absent and must stay absent:
+#   * no `batch` verbs           — the controller cannot create a workload here
+#   * no `provisionrequests/status` — it cannot forge a provisioning outcome
+#   * no `update`/`patch` on requests — it cannot mutate one mid-flight
+#   * no secrets/serviceaccounts — it cannot read the Job's credentials
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workspace-controller-provision
+  namespace: {{ $brokerNs }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["kube-coder.dev"]
+  resources: ["provisionrequests"]
+  verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workspace-controller-provision
+  namespace: {{ $brokerNs }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workspace-controller-provision
+subjects:
+- kind: ServiceAccount
+  name: workspace-controller
+  namespace: {{ .Values.namespace }}
+{{- end }}
