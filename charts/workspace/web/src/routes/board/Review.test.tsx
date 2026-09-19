@@ -528,3 +528,43 @@ describe('arriving for one card (#704)', () => {
     expect(scrolled.map((s) => s.id)).toEqual(['I_kwDOA:4102']);
   });
 });
+
+describe('/board Review — the code behind the reply (#701)', () => {
+  beforeEach(() => {
+    _resetBoardsForTest();
+    writable();
+    stubFetch();
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("shows the Build's branch, what it changed, and links to the diff", () => {
+    seedReview([mkRecord({
+      task_id: 'task-9',
+      worktree: {
+        task_id: 'task-9', branch: 'kc/b-acme-jira-46-1a2b3c4d', port: 3101,
+        path: '/home/dev/.worktrees/app/b-acme-jira-46-1a2b3c4d', removed: false,
+        stat: { files_changed: 2, insertions: 14, deletions: 3, ahead: 1, dirty: 0, untracked: 0 },
+      },
+    })]);
+    render(<ReviewPanel />);
+    expect(screen.getByText('⎇ kc/b-acme-jira-46-1a2b3c4d')).toBeInTheDocument();
+    expect(screen.getByText('2 files changed (+14 −3)')).toBeInTheDocument();
+    const link = screen.getByText('View changes →') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toMatch(/\/tasks\/task-9\/changes$/);
+  });
+
+  it('says so when the worktree is gone, and shows nothing for a tracker-only item', () => {
+    seedReview([
+      mkRecord({
+        item_id: '46',
+        worktree: { task_id: 't1', branch: 'kc/x', port: null, path: null, removed: true, stat: null },
+      }),
+      mkRecord({ item_id: '47', item_key: 'SUP-813', task_id: 't2' }),
+    ]);
+    render(<ReviewPanel />);
+    expect(screen.getByText('worktree removed — branch kept')).toBeInTheDocument();
+    expect(screen.getAllByText('View changes →')).toHaveLength(1);
+  });
+});

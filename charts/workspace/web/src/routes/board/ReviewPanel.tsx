@@ -16,7 +16,9 @@ import {
 import { PromptDialog } from '../../components/ConfirmDialog';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { dispositionLabel, evidenceValueLabel } from '../../api/boards';
-import type { StagedAction, StagedRecord } from '../../api/boards';
+import type { ReviewWorktree, StagedAction, StagedRecord } from '../../api/boards';
+import { navigate, routeHref } from '../../store/router';
+import { diffStatLabel } from '../../util/worktree';
 
 /**
  * The review queue (#588 Phase 6).
@@ -251,6 +253,31 @@ function ResumeNotice() {
   );
 }
 
+function ReviewWorktreeRow({ wt }: { wt: ReviewWorktree }) {
+  const href = `/tasks/${encodeURIComponent(wt.task_id)}/changes`;
+  const summary = wt.removed
+    ? 'worktree removed — branch kept'
+    : wt.stat
+      ? diffStatLabel(wt.stat)
+      : 'changes not recorded yet';
+  return (
+    <div class="board-review-worktree">
+      <span class="board-review-branch mono">⎇ {wt.branch}</span>
+      <span class="board-review-diffstat">{summary}</span>
+      <a
+        class="board-review-link"
+        href={routeHref(href)}
+        onClick={(e) => {
+          e.preventDefault();
+          navigate(href);
+        }}
+      >
+        View changes →
+      </a>
+    </div>
+  );
+}
+
 function ReviewCard({
   record,
   boardId,
@@ -309,6 +336,10 @@ function ReviewCard({
           </a>
         )}
       </header>
+
+      {/* The code behind the proposed reply (#701). A reviewer approving
+          "Fixed on kc/…" should see what "fixed" was before saying yes. */}
+      {record.worktree?.branch && <ReviewWorktreeRow wt={record.worktree} />}
 
       {pending.length > 0 && (
         <ul class="board-review-actions">

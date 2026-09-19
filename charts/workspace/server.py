@@ -556,6 +556,19 @@ BOARD_RUN_PREAMBLE = (
     "needs_rescoping and put the one precise question in the reason.]\n\n"
 )
 
+# Added to a run worker's preamble when its run points at a repository (#701):
+# the agent is in a git checkout — its own worktree when the run isolates — and
+# the reviewer finds the change by branch, so the agent must say which.
+BOARD_CODE_PREAMBLE = (
+    "[System: This item's work happens in a git repository — your current "
+    "directory. If the item needs code changes, make them here and COMMIT them "
+    "on the current branch. Do not switch branches and do not push; a human "
+    "reviews the branch. Put the branch name and a one-line summary of each "
+    "commit in board_report's evidence (evidence.branch, evidence.commits), and "
+    "any comment you stage on the ticket should say what changed and on which "
+    "branch.]\n\n"
+)
+
 BOARD_GEN_PREAMBLE = (
     "[System: You are authoring a BOARD CONNECTOR — a declarative JSON adapter "
     "that lets this workspace read and write an external tracker. The "
@@ -4728,6 +4741,115 @@ class WorktreeManager:
             return None, cls.refusal(e)
         return info, None
 
+    # ── Board runs (#701) ──────────────────────────────────────────────────
+
+    @classmethod
+    def check_run_workdir(cls, workdir, *, isolate, base_ref=''):
+        """`(realpath, error)` for a Board run's `workdir`. Always confined to
+        /home/dev; with `isolate` it must also be a git checkout with commits,
+        because every item is about to get a worktree of it."""
+        if isolate:
+            plan, refusal = cls.plan(workdir, base_ref=base_ref or None)
+            if refusal:
+                return None, refusal['error']
+            if base_ref:
+                # A typo here would otherwise fail every item, one by one,
+                # after the board had already been listed.
+                try:
+                    worktrees.resolve_base(plan['repo'], base_ref)
+                except worktrees.WorktreeError as e:
+                    return None, e.message
+        if cls.available():
+            try:
+                return worktrees.confine(workdir, cls.HOME_ROOT), None
+            except worktrees.WorktreeError as e:
+                return None, e.message
+        path, err = DevcontainerManager.resolve_workdir(workdir)
+        return (path, None) if not err else (None, err)
+
+    @classmethod
+    def clamp_run_items(cls, board_id, workdir, chosen):
+        """`(kept, skipped, reason)` — the items of an isolated run that fit.
+
+        Each item needs its OWN worktree unless one already exists for it (a
+        ticket keeps its worktree across runs, so a re-run or a send-back
+        costs nothing). New ones are limited by KC_MAX_WORKTREES. Dead,
+        unchanged worktrees are reclaimed before anything is left out, and the
+        items that do not fit are simply not in this run — the next run picks
+        them up, so nothing is marked processed that was never worked.
+        """
+        if not cls.available():
+            return chosen, 0, ''
+        root = cls.root()
+        maxn = cls.max_worktrees()
+        try:
+            repo_root = worktrees.resolve_repo(
+                workdir, home_root=cls.HOME_ROOT, wt_root=root)['root']
+        except worktrees.WorktreeError as e:
+            return [], len(chosen), e.message
+
+        def census():
+            rows = worktrees.list_all(root)
+            mine = {m.get('slug') for m in rows
+                    if os.path.realpath(m.get('source_root') or '') ==
+                    os.path.realpath(repo_root)}
+            return mine, max(0, maxn - len(rows))
+
+        def new_ones(existing):
+            return [it for it in chosen if worktrees.board_slug(
+                board_id, str(it.get('id', ''))) not in existing]
+
+        existing, free = census()
+        if len(new_ones(existing)) > free:
+            try:
+                worktrees.sweep(
+                    wt_root=root, is_owner_live=cls.liveness(),
+                    owner_meta=ClaudeTaskManager.read_meta,
+                    gc_days=cls.gc_days(), grace_s=cls.grace_s(),
+                    pristine_only=True)
+            except worktrees.WorktreeError:
+                pass
+            existing, free = census()
+        needed = len(new_ones(existing))
+        if needed <= free:
+            return chosen, 0, ''
+        kept, budget = [], free
+        for it in chosen:
+            if worktrees.board_slug(board_id, str(it.get('id', ''))) in existing:
+                kept.append(it)
+            elif budget > 0:
+                kept.append(it)
+                budget -= 1
+        skipped = len(chosen) - len(kept)
+        if not kept:
+            return [], skipped, (
+                f'no free worktree for any of these items: all {maxn} are in '
+                f'use (KC_MAX_WORKTREES). Remove finished worktrees in '
+                f'Settings → Worktrees, then run again.')
+        return kept, skipped, (
+            f'{skipped} item{"" if skipped == 1 else "s"} left out of this '
+            f'run: it needed {needed} new worktree'
+            f'{"" if needed == 1 else "s"} but only {free} of {maxn} '
+            f'{"is" if free == 1 else "are"} free (KC_MAX_WORKTREES). Remove '
+            f'finished worktrees in Settings → Worktrees; the items left out '
+            f'are picked up by the next run.')
+
+    @classmethod
+    def worktree_owner(cls, board_id, workdir, slug):
+        """The task id that last used this item's worktree, or ''."""
+        if not cls.available():
+            return ''
+        try:
+            repo_root = worktrees.resolve_repo(
+                workdir, home_root=cls.HOME_ROOT, wt_root=cls.root())['root']
+            m = worktrees.find(cls.root(), slug, repo_root)
+        except worktrees.WorktreeError:
+            return ''
+        if not m or os.path.realpath(m.get('source_root') or '') != \
+                os.path.realpath(repo_root):
+            return ''
+        return m.get('task_id') or ''
+
     @classmethod
     def rollback(cls, info):
         try:
@@ -7714,6 +7836,18 @@ class BoardRunsManager:
         if cf is not None and (not isinstance(cf, int) or cf < 1):
             return None, 'stop_on.consecutive_failures must be a positive integer'
 
+        # Where the agents work (#701). Checked before anything is fetched: a
+        # run that could never isolate should say so, not list the board first.
+        repo, errors = boards.runs.validate_repo_config(data)
+        if errors:
+            return None, '; '.join(errors)
+        if repo['workdir']:
+            workdir, err = WorktreeManager.check_run_workdir(
+                repo['workdir'], isolate=repo['isolate'], base_ref=repo['base_ref'])
+            if err:
+                return None, err
+            repo['workdir'] = workdir
+
         requested = data.get('concurrency', 1)
         at_cap_live = ClaudeTaskManager.count_live_tasks()
         effective, clamp_reason = boards.runs.clamp_concurrency(
@@ -7762,11 +7896,27 @@ class BoardRunsManager:
         chosen, skipped = boards.runs.select_items(
             result['items'], select, is_processed=_seen)
 
+        # Every isolated item holds a worktree until it is cleaned up, so a
+        # run can ask for more than the workspace has room for. Clamp and say
+        # so — the concurrency clamp's rule — rather than dispatching items
+        # that would each fail at launch.
+        wt_clamp_reason, wt_skipped = '', 0
+        if repo['isolate'] and chosen:
+            chosen, wt_skipped, wt_clamp_reason = \
+                WorktreeManager.clamp_run_items(board_id, repo['workdir'], chosen)
+            if not chosen:
+                return None, wt_clamp_reason
+
         run_id = boards.runs.make_run_id(time.time(), secrets.token_hex(4))
         run = boards.runs.new_run(
             run_id, board_id, mode=mode, select=select, concurrency=effective,
             requested_concurrency=requested, clamp_reason=clamp_reason,
-            stop_on=stop_on, origin=origin)
+            stop_on=stop_on, origin=origin, workdir=repo['workdir'],
+            isolate=repo['isolate'], base_ref=repo['base_ref'],
+            warnings=boards.runs.shared_tree_warning(
+                repo['workdir'], repo['isolate'], effective))
+        run['worktree_clamp_reason'] = wt_clamp_reason
+        run['worktree_skipped'] = wt_skipped
         # An INCOMPLETE listing is carried on the run, not swallowed. "We worked
         # every open ticket" is a different claim from "we worked every open
         # ticket we could see", and only one of them is true here.
@@ -8027,26 +8177,41 @@ class BoardRunsManager:
 
         prompt = (cls._resume_prompt(cfg, row, resume) if resume
                   else cls._item_prompt(cfg, row))
+
+        # Where this item's agent works (#701): its own worktree when the run
+        # isolates — the SAME one on a send-back, so `--resume` finds its
+        # transcript and the earlier commits are there — the run's folder
+        # when it does not, and /home/dev for a tracker-only run.
+        placement = cls._placement(cfg, run, row, resume)
+        if placement.get('isolate'):
+            cls._supersede_stale_owner(cfg, run, row, resume, placement)
+        resume_session = resume.get('claude_session_id') or ''
+        if resume_session and not cls._resume_cwd_ok(placement, resume):
+            # Claude keys a transcript on the directory it ran in; resuming
+            # somewhere else would fail at launch. Tier 3 is honest instead.
+            resume_session = ''
+
         if resume:
             # Recorded BEFORE the launch, from the same two conditions
             # assistant_command applies, so the row never claims a session was
             # reopened when the flag was not even passed.
             cls._set_item(run['id'], row['id'], resume_tier=(
-                'session' if (_valid_uuid(resume.get('claude_session_id') or '')
+                'session' if (_valid_uuid(resume_session)
                               and ClaudeTaskManager._claude_supports_resume())
                 else 'fresh'))
         try:
             result = ClaudeTaskManager.create_task(
                 prompt,
                 source=source,
-                system_preamble=BOARD_RUN_PREAMBLE,
+                system_preamble=BOARD_RUN_PREAMBLE + (
+                    BOARD_CODE_PREAMBLE if placement.get('workdir') else ''),
                 board_id=cfg['id'], board_item_id=row['id'],
                 # Tier 2: reopen the original Claude session so the agent still
                 # has its own reasoning. Empty for an ordinary item, and
                 # ignored by assistant_command when the CLI has no --resume —
                 # which degrades to tier 3, a fresh build whose prompt carries
                 # the prior reason. Worse, but honest, and the card says so.
-                resume_session_id=resume.get('claude_session_id') or '',
+                resume_session_id=resume_session,
                 # The run's MODE decides whether board WRITES are staged, and
                 # that is enforced server-side from the lease — not here, and
                 # not by the CLI's permission menu. Tying the CLI's
@@ -8056,7 +8221,8 @@ class BoardRunsManager:
                 #
                 # A board worker is an unattended source like webhook: or
                 # cron:, so it takes the same answer they do.
-                auto_approve=ClaudeTaskManager.resolve_auto_approve(source))
+                auto_approve=ClaudeTaskManager.resolve_auto_approve(source),
+                **placement)
         except Exception as e:
             return '', f'could not start the build: {e}'
         if not isinstance(result, dict):
@@ -8065,10 +8231,82 @@ class BoardRunsManager:
             return '', result.get('error') or 'the workspace is at its task limit'
         if result.get('status') == 'error':
             return '', result.get('error') or 'the build failed to start'
+        # Any other refusal — a folder that cannot be isolated, a worktree
+        # another Build holds, a lock timeout — carries its own reason and no
+        # task. It is a failure of this item, in the item's own words.
+        if result.get('task_id') is None and result.get('error'):
+            return '', result['error']
         task_id = result.get('task_id')
         if not task_id:
             return '', 'the build returned no task id'
+        wt = result.get('worktree') or {}
+        if wt:
+            cls._set_item(run['id'], row['id'], worktree={
+                'slug': wt.get('slug'), 'branch': wt.get('branch'),
+                'path': wt.get('path')})
         return task_id, ''
+
+    @staticmethod
+    def _placement(cfg, run, row, resume):
+        """`create_task` keyword arguments for where one item's Build runs."""
+        prior = (resume or {}).get('worktree') or {}
+        if prior.get('slug') and prior.get('source_workdir'):
+            out = {'isolate': True, 'workdir': prior['source_workdir'],
+                   'worktree_slug': prior['slug']}
+            if prior.get('base_sha'):
+                out['base_sha'] = prior['base_sha']
+            return out
+        if run.get('isolate') and run.get('workdir'):
+            out = {'isolate': True, 'workdir': run['workdir'],
+                   'worktree_slug': (worktrees.board_slug(cfg['id'], row['id'])
+                                     if WorktreeManager.available() else None)}
+            if run.get('base_ref'):
+                out['base_ref'] = run['base_ref']
+            return out
+        if run.get('workdir'):
+            return {'workdir': run['workdir']}
+        if (resume or {}).get('workdir'):
+            return {'workdir': resume['workdir']}
+        return {}
+
+    @staticmethod
+    def _resume_cwd_ok(placement, resume):
+        """Whether a resumed Build will run where the original did."""
+        prior = (resume or {}).get('workdir') or ''
+        if not prior or placement.get('isolate'):
+            # An isolated resume reuses the same worktree path by slug.
+            return True
+        return os.path.realpath(placement.get('workdir') or '/home/dev') == \
+            os.path.realpath(prior)
+
+    @classmethod
+    def _supersede_stale_owner(cls, cfg, run, row, resume, placement):
+        """Free this item's worktree from a Build of the same item that is
+        done with it but still holds it.
+
+        A Board item's Build keeps its REPL alive after it reports, so its
+        worktree stays "in use" long after the work is over. When the SAME
+        item is worked again — a re-run of an edited ticket, or a send-back
+        whose tier-1 follow-up could not reach the old session — that idle
+        session is ended rather than blocking the item forever. Anything else
+        holding the worktree is left alone, and the launch reports it busy.
+        """
+        slug = placement.get('worktree_slug')
+        if not slug:
+            return
+        owner = WorktreeManager.worktree_owner(cfg['id'], placement['workdir'], slug)
+        if not owner or not WorktreeManager.liveness()(owner):
+            return
+        meta = ClaudeTaskManager.read_meta(owner) or {}
+        same_item = (meta.get('board_id') == cfg['id']
+                     and str(meta.get('board_item_id') or '') == str(row['id']))
+        idle = meta.get('status') == 'waiting-for-input'
+        unreachable = bool(resume) and owner == ((resume or {}).get('task_id') or '')
+        if same_item and (idle or unreachable):
+            ClaudeTaskManager.delete_task(owner)
+            cls._set_item(run['id'], row['id'], superseded_task_id=owner)
+            print(f'[board-run] {cfg["id"]}/{row["id"]}: ended idle Build '
+                  f'{owner} to reuse its worktree', file=sys.stderr)
 
     #: Attempts at delivering a follow-up into a live pane before giving up.
     #: Delivery goes through the same paste-and-verify path as the initial
@@ -8467,6 +8705,14 @@ class BoardReviewManager:
         if existing and existing.get('state') in boards.review.OPEN_STATES:
             prior = existing.get('run_id') or ''
             if not run_id or prior == run_id:
+                if task_id and not existing.get('task_id'):
+                    # Same run, first time we learn which Build it was (#701).
+                    def backfill(record):
+                        if record.get('task_id'):
+                            return False
+                        record['task_id'] = task_id
+                    updated, _wrote = book.update(item['id'], backfill)
+                    return updated or existing
                 return existing
 
             def supersede(record):
@@ -8856,6 +9102,22 @@ class BoardReviewManager:
                  'started over with your note and its previous conclusion',
     }
 
+    @staticmethod
+    def _send_back_placement(prior_run, prior_wt):
+        """The repository settings a send-back run inherits (#701).
+
+        From the prior RUN when it still exists; otherwise from the prior
+        Build's own worktree record — runs are pruned, task.json is not."""
+        if prior_run.get('workdir'):
+            out = {'workdir': prior_run['workdir'],
+                   'isolate': bool(prior_run.get('isolate'))}
+            if prior_run.get('isolate') and prior_run.get('base_ref'):
+                out['base_ref'] = prior_run['base_ref']
+            return out
+        if prior_wt.get('slug') and prior_wt.get('source_workdir'):
+            return {'workdir': prior_wt['source_workdir'], 'isolate': True}
+        return {}
+
     @classmethod
     def resume_item(cls, cfg, record, *, note):
         """Put a sent-back item back in front of an agent.
@@ -8876,14 +9138,28 @@ class BoardReviewManager:
         """
         item_id = str(record.get('item_id') or '')
         prior_run = BoardRunsManager.get(record.get('run_id') or '') or {}
-        task_id = record.get('task_id') or ''
-        meta = ClaudeTaskManager.get_task(task_id) if task_id else None
+        # A record made by a report alone predates its task id being stored;
+        # the run row always has it.
+        task_id = record.get('task_id') or (
+            ((prior_run.get('items') or {}).get(item_id) or {}).get('task_id')
+            or '')
+        # A plain read of task.json: this needs the session id and where the
+        # Build ran, not a tmux capture of its screen.
+        meta = ClaudeTaskManager.read_meta(task_id) if task_id else None
+        prior_wt = (meta or {}).get('worktree') or {}
         resume = {
             'note': note,
             'task_id': task_id,
             'claude_session_id': (meta or {}).get('claude_session_id') or '',
             'prior_reason': record.get('reason') or '',
             'from_run_id': record.get('run_id') or '',
+            # Where the original Build ran (#701). Taken from its task.json,
+            # not from the run, so a send-back still lands in the same place
+            # after the run record has been pruned.
+            'workdir': (meta or {}).get('workdir') or '',
+            'worktree': ({k: prior_wt.get(k) for k in (
+                'slug', 'branch', 'path', 'source_workdir', 'base_sha',
+                'base_ref', 'repo_root')} if prior_wt.get('slug') else None),
         }
 
         # A reviewer can decide while the original build is STILL RUNNING —
@@ -8925,6 +9201,11 @@ class BoardReviewManager:
                                # a processed marker from the earlier pass is the
                                # thing standing in the way.
                                'ignore_processed': True},
+                    # Where it was worked (#701). Dropping these made the
+                    # re-worked item run in the shared /home/dev with none of
+                    # its earlier commits — the collision isolation exists to
+                    # prevent, at the moment a human asked for a correction.
+                    **cls._send_back_placement(prior_run, prior_wt),
                 },
                 origin='send_back', resume=resume, allow_concurrent=True)
         except Exception as e:                  # pragma: no cover - defensive
@@ -14407,6 +14688,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         open_only = (qs.get('open') or [''])[0] in ('1', 'true')
         records = BoardReviewManager.list_records(self._board_id,
                                                   open_only=open_only)
+        # What each item's Build changed (#701), so a reviewer sees the code
+        # next to the proposed reply. From task.json only — this list is
+        # polled, and it never runs git.
+        briefs = {}
+        for rec in records:
+            tid = rec.get('task_id') or ''
+            if not tid:
+                continue
+            if tid not in briefs:
+                meta = ClaudeTaskManager.read_meta(tid)
+                briefs[tid] = (dict(WorktreeManager.brief(meta), task_id=tid)
+                               if meta and meta.get('worktree') else None)
+            if briefs[tid]:
+                rec['worktree'] = briefs[tid]
         self.send_json({
             'groups': boards.review.group_by_disposition(records),
             'total': len(records),
@@ -14436,7 +14731,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             reason=data.get('reason') or '',
             evidence=data.get('evidence') if isinstance(
                 data.get('evidence'), dict) else {},
-            run_id=(run or {}).get('id', ''))
+            run_id=(run or {}).get('id', ''),
+            # Which Build reported (#701): a report-only record carried no
+            # task id, so its review card could not link to the Build's
+            # changes and a send-back could not find where it ran.
+            task_id=(((run or {}).get('items') or {}).get(str(item['id']))
+                     or {}).get('task_id', ''))
         if err:
             self.send_json({'error': err}, 400)
             return

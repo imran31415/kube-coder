@@ -136,6 +136,11 @@ export interface BoardRunItem {
   error: string;
   writes_used: number;
   updated_at: number;
+  /** This item's own worktree, when its run isolates (#701). */
+  worktree?: { slug: string; branch: string; path: string };
+  /** An idle Build of the same item that was ended so this one could reuse
+   *  its worktree. */
+  superseded_task_id?: string;
 }
 
 export interface BoardRunSummary {
@@ -156,6 +161,16 @@ export interface BoardRunSummary {
    *  open ticket" and "every one we could see" are different claims. */
   listing_complete: boolean;
   truncation_reason: string;
+  /** The repository the agents work in (#701); '' for a tracker-only run. */
+  workdir?: string;
+  /** Every item in its own worktree on its own branch. */
+  isolate?: boolean;
+  base_ref?: string;
+  /** `shared_tree`: several agents at once in ONE checkout. */
+  warnings?: string[];
+  /** Items left out because no worktree was free, in words. */
+  worktree_clamp_reason?: string;
+  worktree_skipped?: number;
   total: number;
   counts: Record<RunItemState, number>;
   done: number;
@@ -190,6 +205,24 @@ export interface StagedAction {
   result?: Record<string, unknown> | null;
 }
 
+/** The Build that worked a review item, when it ran in its own worktree (#701):
+ *  enough for the card to show the branch and link to the diff. */
+export interface ReviewWorktree {
+  task_id: string;
+  branch: string | null;
+  port: number | null;
+  path: string | null;
+  removed: boolean;
+  stat: {
+    files_changed: number;
+    insertions: number;
+    deletions: number;
+    ahead: number | null;
+    dirty: number;
+    untracked: number;
+  } | null;
+}
+
 export interface StagedRecord {
   board_id: string;
   item_id: string;
@@ -200,6 +233,10 @@ export interface StagedRecord {
    *  stale card cannot approve the newer thing that replaced it. */
   content_hash: string;
   run_id: string;
+  /** The Build that worked the item. */
+  task_id?: string;
+  /** Present when that Build ran in an isolated worktree (#701). */
+  worktree?: ReviewWorktree;
   state: 'pending' | 'approved' | 'rejected' | 'sent_back' | 'partial';
   disposition: Disposition | null;
   reason: string;
@@ -350,6 +387,11 @@ export interface StartRunBody {
   concurrency?: number;
   select?: Record<string, unknown>;
   stop_on?: Record<string, number>;
+  /** A git checkout the agents work in (#701). Omit for a tracker-only run. */
+  workdir?: string;
+  /** Give every item its own worktree on its own branch. */
+  isolate?: boolean;
+  base_ref?: string;
 }
 
 export const listBoards = () =>

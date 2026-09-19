@@ -779,6 +779,12 @@ export interface BoardReviewItem {
   /** Echoed back on approve: an approver holding a stale card cannot approve
    *  the newer thing that replaced it. */
   content_hash: string;
+  run_id?: string;
+  /** The Build that worked the item. */
+  task_id?: string;
+  /** Present when that Build ran in its own worktree (#701): its branch and
+   *  what it changed, so the reviewer sees the code next to the reply. */
+  worktree?: WorktreeBrief & { task_id: string };
   state: 'pending' | 'approved' | 'rejected' | 'sent_back' | 'partial';
   disposition: string | null;
   reason: string;

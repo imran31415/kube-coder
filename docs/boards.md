@@ -453,6 +453,48 @@ The run's item table on `/board` goes from each row to what happens next
   clock built on it measures "since this row last changed", not time spent on
   the ticket.
 
+### Runs that change code (#701)
+
+A lease stops two agents working the same **ticket**; it says nothing about two
+tickets whose agents edit the same **file**. By default every item's Build runs
+in `/home/dev`, so parallel agents share one checkout, one branch and one index.
+A run can say where its agents work instead:
+
+| Run setting | Where each item's Build runs |
+|---|---|
+| no `workdir` (default) | `/home/dev`, exactly as before — tracker-only boards are unchanged |
+| `workdir` | that git checkout, **shared** by every item |
+| `workdir` + `isolate: true` | its **own** worktree of that checkout, on its own `kc/<slug>` branch, with its own `$PORT` |
+
+In the Runs form this is **Repository** (git folders only, "None — tracker
+only" by default) and **Isolated worktree per item**, which turns **on** the
+moment a repository is picked. A shared repository with *At once* above 1 is
+warned about before Start, and the run carries `warnings: ["shared_tree"]` so an
+API caller sees the same thing.
+
+The slug is `b-<board>-<item>-<hash>` — one per **ticket**, not per run — so a
+re-run of an edited ticket and a send-back both continue on the ticket's own
+branch, and the worktree count is bounded by tickets. The hash is what keeps
+ids like `I_kwDOA:4102` and `A:1` / `a-1` from sharing one.
+
+Every isolated item holds a worktree until it is cleaned up, so a run is
+**clamped** to the free slots under `KC_MAX_WORKTREES` (after reclaiming dead,
+unchanged worktrees), and says so in `worktree_clamp_reason`. Items left out are
+not marked processed; the next run picks them up. An item whose worktree already
+exists costs nothing.
+
+A Board item's Build keeps its REPL alive after it reports, so its worktree
+stays "in use". When the **same** item is worked again and that Build is idle
+(`waiting-for-input`) — or is the one a send-back could not reach — it is ended
+and the new Build reuses the worktree (`superseded_task_id` on the row). A Build
+that is actually working is never ended; the item fails as "in use".
+
+A worker in a repository run is told to commit on its branch and to report the
+branch and commits in its evidence. The Review card shows that branch, what
+changed and a **View changes** link to the Build's diff (web and phone), so a
+reply like "fixed on `kc/…`" is never approved unseen. See
+[Isolated worktrees](in-app/builds-worktrees.md).
+
 ---
 
 ## Dispositions and staged actions
@@ -667,6 +709,16 @@ that lease is already the invariant, so the agent holding it is asked directly.
 A resumed Build records **no** `claude_session_id`. It reopens the original
 transcript, and two task records naming one transcript would make the token
 ledger count that spend twice.
+
+**A resumed item works where the original did (#701).** The send-back run
+inherits the prior run's `workdir` / `isolate` / `base_ref`, and the resume
+carries the prior Build's own `workdir` and worktree from its task.json — so it
+still works after the run record has been pruned. An isolated item lands in the
+**same** worktree path, on the same branch, with its earlier commits. That is
+also what keeps tier 2 working: Claude files a transcript under the directory it
+ran in, and `--resume` from anywhere else finds nothing. If the folder was
+removed meanwhile, it is re-added from the branch at the same path; if the prior
+directory cannot be reproduced at all, the tier drops honestly to `fresh`.
 
 Optionally, per board, an agent reporting `needs_rescoping` can post its
 question **on the source ticket** so the requester answers where they already
