@@ -91,6 +91,15 @@ This document describes all environment variables used by kube-coder components.
 | `KC_AGENT_DEPTH` | `0` | **Automatically set.** Current agent depth (incremented for subagents). |
 | `KC_USAGE_SCAN_INTERVAL` | `15` | Seconds between token-usage re-scans of a live Build's Claude Code session transcript. Scans are incremental (a resume offset per file), so this is just a floor on how often a polled task re-reads its log. |
 
+### Feed & Mobile Push
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KC_PUSH_ENABLED` | `true` | Send Expo push notifications for high-signal Feed items (an agent waiting on you, a decision). `false` keeps the Feed but sends nothing. Set from `push.enabled`. |
+| `KC_PUSH_MIN_INTERVAL` | `1800` | Seconds before the same alert (same Feed row, e.g. one task flipping back to waiting) may push again. It only pushes again once the row was read or dismissed since the last push; `0` turns the timer off and keeps just that rule. Blank, unparseable or negative means the default. Set from `push.minIntervalSeconds`. |
+| `EXPO_ACCESS_TOKEN` | - | Only needed when the Expo project has enhanced push security on. Set from `push.expoAccessToken`. |
+| `KC_FEED_DIR` | `/home/dev/.claude-feed` | Where the Feed log and read/dismiss state live. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test cannot write the live Feed. Leave it unset in every deployment, or that workspace starts with an empty Feed. |
+| `KC_PUSH_DIR` | `/home/dev/.claude-push` | Where registered phone tokens and the sent-alert ledger live. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test cannot page a real phone. Leave it unset in every deployment, or that workspace forgets every registered phone. |
+
 ### Dashboard & UI
 | Variable | Default | Description |
 |----------|---------|-------------|

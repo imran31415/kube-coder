@@ -538,6 +538,15 @@ retries, `DeviceNotRegistered` tokens pruned), gated by `KC_PUSH_ENABLED`. See
 `push_notify.py` and the mobile `src/push/notifications.ts`. Everything else
 still rides the feed and in-app polling.
 
+The feed coalesces a repeat into one row, and push follows it (#685): a task
+that flips back to waiting pushes again only once you have read or dismissed
+that row since the last push, and never more often than `KC_PUSH_MIN_INTERVAL`
+(30 minutes). A repeat that does go out carries the row id as `collapseId`/`tag`,
+so it replaces the earlier notification instead of stacking beside it, and it
+marks the row unread again. Every push also has a one-hour `ttl`, so a phone
+that was offline gets no stale backlog. The ledger is `sent.json` next to the
+tokens.
+
 ---
 
 ## Authoring a connector

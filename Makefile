@@ -493,11 +493,20 @@ mobile-clean: ## Remove mobile build artifacts and deps
 memory-db-copy: ## Copy the live memory DB to a throwaway path (DEST=<path> optional); source opened read-only
 	@./scripts/memory-db-copy.sh $(DEST)
 
+# The Feed log and the push token store are live shared state too: a test that
+# reaches FeedManager.emit() with the default paths writes the workspace's Feed
+# and pages whoever registered a phone there (#685). Tests isolate themselves
+# (tests/live_state.py); these targets are the safety net for one that forgets,
+# pointing $KC_FEED_DIR / $KC_PUSH_DIR at a throwaway directory for the run.
 python-tests: ## Run server.py unit + integration tests
-	cd charts/workspace && python3 -m unittest discover -s tests -p '*_test.py' -v
+	tmp=$$(mktemp -d) && cd charts/workspace && \
+	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push python3 -m unittest discover -s tests -p '*_test.py' -v; \
+	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
 python-coverage: ## Run Python tests with coverage report
-	cd charts/workspace && coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html
+	tmp=$$(mktemp -d) && cd charts/workspace && \
+	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html; \
+	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
 dashboard-web-coverage: dashboard-web-install ## Run SPA tests with coverage report
 	cd $(WEB_DIR) && yarn test:coverage

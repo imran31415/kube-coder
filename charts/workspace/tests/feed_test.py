@@ -10,9 +10,7 @@ Run:  python3 -m unittest tests.feed_test
 
 import json
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -21,20 +19,38 @@ sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 import mcp_dashboard as mcp  # noqa: E402
 
+sys.path.insert(0, HERE)
+from live_state import isolate_feed_and_push  # noqa: E402
+
 FM = server.FeedManager
 
 
 class FeedManagerBase(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix='kctest-feed-')
-        self._orig = (FM.FEED_DIR, FM.ITEMS_PATH, FM.STATE_PATH)
-        FM.FEED_DIR = self.dir
-        FM.ITEMS_PATH = os.path.join(self.dir, 'items.jsonl')
-        FM.STATE_PATH = os.path.join(self.dir, 'state.json')
+        # Feed files AND the push token store: redirecting only the feed (as
+        # this base did before #685) still let waiting/decision emits push to
+        # the workspace's real phone.
+        isolate_feed_and_push(self)
+        self.dir = FM.FEED_DIR
 
-    def tearDown(self):
-        FM.FEED_DIR, FM.ITEMS_PATH, FM.STATE_PATH = self._orig
-        shutil.rmtree(self.dir, ignore_errors=True)
+
+class FeedDirTests(unittest.TestCase):
+    """`$KC_FEED_DIR` — the throwaway-directory override the Makefile's
+    python-tests target sets so a test run cannot write the live Feed."""
+
+    def test_unset_or_blank_is_the_deployment_path(self):
+        self.assertEqual(server._resolve_feed_dir({}), server.DEFAULT_FEED_DIR)
+        for blank in ('', '   ', '\n'):
+            self.assertEqual(server._resolve_feed_dir({'KC_FEED_DIR': blank}),
+                             server.DEFAULT_FEED_DIR)
+
+    def test_set_is_used_trimmed(self):
+        self.assertEqual(server._resolve_feed_dir({'KC_FEED_DIR': ' /tmp/feed-x \n'}),
+                         '/tmp/feed-x')
+
+    def test_default_is_the_pvc_path(self):
+        # Every workspace's Feed already lives here — a typo empties them all.
+        self.assertEqual(server.DEFAULT_FEED_DIR, '/home/dev/.claude-feed')
 
 
 class EmitAndListTests(FeedManagerBase):
