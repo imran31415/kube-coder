@@ -140,13 +140,22 @@ describe('what riding on the mode actually changes', () => {
     newChatMode.value = 'cto';
     await sendMessage('build me a site');
     expect(createThread).not.toHaveBeenCalled();
-    expect(chatError.value).toContain('Connect your Claude account');
+    expect(chatError.value).toContain('connect Claude in Provider settings');
   });
 
-  it('does not gate a plain chat on the Claude credential', async () => {
+  it('also guides a plain Claude chat to authentication', async () => {
     claudeReady.value = false;
     await sendMessage('hello');
-    expect(createThread).toHaveBeenCalledTimes(1);
+    expect(createThread).not.toHaveBeenCalled();
+    expect(chatError.value).toContain('Authentication required:');
+  });
+
+  it.each(['codex', 'ante', 'antigravity', 'opencode-zen'])('does not gate %s CTO chats on Claude', async (assistant) => {
+    claudeReady.value = false;
+    newChatMode.value = 'cto';
+    selectedAssistant.value = assistant;
+    await sendMessage('hello');
+    expect(createThread).toHaveBeenCalledWith(expect.objectContaining({ assistant, persona: 'cto' }));
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildTurns,
   groupActivity,
   turnWindow,
   TURN_WINDOW,
@@ -8,7 +9,23 @@ import {
   type HvRenderBlock,
 } from './hvTranscript';
 
+it('renders an actionable authentication label only for provider auth errors', () => {
+  const event = { seq: 1, ts: 1, role: 'system' as const, type: 'error' as const, text: '401 Unauthorized' };
+  expect(buildTurns([{ ...event, auth_required: true }])).toEqual([
+    { role: 'agent', blocks: [{ kind: 'activity', label: 'Authentication required', detail: event.text, error: true, authRequired: true }] },
+  ]);
+  expect(buildTurns([{ ...event, text: 'codex exited with code 2' }])).toEqual([
+    { role: 'agent', blocks: [{ kind: 'activity', label: 'Error', detail: 'codex exited with code 2', error: true }] },
+  ]);
+});
+
 describe('turnWindow (mobile)', () => {
+  it('keeps one recovery card per turn and preserves provider setup diagnostics', () => {
+    const event = { seq: 1, ts: 1, role: 'system' as const, type: 'error' as const, setup_required: true, text: 'Provider unavailable' };
+    expect(buildTurns([event, { ...event, seq: 2, text: 'Fallback failed' }])).toEqual([
+      { role: 'agent', blocks: [{ kind: 'activity', label: 'Agent setup required', detail: 'Provider unavailable\nFallback failed', error: true, authRequired: true }] },
+    ]);
+  });
   it('hides nothing when the thread fits in the window', () => {
     expect(turnWindow(0, TURN_WINDOW)).toEqual({ start: 0, hidden: 0 });
     expect(turnWindow(TURN_WINDOW, TURN_WINDOW)).toEqual({ start: 0, hidden: 0 });

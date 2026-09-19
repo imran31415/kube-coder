@@ -356,14 +356,14 @@ let optimisticSeq = -1;
 export async function sendMessage(text: string): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed || sending.value) return;
-  // Gate the AI CTO first-win path on a working Claude credential (#494): with
-  // none present, firing a task just dies with a raw provider error, so refuse
-  // the send and point the user at the connect panel the CTO welcome renders.
-  // Only blocks the CTO surface, and only when readiness is known-false (null =
-  // not yet probed → don't block an existing authenticated user).
-  if (isCtoChat() && claudeReady.value === false) {
+  // Readiness is provider-specific. Never block another runtime on Claude's
+  // login, and use the existing thread's agent rather than a new-chat default.
+  const assistant = activeThreadId.value
+    ? threads.value.find((t) => t.id === activeThreadId.value)?.assistant
+    : selectedAssistant.value || config.value?.defaultAssistant;
+  if (assistant === 'claude' && claudeReady.value === false) {
     chatError.value =
-      'Connect your Claude account to start building — use the connect options above.';
+      'Authentication required: connect Claude in Provider settings, then retry your message.';
     return;
   }
   sending.value = true;

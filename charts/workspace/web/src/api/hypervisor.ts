@@ -44,6 +44,7 @@ export interface HypervisorCommand {
 }
 
 export interface HypervisorConfig {
+  authHelp?: Record<string, { label: string; instructions: string }>;
   enabled: boolean;
   defaultAssistant: string;
   workdir: string;

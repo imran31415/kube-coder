@@ -667,8 +667,8 @@ export default function HypervisorScreen() {
   const turns = buildTurns(events);
   // Bounded render window over the tail of the transcript (#525).
   const { start: turnStart, hidden: hiddenTurns } = turnWindow(turns.length, visibleTurns);
-  const agentName = config?.defaultAssistant || 'claude';
   const activeThread = threads.find((t) => t.id === activeId) || null;
+  const agentName = (activeId ? activeThread?.assistant : selectedAssistant || config?.defaultAssistant) || 'agent';
   const working = status === 'running';
   const blocked = sending || working;
   const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
@@ -676,7 +676,7 @@ export default function HypervisorScreen() {
   // Model switcher (#308): an open thread uses its own assistant + stored model;
   // a not-yet-created chat uses the new-chat assistant + its default. The picker
   // shows for both cases whenever the effective assistant offers a choice.
-  const effectiveAssistant = activeThread?.assistant || selectedAssistant || config?.defaultAssistant;
+  const effectiveAssistant = activeId ? activeThread?.assistant : selectedAssistant || config?.defaultAssistant;
   const models = modelsFor(config, effectiveAssistant);
   const currentModel = activeId
     ? activeThread?.model || models[0] || ''
@@ -887,6 +887,15 @@ export default function HypervisorScreen() {
                       onChoose={(t) => void send(t)}
                     />
                   ))}
+                  {!config?.readOnly && !blocked && turn.blocks.some((b) => b.kind === 'activity' && b.authRequired) &&
+                    turns[i - 1]?.role === 'user' && (
+                    <Pressable accessibilityRole="button" onPress={() => {
+                      const previous = turns[i - 1];
+                      if (previous?.role === 'user') setDraft(previous.text);
+                    }}>
+                      <Text style={styles.activityDetail}>Use prompt again</Text>
+                    </Pressable>
+                  )}
                 </View>
               );
             })}
@@ -928,7 +937,7 @@ export default function HypervisorScreen() {
             select. Only shown when starting a NEW chat (no active thread) and
             more than one assistant is available; existing threads keep the
             assistant they were created with. */}
-        {!activeThread && (config?.assistants?.length ?? 0) > 1 && (
+        {!activeId && (config?.assistants?.length ?? 0) > 1 && (
           <View style={styles.pickerRow}>
             <SearchPicker
               label="Agent"
@@ -1473,6 +1482,7 @@ function ActivityRow({
   expanded: Set<string>;
   setExpanded: (s: Set<string>) => void;
 }) {
+  const navigation = useNavigation();
   const open = expanded.has(id);
   const toggle = () => {
     const next = new Set(expanded);
@@ -1493,6 +1503,11 @@ function ActivityRow({
         </Text>
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={colors.textFaint} />
       </Pressable>
+      {block.authRequired && (
+        <Pressable accessibilityRole="link" onPress={() => navigation.navigate('Settings' as never)}>
+          <Text style={styles.activityDetail}>Check this agent's authentication and provider setup in Provider settings, then retry your message. Open settings →</Text>
+        </Pressable>
+      )}
       {open && block.detail ? <Text style={styles.activityDetail}>{block.detail}</Text> : null}
     </View>
   );

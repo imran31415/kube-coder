@@ -5,6 +5,7 @@ import {
   closeThread,
   newChatMode,
   selectedProject,
+  selectedAssistant,
   threads as threadStore,
 } from '../../store/hypervisor';
 import { _resetProjectsForTest } from '../../store/projects';
@@ -62,6 +63,7 @@ beforeEach(() => {
   threadStore.value = [];
   newChatMode.value = '';
   selectedProject.value = '';
+  selectedAssistant.value = 'claude';
   ctoHandoff.value = null;
   justOnboarded.value = false;
   claudeReady.value = true;
@@ -131,6 +133,17 @@ describe('the CTO welcome in Chat (#683)', () => {
     expect(
       screen.getByText(/Connect Claude and I'll start building/),
     ).toBeTruthy();
+  });
+
+  it('offers CTO chips for Codex without a Claude login or probe', async () => {
+    newChatMode.value = 'cto';
+    selectedAssistant.value = 'codex';
+    claudeReady.value = false;
+    claudeProbed.value = false;
+    render(<HypervisorRoute />);
+    const chip = await screen.findByText('What should I focus on?') as HTMLButtonElement;
+    expect(chip.disabled).toBe(false);
+    expect(screen.queryByText(/Connect Claude and I'll start building/)).toBeNull();
   });
 
   it('keeps the chips inert until the credential probe settles (#500)', async () => {

@@ -1058,6 +1058,7 @@ export function fileDownloadBrowserUrl(path: string): string {
 // ProviderKeysManager.ALLOWED. GET returns a masked view (never the key).
 
 export type ProviderVar =
+  | 'OPENCODE_API_KEY'
   | 'OPENROUTER_API_KEY'
   | 'DEEPSEEK_API_KEY'
   | 'ANTHROPIC_API_KEY'
@@ -1071,6 +1072,7 @@ export interface ProviderKeyStatus {
 export type ProviderKeysView = Record<ProviderVar, ProviderKeyStatus>;
 
 const EMPTY_PROVIDER_VIEW: ProviderKeysView = {
+  OPENCODE_API_KEY: { set: false, hint: '' },
   OPENROUTER_API_KEY: { set: false, hint: '' },
   DEEPSEEK_API_KEY: { set: false, hint: '' },
   ANTHROPIC_API_KEY: { set: false, hint: '' },
