@@ -14870,8 +14870,12 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_task_worktree_diff(self):
         """GET /api/claude/tasks/{id}/worktree/diff?file=<path> — one changed
-        file's diff against the base. Only files the status lists."""
-        if not self.check_claude_auth():
+        file's diff against the base. Only files the status lists.
+
+        Always needs a real identity: this returns file CONTENTS, and a public
+        read-only demo (AUTH_MODE=none) confines its file reads to
+        PUBLIC_FILE_ROOT and refuses dot-paths — `~/.worktrees` is both."""
+        if not self.check_claude_auth(allow_none_mode=False):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         file = (self._query_params().get('file') or [''])[0]

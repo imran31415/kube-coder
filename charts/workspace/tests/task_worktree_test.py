@@ -364,8 +364,11 @@ class WorktreeRouteTests(_IsolatedBase):
     def setUp(self):
         super().setUp()
         self.authed = True
-        for p in (mock.patch.object(server.BrowserHandler, 'check_claude_auth',
-                                    lambda h, *a, **k: self.authed),
+        self.public = False       # AUTH_MODE=none: open to anyone who may
+
+        def check(h, allow_none_mode=True):
+            return self.authed or (self.public and allow_none_mode)
+        for p in (mock.patch.object(server.BrowserHandler, 'check_claude_auth', check),
                   mock.patch.object(server, 'READONLY_MODE', False)):
             p.start()
             self.addCleanup(p.stop)
@@ -518,6 +521,16 @@ class WorktreeRouteTests(_IsolatedBase):
             self.assertEqual(self.call('POST', '/api/worktrees/sweep', {})[0], 403)
             self.assertEqual(self.call('GET', f'/api/claude/tasks/{tid}/worktree')[0], 200)
         self.assertTrue(os.path.isdir(task['worktree']['path']))
+
+    def test_a_public_demo_never_serves_file_contents(self):
+        _s, task = self.post_task(isolate=True)
+        tid = task['task_id']
+        commit(task['worktree']['path'], 'secret.txt', 'api_key=abc')
+        self.authed, self.public = False, True
+        self.assertEqual(self.call('GET', f'/api/claude/tasks/{tid}/worktree')[0], 200)
+        status, _body = self.call(
+            'GET', f'/api/claude/tasks/{tid}/worktree/diff?file=secret.txt')
+        self.assertEqual(status, 401)
 
 
 if __name__ == '__main__':
