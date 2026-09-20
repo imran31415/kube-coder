@@ -42,6 +42,7 @@ import {
   mockDocsPage,
   mockBoards,
   mockBoardReview,
+  mockBoardStanding,
   mockDecideBoardItem,
 } from '../mock/mockData';
 import type {
@@ -86,6 +87,7 @@ import type {
   BoardSummary,
   BoardReviewGroup,
   BoardReviewItem,
+  BoardStanding,
   WebhookRecord,
 } from './types';
 
@@ -1562,6 +1564,27 @@ export async function listBoards(): Promise<BoardSummary[]> {
   }
   const d = await request<{ boards?: BoardSummary[] }>('/api/boards');
   return d.boards ?? [];
+}
+
+/**
+ * What the board is doing right now (#712).
+ *
+ * The phone showed the review queue and nothing else, so a board with nothing
+ * staged — the normal state of a board between runs — rendered as an empty
+ * screen with no way to tell whether anything was happening. This is the one
+ * board endpoint that reads only local workspace state, so polling it costs
+ * the vendor's rate limit nothing.
+ */
+export async function getBoardStanding(
+  boardId: string,
+): Promise<BoardStanding> {
+  if (getConfig().mock) {
+    await delay(90);
+    return mockBoardStanding(boardId);
+  }
+  return request<BoardStanding>(
+    `/api/boards/${encodeURIComponent(boardId)}/standing`,
+  );
 }
 
 /** Items awaiting a human on one board, grouped by disposition (needs_review

@@ -556,6 +556,31 @@ export function isRunItemLive(state: RunItemState): boolean {
   return state === 'working' || state === 'claimed' || state === 'pending';
 }
 
+/**
+ * Is this run actually working anything right now? (#712)
+ *
+ * `status === 'running'` alone is not enough, and the difference is
+ * load-bearing: a run whose items have all settled keeps that status until
+ * something finalises it, and one whose process died keeps it until the boot
+ * sweep calls it `interrupted`. Treating either as in-flight would grey out
+ * Start run forever on a board the server would happily run. Mirrors
+ * `boards.runs.is_live` on the server, which is what actually refuses.
+ */
+export function isLiveRun(run: {
+  status: string;
+  counts?: Partial<Record<RunItemState, number>>;
+}): boolean {
+  if (run.status !== 'running') return false;
+  // No tally to judge by (an older payload, a partial record) — trust the
+  // status. Guessing "finished" from missing data would stop the progress
+  // poll on a run that is genuinely working.
+  if (!run.counts) return true;
+  const counts = run.counts;
+  return (['working', 'claimed', 'pending'] as RunItemState[]).some(
+    (state) => (counts[state] ?? 0) > 0,
+  );
+}
+
 /** A disposition as prose, never the raw enum. */
 export function dispositionLabel(d: string | null | undefined): string {
   if (!d) return '';

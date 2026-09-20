@@ -1043,13 +1043,20 @@ class LeaseTests(_E2E):
     def test_two_overlapping_runs_never_both_claim_an_item(self):
         """C10 from the real-board plan, which the manual round never
         exercised. The lease is per BOARD, not per run."""
-        self.board()
+        cfg = self.board()
         _s, first = self.req('POST', '/api/boards/e2e/runs',
                              {'mode': 'propose', 'concurrency': 6,
                               'select': {'limit': 6}})
-        _s, second = self.req('POST', '/api/boards/e2e/runs',
-                              {'mode': 'propose', 'concurrency': 6,
-                               'select': {'limit': 6, 'ignore_processed': True}})
+        # The ROUTE now refuses a second run while one is live (#712) — see
+        # `test_a_second_run_while_one_is_live_is_refused` below. The lease is
+        # the deeper guard and still has to hold for the paths that legitimately
+        # overlap (a send-back re-dispatch, a run the boot sweep has not yet
+        # reclaimed), so this one is created through the documented exemption.
+        second, err = RM.create(
+            cfg, {'mode': 'propose', 'concurrency': 6,
+                  'select': {'limit': 6, 'ignore_processed': True}},
+            allow_concurrent=True)
+        self.assertIsNone(err, err)
 
         errors = []
 
@@ -1075,6 +1082,34 @@ class LeaseTests(_E2E):
                          'an item was claimed by both runs')
         # And every build that started belongs to exactly one owner.
         self.assertEqual(len(self.launched), len(set(claimed)))
+
+    def test_a_second_run_while_one_is_live_is_refused(self):
+        """The operator-facing half of the lease (#712).
+
+        A second run cannot claim what the first holds, so what it actually
+        produces is a page of `skipped` items — which reads like the board is
+        broken. The route says so instead, and says it as a 409: nothing is
+        wrong with the request, it conflicts with the board's state.
+        """
+        self.board()
+        status, first = self.req('POST', '/api/boards/e2e/runs',
+                                 {'mode': 'propose', 'concurrency': 2,
+                                  'select': {'limit': 3}})
+        self.assertEqual(status, 201, first)
+        status, body = self.req('POST', '/api/boards/e2e/runs',
+                                {'mode': 'propose', 'concurrency': 2,
+                                 'select': {'limit': 3}})
+        self.assertEqual(status, 409, body)
+        self.assertIn('already in flight', body['error'])
+        self.assertIn(first['id'], body['error'])
+
+        # And the standing endpoint says the same thing, so the UI can grey the
+        # button before anybody clicks it.
+        status, standing = self.req('GET', '/api/boards/e2e/standing')
+        self.assertEqual(status, 200, standing)
+        self.assertEqual(standing['state'], 'running')
+        self.assertFalse(standing['can_start_run'])
+        self.assertIn('already in flight', standing['blocked_reason'])
 
     @unittest.skipUnless(bstore.real_flock(), 'fcntl.flock is shimmed here')
     def test_the_boot_sweep_frees_leases_and_marks_the_run_interrupted(self):

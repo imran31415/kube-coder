@@ -291,6 +291,31 @@ def summary(run):
     }
 
 
+def is_live(run):
+    """Is this run actually working anything right now? (#712)
+
+    Accepts a full run record or a `summary()`. `status == 'running'` alone is
+    not enough: a run whose items are all terminal keeps that status until
+    something finalises it, and a process that died under one leaves it there
+    forever (the boot sweep is what eventually calls that `interrupted`). Both
+    cases would otherwise read as "a run is in flight" and block the next one.
+    """
+    if not isinstance(run, dict) or run.get('status') not in LIVE_RUN_STATUSES:
+        return False
+    rows = run.get('items')
+    if isinstance(rows, dict):
+        tally = counts(run)
+    elif isinstance(run.get('counts'), dict):
+        tally = run['counts']
+    else:
+        # Neither the item table nor a tally to judge by. Trust the status
+        # rather than guess "finished" — the web mirror does the same
+        # (`isLiveRun` in `web/src/api/boards.ts`).
+        return True
+    return any(int(tally.get(state) or 0) > 0
+               for state in ITEM_STATES if state not in TERMINAL_ITEM_STATES)
+
+
 def should_stop(run):
     """`(stop, reason)` from the run's own `stop_on` policy.
 

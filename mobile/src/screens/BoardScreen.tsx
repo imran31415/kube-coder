@@ -35,12 +35,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getBoardReview, listBoards, decideBoardItem } from '../api/client';
+import {
+  getBoardReview,
+  getBoardStanding,
+  listBoards,
+  decideBoardItem,
+} from '../api/client';
 import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
 import { clearBoardFocus, useBoardFocus } from '../store/boardFocus';
+import { pickBoard, rememberBoard } from '../util/lastBoard';
 import {
   drain,
   enqueue,
@@ -49,7 +55,12 @@ import {
   type Decision,
   type QueuedApproval,
 } from '../util/approvalQueue';
-import type { BoardReviewGroup, BoardReviewItem, BoardSummary } from '../api/types';
+import type {
+  BoardReviewGroup,
+  BoardReviewItem,
+  BoardStanding,
+  BoardSummary,
+} from '../api/types';
 
 const DISPOSITION_LABEL: Record<string, string> = {
   needs_review: 'Needs review',
@@ -73,6 +84,26 @@ type Row =
   | { type: 'header'; key: string; label: string; count: number; rule: string }
   | { type: 'item'; key: string; item: BoardReviewItem };
 
+/** The state badge's colour, by state. Everything else is muted: a board that
+ *  is idle should not shout. */
+const STATE_RULE: Record<BoardStanding['state'], string> = {
+  running: colors.accent,
+  awaiting_human: colors.warning,
+  needs_credential: colors.danger,
+  never_run: colors.textMuted,
+  idle: colors.textMuted,
+};
+
+/** Read the standing, or null. A workspace that predates `/standing` answers
+ *  404, and that must cost the screen nothing but the banner. */
+async function standingOrNull(boardId: string): Promise<BoardStanding | null> {
+  try {
+    return await getBoardStanding(boardId);
+  } catch {
+    return null;
+  }
+}
+
 export default function BoardScreen() {
   const [boards, setBoards] = useState<BoardSummary[] | null>(null);
   const [boardId, setBoardId] = useState<string | null>(null);
@@ -81,6 +112,9 @@ export default function BoardScreen() {
   // queue on screen is still the PREVIOUS board's, and a deep link that
   // searched it would decide its item was gone.
   const [groupsBoard, setGroupsBoard] = useState<string | null>(null);
+  // What the board is DOING — see the banner below. Null while it has not been
+  // read yet, or when the workspace is older than the endpoint (#712).
+  const [standing, setStanding] = useState<BoardStanding | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   // Kept apart from `notice`, which carries queue errors and is meant to
   // persist. This one answers "I tapped a notification and nothing happened",
@@ -132,7 +166,8 @@ export default function BoardScreen() {
 
       const list = boards ?? (await listBoards());
       if (!boards) setBoards(list);
-      const active = boardId ?? list[0]?.id ?? null;
+      // The board this phone was last on, not whichever sorts first (#712).
+      const active = boardId ?? (await pickBoard(AsyncStorage, list));
       if (!boardId && active) setBoardId(active);
       // Claim the board before awaiting, so the switch effect below sees this
       // pass already covers it and does not fire a duplicate fetch for the
@@ -140,6 +175,10 @@ export default function BoardScreen() {
       loadedFor.current = active;
 
       setQueued(pendingItemIds(await readQueue(AsyncStorage)));
+      // Standing is read in its own try: it is the newest of these endpoints,
+      // and a phone talking to a workspace that predates it must still get its
+      // review queue rather than an error screen.
+      setStanding(active ? await standingOrNull(active) : null);
       setGroups(active ? await getBoardReview(active) : []);
       setGroupsBoard(active);
       setError(null);
@@ -246,6 +285,11 @@ export default function BoardScreen() {
     if (boardId !== focus.boardId) {
       setBoardId(focus.boardId);
       setGroups(null);
+      // The old board's banner must not sit over the new board's queue.
+      setStanding(null);
+      // A deep link is a visit like any other: coming back later should open
+      // the board the notification took you to (#712).
+      void rememberBoard(AsyncStorage, focus.boardId);
       return;
     }
 
@@ -286,19 +330,30 @@ export default function BoardScreen() {
   const openCount = groups
     ? groups.flatMap((g) => g.items).filter((i) => i.open).length
     : 0;
+  const current = boards?.find((b) => b.id === boardId) ?? null;
+  const noBoards = boards !== null && boards.length === 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <ScreenHeader
         title="Board"
+        // The board's NAME, because "Board" alone told you nothing about which
+        // tracker you were looking at (#712).
         subtitle={
-          openCount > 0
-            ? `${openCount} awaiting your decision`
-            : 'Nothing waiting for you'
+          current
+            ? openCount > 0
+              ? `${current.display_name} · ${openCount} awaiting your decision`
+              : current.display_name
+            : noBoards
+              ? 'No boards connected'
+              : 'Nothing waiting for you'
         }
       />
 
-      {boards && boards.length > 1 && (
+      {/* Shown for ONE board too. It is the only thing on the screen that says
+          which tracker these cards belong to, and a single unlabelled queue is
+          exactly how this screen came to look empty. */}
+      {boards && boards.length > 0 && (
         <View style={styles.chips}>
           {boards.map((b) => (
             <Pressable
@@ -306,6 +361,8 @@ export default function BoardScreen() {
               onPress={() => {
                 setBoardId(b.id);
                 setGroups(null);
+                setStanding(null);
+                void rememberBoard(AsyncStorage, b.id);
               }}
               accessibilityRole="button"
               accessibilityState={{ selected: boardId === b.id }}
@@ -325,6 +382,12 @@ export default function BoardScreen() {
         </View>
       )}
 
+      {/* What the board is doing, above the queue and present whether or not
+          anything is staged. This banner is the fix for "the Board page is
+          empty on iOS" (#712): with nothing to review the screen used to carry
+          one grey sentence and no way to tell a busy board from a broken one. */}
+      {standing && <StandingBanner standing={standing} />}
+
       {error && <ErrorBanner message={error} />}
       {notice && <ErrorBanner message={notice} />}
       {focusNote && (
@@ -333,12 +396,22 @@ export default function BoardScreen() {
         </Text>
       )}
 
-      {rows === null ? (
+      {noBoards ? (
+        <EmptyState
+          icon="clipboard-outline"
+          title="No boards connected"
+          subtitle="A board is an external tracker — Jira, GitHub, Linear, Zendesk. Connect one from the dashboard's Board page, then its items come here for review."
+        />
+      ) : rows === null ? (
         <Loading />
       ) : rows.length === 0 ? (
         <EmptyState
           title="Nothing to review"
-          subtitle="When an agent works a board item in propose mode, its proposed writes land here for you to approve."
+          subtitle={
+            standing?.live
+              ? 'A run is working this board now. Anything an agent wants to write lands here for your approval.'
+              : 'When an agent works a board item in propose mode, its proposed writes land here for you to approve.'
+          }
         />
       ) : (
         <FlatList
@@ -444,6 +517,40 @@ export default function BoardScreen() {
         </View>
       </Modal>
     </SafeAreaView>
+  );
+}
+
+/**
+ * Where the board stands, in a badge and a sentence (#712).
+ *
+ * Deliberately not a progress bar: the question a phone is opened to answer is
+ * "is anything happening, and does it need me", and a bar answers neither when
+ * the run has already finished. The badge is the one-word state and the line
+ * under it is the evidence. `blocked_reason` is deliberately left out: runs
+ * are started from the dashboard, so "you cannot start another run" is not
+ * advice a phone can act on.
+ */
+function StandingBanner({ standing }: { standing: BoardStanding }) {
+  const rule = STATE_RULE[standing.state] ?? colors.textMuted;
+  return (
+    <View
+      style={styles.standing}
+      accessibilityRole="summary"
+      accessibilityLabel={`Board state: ${standing.label}. ${standing.detail}`}
+    >
+      <View style={styles.standingHead}>
+        <View style={[styles.standingDot, { backgroundColor: rule }]} />
+        <Text style={[styles.standingLabel, { color: rule }]}>
+          {standing.label}
+        </Text>
+        {standing.awaiting > 0 && (
+          <Text style={styles.standingCount}>
+            {standing.awaiting} awaiting you
+          </Text>
+        )}
+      </View>
+      <Text style={styles.standingDetail}>{standing.detail}</Text>
+    </View>
   );
 }
 
@@ -600,6 +707,25 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   groupCount: { color: colors.textMuted, fontSize: font.size.xs },
+  standing: {
+    marginHorizontal: space.md,
+    marginBottom: space.sm,
+    padding: space.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface2,
+    gap: 2,
+  },
+  standingHead: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  standingDot: { width: 8, height: 8, borderRadius: 4 },
+  standingLabel: {
+    fontSize: font.size.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  standingCount: { color: colors.warning, fontSize: font.size.xs },
+  standingDetail: { color: colors.text, fontSize: font.size.sm },
   focusNote: {
     color: colors.textMuted,
     fontSize: font.size.sm,

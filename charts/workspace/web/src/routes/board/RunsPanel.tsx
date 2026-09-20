@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import {
+  hasLiveRun,
   selectedBoard,
   selectedBoardId,
   selectedBoardRuns,
@@ -93,6 +94,17 @@ export function RunsPanel() {
 
   const runs = selectedBoardRuns.value;
   const open = activeRun.value;
+  // A second run on a board that already has one in flight is not a parallel
+  // run: item leases are per BOARD, so it can only mark as `skipped`
+  // everything the live run holds, and it reports that as a page of skips
+  // (#712). The server refuses it with a 409; the form says so first, because
+  // a disabled button with a reason beats an error after the click. The same
+  // sentence is the button's tooltip.
+  const blockedByRun = hasLiveRun.value
+    ? 'A run is already in flight on this board. Stop it, or wait for it to '
+      + 'finish — a second run could only skip the items this one holds.'
+    : '';
+  const needsCredential = selectedBoard.value?.credential_set === false;
 
   return (
     <section class="board-runs">
@@ -190,9 +202,15 @@ export function RunsPanel() {
           <button
             type="submit"
             class="btn btn-primary btn-sm"
-            disabled={starting || selectedBoard.value?.credential_set === false}
+            disabled={starting || needsCredential || !!blockedByRun}
+            title={
+              blockedByRun ||
+              (needsCredential
+                ? 'This board has no credential, so a run could not authenticate.'
+                : undefined)
+            }
           >
-            {starting ? 'Starting…' : 'Start run'}
+            {starting ? 'Starting…' : blockedByRun ? 'Run in progress' : 'Start run'}
           </button>
           {/* One vendor listing, so it is a deliberate click rather than a
               reaction to every keystroke — a preview per keypress would spend
@@ -209,6 +227,13 @@ export function RunsPanel() {
           >
             {previewing ? 'Checking…' : 'What would this work?'}
           </button>
+          {/* Said in words as well as in the disabled state: a greyed button
+              with no explanation reads as a broken page. */}
+          {blockedByRun && (
+            <p class="board-run-warn" role="status">
+              {blockedByRun}
+            </p>
+          )}
           {mode === 'autonomous' && (
             <p class="board-run-warn">
               Autonomous writes to the board without asking. Use propose until

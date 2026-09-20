@@ -454,8 +454,11 @@ class DispatchTests(_Base):
         first, _e = self._create_run(cfg, concurrency=2)
         RM._dispatch(first['id'])
 
-        second, _e = self._create_run(cfg, concurrency=2,
-                                      select={'limit': 5})
+        # Created through the documented exemption: the ROUTE refuses a second
+        # run while one is live (#712), but the lease is what guards the paths
+        # that legitimately overlap, and that is what this asserts.
+        second, _e = RM.create(cfg, {'concurrency': 2, 'select': {'limit': 5}},
+                               allow_concurrent=True)
         # The first run's items are not yet PROCESSED, only leased — so the
         # second run selects them and must lose the claim rather than work them.
         RM._dispatch(second['id'])

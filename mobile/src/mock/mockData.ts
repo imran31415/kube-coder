@@ -37,6 +37,7 @@ import type {
   DocsManifest,
   DocsPage,
   WebhookRecord,
+  BoardStanding,
   BoardSummary,
   BoardReviewItem,
 } from '../api/types';
@@ -1201,6 +1202,58 @@ export const mockBoardReview: BoardReviewItem[] = [
     updated_at: NOW - 3600 * 9,
   },
 ];
+
+/**
+ * Board standing for the demo build (#712).
+ *
+ * Computed from `mockBoardReview` rather than hard-coded, so approving the
+ * last open card in the screenshot flow moves the badge from "Waiting on you"
+ * to "Idle" the way the real endpoint would. The first board is shown mid-run
+ * so the screenshots carry both states.
+ */
+export function mockBoardStanding(boardId: string): BoardStanding {
+  const board = mockBoards.find((b) => b.id === boardId);
+  const awaiting = mockBoardReview.filter(
+    (i) => i.board_id === boardId && i.open,
+  ).length;
+  const live = boardId === 'acme-jira';
+  const state: BoardStanding['state'] = live
+    ? 'running'
+    : awaiting > 0
+      ? 'awaiting_human'
+      : 'idle';
+  const label = {
+    running: 'Runs in progress',
+    awaiting_human: 'Waiting on you',
+    idle: 'Idle',
+    never_run: 'Not run yet',
+    needs_credential: 'Needs a credential',
+  }[state];
+  return {
+    board_id: boardId,
+    display_name: board?.display_name || boardId,
+    state,
+    label,
+    detail: live
+      ? `4/9 worked · 2 working · 3 queued${awaiting ? ` · ${awaiting} awaiting you` : ''}`
+      : awaiting > 0
+        ? `${awaiting} ${awaiting === 1 ? 'item is' : 'items are'} waiting on your decision.`
+        : 'Everything worked so far has been decided.',
+    live,
+    run_id: live ? 'run-1756000000-ab12' : '',
+    mode: 'propose',
+    working: live ? 2 : 0,
+    queued: live ? 3 : 0,
+    settled: live ? 4 : 0,
+    run_total: live ? 9 : 0,
+    awaiting,
+    runs: live ? 3 : 1,
+    can_start_run: !live,
+    blocked_reason: live
+      ? 'A run is already in flight on this board (run-1756000000-ab12). Stop it, or wait for it to finish — a second run can only skip the items this one holds.'
+      : '',
+  };
+}
 
 /** Mock write: mutate in place so the screen actually changes. */
 export function mockDecideBoardItem(itemId: string, state: BoardReviewItem['state']): void {

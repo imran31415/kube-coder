@@ -15,6 +15,7 @@ import {
   startBoardRun,
   stopBoardRun,
   getBoardReview,
+  isLiveRun,
   approveStagedActions,
   rejectStagedActions,
   sendBackStagedActions,
@@ -144,6 +145,17 @@ export async function loadItems(boardId: string, quiet = false): Promise<void> {
   return p;
 }
 
+/** Where the last-viewed board is remembered (#712). */
+const LAST_BOARD_KEY = 'kc.boardSelected';
+
+function readLastBoard(): string {
+  try {
+    return localStorage.getItem(LAST_BOARD_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 export async function selectBoard(id: string | null): Promise<void> {
   // The review queue belongs to one board. Keeping it across a switch showed
   // the previous board's count on the Review badge until something happened to
@@ -155,7 +167,34 @@ export async function selectBoard(id: string | null): Promise<void> {
   selectedBoardId.value = id;
   selectedItemId.value = null;
   itemFilter.value = '';
+  try {
+    if (id) localStorage.setItem(LAST_BOARD_KEY, id);
+    else localStorage.removeItem(LAST_BOARD_KEY);
+  } catch {
+    /* private mode — the preference just doesn't persist */
+  }
   if (id && !boardItems.value[id]) await loadItems(id);
+}
+
+/**
+ * Open the board the user was last on (#712).
+ *
+ * /board used to arrive with nothing selected, so the first thing anyone with
+ * a board saw was "Select a board to see its items" — a picker in front of the
+ * one board they always pick. The remembered id wins; a board that has since
+ * been disconnected falls back to the first one, because an empty screen is
+ * never the better answer.
+ *
+ * A deep link (`?board=`) is the exception and is applied by the route
+ * instead, so this no-ops once something is already selected.
+ */
+export async function restoreBoardSelection(): Promise<void> {
+  if (selectedBoardId.value) return;
+  const list = boards.value;
+  if (list.length === 0) return;
+  const remembered = readLastBoard();
+  const target = list.find((b) => b.id === remembered) ?? list[0];
+  await selectBoard(target.id);
 }
 
 export function selectItem(id: string | null): void {
@@ -326,7 +365,7 @@ export const selectedBoardRuns = computed<BoardRunSummary[]>(() =>
  *  below. Reading runs is a LOCAL call (the PVC), unlike reading items, so
  *  polling here costs the vendor nothing. */
 export const hasLiveRun = computed(() =>
-  selectedBoardRuns.value.some((r) => r.status === 'running'),
+  selectedBoardRuns.value.some(isLiveRun),
 );
 
 export async function refreshRuns(boardId: string): Promise<void> {
@@ -820,8 +859,35 @@ export const boardsLive = computed(() => eventStreamConnected.value);
  */
 export type BoardTab = 'items' | 'runs' | 'review' | 'credentials';
 
+/**
+ * The board's overall state, in one word.
+ *
+ * The same five names the server computes in `charts/workspace/boards/
+ * state.py` for the phone (#712). Both surfaces have to call the same
+ * situation the same thing, so the vocabulary is mirrored deliberately — add a
+ * state in one place and add it in the other.
+ */
+export type BoardState =
+  | 'needs_credential'
+  | 'running'
+  | 'awaiting_human'
+  | 'never_run'
+  | 'idle';
+
+export const BOARD_STATE_LABEL: Record<BoardState, string> = {
+  needs_credential: 'Needs a credential',
+  running: 'Runs in progress',
+  awaiting_human: 'Waiting on you',
+  never_run: 'Not run yet',
+  idle: 'Idle',
+};
+
 export interface BoardStanding {
   items: number;
+  /** What the board is doing, as one of five named states. */
+  state: BoardState;
+  /** `BOARD_STATE_LABEL[state]` — the badge's text. */
+  stateLabel: string;
   /** A run is in flight on this board. */
   live: boolean;
   working: number;
@@ -841,7 +907,7 @@ export const boardStanding = computed<BoardStanding>(() => {
   const listing = selectedItems.value;
   const runs = selectedBoardRuns.value;
   const awaiting = openReviewCount.value;
-  const live = runs.find((r) => r.status === 'running') ?? null;
+  const live = runs.find(isLiveRun) ?? null;
 
   const counts: Partial<Record<RunItemState, number>> = live?.counts ?? {};
   const working = (counts.working ?? 0) + (counts.claimed ?? 0);
@@ -850,6 +916,21 @@ export const boardStanding = computed<BoardStanding>(() => {
 
   const n = (count: number, one: string, many: string) =>
     count === 1 ? one : many;
+
+  // The named state, decided by the same precedence as the sentence below and
+  // in the same order the server uses: a board can be several of these at once
+  // (a run in flight WITH items already awaiting a decision), and a badge that
+  // says two things says nothing. The sentence carries the rest.
+  const state: BoardState =
+    board && board.credential_set === false
+      ? 'needs_credential'
+      : live
+        ? 'running'
+        : awaiting > 0
+          ? 'awaiting_human'
+          : runs.length === 0
+            ? 'never_run'
+            : 'idle';
 
   let next = '';
   let nextTab: BoardTab | null = null;
@@ -878,6 +959,8 @@ export const boardStanding = computed<BoardStanding>(() => {
 
   return {
     items: listing?.items.length ?? 0,
+    state,
+    stateLabel: BOARD_STATE_LABEL[state],
     live: !!live,
     working,
     queued,
@@ -1053,6 +1136,11 @@ export function _resetBoardsForTest(): void {
   templatesError.value = null;
   boards.value = [];
   boardsLoading.value = false;
+  try {
+    localStorage.removeItem(LAST_BOARD_KEY);
+  } catch {
+    /* jsdom without storage — nothing to clear */
+  }
   boardsError.value = null;
   boardsLastFetch.value = null;
   selectedBoardId.value = null;
