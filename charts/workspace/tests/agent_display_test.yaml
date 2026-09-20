@@ -1,0 +1,104 @@
+suite: agent-only X display :98 (browser.agentDisplay, issue #716)
+# :99 is the human's screen — x11vnc exports it into the dashboard Browser
+# tab. :98 has no x11vnc attached, so a GUI app an agent launches there is
+# invisible to the user and cannot steal fluxbox focus. These assertions pin
+# the two properties that make that true: the second Xvfb exists, and nothing
+# ever points x11vnc/websockify at it.
+templates:
+  - templates/workspace-entrypoint-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: starts the agent display when browser.agentDisplay=true
+    set:
+      browser.enabled: true
+      browser.agentDisplay: true
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "Xvfb :98 -screen 0 1920x1280x24"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "fluxbox -display :98"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "export KC_AGENT_DISPLAY=:98"
+      # The helper is installed from the image-baked copy, not the PVC.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "install -m 0755 /opt/browser-src/kc_gui.py /home/dev/.local/bin/kc-gui"
+
+  - it: never exports the agent display over VNC
+    set:
+      browser.enabled: true
+      browser.agentDisplay: true
+    asserts:
+      # The whole point of :98. If either of these ever matches, the agent's
+      # screen is back in the human's Browser tab.
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "x11vnc -display :98"
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "websockify .* localhost:5901"
+
+  - it: leaves the human display default untouched
+    set:
+      browser.enabled: true
+      browser.agentDisplay: true
+    asserts:
+      # DISPLAY stays :99 for every child of start.sh; agents opt in to :98
+      # explicitly. `export DISPLAY=:98` would silently move the human's
+      # Firefox button and every GUI app onto the invisible display.
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "(?m)^export DISPLAY=:98"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "(?m)^export DISPLAY=:99"
+
+  - it: supervises the agent display in the watchdog loop
+    set:
+      browser.enabled: true
+      browser.agentDisplay: true
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "restarting agent Xvfb :98"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'pgrep -f "Xvfb :98 "'
+
+  - it: skips the agent display when browser.agentDisplay=false
+    set:
+      browser.enabled: true
+      browser.agentDisplay: false
+    asserts:
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "Xvfb :98 -screen"
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "fluxbox -display :98"
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "restarting agent Xvfb"
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "agent display disabled"
+      # The :99 stack is unaffected by the new gate.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: "Xvfb :99 -screen"
+
+  - it: browser.enabled=false disables the agent display too
+    set:
+      browser.enabled: false
+      browser.agentDisplay: true
+    asserts:
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "Xvfb :98 -screen"
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: "restarting agent Xvfb"

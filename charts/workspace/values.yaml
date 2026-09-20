@@ -444,6 +444,17 @@ codeServer:
 # X/VNC scaffolding.
 browser:
   enabled: true
+  # Second, agent-only virtual display on :98 (issue #716). x11vnc is attached
+  # only to :99, so a GUI app an agent launches on :98 never reaches the user's
+  # Browser tab and cannot steal fluxbox focus from them — and an agent's
+  # screenshot no longer captures whatever the human had open. Agents opt in
+  # via $KC_AGENT_DISPLAY or the `kc-gui` helper; the shell default stays :99,
+  # so a user who never touches it sees no difference.
+  # Costs ~42MB idle (Xvfb ~31MB + fluxbox ~11MB). Nested under browser.enabled:
+  # setting that to false skips :98 too.
+  # NOT a security boundary — X11 has no seat isolation, so a process on :98
+  # can still open :99. This is visual separation only.
+  agentDisplay: true
 
 # Claude Code configuration
 # Two auth methods are supported:

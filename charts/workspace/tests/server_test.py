@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -2104,6 +2105,33 @@ class ProductMetricsCollectorTest(unittest.TestCase):
         # 'memory' (RAM) and 'product' (usage) stay distinct top-level keys.
         self.assertIsNot(m['memory'], m['product'])
 
+
+class XvfbRunningTests(unittest.TestCase):
+    """_xvfb_running must distinguish the two displays (#716).
+
+    Before the agent display existed, the fallback health check was a bare
+    `pgrep Xvfb`. With :98 also running, that would call the human's :99
+    healthy whenever *either* server was up.
+    """
+
+    def test_matches_only_the_requested_display(self):
+        def fake_run(argv, **kwargs):
+            self.assertEqual(argv[:2], ['pgrep', '-f'])
+            return mock.Mock(returncode=0 if argv[2] == 'Xvfb :98 ' else 1)
+
+        with mock.patch.object(server.subprocess, 'run', side_effect=fake_run):
+            self.assertTrue(server._xvfb_running(':98'))
+            self.assertFalse(server._xvfb_running(':99'))
+
+    def test_an_unusable_pgrep_never_reads_as_healthy(self):
+        # Missing binary or a hung probe must fail closed, not report the
+        # display up.
+        for boom in (FileNotFoundError(), OSError(),
+                     subprocess.TimeoutExpired('pgrep', 5)):
+            with self.subTest(boom=type(boom).__name__):
+                with mock.patch.object(server.subprocess, 'run',
+                                       side_effect=boom):
+                    self.assertFalse(server._xvfb_running(':99'))
 
 if __name__ == '__main__':
     unittest.main()

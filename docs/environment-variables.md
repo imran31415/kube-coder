@@ -104,7 +104,8 @@ This document describes all environment variables used by kube-coder components.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DASHBOARD_DIST_DIR` | `/opt/dashboard-dist` | Directory containing compiled dashboard assets. |
-| `DISPLAY` | `:99` | X11 display for browser/VNC sessions. |
+| `DISPLAY` | `:99` | X11 display for browser/VNC sessions — the one x11vnc streams to the user's Browser tab. |
+| `KC_AGENT_DISPLAY` | `:98` | Second X11 display for agents, with no VNC server attached, so GUI apps launched there stay out of the user's Browser tab and cannot steal their window focus (#716). Exported by `start.sh` and seeded into interactive shells. Set from `browser.agentDisplay`; unset when that or `browser.enabled` is false. Visual separation only — X11 has no seat isolation. |
 
 ### devcontainer.json (#594)
 | Variable | Default | Description |

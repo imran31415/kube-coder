@@ -8,6 +8,9 @@ This is a Kubernetes-based development workspace running in an isolated containe
 - **User:** `dev` (uid/gid 1000), passwordless `sudo` available
 - **Shell:** bash
 - **Display:** Virtual X11 on `:99` (1280x720) — set `export DISPLAY=:99` for GUI apps
+- **Agent display:** a second X11 display on `:98` (`$KC_AGENT_DISPLAY`) that the
+  user's VNC tab does **not** show — use it for GUI work you don't want to take
+  over their screen (see *Agent GUI display* below)
 
 ## Storage
 
@@ -57,6 +60,44 @@ firefox &
 ```
 
 Access the browser visually through the workspace dashboard's VNC viewer.
+
+## Agent GUI display (`:98`) — don't take over the user's screen
+
+`:99` is the **human's** screen: it is what the dashboard's Browser tab
+streams over VNC. Anything you launch there pops up in front of the user and
+steals window focus from them, and any screenshot you take of it captures
+whatever they had open.
+
+`:98` is a second display for **you**. No VNC server is attached to it, so
+nothing you render there reaches the user's tab. Prefer it for every GUI app
+you drive yourself; leave `:99` for things the user asked to watch.
+
+```bash
+DISPLAY=$KC_AGENT_DISPLAY firefox &        # or just DISPLAY=:98
+```
+
+`kc-gui` drives and captures that display (the image ships neither `xdotool`
+nor ImageMagick `import`, so this is the supported path):
+
+```bash
+kc-gui info                       # geometry + window list
+kc-gui run xterm -geometry 100x30 # launch an app on :98
+kc-gui windows                    # -> 0x40000c  1354x724+0+22  xterm
+kc-gui screenshot -o /tmp/s.png   # PNG of the whole display
+kc-gui screenshot -w 0x40000c -o /tmp/w.png   # …or one window
+kc-gui click 400 300
+kc-gui type -w 0x40000c 'make test'
+kc-gui key -w 0x40000c Return     # also ctrl+c, alt+F4, ctrl+shift+t
+```
+
+Add `-d :99` to point any of these at the human's display — do that only when
+the user asked you to look at or touch *their* screen.
+
+Caveats worth knowing: this is **visual** separation, not a security boundary
+(X11 has no seat isolation — a process on `:98` can still open `:99`), there
+is one shared `:98`, not a box per app, and the clipboard is not isolated.
+For **web** automation prefer the Playwright MCP, which has real selectors and
+waits; `:98` is for native GUI apps that have no DOM.
 
 ## Monitoring APIs
 

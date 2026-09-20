@@ -11993,6 +11993,22 @@ def missioncontrol_card_detail(card_id):
     return None
 
 
+def _xvfb_running(display):
+    """True if an Xvfb is serving `display` (e.g. ':99').
+
+    Since #716 the pod runs two: `:99` is the human's, streamed to the
+    Browser tab by x11vnc, and `:98` is the agent-only one that nothing
+    exports. A bare `pgrep Xvfb` cannot tell them apart, so this matches the
+    display argument in the command line.
+    """
+    try:
+        check = subprocess.run(
+            ['pgrep', '-f', f'Xvfb {display} '], capture_output=True, timeout=5)
+        return check.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
 class BrowserHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -19407,15 +19423,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 result = subprocess.run(['xdpyinfo', '-display', display], 
                                        capture_output=True, text=True, timeout=5)
                 if result.returncode != 0:
-                    # xdpyinfo failed, but check if Xvfb process is running instead
-                    xvfb_check = subprocess.run(['pgrep', 'Xvfb'], capture_output=True)
-                    if xvfb_check.returncode != 0:
+                    # xdpyinfo failed, but check if Xvfb process is running instead.
+                    # Match the display too: since #716 there are two Xvfbs
+                    # (:99 for the user, :98 for agents), so a bare `pgrep Xvfb`
+                    # would report the human's display healthy on the strength
+                    # of the agent's.
+                    if not _xvfb_running(display):
                         self.send_error_response(f'X11 display {display} not available')
                         return
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 # xdpyinfo not available or timed out, check if Xvfb process is running
-                xvfb_check = subprocess.run(['pgrep', 'Xvfb'], capture_output=True)
-                if xvfb_check.returncode != 0:
+                if not _xvfb_running(display):
                     self.send_error_response(f'X11 display {display} not available (Xvfb not running)')
                     return
             

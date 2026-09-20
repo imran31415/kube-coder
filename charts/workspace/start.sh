@@ -550,6 +550,63 @@ sleep 1
 websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
   > /tmp/websockify.log 2>&1 &
 sleep 2
+
+{{- if .Values.browser.agentDisplay }}
+# ── Agent-only virtual display :98 (issue #716, Gap 1) ────────────────────
+# Everything above is the *human's* screen: x11vnc exports :99 over
+# websockify into the dashboard's Browser tab. Before this, an agent that
+# ran `DISPLAY=:99 <gui app>` rendered into that same framebuffer, stole
+# fluxbox focus, and appeared in the user's tab — and anything the agent
+# screenshotted also captured whatever the human had open.
+#
+# :98 is a second Xvfb that NO x11vnc is attached to, so it is invisible in
+# the Browser tab by construction. Agents opt in with DISPLAY=:98 (or the
+# `kc-gui` helper installed below); the shell default stays :99, so a user
+# who never touches this sees no change. Costs ~42 MB idle (Xvfb ~31 MB +
+# fluxbox ~11 MB) — set browser.agentDisplay=false to skip it.
+#
+# Honest limit: X11 has no seat isolation. This is visual separation, not a
+# security boundary — a process on :98 can still open :99 and vice versa.
+log_stage "starting agent-only Xvfb :98 + fluxbox (not exported to VNC)"
+rm -f /tmp/.X98-lock
+# Same framebuffer allocation as :99 so an agent can drive a full-size app;
+# RANDR is enabled for parity, though nothing resizes this one remotely.
+Xvfb :98 -screen 0 1920x1280x24 +extension RANDR > /tmp/xvfb-98.log 2>&1 &
+sleep 2
+DISPLAY=:98 setxkbmap us 2>/dev/null || true
+# A window manager matters even with no human watching: without one, app
+# windows are never mapped with focus and dialogs stack unpredictably.
+# `ulimit -c 0`: fluxbox segfaults when its X server disappears (verified:
+# ~2.7MB core). For :99 that only happens at pod shutdown, but the watchdog
+# below deliberately restarts :98, so without this each restart would drop a
+# core file in the cwd. `exec` keeps the cmdline as `fluxbox -display :98`,
+# which is what pgrep/pkill match on.
+( ulimit -c 0; exec fluxbox -display :98 ) > /tmp/fluxbox-98.log 2>&1 &
+sleep 1
+# :98 is deliberately NOT made the shell-wide DISPLAY: the surrounding
+# block exported :99, and every later child of start.sh must keep
+# inheriting the human's display. Agents opt in via $KC_AGENT_DISPLAY.
+export KC_AGENT_DISPLAY=:98
+
+# kc-gui: the agent-side handle on :98 (launch / list / screenshot / click /
+# type). The image ships neither xdotool nor ImageMagick `import`, so this is
+# stdlib-only Python over libX11 + libXtst via ctypes — no new packages. Baked
+# into the image by `COPY charts/workspace/*.py /opt/browser-src/`; reinstalled
+# every boot so chart updates land (the PVC copy is never authoritative).
+if [ -f /opt/browser-src/kc_gui.py ]; then
+  install -m 0755 /opt/browser-src/kc_gui.py /home/dev/.local/bin/kc-gui
+fi
+
+# Make the agent display discoverable from every interactive shell (ttyd,
+# code-server, SSH) — those run with HOME=/home/ubuntu, which is rebuilt from
+# skel on each boot, so the export has to be re-seeded (issue #334).
+bootstrap_rc 'KC_AGENT_DISPLAY' '# --- kube-coder: agent-only X display (issue #716) ---
+# Invisible in the VNC tab. DISPLAY stays :99 on purpose — opt in per
+# command, e.g. DISPLAY=$KC_AGENT_DISPLAY firefox, or use `kc-gui`.
+export KC_AGENT_DISPLAY=:98'
+{{- else }}
+log_stage "agent display disabled (browser.agentDisplay=false); skipping Xvfb :98"
+{{- end }}
 {{- else }}
 log_stage "browser/VNC stack disabled (browser.enabled=false); skipping Xvfb/fluxbox/x11vnc/websockify"
 {{- end }}
@@ -1059,5 +1116,21 @@ while true; do
     websockify --web=/usr/share/novnc --heartbeat=30 6081 localhost:5900 \
       >> /tmp/websockify.log 2>&1 &
   fi
+  {{- if .Values.browser.agentDisplay }}
+  # Agent display (issue #716). Unlike :99 there is no port to probe, so the
+  # liveness check is the Xvfb process itself. fluxbox is restarted with it:
+  # a WM orphaned from its dead X server exits on its own anyway.
+  if ! pgrep -f "Xvfb :98 " > /dev/null; then
+    log_stage "restarting agent Xvfb :98"
+    # Clear the old WM first: a fluxbox whose X server died usually exits on
+    # its own, but a hung one would otherwise survive into the new display.
+    pkill -f "fluxbox -display :98" 2>/dev/null || true
+    rm -f /tmp/.X98-lock
+    Xvfb :98 -screen 0 1920x1280x24 +extension RANDR >> /tmp/xvfb-98.log 2>&1 &
+    sleep 2
+    DISPLAY=:98 setxkbmap us 2>/dev/null || true
+    ( ulimit -c 0; exec fluxbox -display :98 ) >> /tmp/fluxbox-98.log 2>&1 &
+  fi
+  {{- end }}
   {{- end }}
 done
