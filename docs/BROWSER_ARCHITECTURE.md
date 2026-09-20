@@ -13,8 +13,9 @@ This document describes the comprehensive architecture for the remote browser fu
 3. [Technology Stack](#technology-stack)
 4. [Implementation Details](#implementation-details)
 5. [Data Flow](#data-flow)
-6. [Security Considerations](#security-considerations)
-7. [Troubleshooting Guide](#troubleshooting-guide)
+6. [Agent Display (`:98`)](#agent-display-98)
+7. [Security Considerations](#security-considerations)
+8. [Troubleshooting Guide](#troubleshooting-guide)
 
 ## Architecture Overview
 
@@ -229,6 +230,12 @@ PersistentVolumeClaim:
 
 6. Window Manager (on-demand)
    └── Start Fluxbox when needed
+
+7. Agent Display Setup (browser.agentDisplay, #716)
+   ├── Start Xvfb on display :98 (no x11vnc attached)
+   ├── Start Fluxbox on :98
+   ├── Export KC_AGENT_DISPLAY=:98 (DISPLAY stays :99)
+   └── Install kc-gui into /home/dev/.local/bin
 ```
 
 ### Browser Launch Process
@@ -305,6 +312,80 @@ Internal Container:
    ↓ X11 Event
 6. Firefox Application
 ```
+
+## Agent Display (`:98`)
+
+`:99` is the human's screen. `x11vnc` streams it to the dashboard's Browser
+tab, so before #716 a GUI app an agent launched with `DISPLAY=:99` rendered
+into the frame the user was watching, took fluxbox focus from them, and showed
+up in their tab — and an agent's screenshot captured whatever the user had
+open. There was exactly one display and both parties shared it.
+
+`start.sh` now also runs a **second `Xvfb` on `:98`** with its own fluxbox.
+**No `x11vnc` is attached to it**, which is the whole mechanism: what is not
+captured cannot be streamed. Agents target it explicitly; `DISPLAY` stays
+`:99` for every other process, so a user who never touches `:98` sees no
+change at all.
+
+```
+   human                                  agent
+   ─────                                  ─────
+   Browser tab                            DISPLAY=:98 / kc-gui
+        │                                      │
+   websockify :6081                            │
+        │                                      │
+   x11vnc :5900                                │
+        │                                      │
+   Xvfb :99  + fluxbox            Xvfb :98  + fluxbox
+   (1920x1280x24)                 (1920x1280x24)
+                                  ↑ nothing exports this
+```
+
+| | `:99` | `:98` |
+|---|---|---|
+| Who | the user | agents |
+| Visible in the Browser tab | yes | **no** |
+| Window manager | fluxbox | fluxbox |
+| Framebuffer | 1920x1280x24 | 1920x1280x24 |
+| Gate | `browser.enabled` | `browser.enabled` **and** `browser.agentDisplay` |
+| Supervised | websockify port probe | `pgrep -f "Xvfb :98 "` |
+| Idle cost | ~95MB (whole VNC stack) | ~42MB (Xvfb ~31MB + fluxbox ~11MB) |
+
+### Driving it: `kc-gui`
+
+The image ships neither `xdotool` nor ImageMagick `import`, so `kc-gui`
+(`charts/workspace/kc_gui.py`, installed to `/home/dev/.local/bin/kc-gui` on
+each boot) talks to libX11/libXtst through `ctypes` and encodes PNGs with
+`zlib`. Stdlib only — no packages were added to the image for it.
+
+```bash
+kc-gui info                                  # geometry + window list
+kc-gui run firefox --new-window https://x.test
+kc-gui windows                               # id  WxH+X+Y  title
+kc-gui screenshot -o /tmp/shot.png           # whole display
+kc-gui screenshot -w 0x40000c -o /tmp/w.png  # one window
+kc-gui click 400 300 [-b 1]
+kc-gui move 400 300
+kc-gui type -w 0x40000c 'make test'
+kc-gui key  -w 0x40000c Return ctrl+c alt+F4
+kc-gui focus 0x40000c
+kc-gui -d :99 windows                        # …or target the human's display
+```
+
+### What this is not
+
+- **Not a security boundary.** X11 has no seat isolation: a process that can
+  open `:98` can also open `:99`, read its windows and inject into it. `:98`
+  buys *visual* separation — the user keeps their screen — nothing more.
+- **Not a box per app.** There is one `:98` shared by every agent in the pod.
+- **No clipboard isolation.** Selections are per-display here, but nothing
+  prevents a process from reading either display's.
+- **Not a Playwright replacement.** For anything with a DOM, the Playwright
+  MCP's selectors and waits beat pixel-clicking. `:98` is for native GUI apps.
+
+See [#716](https://github.com/imran31415/kube-coder/issues/716) for the
+nested-compositor designs (wbox-mcp / a native `kc-gui` compositor) that would
+give a real isolation boundary.
 
 ## Security Considerations
 
