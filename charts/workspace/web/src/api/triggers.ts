@@ -127,6 +127,59 @@ export async function listTriggers(): Promise<Trigger[]> {
   return triggers;
 }
 
+/** One recorded fire (#91). A `spawned` run has a `task_id`; `rejected` and
+ *  `error` carry a `reason` slug and usually an `error` gloss. `skipped` is a
+ *  page-watch check that arrived and correctly chose to do nothing. */
+export interface TriggerRun {
+  ts: number;
+  type: TriggerKind;
+  trigger_id: string;
+  outcome: 'spawned' | 'skipped' | 'rejected' | 'error';
+  /** Short slug: bad_signature, replay, at_capacity, suspended, unchanged, … */
+  reason?: string;
+  task_id?: string;
+  error?: string;
+  /** The socket peer — behind the ingress, usually the ingress controller. */
+  source_ip?: string;
+  /** Leftmost X-Forwarded-For hop. Caller-asserted, hence a separate field. */
+  forwarded_for?: string;
+  /** Present only where a proof of authorisation applied: an HMAC for a
+   *  webhook, the fire token for a cron/page-watch. Absent on the dashboard's
+   *  own Test / Check-now buttons, which authenticate as the workspace owner. */
+  signature_verified?: boolean;
+  provider?: string;
+  /** Fired from the dashboard rather than by a timer or an external sender. */
+  manual?: boolean;
+}
+
+export interface TriggerRunPage {
+  runs: TriggerRun[];
+  /** Entries still on disk, which is what pagination needs — not the number of
+   *  times the trigger has ever fired. The ledger is capped, so those differ. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Each kind's REST collection. The ledger path is derived from it rather than
+ *  from `kind` directly, because the server's collections are plurals
+ *  ('page-watches') and the kind is not. */
+const RUNS_COLLECTION: Record<TriggerKind, string> = {
+  webhook: 'webhooks',
+  cron: 'crons',
+  'page-watch': 'page-watches',
+};
+
+export const listTriggerRuns = (
+  kind: TriggerKind,
+  id: string,
+  opts: { limit?: number; offset?: number } = {},
+) =>
+  apiGet<TriggerRunPage>(
+    `/api/${RUNS_COLLECTION[kind]}/${encodeURIComponent(id)}/runs`,
+    { limit: opts.limit, offset: opts.offset },
+  );
+
 export interface CreateCronInput {
   id: string;
   schedule: string;

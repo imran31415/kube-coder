@@ -199,9 +199,9 @@ class LeakedThreadTests(unittest.TestCase):
 
 class MakefileSafetyNetTests(unittest.TestCase):
     """The suite-wide second line of defence: `make python-tests` runs with the
-    feed, push and provider-key paths pointed at a throwaway folder, so a
-    future test that forgets the helper still cannot reach a phone or read the
-    user's API keys."""
+    feed, push, provider-key and trigger-ledger paths pointed at a throwaway
+    folder, so a future test that forgets the helper still cannot reach a phone,
+    read the user's API keys, or append to their trigger history."""
 
     def _recipe(self, target):
         with open(os.path.join(REPO, 'Makefile'), encoding='utf-8') as f:
@@ -221,6 +221,7 @@ class MakefileSafetyNetTests(unittest.TestCase):
                 self.assertIn('KC_FEED_DIR=', recipe)
                 self.assertIn('KC_PUSH_DIR=', recipe)
                 self.assertIn('KC_PROVIDER_KEYS_FILE=', recipe)
+                self.assertIn('KC_TRIGGER_RUNS_DIR=', recipe)
                 self.assertIn('mktemp -d', recipe)
 
 

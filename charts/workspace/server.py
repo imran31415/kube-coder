@@ -85,6 +85,18 @@ except ImportError:      # pragma: no cover - package always ships beside server
     boards = None
     _BOARDS_AVAILABLE = False
 
+# The trigger run-history ledger (#91) reuses `boards.store.JsonlLog` — an
+# append-only, byte-capped JSONL log whose append is explicitly written so it
+# can never raise into the caller. That is exactly the property an audit write
+# on a webhook fire needs. Imported on its own rather than off the block above
+# because triggers are core: if some other module in the boards package ever
+# grows a dependency this workspace lacks, the fire ledger must not disappear
+# with the /board surface. `store` itself is stdlib-only.
+try:
+    from boards.store import JsonlLog as _JsonlLog
+except ImportError:      # pragma: no cover - ships beside server.py
+    _JsonlLog = None
+
 # devcontainer.json reader (#594). Pure — it parses, normalizes and classifies
 # but never executes; DevcontainerManager below owns everything that touches
 # the workspace. Kept out of server.py because the JSONC parser wants ~40 unit
@@ -5856,6 +5868,195 @@ class _ReplayCache:
             return True
 
 
+DEFAULT_TRIGGER_RUNS_DIR = '/home/dev/.claude-triggers/runs'
+
+
+def _resolve_trigger_runs_dir(env=None):
+    """`$KC_TRIGGER_RUNS_DIR`, or the deployment default when unset/blank (#91).
+
+    Same blank-means-default contract as `$KC_FEED_DIR`: it exists so a test run
+    can never append to the workspace's real trigger history, and so the
+    Makefile's python-tests target can point the whole suite at a throwaway
+    directory. Leave it unset in every deployment."""
+    src = os.environ if env is None else env
+    return ((src.get('KC_TRIGGER_RUNS_DIR') or '').strip()) or DEFAULT_TRIGGER_RUNS_DIR
+
+
+class TriggerRunsManager:
+    """Per-trigger run history: one durable entry per inbound fire (#91).
+
+    WHY. A fire used to leave nothing behind. `EventBroker.publish` is in-memory
+    and gone the moment the SSE stream drops; `FeedManager.emit_trigger` records
+    only that *something* fired; and the spawned task ages out. Worse, the
+    branches a user most needs to see left no trace at all, because they return
+    before either of those calls: a bad HMAC, a replayed body, a cron firing
+    with the wrong token, a fire refused because the pod was at its task cap.
+    "Did my webhook arrive, and what happened to it?" was unanswerable.
+
+    STORAGE is `boards.store.JsonlLog`, one log per trigger under
+    `<runs dir>/<kind>/<id>.jsonl`, rather than a new ledger implementation or a
+    SQLite table. That class already has the three properties this needs: it is
+    append-only (history is never rewritten), it is byte-capped with one
+    generation of rotation (an uncapped log on a PVC is a slow-motion disk-full
+    incident), and its `append` is written so it cannot raise into the caller —
+    a ledger write must never be able to fail a fire that already happened.
+
+    WHAT IS AND IS NOT RECORDED. An entry is metadata about the call: when, from
+    where, whether the signature checked out, what the pod decided, and the id
+    of the task it spawned. Never the payload, never the rendered prompt, never
+    secret material. The ledger is read in a browser by whoever owns the
+    workspace; a webhook body is someone else's data and often carries their
+    credentials, so it stays out. The task the fire spawned is the place to look
+    for what the payload actually said.
+
+    Entries are only ever written for a trigger that EXISTS. A POST to a
+    made-up id gets its 404 and nothing else: recording it would let an
+    anonymous caller create an arbitrary file per guessed id, which turns an
+    audit log into a disk-fill primitive.
+
+    `signature_verified` reads as "this fire proved it was allowed to fire",
+    which is a different mechanism per kind: an HMAC over the body for a
+    webhook, the per-trigger bearer fire_token for a cron or page-watch. It is
+    absent, rather than False, wherever no such check applies — the dashboard's
+    own Test / Check-now buttons authenticate as the workspace owner, and a
+    cross in that column would suggest something was wrong with them.
+    """
+
+    RUNS_DIR = _resolve_trigger_runs_dir()
+    #: The three trigger kinds the dashboard's Triggers tab lists. Doubles as
+    #: the directory-name allowlist, so a typo cannot write outside RUNS_DIR.
+    KINDS = ('webhook', 'cron', 'page-watch')
+    #: Ledger outcomes. `spawned` is the happy path; `skipped` is a fire that
+    #: arrived and correctly chose to do nothing (a page-watch whose page had
+    #: not changed); `rejected` is refused by us (bad signature, replay, paused,
+    #: at capacity); `error` is something that went wrong on our side.
+    OUTCOMES = ('spawned', 'skipped', 'rejected', 'error')
+    #: 256 KiB per generation, two generations kept — roughly 4k entries per
+    #: trigger. Deliberately a tenth of the boards default: there is one of
+    #: these per trigger, and a five-minute page-watch writes ~288 a day.
+    MAX_BYTES = 256 * 1024
+    DEFAULT_LIMIT = 50
+    MAX_LIMIT = 200
+    #: Long vendor errors are the norm; the ledger keeps a gist, not a log line.
+    MAX_ERROR_CHARS = 300
+    _ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+    @classmethod
+    def _log(cls, kind, trigger_id):
+        """The ledger for one trigger, or None if it cannot be addressed.
+
+        The id is re-checked here even though every caller reaches this through
+        a route regex: this is the function that turns an id into a filesystem
+        path, so it is the function that must refuse `../`. A missing
+        `boards.store` lands here too, which is what degrades the ledger to a
+        no-op rather than breaking the fire path."""
+        if _JsonlLog is None:
+            return None
+        if kind not in cls.KINDS:
+            return None
+        if not trigger_id or not cls._ID_RE.match(trigger_id):
+            return None
+        return _JsonlLog(os.path.join(cls.RUNS_DIR, kind, trigger_id + '.jsonl'),
+                         max_bytes=cls.MAX_BYTES)
+
+    @classmethod
+    def record(cls, kind, trigger_id, outcome, *, task_id=None, reason=None,
+               error=None, source_ip=None, forwarded_for=None,
+               signature_verified=None, provider=None, manual=False, ts=None):
+        """Append one entry. Returns whether it was written.
+
+        Never raises. Every call site is a fire that has already been decided,
+        and no audit write is worth turning a delivered webhook into a 500 —
+        so a full disk or a read-only mount costs the entry, not the request.
+        """
+        log = cls._log(kind, trigger_id)
+        if log is None:
+            return False
+        entry = {
+            'ts': int(time.time() if ts is None else ts),
+            'type': kind,
+            'trigger_id': trigger_id,
+            'outcome': outcome if outcome in cls.OUTCOMES else 'error',
+        }
+        # Optional keys are omitted rather than set to null: these lines are
+        # counted in bytes against MAX_BYTES, and `"provider": null` on every
+        # cron fire is pure rotation pressure.
+        if reason:
+            entry['reason'] = str(reason)[:64]
+        if task_id:
+            entry['task_id'] = str(task_id)[:128]
+        if error:
+            # `error` is for a message this code did not author — what the task
+            # manager or the fetch said — plus the two branches carrying a
+            # detail the slug cannot (the replay window; a pause that landed
+            # mid-check). Where the slug IS the explanation, there is no error:
+            # "bad_signature / signature verification failed" is one fact
+            # printed twice, and the ledger pays for it twice in bytes.
+            entry['error'] = str(error)[:cls.MAX_ERROR_CHARS]
+        if source_ip:
+            entry['source_ip'] = str(source_ip)[:64]
+        if forwarded_for:
+            entry['forwarded_for'] = str(forwarded_for)[:64]
+        if signature_verified is not None:
+            entry['signature_verified'] = bool(signature_verified)
+        if provider:
+            entry['provider'] = str(provider)[:32]
+        if manual:
+            entry['manual'] = True
+        try:
+            return bool(log.append(entry))
+        except OSError:
+            return False
+
+    @classmethod
+    def list_runs(cls, kind, trigger_id, limit=None, offset=0):
+        """A newest-first page of one trigger's history.
+
+        `total` is the number of entries still on disk, which is what the UI
+        needs to paginate — not the number of times the trigger has ever fired.
+        Those differ once the log has rotated, and the cap makes that normal.
+        """
+        try:
+            limit = cls.DEFAULT_LIMIT if limit is None else int(limit)
+        except (TypeError, ValueError):
+            limit = cls.DEFAULT_LIMIT
+        limit = max(1, min(cls.MAX_LIMIT, limit))
+        try:
+            offset = max(0, int(offset))
+        except (TypeError, ValueError):
+            offset = 0
+        log = cls._log(kind, trigger_id)
+        entries = []
+        if log is not None:
+            try:
+                entries = log.read()
+            except OSError:
+                entries = []
+        entries.reverse()   # JsonlLog reads oldest-first; a ledger reads newest-first.
+        return {
+            'runs': entries[offset:offset + limit],
+            'total': len(entries),
+            'limit': limit,
+            'offset': offset,
+        }
+
+    @classmethod
+    def delete(cls, kind, trigger_id):
+        """Drop a trigger's history when the trigger itself is deleted.
+
+        The alternative — keeping it — makes the ledger unreachable (every read
+        path 404s on a missing trigger) while it still occupies the PVC forever,
+        and a recreated id would then inherit a stranger's history. So delete
+        follows delete."""
+        log = cls._log(kind, trigger_id)
+        if log is None:
+            return False
+        try:
+            return bool(log.delete())
+        except OSError:
+            return False
+
+
 class WebhookManager:
     """Inbound HTTP webhooks that spawn Claude tasks.
 
@@ -6029,6 +6230,10 @@ class WebhookManager:
         if not WebhookManager.valid_id(webhook_id):
             return False
         path = WebhookManager._config_path(webhook_id)
+        # The run history goes with the webhook (#91): every read path 404s on a
+        # missing config, so keeping it would occupy the PVC forever while being
+        # unreachable — and a recreated id would inherit a stranger's entries.
+        TriggerRunsManager.delete('webhook', webhook_id)
         try:
             os.remove(path)
             return True
@@ -9186,6 +9391,7 @@ class CronManager:
                 ['kubectl', 'delete', kind, name, '-n', ns, '--ignore-not-found'],
                 capture_output=True, text=True, timeout=30,
             )
+        TriggerRunsManager.delete('cron', cron_id)   # see WebhookManager.delete
         try:
             os.remove(CronManager._config_path(cron_id))
             return True
@@ -9817,6 +10023,7 @@ class PageWatchManager:
                 ['kubectl', 'delete', kind, name, '-n', ns, '--ignore-not-found'],
                 capture_output=True, text=True, timeout=30,
             )
+        TriggerRunsManager.delete('page-watch', watch_id)  # see WebhookManager.delete
         try:
             os.remove(PageWatchManager._config_path(watch_id))
             removed = True
@@ -12418,6 +12625,14 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/webhooks':
             self.handle_webhook_list()
             return
+        # /runs before the bare-id route. Both are anchored, so the order is
+        # presentational rather than load-bearing — but the next person to widen
+        # one of these patterns should find the specific one first.
+        m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)/runs$', claude_path)
+        if m:
+            self._webhook_id = m.group(1)
+            self.handle_webhook_runs()
+            return
         m = re.match(r'^/api/webhooks/([a-zA-Z0-9_-]+)$', claude_path)
         if m:
             self._webhook_id = m.group(1)
@@ -12428,6 +12643,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if claude_path == '/api/crons':
             self.handle_cron_list()
             return
+        m = re.match(r'^/api/crons/([a-z0-9-]+)/runs$', claude_path)
+        if m:
+            self._cron_id = m.group(1)
+            self.handle_cron_runs()
+            return
         m = re.match(r'^/api/crons/([a-z0-9-]+)$', claude_path)
         if m:
             self._cron_id = m.group(1)
@@ -12436,6 +12656,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # --- Page-watch CRUD (dashboard) — #681 ---
         if claude_path == '/api/page-watches':
             self.handle_page_watch_list()
+            return
+        m = re.match(r'^/api/page-watches/([a-z0-9-]+)/runs$', claude_path)
+        if m:
+            self._page_watch_id = m.group(1)
+            self.handle_page_watch_runs()
             return
         m = re.match(r'^/api/page-watches/([a-z0-9-]+)$', claude_path)
         if m:
@@ -15304,6 +15529,30 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         cfg['receive_url'] = self._build_receive_url(self._webhook_id)
         self.send_json(cfg)
 
+    def _trigger_runs_page(self):
+        """`?limit=&offset=` for a runs listing. Clamping lives in
+        TriggerRunsManager.list_runs so the MCP/CLI callers get it too."""
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        return {
+            'limit': (qs.get('limit') or [None])[0],
+            'offset': (qs.get('offset') or ['0'])[0],
+        }
+
+    def handle_webhook_runs(self):
+        """GET /api/webhooks/<id>/runs — this webhook's fire history (#91).
+
+        A read, so `_readonly_block` does not apply; the read-only public demo
+        is allowed to show a trigger's history for the same reason it is allowed
+        to list the triggers themselves."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if WebhookManager.get_webhook(self._webhook_id) is None:
+            self.send_json({'error': 'Webhook not found'}, 404)
+            return
+        self.send_json(TriggerRunsManager.list_runs(
+            'webhook', self._webhook_id, **self._trigger_runs_page()))
+
     def handle_webhook_create(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -15497,9 +15746,24 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Not found or unauthorized'}, 404)
             return
 
+        # Every early return below also writes a ledger entry (#91). The
+        # rejection branches are the whole point of the feature: a bad HMAC and
+        # a replayed body are what people are actually trying to debug, and
+        # until now they returned a deliberately vague 404 and left no trace.
+        # The id is known to exist at this point, so nothing an anonymous
+        # caller sends can create a ledger file for a trigger we do not have.
+        def _ledger(outcome, reason, **kw):
+            TriggerRunsManager.record(
+                'webhook', cfg['id'], outcome, reason=reason,
+                source_ip=self._peer_ip(), forwarded_for=self._forwarded_for(),
+                provider=cfg.get('provider') or 'generic', **kw)
+
         # Read the raw body for HMAC verification BEFORE JSON parsing.
         content_length = int(self.headers.get('Content-Length', 0))
         if content_length < 0 or content_length > 1 * 1024 * 1024:  # 1 MiB cap
+            # No signature_verified: verification has not run yet, and claiming
+            # False here would read as "the signature was wrong".
+            _ledger('rejected', 'payload_too_large')
             self.send_json({'error': 'payload too large'}, 413)
             return
         raw_body = self.rfile.read(content_length) if content_length else b''
@@ -15507,6 +15771,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # Pass full headers — Slack/Stripe verifiers read multiple of them
         # (e.g. X-Slack-Request-Timestamp alongside X-Slack-Signature).
         if not WebhookManager.verify_signature(cfg, raw_body, self.headers):
+            _ledger('rejected', 'bad_signature', signature_verified=False)
             # Same shape as the not-found response to avoid leaking which is which.
             self.send_json({'error': 'Not found or unauthorized'}, 404)
             return
@@ -15517,16 +15782,24 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # 5 minutes of replay; this cache closes that window to "exactly once".
         replay_key = (cfg['id'], hashlib.sha256(raw_body).hexdigest())
         if not WebhookManager.REPLAY_CACHE.check_and_record(replay_key):
+            # signature_verified is True here on purpose: the signature DID
+            # check out, and the body was refused for being a duplicate. The
+            # two failures have different fixes, so the ledger separates them.
+            _ledger('rejected', 'replay', signature_verified=self._signature_checked(cfg),
+                    error='identical signed body already seen in the 5-minute window')
             self.send_json({'error': 'duplicate request (replay)'}, 409)
             return
 
         try:
             payload = json.loads(raw_body.decode('utf-8')) if raw_body else {}
         except (json.JSONDecodeError, UnicodeDecodeError):
+            _ledger('rejected', 'invalid_payload',
+                    signature_verified=self._signature_checked(cfg))
             self.send_json({'error': 'invalid JSON payload'}, 400)
             return
 
-        self._fire_webhook(cfg, payload, status=202)
+        self._fire_webhook(cfg, payload, status=202,
+                           signature_verified=self._signature_checked(cfg))
 
     def handle_webhook_test(self):
         """Dashboard 'Test' button: fire as if a real call came in, but with
@@ -15544,9 +15817,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         payload = data.get('payload', {}) if isinstance(data, dict) else {}
-        self._fire_webhook(cfg, payload, status=202)
+        # manual=True, and no signature_verified at all: this path authenticates
+        # with the dashboard's own bearer/OAuth session and never looks at an
+        # HMAC, so a tick or a cross in that column would both be wrong.
+        self._fire_webhook(cfg, payload, status=202, manual=True)
 
-    def _fire_webhook(self, cfg, payload, status=202):
+    def _fire_webhook(self, cfg, payload, status=202, *,
+                      signature_verified=None, manual=False):
         prompt = WebhookManager.render_prompt(cfg, payload)
         task = ClaudeTaskManager.create_task(
             prompt,
@@ -15555,7 +15832,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             response_secret=cfg.get('response_secret'),
             source=f"webhook:{cfg['id']}",
         )
+
+        def _ledger(outcome, reason=None, **kw):
+            TriggerRunsManager.record(
+                'webhook', cfg['id'], outcome, reason=reason,
+                source_ip=self._peer_ip(), forwarded_for=self._forwarded_for(),
+                signature_verified=signature_verified,
+                provider=cfg.get('provider') or 'generic',
+                manual=manual, **kw)
+
         if task.get('status') == 'rejected':
+            _ledger('rejected', 'at_capacity', error=task.get('error'))
             self.send_json({
                 'error': task.get('error'),
                 'webhook_id': cfg['id'],
@@ -15565,12 +15852,15 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # the upstream sees a 5xx and can retry, rather than a 202 with a
         # task_id that never runs.
         if task.get('status') == 'error':
+            _ledger('error', 'spawn_failed', task_id=task.get('task_id'),
+                    error=task.get('error') or 'failed to spawn task')
             self.send_json({
                 'error': task.get('error') or 'failed to spawn task',
                 'webhook_id': cfg['id'],
                 'task_id': task.get('task_id'),
             }, 502)
             return
+        _ledger('spawned', task_id=task['task_id'])
         EventBroker.publish('trigger.fired', {
             'trigger_type': 'webhook',
             'trigger_id': cfg['id'],
@@ -15582,6 +15872,41 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             'webhook_id': cfg['id'],
             'status': task['status'],
         }, status)
+
+    # --- Run-ledger helpers (#91) ----------------------------------------
+
+    def _peer_ip(self):
+        """The socket peer, or '' if it cannot be read.
+
+        Deliberately NOT X-Forwarded-For. Behind the workspace ingress the peer
+        is the ingress controller, so this is often the same value for every
+        entry — but it is the one address the caller cannot choose, and an audit
+        column that an attacker writes is worse than a boring one.
+        `_forwarded_for` carries the claimed hop separately, so a reader can
+        tell proof from assertion."""
+        try:
+            addr = self.client_address
+        except AttributeError:      # pragma: no cover - always set by the base class
+            return ''
+        if isinstance(addr, (tuple, list)) and addr:
+            return str(addr[0])[:64]
+        return str(addr or '')[:64]
+
+    def _forwarded_for(self):
+        """Leftmost X-Forwarded-For hop, or '' when the header is absent.
+
+        Caller-asserted by definition — anyone can send the header — which is
+        exactly why it is a second field rather than overwriting `source_ip`."""
+        raw = self.headers.get('X-Forwarded-For', '') or ''
+        return raw.split(',')[0].strip()[:64]
+
+    @staticmethod
+    def _signature_checked(cfg):
+        """Whether an HMAC was actually verified, not merely whether we let the
+        request in. A secret-less webhook running with
+        KC_ALLOW_UNSIGNED_WEBHOOKS=1 is accepted with nothing checked, and the
+        ledger says so — that is a finding, not a tick."""
+        return bool(cfg.get('hmac_secret'))
 
     def _build_receive_url(self, webhook_id):
         """Construct the public URL the upstream service should POST to.
@@ -16046,6 +16371,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json({'ok': True})
 
+    def handle_cron_runs(self):
+        """GET /api/crons/<id>/runs — this cron's fire history (#91)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if CronManager.get_cron(self._cron_id) is None:
+            self.send_json({'error': 'Cron not found'}, 404)
+            return
+        self.send_json(TriggerRunsManager.list_runs(
+            'cron', self._cron_id, **self._trigger_runs_page()))
+
     def handle_cron_action(self):
         """suspend / resume / run — dashboard buttons."""
         if not self.check_claude_auth():
@@ -16090,7 +16426,25 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         auth = self.headers.get('Authorization', '')
         token = auth[7:].strip() if auth.startswith('Bearer ') else ''
         ok, cfg = CronManager.verify_fire_token(self._cron_id, token)
+
+        def _ledger(outcome, reason=None, **kw):
+            """Record against the cron's OWN id. `cfg` is never read for it:
+            verify_fire_token hands back the config with its fire_token still
+            in it on a failed auth, and this ledger must not grow a habit of
+            touching that object."""
+            TriggerRunsManager.record(
+                'cron', self._cron_id, outcome, reason=reason,
+                source_ip=self._peer_ip(), forwarded_for=self._forwarded_for(),
+                **kw)
+
         if not ok or cfg is None:
+            # cfg is None for an id that does not exist, and non-None when the
+            # id is real but the bearer was wrong. Only the second is recorded:
+            # a ledger file per guessed id would be a disk-fill primitive, and
+            # "someone fired this cron with a stale token" is the entry worth
+            # having — it is what a rotated fire_token looks like from here.
+            if cfg is not None:
+                _ledger('rejected', 'bad_token', signature_verified=False)
             # Don't leak existence; same response for unknown id vs bad token.
             self.send_json({'error': 'Not found or unauthorized'}, 404)
             return
@@ -16098,6 +16452,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # CronJob shouldn't fire when suspended, but if someone hits this
         # endpoint manually we want the suspend flag to be authoritative.
         if cfg.get('suspended'):
+            _ledger('rejected', 'suspended', signature_verified=True)
             self.send_json({'error': 'cron is suspended'}, 409)
             return
         prompt = CronManager.render_prompt(cfg)
@@ -16109,8 +16464,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             source=f"cron:{cfg['id']}",
         )
         if task.get('status') == 'rejected':
+            _ledger('rejected', 'at_capacity', signature_verified=True,
+                    error=task.get('error'))
             self.send_json({'error': task.get('error'), 'cron_id': cfg['id']}, 429)
             return
+        # The ledger reports what the spawn actually did. This handler answers
+        # 202 either way (changing that is a separate call), but writing
+        # 'spawned' for a task whose status came back 'error' would make the
+        # audit log agree with the HTTP code instead of with reality.
+        if task.get('status') == 'error':
+            _ledger('error', 'spawn_failed', signature_verified=True,
+                    task_id=task.get('task_id'),
+                    error=task.get('error') or 'failed to spawn task')
+        else:
+            _ledger('spawned', signature_verified=True, task_id=task.get('task_id'))
         EventBroker.publish('trigger.fired', {
             'trigger_type': 'cron',
             'trigger_id': cfg['id'],
@@ -16140,6 +16507,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': 'Not found'}, 404)
             return
         self.send_json(cfg)
+
+    def handle_page_watch_runs(self):
+        """GET /api/page-watches/<id>/runs — this watch's check history (#91)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if PageWatchManager.get_page_watch(self._page_watch_id) is None:
+            self.send_json({'error': 'Not found'}, 404)
+            return
+        self.send_json(TriggerRunsManager.list_runs(
+            'page-watch', self._page_watch_id, **self._trigger_runs_page()))
 
     def handle_page_watch_create(self):
         if not self.check_claude_auth():
@@ -16216,10 +16594,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         ok, cfg = PageWatchManager.verify_fire_token(self._page_watch_id, token)
         if not ok or cfg is None:
             # Same response for unknown id and bad token, so the endpoint does
-            # not confirm which watches exist.
+            # not confirm which watches exist. No ledger entry either, and
+            # unlike the cron path that is not a choice made here:
+            # PageWatchManager.verify_fire_token returns (False, None) on ANY
+            # failure by design, so this branch genuinely cannot tell a bad
+            # token from an id that was never real.
             self.send_json({'error': 'Not found or unauthorized'}, 404)
             return
         if cfg.get('suspended'):
+            TriggerRunsManager.record(
+                'page-watch', self._page_watch_id, 'rejected', reason='suspended',
+                signature_verified=True, source_ip=self._peer_ip(),
+                forwarded_for=self._forwarded_for())
             self.send_json({'error': 'page-watch is suspended'}, 409)
             return
         self._run_page_watch_check(manual=False)
@@ -16229,7 +16615,25 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         watch_id = self._page_watch_id
         outcome, cfg, detail = PageWatchManager.check_once(watch_id)
 
+        def _ledger(led_outcome, reason=None, **kw):
+            """A page-watch records EVERY check, including the ones that found
+            nothing. For the other two kinds "it fired" and "it arrived" are the
+            same event; for a watch they are not, and "it checked on time and
+            the page had not moved" is the single most common answer to "why
+            didn't my watch fire?". A 5-minute watch writes ~288 entries a day,
+            which the 256 KiB cap holds for about a fortnight.
+
+            signature_verified is only claimed for the scheduled call, which
+            arrived carrying the watch's fire_token; Check-now rides the
+            dashboard session instead."""
+            TriggerRunsManager.record(
+                'page-watch', watch_id, led_outcome, reason=reason,
+                source_ip=self._peer_ip(), forwarded_for=self._forwarded_for(),
+                signature_verified=None if manual else True,
+                manual=manual, **kw)
+
         if outcome == 'missing':
+            # Nothing to attribute an entry to — the watch is gone.
             self.send_json({'error': 'Not found'}, 404)
             return
         if outcome == 'busy':
@@ -16239,6 +16643,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # anyway is precisely how one change becomes two agent runs.
             # 200 for the same reason 'error' is 200: nothing went wrong, so
             # failing the CronJob's `curl -f` over it would be noise.
+            _ledger('skipped', 'busy')
             self.send_json({
                 'page_watch_id': watch_id,
                 'outcome': 'busy',
@@ -16249,6 +16654,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # 200, not 5xx: the check ran correctly and its answer is "the page
             # could not be read". A non-2xx would make the CronJob's `curl -f`
             # fail the Job and bury a routine, expected outcome in k8s noise.
+            _ledger('error', 'fetch_failed', error=detail.get('error'))
             self.send_json({
                 'page_watch_id': watch_id,
                 'outcome': 'error',
@@ -16257,6 +16663,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
         if outcome in ('baseline', 'unchanged'):
+            _ledger('skipped', outcome)
             self.send_json({
                 'page_watch_id': watch_id,
                 'outcome': outcome,
@@ -16272,6 +16679,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # its own stale copy), so this sees the pause. pending_fire is
             # already set, which means resuming re-offers this change rather
             # than losing it.
+            _ledger('rejected', 'suspended',
+                    error='paused mid-check; the change is still owed')
             self.send_json({
                 'page_watch_id': cfg['id'],
                 'outcome': 'changed',
@@ -16298,6 +16707,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if task.get('status') == 'rejected':
             # At the task cap. pending_fire stays set, so the next successful
             # check re-fires instead of silently swallowing the change.
+            _ledger('rejected', 'at_capacity', error=task.get('error'))
             self.send_json({
                 'error': task.get('error'),
                 'page_watch_id': cfg['id'],
@@ -16306,6 +16716,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             }, 429)
             return
         if task.get('status') == 'error':
+            _ledger('error', 'spawn_failed', task_id=task.get('task_id'),
+                    error=task.get('error') or 'task failed to start')
             self.send_json({
                 'error': task.get('error') or 'task failed to start',
                 'page_watch_id': cfg['id'],
@@ -16314,6 +16726,7 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             }, 502)
             return
 
+        _ledger('spawned', 'changed', task_id=task['task_id'])
         PageWatchManager.clear_pending_fire(cfg['id'])
         EventBroker.publish('trigger.fired', {
             'trigger_type': 'page-watch',

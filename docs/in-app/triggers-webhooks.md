@@ -98,10 +98,40 @@ The list view has a switch per trigger. Suspended triggers return 200
 with `"suspended": true` and never spawn a task. Use this to silence
 noisy services during a deploy without deleting the config.
 
+## Run history
+
+Every row has a **Runs** button. It opens the trigger's own ledger: one
+entry per inbound call, newest first, with the time, the source, whether
+the signature was actually verified, the outcome, and a link to the task
+the call spawned.
+
+Rejections are recorded too, which is the point — a POST with a bad HMAC
+answers a deliberately vague `404`, so the ledger is the only place that
+will tell you the signature was wrong rather than the id. Same for a
+replayed body, a fire refused because the workspace was at its task
+limit, and a cron firing with a token you have since rotated.
+
+What is **not** recorded: the payload and the rendered prompt. The
+ledger is metadata about the call; a webhook body is someone else's data
+and often carries their credentials. Open the linked task to see what
+the payload actually said.
+
+The ledger is size-capped per trigger, so a busy webhook's oldest
+entries age out rather than filling the disk, and deleting a trigger
+deletes its history with it.
+
+    GET /api/webhooks/<id>/runs?limit=50&offset=0
+    GET /api/crons/<id>/runs
+    GET /api/page-watches/<id>/runs
+
 ## Common failures
 
+Open **Runs** on the trigger first — it says which of these happened,
+and when.
+
 - **`401 invalid signature`** — secret mismatch, or the timestamp is
-  off by >5 minutes. Check the calling side's clock.
+  off by >5 minutes. Check the calling side's clock. Shows in Runs as
+  `rejected` with **unverified**.
 - **`409 replay`** — the same body+timestamp was seen recently. Bump
   the timestamp or change a field.
 - **Prompt expands to gibberish** — `{{ json.x.y }}` paths don't

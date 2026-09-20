@@ -93,3 +93,46 @@
 }
 .tf-check input { margin-top: 3px; flex: none; }
 .tf-check .tf-hint { display: block; margin-top: 2px; }
+
+/* Run history (#91) — the ledger panel inside a trigger row. */
+.trig-runs {
+  margin-top: var(--size-2);
+  padding-top: var(--size-2);
+  border-top: 1px solid var(--border);
+  /* A narrow phone cannot fit five columns; scroll the table rather than let
+     it push the whole row sideways. */
+  overflow-x: auto;
+}
+.trig-runs-msg { font-size: var(--text-sm); padding: var(--size-2) 0; line-height: 1.5; }
+.trig-runs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+.trig-runs-table th {
+  text-align: left;
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.trig-runs-table td {
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.trig-runs-table tr:last-child td { border-bottom: none; }
+.trig-runs-when, .trig-runs-src { white-space: nowrap; color: var(--text-muted); }
+.trig-runs-why { margin-left: 6px; }
+.trig-runs-err { margin-top: 2px; overflow-wrap: anywhere; min-width: 0; }
+.trig-runs-task { color: var(--accent); text-decoration: none; }
+.trig-runs-task:hover { text-decoration: underline; }
+.trig-runs-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-2);
+  font-size: var(--text-xs);
+  padding-top: var(--size-2);
+}

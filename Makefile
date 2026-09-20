@@ -495,13 +495,17 @@ memory-db-copy: ## Copy the live memory DB to a throwaway path (DEST=<path> opti
 
 # The Feed log and the push token store are live shared state too: a test that
 # reaches FeedManager.emit() with the default paths writes the workspace's Feed
-# and pages whoever registered a phone there (#685). Tests isolate themselves
+# and pages whoever registered a phone there (#685). The trigger run ledger
+# (#91) is a third: a test that fires a webhook or a cron appends to the
+# workspace's real trigger history. Tests isolate themselves
 # (tests/live_state.py); these targets are the safety net for one that forgets,
-# pointing $KC_FEED_DIR / $KC_PUSH_DIR at a throwaway directory for the run.
+# pointing $KC_FEED_DIR / $KC_PUSH_DIR / $KC_TRIGGER_RUNS_DIR at a throwaway
+# directory for the run.
 python-tests: ## Run server.py unit + integration tests
 	tmp=$$(mktemp -d) && cd charts/workspace && \
 	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
 	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
+	  KC_TRIGGER_RUNS_DIR=$$tmp/trigger-runs \
 	  python3 -m unittest discover -s tests -p '*_test.py' -v; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
@@ -509,6 +513,7 @@ python-coverage: ## Run Python tests with coverage report
 	tmp=$$(mktemp -d) && cd charts/workspace && \
 	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
 	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
+	  KC_TRIGGER_RUNS_DIR=$$tmp/trigger-runs \
 	  coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
