@@ -3850,6 +3850,13 @@ class ClaudeTaskManager:
     # it regardless — and that paste was going to fail either way.
     PANE_READY_TIMEOUT = float(os.environ.get('KC_PANE_READY_TIMEOUT', '45'))
 
+    # Consecutive failed captures that mean the session is GONE rather than
+    # still drawing. `_capture_pane` returns None only when tmux itself errors,
+    # and the session was created moments earlier — so a short run of failures
+    # is a dead session, not a slow one. Three at the 0.6s default interval is
+    # under two seconds, well inside the noise of a real TUI's startup.
+    PANE_GONE_STRIKES = 3
+
     @staticmethod
     def _wait_for_pane_ready(session_name, floor=2.0, ceiling=None, interval=0.6,
                              expect_composer=False):
@@ -3877,11 +3884,23 @@ class ClaudeTaskManager:
         prev = ClaudeTaskManager._capture_pane(session_name)
         if ClaudeTaskManager._pane_input_ready(prev):
             return True
+        # A capture that FAILS is not a pane that is still drawing — tmux says
+        # "can't find session". Waiting out the full ceiling for a session that
+        # no longer exists buys nothing: the paste that follows cannot land
+        # either. A few consecutive misses is the give-up signal, which also
+        # stops a launch that died instantly from polling tmux ~75 times.
+        misses = 1 if prev is None else 0
         while time.time() < deadline:
             time.sleep(interval)
             cur = ClaudeTaskManager._capture_pane(session_name)
             if ClaudeTaskManager._pane_input_ready(cur):
                 return True
+            if cur is None:
+                misses += 1
+                if misses >= ClaudeTaskManager.PANE_GONE_STRIKES:
+                    return False
+            else:
+                misses = 0
             if not expect_composer and cur is not None and cur == prev:
                 return False
             prev = cur
@@ -8361,6 +8380,29 @@ class BoardMetricsManager:
         return sorted(ids)
 
 
+DEFAULT_PROVIDER_KEYS_FILE = '/home/dev/.claude-tasks/provider-keys.json'
+
+
+def _resolve_provider_keys_file(env=None):
+    """`$KC_PROVIDER_KEYS_FILE`, or the deployment default when unset/blank.
+
+    Same contract, and the same reason, as `_resolve_feed_dir` (#685): a test
+    run must not be able to reach the workspace's own state. This store holds
+    the keys the user set in Settings, and `available_assistants` gates the
+    assistant list on them — so on a workspace where the owner has an
+    OpenRouter key, the suite read that key and two assistant tests failed on
+    the developer's machine while passing in CI, which has no such file.
+    Writing it would be worse: `ProviderKeysManager.set` in a test that forgot
+    to redirect `KEYS_FILE` would overwrite real API keys.
+
+    Leave it unset in every deployment, or that workspace forgets every
+    self-service key.
+    """
+    src = os.environ if env is None else env
+    return ((src.get('KC_PROVIDER_KEYS_FILE') or '').strip()
+            or DEFAULT_PROVIDER_KEYS_FILE)
+
+
 class ProviderKeysManager:
     """User-settable provider API keys, persisted on the PVC and injected into
     every CLI subprocess's env at spawn — so a user can set their own OpenRouter
@@ -8370,7 +8412,7 @@ class ProviderKeysManager:
     (one JSON on the PVC, atomic 0600 write, masked public view).
     """
 
-    KEYS_FILE = '/home/dev/.claude-tasks/provider-keys.json'
+    KEYS_FILE = _resolve_provider_keys_file()
     # ONLY these env var names may ever be set/injected — never arbitrary env.
     # Keep in sync with hypervisor_session._PROVIDER_KEY_VARS.
     # OPENAI_API_KEY (issue #396) also powers the voice interface's server-side

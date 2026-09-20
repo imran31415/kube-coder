@@ -295,6 +295,42 @@ class WaitForPaneReadyTests(unittest.TestCase):
                 CTM._wait_for_pane_ready('sess', floor=0, ceiling=5, interval=0))
 
 
+    def test_gives_up_when_the_session_is_GONE_not_slow(self):
+        """A capture that fails is tmux saying "can't find session".
+
+        The wait used to poll out the whole 45s ceiling anyway — ~75 shell-outs
+        for a session that no longer exists, and the paste afterwards could not
+        land either. In the test suite that turned into real `tmux capture-pane`
+        calls firing long after the test had finished and unpatched
+        `subprocess.run`, which is how a completely unrelated test came to
+        capture a board worker's argv (#712 follow-up).
+        """
+        calls = []
+
+        def capture(_session):
+            calls.append(_session)
+            return None
+
+        clock = iter(range(0, 200))
+        with mock.patch.object(CTM, '_capture_pane', side_effect=capture), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=lambda: next(clock)):
+            self.assertFalse(
+                CTM._wait_for_pane_ready('sess', floor=0, ceiling=45,
+                                         interval=0, expect_composer=True))
+        self.assertEqual(len(calls), CTM.PANE_GONE_STRIKES)
+
+    def test_one_missed_capture_is_not_a_dead_session(self):
+        # A single hiccup must not abandon a TUI that is merely slow.
+        frames = iter([None, 'starting', None, COMPOSER_READY])
+        clock = iter(range(0, 200))
+        with mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(frames)), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=lambda: next(clock)):
+            self.assertTrue(
+                CTM._wait_for_pane_ready('sess', floor=0, ceiling=45,
+                                         interval=0, expect_composer=True))
+
     def test_default_ceiling_outlasts_a_slow_cold_start(self):
         """A cold Claude Code start was measured at 33s in a container (large
         binary + MCP spawn). The old 12s ceiling expired first, so the prompt

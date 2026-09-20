@@ -23,13 +23,23 @@ which works under both `python3 -m unittest discover -s tests` (the Makefile)
 and `python3 -m unittest tests.<name>` (the per-file docstrings). Everything is
 undone through addCleanup, so it composes with any tearDown.
 
+`isolate_provider_keys` is the same idea for the OTHER live store a test can
+reach: the API keys the user set in Settings. `available_assistants()` gates
+the assistant list on them, so on a workspace whose owner has an OpenRouter key
+`AssistantSelectionTests` read that key and failed two assertions that pass in
+CI, which has no such file. The write direction is the worse one — a test that
+calls `ProviderKeysManager.set` without redirecting `KEYS_FILE` overwrites real
+API keys.
+
 The Makefile's python-tests target is the second line of defence: it points
-KC_FEED_DIR / KC_PUSH_DIR at a throwaway directory for the whole run, so a test
-that forgets this helper still cannot reach the live Feed or a phone.
+KC_FEED_DIR / KC_PUSH_DIR / KC_PROVIDER_KEYS_FILE at a throwaway directory for
+the whole run, so a test that forgets these helpers still cannot reach the live
+Feed, a phone, or the user's keys.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -38,6 +48,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+import hypervisor_session  # noqa: E402
 import push_notify  # noqa: E402
 import server  # noqa: E402
 
@@ -73,3 +84,54 @@ def isolate_feed_and_push(tc, stub_expo=True):
         patcher.start()
         tc.addCleanup(patcher.stop)
     return root
+
+
+def isolate_provider_keys(tc, keys=None):
+    """Point the self-service provider-key store at a fresh temp file for the
+    lifetime of test case `tc`, seeded with `keys` (default: none at all).
+
+    Both readers are moved, because they read the same file independently:
+    `server.ProviderKeysManager.KEYS_FILE` and
+    `hypervisor_session._PROVIDER_KEYS_FILE`. Returns the path.
+
+    Default-empty is the point. A test asserting "this assistant is disabled
+    when its key is unset" is asserting something about env vars, and it must
+    not quietly become a statement about whoever is running the suite.
+    """
+    root = tempfile.mkdtemp(prefix='kctest-keys-')
+    tc.addCleanup(shutil.rmtree, root, True)
+    path = os.path.join(root, 'provider-keys.json')
+    if keys:
+        with open(path, 'w') as f:
+            json.dump(dict(keys), f)
+    for target, attr in ((server.ProviderKeysManager, 'KEYS_FILE'),
+                         (hypervisor_session, '_PROVIDER_KEYS_FILE')):
+        patcher = mock.patch.object(target, attr, path)
+        patcher.start()
+        tc.addCleanup(patcher.stop)
+    return path
+
+
+def silence_prompt_delivery(tc):
+    """Stop `create_task` from leaving a live prompt-delivery thread behind.
+
+    `ClaudeTaskManager.create_task` spawns a daemon thread that waits for the
+    new tmux pane to be ready and then pastes the prompt. In a test the pane
+    never exists — but the thread outlives the test, and by the time it runs,
+    the test's `mock.patch('server.subprocess.run')` has been undone. So it
+    shells out to the REAL tmux, against the developer's own tmux server, once
+    or twice a second for as long as its ceiling allows.
+
+    That is a live-state leak like any other here, and it also poisons whoever
+    patches `subprocess.run` next: an unrelated test asserting "my endpoint ran
+    this argv" can capture a stray `tmux capture-pane` from a test that already
+    finished. `server.py` now gives up as soon as the session reads as gone,
+    which bounds it; this removes it outright for tests that do not care about
+    prompt delivery at all.
+    """
+    for attr, value in (('_wait_for_pane_ready', False),
+                        ('_deliver_prompt', True)):
+        patcher = mock.patch.object(server.ClaudeTaskManager, attr,
+                                    return_value=value)
+        patcher.start()
+        tc.addCleanup(patcher.stop)

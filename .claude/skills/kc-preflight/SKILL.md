@@ -47,9 +47,11 @@ helm unittest charts/workspace/
 
 ```bash
 make python-tests
-# Prefer the make target: it points KC_FEED_DIR / KC_PUSH_DIR at a temp dir, so
-# a test can't write this workspace's live Feed or page its phone (#685). By hand:
+# Prefer the make target: it points KC_FEED_DIR / KC_PUSH_DIR / KC_PROVIDER_KEYS_FILE
+# at a temp dir, so a test can't write this workspace's live Feed, page its phone
+# (#685), or read/overwrite the API keys you set in Settings. By hand:
 # t=$(mktemp -d) && cd charts/workspace && KC_FEED_DIR=$t/feed KC_PUSH_DIR=$t/push \
+#   KC_PROVIDER_KEYS_FILE=$t/provider-keys.json \
 #   python3 -m unittest discover -s tests -p '*_test.py'
 ```
 
