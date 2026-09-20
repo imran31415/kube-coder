@@ -914,7 +914,40 @@ class StreamJsonSinkTest(_SinkDriver):
             if line.startswith('{'):
                 json.loads(line)  # every {-leading line must parse as an event
             else:
-                self.assertTrue(line[:1] in '·◇…↳⚒✗', line)
+                starts = tuple(v[:1] for v in
+                               acp_bridge.PrettySink._GLYPH.values())
+                self.assertTrue(line.startswith(starts), line)
+
+    def test_pane_vocabulary_is_ascii_only(self):
+        # The Build pane is xterm.js on the VIEWER's device (ttyd in the web
+        # tab, a WebView over the same client on mobile) and ttyd is launched
+        # with no fontFamily option, so a non-ASCII marker renders as a tofu
+        # box on whatever fonts that device lacks -- which is exactly what was
+        # reported in #639. No font shipped in the image can reach it, so the
+        # vocabulary has to stay ASCII.
+        for key, marker in acp_bridge.PrettySink._GLYPH.items():
+            self.assertTrue(marker.isascii(), f'{key}: {marker!r}')
+            # StreamJsonSink shares stdout with JSONL frames; a pretty line
+            # that opened with `{` would be indistinguishable from an event.
+            self.assertFalse(marker.startswith('{'), key)
+
+    def test_every_rendered_line_is_ascii(self):
+        sink = acp_bridge.PrettySink()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sink.turn_start()
+            sink.emit({'type': 'session', 'sessionId': 's1'})
+            sink.emit({'type': 'thought', 'text': 'hmm'})
+            sink.emit({'type': 'message', 'text': 'hi'})
+            sink.emit({'type': 'tool_call', 'id': 't', 'name': 'bash',
+                       'input': {'command': 'ls'}})
+            sink.emit({'type': 'tool_result', 'id': 't', 'text': 'out'})
+            sink.emit({'type': 'error', 'text': 'boom'})
+        for line in buf.getvalue().splitlines():
+            # Only the markers are ours; model text is passed through verbatim
+            # and may legitimately contain anything.
+            marker = line.split('  ')[0]
+            self.assertTrue(marker.isascii(), line)
 
 
 class ContentMappingTest(unittest.TestCase):

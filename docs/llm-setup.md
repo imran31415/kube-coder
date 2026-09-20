@@ -314,6 +314,18 @@ Each turn emits two streams on stdout:
    start with `{` so the JSONL parser ignores them. They make the Chat
    tab look like a TUI instead of a JSON dump.
 
+The line markers (`* assistant`, `$ <tool>`, `-> <result>`, `... thinking`)
+are **ASCII on purpose**, and `acp_bridge.py` uses the same vocabulary for
+the DeepSeek Harness. Both panes are xterm.js on the *viewer's* device --
+ttyd in the web Build tab, and a WebView over that same ttyd client in the
+mobile Task view -- and ttyd is started with no `fontFamily` option, so a
+decorative glyph renders as a tofu box on any device whose fonts lack it
+(#639 saw `…`, `◇` and `—` fail on iOS). No font installed in the workspace
+image can change that, which is why the fix is the vocabulary rather than
+the image. Model output is still passed through verbatim, so an answer that
+itself contains an emoji or an em dash may still show boxes -- that text is
+the model's, not ours.
+
 ### Configuration
 
 Same Helm values block as OpenCode's fallback; `kc-harness` is the

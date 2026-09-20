@@ -205,8 +205,23 @@ class PrettySink(Sink):
     drift into disagreeing about how a tool call reads.
     """
 
-    _GLYPH = {'message': '◇ assistant', 'thought': '… thinking',
-              'tool_result': '↳', 'error': '✗ error'}
+    #: The pane's entire visual vocabulary, deliberately ASCII-only.
+    #:
+    #: Both surfaces that show this pane render it with xterm.js -- ttyd in the
+    #: web Build tab, and the WebView wrapping that same ttyd client in the
+    #: mobile Task view -- and start.sh launches ttyd with no `fontFamily`
+    #: client option, so glyphs resolve against whatever fonts the VIEWER's
+    #: device happens to have. A reported iOS pane rendered `·` but showed
+    #: `…`, `◇` and even `—` as tofu boxes (#639), so installing fonts in the
+    #: image cannot reach it and "pick better-covered glyphs" is not a fix
+    #: either -- only ASCII is safe. harness.py carries the same vocabulary for
+    #: kc-harness; keep the two in step.
+    #:
+    #: No entry may begin with `{`: StreamJsonSink shares stdout with JSONL
+    #: frames and a reader tells them apart by that first character.
+    _GLYPH = {'session': '.', 'message': '* assistant',
+              'thought': '... thinking', 'tool_call': '$',
+              'tool_result': '->', 'error': 'x error'}
 
     def __init__(self):
         self._last_text = ''
@@ -229,7 +244,7 @@ class PrettySink(Sink):
         t = event.get('type')
         text = _stringify(event.get('text'))
         if t == 'session':
-            return f"· session {event.get('sessionId')}"
+            return f"{self._GLYPH['session']} session {event.get('sessionId')}"
         if t in ('message', 'thought'):
             if t == 'message':
                 self._last_text = text
@@ -237,7 +252,8 @@ class PrettySink(Sink):
         if t == 'tool_call':
             name = event.get('name') or 'tool'
             inp = event.get('input') if isinstance(event.get('input'), dict) else {}
-            return f'⚒ {name}  {json.dumps(inp, ensure_ascii=False)[:240]}'
+            return (f"{self._GLYPH['tool_call']} {name}  "
+                    f"{json.dumps(inp, ensure_ascii=False)[:240]}")
         if t == 'tool_result':
             return f"{self._GLYPH['tool_result']} {text[:600]}"
         if t == 'error':
@@ -701,7 +717,7 @@ class AcpBridge:
         if isinstance(usage, dict):
             _debug(f'turn reported token usage: {json.dumps(usage, sort_keys=True)}')
         else:
-            _debug('turn reported no token usage (PromptResponse.usage absent) — '
+            _debug('turn reported no token usage (PromptResponse.usage absent) - '
                    'spend for this assistant stays not_instrumented')
         stop = str(result.get('stopReason') or '')
         self.emit({'type': 'done', 'stopReason': stop or 'end_turn'})
@@ -1024,7 +1040,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "'stream-json' for a Builds tmux pane")
     ap.add_argument('--mcp', default='',
                     help="MCP servers for the session: 'default' for the "
-                         "curated set, or a {\"mcpServers\": {…}} JSON object. "
+                         "curated set, or a {\"mcpServers\": {...}} JSON object. "
                          "Omit for none.")
     ap.add_argument('--serve', action='store_true',
                     help='stay open and take prompt after prompt from stdin, '
