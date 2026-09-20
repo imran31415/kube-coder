@@ -460,6 +460,7 @@ SERVER_INFO = {
     'version': '1.0.0',
 }
 PROTOCOL_VERSION = '2024-11-05'
+SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2026-07-28']
 
 
 def _content_text(payload: Any) -> List[Dict[str, Any]]:
@@ -467,12 +468,43 @@ def _content_text(payload: Any) -> List[Dict[str, Any]]:
     return [{'type': 'text', 'text': text}]
 
 
-def _handle_initialize(_params: Dict[str, Any]) -> Dict[str, Any]:
+def _negotiate_protocol_version(params: Dict[str, Any]) -> str:
+    """Echo back the protocol version the client asked for, when we speak it.
+
+    The 2026-07-28 revision dropped the initialize handshake and moves the
+    version onto `_meta`, so read both spellings. Anything we don't speak —
+    or nothing at all — falls back to the version every shipping client
+    (Claude Code, Codex, OpenCode, Ante) negotiates today.
+    """
+    want = None
+    if isinstance(params, dict):
+        want = params.get('protocolVersion')
+        if not isinstance(want, str):
+            meta = params.get('_meta')
+            if isinstance(meta, dict):
+                want = meta.get('io.modelcontextprotocol/protocolVersion')
+    if isinstance(want, str) and want in SUPPORTED_PROTOCOL_VERSIONS:
+        return want
+    return PROTOCOL_VERSION
+
+
+def _handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        'protocolVersion': PROTOCOL_VERSION,
+        'protocolVersion': _negotiate_protocol_version(params),
         'capabilities': {'tools': {'listChanged': False}},
         'serverInfo': SERVER_INFO,
     }
+
+
+def _handle_discover(params: Dict[str, Any]) -> Dict[str, Any]:
+    """`server/discover` (2026-07-28) — initialize's payload, no handshake.
+
+    The stateless protocol has no handshake to carry the version, so the
+    result also lists every version this server speaks.
+    """
+    result = _handle_initialize(params)
+    result['supportedProtocolVersions'] = list(SUPPORTED_PROTOCOL_VERSIONS)
+    return result
 
 
 def _handle_tools_list(_params: Dict[str, Any]) -> Dict[str, Any]:
@@ -502,6 +534,7 @@ def _handle_tools_call(params: Dict[str, Any]) -> Dict[str, Any]:
 
 _METHODS = {
     'initialize': _handle_initialize,
+    'server/discover': _handle_discover,
     'tools/list': _handle_tools_list,
     'tools/call': _handle_tools_call,
 }

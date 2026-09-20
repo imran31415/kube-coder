@@ -12,6 +12,7 @@ Run with:    python3 -m unittest tests.mcp_dashboard_test
 import os
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -261,6 +262,63 @@ class UnauthorizedMessageTest(unittest.TestCase):
         text = res['content'][0]['text']
         self.assertIn('HTTP 500', text)
         self.assertNotIn('KC_WORKSPACE_HOME', text)
+
+
+class ProtocolVersionTest(unittest.TestCase):
+    """The version we answer with must follow the client, not a hardcode."""
+
+    def _initialize(self, params):
+        with mock.patch.object(m, '_send') as send:
+            m._handle_initialize(1, params)
+        return send.call_args[0][0]['result']
+
+    def test_supported_version_is_echoed(self):
+        self.assertEqual(
+            self._initialize({'protocolVersion': '2026-07-28'})['protocolVersion'],
+            '2026-07-28')
+
+    def test_version_read_from_meta_when_params_lack_it(self):
+        params = {'_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28'}}
+        self.assertEqual(self._initialize(params)['protocolVersion'], '2026-07-28')
+
+    def test_unsupported_version_falls_back(self):
+        self.assertEqual(
+            self._initialize({'protocolVersion': '1999-01-01'})['protocolVersion'],
+            m.PROTOCOL_VERSION)
+
+    def test_absent_or_malformed_params_fall_back(self):
+        for params in ({}, None, 'not-a-dict', {'protocolVersion': 7}):
+            self.assertEqual(self._initialize(params)['protocolVersion'],
+                             m.PROTOCOL_VERSION)
+
+
+class ServerDiscoverTest(unittest.TestCase):
+    """`server/discover` (2026-07-28): initialize's payload, no handshake."""
+
+    def _discover(self, params=None):
+        with mock.patch.object(m, '_send') as send:
+            m._handle_discover(2, params or {})
+        return send.call_args[0][0]['result']
+
+    def test_registered_as_a_method(self):
+        self.assertIs(m._HANDLERS['server/discover'], m._handle_discover)
+
+    def test_returns_server_identity_and_supported_versions(self):
+        result = self._discover()
+        self.assertEqual(result['serverInfo']['name'], 'dashboard')
+        self.assertIn('tools', result['capabilities'])
+        self.assertEqual(result['supportedProtocolVersions'],
+                         ['2024-11-05', '2026-07-28'])
+
+    def test_negotiates_like_initialize(self):
+        self.assertEqual(
+            self._discover({'protocolVersion': '2026-07-28'})['protocolVersion'],
+            '2026-07-28')
+
+    def test_does_not_mutate_the_shared_version_list(self):
+        self._discover()['supportedProtocolVersions'].append('nope')
+        self.assertEqual(m.SUPPORTED_PROTOCOL_VERSIONS,
+                         ['2024-11-05', '2026-07-28'])
 
 
 if __name__ == '__main__':

@@ -197,6 +197,51 @@ class StaticHandlerTests(unittest.TestCase):
         self.assertIn('memory_forget', names)
 
 
+class ProtocolVersionTests(unittest.TestCase):
+    """The version we answer with must follow the client, not a hardcode."""
+
+    def test_supported_version_is_echoed(self):
+        out = mcp._handle_initialize({'protocolVersion': '2026-07-28'})
+        self.assertEqual(out['protocolVersion'], '2026-07-28')
+
+    def test_version_read_from_meta_when_params_lack_it(self):
+        out = mcp._handle_initialize(
+            {'_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28'}})
+        self.assertEqual(out['protocolVersion'], '2026-07-28')
+
+    def test_unsupported_version_falls_back(self):
+        out = mcp._handle_initialize({'protocolVersion': '1999-01-01'})
+        self.assertEqual(out['protocolVersion'], mcp.PROTOCOL_VERSION)
+
+    def test_absent_or_malformed_params_fall_back(self):
+        for params in ({}, None, 'not-a-dict', {'protocolVersion': 7}):
+            self.assertEqual(mcp._handle_initialize(params)['protocolVersion'],
+                             mcp.PROTOCOL_VERSION)
+
+
+class ServerDiscoverTests(unittest.TestCase):
+    """`server/discover` (2026-07-28): initialize's payload, no handshake."""
+
+    def test_registered_as_a_method(self):
+        self.assertIs(mcp._METHODS['server/discover'], mcp._handle_discover)
+
+    def test_returns_server_identity_and_supported_versions(self):
+        out = mcp._handle_discover({})
+        self.assertEqual(out['serverInfo'], mcp.SERVER_INFO)
+        self.assertIn('tools', out['capabilities'])
+        self.assertEqual(out['supportedProtocolVersions'],
+                         ['2024-11-05', '2026-07-28'])
+
+    def test_negotiates_like_initialize(self):
+        out = mcp._handle_discover({'protocolVersion': '2026-07-28'})
+        self.assertEqual(out['protocolVersion'], '2026-07-28')
+
+    def test_does_not_mutate_the_shared_version_list(self):
+        mcp._handle_discover({})['supportedProtocolVersions'].append('nope')
+        self.assertEqual(mcp.SUPPORTED_PROTOCOL_VERSIONS,
+                         ['2024-11-05', '2026-07-28'])
+
+
 class DispatchTests(unittest.TestCase):
     def _capture(self, req):
         with mock.patch.object(mcp, '_send') as send:

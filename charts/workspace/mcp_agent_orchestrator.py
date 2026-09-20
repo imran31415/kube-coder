@@ -824,16 +824,52 @@ TOOLS: Dict[str, Any] = {
 # MCP dispatch
 # ───────────────────────────────────────────────────────────────────────────
 
+PROTOCOL_VERSION = '2024-11-05'
+SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2026-07-28']
+
+
+def _negotiate_protocol_version(params: Any) -> str:
+    """Echo back the protocol version the client asked for, when we speak it.
+
+    The 2026-07-28 revision dropped the initialize handshake and moves the
+    version onto `_meta`, so read both spellings. Anything we don't speak —
+    or nothing at all — falls back to the version every shipping client
+    (Claude Code, Codex, OpenCode, Ante) negotiates today.
+    """
+    want = None
+    if isinstance(params, dict):
+        want = params.get('protocolVersion')
+        if not isinstance(want, str):
+            meta = params.get('_meta')
+            if isinstance(meta, dict):
+                want = meta.get('io.modelcontextprotocol/protocolVersion')
+    if isinstance(want, str) and want in SUPPORTED_PROTOCOL_VERSIONS:
+        return want
+    return PROTOCOL_VERSION
+
+
+def _server_descriptor(params: Any) -> Dict[str, Any]:
+    """The identity payload shared by `initialize` and `server/discover`."""
+    return {
+        'protocolVersion': _negotiate_protocol_version(params),
+        'capabilities': {'tools': {}},
+        'serverInfo': {'name': 'agent-orchestrator', 'version': '0.1.0'},
+    }
+
+
 def _handle_initialize(id_val: Any, params: Any) -> None:
-    _send({
-        'jsonrpc': '2.0',
-        'id': id_val,
-        'result': {
-            'protocolVersion': '2024-11-05',
-            'capabilities': {'tools': {}},
-            'serverInfo': {'name': 'agent-orchestrator', 'version': '0.1.0'},
-        },
-    })
+    _send({'jsonrpc': '2.0', 'id': id_val, 'result': _server_descriptor(params)})
+
+
+def _handle_discover(id_val: Any, params: Any) -> None:
+    """`server/discover` (2026-07-28) — initialize's payload, no handshake.
+
+    The stateless protocol has no handshake to carry the version, so the
+    result also lists every version this server speaks.
+    """
+    result = _server_descriptor(params)
+    result['supportedProtocolVersions'] = list(SUPPORTED_PROTOCOL_VERSIONS)
+    _send({'jsonrpc': '2.0', 'id': id_val, 'result': result})
 
 
 def _handle_list_tools(id_val: Any, params: Any) -> None:
@@ -870,6 +906,7 @@ def _handle_call_tool(id_val: Any, params: Any) -> None:
 
 _HANDLERS = {
     'initialize': _handle_initialize,
+    'server/discover': _handle_discover,
     'listTools': _handle_list_tools,
     'tools/list': _handle_list_tools,
     'tools/call': _handle_call_tool,
@@ -896,10 +933,14 @@ def main() -> int:
         method = msg.get('method', '')
         id_val = msg.get('id')
         params = msg.get('params')
+        # Notifications (no id, e.g. notifications/initialized) need no reply —
+        # JSON-RPC forbids responding to them at all.
+        if id_val is None and method.startswith('notifications/'):
+            continue
         handler = _HANDLERS.get(method)
         if handler:
             handler(id_val, params)
-        else:
+        elif id_val is not None:
             _error(id_val, -32601, f'Method not found: {method}')
     _log('exiting on EOF')
     return 0
