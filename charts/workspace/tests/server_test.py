@@ -36,7 +36,11 @@ sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 
 sys.path.insert(0, HERE)
-from live_state import isolate_feed_and_push  # noqa: E402
+from live_state import (  # noqa: E402
+    isolate_feed_and_push,
+    isolate_provider_keys,
+    silence_prompt_delivery,
+)
 
 
 def _fake_tmux_alive(*args, **kwargs):
@@ -76,6 +80,9 @@ class CompletionHookTests(unittest.TestCase):
         # A reconcile that finds the session gone emits a "Task finished" Feed
         # item — keep it out of the live Feed (#685).
         isolate_feed_and_push(self)
+        # These tests call the real create_task, whose prompt-delivery thread
+        # outlives them and then shells out to the developer's own tmux.
+        silence_prompt_delivery(self)
         self.tmpdir = tempfile.mkdtemp(prefix='kctest-')
         self._orig_tasks_dir = server.ClaudeTaskManager.TASKS_DIR
         self._orig_token_file = server.ClaudeTaskManager.TOKEN_FILE
@@ -241,6 +248,15 @@ class AssistantSelectionTests(unittest.TestCase):
         self._orig_token_file = server.ClaudeTaskManager.TOKEN_FILE
         server.ClaudeTaskManager.TASKS_DIR = self.tmpdir
         server.ClaudeTaskManager.TOKEN_FILE = os.path.join(self.tmpdir, '.api-token')
+        # Keys set in Settings count exactly as much as pod env here
+        # (`ClaudeTaskManager._provider_keys`), and that store is a file on the
+        # PVC — so on a workspace whose owner has an OpenRouter key, the two
+        # "disabled falls back to claude" assertions below read that key and
+        # failed, while CI (no such file) passed. Redirect it first: these
+        # tests are about the ENV gating, not about who is running them.
+        isolate_provider_keys(self)
+        # Two of these create a real task to check which assistant it picked.
+        silence_prompt_delivery(self)
         # Defend against test interference: snapshot then clear the env vars
         # the resolver looks at.
         self._saved_env = {k: os.environ.pop(k) for k in (
@@ -1761,6 +1777,7 @@ class WebhookReceiverTests(unittest.TestCase):
 
     def setUp(self):
         isolate_feed_and_push(self)  # a fired webhook emits a Feed item (#685)
+        silence_prompt_delivery(self)  # a fired webhook creates a real task
         self.tmpdir = tempfile.mkdtemp(prefix='kctest-recv-')
         self.tasks_dir = os.path.join(self.tmpdir, 'tasks')
         self.webhooks_dir = os.path.join(self.tmpdir, 'webhooks')

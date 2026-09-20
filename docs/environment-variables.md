@@ -99,6 +99,7 @@ This document describes all environment variables used by kube-coder components.
 | `EXPO_ACCESS_TOKEN` | - | Only needed when the Expo project has enhanced push security on. Set from `push.expoAccessToken`. |
 | `KC_FEED_DIR` | `/home/dev/.claude-feed` | Where the Feed log and read/dismiss state live. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test cannot write the live Feed. Leave it unset in every deployment, or that workspace starts with an empty Feed. |
 | `KC_PUSH_DIR` | `/home/dev/.claude-push` | Where registered phone tokens and the sent-alert ledger live. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test cannot page a real phone. Leave it unset in every deployment, or that workspace forgets every registered phone. |
+| `KC_PROVIDER_KEYS_FILE` | `/home/dev/.claude-tasks/provider-keys.json` | Where the keys a user sets in **Settings → Provider keys** are stored (and read from by `hypervisor_session` too). Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir, so a test can neither read the owner's real API keys (the assistant list is gated on them, which made two tests fail on a keyed workspace and pass in CI) nor overwrite them. Leave it unset in every deployment, or that workspace forgets every self-service key. |
 
 ### Dashboard & UI
 | Variable | Default | Description |

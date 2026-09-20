@@ -125,7 +125,13 @@ HYPERVISOR_DIR = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'hypervisor')
 # so a key set in Settings takes effect on the next turn with no restart. This
 # module can't import server.py (server imports us), so we read the same file
 # directly — keep _PROVIDER_KEY_VARS in sync with ProviderKeysManager.ALLOWED.
-_PROVIDER_KEYS_FILE = os.path.join(WORKSPACE_HOME, '.claude-tasks', 'provider-keys.json')
+# `$KC_PROVIDER_KEYS_FILE` overrides the path, exactly as it does for
+# server.py's ProviderKeysManager — the two read the same file and must agree
+# about where it is, or a test that redirects one still reads the workspace's
+# real keys through the other.
+_PROVIDER_KEYS_FILE = (
+    (os.environ.get('KC_PROVIDER_KEYS_FILE') or '').strip()
+    or os.path.join(WORKSPACE_HOME, '.claude-tasks', 'provider-keys.json'))
 _PROVIDER_KEY_VARS = ('OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY',
                       'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENCODE_API_KEY')
 

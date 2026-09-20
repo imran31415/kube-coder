@@ -500,12 +500,16 @@ memory-db-copy: ## Copy the live memory DB to a throwaway path (DEST=<path> opti
 # pointing $KC_FEED_DIR / $KC_PUSH_DIR at a throwaway directory for the run.
 python-tests: ## Run server.py unit + integration tests
 	tmp=$$(mktemp -d) && cd charts/workspace && \
-	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push python3 -m unittest discover -s tests -p '*_test.py' -v; \
+	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
+	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
+	  python3 -m unittest discover -s tests -p '*_test.py' -v; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
 python-coverage: ## Run Python tests with coverage report
 	tmp=$$(mktemp -d) && cd charts/workspace && \
-	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html; \
+	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
+	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
+	  coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
 dashboard-web-coverage: dashboard-web-install ## Run SPA tests with coverage report

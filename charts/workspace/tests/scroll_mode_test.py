@@ -60,20 +60,41 @@ class ScrollModeTests(unittest.TestCase):
         cls.httpd.server_close()
         server.AUTH_MODE = cls._orig_auth_mode
 
-    def _call(self, body):
-        """POST the body and return (status, the tmux argv that was run)."""
-        captured = {}
+    SESSION = 'sess-T'
+
+    def _call(self, body, noise=()):
+        """POST the body and return (status, the tmux argv run for OUR session).
+
+        Scoped to `SESSION` rather than "whatever ran last", because
+        `mock.patch('server.subprocess.run')` is process-wide and this suite
+        does not run alone. A task-creating test elsewhere leaves a
+        prompt-delivery thread polling `tmux capture-pane` on ITS session, and
+        that call used to land here — the assertion then compared this
+        endpoint's argv against a stray `['tmux', 'capture-pane', '-p', '-t',
+        'kube-coder-…']` and failed, but only in a full-suite run. The thread
+        is bounded now (`PANE_GONE_STRIKES`) and silenced in the tests that
+        caused it; this keeps the assertion honest regardless.
+        """
+        calls = []
 
         def fake_run(cmd, *a, **k):
-            captured['cmd'] = cmd
+            calls.append(cmd)
             return mock.Mock(returncode=0, stdout='', stderr='')
+
+        def get_task(_task_id):
+            # `noise` stands in for another test's leaked thread firing INSIDE
+            # the patched window — the failure mode this scoping exists for.
+            for argv in noise:
+                server.subprocess.run(argv)
+            return {'tmux_session': self.SESSION}
 
         with mock.patch('server.subprocess.run', side_effect=fake_run), \
              mock.patch.object(server.ClaudeTaskManager, 'get_task',
-                               return_value={'tmux_session': 'sess-T'}):
+                               side_effect=get_task):
             with _post(f'http://127.0.0.1:{self.port}/api/claude/tasks/T/scroll-mode',
                        body) as r:
-                return r.status, captured.get('cmd')
+                mine = [c for c in calls if self.SESSION in c]
+                return r.status, (mine[-1] if mine else None)
 
     def test_enter_uses_copy_mode(self):
         st, cmd = self._call({'action': 'enter'})
@@ -100,6 +121,21 @@ class ScrollModeTests(unittest.TestCase):
     def test_line_count_is_clamped(self):
         _, cmd = self._call({'action': 'up', 'lines': 9999})
         self.assertEqual(cmd[-2:], ['40', 'scroll-up'])
+
+    def test_a_stray_tmux_call_cannot_confuse_the_assertion(self):
+        """Another test's leaked prompt-delivery thread used to land here.
+
+        `mock.patch('server.subprocess.run')` is process-wide, so a capture
+        fired by a thread that outlived a different test was recorded as if it
+        were this endpoint's work — and the suite failed on an argv nothing in
+        this file ever ran.
+        """
+        st, cmd = self._call(
+            {'action': 'up', 'lines': 2},
+            noise=[['tmux', 'capture-pane', '-p', '-t', 'kube-coder-other']])
+        self.assertEqual(st, 200)
+        self.assertEqual(
+            cmd, ['tmux', 'send-keys', '-t', 'sess-T', '-X', '-N', '2', 'scroll-up'])
 
     def test_invalid_action_rejected(self):
         try:
