@@ -269,6 +269,49 @@ class DispatchTests(TasksDirTestCase):
         result = send.call_args[0][0]['result']
         self.assertEqual(result['serverInfo']['name'], 'agent-orchestrator')
 
+    def test_initialize_echoes_a_supported_protocol_version(self):
+        with mock.patch.object(orch, '_send') as send:
+            orch._handle_initialize(1, {'protocolVersion': '2026-07-28'})
+        self.assertEqual(send.call_args[0][0]['result']['protocolVersion'],
+                         '2026-07-28')
+
+    def test_initialize_reads_the_version_from_meta(self):
+        params = {'_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28'}}
+        with mock.patch.object(orch, '_send') as send:
+            orch._handle_initialize(1, params)
+        self.assertEqual(send.call_args[0][0]['result']['protocolVersion'],
+                         '2026-07-28')
+
+    def test_initialize_falls_back_on_unsupported_or_absent_version(self):
+        for params in ({'protocolVersion': '1999-01-01'}, {}, None, 'not-a-dict'):
+            with mock.patch.object(orch, '_send') as send:
+                orch._handle_initialize(1, params)
+            self.assertEqual(send.call_args[0][0]['result']['protocolVersion'],
+                             orch.PROTOCOL_VERSION)
+
+    def test_discover_returns_identity_and_supported_versions(self):
+        with mock.patch.object(orch, '_send') as send:
+            orch._handle_discover(2, {})
+        result = send.call_args[0][0]['result']
+        self.assertEqual(result['serverInfo']['name'], 'agent-orchestrator')
+        self.assertEqual(result['supportedProtocolVersions'],
+                         ['2024-11-05', '2026-07-28'])
+        self.assertEqual(result['protocolVersion'], orch.PROTOCOL_VERSION)
+
+    def test_discover_is_registered_and_negotiates(self):
+        self.assertIs(orch._HANDLERS['server/discover'], orch._handle_discover)
+        with mock.patch.object(orch, '_send') as send:
+            orch._handle_discover(2, {'protocolVersion': '2026-07-28'})
+        self.assertEqual(send.call_args[0][0]['result']['protocolVersion'],
+                         '2026-07-28')
+
+    def test_discover_does_not_mutate_the_shared_version_list(self):
+        with mock.patch.object(orch, '_send') as send:
+            orch._handle_discover(2, {})
+        send.call_args[0][0]['result']['supportedProtocolVersions'].append('nope')
+        self.assertEqual(orch.SUPPORTED_PROTOCOL_VERSIONS,
+                         ['2024-11-05', '2026-07-28'])
+
     def test_list_tools_returns_schemas(self):
         with mock.patch.object(orch, '_send') as send:
             orch._handle_list_tools(2, {})
@@ -322,6 +365,20 @@ class MainLoopTests(unittest.TestCase):
     def test_unknown_method_errors(self):
         _, _, err = self._run_main([json.dumps({'id': 9, 'method': 'nope'})])
         self.assertEqual(err.call_args[0][1], -32601)
+
+    def test_notification_without_id_gets_no_response(self):
+        # JSON-RPC forbids replying to a notification; `notifications/
+        # initialized` is the one every client sends right after initialize.
+        rc, send, err = self._run_main(
+            [json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'})])
+        self.assertEqual(rc, 0)
+        send.assert_not_called()
+        err.assert_not_called()
+
+    def test_unknown_method_without_id_gets_no_response(self):
+        _, send, err = self._run_main([json.dumps({'method': 'notifications/cancelled'})])
+        send.assert_not_called()
+        err.assert_not_called()
 
     def test_blank_and_invalid_lines_skipped(self):
         rc, send, err = self._run_main(['', '   ', 'not json', '[1,2,3]'])
