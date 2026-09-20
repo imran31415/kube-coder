@@ -31,10 +31,17 @@ CI, which has no such file. The write direction is the worse one — a test that
 calls `ProviderKeysManager.set` without redirecting `KEYS_FILE` overwrites real
 API keys.
 
+`isolate_trigger_runs` is the same idea for the THIRD live store: the per-trigger
+run ledger (#91). Every webhook fire, cron fire and page-watch check now appends
+one entry, so a test that exercises those handlers writes the workspace owner's
+real trigger history — and once a suite starts asserting on the ledger, entries
+left behind by an earlier test are also a source of cross-test flake.
+
 The Makefile's python-tests target is the second line of defence: it points
-KC_FEED_DIR / KC_PUSH_DIR / KC_PROVIDER_KEYS_FILE at a throwaway directory for
-the whole run, so a test that forgets these helpers still cannot reach the live
-Feed, a phone, or the user's keys.
+KC_FEED_DIR / KC_PUSH_DIR / KC_PROVIDER_KEYS_FILE / KC_TRIGGER_RUNS_DIR at a
+throwaway directory for the whole run, so a test that forgets these helpers
+still cannot reach the live Feed, a phone, the user's keys, or their trigger
+history.
 """
 
 from __future__ import annotations
@@ -110,6 +117,24 @@ def isolate_provider_keys(tc, keys=None):
         patcher.start()
         tc.addCleanup(patcher.stop)
     return path
+
+
+def isolate_trigger_runs(tc):
+    """Point the per-trigger run ledger at a fresh temp dir for the lifetime of
+    test case `tc`, and return that dir (#91).
+
+    Any test that reaches a webhook/cron/page-watch fire handler needs this:
+    those handlers append one ledger entry per call, and with the default path
+    that is the workspace owner's own trigger history. It is also what makes
+    ledger assertions deterministic — `list_runs` reads whatever is on disk, so
+    a previous test's entries would count toward this one's totals.
+    """
+    root = tempfile.mkdtemp(prefix='kctest-trigruns-')
+    tc.addCleanup(shutil.rmtree, root, True)
+    patcher = mock.patch.object(server.TriggerRunsManager, 'RUNS_DIR', root)
+    patcher.start()
+    tc.addCleanup(patcher.stop)
+    return root
 
 
 def silence_prompt_delivery(tc):

@@ -142,6 +142,19 @@ the scheduled check is still running, you are told a check is already in
 progress rather than a second one starting — one change must never
 produce two builds.
 
+## Run history
+
+The row's **Runs** button opens this watch's check ledger. Unlike a
+webhook or a cron, a page watch records *every* check — including the
+ones that found no change — because "it checked on time and the page had
+not moved" is the usual answer to "why didn't my watch fire?". Entries
+read `nothing to do` with a reason of `page had not changed`, `first
+check - recorded a baseline`, or `a check was already running`; a real
+fire reads `task started` and links to the task.
+
+A failed fetch lands there too, as `error` with the reason the page could
+not be read — which is where to look before assuming the watch is broken.
+
 ## Common failures
 
 - **`that address is not publicly reachable`** — the URL points at

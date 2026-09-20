@@ -23,6 +23,7 @@ import { EmptyState } from '../../components/primitives/EmptyState';
 import { Drawer } from '../../components/Drawer';
 import { BottomSheet } from '../../components/BottomSheet';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { TriggerRuns } from './TriggerRuns';
 import { pushToast } from '../../store/ui';
 import './triggers.css';
 
@@ -156,6 +157,10 @@ const KIND_META: Record<
 
 function TriggerRow({ t }: { t: Trigger }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Collapsed by default, and mounted only while open: the ledger is a
+  // per-trigger fetch, and opening the Triggers tab must not turn into one
+  // request per row (#91).
+  const [showRuns, setShowRuns] = useState(false);
   const meta = KIND_META[t.kind] ?? KIND_META.webhook;
   const tone = t.suspended ? 'warn' : meta.tone;
   const label = t.suspended ? `${meta.label} · paused` : meta.label;
@@ -166,6 +171,16 @@ function TriggerRow({ t }: { t: Trigger }) {
         <span class="trig-row-id mono">{t.id}</span>
         {t.schedule && <span class="trig-row-sched mono">{t.schedule}</span>}
         <div class="trig-row-actions">
+          {/* Outside MutatorOnly: reading a trigger's history is not a
+              mutation, and the read-only demo already lists the triggers. */}
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={showRuns}
+            onClick={() => setShowRuns((v) => !v)}
+          >
+            {showRuns ? 'Hide runs' : 'Runs'}
+          </Button>
           <MutatorOnly>
             {/* A paused page-watch refuses the check server-side, so the
                 button says so up front rather than handing back a 409. */}
@@ -235,6 +250,7 @@ function TriggerRow({ t }: { t: Trigger }) {
           {t.timezone && <span> · {t.timezone}</span>}
         </div>
       )}
+      {showRuns && <TriggerRuns t={t} />}
     </article>
   );
 }

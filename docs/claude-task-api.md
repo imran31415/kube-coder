@@ -906,12 +906,26 @@ this is the API reference.
 | `DELETE` | `/oauth/api/webhooks/{id}` | Delete |
 | `POST` | `/oauth/api/webhooks/{id}/test` | Fire as if a real call arrived; bypasses HMAC. Body: `{"payload": {...}}` |
 | `POST` | `/api/webhooks/{id}` | **Inbound receiver** — HMAC-authed, no OAuth. Per-provider signature scheme. |
+| `GET` | `/oauth/api/webhooks/{id}/runs` | Run history, newest first. `?limit=` (default 50, max 200) `&offset=` |
+| `GET` | `/oauth/api/crons/{id}/runs` | Same, for a cron |
+| `GET` | `/oauth/api/page-watches/{id}/runs` | Same, for a page watch |
 
 The receiver returns:
 - `202` with `{task_id, webhook_id, status}` on success
 - `404` for both unknown id and bad signature (identical response to avoid id-enumeration)
 - `409` for a replay (identical signed body within the 5-minute window)
 - `413` for payloads >1 MiB
+
+Every one of those outcomes — including the deliberately vague `404` — is
+recorded in the webhook's run ledger, which is the only place that
+distinguishes "bad signature" from "unknown id". A `runs` response is
+`{runs, total, limit, offset}`; each entry carries `ts`, `type`,
+`trigger_id`, `outcome` (`spawned` / `skipped` / `rejected` / `error`), and,
+where they apply, `reason`, `task_id`, `error`, `source_ip`,
+`forwarded_for`, `signature_verified`, `provider` and `manual`. Payloads and
+rendered prompts are deliberately absent — follow `task_id` for those. The
+ledger is byte-capped per trigger, so `total` counts what is still on disk
+rather than every fire since the beginning.
 
 ### Provider signature reference
 
