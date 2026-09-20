@@ -11,6 +11,7 @@ import {
   stopping,
   chatError,
   selectedAssistant,
+  assistantMissingKey,
   config,
   threads,
   transcriptSource,
@@ -33,6 +34,7 @@ import {
 import { turnWindow, TURN_WINDOW, TURN_WINDOW_STEP } from './transcriptWindow';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
+import { PROVIDER_KEYS_PATH } from '../../util/assistantReady';
 import { withOauthPrefix } from '../../api/client';
 import { previewFile, fileRawUrl, fileViewUrl, downloadFile, type FilePreview } from '../../api/files';
 import {
@@ -878,6 +880,8 @@ export function Chat({
 
   function submit(text?: string) {
     if (blocked) return;
+    // Enter-to-send bypasses the disabled button, so the gate lives here too.
+    if (missingKey) return;
     stopMic(); // sending finalizes dictation — don't keep transcribing into the next draft
     pinnedRef.current = true; // sending your own message re-pins to the bottom
     pinToBottom();
@@ -919,10 +923,17 @@ export function Chat({
     window.addEventListener('focus', refresh);
     return () => window.removeEventListener('focus', refresh);
   }, [cli]);
+  // The agent a NEW chat would open on is installed but has no provider key
+  // (#702). The composer stays typeable — losing a half-written draft to a
+  // missing key would be its own bug — but Send is off and the banner says
+  // which key to save. An OPEN thread is exempt: it exists already, and its
+  // turns surface their own auth errors through chatError.
+  const missingKey = active ? null : assistantMissingKey(cli);
   // Show the thinking indicator while the agent is working, or right after we
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
-  const canSend = !!draft.trim() || attachments.some((a) => a.status === 'ready');
+  const canSend =
+    !missingKey && (!!draft.trim() || attachments.some((a) => a.status === 'ready'));
 
   // New events re-pin, and so does the thinking placeholder appearing or being
   // replaced by the real turn — it is rendered outside `turns`, so on its own
@@ -1191,6 +1202,19 @@ export function Chat({
           <> <a href={routeHref('/settings/providers#providers')} target="_blank" rel="noopener noreferrer">Provider settings</a></>
         )}
       </div>}
+
+      {missingKey && (
+        <div class="hv-banner hv-banner-warn" role="alert">
+          {missingKey}{' '}
+          <a
+            href={routeHref(PROVIDER_KEYS_PATH)}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open provider settings
+          </a>
+        </div>
+      )}
 
       {attachError && (
         <div class="hv-banner hv-banner-error" role="alert">

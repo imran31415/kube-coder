@@ -30,6 +30,12 @@ export interface HypervisorAssistant {
   /** Provider may train on submitted data (Zen free models, #395) — drives the
    *  in-chat data-training disclosure note. */
   trainingDisclosure?: boolean;
+  /** False when the assistant is installed but not authenticated (#702) — still
+   *  listed and selectable, but no turn may be sent until `needs` is saved in
+   *  Settings. Absent is read as ready (older server payloads). */
+  ready?: boolean;
+  /** The provider key a not-ready entry is waiting for, e.g. DEEPSEEK_API_KEY. */
+  needs?: string;
 }
 
 /** One entry in the composer's `/` picker: an invocable skill or a custom

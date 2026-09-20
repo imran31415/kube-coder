@@ -2144,7 +2144,9 @@ class ClaudeTaskManager:
     # exactly the drift the catalog exists to remove — a runtime could be
     # launchable but unlistable, or listed but unlaunchable. Which of these
     # entries a given workspace actually offers is decided by
-    # available_assistants() below, on binary + key presence.
+    # available_assistants() below, on binary presence; a missing provider key
+    # marks the entry not-ready (#702) rather than removing it, so the picker
+    # can say what it needs instead of the option silently vanishing.
     #
     # `trainingDisclosure` stays camelCase because it is wire format: the SPA
     # and the mobile app read it off /api/claude/assistants.
@@ -2186,6 +2188,22 @@ class ClaudeTaskManager:
         out.append(dict(ClaudeTaskManager.ASSISTANTS['ante']))
         # Self-service keys (Settings) count the same as pod-env keys here.
         keys = ClaudeTaskManager._provider_keys()
+
+        def _entry(rid, needs, **extra):
+            """A listed entry that may be installed-but-unauthenticated (#702).
+
+            `needs` is the provider key that makes it launchable. Present →
+            an ordinary ready entry; missing → the same entry carrying
+            ready=False and the variable name, so every picker can render
+            "· needs API key" and a Settings link instead of the entry silently
+            not existing. Only entries that opt in this way can be not-ready:
+            everything else defaults to ready=True below."""
+            entry = dict(ClaudeTaskManager.ASSISTANTS[rid], **extra)
+            if not keys.get(needs):
+                entry['ready'] = False
+                entry['needs'] = needs
+            return entry
+
         # Antigravity — listed only when its `agy` CLI is actually resolvable
         # (older images predate it; /usr/local/bin/agy is a symlink to a PVC path
         # start.sh seeds). Auth is OAuth (`agy` login once in the pod), so there's
@@ -2204,14 +2222,19 @@ class ClaudeTaskManager:
                 ClaudeTaskManager.ASSISTANTS['codex'],
                 model=os.environ.get('KC_CODEX_MODEL', ''),
             ))
-        # DeepSeek Harness — gated on BOTH signals. Binary presence alone is
-        # the right test only for OAuth CLIs (agy, codex); `dsh` authenticates
-        # with an API key, so listing it without one would offer an entry whose
-        # every turn fails with "Authentication Fails". An older image without
-        # the binary simply doesn't list it — nothing else is affected.
-        if shutil.which('dsh') and keys.get('DEEPSEEK_API_KEY'):
-            out.append(dict(
-                ClaudeTaskManager.ASSISTANTS['deepseek-harness'],
+        # DeepSeek Harness — listed on BINARY presence, like agy/codex, and
+        # marked not-ready when the key is missing (#702). Hiding it was worse
+        # than useless: the entry simply vanished with nothing on the page
+        # saying why, so a workspace that had `dsh` installed looked like the
+        # install had failed, and there was no way to discover that a key was
+        # all it wanted. `ready: False` + `needs` keeps the honest half of the
+        # old gate — nothing may LAUNCH it without a key (see
+        # assistant_needs, resolve_assistant and the two create handlers) —
+        # while letting the picker say so out loud. An older image without the
+        # binary still doesn't list it; nothing else is affected.
+        if shutil.which('dsh'):
+            out.append(_entry(
+                'deepseek-harness', 'DEEPSEEK_API_KEY',
                 model=os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL),
             ))
         # LibreFang — listed only when its CLI is actually resolvable (older
@@ -2225,9 +2248,15 @@ class ClaudeTaskManager:
                 ClaudeTaskManager.ASSISTANTS['opencode-openrouter'],
                 model=os.environ.get('KC_OPENROUTER_MODEL', 'anthropic/claude-sonnet-4'),
             ))
-        if keys.get('DEEPSEEK_API_KEY'):
-            out.append(dict(
-                ClaudeTaskManager.ASSISTANTS['opencode-deepseek'],
+        # DeepSeek via OpenCode — same #702 treatment as the harness above, and
+        # for the same reported reason (both DeepSeek entries disappeared
+        # together). The binary check is an OR rather than an AND so a
+        # workspace that already lists this entry cannot lose it: a stored key
+        # keeps it listed exactly as before, and a keyless workspace gains it
+        # (not-ready) only when `opencode` is actually installed.
+        if keys.get('DEEPSEEK_API_KEY') or shutil.which('opencode'):
+            out.append(_entry(
+                'opencode-deepseek', 'DEEPSEEK_API_KEY',
                 model=os.environ.get('KC_DEEPSEEK_MODEL', 'deepseek-chat'),
             ))
         # OpenCode Zen (issue #395) — OpenCode's hosted gateway of free coding
@@ -2251,6 +2280,9 @@ class ClaudeTaskManager:
         # non-empty list; the frontend shows the switcher only then. First entry
         # is the default.
         for a in out:
+            # Wire shape is uniform (#702): every entry carries `ready`, so a
+            # client can test the field rather than "absent means ready".
+            a.setdefault('ready', True)
             a['models'] = ClaudeTaskManager.available_models(a['id'])
             # Reasoning-effort axis (#362): the 5-stop list (empty → SPA hides
             # the selector), the assistant's default, and its native ceiling so
@@ -2267,7 +2299,11 @@ class ClaudeTaskManager:
         default=False. When the configured default isn't in the enabled set
         (e.g. opencode-zen selected but no OPENCODE_API_KEY provisioned) we log
         loudly and fall back to claude instead of silently mis-defaulting."""
-        ids = {a['id'] for a in assistants}
+        # Only a LAUNCHABLE entry may be the default (#702): a not-ready one is
+        # listed for discovery, but flagging it default would seed every picker
+        # — and every client that trusts `default` — with an agent that cannot
+        # run a turn.
+        ids = {a['id'] for a in assistants if a.get('ready', True)}
         target = WORKSPACE_DEFAULT_ASSISTANT
         if target not in ids:
             if target != 'claude':
@@ -2534,6 +2570,35 @@ class ClaudeTaskManager:
         return []
 
     @staticmethod
+    def assistant_needs(requested):
+        """The provider key a LISTED-but-unauthenticated assistant is waiting
+        for, or '' when it is ready (or not listed at all — that case belongs
+        to resolve_assistant's fallback, not to this one).
+
+        Lets a request handler tell the two failures apart: "this workspace
+        cannot run that agent" (fall back) versus "that agent is installed and
+        one key away" (say so, issue #702)."""
+        if not requested:
+            return ''
+        for a in ClaudeTaskManager.available_assistants():
+            if a['id'] == requested:
+                return '' if a.get('ready', True) else (a.get('needs') or '')
+        return ''
+
+    @staticmethod
+    def assistant_not_ready_error(requested):
+        """A user-readable rejection for a not-ready assistant, or None when the
+        request may proceed. The wording is the picker's, so the message a
+        client renders inline and the one the API returns agree."""
+        needs = ClaudeTaskManager.assistant_needs(requested)
+        if not needs:
+            return None
+        label = ClaudeTaskManager.ASSISTANTS.get(requested, {}).get(
+            'label', requested)
+        return (f'{label} needs an API key ({needs}). '
+                'Add it in Settings \u2192 Provider API keys, then try again.')
+
+    @staticmethod
     def resolve_assistant(requested):
         """Validate the caller's choice; fall back to the configured workspace
         default (KC_DEFAULT_ASSISTANT, #395), then claude, on anything unknown
@@ -2541,7 +2606,12 @@ class ClaudeTaskManager:
         CLI clients are free-form so we defend the boundary). Logs loudly on
         every fallback so a mis-provisioned default is visible instead of
         silently reverting to claude."""
-        enabled = {a['id'] for a in ClaudeTaskManager.available_assistants()}
+        # READY entries only. A not-ready assistant (#702) is listed so the
+        # picker can offer it and explain what it needs, but it is not
+        # launchable — a webhook or cron naming one must fall back loudly,
+        # exactly as it did when the entry was hidden outright.
+        enabled = {a['id'] for a in ClaudeTaskManager.available_assistants()
+                   if a.get('ready', True)}
         if requested and requested in enabled:
             return requested
         if requested:
@@ -13988,6 +14058,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if response_url and not ClaudeTaskManager._is_safe_response_url(response_url):
             self.send_json({'error': 'response_url must be http(s)'}, 400)
             return
+        # An EXPLICITLY requested assistant that is listed but unauthenticated
+        # (#702) is rejected here with the missing key named, instead of being
+        # quietly downgraded to the workspace default by resolve_assistant. The
+        # picker already blocks Start build, so reaching this is either a
+        # free-form client or a key cleared between load and submit — both want
+        # to be told which key is missing, not handed a different agent's build.
+        not_ready = ClaudeTaskManager.assistant_not_ready_error(assistant)
+        if not_ready:
+            self.send_json({'error': not_ready}, 400)
+            return
         task = ClaudeTaskManager.create_task(
             prompt,
             workdir=workdir,
@@ -14329,6 +14409,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         # into a project (#358) keeps whatever agent the user chose for it.
         p_assistant, p_model, p_effort = ProjectsManager.defaults_for(
             project_id if persona == 'cto' else '')
+        # Same #702 rule as the build path: a chat the caller explicitly asked
+        # to run on a listed-but-unauthenticated agent is refused with the key
+        # named, rather than opening a thread whose every turn fails with
+        # "Authentication Fails". Only the caller's own choice is rejected — a
+        # stale PROJECT default still degrades through resolve_assistant, since
+        # nobody chose it for this turn.
+        not_ready = ClaudeTaskManager.assistant_not_ready_error(
+            data.get('assistant'))
+        if not_ready:
+            self.send_json({'error': not_ready}, 400)
+            return
         assistant = ClaudeTaskManager.resolve_assistant(
             data.get('assistant') or p_assistant or HYPERVISOR_DEFAULT_ASSISTANT)
         # Per-thread model choice (#308) — validated against the assistant's

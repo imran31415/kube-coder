@@ -65,6 +65,18 @@
   color: var(--text);
 }
 
+/* Installed-but-unauthenticated agent (#702) — sits under the Assistant select
+   and explains why Start build is off. Warning hue, not danger: it is an
+   action the user can take, in one click, via the link inside it. */
+.ntf-needs-key {
+  color: var(--warning-text);
+}
+
+.ntf-needs-key a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 /* Saved prompt templates (#94) — localStorage-backed chips under the prompt. */
 .ntf-templates { display: flex; flex-direction: column; gap: 8px; }
 .ntf-templates-head { display: flex; align-items: center; justify-content: space-between; gap: var(--size-2); }

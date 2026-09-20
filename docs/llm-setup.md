@@ -153,16 +153,33 @@ assistant:
     effort: ""              # optional; low/medium/high/xhigh/max
 ```
 
-The entry appears in the picker only when **both** are true:
+The entry appears in the picker whenever the `dsh` binary resolves on
+PATH. On a workspace image predating the install it is simply absent —
+nothing else is affected.
 
-- `DEEPSEEK_API_KEY` is set, **and**
-- the `dsh` binary resolves on PATH.
+Without `DEEPSEEK_API_KEY`, the entry is still listed, but marked
+**"needs API key"** and not startable (#702): the picker shows the
+marker, selecting it explains which variable to save and links to
+**Settings → Provider API keys**, and Start build / Send stay disabled.
+The API refuses it too — `POST /api/claude/tasks` and
+`POST /api/hypervisor/threads` answer `400` naming the key rather than
+substituting a different agent, and a webhook or cron that names it
+falls back to the workspace default exactly as before.
 
-Binary presence alone is not enough. That is the right signal only for
-the OAuth CLIs (`agy`, `codex`); `dsh` authenticates with an API key, so
-listing it without one would offer an entry whose every turn fails with
-`Authentication Fails`. On a workspace image predating the install, the
-entry is simply absent — nothing else is affected.
+It used to be hidden outright when the key was missing, on the reasoning
+that an entry whose every turn fails with `Authentication Fails` is worse
+than no entry. The reporting in #702 was that the disappearance is worse
+still: the option vanished with nothing on the page saying why, so a
+correct install read as a failed one and there was no way to discover
+that a key was all it wanted. Listing it keeps the discovery; the launch
+gates keep the original guarantee.
+
+Saving the key in Settings makes it usable on the next picker load, with
+no redeploy — `ProviderKeysManager` persists it on the PVC and
+`available_assistants()` merges stored keys with the pod env.
+
+The same applies to the OpenCode → DeepSeek entry (`opencode-deepseek`),
+which shares the key and disappeared alongside it.
 
 ### Wiring
 
