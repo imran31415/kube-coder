@@ -372,6 +372,7 @@ that reads a value back.
 | `GET` | `/api/boards/<id>/runs/<run_id>` | one run, with its per-item table |
 | `POST` | `/api/boards/<id>/runs/<run_id>/stop` | stop claiming new items |
 | `GET` | `/api/boards/<id>/review` | the review queue, grouped by disposition |
+| `GET` | `/api/boards/<id>/standing` | what the board is doing, from local state only |
 | `POST` | `/api/boards/<id>/items/<item_id>/disposition` | the agent reports an outcome |
 | `POST` | `/api/boards/<id>/staged/<item_id>/{approve,reject,send-back,edit}` | the human decides (`send-back` requires a `note`) |
 | `GET` | `/api/boards/templates[/<id>]` | starter connectors — never "verified" |
@@ -399,11 +400,24 @@ caller-supplied item would let an agent name one ticket and write to another.
 |---|---|
 | Two workers pick the same item inside one run | the **lease** — a compare-and-set against a per-board record |
 | Two overlapping runs both claim item 46 | the same lease, which is per **board**, not per run |
+| An operator starts a second run while one is live | the route **refuses it, 409** — see below |
 | A later run re-works something already done | the **processed log**, keyed on `item.id + content_hash` |
 
 That third key is what makes both halves true at once: re-running a board skips
 everything untouched, and an item somebody **edited** comes back into scope
 because its hash changed.
+
+**One live run per board** (#712). The lease means a second run cannot claim
+what the first holds — so what it actually produces is a page of `skipped`
+items, which reads like the board is broken. `POST /runs` answers `409` while a
+run is in flight and names the run in the message; `/board` greys **Start run**
+with the same sentence, so nobody has to click to find out. Two exemptions, and
+only two: the **send-back** round trip, which re-dispatches one item the caller
+has already established no live run holds, and `BoardRunsManager.create(...,
+allow_concurrent=True)`, which nothing reachable from a route passes. "Live"
+means `boards.runs.is_live` — status `running` **and** at least one item not yet
+terminal — so a run whose last item settled, or whose process died under it,
+does not lock the board out of its next run.
 
 **Leases do not expire on a timer.** A TTL has to guess how long work takes,
 and either guess is wrong somewhere — too short frees an item mid-write, too
@@ -506,6 +520,17 @@ An item needing a human emits a waiting `FeedManager` item, which drives both
 the feed row and the topbar waiting badge. `board:<board_id>:<item_id>` links
 deep-link to the card.
 
+A **board worker's own build** links there too (#712). When its build ends and
+the item still has an open staged record, `FeedManager.emit_task_terminal` puts
+`board:<board>:<item>` ahead of `task:<task_id>` on that row — so the chip, and
+the push (`push_notify` sends the first link's ref), land on the decision rather
+than on the transcript. The build stays reachable as the second chip, and when
+nothing was staged — autonomous mode, a clean completion — the build link is all
+there is and all that is offered. A build that has merely *paused* mid-work
+deliberately carries no board link: that row is `waiting=True`, and the
+dashboard's waiting badge counts every waiting row with a `board:` link as an
+item needing a decision.
+
 That ref has **two** colons, and the item id may contain more of them — a
 GitHub GraphQL global id is `I_kwDOA:4102`. Both clients therefore split off
 the board id only and take the rest verbatim: `web/src/routes/feed/FeedItem.tsx`
@@ -518,11 +543,33 @@ to encode them.
 
 **Mobile leads this design.** Approving five staged replies from a phone is the
 realistic workflow; running a board from a phone is not — so `BoardScreen`
-carries the queue and the decisions and nothing else. Decisions go through a
+carries the queue and the decisions, plus the one thing a queue alone cannot
+say: what the board is **doing**. Decisions go through a
 local AsyncStorage queue that drains opportunistically (there is no NetInfo
 dependency, so nothing can react to reconnection) and reuses one `approval_id`
 across every retry. A 409 is terminal in that queue: a stale approval must not
 be retried, because the point of the guard is that a human looks again.
+
+**Where the screen stands** (#712). A board with nothing staged is the normal
+state of a board between runs, and the phone used to render that as one grey
+sentence — reported as "the Board page is empty on iOS". Three things fix it,
+none of which spends a vendor call: the screen polls `/api/boards/<id>/standing`
+and prints the state badge (*Runs in progress · Waiting on you · Idle · Not run
+yet · Needs a credential*) with its detail line above the queue; the board
+picker is shown even when there is only **one** board, because it is the only
+thing naming which tracker these cards belong to; and "no boards connected" is
+its own empty state rather than "nothing to review". The screen also reopens
+the board it was last on (`util/lastBoard.ts`, AsyncStorage), falling back to
+the first board when the remembered one has been disconnected — the dashboard
+does the same through `restoreBoardSelection` and `localStorage`.
+
+![The phone's Board screen: the board it opened on, the picker, and the state banner above the queue](screenshots/board-processor/board-mobile-standing.png)
+
+The state vocabulary is computed **server-side** in `boards/state.py` from local
+files only (run records + staged records), so the phone, the dashboard and the
+run-refusal all call the same situation the same thing. `web/src/store/
+boards.ts` mirrors the five state names for the standing strip it already
+derives client-side (it folds in the item count, which does cost a fetch).
 
 Every control on that screen is at least **44pt** tall (the iOS minimum) and
 carries an `accessibilityLabel`; the drawer shows a count of board items
@@ -734,6 +781,8 @@ cd mobile && npm run typecheck && npm test
 - `tests/boards_review_test.py` — dispositions and the three approval guards
 - `tests/boards_review_api_test.py` — staging, 409-on-stale, replay
 - `tests/boards_api_test.py` — routes, auth, readonly, the allowlist
+- `tests/boards_state_test.py` — the state vocabulary, `/standing` (and that it
+  costs no vendor call), and where a board build's notification lands
 - `tests/board_persona_test.py` — preambles, binding, MCP tool surface
 - `tests/board_fixtures.py` — the worked GitHub / Jira / Linear connectors
 - `tests/boards_ledger_test.py` — append-only, rotation, and that an entry is
@@ -763,6 +812,10 @@ cd mobile && npm run typecheck && npm test
   forms that must fall back to the Feed rather than to half a target
 - `mobile/src/store/boardFocus.test.ts` — the deep-link handoff, and that the
   **second** of two quick taps wins
+- `mobile/src/util/lastBoard.test.ts` — which board the phone reopens on, and
+  the fallback when the remembered one has been disconnected
+- `web/src/routes/board/BoardState.test.tsx` — the remembered board, the state
+  badge's five names, and Start run locked while a run is in flight
 - `mobile/scripts/check-board.mjs` — a **local** Playwright gate (like
   `check-nav.mjs`; neither runs in CI) over the Expo web export: the drawer
   badge, the 44pt targets, the type scale, the send-back modal, and the feed

@@ -10,6 +10,7 @@ import {
   openReviewFor,
   refreshBoards,
   refreshReview,
+  restoreBoardSelection,
   selectBoard,
   selectedBoardId,
   selectedItemId,
@@ -74,20 +75,27 @@ export function BoardRoute() {
   const [connecting, setConnecting] = useState(false);
 
   useEffect(() => {
-    void refreshBoards();
-    startBoardsEvents();
-
     // A feed link or the waiting badge deep-links straight to one item's
     // review card: /board?board=<id>&review=<item_id>. Arriving anywhere else
     // in the queue would make "N waiting" a scavenger hunt.
     const params = new URLSearchParams(window.location.search);
-    const boardId = params.get('board');
+    const deepLinked = params.get('board');
     const reviewItem = params.get('review');
-    if (boardId) {
+    // Applied SYNCHRONOUSLY, before the board list is even back: a deep link
+    // names its board, so it needs nothing the fetch would tell it, and
+    // waiting would show the remembered board's queue first.
+    if (deepLinked) {
       // The queue itself is loaded by the board effect below.
-      void selectBoard(boardId);
+      void selectBoard(deepLinked);
       if (reviewItem !== null) openReviewFor(reviewItem);
     }
+    void refreshBoards().then(() => {
+      // Otherwise pick up where the last visit left off, rather than opening a
+      // picker in front of the one board this workspace has (#712). This needs
+      // the list, so it waits for it — and no-ops if anything is selected.
+      if (!deepLinked) void restoreBoardSelection();
+    });
+    startBoardsEvents();
     return () => stopBoardsEvents();
   }, []);
 
@@ -161,6 +169,24 @@ export function BoardRoute() {
       <section class="board-main">
         <header class="board-topbar">
           <h1>Board</h1>
+          {/* The one-word answer to "what is this board doing", beside the
+              title so it is readable from every tab. The sentence underneath
+              it (the standing strip) says the rest; this is what a glance
+              gets, and its tooltip is the same sentence for a reader who
+              hovers before scrolling (#712). */}
+          {selectedBoardId.value && (
+            <span
+              class={`board-state-badge board-state-badge-${standing.state}`}
+              role="status"
+              title={standing.next || standing.stateLabel}
+              aria-label={`Board state: ${standing.stateLabel}`}
+            >
+              {standing.state === 'running' && (
+                <span class="board-spinner" aria-hidden="true" />
+              )}
+              {standing.stateLabel}
+            </span>
+          )}
           <p class="board-subtitle">
             Items from a tracker this workspace does not own.
           </p>

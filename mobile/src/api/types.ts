@@ -731,6 +731,37 @@ export interface BoardReviewGroup {
   items: BoardReviewItem[];
 }
 
+/**
+ * What a board is DOING right now (#712) — the server's `boards.state`
+ * vocabulary, verbatim. Local reads only on the server side, so the screen may
+ * poll it as often as it polls the review queue.
+ */
+export interface BoardStanding {
+  board_id: string;
+  display_name: string;
+  state:
+    | 'needs_credential'
+    | 'running'
+    | 'awaiting_human'
+    | 'never_run'
+    | 'idle';
+  /** Human label for `state` — shown as the badge. */
+  label: string;
+  /** One sentence of supporting detail under the badge. */
+  detail: string;
+  live: boolean;
+  run_id: string;
+  mode: string;
+  working: number;
+  queued: number;
+  settled: number;
+  run_total: number;
+  awaiting: number;
+  runs: number;
+  can_start_run: boolean;
+  blocked_reason: string;
+}
+
 export interface BoardSummary {
   id: string;
   display_name: string;

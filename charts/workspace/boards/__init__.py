@@ -16,6 +16,9 @@ Three modules, split by purity because that split is what makes this testable:
               nothing is ever rewritten.
 - `runs`    — the run state machine, leases, processed markers and selection.
 - `review`  — dispositions, staged actions and the three approval guards.
+- `state`   — PURE. What a board is DOING (running / waiting on you / idle …),
+              in the one vocabulary the dashboard, the phone and the
+              run-refusal all use.
 - `templates` — PURE data. Starter connectors for GitHub, Jira and Zendesk.
               A template is a starting point, never a verified connector; only
               `test-fetch` earns that word.

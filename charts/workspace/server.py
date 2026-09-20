@@ -77,6 +77,7 @@ try:
     import boards.review
     import boards.runs
     import boards.schema
+    import boards.state
     import boards.store
     import boards.templates
     _BOARDS_AVAILABLE = True
@@ -5590,6 +5591,36 @@ class FeedManager:
     # ── deterministic system emitters (called from known-fact sites) ─────
 
     @staticmethod
+    def _board_review_link(meta):
+        """The approval this build left behind, if there is one (#712).
+
+        A board worker's build ends and the feed row for it linked at the
+        build — so tapping the notification landed on a transcript, when what
+        the build actually produced was a decision waiting to be made. When
+        the item has an OPEN staged record, that approval is the thing the
+        reader wants; the build stays as the second chip for when they want
+        the reasoning. Nothing staged (autonomous mode, a clean completion) and
+        this returns None, which is the "unless that's all that's available"
+        half of the ask.
+        """
+        board_id = (meta or {}).get('board_id') or ''
+        item_id = str((meta or {}).get('board_item_id') or '')
+        if not board_id or not item_id or not _BOARDS_AVAILABLE:
+            return None
+        # Re-checked here even though every writer of this meta validates it:
+        # the board id becomes a DIRECTORY name on the way to the staged book.
+        if not BoardsManager.valid_id(board_id):
+            return None
+        try:
+            record = BoardReviewManager.get(board_id, item_id)
+        except Exception:                       # pragma: no cover - defensive
+            return None
+        if not record or record.get('state') not in boards.review.OPEN_STATES:
+            return None
+        key = record.get('item_key') or item_id
+        return {'label': f'Review {key}', 'ref': f'board:{board_id}:{item_id}'}
+
+    @staticmethod
     def emit_task_terminal(meta, status):
         """A task reached a terminal state. One coalesced item per task."""
         tid = meta.get('task_id')
@@ -5598,12 +5629,19 @@ class FeedManager:
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
         verb = {'completed': 'finished', 'error': 'failed', 'killed': 'was stopped'}.get(
             status, status)
+        # FIRST, when there is one: `push_notify` sends the first ref as the
+        # notification's target, and both clients resolve a `board:` ref to the
+        # item's approval card.
+        review = FeedManager._board_review_link(meta)
+        links = [{'label': 'Open task', 'ref': f'task:{tid}'}]
+        if review:
+            links.insert(0, review)
         return FeedManager.emit(
             'activity',
             f'Task {verb}: {prompt[:80] or tid}',
             source='system:task',
             project_id=FeedManager._project_for_meta(meta),
-            links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
+            links=links,
             dedupe_key=f'task:{tid}:terminal',
         )
 
@@ -5614,6 +5652,12 @@ class FeedManager:
         if not tid:
             return None
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
+        # Deliberately NOT carrying the board approval link that
+        # `emit_task_terminal` carries: this row is `waiting=True`, and the
+        # dashboard's waiting badge counts every waiting row with a `board:`
+        # link as an item needing a decision. A build paused mid-work has not
+        # staged anything yet, and counting it would double-count the one the
+        # agent reports when it does.
         return FeedManager.emit(
             'activity',
             f'Task waiting on you: {prompt[:80] or tid}',
@@ -6405,6 +6449,34 @@ class BoardsManager:
         return out
 
     @classmethod
+    def standing(cls, board_id):
+        """What this board is doing right now — see `boards.state` (#712).
+
+        LOCAL reads only (run records and staged records on the PVC), so the
+        phone may poll it as often as it polls anything else. The dashboard
+        folds in its own item count on top; that one costs a vendor fetch and
+        stays client-side.
+        """
+        cfg = cls.get(board_id)
+        if cfg is None:
+            return None
+        runs = BoardRunsManager.list_runs(board_id)
+        open_records = BoardReviewManager.list_records(board_id, open_only=True)
+        breakdown = {}
+        for rec in open_records:
+            key = rec.get('disposition') or 'unreported'
+            breakdown[key] = breakdown.get(key, 0) + 1
+        out = boards.state.standing(
+            board=boards.schema.public_view(cfg),
+            runs=runs,
+            awaiting=len(open_records),
+            awaiting_breakdown=breakdown,
+        )
+        out['board_id'] = board_id
+        out['display_name'] = cfg.get('display_name') or board_id
+        return out
+
+    @classmethod
     def create_or_update(cls, data, existing_id=None):
         """Validate and persist. Returns `(cfg, error)` — never raises — in the
         same shape as WebhookManager.create_or_update, so route handlers map it
@@ -6744,7 +6816,8 @@ class BoardRunsManager:
     # ── creating a run ─────────────────────────────────────────────────────
 
     @classmethod
-    def create(cls, cfg, data, *, origin='manual', resume=None):
+    def create(cls, cfg, data, *, origin='manual', resume=None,
+               allow_concurrent=False):
         """Select items and start working them. Returns `(run, error)`.
 
         The item listing happens HERE, synchronously, rather than in the driver
@@ -6757,6 +6830,28 @@ class BoardRunsManager:
         could attach an arbitrary note — and a resume prompt — to any run.
         """
         board_id = cfg['id']
+        # One live run per board (#712). Leases are per BOARD, so a second run
+        # started while the first is live cannot claim anything the first
+        # holds: it would dispatch nothing and report a page of `skipped`
+        # items, which reads like the board is broken. Refused here rather
+        # than left to the UI, because the API is reachable from the MCP tool
+        # and from curl.
+        #
+        # `allow_concurrent` is the deliberate exemption, and the send-back
+        # round trip is its caller: that re-dispatches ONE item the caller has
+        # already established no live run holds (see
+        # `BoardReviewManager.resume_item`), and a reviewer sending something
+        # back while the rest of a run is still working is the normal case,
+        # not a conflict. Nothing reachable from a route passes it.
+        live = (next((r for r in cls.list_runs(board_id)
+                      if boards.runs.is_live(r)), None)
+                if not allow_concurrent else None)
+        if live:
+            return None, (f'a run is already in flight on this board '
+                          f'({live.get("id")}). Stop it, or wait for it to '
+                          f'finish — a second run can only skip the items '
+                          f'this one holds.')
+
         select, errors = boards.runs.validate_select(data.get('select'))
         if errors:
             return None, '; '.join(errors[:8])
@@ -7984,7 +8079,7 @@ class BoardReviewManager:
                                # thing standing in the way.
                                'ignore_processed': True},
                 },
-                origin='send_back', resume=resume)
+                origin='send_back', resume=resume, allow_concurrent=True)
         except Exception as e:                  # pragma: no cover - defensive
             print(f'[board-review] resume dispatch raised: {e}', file=sys.stderr)
             return {'dispatched': False,
@@ -12342,6 +12437,11 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self._board_id = m.group(1)
             self.handle_board_review_list()
             return
+        m = re.match(r'^/api/boards/([a-zA-Z0-9_-]+)/standing$', claude_path)
+        if m:
+            self._board_id = m.group(1)
+            self.handle_board_standing()
+            return
         m = re.match(r'^/api/boards/([a-zA-Z0-9_-]+)/runs$', claude_path)
         if m:
             self._board_id = m.group(1)
@@ -13581,6 +13681,18 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json(BoardMetricsManager.for_board(self._board_id))
 
+    def handle_board_standing(self):
+        """The board's overall state in one object (#712).
+
+        Local reads only, so this is the one board endpoint a phone can poll on
+        a 15-second timer without spending anybody's rate limit.
+        """
+        if not self._board_guard():
+            return
+        if self._board_or_404(self._board_id) is None:
+            return
+        self.send_json(BoardsManager.standing(self._board_id) or {})
+
     # ── runs (#588 Phase 4) ────────────────────────────────────────────────
 
     def handle_board_runs_list(self):
@@ -13617,8 +13729,13 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if err:
             # A vendor/credential failure is not the caller's bad request, and
             # 502 vs 400 is the difference between "retry" and "fix your body".
-            status = 502 if err.startswith(('refused for safety', 'no stored',
-                                            'the workspace GitHub App')) else 400
+            # A run already in flight is neither: nothing is wrong with the
+            # request, it just conflicts with the board's current state (#712).
+            if err.startswith('a run is already in flight'):
+                status = 409
+            else:
+                status = 502 if err.startswith(('refused for safety', 'no stored',
+                                                'the workspace GitHub App')) else 400
             self.send_json({'error': err}, status)
             return
         self.send_json(run, 201)

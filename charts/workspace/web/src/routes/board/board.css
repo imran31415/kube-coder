@@ -139,7 +139,33 @@
   padding: var(--size-3) var(--size-4);
   border-bottom: 1px solid var(--border);
 }
-.board-topbar h1 { margin: 0; font-size: var(--text-lg); }
+.board-topbar h1 {
+  margin: 0;
+  font-size: var(--text-lg);
+  display: inline;
+  margin-right: var(--size-2);
+}
+
+/* The board's state in one word (#712). Beside the title rather than in the
+ * standing strip: the strip scrolls with the tab content on a narrow window,
+ * and "is anything happening" is the question asked from every tab. */
+.board-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-1);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--size-2);
+  border: 1px solid var(--border);
+  color: var(--text-subtle);
+  vertical-align: 0.15em;
+  white-space: nowrap;
+}
+.board-state-badge-running { color: var(--accent); border-color: var(--accent); }
+.board-state-badge-awaiting_human { color: var(--warn); border-color: var(--warn); }
+.board-state-badge-needs_credential { color: var(--danger); border-color: var(--danger); }
 .board-subtitle {
   margin: var(--size-1) 0 0;
   color: var(--text-subtle);
