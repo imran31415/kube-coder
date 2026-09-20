@@ -99,7 +99,7 @@ _C_RESET = "\033[0m"
 def _short(s: str, limit: int = 600) -> str:
     s = s.rstrip("\n")
     if len(s) > limit:
-        return s[:limit] + f"…[+{len(s) - limit}b]"
+        return s[:limit] + f"...[+{len(s) - limit}b]"
     return s
 
 
@@ -118,13 +118,13 @@ def emit_event(event: dict):
 
 def emit_user_text(text: str):
     emit_event({"type": "user", "message": {"content": [{"type": "text", "text": text}]}})
-    _pretty(f"\n{_C_USER}▷ you{_C_RESET}  {text.strip()}")
+    _pretty(f"\n{_C_USER}> you{_C_RESET}  {text.strip()}")
 
 
 def emit_assistant_text(text: str):
     emit_event({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
     if text.strip():
-        _pretty(f"{_C_BOLD}◇ assistant{_C_RESET}  {text.strip()}")
+        _pretty(f"{_C_BOLD}* assistant{_C_RESET}  {text.strip()}")
 
 
 def emit_tool_use(name: str, args: dict):
@@ -132,7 +132,7 @@ def emit_tool_use(name: str, args: dict):
         {"type": "tool_use", "name": name, "input": args},
     ]}})
     args_short = json.dumps(args, ensure_ascii=False)
-    _pretty(f"{_C_TOOL}⚒ {name}{_C_RESET}  {_C_DIM}{_short(args_short, 240)}{_C_RESET}")
+    _pretty(f"{_C_TOOL}$ {name}{_C_RESET}  {_C_DIM}{_short(args_short, 240)}{_C_RESET}")
 
 
 def emit_tool_result(name: str, result: str):
@@ -143,13 +143,13 @@ def emit_tool_result(name: str, result: str):
     colour = _C_ERR if is_err else _C_DIM
     body = _short(result, 600)
     indented = body.replace("\n", "\n   ")
-    _pretty(f"{colour}↳ {indented}{_C_RESET}")
+    _pretty(f"{colour}-> {indented}{_C_RESET}")
 
 
 def emit_final(text: str):
     emit_event({"type": "result", "result": text})
     if text.strip():
-        _pretty(f"{_C_DONE}✓ {text.strip()}{_C_RESET}")
+        _pretty(f"{_C_DONE}= {text.strip()}{_C_RESET}")
 
 
 # ───────────────────────── Tool implementations ─────────────────────────
@@ -161,7 +161,7 @@ def _truncate(s: str) -> str:
     if len(s) <= TOOL_OUTPUT_CAP:
         return s
     head = s[: TOOL_OUTPUT_CAP - 200]
-    return head + f"\n…[truncated {len(s) - len(head)} bytes]"
+    return head + f"\n...[truncated {len(s) - len(head)} bytes]"
 
 
 def tool_bash(args: dict) -> str:
@@ -606,15 +606,15 @@ def run_once(prompt: str, base_url: str, api_key: str, model: str, messages=None
 
 
 REPL_BANNER_BOTTOM = (
-    f"\n{_C_DIM}─── kc-harness "
-    "──────────────────────────────────────────────────────"
+    f"\n{_C_DIM}--- kc-harness "
+    "------------------------------------------------------"
     f"\nNext prompt? (Ctrl-D / /exit to quit){_C_RESET}\n"
 )
 
 
 def _startup_banner(base_url: str, model: str) -> str:
     return (
-        f"{_C_BOLD}╭─ kc-harness ─╮{_C_RESET}\n"
+        f"{_C_BOLD}+- kc-harness -+{_C_RESET}\n"
         f"{_C_DIM}  endpoint  {_C_RESET}{base_url}\n"
         f"{_C_DIM}  model     {_C_RESET}{model}\n"
         f"{_C_DIM}  tools     {_C_RESET}{', '.join(TOOLS.keys())}\n"
@@ -638,7 +638,7 @@ def main():
         elif a == "--once" and argv:
             one_shot_prompt = argv.pop(0)
         elif a in ("-h", "--help"):
-            sys.stderr.write(__doc__ or "kc-harness — see source for usage.\n")
+            sys.stderr.write(__doc__ or "kc-harness - see source for usage.\n")
             return
         else:
             sys.stderr.write(f"kc-harness: unknown arg {a!r}\n")
