@@ -8172,7 +8172,15 @@ class BoardRunsManager:
         if resume:
             task_id = cls._resume_in_place(resume)
             if task_id:
-                cls._set_item(run['id'], row['id'], resume_tier='followup')
+                # The agent keeps working in the folder it already has, so the
+                # row names that worktree (#701) — or the Runs panel shows no
+                # branch for the one tier that never calls create_task.
+                prior = resume.get('worktree') or {}
+                extra = ({'worktree': {k: prior.get(k) for k in
+                                       ('slug', 'branch', 'path')}}
+                         if prior.get('slug') else {})
+                cls._set_item(run['id'], row['id'], resume_tier='followup',
+                              **extra)
                 return task_id, ''
 
         prompt = (cls._resume_prompt(cfg, row, resume) if resume

@@ -471,6 +471,22 @@ class SendBackTests(_Base):
         self.assertEqual(len(self.created), launches)
         self.assertEqual(self._row(run)['resume_tier'], 'followup')
 
+    def test_tier_1_after_the_run_ended_names_the_worktree_on_the_row(self):
+        # Found live: the run had finished but the agent's REPL was still
+        # open, so the send-back run reached it in place — and its row had no
+        # worktree, so the Runs panel showed no branch for that item.
+        _run, task, wt = self._worked()
+        launches = len(self.created)
+        with mock.patch.object(CTM, 'send_followup',
+                               lambda t, p, submit=True: ({'task_id': t}, None)):
+            status, body = self._send_back()
+            self.assertEqual(status, 200, body)
+            resume_run = self._dispatch_resume(body)
+        row = self._row(resume_run)
+        self.assertEqual(len(self.created), launches)
+        self.assertEqual((row['resume_tier'], row['task_id']), ('followup', task))
+        self.assertEqual(row['worktree'], {k: wt[k] for k in ('slug', 'branch', 'path')})
+
     def test_it_still_isolates_after_the_prior_run_record_is_pruned(self):
         run, _task, wt = self._worked()
         RM._run_record(run['id']).delete()
