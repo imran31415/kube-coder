@@ -8263,6 +8263,11 @@ class BoardRunsManager:
                    'worktree_slug': prior['slug']}
             if prior.get('base_sha'):
                 out['base_sha'] = prior['base_sha']
+                # The recorded commit decides where it starts; the ref it came
+                # from is kept as its label, so a rebuilt worktree still reads
+                # "from origin/main", not "from <40-hex id>".
+                if prior.get('base_ref'):
+                    out['base_ref'] = prior['base_ref']
             return out
         if run.get('isolate') and run.get('workdir'):
             out = {'isolate': True, 'workdir': run['workdir'],

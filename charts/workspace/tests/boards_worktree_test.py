@@ -540,6 +540,9 @@ class SendBackTests(_Base):
         self.assertEqual(new['path'], wt['path'])
         self.assertTrue(os.path.exists(os.path.join(wt['path'], 'fix.py')))
         self.assertEqual(new['base_sha'], wt['base_sha'])
+        # Found live: the rebuilt worktree was labelled with its raw commit id
+        # ("from c19043d4…40 hex… @ c19043d") instead of what it started from.
+        self.assertEqual(new['base_ref'], wt['base_ref'])
 
     def test_an_unreachable_live_agent_is_ended_so_the_rework_can_start(self):
         run = self._isolated_run()
