@@ -459,6 +459,34 @@ class SendBackTests(_Base):
         self.assertEqual(self.created[-1]['resume_session_id'], session)
         self.assertEqual(self._row(resume_run)['resume_tier'], 'session')
 
+    def test_a_second_send_back_resumes_the_same_conversation_again(self):
+        # Found live: a resumed Build records the conversation it reopened as
+        # `resumed_session_id` (so its spend is not counted twice), and the
+        # next send-back read only `claude_session_id` — so the second round
+        # trip on one ticket fell to a fresh start and lost the agent's context.
+        dead = lambda t, p, submit=True: (None, 'Session is no longer running')
+        with mock.patch.object(CTM, '_claude_supports_session_id', staticmethod(lambda: True)), \
+                mock.patch.object(CTM, '_claude_supports_resume', staticmethod(lambda: True)), \
+                mock.patch.object(CTM, 'send_followup', dead):
+            _run, task, wt = self._worked()
+            session = self._meta(task)['claude_session_id']
+            _s, body = self._send_back()
+            first = self._dispatch_resume(body)
+            self.assertEqual(self._row(first)['resume_tier'], 'session')
+            self.assertEqual(self._stage_comment('Now with the March refund.')[0], 202)
+            self._report()
+            RM._finish(first['id'], 'done')
+            self._listing()
+            status, body = self._req(
+                'POST', f'/api/boards/{BOARD}/staged/46/send-back',
+                {'approval_id': 'b2c3d4e5-f6a7-4811-9900-bbccddeeff00',
+                 'note': 'and say which account it went to'})
+            self.assertEqual(status, 200, body)
+            second = self._dispatch_resume(body)
+        self.assertEqual(self._row(second)['resume_tier'], 'session')
+        self.assertEqual(self.created[-1]['resume_session_id'], session)
+        self.assertEqual(self.created[-1]['worktree_slug'], wt['slug'])
+
     def test_tier_1_talks_to_the_live_agent_in_its_own_folder(self):
         run = self._isolated_run()
         self._stage_comment()

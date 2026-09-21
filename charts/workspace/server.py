@@ -9158,7 +9158,13 @@ class BoardReviewManager:
         resume = {
             'note': note,
             'task_id': task_id,
-            'claude_session_id': (meta or {}).get('claude_session_id') or '',
+            # A Build that was itself a resume names the conversation it
+            # reopened as `resumed_session_id` (it claims no id of its own, so
+            # spend is not counted twice). That is still the conversation to
+            # resume — without it a second send-back of one ticket starts over.
+            'claude_session_id': ((meta or {}).get('claude_session_id')
+                                  or (meta or {}).get('resumed_session_id')
+                                  or ''),
             'prior_reason': record.get('reason') or '',
             'from_run_id': record.get('run_id') or '',
             # Where the original Build ran (#701). Taken from its task.json,
