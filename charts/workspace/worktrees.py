@@ -170,6 +170,25 @@ def _git_env():
     return env
 
 
+def launch_writer(workdir, argv, *, runner=None, wt_root=None, **kwargs):
+    """Serialize managed writer launch with publication and cleanup.
+
+    Task metadata must be on disk before launching, so publication can see
+    the session after this lock is released. Unmanaged paths cost no lock.
+    """
+    from pathlib import Path
+    path = Path(os.path.realpath(workdir or '/home/dev'))
+    managed = next((p for p in (path, *path.parents) if (p / MANIFEST).is_file()), None)
+    run = runner or _RUN
+    if managed is None:
+        return run(argv, **kwargs)
+    with locked(wt_root):
+        manifest = read_manifest(str(managed))
+        if not manifest or manifest.get('publication'):
+            return subprocess.CompletedProcess(argv, 1, '', 'Worktree publication is in progress; retry after it finishes.')
+        return run(argv, **kwargs)
+
+
 def _git(args, cwd, *, timeout=None, check=True, binary=False):
     """Run one git command. Returns the CompletedProcess.
 
@@ -758,6 +777,8 @@ def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
         if os.path.exists(path):
             manifest = read_manifest(path)
             if real_path in registered and manifest is not None:
+                if manifest.get('publication'):
+                    raise WorktreeError('busy', 'This worktree is being published; retry after publishing finishes.')
                 owner = manifest.get('task_id') or ''
                 if (owner and owner != task_id and owner != allow_owner
                         and is_owner_live is not None and is_owner_live(owner)):
@@ -1083,6 +1104,8 @@ def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner=''):
         if not os.path.exists(real):
             return {'removed': False, 'already': True, 'path': real}
         raise WorktreeError('not_worktree', f'{path} is not a managed worktree')
+    if manifest.get('publication'):
+        raise WorktreeError('busy', 'This worktree is reserved by a publishing operation.')
     owner = manifest.get('task_id') or ''
     if (owner and owner != allow_owner and is_owner_live is not None
             and is_owner_live(owner)):
@@ -1186,6 +1209,9 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
                      'repo_key': m.get('repo_key'), 'reason': reason})
 
     for m in list_all(wt_root):
+        if m.get('publication'):
+            keep(m, 'publishing')
+            continue
         age = now - (m.get('created_at') or 0)
         owner = m.get('task_id') or ''
         if age < grace_s:

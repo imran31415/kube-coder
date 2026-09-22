@@ -47,7 +47,7 @@ import type {
 } from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
-import { initPush, registerForPush } from './src/push/notifications';
+import { initPush, registerForPush, flushPendingNotification } from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
 import { colors, font } from './src/theme';
 
@@ -208,12 +208,13 @@ export default function App() {
     const detach = initPush();
     hydrate().then(() => {
       void registerForPush();
+      flushPendingNotification();
     });
     return detach;
   }, []);
   return (
     <SafeAreaProvider>
-      <NavigationContainer theme={navTheme} ref={navigationRef}>
+      <NavigationContainer theme={navTheme} ref={navigationRef} onReady={flushPendingNotification} onStateChange={flushPendingNotification}>
         <StatusBar style="light" />
         <Gate />
       </NavigationContainer>

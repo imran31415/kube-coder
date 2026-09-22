@@ -9,6 +9,7 @@ import {
   type TaskWorktreeView,
 } from '../../api/tasks';
 import { serverMode } from '../../store/server-mode';
+vi.mock('../../api/publish', () => ({ getPublish: async () => ({ supported: false }), publishing: () => false }));
 
 vi.mock('../../api/tasks', () => ({
   getTaskWorktree: vi.fn(),

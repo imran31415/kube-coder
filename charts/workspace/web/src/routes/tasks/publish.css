@@ -1,0 +1,12 @@
+.publish-panel { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-block: 16px; display: grid; gap: 12px; min-width: 0; }
+.publish-panel p { margin: 0; overflow-wrap: anywhere; }
+.publish-panel label { display: grid; gap: 6px; }
+.publish-panel input:not([type=checkbox]), .publish-panel textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+.publish-panel button, .publish-panel summary, .publish-action, .publish-check { min-height: 44px; cursor: pointer; }
+.publish-panel button { font: inherit; border: 1px solid var(--border); border-radius: 6px; padding: 10px; color: inherit; background: var(--surface); }
+.publish-panel button:disabled { opacity: .5; cursor: default; }
+.publish-panel .publish-check { display: flex; align-items: center; gap: 10px; }
+.publish-file { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; }
+.publish-panel pre { max-height: 340px; overflow: auto; white-space: pre; }
+.publish-footer { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 env(safe-area-inset-bottom); }
+.publish-footer button { width: 100%; background: var(--accent); color: var(--on-accent); font-weight: var(--weight-semibold); }

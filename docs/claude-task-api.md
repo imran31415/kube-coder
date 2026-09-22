@@ -1019,3 +1019,21 @@ need it directly if hand-editing the CronJob.
 | `POST` | `/oauth/api/crons/{id}/run` | `kubectl create job --from=cronjob/...` — fires once immediately |
 | `POST` | `/oauth/api/crons/{id}/rotate-token` | Mint new `fire_token`, re-apply Secret; returns it once as `fire_token_once` |
 | `POST` | `/api/triggers/cron-fire/{id}` | **Internal receiver** — called by the cron pod's curl. Bearer = `fire_token`. |
+
+
+## Completed Build publishing (#710)
+
+All routes require task API authentication. Mutations also enforce read-only mode.
+
+| Method and suffix under `/api/claude/tasks/{id}/publish` | Contract |
+| --- | --- |
+| `GET /` | Eligibility, preparation, saved draft, operation and verified PR. No model call. |
+| `POST /prepare` | Optional `{destination: {remote, base_repo, base_branch}}`; asynchronous snapshot and description generation; returns 202. |
+| `GET /diff?preparation_id=?&file=?` | Diff from the immutable prepared tree; includes a truncation flag. |
+| `POST /draft` or `PATCH /draft` | `{preparation_id, draft_revision, title, body, draft}`; optimistic revision check; returns new revision. |
+| `POST /` | `{preparation_id, fingerprint, draft_revision, idempotency_key}`; durable enqueue; returns 202. |
+| `POST /{operation_id}/retry` | Resume the recorded operation; reconcile external effects first. |
+
+Errors include `code` and readable `error`. A 409 can mean stale review, concurrent draft edit, changed owner, live writer, divergence or recovery required. No publishing endpoint force-pushes, merges, or authorizes unreviewed changes. A failed operation that already owns a commit must be recovered before creating another operation. After a failure before commit creation, a refreshed review may replace it.
+
+See [Push & Open PR](in-app/build-publishing.md) for the user flow and limitations.

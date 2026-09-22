@@ -94,6 +94,9 @@ export function Button({
       <Pressable
         onPress={onPress}
         disabled={disabled || loading}
+        accessibilityRole="button"
+        accessibilityLabel={title}
+        accessibilityState={{ disabled: !!(disabled || loading), busy: !!loading }}
         style={({ pressed }) => [{ opacity: disabled ? 0.45 : pressed ? 0.9 : 1, borderRadius: radius.md }, style]}
       >
         <LinearGradient
@@ -113,6 +116,9 @@ export function Button({
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ disabled: !!(disabled || loading), busy: !!loading }}
       style={({ pressed }) => [
         styles.btn,
         styles.btnFlat,

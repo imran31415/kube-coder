@@ -51,6 +51,8 @@ users-private/
 # auto-written when browser tools run from this directory). Useful as
 # flight-recorder data during a session, regenerable, not source.
 .playwright-mcp/
+charts/workspace/web/artifacts/
+mobile/artifacts/
 # Coverage reports
 charts/workspace/.coverage
 charts/workspace/htmlcov/
@@ -72,3 +74,6 @@ charts/workspace/.devdata/
 # this is the second lock on the same door. .dockerignore carries the same entry
 # for image builds, which ignore this file. See docs/BACKUP_RESTORE.md.
 backups/
+
+# Local issue verification logs.
+artifacts/issue-710/

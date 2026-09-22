@@ -59,6 +59,12 @@ export const mockWorkdirs: WorkdirOption[] = [
 
 export const mockTasks: TaskSummary[] = [
   {
+    id: 'publish-demo', prompt: 'Review a completed Build and open a PR', status: 'completed', assistant: 'claude',
+    workdir: '/home/dev/.worktrees/example/health-check', created_at: NOW - 360, updated_at: NOW - 60,
+    worktree: { branch: 'kc/health-check', port: 3102, path: '/home/dev/.worktrees/example/health-check', removed: false,
+      stat: { files_changed: 2, insertions: 20, deletions: 0, ahead: 0, dirty: 2, untracked: 0 } },
+  },
+  {
     id: 'a1b2c3',
     prompt: 'Add a /healthz endpoint to server.py and a unit test for it',
     status: 'running',
