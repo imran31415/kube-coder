@@ -157,6 +157,32 @@ then leave `provision.gitToken` / `provision.stateSecret` empty.
 
 ---
 
+## Deleting and recreating a workspace
+
+`make delete-user USER=<slug>` is **cluster-only**. It removes the Helm release,
+the home PVC and the `ws-<slug>` namespace, but deliberately leaves two things
+standing: the GitHub OAuth App, and the workspace's config in the GitOps repo
+(`users-private/<slug>/`).
+
+That second one is load-bearing. `gitops_config_exists()` in `controller.py`
+surfaces the saved config to the console as `configExists`, which makes the
+**New workspace** flow skip the OAuth credential form entirely and deploy
+straight from the stored `clientId`. That is the intended behaviour for
+retrying a failed provision — but it also means a delete-and-recreate rebuilds
+the workspace against the *same* OAuth App, silently.
+
+So if you deleted or rotated the OAuth App, clear the saved config too:
+
+```bash
+make forget-user USER=<slug>    # drops users-private/<slug>/ from the GitOps repo and pushes
+```
+
+The next provision then prompts for a fresh Client ID and secret. Without it the
+new workspace boots against dead credentials and login fails in a way that looks
+identical to a misprovisioned workspace.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -167,6 +193,7 @@ then leave `provision.gitToken` / `provision.stateSecret` empty.
 | Job fails cloning the GitOps repo | Token lacks push/clone access, or the repo has no initial commit on `branch`. |
 | Workspace pod never ready | Chart deploy issue — same as a manual `make deploy`; the workspace lives in its OWN namespace (#103): `kubectl -n ws-<slug> describe deploy ws-<slug>`. |
 | Provision Job forbidden creating the namespace | The provisioner needs its cluster-scoped grants — redeploy the controller chart so the `workspace-provisioner` ClusterRole/ClusterRoleBinding exist. |
+| Recreated workspace still fails to log in | The delete left `users-private/<slug>/` in the GitOps repo, so the console skipped the credential form (`configExists`) and redeployed the old `clientId`. Run `make forget-user USER=<slug>` and provision again. |
 | Limit edits revert after a redeploy | Expected: in-place edits are live `kubectl patch` (like start/stop); durable changes go in the workspace `values.yaml`. |
 
 The provisioner Job runs the same `make deploy USER=<slug>` you would run by
