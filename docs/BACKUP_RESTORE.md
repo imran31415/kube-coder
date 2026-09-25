@@ -67,7 +67,8 @@ private key inside it.
 What the scripts do for you:
 
 - the archive is written `0600`, inside a `0700` directory,
-- `backups/` is in `.gitignore`, so a backup cannot be committed by accident,
+- `backups/` is in `.gitignore` and `.dockerignore`, so a backup cannot be
+  committed by accident or swept into an image build's context,
 - a `.sha256` sidecar is written next to it, also `0600`,
 - `--encrypt-to <gpg-id>` pipes the archive through `gpg --encrypt` and
   removes the plaintext — `restore-user.sh` decrypts a `.gpg` archive

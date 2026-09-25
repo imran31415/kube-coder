@@ -28,10 +28,11 @@
 #     --dry-run           print every action, touch nothing
 #
 # THE ARCHIVE CONTAINS LIVE CREDENTIALS. It is written 0600 inside a 0700
-# directory, and `backups/` is gitignored, but that is the floor and not a
-# story: treat the file exactly like the SSH private key that is inside it, and
-# prefer --encrypt-to (or an encrypted-at-rest bucket) for anything that leaves
-# this machine. docs/BACKUP_RESTORE.md spells out what is and isn't captured.
+# directory, and `backups/` is gitignored and dockerignored, but that is the
+# floor and not a story: treat the file exactly like the SSH private key that is
+# inside it, and prefer --encrypt-to (or an encrypted-at-rest bucket) for
+# anything that leaves this machine. docs/BACKUP_RESTORE.md spells out what is
+# and isn't captured.
 #
 # Consistency: without --quiesce this is a HOT copy of a volume that is being
 # written. Ordinary files are fine; a SQLite DB mid-write (memory.db) can be

@@ -129,6 +129,9 @@ jobs:
         # kubectl, so the suite shims it on PATH and drives every branch from
         # env — including the partial-archive and non-empty-volume guards that
         # decide whether a backup is trustworthy. Offline, no cluster, seconds.
+        # One test (#680) asks the runner's Docker whether backups/ reaches a
+        # build context — a FROM scratch probe, so still no pull; it fails
+        # rather than skips here if the daemon is missing (CI is set).
         run: bash scripts/backup_restore_test.sh
 
       - name: doctor.sh operator-preflight tests (#580)
