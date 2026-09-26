@@ -80,6 +80,11 @@ export interface HypervisorThread {
   // project_id present only when bound. Lets the CTO page filter its list.
   persona?: string;
   project_id?: string;
+  // Board binding (#588/#589): the external board and the ONE item this thread
+  // is working, '' when unbound. What lets /board find the chat it already
+  // opened for an item instead of starting a second one (#730).
+  board_id?: string;
+  board_item_id?: string;
   // The folder the thread was created in (#637) — fixed for the thread's
   // lifetime. Shown in the sidebar and reflected by the Folder picker when
   // the thread is open.
@@ -188,6 +193,11 @@ export const createThread = (opts: {
   // AI CTO (#465): persona 'cto' + the bound project id.
   persona?: string;
   project_id?: string;
+  // Board Processor (#588/#589): persona 'board' + the item it works. The
+  // server drops the binding (and with it the exported KC_BOARD_* env) when
+  // the board is unknown, so a stale id degrades to a plain chat.
+  board_id?: string;
+  board_item_id?: string;
 }) =>
   apiPost<{ thread: HypervisorThread }>('/api/hypervisor/threads', opts).then(
     (r) => r.thread,

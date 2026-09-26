@@ -1,10 +1,15 @@
+import { useState } from 'preact/hooks';
 import { selectedBoard, selectedItem } from '../../store/boards';
+import { Icon } from '../../components/Icon';
 import { StatusPill } from './ItemList';
+import { openItemInChat } from './itemChat';
 
 /** Right column: one item in full, with the deep link out to the real ticket. */
 export function ItemDetail() {
   const item = selectedItem.value;
   const board = selectedBoard.value;
+  const [opening, setOpening] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
 
   if (!item) {
     return (
@@ -13,6 +18,19 @@ export function ItemDetail() {
       </aside>
     );
   }
+
+  const openChat = async () => {
+    if (opening) return;
+    setOpening(true);
+    setChatError(null);
+    try {
+      await openItemInChat(item, board);
+    } catch (e) {
+      setChatError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOpening(false);
+    }
+  };
 
   return (
     <aside class="board-detail">
@@ -24,17 +42,48 @@ export function ItemDetail() {
             <span class="board-priority">{item.priority.normalized.toLowerCase()}</span>
           )}
         </div>
-        {/* Not optional: a reviewer will want to see the ticket natively
-            before approving anything that touches a real customer. */}
-        {item.url && (
-          <a
-            class="board-open-native"
-            href={item.url}
-            target="_blank"
-            rel="noreferrer noopener"
+        <div class="board-detail-actions">
+          {/* Reading an item and acting on it used to be two disconnected
+              places (#730): this opens a chat already bound to THIS item, so
+              the agent reads it with get_board_item and briefs you, and every
+              write it later proposes is staged for your approval. The
+              accessible name is fixed rather than tracking the label — the
+              label becomes "Opening…" for the length of the call, and a
+              control that renames itself mid-click is one a screen reader
+              loses track of. */}
+          <button
+            type="button"
+            class="board-open-chat"
+            disabled={opening || !board}
+            aria-busy={opening}
+            aria-label="Open in chat"
+            title={
+              board
+                ? 'Open a chat about this item — the agent reads it and summarises it for you'
+                : 'Select a board first'
+            }
+            onClick={() => void openChat()}
           >
-            Open in {board?.vendor ?? 'tracker'} ↗
-          </a>
+            <Icon name="chat" size={14} />
+            {opening ? 'Opening…' : 'Open in chat'}
+          </button>
+          {/* Not optional: a reviewer will want to see the ticket natively
+              before approving anything that touches a real customer. */}
+          {item.url && (
+            <a
+              class="board-open-native"
+              href={item.url}
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              Open in {board?.vendor ?? 'tracker'} ↗
+            </a>
+          )}
+        </div>
+        {chatError && (
+          <p class="board-error" role="alert">
+            Could not open a chat for this item: {chatError}
+          </p>
         )}
       </header>
 
