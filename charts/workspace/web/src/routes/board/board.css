@@ -391,6 +391,30 @@
   color: var(--text-subtle);
 }
 .board-open-native { font-size: var(--text-sm); }
+/* The two ways out of an item: into a chat about it, or out to the tracker
+   (#730). They wrap rather than shrink — the vendor link is a sentence, not a
+   chip, and squeezing both onto one line in the narrow layout truncated it. */
+.board-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-3);
+  flex-wrap: wrap;
+}
+.board-open-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2);
+  padding: var(--size-1) var(--size-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.board-open-chat:hover:not([disabled]) { border-color: var(--accent); }
+.board-open-chat[disabled] { opacity: 0.6; cursor: default; }
 .board-detail-title { margin: 0 0 var(--size-3); font-size: var(--text-md); line-height: 1.35; }
 
 .board-detail-meta {

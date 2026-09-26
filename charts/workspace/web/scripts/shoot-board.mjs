@@ -542,7 +542,11 @@ try {
   }
 
   const shots = [
-    { name: 'board-items', tab: 'Items', board: 'github-billing-api', viewport: WIDE },
+    // With an item OPEN, so the detail panel is in frame: what a reader sees
+    // before deciding anything, including the way from the item into a chat
+    // about it (#730).
+    { name: 'board-items', tab: 'Items', board: 'github-billing-api',
+      item: '412', viewport: WIDE },
     { name: 'board-runs', tab: 'Runs', board: 'zendesk-acme', viewport: WIDE },
     // A run actually in flight, opened: live work sorted to the top, each
     // state as a pill, the per-state tally above the table, a View session
@@ -575,6 +579,12 @@ try {
     if (s.tab && s.tab !== 'Items') {
       const tab = page.locator('.board-tab', { hasText: s.tab }).first();
       if (await tab.count()) { await tab.click(); await page.waitForTimeout(700); }
+    }
+    if (s.item) {
+      const row = page.locator('.board-item', { hasText: s.item }).first();
+      if (await row.count()) { await row.click(); await page.waitForTimeout(500); }
+      const chat = page.locator('.board-open-chat');
+      if (!(await chat.count())) fail(s.name, 'the detail panel has no Open in chat button');
     }
     if (s.openRun) {
       const row = page.locator('.board-run-row').first();
