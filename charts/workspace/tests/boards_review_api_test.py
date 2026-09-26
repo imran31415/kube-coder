@@ -779,7 +779,7 @@ class SendBackRoundTripTests(_Base):
         _cfg, run = self._staged()
         self._retire(run)
         session = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-        with mock.patch.object(CTM, 'get_task',
+        with mock.patch.object(CTM, 'read_meta',
                                lambda t: {'claude_session_id': session}), \
              mock.patch.object(CTM, 'send_followup',
                                lambda t, p, submit=True: (None, 'Session is no '
@@ -799,7 +799,7 @@ class SendBackRoundTripTests(_Base):
         claim context was preserved when it was not."""
         _cfg, run = self._staged()
         self._retire(run)
-        with mock.patch.object(CTM, 'get_task', lambda t: {'claude_session_id': ''}), \
+        with mock.patch.object(CTM, 'read_meta', lambda t: {'claude_session_id': ''}), \
              mock.patch.object(CTM, 'send_followup',
                                lambda t, p, submit=True: (None, 'Session is no longer running')):
             _s, body = self._send_back()

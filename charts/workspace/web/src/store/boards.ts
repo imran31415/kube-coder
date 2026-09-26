@@ -259,6 +259,12 @@ export interface BoardRunForm {
   limit: number;
   concurrency: number;
   strategy: string;
+  /** The git checkout agents work in (#701); '' for a tracker-only run. */
+  workdir: string;
+  /** Every item in its own worktree. Only meaningful with a workdir, and ON by
+   *  default the moment one is picked — several agents in one checkout is the
+   *  collision this exists to prevent. */
+  isolate: boolean;
 }
 
 export const RUN_FORM_DEFAULTS: Readonly<BoardRunForm> = {
@@ -266,7 +272,13 @@ export const RUN_FORM_DEFAULTS: Readonly<BoardRunForm> = {
   limit: 10,
   concurrency: 3,
   strategy: '',
+  workdir: '',
+  isolate: true,
 };
+
+/** A workdir must be an absolute path inside the workspace home — storage is
+ *  untrusted, and the server refuses anything else anyway. */
+const WORKDIR_RE = /^\/home\/dev(\/.*)?$/;
 
 const RUN_FORM_KEY = 'kc.boardRunForm';
 
@@ -295,6 +307,11 @@ function sanitizeRunForm(raw: unknown): BoardRunForm {
       o.concurrency, CONCURRENCY_MIN, CONCURRENCY_MAX, RUN_FORM_DEFAULTS.concurrency,
     ),
     strategy: typeof o.strategy === 'string' ? o.strategy : RUN_FORM_DEFAULTS.strategy,
+    workdir: typeof o.workdir === 'string' && o.workdir.length <= 4096
+      && WORKDIR_RE.test(o.workdir) && !o.workdir.split('/').includes('..')
+      ? o.workdir
+      : RUN_FORM_DEFAULTS.workdir,
+    isolate: typeof o.isolate === 'boolean' ? o.isolate : RUN_FORM_DEFAULTS.isolate,
   };
 }
 

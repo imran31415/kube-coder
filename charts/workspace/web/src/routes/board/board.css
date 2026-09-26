@@ -534,6 +534,21 @@
 .board-review-key { color: var(--text-subtle); font-size: var(--text-xs); }
 .board-review-title { flex: 1 1 12rem; min-width: 0; }
 .board-review-link { font-size: var(--text-xs); white-space: nowrap; }
+/* The Build's branch and what it changed (#701). */
+.board-review-worktree {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2);
+  margin: var(--size-2) 0 0;
+  padding: var(--size-1) var(--size-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+}
+.board-review-branch { overflow-wrap: anywhere; }
+.board-review-diffstat { color: var(--text-subtle); flex: 1; }
 
 .board-review-actions { list-style: none; margin: var(--size-3) 0 0; padding: 0; }
 .board-review-action { margin-bottom: var(--size-3); }
@@ -628,6 +643,27 @@
   line-height: 1.5;
 }
 .board-run-warn { color: var(--warn); }
+/* Repository runs (#701). */
+.board-run-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-1);
+  font-size: var(--text-xs);
+  min-height: 32px;
+}
+.board-run-check input { accent-color: var(--accent); }
+.board-run-isolated {
+  font-size: var(--text-2xs);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--size-2);
+}
+.board-run-item-branch {
+  display: block;
+  font-size: var(--text-2xs);
+  color: var(--text-subtle);
+}
 
 .board-run-list { list-style: none; margin: 0; padding: 0; }
 .board-run-row {

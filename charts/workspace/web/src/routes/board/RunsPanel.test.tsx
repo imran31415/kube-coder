@@ -166,6 +166,8 @@ describe('run form storage is untrusted', () => {
       limit: 10,
       concurrency: 3,
       strategy: '',
+      workdir: '',
+      isolate: true,
     });
 
     localStorage.setItem('kc.boardRunForm', 'not json');
@@ -175,6 +177,8 @@ describe('run form storage is untrusted', () => {
       limit: 10,
       concurrency: 3,
       strategy: '',
+      workdir: '',
+      isolate: true,
     });
   });
 

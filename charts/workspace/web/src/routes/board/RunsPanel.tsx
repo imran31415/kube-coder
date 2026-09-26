@@ -34,6 +34,8 @@ import {
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { navigate, routeHref } from '../../store/router';
 import type { BoardRun, BoardRunItem, BoardRunSummary } from '../../api/boards';
+import { listWorkdirs, type WorkdirOption } from '../../api/tasks';
+import { shouldWarnSharedTree } from '../../util/worktree';
 
 /**
  * Runs (#588 Phase 4/6) — start N items working in parallel and watch them.
@@ -55,9 +57,19 @@ export function RunsPanel() {
   // Review and back — with the values in useState, each trip quietly reset
   // Items / At once to the heavier defaults under an operator who had
   // deliberately turned them down.
-  const { mode, limit, concurrency, strategy } = runFormFor(boardId);
+  const { mode, limit, concurrency, strategy, workdir, isolate } = runFormFor(boardId);
   const [starting, setStarting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  // Git folders a run can point its agents at (#701). A repository is
+  // optional: without one the run is tracker-only, exactly as before.
+  const [dirs, setDirs] = useState<WorkdirOption[]>([]);
+  useEffect(() => {
+    listWorkdirs()
+      .then((d) => setDirs(Array.isArray(d) ? d : []))
+      .catch(() => setDirs([]));
+  }, []);
+  const gitDirs = dirs.filter((d) => d.is_git_repo);
+  const sharedTree = shouldWarnSharedTree(workdir, isolate, concurrency);
 
   // Progress polling is NOT started here. It belongs to the route, which stays
   // mounted across tab switches — owning it from this panel meant stepping
@@ -129,6 +141,7 @@ export function RunsPanel() {
               concurrency,
               select: currentSelect(),
               stop_on: { consecutive_failures: 3 },
+              ...(workdir ? { workdir, isolate } : {}),
             });
             strategyPreview.value = null;
             setStarting(false);
@@ -199,6 +212,41 @@ export function RunsPanel() {
               }
             />
           </label>
+          <label class="board-run-field">
+            <span>Repository</span>
+            <select
+              value={workdir}
+              aria-label="Repository"
+              onInput={(e) => {
+                const value = (e.target as HTMLSelectElement).value;
+                // Picking a repository turns isolation on: several agents in
+                // one checkout is the collision this exists to prevent.
+                setRunForm(boardId, value ? { workdir: value, isolate: true } : { workdir: '' });
+              }}
+            >
+              <option value="">None — tracker only</option>
+              {gitDirs.map((d) => (
+                <option key={d.path} value={d.path}>
+                  {d.label ?? d.path}
+                </option>
+              ))}
+              {workdir && !gitDirs.some((d) => d.path === workdir) && (
+                <option value={workdir}>{workdir}</option>
+              )}
+            </select>
+          </label>
+          {workdir && (
+            <label class="board-run-check">
+              <input
+                type="checkbox"
+                checked={isolate}
+                onChange={(e) =>
+                  setRunForm(boardId, { isolate: (e.target as HTMLInputElement).checked })
+                }
+              />
+              Isolated worktree per item
+            </label>
+          )}
           <button
             type="submit"
             class="btn btn-primary btn-sm"
@@ -240,6 +288,20 @@ export function RunsPanel() {
               you have watched a run end to end.
             </p>
           )}
+          {sharedTree && (
+            <p class="board-run-warn" role="alert">
+              {concurrency} agents will work in the same checkout at once and can
+              overwrite each other's files and commits. Turn on{' '}
+              <strong>Isolated worktree per item</strong>, or set At once to 1.
+            </p>
+          )}
+          {workdir && isolate && (
+            <p class="board-cred-note">
+              Each item works on its own <span class="mono">kc/…</span> branch in its
+              own folder. The Review card shows what it changed; a sent-back item
+              continues in the same worktree.
+            </p>
+          )}
         </form>
       </MutatorOnly>
 
@@ -265,6 +327,15 @@ export function RunsPanel() {
               <div class="board-run-detail">
                 {clampLabel(run) && (
                   <p class="board-run-clamp">{clampLabel(run)}</p>
+                )}
+                {run.worktree_clamp_reason && (
+                  <p class="board-run-clamp">{run.worktree_clamp_reason}</p>
+                )}
+                {run.warnings?.includes('shared_tree') && (
+                  <p class="board-run-clamp">
+                    These agents shared one checkout ({run.workdir}) — their edits may
+                    overlap.
+                  </p>
                 )}
                 {!run.listing_complete && (
                   <p class="board-warn">
@@ -409,6 +480,16 @@ function RunLine({ run }: { run: BoardRunSummary }) {
           partial listing
         </span>
       )}
+      {run.isolate && (
+        <span class="board-run-isolated" title={`Each item in its own worktree of ${run.workdir}`}>
+          isolated
+        </span>
+      )}
+      {run.warnings?.includes('shared_tree') && (
+        <span class="board-run-partial" title={`Several agents shared ${run.workdir}`}>
+          shared tree
+        </span>
+      )}
     </>
   );
 }
@@ -502,7 +583,14 @@ function RunItemTable({ run }: { run: BoardRun }) {
           return (
             <tr key={item.id} class={`board-run-item-${item.state}`}>
               <td class="mono">{item.key || item.id}</td>
-              <td class="board-run-item-title">{item.title}</td>
+              <td class="board-run-item-title">
+                {item.title}
+                {item.worktree?.branch && (
+                  <span class="board-run-item-branch mono" title={item.worktree.path}>
+                    ⎇ {item.worktree.branch}
+                  </span>
+                )}
+              </td>
               <td>
                 <span class={`board-state-pill board-state-${item.state}`}>
                   {item.state === 'working' && (

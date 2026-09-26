@@ -183,9 +183,69 @@ def clamp_concurrency(requested, *, live_tasks, max_tasks,
 
 # ── the run record ─────────────────────────────────────────────────────────
 
+# ── repository runs (#701) ─────────────────────────────────────────────────
+
+MAX_WORKDIR_LEN = 4096
+MAX_BASE_REF_LEN = 200
+
+
+def validate_repo_config(data):
+    """`(cfg, errors)` for a run's repository settings (#701).
+
+    A run may point its agents at a git checkout (`workdir`); with `isolate`,
+    every item gets its own worktree on its own branch. This is the SHAPE
+    check only — whether the path is inside /home/dev and is a git checkout
+    touches the disk, so the server does that.
+
+    Absent means "a tracker-only run", exactly as before this feature.
+    """
+    data = data if isinstance(data, dict) else {}
+    cfg = {'workdir': '', 'isolate': False, 'base_ref': ''}
+    errors = []
+    workdir = data.get('workdir')
+    if workdir not in (None, ''):
+        if (not isinstance(workdir, str) or not workdir.startswith('/')
+                or len(workdir) > MAX_WORKDIR_LEN):
+            errors.append('workdir must be an absolute path')
+        else:
+            cfg['workdir'] = workdir
+    isolate = data.get('isolate', False)
+    if isolate is None:
+        isolate = False
+    if not isinstance(isolate, bool):
+        errors.append('isolate must be true or false')
+    else:
+        cfg['isolate'] = isolate
+    base_ref = data.get('base_ref')
+    if base_ref not in (None, ''):
+        if not isinstance(base_ref, str) or len(base_ref) > MAX_BASE_REF_LEN:
+            errors.append('base_ref must be a branch, tag or commit')
+        else:
+            cfg['base_ref'] = base_ref
+    if cfg['isolate'] and not cfg['workdir']:
+        errors.append('isolate needs a workdir: the repository each item '
+                      'gets its own worktree of')
+    if cfg['base_ref'] and not cfg['isolate']:
+        errors.append('base_ref only applies with isolate')
+    return cfg, errors
+
+
+def shared_tree_warning(workdir, isolate, concurrency):
+    """`['shared_tree']` when several agents would work in ONE checkout at
+    once — the collision #701 exists to prevent. A warning, not a refusal:
+    one-at-a-time runs and tracker-only runs are fine, and an API caller who
+    means it gets what they asked for, with the risk on the record."""
+    try:
+        many = int(concurrency or 1) > 1
+    except (TypeError, ValueError):
+        many = False
+    return ['shared_tree'] if workdir and not isolate and many else []
+
+
 def new_run(run_id, board_id, *, mode=DEFAULT_MODE, select=None, concurrency=1,
             requested_concurrency=None, clamp_reason='', stop_on=None,
-            origin='manual', now=None):
+            origin='manual', workdir='', isolate=False, base_ref='',
+            warnings=None, now=None):
     now = time.time() if now is None else now
     return {
         'id': run_id,
@@ -203,6 +263,14 @@ def new_run(run_id, board_id, *, mode=DEFAULT_MODE, select=None, concurrency=1,
             else concurrency),
         'clamp_reason': clamp_reason,
         'stop_on': dict(stop_on or {}),
+        # Where the agents work (#701). '' is a tracker-only run.
+        'workdir': workdir or '',
+        'isolate': bool(isolate),
+        'base_ref': base_ref or '',
+        'warnings': list(warnings or []),
+        # Items left out because the workspace had no free worktree for them.
+        'worktree_clamp_reason': '',
+        'worktree_skipped': 0,
         'status': 'running',
         'stop_requested': False,
         'created_at': now,
@@ -285,6 +353,12 @@ def summary(run):
         'error': run.get('error', ''),
         'listing_complete': run.get('listing_complete', True),
         'truncation_reason': run.get('truncation_reason', ''),
+        'workdir': run.get('workdir', ''),
+        'isolate': bool(run.get('isolate')),
+        'base_ref': run.get('base_ref', ''),
+        'warnings': list(run.get('warnings') or []),
+        'worktree_clamp_reason': run.get('worktree_clamp_reason', ''),
+        'worktree_skipped': run.get('worktree_skipped', 0),
         'total': len(run.get('items') or {}),
         'counts': c,
         'done': c['done'], 'failed': c['failed'], 'skipped': c['skipped'],

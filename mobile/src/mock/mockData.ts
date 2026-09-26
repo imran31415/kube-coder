@@ -1185,6 +1185,16 @@ export const mockBoardReview: BoardReviewItem[] = [
     item_title: 'Refund not received',
     item_url: 'https://acme.atlassian.net/browse/SUP-812',
     content_hash: 'ab12cd34',
+    task_id: 'a1b2c3',
+    // Worked in its own worktree (#701) — the review card shows the branch.
+    worktree: {
+      task_id: 'a1b2c3',
+      branch: 'kc/b-acme-jira-812-5e1f0a2b',
+      port: 3102,
+      path: '/home/dev/.worktrees/kube-coder/b-acme-jira-812-5e1f0a2b',
+      removed: false,
+      stat: { files_changed: 2, insertions: 41, deletions: 3, ahead: 1, dirty: 0, untracked: 0 },
+    },
     state: 'pending',
     disposition: 'needs_review',
     reason: 'matched refund txn 8821 in Stripe; no further action needed',

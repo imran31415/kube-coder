@@ -35,6 +35,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useNavigation } from '@react-navigation/native';
 import {
   getBoardReview,
   getBoardStanding,
@@ -45,6 +46,7 @@ import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../compone
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
+import { formatDiffStat, worktreeRemoved } from '../util/worktree';
 import { clearBoardFocus, useBoardFocus } from '../store/boardFocus';
 import { pickBoard, rememberBoard } from '../util/lastBoard';
 import {
@@ -104,7 +106,18 @@ async function standingOrNull(boardId: string): Promise<BoardStanding | null> {
   }
 }
 
+/** Cross-tab navigation, as Mission Control types it. */
+type Nav = { navigate: (tab: string, opts?: object) => void };
+
 export default function BoardScreen() {
+  const nav = useNavigation<Nav>();
+  // The Build that worked an item, opened on its changes (#701). initial:
+  // false keeps TaskList beneath it, so the detail has a back button.
+  const viewChanges = useCallback((taskId: string) => {
+    nav.navigate('Tasks', {
+      screen: 'TaskDetail', params: { id: taskId, tab: 'changes' }, initial: false,
+    });
+  }, [nav]);
   const [boards, setBoards] = useState<BoardSummary[] | null>(null);
   const [boardId, setBoardId] = useState<string | null>(null);
   const [groups, setGroups] = useState<BoardReviewGroup[] | null>(null);
@@ -445,6 +458,7 @@ export default function BoardScreen() {
                 busy={queued.has(row.item.item_id)}
                 focused={highlight === row.item.item_id}
                 onDecide={decide}
+                onViewChanges={viewChanges}
               />
             )
           }
@@ -559,11 +573,13 @@ function ReviewCard({
   busy,
   focused,
   onDecide,
+  onViewChanges,
 }: {
   item: BoardReviewItem;
   busy: boolean;
   focused: boolean;
   onDecide: (item: BoardReviewItem, decision: Decision) => void;
+  onViewChanges: (taskId: string) => void;
 }) {
   const evidence = Object.entries(item.evidence ?? {});
   return (
@@ -582,6 +598,29 @@ function ReviewCard({
         <Text style={styles.itemAge}>{relativeTime(item.created_at)}</Text>
       </View>
       <Text style={styles.itemTitle}>{item.item_title}</Text>
+
+      {/* The code behind the proposed reply (#701): approving "Fixed on
+          kc/…" from a phone should not mean approving it unseen. */}
+      {item.worktree?.branch ? (
+        <Pressable
+          style={styles.wtRow}
+          accessibilityRole="link"
+          accessibilityLabel="View changes"
+          onPress={() => onViewChanges(item.worktree!.task_id)}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.wtBranch} numberOfLines={1}>⎇ {item.worktree.branch}</Text>
+            <Text style={styles.wtStat}>
+              {worktreeRemoved(item.worktree)
+                ? 'worktree removed — branch kept'
+                : item.worktree.stat
+                  ? formatDiffStat(item.worktree.stat)
+                  : 'changes not recorded yet'}
+            </Text>
+          </View>
+          <Text style={styles.link}>View changes ›</Text>
+        </Pressable>
+      ) : null}
 
       {item.pending_actions.map((action) => (
         <View key={action.id} style={styles.action}>
@@ -771,6 +810,22 @@ const styles = StyleSheet.create({
   // The <Text> keeps its own size; the Pressable around it carries the hit
   // area, which was previously zero beyond the glyphs themselves.
   linkHit: { minHeight: 44, justifyContent: 'center', marginTop: space.xs },
+  // The Build's branch (#701) — the whole row is the 44pt target.
+  wtRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgElevated,
+  },
+  wtBranch: { color: colors.text, fontFamily: font.mono, fontSize: font.size.sm },
+  wtStat: { color: colors.textMuted, fontSize: font.size.sm, marginTop: 2 },
   link: { color: colors.accent, fontSize: font.size.md },
   queued: { color: colors.textMuted, fontSize: font.size.sm, marginTop: space.sm },
   // Wraps: three 44pt buttons at the larger label size no longer fit one line

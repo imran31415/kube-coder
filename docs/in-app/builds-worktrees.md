@@ -29,6 +29,11 @@ files are copied.
   worktree*. Optionally fill in *Branch from* (a branch, tag or commit, e.g.
   `origin/main`); by default the worktree starts from the folder's current
   commit.
+- **Board runs** — choose a *Repository* and leave *Isolated worktree per
+  item* on. Every ticket gets its own worktree, and the same ticket always
+  gets the same one — a sent-back ticket continues where it left off (see
+  [Boards](/docs/board-processor)). The Review card shows each ticket's branch
+  and a **View changes** link.
 - **The API** — `POST /api/claude/tasks` with `"isolate": true` (and
   optionally `base_ref`, or `worktree_slug` to continue in a named worktree).
 

@@ -94,7 +94,8 @@ async function fontSizeOf(page, text) {
   await shot(page, 'b02-board.png');
 
   // ── 2. Every control clears 44pt ─────────────────────────────────────────
-  for (const label of ['Approve', 'Reject', 'Send back', 'Open ticket']) {
+  // 'View changes' is the Build's branch row on an isolated item (#701).
+  for (const label of ['Approve', 'Reject', 'Send back', 'Open ticket', 'View changes']) {
     await assertTouchTarget(page, label);
   }
   // The board selector is a control too, and was the smallest thing on screen.
