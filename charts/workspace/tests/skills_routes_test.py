@@ -24,14 +24,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import skills  # noqa: E402
-from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
+from tests.http_harness import (  # noqa: E402
+    EndpointTestCase, args_for, handler_for,
+)
 
 
 class SkillsRouteOrderTests(unittest.TestCase):
-
-    def _hit(self, http_method, path, raw=None):
-        return skills.ROUTES.match(
-            http_method, path, raw if raw is not None else path)
 
     def _handler_for(self, http_method, path, raw=None):
         return handler_for(skills.ROUTES, http_method, path, raw)
@@ -47,8 +45,8 @@ class SkillsRouteOrderTests(unittest.TestCase):
                          'handle_skills_list')
         self.assertEqual(self._handler_for('GET', '/api/skills/my.skill_v2'),
                          'handle_skills_get')
-        _, args = self._hit('GET', '/api/skills/my.skill_v2')
-        self.assertEqual(args, ('my.skill_v2',))
+        self.assertEqual(args_for(skills.ROUTES, 'GET', '/api/skills/my.skill_v2'),
+                         ('my.skill_v2',))
 
     def test_the_two_post_routes(self):
         # Adjacent in the table; 70 lines apart in the chain they replace.
@@ -56,8 +54,9 @@ class SkillsRouteOrderTests(unittest.TestCase):
                          'handle_skills_scan')
         self.assertEqual(self._handler_for('POST', '/api/skills/my-skill/sync'),
                          'handle_skills_sync')
-        _, args = self._hit('POST', '/api/skills/my-skill/sync')
-        self.assertEqual(args, ('my-skill',))
+        self.assertEqual(
+            args_for(skills.ROUTES, 'POST', '/api/skills/my-skill/sync'),
+            ('my-skill',))
 
     def test_the_verb_is_part_of_the_match(self):
         # GET /api/skills/_scan has always been the detail route — `_scan` is

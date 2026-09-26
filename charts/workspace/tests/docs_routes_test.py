@@ -22,7 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import docs  # noqa: E402
-from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
+from tests.http_harness import (  # noqa: E402
+    EndpointTestCase, args_for, handler_for,
+)
 
 
 class _Recorder:
@@ -37,9 +39,6 @@ class _Recorder:
 
 
 class DocsRouteOrderTests(unittest.TestCase):
-
-    def _hit(self, path, raw=None):
-        return docs.ROUTES.match('GET', path, raw if raw is not None else path)
 
     def _handler_for(self, path, raw=None):
         return handler_for(docs.ROUTES, 'GET', path, raw)
@@ -56,8 +55,8 @@ class DocsRouteOrderTests(unittest.TestCase):
                          'handle_docs_page')
 
     def test_page_id_is_passed_as_a_capture_group(self):
-        _, args = self._hit('/api/docs/tasks-concepts')
-        self.assertEqual(args, ('tasks-concepts',))
+        self.assertEqual(args_for(docs.ROUTES, 'GET', '/api/docs/tasks-concepts'),
+                         ('tasks-concepts',))
 
     def test_paths_outside_the_domain_do_not_match(self):
         for path in ('/api/docs/', '/api/docs/a/b', '/api/docs/bad id',

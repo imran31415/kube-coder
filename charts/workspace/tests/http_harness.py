@@ -1,7 +1,7 @@
 """Shared harness for the route-table suites (#100).
 
 Two things the per-domain suites all want: a real server to make requests
-against, and a one-line way to ask a table which handler a path resolves to.
+against, and a one-line way to ask a table what it would do with a path.
 
 A dozen suites under `tests/` hand-roll the same three things: pick a port,
 start a ThreadingHTTPServer on BrowserHandler in a daemon thread, and issue
@@ -84,3 +84,14 @@ def handler_for(table, http_method, path, raw=None):
     """
     hit = table.match(http_method, path, path if raw is None else raw)
     return hit[0].handler if hit else None
+
+
+def args_for(table, http_method, path, raw=None):
+    """The positional arguments the table would hand the handler.
+
+    `()` for an exact route, the capture groups for a regex one — and the
+    parsed query string ahead of them on a `query=True` route. Raises if
+    nothing matched, because a test asserting on arguments has already
+    established that it does.
+    """
+    return table.match(http_method, path, path if raw is None else raw)[1]
