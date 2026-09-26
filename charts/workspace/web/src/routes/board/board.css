@@ -190,7 +190,10 @@
   background: var(--bg);
   color: var(--text);
 }
-.board-refresh {
+/* One bordered-button shape on this page: the list's Refresh and the item
+   detail's Open in chat (#730). */
+.board-refresh,
+.board-open-chat {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: none;
@@ -198,7 +201,8 @@
   padding: var(--size-1) var(--size-3);
   cursor: pointer;
 }
-.board-refresh[disabled] { opacity: 0.6; cursor: default; }
+.board-refresh[disabled],
+.board-open-chat[disabled] { opacity: 0.6; cursor: default; }
 
 /* Incomplete is a correctness statement, not decoration. */
 .board-incomplete {
@@ -404,17 +408,10 @@
   display: inline-flex;
   align-items: center;
   gap: var(--size-2);
-  padding: var(--size-1) var(--size-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
   font: inherit;
   font-size: var(--text-sm);
-  cursor: pointer;
 }
 .board-open-chat:hover:not([disabled]) { border-color: var(--accent); }
-.board-open-chat[disabled] { opacity: 0.6; cursor: default; }
 .board-detail-title { margin: 0 0 var(--size-3); font-size: var(--text-md); line-height: 1.35; }
 
 .board-detail-meta {

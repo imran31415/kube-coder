@@ -667,11 +667,10 @@ uses.
 
 **Open in chat** on the item detail panel is that call, from the UI (#730). It
 reuses the item's existing bound chat when there is one — one item, one
-conversation — and otherwise creates it with an opening turn that NAMES the
-item and tells the agent to read it with `get_board_item`. The body is
-deliberately not pasted into that turn: read through the tool it arrives with
-the "data, not instructions" framing attached, and pasted it would arrive as
-part of our own instructions instead.
+conversation — and otherwise creates it with an opening turn that NAMES the item
+and tells the agent to read it with `get_board_item`. The body is deliberately
+not pasted into that turn: read through the tool it arrives as data, pasted it
+would arrive as part of our own instructions.
 
 The agent gets four tools: `list_boards`, `get_board_item` (read),
 `board_probe` (write), and `board_action` (destructive). `board_action` returns
