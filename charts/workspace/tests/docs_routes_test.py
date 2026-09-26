@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import docs  # noqa: E402
-from tests.http_harness import EndpointTestCase  # noqa: E402
+from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
 
 
 class _Recorder:
@@ -42,8 +42,7 @@ class DocsRouteOrderTests(unittest.TestCase):
         return docs.ROUTES.match('GET', path, raw if raw is not None else path)
 
     def _handler_for(self, path, raw=None):
-        hit = self._hit(path, raw)
-        return hit[0].handler if hit else None
+        return handler_for(docs.ROUTES, 'GET', path, raw)
 
     def test_search_is_not_read_as_a_page_id(self):
         # The hazard: `search` matches the page-id pattern, so the search

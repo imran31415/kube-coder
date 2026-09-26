@@ -2,8 +2,8 @@
 
 Three layers:
   * `RouteTable` itself — first match wins, exact vs regex patterns, capture
-    groups, raw-vs-normalized path selection, the query-string column,
-    name-based handler lookup.
+    groups, raw-vs-normalized path selection, the two query-string
+    columns, name-based handler lookup.
   * The system domain's table — the ordering hazards that used to be nothing
     but a comment asking the next editor not to move the lines, asserted
     directly against the table with no HTTP request involved.
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import system  # noqa: E402
 from handlers.routing import RouteTable  # noqa: E402
-from tests.http_harness import EndpointTestCase  # noqa: E402
+from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
 
 
 class _Recorder:
@@ -160,12 +160,50 @@ class RouteTableQueryTests(unittest.TestCase):
         self.assertEqual(rec.calls, [('alpha', ({},))])
 
 
+class RouteTableStripQueryTests(unittest.TestCase):
+    """The `strip_query=True` column: do_GET routes on a path whose query is
+    already gone, every other verb routes on one that still has it."""
+
+    def test_a_plain_route_does_not_match_once_a_query_is_attached(self):
+        # The bug the column exists to prevent, spelled out.
+        t = RouteTable()
+        t.add('DELETE', '/api/files', 'alpha')
+        self.assertIsNotNone(t.match('DELETE', '/api/files', '/api/files'))
+        self.assertIsNone(t.match('DELETE', '/api/files?path=a.txt',
+                                  '/api/files?path=a.txt'))
+
+    def test_the_column_matches_the_route_portion_before_the_question_mark(self):
+        t = RouteTable()
+        t.add('DELETE', '/api/files', 'alpha', strip_query=True)
+        for path in ('/api/files', '/api/files?path=a.txt', '/api/files?'):
+            self.assertIsNotNone(t.match('DELETE', path, path), path)
+        # Still an exact match on the route portion — not a prefix.
+        self.assertIsNone(t.match('DELETE', '/api/filesx?a=1',
+                                  '/api/filesx?a=1'))
+
+    def test_the_column_applies_to_regex_patterns_too(self):
+        t = RouteTable()
+        t.add('DELETE', re.compile(r'^/api/worktrees/([^/?]+)$'), 'alpha',
+              strip_query=True)
+        _, args = t.match('DELETE', '/api/worktrees/repo?force=1',
+                          '/api/worktrees/repo?force=1')
+        self.assertEqual(args, ('repo',))
+
+    def test_the_handler_still_sees_the_untouched_request_path(self):
+        # Stripping is for MATCHING only; handlers re-parse self.path.
+        t = RouteTable()
+        t.add('DELETE', '/api/files', 'alpha', strip_query=True, query=True)
+        rec = _Recorder()
+        t.dispatch(rec, 'DELETE', '/api/files?path=a.txt',
+                   '/api/files?path=a.txt')
+        self.assertEqual(rec.calls, [('alpha', ({'path': ['a.txt']},))])
+
+
 class SystemRouteOrderTests(unittest.TestCase):
     """The hazards the old chain carried as comments, as assertions."""
 
     def _handler_for(self, path, raw=None):
-        hit = system.ROUTES.match('GET', path, raw if raw is not None else path)
-        return hit[0].handler if hit else None
+        return handler_for(system.ROUTES, 'GET', path, raw)
 
     def test_bare_vnc_is_the_viewer_and_a_subpath_is_the_proxy(self):
         self.assertEqual(self._handler_for('/vnc'), 'send_vnc_viewer')
