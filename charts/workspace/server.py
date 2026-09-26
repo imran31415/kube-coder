@@ -73,6 +73,8 @@ import push_notify
 # execute a second copy of this file. Attribute lookups on the bound module all
 # happen at request time, so binding a half-initialized module here is fine.
 import handlers
+from handlers import docs as docs_routes
+from handlers import skills as skills_routes
 from handlers import system as system_routes
 handlers.bind(sys.modules[__name__])
 
@@ -13262,7 +13264,9 @@ def _xvfb_running(display):
         return False
 
 
-class BrowserHandler(system_routes.SystemRoutes,
+class BrowserHandler(docs_routes.DocsRoutes,
+                     skills_routes.SkillsRoutes,
+                     system_routes.SystemRoutes,
                      http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -13684,15 +13688,10 @@ class BrowserHandler(system_routes.SystemRoutes,
             return
 
         # --- Skills API (multi-harness SKILL.md surface; backs the Skills tab) ---
-        if claude_path == '/api/skills':
-            self.handle_skills_list(memory_query)
-            return
-        if claude_path == '/api/skills/stats':
-            self.handle_skills_stats()
-            return
-        m = re.match(r'^/api/skills/([a-zA-Z0-9._-]+)$', claude_path)
-        if m:
-            self.handle_skills_get(m.group(1))
+        # Three elif branches until #100; now an ordered table in
+        # handlers/skills.py, which also carries the POST half of the domain
+        # and the reason /api/skills/stats has to precede the detail route.
+        if skills_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Subagents (read-only view over Claude's transcripts) ---
@@ -13701,15 +13700,10 @@ class BrowserHandler(system_routes.SystemRoutes,
             return
 
         # --- Docs (in-app documentation site) ---
-        if claude_path == '/api/docs':
-            self.handle_docs_manifest()
-            return
-        if claude_path == '/api/docs/search':
-            self.handle_docs_search(memory_query)
-            return
-        m = re.match(r'^/api/docs/([a-zA-Z0-9_-]+)$', claude_path)
-        if m:
-            self.handle_docs_page(m.group(1))
+        # Three elif branches until #100; now an ordered table in
+        # handlers/docs.py, where the reason /api/docs/search has to precede
+        # the page-id route is written down next to the two registrations.
+        if docs_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- File browser (lists /home/dev and child directories) ---
@@ -18147,207 +18141,6 @@ class BrowserHandler(system_routes.SystemRoutes,
         EventBroker.publish('memory.changed', {'op': 'purge'})
         self.send_json({'status': 'ok', 'result': res})
 
-    # ── Skills (multi-harness SKILL.md surface — issue #187) ─────────────
-    # Read-only in this phase: list / detail / stats come from the
-    # SkillsSyncer's in-memory snapshot (files are the source of truth);
-    # POST /api/skills/_scan forces a synchronous rescan.
-
-    def _skills_unavailable(self):
-        if _SKILLS_AVAILABLE:
-            return False
-        self.send_json({'error': 'skills subsystem unavailable',
-                        'code': 'skills_unavailable',
-                        'detail': 'skills package failed to import; check server logs'},
-                       503)
-        return True
-
-    def handle_skills_list(self, query):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._skills_unavailable():
-            return
-        if (query.get('refresh') or [''])[0] in ('1', 'true'):
-            try:
-                SkillsSyncer.trigger_sync()
-            except Exception as e:
-                print(f'[skills] refresh failed: {e}', file=sys.stderr)
-        records = SkillsSyncer.snapshot()
-        system = (query.get('system') or [None])[0]
-        scope = (query.get('scope') or [None])[0]
-        if system:
-            records = [r for r in records if system in r.systems]
-        if scope:
-            records = [r for r in records if r.scope == scope]
-        self.send_json({'skills': [r.to_dict() for r in records],
-                        'count': len(records)})
-
-    def handle_skills_get(self, name):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._skills_unavailable():
-            return
-        variants = SkillsSyncer.get(name)
-        if not variants:
-            self.send_json({'error': 'not found', 'code': 'not_found'}, 404)
-            return
-        # One logical skill normally; 2+ entries when copies have diverged
-        # across systems (same name, different content fingerprint).
-        self.send_json({'skill': variants[0].to_dict(),
-                        'variants': [v.to_dict() for v in variants],
-                        'divergent': len(variants) > 1})
-
-    def handle_skills_stats(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._skills_unavailable():
-            return
-        records = SkillsSyncer.snapshot()
-        by_system, by_scope = {}, {}
-        for r in records:
-            for s in r.systems:
-                by_system[s] = by_system.get(s, 0) + 1
-            by_scope[r.scope] = by_scope.get(r.scope, 0) + 1
-        self.send_json({'total': len(records),
-                        'by_system': by_system,
-                        'by_scope': by_scope,
-                        'syncer': SkillsSyncer.status()})
-
-    def handle_skills_scan(self):
-        """POST /api/skills/_scan — synchronous forced rescan."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._skills_unavailable():
-            return
-        try:
-            res = SkillsSyncer.trigger_sync()
-        except Exception as e:
-            self.send_json({'error': f'scan failed: {e}'}, 500)
-            return
-        self.send_json({'status': 'ok', 'result': res})
-
-    def handle_skills_sync(self, name):
-        """POST /api/skills/{name}/sync — cross-harness install (PR2).
-
-        Body: {source_system, source_scope?, targets:[{system, scope?}],
-        force?}. Translates one logical skill's source variant into each
-        target harness's native dir so every agent can use it. Any-to-any:
-        source_system is a parameter, not fixed to Claude.
-
-        Guarded: readonly (do_POST chokepoint), name charset, unknown/
-        disabled targets (400), and 409 when a target already holds a
-        DIVERGENT copy (different fingerprint) unless {"force": true} —
-        so a sync never silently clobbers a locally-edited skill.
-        """
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._skills_unavailable():
-            return
-        # Belt-and-suspenders: the route regex already restricts the charset,
-        # but re-check against the canonical gate before any path is built.
-        if not (SKILL_NAME_RE and SKILL_NAME_RE.match(name)):
-            self.send_json({'error': 'invalid skill name', 'code': 'bad_name'}, 400)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        if not isinstance(data, dict):
-            self.send_json({'error': 'body must be an object'}, 400)
-            return
-
-        source_system = (data.get('source_system') or '').strip()
-        source_scope = (data.get('source_scope') or '').strip() or None
-        force = bool(data.get('force'))
-        targets = data.get('targets')
-        if not isinstance(targets, list) or not targets:
-            self.send_json({'error': 'targets[] required'}, 400)
-            return
-
-        # --- resolve the SOURCE variant from the live snapshot ---
-        variants = SkillsSyncer.get(name)
-        if not variants:
-            self.send_json({'error': 'not found', 'code': 'not_found'}, 404)
-            return
-        candidates = variants
-        if source_system:
-            candidates = [v for v in candidates if source_system in v.systems]
-        if source_scope:
-            candidates = [v for v in candidates if v.scope == source_scope]
-        if not candidates:
-            self.send_json({'error': 'source variant not found',
-                            'code': 'source_not_found'}, 404)
-            return
-        if len(candidates) > 1:
-            # Divergent skill and the caller didn't pin it down.
-            self.send_json({'error': 'ambiguous source; specify source_system',
-                            'code': 'ambiguous_source'}, 400)
-            return
-        source = candidates[0]
-
-        # --- validate every target up front (fail fast, install nothing) ---
-        norm_targets = []
-        for t in targets:
-            if not isinstance(t, dict):
-                self.send_json({'error': 'each target must be an object'}, 400)
-                return
-            sys_key = (t.get('system') or '').strip()
-            scope = (t.get('scope') or 'user').strip()
-            provider = SKILL_PROVIDERS.get(sys_key)
-            if provider is None:
-                self.send_json({'error': f'unknown target system: {sys_key!r}',
-                                'code': 'bad_target'}, 400)
-                return
-            if not provider.enabled:
-                self.send_json({'error': f'target {sys_key!r} is disabled',
-                                'code': 'target_disabled'}, 400)
-                return
-            try:
-                provider.install_path(name, scope)  # validates scope writable
-            except ValueError as e:
-                self.send_json({'error': str(e), 'code': 'bad_target'}, 400)
-                return
-            norm_targets.append((sys_key, scope, provider))
-
-        # --- conflict check: refuse to overwrite a DIVERGENT target copy ---
-        conflicts = []
-        for sys_key, scope, _provider in norm_targets:
-            existing = [v for v in variants if sys_key in v.systems]
-            for ex in existing:
-                if ex.fingerprint != source.fingerprint:
-                    conflicts.append({'system': sys_key,
-                                      'existing_fingerprint': ex.fingerprint})
-                    break
-        if conflicts and not force:
-            self.send_json({'error': 'target has a divergent copy',
-                            'code': 'conflict', 'conflicts': conflicts,
-                            'hint': 'retry with {"force": true} to overwrite'},
-                           409)
-            return
-
-        # --- install into every target (atomic per file) ---
-        installed, failed = [], []
-        for sys_key, scope, provider in norm_targets:
-            try:
-                path = provider.install(source, scope)
-                installed.append({'system': sys_key, 'scope': scope, 'path': path})
-            except Exception as e:
-                failed.append({'system': sys_key, 'scope': scope, 'error': str(e)})
-        # Refresh the snapshot so the collapsed row is visible immediately
-        # and clients get a fresh list on their next poll / SSE tick.
-        try:
-            SkillsSyncer.trigger_sync()
-        except Exception:
-            pass
-        status = 200 if installed and not failed else (207 if installed else 500)
-        self.send_json({'name': name, 'source_system': source.systems[0],
-                        'installed': installed, 'failed': failed}, status)
-
     # ── Subagents (spawned child tasks) ──────────────────────────
     # Lists real spawned sub-tasks filtered by parent_task_id.
     # Replaces the old read-only transcript scanner which was fragile
@@ -18404,49 +18197,6 @@ class BrowserHandler(system_routes.SystemRoutes,
             'completed_count': completed,
             'error_count': errored,
         })
-
-    # ── Docs (in-app documentation site) ────────────────────────────────
-    def handle_docs_manifest(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            manifest = DocsManager.load_manifest()
-            self.send_json(manifest)
-        except Exception as e:
-            print(f'[docs] manifest error: {e}', file=sys.stderr)
-            self.send_json({'error': str(e), 'code': 'internal'}, 500)
-
-    def handle_docs_page(self, page_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            page = DocsManager.get_page(page_id)
-            self.send_json(page)
-        except KeyError:
-            self.send_json({'error': f'Unknown doc page: {page_id}'}, 404)
-        except Exception as e:
-            print(f'[docs] page {page_id} error: {e}', file=sys.stderr)
-            self.send_json({'error': str(e), 'code': 'internal'}, 500)
-
-    def handle_docs_search(self, query):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        q = ''
-        try:
-            q = (query.get('q', [''])[0] or '').strip()
-            try:
-                limit = int(query.get('limit', ['25'])[0])
-            except (ValueError, TypeError):
-                limit = 25
-            limit = max(1, min(100, limit))
-            results = DocsManager.search(q, limit=limit)
-            self.send_json({'q': q, 'results': results})
-        except Exception as e:
-            print(f'[docs] search {q!r} error: {e}', file=sys.stderr)
-            self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
     # ── File upload + browse (rooted at /home/dev) ─────────────────────
     # We deliberately keep these endpoints scoped to /home/dev with a
@@ -20280,9 +20030,11 @@ class BrowserHandler(system_routes.SystemRoutes,
                 self.handle_memory_import()
             elif path == "/api/memory/_purge":
                 self.handle_memory_purge()
-            # Skills API (multi-harness SKILL.md surface)
-            elif path == "/api/skills/_scan":
-                self.handle_skills_scan()
+            # Skills API (multi-harness SKILL.md surface) — both POST routes
+            # are in handlers/skills.py's table, including the {name}/sync one
+            # that used to sit in the regex block below.
+            elif skills_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # File upload (raw body; X-Dest-Path + X-Filename headers)
             elif path == "/api/files/upload":
                 self.handle_file_upload()
@@ -20349,13 +20101,6 @@ class BrowserHandler(system_routes.SystemRoutes,
                 m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/project$', path)
                 if m:
                     self.handle_hypervisor_set_project(m.group(1))
-                    return
-                # /api/skills/{name}/sync — cross-harness install (PR2).
-                # Stricter name charset than the GET route: only the
-                # filesystem-safe [a-z0-9-] set may ever build a write path.
-                m = re.match(r'^/api/skills/([a-z0-9-]+)/sync$', path)
-                if m:
-                    self.handle_skills_sync(m.group(1))
                     return
                 # /api/claude/tasks/{id}/rename
                 m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/rename$', path)

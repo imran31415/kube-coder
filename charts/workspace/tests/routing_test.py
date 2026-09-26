@@ -2,7 +2,8 @@
 
 Three layers:
   * `RouteTable` itself — first match wins, exact vs regex patterns, capture
-    groups, raw-vs-normalized path selection, name-based handler lookup.
+    groups, raw-vs-normalized path selection, the query-string column,
+    name-based handler lookup.
   * The system domain's table — the ordering hazards that used to be nothing
     but a comment asking the next editor not to move the lines, asserted
     directly against the table with no HTTP request involved.
@@ -14,20 +15,17 @@ Run with:
     cd charts/workspace && python3 -m unittest tests.routing_test
 """
 
-import http.server
 import os
 import re
 import sys
-import threading
 import unittest
-import urllib.error
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import system  # noqa: E402
 from handlers.routing import RouteTable  # noqa: E402
+from tests.http_harness import EndpointTestCase  # noqa: E402
 
 
 class _Recorder:
@@ -130,6 +128,38 @@ class RouteTableTests(unittest.TestCase):
             t.add('GET', 'livez', 'alpha')
 
 
+class RouteTableQueryTests(unittest.TestCase):
+    """The `query=True` column: which handlers are handed the parsed query
+    string, which do_GET used to parse inline and pass positionally."""
+
+    def test_only_routes_with_the_column_see_the_query_string(self):
+        # Same request shape either way; the column is the whole difference.
+        t = RouteTable()
+        t.add('GET', '/with', 'alpha', query=True)
+        t.add('GET', '/without', 'beta')
+        rec = _Recorder()
+        t.dispatch(rec, 'GET', '/with', '/with?scope=user&x=1')
+        t.dispatch(rec, 'GET', '/without', '/without?scope=user&x=1')
+        self.assertEqual(rec.calls,
+                         [('alpha', ({'scope': ['user'], 'x': ['1']},)),
+                          ('beta', ())])
+
+    def test_the_query_dict_precedes_the_capture_groups(self):
+        t = RouteTable()
+        t.add('GET', re.compile(r'^/api/docs/([^/]+)$'), 'alpha', query=True)
+        rec = _Recorder()
+        t.dispatch(rec, 'GET', '/api/docs/search', '/api/docs/search?q=a')
+        self.assertEqual(rec.calls, [('alpha', ({'q': ['a']}, 'search'))])
+
+    def test_a_path_with_no_query_string_yields_an_empty_dict(self):
+        # Not None — the handlers call .get() on it unconditionally.
+        t = RouteTable()
+        t.add('GET', '/api/skills', 'alpha', query=True)
+        rec = _Recorder()
+        t.dispatch(rec, 'GET', '/api/skills', '/api/skills')
+        self.assertEqual(rec.calls, [('alpha', ({},))])
+
+
 class SystemRouteOrderTests(unittest.TestCase):
     """The hazards the old chain carried as comments, as assertions."""
 
@@ -166,51 +196,25 @@ class SystemRouteOrderTests(unittest.TestCase):
                             f'{route} names a method BrowserHandler lacks')
 
 
-class SystemEndpointBehaviourTests(unittest.TestCase):
+class SystemEndpointBehaviourTests(EndpointTestCase):
     """Status codes for the migrated routes, over a real server.
 
-    AUTH_MODE is pinned to oauth2 — the mode where server.py is its own
-    enforcer — so the auth-gated members of this domain answer 401 rather than
-    doing real work. A 401 also proves the route matched at all, which is what
-    separates "reached the handler" from "fell through to the 404".
+    EndpointTestCase pins AUTH_MODE to oauth2 — the mode where server.py is
+    its own enforcer — so the auth-gated members of this domain answer 401
+    rather than doing real work. A 401 also proves the route matched at all,
+    which is what separates "reached the handler" from "fell through to the
+    404".
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls._auth_mode_save = server.AUTH_MODE
-        server.AUTH_MODE = 'oauth2'
-        # Port 0 lets the kernel pick a free one, with no window between
-        # probing for it and binding it.
-        cls.httpd = http.server.ThreadingHTTPServer(
-            ('127.0.0.1', 0), server.BrowserHandler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        server.AUTH_MODE = cls._auth_mode_save
-
-    def _get(self, path):
-        """Return (status, body) whether or not the response was an error."""
-        try:
-            with urllib.request.urlopen(
-                    f'http://127.0.0.1:{self.port}{path}', timeout=5) as r:
-                return r.status, r.read()
-        except urllib.error.HTTPError as e:
-            return e.code, e.read()
-
     def test_probes_answer_without_authentication(self):
-        self.assertEqual(self._get('/livez'), (200, b'ok'))
-        status, body = self._get('/health')
+        self.assertEqual(self.get('/livez'), (200, b'ok'))
+        status, body = self.get('/health')
         self.assertEqual(status, 200)
         self.assertIn(b'"services"', body)
         for path, service in (('/health/vscode', b'vscode'),
                               ('/health/terminal', b'terminal'),
                               ('/health/browser', b'browser')):
-            status, body = self._get(path)
+            status, body = self.get(path)
             self.assertEqual(status, 200, path)
             self.assertIn(service, body)
 
@@ -219,13 +223,13 @@ class SystemEndpointBehaviourTests(unittest.TestCase):
         for path in ('/metrics', '/metrics/prometheus', '/api/github/status',
                      '/api/github/config', '/api/workspace/version',
                      '/vnc', '/vnc/', '/vnc-proxy', '/vnc/core.js'):
-            self.assertEqual(self._get(path)[0], 401, path)
+            self.assertEqual(self.get(path)[0], 401, path)
 
     def test_normalized_routes_are_reachable_under_the_oauth_prefix(self):
         # The SPA and the oauth2 ingress prefix every call with /oauth.
         for path in ('/metrics/prometheus', '/api/github/status',
                      '/api/github/config', '/api/workspace/version'):
-            self.assertEqual(self._get('/oauth' + path)[0], 401, path)
+            self.assertEqual(self.get('/oauth' + path)[0], 401, path)
 
     def test_raw_only_routes_stay_404_under_the_oauth_prefix(self):
         # Pre-existing behaviour, captured rather than changed: these have
@@ -234,7 +238,7 @@ class SystemEndpointBehaviourTests(unittest.TestCase):
         # NON_SPA_PREFIXES). The kubelet and in-pod curls use the bare form.
         for path in ('/oauth/livez', '/oauth/health', '/oauth/metrics',
                      '/oauth/vnc', '/livez?probe=1'):
-            self.assertEqual(self._get(path)[0], 404, path)
+            self.assertEqual(self.get(path)[0], 404, path)
 
 
 if __name__ == '__main__':
