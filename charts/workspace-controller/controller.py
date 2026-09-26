@@ -783,16 +783,16 @@ def set_workspace_image(user, target_version=None, persist=True):
     # backend code — new Hypervisor routes, the assistants list, … — would stay
     # frozen at whatever chart version last did a `helm upgrade`, while the SPA
     # baked into the image advances. That mismatch is the "workspace updated but
-    # Hypervisor 404s / no assistants" bug. Launch the same provisioning Job used
-    # for create: it runs `make deploy` (helm upgrade from CHART_REF against the
-    # user's gitops config, now carrying new_tag), refreshing every ConfigMap and
-    # rolling the pod via the deployment's checksum/* annotations. Run it even
-    # when the image is already current — a stale ConfigMap can (and does)
-    # coexist with an up-to-date image tag.
+    # Hypervisor 404s / no assistants" bug. Raise the same provisioning request
+    # used for create: the broker's Job runs `make deploy` (helm upgrade from the
+    # broker's pinned chart ref against the user's gitops config, now carrying
+    # new_tag), refreshing every ConfigMap and rolling the pod via the
+    # deployment's checksum/* annotations. Run it even when the image is already
+    # current — a stale ConfigMap can (and does) coexist with an up-to-date tag.
     reconcile = None
     if provisioning_enabled():
         try:
-            create_provision_job(user)
+            create_provision_request(user)
             reconcile = 'launched'
         except (KubectlError, ProvisionError) as exc:
             reconcile = 'failed'
@@ -1701,38 +1701,17 @@ GITOPS_BRANCH = os.environ.get('GITOPS_BRANCH', 'main').strip()
 # Token (GitHub App installation token or PAT) with push access to GITOPS_REPO
 # and read on the GitHub API. Injected from a Secret; empty => provisioning off.
 GITOPS_TOKEN = os.environ.get('GITOPS_TOKEN', '').strip()
-# Repo + ref the provisioner Job pulls the workspace Helm chart from. The chart
-# always sets CHART_REF when provisioning is enabled (defaulting an empty
-# provision.chart.ref to the chart's own v<appVersion> release tag, #459); an
-# empty fallback here classifies as mutable, so a missing env still fails closed.
-CHART_REPO = os.environ.get('CHART_REPO', 'https://github.com/imran31415/kube-coder.git').strip()
-CHART_REF = os.environ.get('CHART_REF', '').strip()
-# Supply-chain hardening (security review July 2026, finding 7). The provisioner
-# Job git-clones CHART_REPO at CHART_REF and runs its `make deploy` under the
-# cluster-privileged `workspace-provisioner` ServiceAccount. A *mutable* ref (a
-# branch like `main`, `latest`/`HEAD`, or a short SHA) means the exact code that
-# executes with cluster-wide permissions can change out from under the operator
-# between provisions — so a compromise of the chart repo's default branch would
-# become cluster compromise during provisioning. We therefore require an
-# *immutable* ref: a full 40-hex commit SHA (64-hex for SHA-256 repos) or a
-# signed release tag `vX.Y.Z`. Provisioning is opt-in and rarely run, so we fail
-# closed by default; an operator who genuinely needs to track a branch sets
-# provision.chart.allowMutableRef (env ALLOW_MUTABLE_CHART_REF), mirroring the
-# allowSharedToken migration flag from #414. Every decision is logged for
-# provenance.
-ALLOW_MUTABLE_CHART_REF = os.environ.get('ALLOW_MUTABLE_CHART_REF', '').strip().lower() in (
-    '1', 'true', 'yes', 'on')
-_CHART_REF_SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
-_CHART_REF_TAG_RE = re.compile(r'^v\d+\.\d+\.\d+$')
-# Image the provisioner Job runs. MUST be the dedicated, signed provisioner image
-# (provisioner/Dockerfile) pinned BY DIGEST via provision.image — it bakes
-# helm+kubectl+git+make so nothing is downloaded at runtime (finding 7) AND it
-# carries the provisioning script as its entrypoint (#422). There is no fallback:
-# build_job_manifest fails closed when this is empty, because a Job with no
-# command on some other image would run that image's entrypoint instead.
-PROVISIONER_IMAGE = os.environ.get('PROVISIONER_IMAGE', '').strip()
-PROVISIONER_SA = os.environ.get('PROVISIONER_SERVICE_ACCOUNT', 'workspace-provisioner').strip()
-PROVISIONER_PULL_SECRET = os.environ.get('PROVISIONER_PULL_SECRET', '').strip()
+# Namespace the provisioning broker and the privileged provisioner Job live in
+# (#421). The controller's ONLY grant there is `create` (plus reads) on
+# ProvisionRequests — no batch verbs, no Secret reads, no status writes. Every
+# value that shapes the privileged Job (image, entrypoint, env, ServiceAccount,
+# volumes, resources, chart repo/ref) is resolved by the broker from its own
+# configuration and is deliberately ABSENT from this process: a constant the
+# controller does not hold is a constant a controller compromise cannot forge.
+PROVISION_BROKER_NAMESPACE = os.environ.get(
+    'PROVISION_BROKER_NAMESPACE', 'kube-coder-provision').strip()
+PROVISION_REQUEST_API = 'kube-coder.dev/v1alpha1'
+PROVISION_REQUEST_RESOURCE = 'provisionrequests.kube-coder.dev'
 # Tag the new workspace runs; the chart prefixes it with `devlaptop-`.
 WORKSPACE_IMAGE_TAG = os.environ.get('WORKSPACE_IMAGE_TAG', '').strip()
 # Shared cluster Secret names projected into each provisioned workspace so the
@@ -1764,40 +1743,6 @@ class GithubError(RuntimeError):
 
 class ProvisionError(RuntimeError):
     pass
-
-
-def classify_chart_ref(ref):
-    """Classify a chart git ref for the privileged provisioner Job:
-    'commit-sha' (full 40/64-hex SHA), 'release-tag' (vX.Y.Z), or 'mutable'
-    (a branch like main, latest/HEAD, a short SHA — anything not pinned)."""
-    r = (ref or '').strip()
-    if _CHART_REF_SHA_RE.match(r):
-        return 'commit-sha'
-    if _CHART_REF_TAG_RE.match(r):
-        return 'release-tag'
-    return 'mutable'
-
-
-def chart_ref_is_immutable(ref):
-    """True when ref is a full commit SHA or a vX.Y.Z release tag."""
-    return classify_chart_ref(ref) != 'mutable'
-
-
-def validate_chart_ref(ref):
-    """Enforce an immutable chart ref for the cluster-privileged provisioner Job
-    (finding 7). Returns the ref classification for provenance logging. Raises
-    ProvisionError (fail-closed) when the ref is mutable and the
-    ALLOW_MUTABLE_CHART_REF escape hatch is not set."""
-    kind = classify_chart_ref(ref)
-    if kind == 'mutable' and not ALLOW_MUTABLE_CHART_REF:
-        raise ProvisionError(
-            f'refusing to provision from mutable chart ref {(ref or "").strip()!r}: the '
-            f'provisioner Job git-clones this ref and runs its `make deploy` under the '
-            f'cluster-privileged provisioner ServiceAccount, so it must be pinned to an '
-            f'immutable reference — a full 40-hex commit SHA or a vX.Y.Z release tag. '
-            f'Set provision.chart.ref to a pinned ref, or set '
-            f'provision.chart.allowMutableRef=true (env ALLOW_MUTABLE_CHART_REF) to override.')
-    return kind
 
 
 def _github_api(method, path, token=None, body=None):
@@ -2076,151 +2021,105 @@ def _git(args):
     return proc.stdout
 
 
-# The Job clones the chart repo + the private config repo, assembles the
-# users-private dir the Makefile expects, then runs the same `make deploy` an
-# operator would — all of it from the script baked into the provisioner image
-# (provisioner/provision.sh), not from anything sent in the manifest.
+# --- the constrained provisioning request (#421) -----------------------------
 #
-# The controller itself holds no cluster-wide write verbs — only namespaced
-# `create jobs` (see serviceaccount.yaml). But state the real blast radius
-# honestly: because the
-# Job it creates selects the `workspace-provisioner` ServiceAccount, and in
-# Kubernetes a principal that can create a workload AND choose another SA in the
-# same namespace inherits that SA's identity, a controller compromise (RCE,
-# k8s-token theft, or any flaw giving arbitrary Job-manifest control) bridges
-# straight to the provisioner's cluster-wide ClusterRole. This is emphatically
-# NOT limited to "can start Jobs". Defense-in-depth that keeps it acceptable:
-# provisioning is opt-in and off by default; the controller can only launch a
-# Job in its own namespace; and a ValidatingAdmissionPolicy
-# (templates/provisioner-vap.yaml) pins the shape of any Job that runs as the
-# provisioner SA (exact SA, approved image, single expected container, no
-# command/args override, no privileged securityContext / hostPath / hostNetwork),
-# so a tampered manifest cannot smuggle an attacker-controlled workload in under
-# the provisioner identity. Since #422 that includes the code itself: with the
-# script baked into the image and command/args denied at admission, manifest
-# control buys an attacker the inputs to one fixed signed program, not a shell.
-# Endgame: move the provisioner to a separate namespace behind a constrained
-# broker that stamps Jobs from an immutable template (#421).
+# The controller no longer builds the privileged Job. It creates a
+# ProvisionRequest — a custom resource whose entire spec is one field, `slug` —
+# in the broker's namespace, and the broker (charts/workspace-controller/
+# broker.py) stamps the Job from a template this process cannot see or shape.
 #
-# The provisioning script itself is NOT here any more (#422 item 1). It is baked
-# into the dedicated provisioner image as its ENTRYPOINT — provisioner/provision.sh,
-# installed to /usr/local/bin/provision.sh by provisioner/Dockerfile. The Job this
-# module builds therefore carries DATA (env) and no code: it supplies no `command`,
-# and the ValidatingAdmissionPolicy (templates/provisioner-vap.yaml) rejects any
-# Job under the provisioner SA that tries to set one. Two things follow:
-#   * controller compromise no longer means arbitrary code execution at
-#     provisioner privilege — the attacker can pick the inputs, not the program;
-#   * a Job template with no caller-supplied command is genuinely immutable, which
-#     is the precondition the #421 broker rearchitecture needs.
-# Helm's version also lives solely in the image now (provisioner/Dockerfile's
-# HELM_VERSION ARG, baked to /etc/provisioner/helm-version and read back by
-# provision.sh), so there is no second copy here to drift out of lockstep.
-# Whatever changes in provision.sh, keep the env contract below in sync with it.
+# Why that matters, stated as the thing it replaces. Before #421 the controller
+# held namespaced `create jobs` and the Job it created SELECTED the cluster-
+# privileged `workspace-provisioner` ServiceAccount. Kubernetes hands a pod a
+# token for whatever SA it names, so a principal that could create a workload
+# and choose another SA in the same namespace inherited that SA's ClusterRole:
+# a controller compromise (RCE, token theft, any flaw giving arbitrary
+# Job-manifest control) bridged straight to cluster-wide create verbs. #416's
+# admission policy and #420's immutable chart refs constrained the SHAPE of that
+# Job; the bridge itself remained.
+#
+# It is gone now, structurally rather than by policy:
+#   * the privileged SA lives in another namespace, where this process holds no
+#     binding of any kind (templates/broker-rbac.yaml);
+#   * the `workspace-controller-provision` Role that granted `create jobs` is
+#     deleted (it used to live in templates/serviceaccount.yaml);
+#   * the request's schema declares exactly one property, so the API server
+#     PRUNES any attempt to add image/command/env/volumes/serviceAccountName
+#     before the object is persisted;
+#   * the request's status is a subresource this process cannot write, so a
+#     provisioning outcome cannot be forged back at the console.
+#
+# What a controller compromise now buys is the ability to ask for a workspace
+# by slug. That is the whole surface. Keep it that way: any new field added to
+# ProvisionRequest.spec is a new thing an attacker gets to choose.
+_PROVISION_PHASE_TO_STATE = {
+    '': 'pending',
+    'Pending': 'pending',
+    'Running': 'running',
+    'Succeeded': 'succeeded',
+    'Failed': 'failed',
+}
 
 
-def build_job_manifest(slug):
-    # Fail closed on a mutable/floating chart ref before we ever build a Job that
-    # would git-clone it and run its make deploy under the provisioner SA
-    # (finding 7). Also log the ref + its classification for provenance.
-    ref_kind = validate_chart_ref(CHART_REF)
-    sys.stderr.write(
-        f'[controller] provisioning {slug}: chart repo={CHART_REPO} ref={CHART_REF} '
-        f'({ref_kind}) allowMutableRef={ALLOW_MUTABLE_CHART_REF}\n')
+def build_provision_request(slug):
+    """The entire request this process is able to make.
+
+    Named (not generateName'd) with a timestamp, exactly as the Job used to be:
+    a provision for the same slug is re-run routinely — the update path
+    reconciles config through it — so each request is an event, not a singleton.
+    The broker reuses this name for the Job it stamps, which makes its side
+    idempotent: a broker that crashes between stamping and recording hits
+    AlreadyExists on the next pass instead of starting a second privileged
+    helm-upgrade for the same workspace.
+    """
     name = f'provision-{slug}-{int(time.time())}'[:63]
-    # The provisioner image is now mandatory, and there is no fallback to the
-    # controller's own image (#422). That fallback only ever "worked" because the
-    # injected script probed for helm and exited 1; with the script baked into
-    # the provisioner image, a Job on any other image runs THAT image's
-    # entrypoint instead — for the controller image, ubuntu's default shell,
-    # which exits 0 and reports a Job that provisioned nothing. Refusing here
-    # keeps the failure loud and keeps it at manifest-build time.
-    image = PROVISIONER_IMAGE
-    if not image:
-        raise ProvisionError(
-            'refusing to provision: provision.image is not set. The Job runs the '
-            'provisioning script baked into the dedicated provisioner image '
-            '(provisioner/Dockerfile) as its entrypoint and supplies no command, so '
-            'there is no longer a usable fallback to the controller image. Set '
-            'provision.image to the signed provisioner image pinned by digest '
-            '(ghcr.io/imran31415/kube-coder/provisioner@sha256:...).')
-    env = [
-        {'name': 'SLUG', 'value': slug},
-        # NAMESPACE = the control-plane namespace the Job runs in (regcred source);
-        # WS_NAMESPACE = the workspace's own per-user namespace it deploys into (#103).
-        {'name': 'NAMESPACE', 'value': NAMESPACE},
-        {'name': 'WS_NAMESPACE', 'value': ns_for_user(slug)},
-        {'name': 'CHART_REPO', 'value': CHART_REPO},
-        {'name': 'CHART_REF', 'value': CHART_REF},
-        {'name': 'GITOPS_REPO', 'value': GITOPS_REPO},
-        {'name': 'GITOPS_BRANCH', 'value': GITOPS_BRANCH},
-        {'name': 'GITOPS_TOKEN', 'value': GITOPS_TOKEN},
-    ]
-    container = {
-        'name': 'provision',
-        'image': image,
-        # Deliberately NO 'command'/'args': the image's baked ENTRYPOINT is the
-        # program (#422 item 1). Admission enforces the absence — do not add one
-        # back without also relaxing provisioner-vap.yaml, which would undo the
-        # immutable-template guarantee #421 depends on.
-        'env': env,
-        'resources': {'requests': {'cpu': '100m', 'memory': '256Mi'},
-                      'limits': {'cpu': '1', 'memory': '1Gi'}},
-    }
-    pod_spec = {
-        'serviceAccountName': PROVISIONER_SA,
-        'restartPolicy': 'Never',
-        'containers': [container],
-    }
-    if PROVISIONER_PULL_SECRET:
-        pod_spec['imagePullSecrets'] = [{'name': PROVISIONER_PULL_SECRET}]
     return {
-        'apiVersion': 'batch/v1',
-        'kind': 'Job',
+        'apiVersion': PROVISION_REQUEST_API,
+        'kind': 'ProvisionRequest',
         'metadata': {
             'name': name,
-            'namespace': NAMESPACE,
+            'namespace': PROVISION_BROKER_NAMESPACE,
             'labels': {'app': 'workspace-provisioner', 'provisionUser': slug},
         },
-        'spec': {
-            'backoffLimit': 1,
-            'ttlSecondsAfterFinished': 3600,    # auto-clean an hour after finish
-            'activeDeadlineSeconds': 900,
-            'template': {
-                'metadata': {'labels': {'app': 'workspace-provisioner', 'provisionUser': slug}},
-                'spec': pod_spec,
-            },
-        },
+        # One field. Everything else is the broker's.
+        'spec': {'slug': slug},
     }
 
 
-def _kubectl_apply(manifest):
-    cmd = ['kubectl', 'apply', '-n', NAMESPACE, '-f', '-']
+def _kubectl_create(manifest, namespace):
+    """`kubectl create` (not `apply`): creating is the only write verb the
+    controller holds on ProvisionRequests, and apply would additionally need
+    patch. Keeping the command aligned with the grant means an accidental RBAC
+    widening shows up as a review question rather than as silently-working code."""
+    cmd = ['kubectl', 'create', '-n', namespace, '-f', '-']
     proc = subprocess.run(cmd, input=json.dumps(manifest), capture_output=True,
                           text=True, timeout=KUBECTL_TIMEOUT)
     if proc.returncode != 0:
-        raise KubectlError('kubectl apply failed', proc.stderr.strip())
+        raise KubectlError('kubectl create failed', proc.stderr.strip())
     return proc.stdout.strip()
 
 
-def create_provision_job(slug):
-    return _kubectl_apply(build_job_manifest(slug))
+def create_provision_request(slug):
+    """Ask the broker to provision (or reconcile) one workspace."""
+    return _kubectl_create(build_provision_request(slug), PROVISION_BROKER_NAMESPACE)
 
 
 def provision_status(slug):
-    """Latest provisioning Job for this user + the resulting workspace state."""
-    jobs = _kubectl_json(['get', 'jobs', '-l', f'provisionUser={slug}']).get('items', [])
+    """Latest provisioning request for this user + the resulting workspace state.
+
+    Reads the request's status subresource, which the broker owns. The returned
+    `job` values are unchanged from the pre-#421 Job-polling implementation
+    ('none' | 'pending' | 'running' | 'succeeded' | 'failed') so the console
+    needs no change.
+    """
+    reqs = _kubectl_json(['get', PROVISION_REQUEST_RESOURCE, '-l', f'provisionUser={slug}'],
+                         namespace=PROVISION_BROKER_NAMESPACE).get('items', [])
     job_state, message = 'none', ''
-    if jobs:
-        jobs.sort(key=lambda j: j.get('metadata', {}).get('creationTimestamp', ''))
-        st = jobs[-1].get('status', {})
-        if st.get('succeeded'):
-            job_state = 'succeeded'
-        elif st.get('failed'):
-            job_state, message = 'failed', 'provisioner Job failed — see Job logs'
-        elif st.get('active'):
-            job_state = 'running'
-        else:
-            job_state = 'pending'
+    if reqs:
+        reqs.sort(key=lambda r: r.get('metadata', {}).get('creationTimestamp', ''))
+        st = reqs[-1].get('status') or {}
+        job_state = _PROVISION_PHASE_TO_STATE.get(st.get('phase', ''), 'pending')
+        message = st.get('message', '')
     try:
         ws = find_workspace(slug)   # targeted read; None until the Job creates it
     except (ValueError, LookupError):
@@ -2252,7 +2151,7 @@ def provision_workspace(login, client_id, client_secret, opts_in):
     }
     cookie_secret = gen_cookie_secret()
     gitops_publish(opts, cid, secret, cookie_secret)
-    create_provision_job(opts['slug'])
+    create_provision_request(opts['slug'])
     return opts['slug']
 
 
@@ -2618,14 +2517,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no saved config for {slug} in the GitOps repo — create the workspace with its OAuth App creds first'}, 409)
                 return
             try:
-                create_provision_job(slug)
+                create_provision_request(slug)
                 self.send_json(provision_status(slug))
             except KubectlError as exc:
                 self.send_json({'error': str(exc)}, 502)
             except ProvisionError as exc:
-                # build_job_manifest fails closed on a mutable chart ref or an
-                # unset provision.image (#422) — a misconfiguration, so 400 with
-                # the reason rather than an unhandled 500 from the handler.
+                # GitOps-side failure (the config push). Misconfiguration of the
+                # privileged path itself — an unset provision.image, a mutable
+                # chart ref — is no longer visible here: the broker owns those
+                # constants now and reports them as a Failed request with the
+                # reason in .status.message, which provision_status surfaces.
                 self.send_json({'error': str(exc)}, 400)
             return
         rm = re.match(r'^/api/workspaces/([a-z0-9-]{1,41})/resources$', path)
