@@ -20,6 +20,7 @@ reverse URL building, because registration order is the whole priority model —
 which is precisely what the if/elif chains already meant.
 """
 
+import urllib.parse
 from dataclasses import dataclass
 
 
@@ -37,6 +38,9 @@ class Route:
     handler: str
     #: Match the raw request path rather than the normalized one.
     raw_path: bool
+    #: Pass the request's parsed query string to the handler as its first
+    #: argument, ahead of any capture groups.
+    query: bool
 
     def match(self, path):
         """Capture groups for `path`, or None when the pattern doesn't match.
@@ -64,7 +68,8 @@ class RouteTable:
     def __init__(self):
         self.routes = []
 
-    def add(self, http_method, pattern, handler, *, raw_path=False):
+    def add(self, http_method, pattern, handler, *, raw_path=False,
+            query=False):
         """Append a route.
 
         `pattern` is either an exact path string or a compiled regex — built
@@ -75,10 +80,16 @@ class RouteTable:
         and the SPA's `/oauth` prefix still attached) instead of the
         normalized one. A handful of routes have always been raw-only — the
         kubelet probes and the VNC endpoints — and stay that way.
+
+        `query=True` hands the handler `parse_query(raw_path)` as its first
+        argument. The chains computed that dict inline before calling the few
+        handlers that read query parameters; as a column it says which
+        handlers those are without reading their signatures.
         """
         if isinstance(pattern, str) and not pattern.startswith('/'):
             raise ValueError(f'route pattern must be a path: {pattern!r}')
-        self.routes.append(Route(http_method, pattern, handler, raw_path))
+        self.routes.append(
+            Route(http_method, pattern, handler, raw_path, query))
 
     def match(self, http_method, path, raw_path):
         """First `(route, args)` whose method and pattern match, else None."""
@@ -96,5 +107,18 @@ class RouteTable:
         if hit is None:
             return False
         route, args = hit
+        if route.query:
+            args = (parse_query(raw_path),) + args
         getattr(request, route.handler)(*args)
         return True
+
+
+def parse_query(raw_path):
+    """`parse_qs` over a raw request path's query string.
+
+    Exactly what do_GET computed inline as `memory_query` before calling a
+    handler that reads query parameters — the raw path is used because the
+    normalized one has already had the query string stripped off.
+    """
+    query_string = raw_path.split('?', 1)[1] if '?' in raw_path else ''
+    return urllib.parse.parse_qs(query_string)
