@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import skills  # noqa: E402
-from tests.http_harness import EndpointTestCase  # noqa: E402
+from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
 
 
 class SkillsRouteOrderTests(unittest.TestCase):
@@ -34,8 +34,7 @@ class SkillsRouteOrderTests(unittest.TestCase):
             http_method, path, raw if raw is not None else path)
 
     def _handler_for(self, http_method, path, raw=None):
-        hit = self._hit(http_method, path, raw)
-        return hit[0].handler if hit else None
+        return handler_for(skills.ROUTES, http_method, path, raw)
 
     def test_stats_is_not_read_as_a_skill_name(self):
         # The hazard: `stats` matches the detail pattern, so the stats route

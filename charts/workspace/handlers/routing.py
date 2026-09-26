@@ -41,6 +41,11 @@ class Route:
     #: Pass the request's parsed query string to the handler as its first
     #: argument, ahead of any capture groups.
     query: bool
+    #: Drop the query string before matching. Only the verbs that route on
+    #: `_strip_route_prefix(self.path)` ever see one — do_GET strips it up
+    #: front — so this is how a DELETE route whose parameters ride the query
+    #: still matches its own path.
+    strip_query: bool
 
     def match(self, path):
         """Capture groups for `path`, or None when the pattern doesn't match.
@@ -49,6 +54,8 @@ class Route:
         regex yields its groups, which the table passes to the handler
         positionally.
         """
+        if self.strip_query:
+            path = path.split('?', 1)[0]
         if isinstance(self.pattern, str):
             return () if path == self.pattern else None
         m = self.pattern.match(path)
@@ -69,7 +76,7 @@ class RouteTable:
         self.routes = []
 
     def add(self, http_method, pattern, handler, *, raw_path=False,
-            query=False):
+            query=False, strip_query=False):
         """Append a route.
 
         `pattern` is either an exact path string or a compiled regex — built
@@ -85,11 +92,17 @@ class RouteTable:
         argument. The chains computed that dict inline before calling the few
         handlers that read query parameters; as a column it says which
         handlers those are without reading their signatures.
+
+        `strip_query=True` matches the path with its query string removed.
+        Every verb except do_GET routes on a path that still carries one, so a
+        route whose parameters ride the query — `DELETE /api/files?path=…` —
+        needs this to match at all. The chain spelled it `path.split('?', 1)[0]
+        == '/api/files'` at each such branch.
         """
         if isinstance(pattern, str) and not pattern.startswith('/'):
             raise ValueError(f'route pattern must be a path: {pattern!r}')
         self.routes.append(
-            Route(http_method, pattern, handler, raw_path, query))
+            Route(http_method, pattern, handler, raw_path, query, strip_query))
 
     def match(self, http_method, path, raw_path):
         """First `(route, args)` whose method and pattern match, else None."""

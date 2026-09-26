@@ -1,4 +1,7 @@
-"""Boot a real `server.BrowserHandler` for an endpoint test (#100).
+"""Shared harness for the route-table suites (#100).
+
+Two things the per-domain suites all want: a real server to make requests
+against, and a one-line way to ask a table which handler a path resolves to.
 
 A dozen suites under `tests/` hand-roll the same three things: pick a port,
 start a ThreadingHTTPServer on BrowserHandler in a daemon thread, and issue
@@ -70,3 +73,14 @@ class EndpointTestCase(unittest.TestCase):
 
     def post(self, path, body=b''):
         return self.request(path, method='POST', body=body)
+
+
+def handler_for(table, http_method, path, raw=None):
+    """The handler name `table` would dispatch `path` to, or None.
+
+    The question every route-order test asks. `raw` defaults to `path`, which
+    is the right answer for a normalized-path route; pass it explicitly to
+    check a raw-path route or a request that arrived under `/oauth`.
+    """
+    hit = table.match(http_method, path, path if raw is None else raw)
+    return hit[0].handler if hit else None
