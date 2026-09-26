@@ -44,6 +44,12 @@ docs/
 # no business inside a build context.
 .users/
 
+# Home-volume backups from scripts/backup-user.sh (#579, #680). The archives hold
+# the user's SSH private keys and every persisted tool login. No image needs
+# them, and .gitignore only stops `git add` — without this line the next
+# `make build` / `make push` ships them to the build daemon and its cache.
+backups/
+
 # Local/editor noise.
 .DS_Store
 *.log

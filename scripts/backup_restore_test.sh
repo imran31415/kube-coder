@@ -15,7 +15,10 @@
 #   * restore verifies the archive BEFORE touching the volume, refuses a
 #     non-empty volume without --force, and never reports success unless the
 #     remote tar did,
-#   * --dry-run issues no mutating kubectl verb at all.
+#   * --dry-run issues no mutating kubectl verb at all,
+#   * an archive under backups/ never enters a Docker build context (#680) —
+#     the one test here that needs a Docker daemon; it skips without one,
+#     except under CI where a skip would quietly drop the guard.
 #
 # Run:  bash scripts/backup_restore_test.sh
 set -uo pipefail
@@ -305,6 +308,33 @@ if [ "$brc" = 0 ] && [ "$rrc" = 0 ] && diff -r "$FIX" "$KC_EXTRACT_DIR" >/dev/nu
   ok "backup -> restore round trip reproduces the volume byte-identically"
 else bad "round trip" "backup rc=$brc restore rc=$rrc diff:
 $(diff -r "$FIX" "$KC_EXTRACT_DIR" 2>&1 | head -10)"; fi
+
+echo "=== build context ==="
+
+# 25. An archive in the default sink must never reach a Docker build context
+#     (#680). Every image build uses the repo root as its context, and
+#     .gitignore only stops `git add`, so without a .dockerignore entry the next
+#     `make push` ships every user's SSH keys to the build daemon. Asked of
+#     Docker itself rather than grepped: a throwaway context carrying the REAL
+#     .dockerignore, a fake archive under backups/, and a control file that
+#     proves the probe copied anything at all. FROM scratch pulls nothing.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  CTX="$WORK/ctx"
+  mkdir -p "$CTX/backups/alice"
+  cp "$HERE/../.dockerignore" "$CTX/.dockerignore"
+  echo "PRIVATE KEY" > "$CTX/backups/alice/ws-alice-home-20260801T120000Z.tar.gz"
+  echo "control"     > "$CTX/control.txt"
+  printf 'FROM scratch\nCOPY . /ctx/\n' > "$WORK/probe.Dockerfile"
+  out="$(DOCKER_BUILDKIT=1 docker build -q -f "$WORK/probe.Dockerfile" \
+    -o "type=local,dest=$WORK/ctx-out" "$CTX" 2>&1)"; rc=$?
+  if [ "$rc" = 0 ] && [ -f "$WORK/ctx-out/ctx/control.txt" ] && [ ! -e "$WORK/ctx-out/ctx/backups" ]; then
+    ok "backups/ is excluded from the Docker build context"
+  else bad "backups/ in build context" "rc=$rc copied: $(cd "$WORK/ctx-out" 2>/dev/null && find . -type f | sort | tr '\n' ' ') out=$out"; fi
+elif [ -n "${CI:-}" ]; then
+  bad "backups/ in build context" "no Docker daemon under CI — the guard would silently not run"
+else
+  printf '  skip %s\n' "backups/ excluded from the Docker build context (no Docker daemon)"
+fi
 
 echo ""
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
