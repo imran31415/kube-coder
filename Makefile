@@ -245,7 +245,12 @@ rollback: require-user ## Rollback any user's workspace (USER=<name>)
 # cleans up orphans whose users-private/<name>/ dir is already gone — that's
 # why it deliberately does NOT depend on require-user (no values dir needed).
 # Guard: you must retype the workspace name at the prompt before anything is
-# touched. Skips local config + the GitHub OAuth app (remove those by hand).
+# touched. Cluster-only: the GitHub OAuth App and the workspace's config in the
+# GitOps repo survive — see `make forget-user` for the latter.
+#
+# Every destructive step is checked. A step that fails (a dropped API connection
+# mid-run will do it) marks the run INCOMPLETE and exits non-zero rather than
+# printing "Done." over a namespace that is still standing.
 delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name to confirm
 	@if [ -z "$(USER)" ] || [ "$(origin USER)" = "environment" ]; then \
 	  echo "ERROR: pass USER=<name> explicitly on the command line (e.g. make delete-user USER=oldname)."; \
@@ -261,19 +266,84 @@ delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name
 	@read confirm; \
 	if [ "$$confirm" != "$(USER)" ]; then echo "Aborted — input did not match '$(USER)'."; exit 1; fi; \
 	ns=$(call ws_namespace,$(USER)); \
+	rc=0; \
 	echo "==> helm uninstall $(USER)-workspace"; \
-	helm uninstall $(USER)-workspace --namespace $$ns || true; \
+	if out=$$(helm uninstall $(USER)-workspace --namespace $$ns 2>&1); then \
+	  echo "$$out"; \
+	else \
+	  case "$$out" in \
+	    *"not found"*) echo "    no release to uninstall (expected when clearing an orphan)";; \
+	    *) echo "$$out"; echo "    FAILED: helm uninstall"; rc=1;; \
+	  esac; \
+	fi; \
 	echo "==> deleting PVC ws-$(USER)-home (and its underlying volume)"; \
-	kubectl delete pvc ws-$(USER)-home --namespace $$ns --ignore-not-found; \
+	kubectl delete pvc ws-$(USER)-home --namespace $$ns --ignore-not-found \
+	  || { echo "    FAILED: could not delete PVC ws-$(USER)-home"; rc=1; }; \
 	if [ "$$ns" != "$(NAMESPACE)" ]; then \
 	  echo "==> deleting the per-workspace namespace $$ns (removes all remaining objects)"; \
-	  kubectl delete namespace $$ns --ignore-not-found; \
+	  kubectl delete namespace $$ns --ignore-not-found \
+	    || { echo "    FAILED: could not delete namespace $$ns"; rc=1; }; \
+	  if kubectl get namespace $$ns >/dev/null 2>&1; then \
+	    echo "    FAILED: namespace $$ns is still present after the delete"; rc=1; \
+	  fi; \
 	else \
 	  echo "==> deleting leftover secrets (TLS + basic-auth, if present)"; \
-	  kubectl delete secret $(USER)-dev-scalebase-io-tls $(USER)-basic-auth --namespace $$ns --ignore-not-found; \
+	  kubectl delete secret $(USER)-dev-scalebase-io-tls $(USER)-basic-auth --namespace $$ns --ignore-not-found \
+	    || { echo "    FAILED: could not delete leftover secrets"; rc=1; }; \
+	fi; \
+	if [ $$rc -ne 0 ]; then \
+	  echo; \
+	  echo "INCOMPLETE — '$(USER)' was NOT fully removed (see FAILED above)."; \
+	  echo "Re-running is safe: every step above is idempotent."; \
+	  exit 1; \
 	fi; \
 	echo "Done. '$(USER)' removed from the cluster."; \
-	echo "NOTE: users-private/$(USER)/ (local config) and the GitHub OAuth app are untouched — delete those manually if desired."
+	echo; \
+	echo "NOTE: the GitHub OAuth App is untouched — delete it by hand unless you are reusing it."; \
+	echo "NOTE: the GitOps config users-private/$(USER)/ is untouched, and that is load-bearing:"; \
+	echo "      while it exists the controller console reports configExists for $(USER), SKIPS"; \
+	echo "      the OAuth credential form on the next provision, and redeploys the saved"; \
+	echo "      clientId. If that OAuth App was deleted or rotated, the rebuilt workspace comes"; \
+	echo "      back against dead credentials. To force a fresh prompt:"; \
+	echo "        make forget-user USER=$(USER)"
+
+# Drop a workspace's saved config from the GitOps store. delete-user is
+# cluster-only; the controller keeps values.yaml + secrets/oauth2.yaml for every
+# workspace in the GitOps repo, and gitops_config_exists() in controller.py turns
+# that copy into the console's `configExists` flag — which makes the UI skip the
+# OAuth credential form and deploy straight from the saved clientId. Run this
+# whenever the OAuth App behind a workspace is deleted or rotated, otherwise the
+# next provision silently rebuilds against dead credentials.
+#
+# The whole body runs in ONE shell: the nothing-to-do path exits 0, and make
+# would simply continue to the next recipe line if the guards were split across
+# separate @-lines.
+forget-user: ## Drop a workspace's saved config from the GitOps repo (USER=<name>); forces fresh OAuth creds next provision
+	@if [ -z "$(USER)" ] || [ "$(origin USER)" = "environment" ]; then \
+	  echo "ERROR: pass USER=<name> explicitly on the command line (e.g. make forget-user USER=oldname)."; \
+	  echo "       (\$$USER is also your shell login name, so it is ignored here to avoid clearing the wrong workspace.)"; \
+	  exit 1; \
+	fi; \
+	if [ ! -d $(USERS_DIR)/.git ]; then \
+	  echo "ERROR: $(USERS_DIR)/ is not a checkout of the GitOps repo — run 'make users-sync' first."; \
+	  exit 1; \
+	fi; \
+	if [ ! -d $(USERS_DIR)/users-private/$(USER) ]; then \
+	  echo "Nothing to do: $(USERS_DIR)/users-private/$(USER)/ does not exist."; \
+	  exit 0; \
+	fi; \
+	echo "WARNING: removes '$(USER)' from the GitOps repo and pushes the deletion:"; \
+	echo "  users-private/$(USER)/values.yaml"; \
+	echo "  users-private/$(USER)/secrets/    (OAuth client id + secret)"; \
+	echo "The next provision of '$(USER)' will prompt for a fresh GitHub OAuth App."; \
+	printf "Type the workspace name '%s' to confirm: " "$(USER)"; \
+	read confirm; \
+	if [ "$$confirm" != "$(USER)" ]; then echo "Aborted — input did not match '$(USER)'."; exit 1; fi; \
+	git -C $(USERS_DIR) pull --ff-only && \
+	git -C $(USERS_DIR) rm -r --quiet users-private/$(USER) && \
+	git -C $(USERS_DIR) commit -q -m "clear $(USER) workspace config" && \
+	git -C $(USERS_DIR) push -q && \
+	echo "Done. '$(USER)' config removed from the GitOps repo."
 
 # =============================================================================
 # Per-workspace namespace migration (#103)
