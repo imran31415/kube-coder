@@ -1,6 +1,6 @@
 ---
 name: kc-issue
-description: Spin up an isolated agent to work a kube-coder issue. Given an issue number, creates a clean git worktree branched from a freshly-fetched origin/main, pulls the issue text, and launches a background Claude task that is BORN inside that worktree (workdir=worktree) so it cannot work in the shared clone. Use whenever the user wants to "work on issue N", "start an agent on issue N", or set up a per-issue worktree. Also lists issue worktrees and their task status.
+description: Spin up an isolated agent to work a GitHub issue of kube-coder or any other repo checked out in the workspace. Given an issue number, pulls the issue text and launches a background Claude task that is BORN inside its own git worktree, branched from a freshly-fetched origin default branch, so it cannot work in the shared clone. Use whenever the user wants to "work on issue N", "start an agent on issue N", or set up a per-issue worktree. Also lists issue worktrees and their task status.
 user-invocable: true
 allowed-tools: Bash, Read, mcp__dashboard__create_task, mcp__dashboard__list_tasks, mcp__dashboard__get_task
 argument-hint: "<issue-number> [--pr]  |  list  |  lint [file]  |  <slug> \"free text\""
@@ -8,12 +8,19 @@ argument-hint: "<issue-number> [--pr]  |  list  |  lint [file]  |  <slug> \"free
 
 # kc-issue — one issue, one clean worktree, one agent
 
-This is the reliable entrypoint for per-issue work on **kube-coder**. It removes
-the two things that made ad-hoc worktree use flaky:
+This is the reliable entrypoint for per-issue work — on **kube-coder** or any
+other repository checked out in the workspace. It removes the two things that
+made ad-hoc worktree use flaky:
 
-1. It branches from a **freshly-fetched `origin/main`**, never a stale local HEAD.
-2. It launches the agent with **`workdir` = the worktree**, so the agent starts
-   *inside* its isolation and physically cannot forget to use it.
+1. It branches from a **freshly-fetched `origin/<default branch>`**, never a
+   stale local HEAD.
+2. The agent is **launched inside its own worktree**, so it starts *inside* its
+   isolation and physically cannot forget to use it.
+
+**Which repository:** the git checkout you run the script from (any folder in
+it, or one of its worktrees), or `KC_REPO_ROOT=/home/dev/<repo>`; the GitHub
+repo is read from its `origin` remote (`KC_REPO_SLUG=owner/repo` overrides).
+From `/home/dev` itself it falls back to `/home/dev/kube-coder`.
 
 The heavy lifting is in `kc-issue.sh` next to this file. It does the git/fs part
 and prints JSON; **you** (the assistant) do the launch via `create_task`.
@@ -38,7 +45,14 @@ bash "$CLAUDE_SKILL_DIR/kc-issue.sh" <N>
 KC_AUTO_PR=1 bash "$CLAUDE_SKILL_DIR/kc-issue.sh" <N>
 ```
 Capture the JSON it prints on stdout:
-`{issue,title,url,worktree,branch,port,prompt_file,auto_pr,lint,lint_blockers}`.
+`{issue,title,url,worktree,branch,port,prompt_file,auto_pr,mode,repo_root,repo,slug,base_ref,lint,lint_blockers}`.
+
+`mode` says who makes the worktree:
+- **`server`** — this workspace's dashboard creates it when the Build launches
+  (#701), so the Build is recorded with it: its **Changes** tab shows the diff
+  and push command, and **Settings → Worktrees** lists it. `worktree` is where
+  it will be; `port` is empty until launch.
+- **`script`** — an older workspace: the script created the worktree itself.
 
 **Step 1b — surface the issue-body lint (#569).** The script lints the body
 *before* the worktree exists, because the body is baked verbatim into the agent
@@ -62,18 +76,27 @@ doesn't rewrite.
 
 **Step 2 — read the baked prompt** (do NOT reconstruct it — use the file):
 ```bash
-cat <worktree>/.kc-issue-prompt.md
+cat <prompt_file>
 ```
 
 **Step 3 — launch the agent** with `mcp__dashboard__create_task`:
-- `prompt`  = the full contents of `.kc-issue-prompt.md`
-- `workdir` = the `worktree` path from the JSON  ← this is what forces isolation
+- `prompt` = the full contents of `prompt_file`
 - `assistant` = `claude` (default)
+- with **`mode: "server"`**:
+  - `workdir` = `repo_root`
+  - `isolate` = `true`  ← this is what forces isolation
+  - `worktree_slug` = `slug` (so re-running an issue continues its worktree)
+  - `base_ref` = `base_ref`
+- with **`mode: "script"`**: `workdir` = the `worktree` path ← forces isolation
 
-**Step 4 — confirm & report.** Tell the user: the task id, the branch, the
-worktree path, and the preview port. Offer to show live output with
-`mcp__dashboard__get_task`. If they want to embed a preview once a dev server is
-up, use the port at `/api/app-proxy/<port>/`.
+A `409` whose code is `busy` means an agent is **already working this issue**
+in that worktree — tell the user and offer its task instead of starting another.
+
+**Step 4 — confirm & report.** Tell the user: the task id, and — from the
+`worktree` object in the response (server mode) or the JSON (script mode) — the
+branch, the worktree path and the preview port. Offer to show live output with
+`mcp__dashboard__get_task`; the Build's **Changes** tab is where they review the
+diff and copy the push command.
 
 ### `<slug> "free text"` — ad-hoc (no GitHub issue)
 Same flow; the description text is used in place of an issue body — and it is
@@ -93,10 +116,11 @@ filing it, and it's what `lint_test.sh` drives.
 
 - **The launched agent, not you, does the work.** Your job is only to set up the
   worktree and launch. Don't start editing repo files in this chat.
-- **The agent runs inside the repo**, so from its cwd the repo skills
-  (`worktree`, `kc-preflight`, `kc-ship-pr`) ARE in scope — the baked prompt
-  tells it to use them. (Those skills are NOT in scope for *you* at /home/dev,
-  which is why this orchestration skill lives in the user-global skills dir.)
+- **The agent runs inside the repo**, so from its cwd a repo's own skills are
+  in scope. In kube-coder the baked prompt names `kc-preflight` / `kc-ship-pr`;
+  in any other repo it tells the agent to run that repo's own tests instead.
+  (Repo skills are NOT in scope for *you* at /home/dev, which is why this
+  orchestration skill lives in the user-global skills dir.)
 - **Idempotent.** Re-running for the same issue reuses the existing worktree +
   branch and rewrites the prompt; it won't clobber committed work.
 - **The lint warns, it never blocks.** Default behaviour always proceeds. Set
@@ -109,11 +133,14 @@ filing it, and it's what `lint_test.sh` drives.
 - **Lint runs at spawn time, not issue-creation time.** That's deliberate: it's
   the cheaper place to catch the problem, and it also covers issues written
   before the lint existed.
-- **Cleanup when done** (after the PR merges): remove the worktree dir but keep
-  history via the repo's worktree helper:
+- **Cleanup when done** (after the PR merges): **Remove worktree** on the
+  Build's Changes tab (or in Settings → Worktrees) deletes the folder and keeps
+  the branch; delete the branch once it is merged. The dashboard also cleans up
+  on its own — but never a worktree with uncommitted or unpushed work. From a
+  shell:
   ```bash
   bash /home/dev/kube-coder/.claude/skills/worktree/worktree.sh rm issue-<N>
-  git -C /home/dev/kube-coder branch -D kc/issue-<N>   # after merge only
+  git -C <repo_root> branch -D kc/issue-<N>   # after merge only
   ```
 - **Disk.** Each worktree gets its own `node_modules`/build output — keep only a
   handful live at once; tear down finished ones.

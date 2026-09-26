@@ -32,6 +32,14 @@ from typing import Any, Dict, List, Optional
 # Dockerfile's `COPY charts/workspace/*.py` puts runtimes.py right beside it.
 import runtimes
 
+# Isolated worktrees (#701): the same implementation the dashboard server uses,
+# shipped beside this file. Guarded so an older image without it still spawns
+# (un-isolated) sub-agents rather than failing to load the whole server.
+try:
+    import worktrees
+except ImportError:  # pragma: no cover - ships beside this file
+    worktrees = None
+
 # ───────────────────────────────────────────────────────────────────────────
 # Constants
 # ───────────────────────────────────────────────────────────────────────────
@@ -376,6 +384,20 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
 
     task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
     session_name = f'claude-{task_id}'
+
+    # Isolation (#701): the sub-agent gets its own worktree of the parent's
+    # repository, branched from the parent's current commit, so a parent that
+    # fans out N workers does not get N agents editing one checkout. Created
+    # BEFORE the task directory, so a refusal leaves nothing behind.
+    wt = None
+    source_workdir = workdir
+    if args.get('isolate') is True:
+        wt, refusal = _isolate(workdir, task_id, (args.get('base_ref') or '').strip())
+        if refusal:
+            return {'isError': True, 'content': [{'type': 'text', 'text': refusal}]}
+        workdir = wt['cwd']
+        prompt = worktrees.isolation_note(wt) + prompt
+
     task_dir = _task_dir(task_id)
     os.makedirs(task_dir, mode=0o700, exist_ok=True)
 
@@ -397,9 +419,12 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         'depth': depth + 1,
         'sub_task_ids': [],
     }
+    if wt:
+        meta['worktree'] = worktrees.task_meta(wt, source_workdir)
 
     if not _write_meta(task_dir, meta):
-        # Nothing to clean up — the tmux session isn't created until below.
+        # No tmux session yet; only an isolated worktree to take back.
+        _rollback_worktree(wt)
         return {'isError': True, 'content': [{'type': 'text', 'text': 'Failed to write task metadata'}]}
 
     # Write prompt file
@@ -408,6 +433,7 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         with open(prompt_file, 'w') as f:
             f.write(prompt)
     except OSError as e:
+        _rollback_worktree(wt)
         return {'isError': True, 'content': [{'type': 'text', 'text': f'Failed to write prompt: {e}'}]}
 
     # Build the CLI command. In headless mode the prompt is on the command
@@ -422,18 +448,27 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # Spawn tmux session. KC_AGENT_DEPTH is bumped so the spawned agent's
     # own orchestrator MCP enforces the depth cap one level deeper.
+    wt_env = []
+    for k, v in (worktrees.session_env(wt) if wt else {}).items():
+        wt_env += ['-e', f'{k}={v}']
     tmux_result = subprocess.run(
         ['tmux', 'new-session', '-d',
          '-s', session_name,
          '-x', '220', '-y', '50',
          '-e', f'KC_TASK_ID={task_id}',
          '-e', f'KC_AGENT_DEPTH={depth + 1}',
+         *wt_env,
          'bash', '-lc', shell_cmd],
         capture_output=True, text=True,
     )
     if tmux_result.returncode != 0:
         meta['status'] = 'error'
         meta['error'] = tmux_result.stderr.strip()
+        if wt and wt.get('created'):
+            # Nothing ran in it: take it back, and say so on the record.
+            _rollback_worktree(wt)
+            meta['worktree']['removed_at'] = time.time()
+            meta['worktree']['rollback'] = True
         _write_meta(task_dir, meta)
         return {'isError': True, 'content': [{'type': 'text', 'text': f'tmux failed: {tmux_result.stderr.strip()}'}]}
 
@@ -470,15 +505,55 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
 
         threading.Thread(target=_send_prompt, daemon=True).start()
 
-    return {
-        'content': [{'type': 'text', 'text': json.dumps({
-            'task_id': task_id,
-            'tmux_session': session_name,
-            'status': 'running',
-            'assistant': assistant,
-            'mode': mode,
-        })}],
+    result = {
+        'task_id': task_id,
+        'tmux_session': session_name,
+        'status': 'running',
+        'assistant': assistant,
+        'mode': mode,
     }
+    if wt:
+        result['worktree'] = {'path': wt['path'], 'branch': wt['branch'],
+                              'port': wt.get('port')}
+        # Branches are shared by every worktree of a repository, so the
+        # parent merges the sub-agent's committed work from its own checkout.
+        result['merge_hint'] = (f'when it finishes, merge its committed work '
+                                f'from your checkout: git merge {wt["branch"]}')
+    return {'content': [{'type': 'text', 'text': json.dumps(result)}]}
+
+
+def _isolate(workdir: str, task_id: str, base_ref: str):
+    """`(info, None)` or `(None, message)` — a worktree for one sub-agent."""
+    if worktrees is None:
+        return None, ('spawn refused: isolation is not available in this '
+                      'workspace; spawn without isolate')
+    home = os.environ.get('KC_WORKSPACE_HOME') or '/home/dev'
+    root = worktrees.default_root()
+    try:
+        repo = worktrees.resolve_repo(workdir, home_root=home, wt_root=root)
+        info = worktrees.ensure(
+            repo, f'sub-{task_id}', wt_root=root, base_ref=base_ref or None,
+            task_id=task_id, created_by='orchestrator',
+            max_worktrees=_int_env('KC_MAX_WORKTREES', 20),
+            is_owner_live=worktrees.default_is_owner_live,
+            reclaim=worktrees.reclaimer(
+                root, is_owner_live=worktrees.default_is_owner_live,
+                owner_meta=worktrees.default_owner_meta,
+                grace_s=_int_env('KC_WORKTREE_GRACE_S', 600),
+                gc_days=_int_env('KC_WORKTREE_GC_DAYS', 7)))
+    except worktrees.WorktreeError as e:
+        return None, f'spawn refused: {e.message}'
+    return info, None
+
+
+def _rollback_worktree(info) -> None:
+    """Take back a worktree a failed spawn created. Never raises."""
+    if not info or worktrees is None:
+        return
+    try:
+        worktrees.rollback(info)
+    except Exception as e:
+        _log(f'worktree rollback failed for {info.get("path")}: {e}')
 
 
 def _tool_get_agent_status(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -716,6 +791,8 @@ TOOLS: Dict[str, Any] = {
                         'default': 'headless',
                     },
                     'workdir': {'type': 'string', 'description': "Working directory for the sub-agent. Defaults to the spawning agent's own working directory (its project); pass an absolute path to override."},
+                    'isolate': {'type': 'boolean', 'description': 'true: run the sub-agent in its OWN git worktree of that repository, on its own kc/sub-<id> branch with its own $PORT, branched from your current commit (commit first: uncommitted work is not carried over). Use when fanning out several agents over one repo so they cannot overwrite each other, then merge their branches.'},
+                    'base_ref': {'type': 'string', 'description': 'With isolate: the branch, tag or commit to branch from instead of your current commit.'},
                     'parent_task_id': {'type': 'string', 'description': 'Parent task for lineage tracking (auto-inherited from env)'},
                 },
                 'required': ['prompt'],
