@@ -535,6 +535,10 @@ COPY charts/workspace/adapters /opt/browser-src/adapters
 # which means a forgotten line here ships a workspace where /board simply is
 # not there (#588).
 COPY charts/workspace/boards /opt/browser-src/boards
+# handlers/ is the exception to the "fails quietly" note above: server.py
+# imports it unguarded because the route tables in it ARE the dispatch, so a
+# missing line here fails loudly at startup rather than hiding a surface.
+COPY charts/workspace/handlers /opt/browser-src/handlers
 RUN find /opt/browser-src -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null; \
     find /opt/browser-src -name '*.pyc' -delete 2>/dev/null; true
 

@@ -66,6 +66,16 @@ import runtimes
 # never affects server startup.
 import push_notify
 
+# Per-domain HTTP handlers + the ordered route tables that dispatch to them
+# (#100). `handlers.bind` hands the package this module object: in the pod the
+# backend runs as `python3 server.py` (so it is `__main__`) while the test suite
+# does `import server`, and a handler module that imported server by name would
+# execute a second copy of this file. Attribute lookups on the bound module all
+# happen at request time, so binding a half-initialized module here is fine.
+import handlers
+from handlers import system as system_routes
+handlers.bind(sys.modules[__name__])
+
 # Board Processor (#588/#589) — connector schema, deterministic fetch/act
 # engine, and the three-tier rate limiter. Pure: the package never imports
 # server and never touches the network except through a callable BoardsManager
@@ -13252,7 +13262,8 @@ def _xvfb_running(display):
         return False
 
 
-class BrowserHandler(http.server.SimpleHTTPRequestHandler):
+class BrowserHandler(system_routes.SystemRoutes,
+                     http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
         # dashboard on each visit. Without this, SimpleHTTPRequestHandler
@@ -13310,54 +13321,16 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # SPA at root. /dashboard and /browser kept for back-compat URLs.
             self.serve_next_spa('/')
             return
-        elif self.path == "/livez":
-            self.send_livez()
-            return
-        elif self.path == "/health":
-            self.send_health_check()
-            return
-        elif self.path == "/health/vscode":
-            self.send_vscode_health()
-            return
-        elif self.path == "/health/terminal":
-            self.send_terminal_health()
-            return
-        elif self.path == "/health/browser":
-            self.send_browser_health()
-            return
-        elif self.path == "/metrics":
-            self.send_metrics()
-            return
-        # Matched on normalized_path (not raw self.path like /metrics above) so
-        # a query string or the SPA's /oauth prefix still reaches the scrape
-        # endpoint. Ordering note: /metrics is in NON_SPA_PREFIXES, so the
-        # SPA history fallback at the end of this chain does not swallow it —
-        # there is a test that fails if that ever changes.
-        elif normalized_path == "/metrics/prometheus":
-            self.send_prometheus_metrics()
-            return
-        # These /api/* reads match on normalized_path (the /oauth- and
-        # /browser-stripped path) rather than raw self.path: the SPA prefixes
-        # every /api/ call with /oauth in oauth2 mode, so a raw `self.path`
-        # match would 404 the prefixed request. (Peers like /api/mode and
-        # /api/desktop already route via the normalized path below.)
-        elif normalized_path == "/api/github/status":
-            self.send_github_status()
-            return
-        elif normalized_path == "/api/github/config":
-            self.send_git_config()
-            return
-        elif normalized_path == "/api/workspace/version":
-            self.send_workspace_version()
-            return
-        elif self.path == "/vnc" or self.path == "/vnc/":
-            self.send_vnc_viewer()
-            return
-        elif self.path == "/vnc-proxy" or self.path == "/vnc-proxy/":
-            self.redirect_to_vnc()
-            return
-        elif self.path.startswith("/vnc/"):
-            self.proxy_vnc_request()
+
+        # Workspace status surface — liveness, health, metrics, git/workspace
+        # identity, VNC. These were fifteen more elif branches right here; they
+        # are now an ordered table in handlers/system.py, which is also where
+        # the reasons live: which of them match the RAW path (the kubelet
+        # probes, /metrics, /vnc*) rather than the normalized one, and why the
+        # two exact /vnc routes must precede the /vnc/<path> proxy. /metrics
+        # and /health are in NON_SPA_PREFIXES, so an unmatched variant keeps
+        # 404ing instead of being answered with the SPA shell.
+        if system_routes.ROUTES.dispatch(self, 'GET', normalized_path, self.path):
             return
 
         # --- Claude Task API (GET) ---
@@ -19146,92 +19119,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         rel_out = os.path.relpath(dst, self.HOME_DEV)
         self.send_json({'ok': True, 'path': rel_out})
 
-    def send_vnc_viewer(self):
-        # Defense-in-depth: oauth2-proxy should already have rejected an
-        # unauth'd visitor, but if this handler is ever reached directly
-        # (e.g. a misconfigured ingress) refuse rather than render the
-        # iframe URL anyway. The deeper /vnc/<path> proxy IS authed; this
-        # wrapper page used to slip through.
-        if not self.check_claude_auth():
-            self.send_response(401)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'Unauthorized')
-            return
-        # Instead of embedding, redirect to the noVNC URL directly
-        host = self.headers.get('Host', 'localhost').split(':')[0]
-        vnc_url = f"https://{host}/vnc-direct/vnc.html?host={host}&port=6081&autoconnect=true&resize=scale"
-        
-        vnc_html = f'''<!DOCTYPE html>
-<html>
-<head>
-    <title>VNC Viewer</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; text-align: center; }}
-        .container {{ max-width: 600px; margin: 0 auto; }}
-        .btn {{ background: #007cba; color: white; border: none; padding: 12px 24px; margin: 10px; border-radius: 4px; text-decoration: none; display: inline-block; }}
-        .btn:hover {{ background: #005a8b; }}
-        .warning {{ background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 10px; border-radius: 4px; margin: 10px 0; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🖥️ Remote Desktop Viewer</h1>
-        <div class="warning">
-            <strong>🔒 Secure Access:</strong> This VNC viewer is protected by authentication.
-            You must be logged into this workspace to access the remote desktop.
-        </div>
-        <p>Click the button below to open the VNC viewer in a new window:</p>
-        <a href="{vnc_url}" target="_blank" class="btn">Open VNC Viewer</a>
-        <p><small>If the VNC viewer doesn't load, make sure you've launched a browser first.</small></p>
-        <p><a href="/browser/">← Back to Browser Controls</a></p>
-    </div>
-</body>
-</html>'''
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-        self.wfile.write(vnc_html.encode())
-    
-    def redirect_to_vnc(self):
-        # Defense-in-depth — see send_vnc_viewer above. This handler
-        # actually proxies localhost:6081 content, so unauth'd access
-        # would have exposed the VNC HTML directly.
-        if not self.check_claude_auth():
-            self.send_response(401)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'Unauthorized')
-            return
-        # Redirect to the noVNC URL running on localhost:6081
-        import urllib.request
-        try:
-            # Proxy the request to the local noVNC server
-            vnc_url = "http://localhost:6081/vnc.html?autoconnect=true&resize=scale"
-            with urllib.request.urlopen(vnc_url, timeout=10) as response:
-                content = response.read()
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
-                self.end_headers()
-                self.wfile.write(content)
-        except Exception as e:
-            # Escape so a crafted upstream error message can't inject HTML
-            # into this authenticated origin (reflected XSS).
-            error_html = f'''<!DOCTYPE html>
-<html>
-<head><title>VNC Connection Error</title></head>
-<body>
-    <h1>VNC Connection Error</h1>
-    <p>Unable to connect to VNC server: {html.escape(str(e))}</p>
-    <p><a href="/browser/">← Back to Browser Controls</a></p>
-    <p>Make sure a browser is launched first, then try again.</p>
-</body>
-</html>'''
-            self.send_response(500)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(error_html.encode())
-
     # Per-CSP-directive splitter — used to strip frame-ancestors while keeping
     # the rest of the policy intact.
     _CSP_FRAME_ANCESTORS_RE = re.compile(r'(?:^|;)\s*frame-ancestors[^;]*', re.IGNORECASE)
@@ -20182,72 +20069,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if value.startswith('/') and not value.startswith(prefix + '/') and value != prefix:
             return prefix + value
         return value
-
-    def proxy_vnc_request(self):
-        # Proxy requests to the local noVNC server.
-        # Gate behind the same auth as the rest of the dashboard — the VNC
-        # iframe is loaded from an already-authenticated SPA page, so callers
-        # will always carry OAuth2 headers or a Bearer token.
-        if not self.check_claude_auth():
-            self.send_response(401)
-            self.end_headers()
-            return
-
-        import urllib.request
-        import urllib.parse
-        vnc_url = None
-        try:
-            # Split off path + query; reject anything with control characters
-            # before we paste it into a URL. self.path is attacker-controllable.
-            raw = self.path[5:]  # strip "/vnc/"
-            if any(ord(c) < 0x20 or c in ('\x7f',) for c in raw):
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b'invalid characters in path')
-                return
-            if '?' in raw:
-                path_part, query_part = raw.split('?', 1)
-            else:
-                path_part, query_part = raw, ''
-
-            # Normalize and confine: drop empty / "." / ".." segments so the
-            # caller cannot climb above /. The destination host is hardcoded
-            # to localhost:6081, but a normalized path keeps proxied requests
-            # to the shapes noVNC actually serves.
-            segments = [
-                seg for seg in path_part.split('/')
-                if seg and seg not in ('.', '..')
-            ]
-            safe_path = '/'.join(
-                urllib.parse.quote(urllib.parse.unquote(s), safe='') for s in segments
-            )
-            vnc_url = f"http://localhost:6081/{safe_path}"
-            if query_part:
-                vnc_url += f"?{query_part}"
-
-            with urllib.request.urlopen(vnc_url, timeout=10) as response:
-                content = response.read()
-                content_type = response.headers.get('Content-Type', 'text/html')
-                self.send_response(200)
-                self.send_header('Content-type', content_type)
-                self.end_headers()
-                self.wfile.write(content)
-        except Exception as e:
-            safe_url = html.escape(vnc_url) if vnc_url else 'N/A'
-            error_html = f'''<!DOCTYPE html>
-<html>
-<head><title>VNC Proxy Error</title></head>
-<body>
-    <h1>VNC Proxy Error</h1>
-    <p>Error accessing VNC: {html.escape(str(e))}</p>
-    <p>Path: {html.escape(self.path)}</p>
-    <p>VNC URL: {safe_url}</p>
-</body>
-</html>'''
-            self.send_response(500)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(error_html.encode())
     
     def do_POST(self):
         self._consume_bearer_marker()
@@ -20657,195 +20478,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(body.encode())
-    
-    def send_livez(self):
-        """Liveness probe — proves the HTTP server thread is alive and can
-        answer, nothing more. Deliberately does ZERO blocking work: no socket
-        connects to sub-services (see send_health_check), no auth, no disk, no
-        JSON. On a 2-CPU pod a busy assistant task + many tmux-streaming
-        handler threads can starve the GIL enough that a heavier handler can't
-        finish inside the 10s liveness timeout for 3 straight probes (~90s),
-        and the kubelet then SIGTERMs the container — killing the user's live
-        tmux + tasks. A handler this cheap needs the GIL for only microseconds,
-        so it returns even under heavy contention. Sub-service status belongs
-        to /health (readiness) and the /health/* detail endpoints."""
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(b'ok')
-
-    def send_health_check(self):
-        """Overall health check endpoint - always returns 200 to avoid blocking"""
-        vscode_status = self.check_service_health('localhost', 8080)
-        terminal_status = self.check_service_health('localhost', 7681)
-        browser_status = self.check_service_health('localhost', 6081)
-        
-        health_data = {
-            'status': 'healthy' if (terminal_status and browser_status) else 'degraded',
-            'services': {
-                'vscode': {'status': 'up' if vscode_status else 'down', 'port': 8080},
-                'terminal': {'status': 'up' if terminal_status else 'down', 'port': 7681},
-                'browser': {'status': 'up' if browser_status else 'down', 'port': 6081}
-            },
-            'timestamp': time.time()
-        }
-        
-        # Always return 200 to avoid blocking the service
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(health_data).encode())
-    
-    def send_vscode_health(self):
-        """VS Code health check - always returns 200"""
-        status = self.check_service_health('localhost', 8080)
-        response = {'service': 'vscode', 'status': 'up' if status else 'down', 'port': 8080}
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(response).encode())
-    
-    def send_terminal_health(self):
-        """Terminal health check - always returns 200"""
-        status = self.check_service_health('localhost', 7681)
-        response = {'service': 'terminal', 'status': 'up' if status else 'down', 'port': 7681}
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(response).encode())
-    
-    def send_browser_health(self):
-        """Browser/VNC health check - always returns 200"""
-        vnc_status = self.check_service_health('localhost', 5900)  # x11vnc
-        websockify_status = self.check_service_health('localhost', 6081)  # websockify
-        
-        status = vnc_status and websockify_status
-        response = {
-            'service': 'browser',
-            'status': 'up' if status else 'down',
-            'components': {
-                'vnc': 'up' if vnc_status else 'down',
-                'websockify': 'up' if websockify_status else 'down'
-            }
-        }
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(response).encode())
-
-    def send_metrics(self):
-        """Send system metrics (CPU, memory, disk) as JSON.
-        Auth-gated to avoid double-duty as an unauthenticated workload
-        side-channel — public-demo callers get through via AUTH_MODE=none."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        metrics = MetricsCollector.get_all_metrics()
-
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(metrics).encode())
-
-    def send_prometheus_metrics(self):
-        """GET /metrics/prometheus — the platform's own metrics in Prometheus
-        text exposition format (#105).
-
-        A SEPARATE PATH from the JSON /metrics above, on purpose. That endpoint
-        is what the dashboard SPA's Metrics page reads; content-negotiating the
-        two off one URL would put the Metrics page one `Accept`-header change
-        away from rendering nothing, and would need a correct `Vary: Accept`
-        to survive the ingress and oauth2-proxy in front of this server. A
-        scraper's `metrics_path` is a one-line config field, so the separate
-        path costs nothing and cannot break the SPA. See
-        PrometheusMetricsCollector for what is exposed and why.
-
-        Same auth gate as the JSON endpoint — it reports the same underlying
-        facts, so anything that could read it there can read it here. A
-        Prometheus scrape authenticates with the workspace's Claude Task API
-        token as a Bearer credential (`authorization` / `bearerTokenSecret` in
-        a ServiceMonitor).
-        """
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not _PROMETHEUS_AVAILABLE:
-            self.send_json({'error': 'prometheus exposition unavailable'}, 503)
-            return
-        try:
-            body = PrometheusMetricsCollector.render().encode('utf-8')
-        except Exception as e:
-            # render() already isolates each section, so reaching here means the
-            # document itself could not be built — serve nothing rather than a
-            # half-formed exposition Prometheus would reject wholesale anyway.
-            print(f'[prom-metrics] render failed: {type(e).__name__}: {e}',
-                  file=sys.stderr)
-            self.send_json({'error': 'metrics unavailable'}, 500)
-            return
-        self.send_response(200)
-        self.send_header('Content-type', prom.CONTENT_TYPE)
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(body)
-
-    def send_github_status(self):
-        """Send combined GitHub status as JSON.
-        Strictly auth-gated (allow_none_mode=False) — the response leaks
-        the SSH public-key fingerprint, gh CLI username, and git
-        name/email, none of which should ever surface on a public demo."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        status = GitHubManager.get_full_status()
-
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(status).encode())
-
-    def send_git_config(self):
-        """Send git config as JSON. Strictly auth-gated (allow_none_mode=False)
-        — exposes the operator's git name + email."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        config = GitHubManager.get_git_config()
-
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.end_headers()
-        self.wfile.write(json.dumps(config).encode())
-
-    def send_workspace_version(self):
-        """Current vs latest workspace version, brokered from the controller.
-        Auth-gated (exposes the workspace's image version). Returns
-        {available:false} cleanly when self-serve updates aren't wired, so the
-        SPA can simply hide the section instead of erroring."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not UpdateManager.enabled():
-            self.send_json({'available': False,
-                            'reason': 'self-serve updates not configured'})
-            return
-        status, payload = UpdateManager.get_version()
-        if status == 200:
-            self.send_json({'available': True, **payload})
-        else:
-            self.send_json({'available': True, 'error': payload.get('error', 'controller error')},
-                           status if status >= 400 else 502)
 
     def handle_workspace_update(self):
         """Broker a 'restart and pull latest' for THIS workspace to the
@@ -21007,17 +20639,6 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         GitHubManager.cancel_web_login()
         self.send_json({'ok': True}, 200)
-
-    def check_service_health(self, host, port):
-        """Check if a service is listening on the given port"""
-        import socket
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(2)
-                result = s.connect_ex((host, port))
-                return result == 0
-        except Exception:
-            return False
     
     def test_chrome(self):
         if not self.check_claude_auth():
