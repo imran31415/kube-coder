@@ -39,7 +39,7 @@ export function DesktopPrompt() {
         // Prefer the repo checkout if the server offers one, else keep the
         // workspace root default. Never override a dir the user already picked.
         const preferred =
-          list.find((d) => d.path === DEFAULT_WORKDIR) ?? list.find((d) => d.is_git) ?? list[0];
+          list.find((d) => d.path === DEFAULT_WORKDIR) ?? list.find((d) => d.is_git_repo) ?? list[0];
         if (preferred) setWorkdir((cur) => (cur === DEFAULT_WORKDIR ? preferred.path : cur));
       })
       .catch(() => setDirs([]));

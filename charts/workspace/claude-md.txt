@@ -168,6 +168,25 @@ curl -X POST localhost:6080/api/claude/auth/token/regenerate
 
 Tasks run in tmux sessions (`claude-{task_id}`). Attach with `tmux attach -t claude-{task_id}` to watch live. Task state persists in `/home/dev/.claude-tasks/`.
 
+### Isolated worktrees — when `$KC_WT` is set
+
+Add `"isolate": true` to the create body (with a git `workdir`) and the Build
+runs in its own git worktree under `/home/dev/.worktrees/`, on its own
+`kc/<name>` branch, with its own port. If **you** are running in one, these are
+set:
+
+- `KC_WT` — your worktree folder; `KC_WT_BRANCH` — your branch.
+- `PORT` / `KC_PORT` — the port to bind any dev server to. Other Builds use
+  3000 and each other's ports; use yours.
+
+Rules while `$KC_WT` is set: **commit on your branch**; do not `git checkout`
+or switch to another branch; do not edit the original checkout the worktree
+came from. Files git ignores (`node_modules`, `.venv`, `.env`) are not copied
+in — install or create what you need here. Memory, `/home/dev/.claude-tasks/`
+and `/home/dev/.credentials/` are still shared with every other agent (see
+below). The user reviews your work on the Build's **Changes** tab and pushes
+the branch from there.
+
 ## Key Constraints
 
 - **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl -H "Authorization: Bearer $(cat /home/dev/.claude-tasks/.api-token)" localhost:6080/metrics`.

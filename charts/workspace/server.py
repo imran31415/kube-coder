@@ -108,6 +108,16 @@ except ImportError:      # pragma: no cover - module always ships beside server.
     devcontainer = None
     _DEVCONTAINER_AVAILABLE = False
 
+# Isolated git worktrees per Build (#701). One implementation shared with the
+# orchestrator and the `worktree` skill's shell helper; WorktreeManager below
+# is the server's side of it (task.json, liveness, routes, the sweep).
+try:
+    import worktrees
+    _WORKTREES_AVAILABLE = True
+except ImportError:      # pragma: no cover - module always ships beside server.py
+    worktrees = None
+    _WORKTREES_AVAILABLE = False
+
 # Prometheus text exposition format (#105). Pure and dependency-free — it
 # renders names/labels/values into bytes and knows nothing about kube-coder.
 # Kept out of server.py for the same reason as the two above: the format needs
@@ -2875,18 +2885,79 @@ class ClaudeTaskManager:
                     source=None, disable_memory_injection=False, assistant=None,
                     parent_task_id=None, system_preamble=None, auto_approve=False,
                     project_id=None, model=None, effort=None,
-                    board_id=None, board_item_id=None, resume_session_id=''):
+                    board_id=None, board_item_id=None, resume_session_id='',
+                    isolate=False, base_ref=None, worktree_slug=None,
+                    base_sha=None):
+        """Launch a Build. Returns its meta, or a refusal dict whose `status`
+        is `rejected` / `invalid` / `conflict` / `lock_timeout` / `error`.
+
+        `isolate=True` (#701) runs the Build in its own git worktree on its
+        own `kc/<slug>` branch with its own `$PORT`. The order below is the
+        whole of "nothing half-created": a request that cannot be isolated is
+        refused before any task directory exists, and a launch that fails
+        after the worktree was made takes the worktree back with it.
+        `isolate=False` does not reach a single line of the new code.
+        """
+        wt_plan = None
+        if isolate:
+            wt_plan, refusal = WorktreeManager.plan(
+                workdir, base_ref=base_ref, base_sha=base_sha, slug=worktree_slug)
+            if refusal:
+                return refusal
         at_cap, _, _ = ClaudeTaskManager.at_capacity()
         if at_cap:
             return ClaudeTaskManager._capacity_rejection()
         ClaudeTaskManager.ensure_tasks_dir()
         task_id = f"{int(time.time())}-{secrets.token_hex(4)}"
         session_id = str(uuid.uuid4())
+        spawn_args = (task_id, session_id, prompt, workdir, response_url,
+                      response_secret, source, disable_memory_injection,
+                      assistant, parent_task_id, system_preamble, auto_approve,
+                      project_id, model, effort, board_id, board_item_id,
+                      resume_session_id)
+        if wt_plan is None:
+            return ClaudeTaskManager._spawn_task(*spawn_args)
+
+        wt, refusal = WorktreeManager.acquire(wt_plan, task_id)
+        if refusal:
+            return refusal
+        try:
+            meta = ClaudeTaskManager._spawn_task(*spawn_args, worktree=wt)
+        except BaseException:
+            WorktreeManager.rollback(wt)
+            raise
+        if meta.get('status') == 'error' and wt.get('created'):
+            # tmux refused the session: nothing ran in the worktree, so it
+            # goes. A REUSED worktree is left alone — it held work before
+            # this launch was ever attempted.
+            WorktreeManager.rollback(wt)
+            meta['worktree']['removed_at'] = time.time()
+            meta['worktree']['rollback'] = True
+            ClaudeTaskManager._atomic_update_meta(
+                os.path.join(ClaudeTaskManager.TASKS_DIR, task_id),
+                lambda m: m.get('worktree', {}).update(
+                    removed_at=meta['worktree']['removed_at'], rollback=True))
+        return meta
+
+    @staticmethod
+    def _spawn_task(task_id, session_id, prompt, workdir, response_url,
+                    response_secret, source, disable_memory_injection, assistant,
+                    parent_task_id, system_preamble, auto_approve, project_id,
+                    model, effort, board_id, board_item_id, resume_session_id,
+                    worktree=None):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         os.makedirs(task_dir, mode=0o700)
 
         if workdir is None:
             workdir = '/home/dev'
+
+        # An isolated Build (#701) RUNS in its worktree — the transcript path,
+        # `--resume`, Claude's folder trust and the Preview tab all key on the
+        # cwd — but the folder it was launched against still decides which
+        # project it belongs to and which devcontainer env it gets.
+        source_workdir = workdir
+        if worktree:
+            workdir = worktree['cwd']
 
         # Bind the task to a project at birth (#533). An explicit id wins — the
         # CTO stamps the project its thread is bound to, so a dispatched build
@@ -2894,7 +2965,7 @@ class ClaudeTaskManager:
         # it from the workdir. Always recorded, so the field is never missing.
         if project_id is None:
             try:
-                project_id = ProjectsManager.project_for_workdir(workdir)
+                project_id = ProjectsManager.project_for_workdir(source_workdir)
             except Exception as e:  # attribution must never fail a task launch
                 print(f'[projects] workdir attribution failed: {e}', file=sys.stderr)
                 project_id = ''
@@ -3016,6 +3087,8 @@ class ClaudeTaskManager:
             meta['response_secret'] = response_secret
         if source:
             meta['source'] = source
+        if worktree:
+            meta['worktree'] = WorktreeManager.meta_for(worktree, source_workdir)
 
         meta_path = os.path.join(task_dir, 'task.json')
         with open(meta_path, 'w') as f:
@@ -3032,6 +3105,10 @@ class ClaudeTaskManager:
             f.write(injection_block)
             if system_preamble:
                 f.write(system_preamble)
+            # Only with a prompt: an empty first message must stay empty, or
+            # the note itself would be pasted AND submitted as the first turn.
+            if worktree and prompt:
+                f.write(WorktreeManager.isolation_note(worktree))
             f.write(prompt)
 
         # Log read-access for every auto-injected memory (best-effort).
@@ -3080,9 +3157,13 @@ class ClaudeTaskManager:
         # even a denylist gap cannot let a repo win over a real provider key.
         _dc_env = {}
         if _DEVCONTAINER_AVAILABLE:
-            _dc_env = DevcontainerManager.env_for_workdir(workdir)
+            _dc_env = DevcontainerManager.env_for_workdir(source_workdir)
         _later_keys = set(ProviderKeysManager.env_overlay().keys()) | \
             set(ClaudeTaskManager.effort_env(assistant, effort).keys())
+        # A repo's devcontainer `PORT` must not override the leased one — two
+        # isolated Builds of the same repo would both bind it again.
+        _wt_env = WorktreeManager.session_env(worktree) if worktree else {}
+        _later_keys |= set(_wt_env)
         for k, v in _dc_env.items():
             if k in _later_keys:
                 continue
@@ -3102,6 +3183,10 @@ class ClaudeTaskManager:
             provider_env += ['-e', f'KC_BOARD_ID={board_id}']
             if board_item_id:
                 provider_env += ['-e', f'KC_BOARD_ITEM_ID={board_item_id}']
+        # Isolation (#701): where the worktree is, its branch, and the port
+        # this Build's dev server should bind.
+        for k, v in _wt_env.items():
+            provider_env += ['-e', f'{k}={v}']
         tmux_cmd = [
             'tmux', 'new-session', '-d',
             '-s', session_name,
@@ -3287,7 +3372,7 @@ class ClaudeTaskManager:
                 if parent is not None and task_parent != parent:
                     continue
 
-                tasks.append({
+                row = {
                     'task_id': meta.get('task_id', entry),
                     'name': meta.get('name'),
                     'prompt': meta.get('prompt', '')[:120],
@@ -3312,7 +3397,12 @@ class ClaudeTaskManager:
                     # Token spend for this Build (#574) — zero-but-marked when
                     # the assistant isn't instrumented.
                     'usage': ClaudeTaskManager.usage_view(meta),
-                })
+                }
+                # Isolated Builds only (#701), so every other row is unchanged.
+                # Read from the stored snapshot — a list never runs git.
+                if meta.get('worktree'):
+                    row['worktree'] = WorktreeManager.brief(meta)
+                tasks.append(row)
             except (json.JSONDecodeError, OSError):
                 continue
         return tasks
@@ -3383,6 +3473,25 @@ class ClaudeTaskManager:
             return None
         ClaudeTaskManager._reconcile_status(meta, task_dir)
         return meta.get('status', 'unknown')
+
+    _TASK_ID_RE = re.compile(r'[A-Za-z0-9_-]+')
+
+    @staticmethod
+    def read_meta(task_id):
+        """task.json as stored — no reconcile, no tmux capture. For callers
+        that need a Build's workdir / worktree / session id many times over
+        (the review list, a send-back, the worktree sweep) where `get_task`'s
+        `capture-pane` per call would be the whole cost. None when absent."""
+        if not isinstance(task_id, str) or \
+                not ClaudeTaskManager._TASK_ID_RE.fullmatch(task_id):
+            return None
+        try:
+            with open(os.path.join(ClaudeTaskManager.TASKS_DIR, task_id,
+                                   'task.json'), encoding='utf-8') as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return meta if isinstance(meta, dict) else None
 
     @staticmethod
     def get_task(task_id):
@@ -4380,6 +4489,10 @@ class ClaudeTaskManager:
                 })
                 # Feed (#469): one coalesced activity item per task terminal.
                 FeedManager.emit_task_terminal(meta, meta.get('status') or 'completed')
+                # What the Build changed, recorded once it stops (#701), so a
+                # list or a review card can show it without running git.
+                if meta.get('worktree'):
+                    WorktreeManager.snapshot_async(meta.get('task_id'))
             return
         
         # Session is alive — derive waiting-for-input from render *quiescence*
@@ -4442,6 +4555,512 @@ class ClaudeTaskManager:
                     })
                     # Feed (#469): flag it "waiting on you" (coalesced per task).
                     FeedManager.emit_task_waiting(meta)
+                    # A Board item's Build parks here when it is done (#701).
+                    if meta.get('worktree'):
+                        WorktreeManager.snapshot_async(meta.get('task_id'))
+
+
+class WorktreeManager:
+    """The server's side of isolated worktrees (#701).
+
+    `worktrees.py` knows git. This class knows kube-coder: which Build owns a
+    worktree and whether it is still running, where the answer is recorded
+    (task.json `worktree`), how a refusal becomes an HTTP status, and when the
+    sweep may take a worktree away.
+
+    "Live" means the owner's tmux session exists — the reconciler's own test.
+    A Board item's Build keeps its REPL alive after finishing, so an idle owner
+    is still live, deliberately: a tier-1 send-back talks to that exact session
+    in that exact directory, and removing it underneath would break the one
+    round trip that keeps an agent's context.
+    """
+
+    HOME_ROOT = '/home/dev'
+    #: A status computed on a GET rewrites the stored snapshot at most this
+    #: often — the Changes tab polls, task.json should not churn with it.
+    SNAPSHOT_WRITE_INTERVAL = 30
+    #: Tests set this so a snapshot is taken synchronously.
+    SNAPSHOT_INLINE = False
+    #: `create_task` status → HTTP status for a refusal.
+    HTTP_STATUS = {'invalid': 400, 'rejected': 429, 'conflict': 409,
+                   'lock_timeout': 503, 'error': 500}
+    #: Static fields of task.json `worktree` that go on the wire.
+    STATIC_KEYS = ('path', 'slug', 'branch', 'port', 'repo_root', 'repo_key',
+                   'source_workdir', 'subdir', 'base_ref', 'base_sha',
+                   'created_at', 'removed_at', 'reused')
+    _SEGMENT_RE = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}')
+
+    _snap_lock = threading.Lock()
+    _snap_pending = []
+    _snap_event = threading.Event()
+    _snap_thread = None
+
+    # ── configuration ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def available():
+        return _WORKTREES_AVAILABLE
+
+    @staticmethod
+    def _env_int(name, default, lo=0):
+        try:
+            v = int(os.environ.get(name, '') or default)
+        except (TypeError, ValueError):
+            return default
+        return v if v >= lo else default
+
+    @classmethod
+    def root(cls):
+        return os.environ.get('KC_WORKTREE_ROOT') or \
+            os.path.join(cls.HOME_ROOT, '.worktrees')
+
+    @classmethod
+    def max_worktrees(cls):
+        return cls._env_int('KC_MAX_WORKTREES', 20, lo=1)
+
+    @classmethod
+    def gc_days(cls):
+        return cls._env_int('KC_WORKTREE_GC_DAYS', 7)
+
+    @classmethod
+    def grace_s(cls):
+        return cls._env_int('KC_WORKTREE_GRACE_S', 600)
+
+    # ── liveness ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def live_sessions():
+        """Every tmux session name, in ONE call — the sweep asks about many
+        worktrees, and a `has-session` each would be N subprocesses."""
+        try:
+            r = subprocess.run(['tmux', 'list-sessions', '-F', '#{session_name}'],
+                               capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return set()
+        if r.returncode != 0:
+            return set()
+        return set((r.stdout or '').split())
+
+    @classmethod
+    def liveness(cls):
+        """`is_live(task_id)` for the span of one operation."""
+        sessions = None
+
+        def is_live(task_id):
+            nonlocal sessions
+            if not task_id:
+                return False
+            if sessions is None:
+                sessions = cls.live_sessions()
+            meta = ClaudeTaskManager.read_meta(task_id) or {}
+            names = {meta.get('tmux_session') or f'kube-coder-{task_id}',
+                     f'claude-{task_id}'}
+            return bool(names & sessions)
+        return is_live
+
+    # ── creating ───────────────────────────────────────────────────────────
+
+    @classmethod
+    def refusal(cls, err):
+        """A WorktreeError as a `create_task` refusal dict."""
+        code = err.code
+        if code in worktrees.INVALID_CODES:
+            status = 'invalid'
+        elif code in worktrees.REJECT_CODES:
+            status = 'rejected'
+        elif code in worktrees.CONFLICT_CODES:
+            status = 'conflict'
+        elif code == 'lock_timeout':
+            status = 'lock_timeout'
+        else:
+            status = 'error'
+        out = {'status': status, 'task_id': None, 'error': err.message,
+               'code': code}
+        for k, v in (err.detail or {}).items():
+            out.setdefault(k, v)
+        return out
+
+    @classmethod
+    def plan(cls, workdir, *, base_ref=None, base_sha=None, slug=None):
+        """Validate an isolation request before anything exists.
+        Returns `(plan, None)` or `(None, refusal)`."""
+        if not cls.available():
+            return None, {'status': 'error', 'task_id': None,
+                          'code': 'unavailable',
+                          'error': 'worktree isolation is not available in '
+                                   'this workspace'}
+        source = workdir or cls.HOME_ROOT
+        try:
+            repo = worktrees.resolve_repo(source, home_root=cls.HOME_ROOT,
+                                          wt_root=cls.root())
+            if base_ref:
+                worktrees.validate_ref_text(base_ref)
+            clean = ''
+            if slug:
+                clean = worktrees.slugify(slug)
+                if not worktrees.valid_slug(clean):
+                    raise worktrees.WorktreeError(
+                        'bad_slug', f'{slug!r} is not a usable worktree name')
+        except worktrees.WorktreeError as e:
+            return None, cls.refusal(e)
+        return {'repo': repo, 'base_ref': base_ref or None,
+                'base_sha': base_sha or None, 'slug': clean,
+                'source_workdir': source}, None
+
+    @classmethod
+    def acquire(cls, plan, task_id):
+        """Create or reuse the worktree for `task_id`. `(info, None)` or
+        `(None, refusal)`. At the cap, dead pristine worktrees are reclaimed
+        before anything is refused."""
+        root = cls.root()
+        live = cls.liveness()
+        try:
+            info = worktrees.ensure(
+                plan['repo'], plan['slug'] or f't-{task_id}', wt_root=root,
+                base_ref=plan['base_ref'], base_sha=plan['base_sha'],
+                task_id=task_id, created_by='server',
+                max_worktrees=cls.max_worktrees(), is_owner_live=live,
+                reclaim=worktrees.reclaimer(
+                    root, is_owner_live=live,
+                    owner_meta=ClaudeTaskManager.read_meta,
+                    grace_s=cls.grace_s(), gc_days=cls.gc_days()))
+        except worktrees.WorktreeError as e:
+            return None, cls.refusal(e)
+        return info, None
+
+    @classmethod
+    def rollback(cls, info):
+        try:
+            worktrees.rollback(info, wt_root=cls.root())
+        except Exception as e:      # the launch already failed; say why, once
+            print(f'[worktrees] rollback of {info.get("path")} failed: {e}',
+                  file=sys.stderr)
+
+    @classmethod
+    def meta_for(cls, info, source_workdir):
+        """task.json `worktree` for a freshly launched Build."""
+        return {
+            'path': info['path'], 'slug': info['slug'], 'branch': info['branch'],
+            'port': info.get('port'), 'repo_root': info['repo_root'],
+            'repo_key': info.get('repo_key', ''),
+            'source_workdir': source_workdir or cls.HOME_ROOT,
+            'subdir': info.get('subdir', ''), 'base_ref': info.get('base_ref', ''),
+            'base_sha': info.get('base_sha', ''),
+            'created': bool(info.get('created')),
+            'branch_created': bool(info.get('branch_created')),
+            'reused': bool(info.get('reused')),
+            'created_at': time.time(), 'removed_at': None, 'stat': None,
+        }
+
+    @staticmethod
+    def session_env(info):
+        env = {'KC_WT': info['path'], 'KC_WT_BRANCH': info['branch']}
+        if info.get('port'):
+            env['PORT'] = str(info['port'])
+            env['KC_PORT'] = str(info['port'])
+        return env
+
+    @staticmethod
+    def isolation_note(info):
+        port = info.get('port')
+        serve = (f' If you run a dev server, bind port {port} (it is in $PORT) '
+                 f'so it does not collide with other Builds.' if port else '')
+        return (
+            '[System: This Build runs in an ISOLATED git worktree at '
+            f'{info["path"]} on its own branch {info["branch"]}. Commit your '
+            'work on this branch. Do not check out or switch to another branch, '
+            f'and do not edit the original checkout at {info["repo_root"]}.'
+            f'{serve} Files git ignores (node_modules, .venv, .env) are not '
+            'copied into a worktree — install or create them here if you need '
+            'them.]\n\n')
+
+    @staticmethod
+    def brief(meta):
+        """The list-safe summary of a Build's worktree — no git."""
+        wt = meta.get('worktree') or {}
+        return {'branch': wt.get('branch'), 'port': wt.get('port'),
+                'path': wt.get('path'), 'removed': bool(wt.get('removed_at')),
+                'stat': wt.get('stat')}
+
+    # ── snapshots ──────────────────────────────────────────────────────────
+
+    @classmethod
+    def _record_stat(cls, task_id, st, *, throttle):
+        snap = worktrees.stat_snapshot(st)
+        now = time.time()
+
+        def mutate(m):
+            wt = m.get('worktree')
+            if not isinstance(wt, dict):
+                return False
+            prev = wt.get('stat') or {}
+            if throttle and prev and now - (prev.get('at') or 0) < \
+                    cls.SNAPSHOT_WRITE_INTERVAL and \
+                    {k: v for k, v in prev.items() if k != 'at'} == \
+                    {k: v for k, v in snap.items() if k != 'at'}:
+                return False
+            wt['stat'] = snap
+        ClaudeTaskManager._atomic_update_meta(
+            os.path.join(ClaudeTaskManager.TASKS_DIR, task_id), mutate)
+        return snap
+
+    @classmethod
+    def snapshot_now(cls, task_id):
+        meta = ClaudeTaskManager.read_meta(task_id)
+        wt = (meta or {}).get('worktree') or {}
+        path = wt.get('path')
+        if not path or wt.get('removed_at') or not os.path.isdir(path):
+            return None
+        st = worktrees.status(path, base_sha=wt.get('base_sha') or '',
+                              base_ref=wt.get('base_ref') or '', use_cache=False)
+        return cls._record_stat(task_id, st, throttle=False)
+
+    @classmethod
+    def snapshot_async(cls, task_id):
+        """Record what a Build changed, off the caller's thread. Called from
+        the reconciler, which runs inside list endpoints — git must never run
+        there."""
+        if not task_id or not cls.available():
+            return
+        if cls.SNAPSHOT_INLINE:
+            try:
+                cls.snapshot_now(task_id)
+            except Exception as e:
+                print(f'[worktrees] snapshot {task_id} failed: {e}',
+                      file=sys.stderr)
+            return
+        with cls._snap_lock:
+            if task_id not in cls._snap_pending:
+                cls._snap_pending.append(task_id)
+            if cls._snap_thread is None or not cls._snap_thread.is_alive():
+                cls._snap_thread = threading.Thread(
+                    target=cls._snap_loop, name='worktree-snapshots', daemon=True)
+                cls._snap_thread.start()
+        cls._snap_event.set()
+
+    @classmethod
+    def _snap_loop(cls):
+        while True:
+            cls._snap_event.wait()
+            cls._snap_event.clear()
+            with cls._snap_lock:
+                batch, cls._snap_pending = cls._snap_pending, []
+            for task_id in batch:
+                try:
+                    cls.snapshot_now(task_id)
+                except Exception as e:
+                    print(f'[worktrees] snapshot {task_id} failed: {e}',
+                          file=sys.stderr)
+
+    # ── one Build's worktree ───────────────────────────────────────────────
+
+    @classmethod
+    def _task_worktree(cls, task_id):
+        """`(meta, wt, None)` or `(None, None, (payload, status))`."""
+        meta = ClaudeTaskManager.read_meta(task_id)
+        if meta is None:
+            return None, None, ({'error': 'Task not found',
+                                 'code': 'not_found'}, 404)
+        wt = meta.get('worktree')
+        if not isinstance(wt, dict) or not wt.get('path'):
+            return None, None, ({'error': 'this Build does not run in an '
+                                          'isolated worktree',
+                                 'code': 'no_worktree'}, 404)
+        return meta, wt, None
+
+    @classmethod
+    def status_for_task(cls, task_id, *, fresh=False):
+        """Everything the Changes tab shows. `(payload, http_status)`."""
+        if not cls.available():
+            return {'error': 'worktrees are not available',
+                    'code': 'unavailable'}, 503
+        meta, wt, err = cls._task_worktree(task_id)
+        if err:
+            return err
+        path, root, branch = wt['path'], wt.get('repo_root') or '', wt.get('branch') or ''
+        exists = os.path.isdir(path)
+        repo_exists = bool(root) and os.path.isdir(root)
+        live = cls.liveness()
+        manifest = worktrees.read_manifest(path) if exists else None
+        owner = (manifest or {}).get('task_id') or task_id
+        owner_live = live(owner)
+        st, st_err = None, ''
+        if exists:
+            try:
+                st = worktrees.status(path, base_sha=wt.get('base_sha') or '',
+                                      base_ref=wt.get('base_ref') or '',
+                                      use_cache=not fresh)
+            except worktrees.WorktreeError as e:
+                st_err = e.message
+        branch_exists, remote = False, None
+        if repo_exists:
+            try:
+                branch_exists = worktrees._branch_exists(root, branch)
+                remote = worktrees.push_remote(root)
+            except worktrees.WorktreeError:
+                pass
+        if st is not None and owner == task_id:
+            cls._record_stat(task_id, st, throttle=True)
+        if not exists:
+            blocked = 'removed'
+        elif owner_live:
+            blocked = 'live'
+        elif not repo_exists:
+            blocked = 'repo_missing'
+        elif st and (st['dirty'] or st['untracked']):
+            blocked = 'dirty'
+        else:
+            blocked = ''
+        return {
+            'task_id': task_id,
+            'worktree': {k: wt.get(k) for k in cls.STATIC_KEYS},
+            'exists': exists, 'repo_exists': repo_exists,
+            'branch_exists': branch_exists,
+            'owner_task_id': owner, 'live': owner_live,
+            'status': st, 'status_error': st_err,
+            'push_remote': remote,
+            'push_command': (worktrees.push_command(path, branch, remote)
+                             if exists and branch_exists else None),
+            'remove_blocked': blocked,
+        }, 200
+
+    @classmethod
+    def diff_for_task(cls, task_id, file):
+        meta, wt, err = cls._task_worktree(task_id)
+        if err:
+            return err
+        if not isinstance(file, str) or not file or len(file) > 4096:
+            return {'error': 'file is required', 'code': 'not_changed'}, 400
+        if not os.path.isdir(wt['path']):
+            return {'error': 'this worktree has been removed',
+                    'code': 'removed'}, 404
+        try:
+            return worktrees.diff(wt['path'], base_sha=wt.get('base_sha') or '',
+                                  file=file), 200
+        except worktrees.WorktreeError as e:
+            status = {'not_changed': 400, 'missing': 404}.get(e.code, 500)
+            return e.as_dict(), status
+
+    @classmethod
+    def _mark_removed(cls, task_ids, path, *, at=None):
+        at = at or time.time()
+
+        def mutate(m):
+            wt = m.get('worktree')
+            if not isinstance(wt, dict) or wt.get('path') != path or \
+                    wt.get('removed_at'):
+                return False
+            wt['removed_at'] = at
+        for tid in dict.fromkeys(t for t in task_ids if t):
+            if ClaudeTaskManager._TASK_ID_RE.fullmatch(tid):
+                ClaudeTaskManager._atomic_update_meta(
+                    os.path.join(ClaudeTaskManager.TASKS_DIR, tid), mutate)
+
+    @classmethod
+    def _remove_path(cls, path, *, force, requester=''):
+        """Remove a managed worktree and tell every Build that used it.
+        `(payload, http_status)`."""
+        manifest = worktrees.read_manifest(path) or {}
+        owners = [requester, manifest.get('task_id') or '',
+                  *(manifest.get('history') or [])]
+        if not os.path.exists(path):
+            cls._mark_removed(owners, path)
+            return {'removed': True, 'already': True, 'path': path,
+                    'branch': manifest.get('branch'), 'branch_kept': True}, 200
+        try:
+            out = worktrees.remove(path, wt_root=cls.root(), force=force,
+                                   is_owner_live=cls.liveness())
+        except worktrees.WorktreeError as e:
+            status = {'live': 409, 'dirty': 409, 'repo_missing': 409,
+                      'not_worktree': 404, 'lock_timeout': 503}.get(e.code, 500)
+            return e.as_dict(), status
+        cls._mark_removed(owners, path)
+        EventBroker.publish('task.worktree', {
+            'op': 'removed', 'path': path, 'task_id': requester or
+            manifest.get('task_id') or '', 'branch': out.get('branch')})
+        return out, 200
+
+    @classmethod
+    def remove_for_task(cls, task_id, *, force=False):
+        if not cls.available():
+            return {'error': 'worktrees are not available',
+                    'code': 'unavailable'}, 503
+        meta, wt, err = cls._task_worktree(task_id)
+        if err:
+            return err
+        return cls._remove_path(wt['path'], force=force, requester=task_id)
+
+    # ── the registry (Settings → Worktrees) ────────────────────────────────
+
+    @classmethod
+    def list_view(cls):
+        """Every worktree on the PVC, with its owner's state. File reads and
+        one tmux call — no git — because Settings polls this."""
+        if not cls.available():
+            return {'worktrees': [], 'count': 0, 'max': cls.max_worktrees(),
+                    'root': cls.root(), 'available': False,
+                    'sweep': WorktreeSweeper.status()}
+        live = cls.liveness()
+        reasons = {k.get('path'): k.get('reason')
+                   for k in (WorktreeSweeper.last_report() or {}).get('kept', [])}
+        rows = []
+        for m in worktrees.list_all(cls.root()):
+            owner = m.get('task_id') or ''
+            meta = ClaudeTaskManager.read_meta(owner) if owner else None
+            owned = (meta or {}).get('worktree') or {}
+            stat = owned.get('stat') if owned.get('path') == m['path'] else None
+            rows.append({
+                'repo': m.get('repo_key'), 'slug': m.get('slug'),
+                'path': m['path'], 'branch': m.get('branch'),
+                'port': m.get('port'), 'source_root': m.get('source_root'),
+                'task_id': owner,
+                'owner_name': ((meta or {}).get('name')
+                               or ((meta or {}).get('prompt') or '')[:80]),
+                'owner_status': (meta or {}).get('status') or '',
+                'live': live(owner) if owner else False,
+                'created_by': m.get('created_by') or '',
+                'created_at': m.get('created_at'), 'stat': stat,
+                'keep_reason': reasons.get(m['path'], ''),
+            })
+        return {'worktrees': rows, 'count': len(rows),
+                'max': cls.max_worktrees(), 'root': cls.root(),
+                'available': True, 'sweep': WorktreeSweeper.status()}
+
+    @classmethod
+    def remove_by_key(cls, key, slug, *, force=False):
+        if not cls.available():
+            return {'error': 'worktrees are not available',
+                    'code': 'unavailable'}, 503
+        if not (cls._SEGMENT_RE.fullmatch(key or '')
+                and cls._SEGMENT_RE.fullmatch(slug or '')):
+            return {'error': 'bad worktree name', 'code': 'not_worktree'}, 400
+        path = os.path.join(cls.root(), key, slug)
+        if not os.path.exists(path) and worktrees.read_manifest(path) is None:
+            return {'error': 'no such worktree', 'code': 'not_worktree'}, 404
+        return cls._remove_path(os.path.realpath(path), force=force)
+
+    @classmethod
+    def sweep(cls, *, dry_run=False):
+        if not cls.available():
+            return {'removed': [], 'kept': [], 'at': time.time(),
+                    'dry_run': dry_run}
+        keep_branches = os.environ.get(
+            'KC_WORKTREE_SWEEP_KEEP_BRANCHES', '').strip().lower() in (
+            '1', 'true', 'yes', 'on')
+        report = worktrees.sweep(
+            wt_root=cls.root(), is_owner_live=cls.liveness(),
+            owner_meta=ClaudeTaskManager.read_meta, gc_days=cls.gc_days(),
+            grace_s=cls.grace_s(), dry_run=dry_run,
+            delete_pristine_branches=not keep_branches)
+        if not dry_run:
+            for r in report['removed']:
+                cls._mark_removed(r.get('task_ids') or [], r['path'],
+                                  at=report['at'])
+                EventBroker.publish('task.worktree', {
+                    'op': 'swept', 'path': r['path'],
+                    'task_id': r.get('task_id') or '', 'reason': r['reason']})
+        WorktreeSweeper.record(report)
+        return report
 
 
 def _shell_quote(s):
@@ -4529,7 +5148,11 @@ class WorkspaceManager:
             results.append({
                 'path': path,
                 'label': name,
-                'is_git_repo': is_git,
+                # A linked worktree's `.git` is a FILE, and it is still a git
+                # checkout the New Build form may isolate from (#701). Only
+                # this field widens; `is_project` feeds project auto-discovery
+                # and keeps its meaning.
+                'is_git_repo': is_git or os.path.isfile(os.path.join(path, '.git')),
                 'is_project': is_git or has_project_marker,
                 'has_devcontainer': has_devcontainer,
                 'mtime': mtime,
@@ -12600,6 +13223,20 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             self._claude_task_id = m.group(1)
             self.handle_claude_get_output()
             return
+        # Isolated worktree of one Build (#701): what changed, and one file's
+        # diff. Before the plain tasks/{id} match, like /output.
+        m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/worktree(/diff)?$',
+                     claude_path)
+        if m:
+            self._claude_task_id = m.group(1)
+            if m.group(2):
+                self.handle_task_worktree_diff()
+            else:
+                self.handle_task_worktree_status()
+            return
+        if claude_path == '/api/worktrees':
+            self.handle_worktrees_list()
+            return
         m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', claude_path)
         if m:
             self._claude_task_id = m.group(1)
@@ -13160,6 +13797,19 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             # param, so match the route portion before '?'.
             if path.split('?', 1)[0] == '/api/files':
                 self.handle_file_delete()
+                return
+            # Remove an isolated worktree (#701). `?force=1` rides the query,
+            # so match the route portion before '?' — as /api/files does.
+            m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/worktree$',
+                         path.split('?', 1)[0])
+            if m:
+                self._claude_task_id = m.group(1)
+                self.handle_task_worktree_remove()
+                return
+            m = re.match(r'^/api/worktrees/([^/?]+)/([^/?]+)$',
+                         path.split('?', 1)[0])
+            if m:
+                self.handle_worktrees_remove(m.group(1), m.group(2))
                 return
             m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)$', path)
             if m:
@@ -14196,6 +14846,90 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_json(task)
 
+    # ── isolated worktrees (#701) ─────────────────────────────────────────
+
+    def _query_params(self):
+        if '?' not in self.path:
+            return {}
+        return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+    def _query_flag(self, name):
+        return (self._query_params().get(name, ['0'])[0] or '').lower() in (
+            '1', 'true', 'yes')
+
+    def handle_task_worktree_status(self):
+        """GET /api/claude/tasks/{id}/worktree[?fresh=1] — branch, what
+        changed since the base (committed and not), push command, and whether
+        it can be removed."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        body, status = WorktreeManager.status_for_task(
+            self._claude_task_id, fresh=self._query_flag('fresh'))
+        self.send_json(body, status)
+
+    def handle_task_worktree_diff(self):
+        """GET /api/claude/tasks/{id}/worktree/diff?file=<path> — one changed
+        file's diff against the base. Only files the status lists.
+
+        Always needs a real identity: this returns file CONTENTS, and a public
+        read-only demo (AUTH_MODE=none) confines its file reads to
+        PUBLIC_FILE_ROOT and refuses dot-paths — `~/.worktrees` is both."""
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        file = (self._query_params().get('file') or [''])[0]
+        body, status = WorktreeManager.diff_for_task(self._claude_task_id, file)
+        self.send_json(body, status)
+
+    def handle_task_worktree_remove(self):
+        """DELETE /api/claude/tasks/{id}/worktree[?force=1] — remove the
+        directory. Refused while its Build runs; refused when dirty unless
+        forced; the branch is always kept."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        body, status = WorktreeManager.remove_for_task(
+            self._claude_task_id, force=self._query_flag('force'))
+        self.send_json(body, status)
+
+    def handle_worktrees_list(self):
+        """GET /api/worktrees — every worktree on the PVC (Settings)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        self.send_json(WorktreeManager.list_view())
+
+    def handle_worktrees_remove(self, key, slug):
+        """DELETE /api/worktrees/{repo}/{slug}[?force=1] — for worktrees whose
+        Build is gone (or that were made by hand)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        body, status = WorktreeManager.remove_by_key(
+            urllib.parse.unquote(key), urllib.parse.unquote(slug),
+            force=self._query_flag('force'))
+        self.send_json(body, status)
+
+    def handle_worktrees_sweep(self):
+        """POST /api/worktrees/sweep {dry_run?} — clean up now."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            data = self.read_json_body() if int(
+                self.headers.get('Content-Length') or 0) else {}
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        dry_run = isinstance(data, dict) and data.get('dry_run') is True
+        try:
+            report = WorktreeManager.sweep(dry_run=dry_run)
+        except worktrees.WorktreeError as e:
+            self.send_json(e.as_dict(), 503 if e.code == 'lock_timeout' else 500)
+            return
+        self.send_json(report)
+
     def handle_claude_get_output(self):
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
@@ -14468,6 +15202,23 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
         if not_ready:
             self.send_json({'error': not_ready}, 400)
             return
+        # Isolation (#701). Only a JSON `true` counts — a string "false" is
+        # truthy, and turning isolation on by accident is a surprise worktree.
+        isolate = data.get('isolate') is True
+        base_ref = data.get('base_ref') or None
+        worktree_slug = data.get('worktree_slug') or None
+        for name, value in (('base_ref', base_ref),
+                            ('worktree_slug', worktree_slug)):
+            if value is not None and (not isinstance(value, str)
+                                      or len(value) > 200):
+                self.send_json({'error': f'{name} must be a short string',
+                                'code': 'bad_ref' if name == 'base_ref'
+                                else 'bad_slug'}, 400)
+                return
+        if (base_ref or worktree_slug) and not isolate:
+            self.send_json({'error': 'base_ref / worktree_slug need '
+                                     '"isolate": true', 'code': 'invalid'}, 400)
+            return
         task = ClaudeTaskManager.create_task(
             prompt,
             workdir=workdir,
@@ -14481,9 +15232,17 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
             parent_task_id=parent_task_id,
             auto_approve=auto_approve,
             project_id=project_id,
+            isolate=isolate,
+            base_ref=base_ref,
+            worktree_slug=worktree_slug,
         )
-        if task.get('status') == 'rejected':
-            self.send_json({'error': task.get('error')}, 429)
+        refused = WorktreeManager.HTTP_STATUS.get(task.get('status'))
+        if refused and task.get('task_id') is None:
+            body = {'error': task.get('error')}
+            if task.get('code'):
+                body.update({k: v for k, v in task.items()
+                             if k not in ('status', 'task_id')})
+            self.send_json(body, refused)
             return
         self.send_json(task, 201)
 
@@ -19249,6 +20008,8 @@ class BrowserHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_claude_create_task()
             elif path == "/api/claude/tasks/terminal":
                 self.handle_claude_create_terminal_task()
+            elif path == "/api/worktrees/sweep":
+                self.handle_worktrees_sweep()
             elif path == "/api/claude/auth/token/regenerate":
                 self.handle_claude_regenerate_token()
             # Hypervisor chat threads
@@ -20290,6 +21051,68 @@ class TaskReconciler:
         }
 
 
+class WorktreeSweeper:
+    """Background cleanup of isolated worktrees (#701), on TaskReconciler's
+    pattern. Every pass is `WorktreeManager.sweep()` — which never removes a
+    worktree that is live, recent, dirty or holds an unpushed commit — so the
+    loop itself decides nothing; it only keeps the disk from filling with the
+    pristine worktrees tracker-only Board items leave behind.
+
+    The first pass waits `boot_delay` so a pod restart does not race the
+    Builds it is about to see come back.
+    """
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _start_lock = threading.Lock()
+    _last_report = None
+    _last_error = ''
+
+    @classmethod
+    def start(cls, *, interval_seconds=600, boot_delay=120):
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            if cls._stop_event.wait(boot_delay):
+                return
+            while not cls._stop_event.is_set():
+                try:
+                    WorktreeManager.sweep()
+                    cls._last_error = ''
+                except Exception as e:
+                    cls._last_error = str(e)
+                    print(f'[worktrees] sweep failed: {e}', file=sys.stderr)
+                cls._stop_event.wait(interval_seconds)
+
+        t = threading.Thread(target=_loop, name='worktree-sweeper', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def record(cls, report):
+        if not report.get('dry_run'):
+            cls._last_report = report
+
+    @classmethod
+    def last_report(cls):
+        return cls._last_report
+
+    @classmethod
+    def status(cls):
+        rep = cls._last_report or {}
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'last_run_at': rep.get('at'),
+            'removed': len(rep.get('removed') or []),
+            'kept': len(rep.get('kept') or []),
+            'error': cls._last_error,
+        }
+
+
 if __name__ == "__main__":
     # Change to the directory containing our files
     os.chdir('/tmp/browser')
@@ -20499,6 +21322,21 @@ if __name__ == "__main__":
     except Exception as e:
         print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
 
+    # Isolated-worktree cleanup (#701). Removes only what holds nothing: a
+    # worktree whose Build finished without changing anything, or one whose
+    # every commit is already on a remote and is older than
+    # KC_WORKTREE_GC_DAYS. Dirty or unpushed work is never touched.
+    if _WORKTREES_AVAILABLE:
+        try:
+            _wt_interval = int(os.environ.get('KC_WORKTREE_SWEEP_INTERVAL_S', '600'))
+        except (TypeError, ValueError):
+            _wt_interval = 600
+        try:
+            WorktreeSweeper.start(interval_seconds=max(60, _wt_interval))
+            print(f'[worktrees] sweeper started ({max(60, _wt_interval)}s)')
+        except Exception as e:
+            print(f'[worktrees] sweeper start failed: {e}', file=sys.stderr)
+
     # Board run orphan sweep (#588 Phase 4). A run whose process died is
     # DEFINITIVELY stale at boot — no worker of a previous process can still be
     # alive — so its leases are reclaimed and the run is marked `interrupted`
@@ -20539,6 +21377,8 @@ if __name__ == "__main__":
     print("  GET  /api/claude/tasks              - List all tasks")
     print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
     print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
+    print("  GET  /api/claude/tasks/{id}/worktree - Isolated worktree status (#701)")
+    print("  GET  /api/worktrees                 - All isolated worktrees")
     print("  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
     print("  POST /api/claude/tasks/{id}/rename  - Rename a task")
     print("  DELETE /api/claude/tasks/{id}       - Kill a running task")

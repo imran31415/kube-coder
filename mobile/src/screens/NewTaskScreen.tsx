@@ -9,12 +9,15 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { createTask, listAssistants, type Assistant } from '../api/client';
+import { createTask, listAssistants, listWorkspaceDirs, type Assistant } from '../api/client';
+import type { WorkdirOption } from '../api/types';
+import { isGitWorkdir } from '../util/worktree';
 import { Button, Label } from '../components/ui';
 import {
   assistantMarker,
@@ -42,6 +45,11 @@ export default function NewTaskScreen() {
   const [assistant, setAssistant] = useState('claude');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dirs, setDirs] = useState<WorkdirOption[]>([]);
+  const [isolate, setIsolate] = useState(false);
+  // Offered only where the server will accept it: a git folder, or a folder
+  // inside one (the workdir is free text here).
+  const canIsolate = isGitWorkdir(workdir, dirs);
 
   useEffect(() => {
     void listAssistants()
@@ -52,6 +60,7 @@ export default function NewTaskScreen() {
         setAssistant(list.find((a) => a.default)?.id ?? list[0].id);
       })
       .catch(() => {/* keep the fallback list */});
+    void listWorkspaceDirs().then(setDirs).catch(() => setDirs([]));
   }, []);
 
   const selected = assistants.find((a) => a.id === assistant);
@@ -68,7 +77,12 @@ export default function NewTaskScreen() {
     setBusy(true);
     setError(null);
     try {
-      const t = await createTask({ prompt: prompt.trim(), workdir, assistant });
+      const t = await createTask({
+        prompt: prompt.trim(),
+        workdir,
+        assistant,
+        ...(canIsolate && isolate ? { isolate: true } : {}),
+      });
       nav.replace('TaskDetail', { id: t.id });
     } catch (e) {
       // The prompt stays in the form — surface why it didn't start instead of
@@ -110,6 +124,24 @@ export default function NewTaskScreen() {
             autoCorrect={false}
             style={styles.input}
           />
+
+          {canIsolate ? (
+            <View style={styles.isoRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.isoTitle}>Isolated worktree</Text>
+                <Text style={styles.isoHint}>
+                  Its own branch, folder and port, so tasks on this repo at the same time can't
+                  overwrite each other.
+                </Text>
+              </View>
+              <Switch
+                value={isolate}
+                onValueChange={setIsolate}
+                accessibilityLabel="Isolated worktree"
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+          ) : null}
 
           <Label style={{ marginTop: space.xl }}>Assistant</Label>
           <View style={styles.chips}>
@@ -161,6 +193,15 @@ export default function NewTaskScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
+  isoRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginTop: space.md,
+  },
+  isoTitle: { color: colors.text, fontSize: font.size.md, fontWeight: '600' },
+  isoHint: { color: colors.textFaint, fontSize: font.size.xs, marginTop: 2 },
   scroll: { padding: space.lg, paddingBottom: space.xxl },
   prompt: {
     backgroundColor: colors.bgElevated,

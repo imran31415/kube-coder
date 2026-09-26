@@ -3,7 +3,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 /** Stack routes for the Tasks tab. */
 export type TasksStackParams = {
   TaskList: undefined;
-  TaskDetail: { id: string };
+  // `tab: 'changes'` opens an isolated Build's worktree sheet straight away —
+  // the link a Board review card follows (#701).
+  TaskDetail: { id: string; tab?: 'changes' };
   NewTask: undefined;
 };
 

@@ -18,6 +18,7 @@ vi.mock('./MessagingSection', () => ({
 vi.mock('./UpdatesSection', () => ({ UpdatesSection: () => <div data-testid="sec-updates" /> }));
 vi.mock('./BrowserSection', () => ({ BrowserSection: () => <div data-testid="sec-browser" /> }));
 vi.mock('./MetricsSection', () => ({ MetricsSection: () => <div data-testid="sec-metrics" /> }));
+vi.mock('./WorktreesSection', () => ({ WorktreesSection: () => <div data-testid="sec-worktrees" /> }));
 
 import { SettingsRoute } from './index';
 
@@ -30,6 +31,7 @@ const ALL_SECTIONS = [
   'sec-updates',
   'sec-browser',
   'sec-metrics',
+  'sec-worktrees',
 ];
 
 function renderAt(path: string) {
@@ -87,11 +89,12 @@ describe('SettingsRoute shell (#439)', () => {
     expect(activePill()).toBe('Integrations');
   });
 
-  it('renders updates + browser + metrics sections at /settings/workspace', () => {
+  it('renders updates + browser + metrics + worktrees sections at /settings/workspace', () => {
     renderAt('/settings/workspace');
     expect(screen.getByTestId('sec-updates')).toBeInTheDocument();
     expect(screen.getByTestId('sec-browser')).toBeInTheDocument();
     expect(screen.getByTestId('sec-metrics')).toBeInTheDocument();
+    expect(screen.getByTestId('sec-worktrees')).toBeInTheDocument();
     expect(activePill()).toBe('Workspace');
   });
 

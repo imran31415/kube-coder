@@ -1,34 +1,55 @@
 #!/usr/bin/env bash
-# kube-coder Phase 0 worktree helper.
+# kube-coder worktree helper.
 # One git worktree + one branch + one port lease per session, so concurrent
 # Claude sessions and builds stop fighting over a shared checkout.
 #
-# Pure userland — no infra/PR needed. Subcommands:
-#   new [slug] [base-ref]   create a worktree (+branch kc/<slug>) and lease a port
+# Subcommands:
+#   new [slug] [base-ref]   create (or reuse) a worktree (+branch kc/<slug>) and lease a port
 #   list                    show all live worktrees for the current repo
 #   rm <slug> [--force]     remove a worktree dir (branch is KEPT)
 #   port                    just print a free port (skips reserved + leased)
 #
 # `new` prints a shell env block on stdout (KC_WT / KC_WT_BRANCH / PORT) and a
 # human summary on stderr, so callers can:  eval "$(worktree.sh new foo)"; cd "$KC_WT"
+#
+# Since #701 the dashboard server creates worktrees too (the New Build
+# "Isolated worktree" toggle, Board runs, sub-agents). There is ONE
+# implementation of the layout, the port lease and the lock:
+# charts/workspace/worktrees.py, shipped in the pod at /tmp/browser. When it is
+# there this script delegates to it; the bash below is the fallback for a
+# checkout outside a kube-coder pod, and takes the same lock and writes the
+# same manifest so the two never hand out the same port.
 set -euo pipefail
 
 WT_ROOT="${KC_WORKTREE_ROOT:-/home/dev/.worktrees}"
+WT_PY="${KC_WORKTREES_PY:-/tmp/browser/worktrees.py}"
 # kube-coder's reserved in-pod ports (server.py INTERNAL_PORTS) — never lease these.
 RESERVED="22 2376 5900 6080 6081 7681 8080"
-PORT_LO="${KC_WT_PORT_LO:-3000}"
+PORT_LO="${KC_WT_PORT_LO:-3100}"
 PORT_HI="${KC_WT_PORT_HI:-3999}"
 
 die() { echo "worktree: $*" >&2; exit 1; }
 
-slugify() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40
+# The Python implementation, if this pod ships a compatible one.
+use_py() {
+  [ -f "$WT_PY" ] || return 1
+  local v
+  v=$(python3 "$WT_PY" --api-version 2>/dev/null) || return 1
+  [ "${v:-0}" -ge 1 ] 2>/dev/null
 }
 
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40 | sed -E 's/-+$//'
+}
+
+# The MAIN checkout, even from inside a linked worktree — every worktree hangs
+# off the main repository and the layout keys on it.
 repo_root() {
-  git -C "${1:-$PWD}" rev-parse --show-toplevel 2>/dev/null \
+  local top
+  top=$(git -C "${1:-$PWD}" rev-parse --show-toplevel 2>/dev/null) \
     || die "not inside a git repo — cd into one first"
+  git -C "$top" worktree list --porcelain | sed -n '1s/^worktree //p'
 }
 
 # true (rc 0) if something is already listening on 127.0.0.1:<port>.
@@ -49,11 +70,26 @@ free_port() {
   die "no free port in ${PORT_LO}-${PORT_HI}"
 }
 
+# Hold the same lock worktrees.py takes, for the rest of this process.
+take_lock() {
+  mkdir -p "$WT_ROOT"
+  exec 9>"$WT_ROOT/.kc-worktrees.lock"
+  flock -w 60 9 || die "another worktree operation is still running; try again"
+}
+
 cmd_new() {
   local raw="${1:-}" base="${2:-}"
-  local root name slug wt branch port
+  if use_py; then
+    local args=(ensure --repo "$PWD" --task-id "${KC_TASK_ID:-}"
+                --created-by worktree.sh --emit-shell)
+    [ -n "$raw" ]  && args+=(--slug "$raw")
+    [ -n "$base" ] && args+=(--base "$base")
+    exec python3 "$WT_PY" "${args[@]}"
+  fi
+
+  local root name slug wt branch port base_sha common
   root=$(repo_root)
-  name=$(basename "$root")
+  name=$(slugify "$(basename "$root")")
   # slug precedence: explicit arg > current task id > time-ish + $RANDOM
   [ -n "$raw" ] || raw="${KC_TASK_ID:-}"
   [ -n "$raw" ] || raw="$(date +%H%M%S)-$RANDOM"
@@ -62,29 +98,43 @@ cmd_new() {
   wt="$WT_ROOT/$name/$slug"
   branch="kc/$slug"
 
+  take_lock
   [ -e "$wt" ] && die "worktree exists: $wt  (reuse it, or: worktree.sh rm $slug)"
   mkdir -p "$WT_ROOT/$name"
+  port=$(free_port)
 
   # branch from base-ref if given, else current HEAD; reuse branch if it exists.
+  # --no-track: an agent's bare `git push` must never be aimed at the base.
+  local bc=false
   if git -C "$root" show-ref --quiet --verify "refs/heads/$branch"; then
-    git -C "$root" worktree add "$wt" "$branch" >&2
-  elif [ -n "$base" ]; then
-    git -C "$root" worktree add -b "$branch" "$wt" "$base" >&2
+    base_sha=$(git -C "$root" merge-base "$branch" HEAD 2>/dev/null \
+               || git -C "$root" rev-parse "$branch")
+    git -C "$root" -c core.hooksPath=/dev/null worktree add "$wt" "$branch" >&2
   else
-    git -C "$root" worktree add -b "$branch" "$wt" >&2
+    base_sha=$(git -C "$PWD" rev-parse --verify "${base:-HEAD}^{commit}") \
+      || die "unknown base '${base:-HEAD}'"
+    git -C "$root" -c core.hooksPath=/dev/null \
+      worktree add --no-track -b "$branch" "$wt" "$base_sha" >&2
+    bc=true
   fi
 
-  port=$(free_port)
   jq -n --arg slug "$slug" --arg repo "$name" --arg path "$wt" \
         --arg branch "$branch" --argjson port "$port" \
         --arg root "$root" --arg task "${KC_TASK_ID:-}" \
-    '{slug:$slug, repo:$repo, path:$path, branch:$branch, port:$port,
-      source_root:$root, task_id:$task}' > "$wt/.kc-worktree.json"
-  # keep the meta file out of `git status` / commits (shared exclude, idempotent).
-  local exclude="$root/.git/info/exclude"
-  if [ -f "$exclude" ] && ! grep -qx '.kc-worktree.json' "$exclude"; then
-    printf '.kc-worktree.json\n' >> "$exclude"
-  fi
+        --arg base_ref "${base:-HEAD}" --arg base_sha "$base_sha" \
+        --argjson now "$(date +%s)" --argjson bc "$bc" \
+    '{version:2, slug:$slug, repo:$repo, path:$path, branch:$branch, port:$port,
+      source_root:$root, task_id:$task, base_ref:$base_ref, base_sha:$base_sha,
+      created_at:$now, created_by:"worktree.sh", branch_created:$bc,
+      history:[]}' > "$wt/.kc-worktree.json"
+  # keep our files out of `git status` / commits (shared exclude, idempotent).
+  common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)
+  mkdir -p "$common/info"
+  local f
+  for f in .kc-worktree.json .kc-issue-prompt.md; do
+    grep -qx "$f" "$common/info/exclude" 2>/dev/null \
+      || printf '%s\n' "$f" >> "$common/info/exclude"
+  done
 
   {
     echo "worktree ready:"
@@ -100,7 +150,8 @@ cmd_new() {
 }
 
 cmd_list() {
-  local root name; root=$(repo_root); name=$(basename "$root")
+  if use_py; then exec python3 "$WT_PY" list --repo "$PWD"; fi
+  local root name; root=$(repo_root); name=$(slugify "$(basename "$root")")
   echo "worktrees for $name:"
   git -C "$root" worktree list
   echo
@@ -114,7 +165,13 @@ cmd_list() {
 cmd_rm() {
   local slug="${1:-}" force="${2:-}"
   [ -n "$slug" ] || die "usage: worktree.sh rm <slug> [--force]"
+  if use_py; then
+    local args=(remove --slug "$slug")
+    [ "$force" = "--force" ] && args+=(--force)
+    exec python3 "$WT_PY" "${args[@]}"
+  fi
   slug=$(slugify "$slug")
+  take_lock
   local meta wt root branch
   meta=$(ls "$WT_ROOT"/*/"$slug"/.kc-worktree.json 2>/dev/null | head -1 || true)
   [ -n "$meta" ] || die "no worktree with slug '$slug'"
@@ -122,9 +179,10 @@ cmd_rm() {
   root=$(jq -r '.source_root' "$meta")
   branch=$(jq -r '.branch' "$meta")
 
-  # ignore our own meta file when deciding "dirty".
+  # ignore our own files when deciding "dirty".
   local dirty
-  dirty=$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '\.kc-worktree\.json$' || true)
+  dirty=$(git -C "$wt" status --porcelain 2>/dev/null \
+    | grep -v -e '\.kc-worktree\.json$' -e '\.kc-issue-prompt\.md$' || true)
   if [ "$force" != "--force" ] && [ -n "$dirty" ]; then
     die "$wt has uncommitted changes — commit them, or re-run: rm $slug --force"
   fi
@@ -138,10 +196,15 @@ cmd_rm() {
   echo "branch '$branch' KEPT — delete when done: git -C $(printf '%q' "$root") branch -D $branch" >&2
 }
 
+cmd_port() {
+  if use_py; then exec python3 "$WT_PY" port; fi
+  free_port
+}
+
 case "${1:-new}" in
-  new)  shift; cmd_new "${1:-}" "${2:-}" ;;
+  new)  shift || true; cmd_new "${1:-}" "${2:-}" ;;
   list) cmd_list ;;
   rm)   shift; cmd_rm "${1:-}" "${2:-}" ;;
-  port) free_port ;;
+  port) cmd_port ;;
   *)    die "unknown command '$1' (new|list|rm|port)" ;;
 esac

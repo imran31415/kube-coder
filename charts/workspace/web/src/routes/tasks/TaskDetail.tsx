@@ -24,6 +24,8 @@ import { Icon } from '../../components/Icon';
 import { TerminalPane } from './TerminalPane';
 import { SubagentsTab } from './SubagentsTab';
 import { MessageChat } from './MessageChat';
+import { ChangesTab } from './ChangesTab';
+import { currentPath, pathSuffix } from '../../store/router';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import { MutatorOnly } from '../../components/MutatorOnly';
@@ -35,7 +37,7 @@ import type { TaskStatus } from '../../api/tasks';
 // dot at the left of the bar (see TaskBar's td-bar-dot rules). Keeping
 // TAB_HELP / TAB_LABELS only since those still feed the tab buttons.
 
-type DetailTab = 'terminal' | 'preview' | 'message' | 'info' | 'subagents';
+type DetailTab = 'terminal' | 'preview' | 'message' | 'changes' | 'info' | 'subagents';
 // The "terminal" id is historical — what the user sees is "Session", which is
 // the live attach to the task's tmux/Claude session. terminal-entry.sh falls
 // back to the most-recent claude-* session when the pending file is missing,
@@ -44,6 +46,7 @@ const TAB_LABELS: Record<DetailTab, string> = {
   terminal: 'Session',
   preview: 'Preview',
   message: 'Send message',
+  changes: 'Changes',
   info: 'Info',
   subagents: 'Subagents',
 };
@@ -51,6 +54,7 @@ const TAB_HELP: Record<DetailTab, string> = {
   terminal: 'Live Claude/OpenCode session — attach and type as if you were SSH\'d into the pod.',
   preview: 'Side-by-side session + app preview — in-app iframe or in-pod browser (noVNC).',
   message: 'Chat-style composer that mirrors the session in a friendly UI.',
+  changes: 'This Build\'s isolated worktree: its branch, what it changed, and how to get the work out.',
   info: 'Metadata, prompt, timestamps, and injected memory.',
   subagents: 'Sub-tasks spawned by Claude\'s Agent / Task tool.',
 };
@@ -63,6 +67,12 @@ const TAB_HELP: Record<DetailTab, string> = {
  */
 function isAliveStatus(s: TaskStatus | undefined): boolean {
   return s === 'running' || s === 'waiting-for-input';
+}
+
+/** `/tasks/<id>/changes` opens straight onto the Changes tab — the link the
+ *  Board review card follows (#701). */
+function requestedTab(): string {
+  return pathSuffix(currentPath.value).split('/')[1] ?? '';
 }
 
 export function TaskDetail({ onClose }: { onClose?: () => void }) {
@@ -87,11 +97,23 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   // the user off interactive tabs since the tmux session is gone.
   useEffect(() => {
     if (!t) return;
+    if (t.worktree && requestedTab() === 'changes') {
+      setTab('changes');
+      return;
+    }
     setTab(isAliveStatus(t.status) ? 'terminal' : 'info');
     // Reset only on task-id change so user keystrokes inside the same task
     // (status flips, etc.) don't yank them off the tab they're reading.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t?.task_id]);
+
+  // Following a /changes link to the Build that is already open does not
+  // change the task id, so the effect above would not re-run.
+  const path = currentPath.value;
+  useEffect(() => {
+    if (t?.worktree && requestedTab() === 'changes') setTab('changes');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
 
   useEffect(() => {
     if (!t) return;
@@ -235,6 +257,8 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
   const visibleTabs: DetailTab[] = isLive
     ? ['terminal', 'preview', 'message', 'info']
     : ['info'];
+  // An isolated Build's changes are worth reading live AND after it ends.
+  if (t.worktree) visibleTabs.splice(visibleTabs.indexOf('info'), 0, 'changes');
   if (subagentsCount > 0) visibleTabs.push('subagents');
 
   const FINISHED_BANNER: Partial<Record<TaskStatus, { tone: 'success' | 'warn' | 'danger' | 'neutral'; title: string; body: string }>> = {
@@ -289,8 +313,11 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
           </div>
         )}
         {tab === 'terminal' && <TerminalPane taskId={t.task_id} />}
-        {tab === 'preview' && <TerminalPane taskId={t.task_id} withVnc />}
+        {tab === 'preview' && (
+          <TerminalPane taskId={t.task_id} withVnc defaultPort={t.worktree?.port ?? null} />
+        )}
         {tab === 'message' && <MessageChat taskId={t.task_id} status={t.status} taskName={t.name} />}
+        {tab === 'changes' && t.worktree && <ChangesTab taskId={t.task_id} live={isLive} />}
         {tab === 'info' && (
           <dl class="td-info">
             {t.prompt && (
@@ -309,6 +336,27 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
               <>
                 <dt>Finished</dt>
                 <dd>{new Date(t.finished_at * 1000).toLocaleString()}</dd>
+              </>
+            )}
+            {t.workdir && (
+              <>
+                <dt>Working directory</dt>
+                <dd class="mono">{t.workdir}</dd>
+              </>
+            )}
+            {t.worktree && (
+              <>
+                <dt title="This Build runs in its own git worktree (#701)">Branch</dt>
+                <dd class="mono">
+                  {t.worktree.branch}
+                  {t.worktree.removed && <span class="muted"> (worktree removed, branch kept)</span>}
+                </dd>
+                {t.worktree.port && (
+                  <>
+                    <dt title="The port this Build's dev server should bind ($PORT)">Port</dt>
+                    <dd class="mono">{t.worktree.port}</dd>
+                  </>
+                )}
               </>
             )}
             {t.tmux_session && (

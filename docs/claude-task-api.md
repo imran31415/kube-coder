@@ -224,6 +224,9 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 | `response_url` | string | No | Where to POST the task's terminal state when it reaches `completed` / `error` / `killed`. Must be `http(s)`. See [Completion hooks](#completion-hooks-response_url). |
 | `response_secret` | string | No | If set, the completion-hook POST is signed with HMAC-SHA256 in `X-Kube-Coder-Signature-256: sha256=<hex>`. |
 | `source` | string | No | Free-form provenance string surfaced on the dashboard (`webhook:<id>`, `cron:<id>`, etc.). Webhook and cron receivers set this automatically. |
+| `isolate` | boolean | No | `true` runs the task in its own git worktree on its own `kc/<name>` branch with its own `$PORT` ([Isolated worktrees](#isolated-worktrees-701)). `workdir` must be inside a git repository. Only a JSON `true` counts. |
+| `base_ref` | string | No | With `isolate`: the branch, tag or commit to start from. Default: the folder's current commit. |
+| `worktree_slug` | string | No | With `isolate`: continue in the named worktree (e.g. `issue-701`) instead of a fresh one. Refused with `409 busy` while another live task uses it. |
 
 **Response (201 Created):**
 
@@ -524,15 +527,44 @@ Generates a new bearer token, invalidating the previous one. Requires OAuth2 bro
 
 ---
 
+### Isolated worktrees (#701)
+
+A task created with `"isolate": true` runs in `/home/dev/.worktrees/<repo>/<name>/`
+on branch `kc/<name>`, with `KC_WT`, `KC_WT_BRANCH` and `PORT` set in its session.
+Its detail (`GET /api/claude/tasks/{id}`) carries a `worktree` object; the list
+carries a short `worktree` summary (branch, port, whether it was removed, and
+the last recorded change counts). Tasks without isolation have neither.
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/api/claude/tasks/{id}/worktree[?fresh=1]` | Branch, base, what changed since the base (committed and not), the push command, and whether it can be removed (`remove_blocked`: `''`, `live`, `dirty`, `repo_missing`, `removed`). |
+| `GET` | `/api/claude/tasks/{id}/worktree/diff?file=<path>` | One changed file's diff against the base. Only files the status lists (`400 not_changed` otherwise). |
+| `DELETE` | `/api/claude/tasks/{id}/worktree[?force=1]` | Remove the folder. `409 live` while the task runs (even with force), `409 dirty` for uncommitted changes unless `force=1`. **The branch is always kept.** |
+| `GET` | `/api/worktrees` | Every worktree on the workspace, with its owner's state and why the cleanup kept it. |
+| `DELETE` | `/api/worktrees/{repo}/{name}[?force=1]` | Remove one by name — for worktrees whose task is gone or that were made by hand. |
+| `POST` | `/api/worktrees/sweep` | Run the cleanup now. `{"dry_run": true}` reports without removing. |
+
+Refusals when creating an isolated task come back before anything is created,
+as `{error, code}`:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `400` | `not_git`, `empty_repo`, `home_is_repo`, `outside_home`, `not_dir`, `bad_ref`, `unknown_ref`, `bad_slug` | This folder / ref cannot be isolated. |
+| `429` | `worktree_cap`, `no_port` | The workspace is at `KC_MAX_WORKTREES` or out of ports. |
+| `409` | `busy`, `branch_in_use`, `path_conflict` | Something else holds the worktree or branch. |
+| `503` | `lock_timeout` | Another worktree operation is still running. |
+
 ### Error Responses
 
 All endpoints return errors as JSON with an appropriate HTTP status code:
 
 | Status | Meaning |
 |---|---|
-| `400` | Bad request (missing or invalid `prompt`, malformed JSON). |
+| `400` | Bad request (missing or invalid `prompt`, malformed JSON, a folder that cannot be isolated). |
 | `401` | Unauthorized (missing or invalid bearer token, missing OAuth2 headers). |
 | `404` | Task not found. |
+| `409` | Conflict (an isolated worktree that is busy, running, or has uncommitted changes). |
+| `429` | At a limit (`KC_MAX_TASKS`, `KC_MAX_WORKTREES`). |
 | `500` | Internal server error. |
 
 ## Dashboard

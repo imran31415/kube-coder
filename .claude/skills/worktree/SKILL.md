@@ -6,7 +6,7 @@ allowed-tools: Bash, Read
 argument-hint: "[slug] | list | rm <slug> [--force]  (default: new, slug from task id)"
 ---
 
-# Per-session git worktree (Phase 0)
+# Per-session git worktree
 
 kube-coder isolates sessions at the *terminal* level (each task gets its own
 tmux session + `~/.claude-tasks/<id>/`) but everything still runs in the **same
@@ -52,7 +52,10 @@ jq -r .port "$KC_WT/.kc-worktree.json"   # or read .branch / .path
 
 - worktree dir: `/home/dev/.worktrees/<repo>/<slug>/`
 - branch: `kc/<slug>` (branched from current HEAD, or a base-ref: `new <slug> <base>`)
-- leased port in 3000–3999 (skips kube-coder's reserved ports and other leases)
+- leased port in 3100–3999 (skips kube-coder's reserved ports, other leases and
+  anything already listening)
+- `new` with a slug that already exists **reuses** that worktree (same path,
+  branch and port) instead of failing
 
 ## Running a dev server / preview
 
@@ -103,16 +106,30 @@ delete a dirty worktree unless you pass `--force`.
    a `kc/<slug>` worktree keeps `main` clean so that pull still fast-forwards —
    which is the point. Don't check out `main` inside a worktree.
 
-## Scope (why this is "Phase 0")
+## The dashboard does this too (#701)
 
-Pure userland, works today, teaches us the naming/cleanup ergonomics. It does
-**not** yet integrate with the Task API or dashboard — the worktree/branch/port
-aren't shown in the task UI and aren't auto-created when a task starts, and the
-port lease is advisory (first-come). Phase 1 moves this into `server.py`'s
-`create_task()` (record worktree in `task.json`, clean up in `delete_task`,
-surface it in `NewTaskForm`/task detail). Sanity-check the helper before relying
-on it:
+A Build can now be launched isolated without this skill: the **New Build**
+form's *Isolated worktree* toggle, a Board run's *Isolated worktree per item*,
+`create_task(isolate=true)` from the dashboard MCP, and `spawn_agent(isolate=
+true)` for sub-agents. All of them — and this script — share one
+implementation, `charts/workspace/worktrees.py` (in the pod at
+`/tmp/browser/worktrees.py`): the same `/home/dev/.worktrees/<repo>/<slug>`
+layout, the same `.kc-worktree.json` manifest, the same port lease and the same
+lock. So a worktree made here shows up in **Settings → Worktrees**, counts
+toward `KC_MAX_WORKTREES`, and its port is never handed out twice.
+
+When `/tmp/browser/worktrees.py` is present this script delegates to it
+(override with `KC_WORKTREES_PY`); otherwise it falls back to its own bash
+implementation, which takes the same `flock` and writes the same manifest.
+
+A worktree you make by hand has no owning Build, so the dashboard's cleanup
+sweep only removes it once it is pristine (nothing committed, nothing dirty)
+**and** older than `KC_WORKTREE_GC_DAYS` (7). Anything with work in it is yours
+to remove.
+
+Sanity-check the helper before relying on it:
 
 ```bash
 bash -n /home/dev/kube-coder/.claude/skills/worktree/worktree.sh
+python3 /tmp/browser/worktrees.py --api-version
 ```

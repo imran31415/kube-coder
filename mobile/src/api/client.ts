@@ -44,6 +44,8 @@ import {
   mockBoardReview,
   mockBoardStanding,
   mockDecideBoardItem,
+  mockWorktreeDiff,
+  mockWorktreeView,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -89,13 +91,19 @@ import type {
   BoardReviewItem,
   BoardStanding,
   WebhookRecord,
+  TaskWorktreeView,
+  WorktreeDiff,
 } from './types';
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** The server's stable error code when it sends one (`dirty`, `live`,
+   *  `worktree_cap`, …) — switch on this, never on the message. */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -172,7 +180,11 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
       parsed && typeof parsed === 'object' && 'error' in parsed
         ? String((parsed as { error: unknown }).error)
         : `${res.status} ${res.statusText}`;
-    throw new ApiError(msg, res.status);
+    const code =
+      parsed && typeof parsed === 'object' && typeof (parsed as { code?: unknown }).code === 'string'
+        ? (parsed as { code: string }).code
+        : undefined;
+    throw new ApiError(msg, res.status, code);
   }
   return parsed as T;
 }
@@ -361,6 +373,8 @@ export async function createTask(input: {
   prompt: string;
   workdir?: string;
   assistant?: string;
+  /** Run in an isolated git worktree on its own branch and port (#701). */
+  isolate?: boolean;
 }): Promise<TaskSummary> {
   if (getConfig().mock) {
     await delay(150);
@@ -486,6 +500,43 @@ export async function uploadTaskImage(
     throw new ApiError(parsed?.error || `Upload failed (${res.status})`, res.status);
   }
   return parsed.absolute_path;
+}
+
+// ---- Isolated worktrees (#701) -------------------------------------------
+
+/** An isolated Build's branch, what it changed, and whether it can be removed. */
+export async function getTaskWorktree(id: string, fresh = false): Promise<TaskWorktreeView> {
+  if (getConfig().mock) {
+    await delay(100);
+    const v = mockWorktreeView(id);
+    if (!v) throw new ApiError('this Build does not run in an isolated worktree', 404, 'no_worktree');
+    return v;
+  }
+  return request<TaskWorktreeView>(`/api/claude/tasks/${id}/worktree`,
+    { query: fresh ? { fresh: 1 } : undefined });
+}
+
+/** One changed file's diff against the worktree's base. */
+export async function getTaskWorktreeDiff(id: string, file: string): Promise<WorktreeDiff> {
+  if (getConfig().mock) {
+    await delay(80);
+    return mockWorktreeDiff(file);
+  }
+  return request<WorktreeDiff>(`/api/claude/tasks/${id}/worktree/diff`, { query: { file } });
+}
+
+/** Delete the worktree folder. Its branch is always kept. `force` discards
+ *  uncommitted changes; without it a dirty tree answers 409 `dirty`. */
+export async function removeTaskWorktree(
+  id: string,
+  force = false,
+): Promise<{ removed: boolean; branch?: string }> {
+  if (getConfig().mock) {
+    await delay(120);
+    return { removed: true, branch: mockWorktreeView(id)?.worktree.branch };
+  }
+  return request(`/api/claude/tasks/${id}/worktree`,
+    { method: 'DELETE', query: force ? { force: 1 } : undefined });
 }
 
 export async function killTask(id: string): Promise<void> {

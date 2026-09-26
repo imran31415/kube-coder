@@ -9,6 +9,72 @@ export interface TaskSummary {
   created_at?: number;
   updated_at?: number;
   waiting_for_input?: boolean;
+  /** Present only for a Build running in an isolated worktree (#701). */
+  worktree?: WorktreeBrief;
+}
+
+/** What an isolated Build changed — recorded server-side, no git on a list. */
+export interface WorktreeStat {
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  ahead: number | null;
+  dirty: number;
+  untracked: number;
+}
+
+/** An isolated Build's worktree as the task list / detail carries it. The
+ *  detail view is the raw task.json record, which says `removed_at`. */
+export interface WorktreeBrief {
+  branch?: string | null;
+  port?: number | null;
+  path?: string | null;
+  removed?: boolean;
+  removed_at?: number | null;
+  stat?: WorktreeStat | null;
+}
+
+export interface WorktreeFile {
+  path: string;
+  /** A added, M modified, D deleted, ? untracked. */
+  status: string;
+  added: number | null;
+  deleted: number | null;
+  binary: boolean;
+  uncommitted: boolean;
+}
+
+/** GET /api/claude/tasks/<id>/worktree (#701). */
+export interface TaskWorktreeView {
+  task_id: string;
+  worktree: {
+    path: string;
+    branch: string;
+    port: number | null;
+    base_ref: string;
+    base_sha: string;
+    repo_root: string;
+  };
+  exists: boolean;
+  branch_exists: boolean;
+  live: boolean;
+  status: (WorktreeStat & {
+    branch: string;
+    behind: number | null;
+    files: WorktreeFile[];
+    truncated: boolean;
+  }) | null;
+  status_error: string;
+  push_command: string | null;
+  /** '' removable · 'dirty' only with force · 'live' | 'repo_missing' | 'removed' blocked */
+  remove_blocked: '' | 'live' | 'dirty' | 'repo_missing' | 'removed';
+}
+
+export interface WorktreeDiff {
+  file: string;
+  diff: string;
+  truncated: boolean;
+  binary: boolean;
 }
 
 export interface TaskDetail extends TaskSummary {

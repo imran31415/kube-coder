@@ -43,6 +43,14 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
   const [assistants, setAssistants] = useState<AssistantOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isolate, setIsolate] = useState(false);
+  const [baseRef, setBaseRef] = useState('');
+
+  // Isolation needs a git checkout. With the folder list we know; with the
+  // free-text fallback we cannot, so offer it and let the server say why not.
+  const selectedDir = dirs.find((d) => d.path === workdir);
+  const canIsolate = dirs.length === 0 ? true : Boolean(selectedDir?.is_git_repo);
+  const isolating = canIsolate && isolate;
 
   useEffect(() => {
     listWorkdirs().then(setDirs).catch(() => setDirs([]));
@@ -69,18 +77,22 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
     // whatever they type in the terminal. Both are valid server-side.
     // createTask catches API errors internally and returns null.
     let task = null;
+    let reason: string | null = null;
     try {
       task = await createTask({
         prompt: prompt.trim(),
         workdir,
         assistant: assistant || undefined,
         disable_memory_injection: false,
-      });
+        ...(isolating
+          ? { isolate: true, ...(baseRef.trim() ? { base_ref: baseRef.trim() } : {}) }
+          : {}),
+      }, { onError: (m) => { reason = m; } });
     } finally {
       setBusy(false);
     }
     if (!task || !task.task_id) {
-      setError('Could not start the build — check the workspace server and try again.');
+      setError(reason ?? 'Could not start the build — check the workspace server and try again.');
       return;
     }
     // The create endpoint takes no name, so the rename is a second call.
@@ -178,7 +190,7 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
               {dirs.map((d) => (
                 <option key={d.path} value={d.path}>
                   {d.label ?? d.path}
-                  {d.is_git ? '  (git)' : ''}
+                  {d.is_git_repo ? '  (git)' : ''}
                 </option>
               ))}
             </select>
@@ -222,6 +234,39 @@ export function NewTaskForm({ onClose }: { onClose: () => void }) {
           )}
         </label>
       </div>
+
+      {canIsolate && (
+        <div class="ntf-field ntf-isolate">
+          <label class="ntf-checkbox">
+            <input
+              type="checkbox"
+              checked={isolate}
+              onChange={(e) => setIsolate((e.target as HTMLInputElement).checked)}
+            />
+            Isolated worktree
+          </label>
+          <span class="ntf-hint muted">
+            Runs on its own branch, folder and port, so builds working on this repo at the same
+            time can't overwrite each other.{' '}
+            <a
+              href={routeHref('/docs/builds-worktrees')}
+              onClick={(e) => { e.preventDefault(); onClose(); navigate('/docs/builds-worktrees'); }}
+            >
+              What's this?
+            </a>
+          </span>
+          {isolate && (
+            <Input
+              fullWidth
+              value={baseRef}
+              onInput={(e) => setBaseRef((e.target as HTMLInputElement).value)}
+              placeholder="Branch from (default: the folder's current commit)"
+              aria-label="Branch from"
+              maxLength={200}
+            />
+          )}
+        </div>
+      )}
 
       <label class="ntf-field">
         <span class="ntf-label">First prompt <span class="muted">(optional)</span></span>

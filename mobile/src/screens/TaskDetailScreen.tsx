@@ -26,6 +26,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { getTask, getTaskOutput, killTask, sendKey, sendMessage, uploadTaskImage } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
 import { AppPickerSheet } from '../components/AppPickerSheet';
+import { WorktreeSheet } from '../components/WorktreeSheet';
 import { Loading, StatusPill } from '../components/ui';
 import { TerminalView } from '../components/TerminalView';
 import { getItem, setItem } from '../store/storage';
@@ -35,6 +36,7 @@ import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
+import { formatDiffStat, worktreeRemoved } from '../util/worktree';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -104,6 +106,12 @@ export default function TaskDetailScreen() {
   // the task's attachments dir; its saved path is appended to the prompt on send.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  // An isolated Build's changes (#701). A Board review card links here with
+  // `tab: 'changes'`, which opens the sheet straight away.
+  const [changesOpen, setChangesOpen] = useState(route.params.tab === 'changes');
+  useEffect(() => {
+    if (route.params.tab === 'changes') setChangesOpen(true);
+  }, [route.params.tab]);
   // The control-key tray, hidden behind the keypad button beside Send.
   const [keysOpen, setKeysOpen] = useState(false);
   // Split view: watch an app run in the lower half while the task streams in
@@ -411,6 +419,23 @@ export default function TaskDetailScreen() {
                 {task.workdir ?? '/home/dev'}
               </Text>
             </View>
+            {task.worktree?.branch ? (
+              <Pressable
+                onPress={() => setChangesOpen(true)}
+                style={styles.wtRow}
+                accessibilityRole="button"
+                accessibilityLabel="View changes"
+              >
+                <Ionicons name="git-branch-outline" size={14} color={colors.accent} />
+                <Text style={styles.wtBranch} numberOfLines={1}>{task.worktree.branch}</Text>
+                <Text style={styles.wtStat} numberOfLines={1}>
+                  {worktreeRemoved(task.worktree)
+                    ? 'worktree removed'
+                    : formatDiffStat(task.worktree.stat)}
+                </Text>
+                <Text style={styles.wtLink}>Changes ›</Text>
+              </Pressable>
+            ) : null}
           </View>
 
           {/* The real workspace terminal (ttyd/xterm.js) — the same session the
@@ -587,6 +612,9 @@ export default function TaskDetailScreen() {
           onPick={pickApp}
           onClose={() => setPickerOpen(false)}
         />
+        {task.worktree ? (
+          <WorktreeSheet taskId={id} visible={changesOpen} onClose={() => setChangesOpen(false)} />
+        ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -623,6 +651,22 @@ const styles = StyleSheet.create({
   },
   assistantText: { color: colors.accent, fontSize: font.size.xs, fontWeight: '700' },
   workdir: { flex: 1, color: colors.textFaint, fontSize: font.size.xs, fontFamily: font.mono },
+  // An isolated Build's branch row (#701) — the whole row is the 44pt target.
+  wtRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.sm,
+    paddingHorizontal: space.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgElevated,
+  },
+  wtBranch: { color: colors.text, fontFamily: font.mono, fontSize: font.size.xs, flexShrink: 1 },
+  wtStat: { flex: 1, color: colors.textFaint, fontSize: font.size.xs },
+  wtLink: { color: colors.accent, fontSize: font.size.sm, fontWeight: '600' },
 
   // ---- composer ----
   composerZone: { borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg },
