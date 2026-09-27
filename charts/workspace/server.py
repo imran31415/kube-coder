@@ -75,6 +75,7 @@ import push_notify
 import handlers
 from handlers import docs as docs_routes
 from handlers import files as files_routes
+from handlers import memory as memory_routes
 from handlers import skills as skills_routes
 from handlers import system as system_routes
 handlers.bind(sys.modules[__name__])
@@ -13267,6 +13268,7 @@ def _xvfb_running(display):
 
 class BrowserHandler(docs_routes.DocsRoutes,
                      files_routes.FilesRoutes,
+                     memory_routes.MemoryRoutes,
                      skills_routes.SkillsRoutes,
                      system_routes.SystemRoutes,
                      http.server.SimpleHTTPRequestHandler):
@@ -13656,37 +13658,11 @@ class BrowserHandler(docs_routes.DocsRoutes,
             return
 
         # --- Memory API (dashboard surface; backs the Memory tab) ---
-        # Parse the query string once so list/search can use it.
-        query_string = self.path.split('?', 1)[1] if '?' in self.path else ''
-        memory_query = urllib.parse.parse_qs(query_string)
-        if claude_path == '/api/memory':
-            self.handle_memory_list(memory_query)
-            return
-        if claude_path == '/api/memory/stats':
-            self.handle_memory_stats()
-            return
-        if claude_path == '/api/memory/export':
-            self.handle_memory_export()
-            return
-        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/history$', claude_path)
-        if m:
-            self.handle_memory_history(m.group(1), m.group(2))
-            return
-        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/refs$', claude_path)
-        if m:
-            self.handle_memory_refs(m.group(1), m.group(2))
-            return
-        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations$', claude_path)
-        if m:
-            self.handle_memory_relations(m.group(1), m.group(2))
-            return
-        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/neighbors$', claude_path)
-        if m:
-            self.handle_memory_neighbors(m.group(1), m.group(2), memory_query)
-            return
-        m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)$', claude_path)
-        if m:
-            self.handle_memory_get(m.group(1), m.group(2))
+        # Eight branches until #100, plus the inline query-string parse the
+        # two search-ish handlers needed; both are now an ordered table in
+        # handlers/memory.py, where the `{ns}/{key}` sub-resource family and
+        # the `query=` column live next to each other.
+        if memory_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Skills API (multi-harness SKILL.md surface; backs the Skills tab) ---
@@ -14129,13 +14105,10 @@ class BrowserHandler(docs_routes.DocsRoutes,
             if m:
                 self.handle_desktop_delete(m.group(1))
                 return
-            m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations/(\d+)$', path)
-            if m:
-                self.handle_memory_unlink(m.group(1), m.group(2), int(m.group(3)))
-                return
-            m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)$', path)
-            if m:
-                self.handle_memory_delete(m.group(1), m.group(2))
+            # Memory: unlink one relation, or soft-delete the memory itself.
+            # The int() the unlink branch did here rides an adapter in
+            # handlers/memory.py, since the table hands over strings.
+            if memory_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             self.send_json({'error': 'Not found'}, 404)
         except Exception as e:
@@ -17751,20 +17724,10 @@ class BrowserHandler(docs_routes.DocsRoutes,
             'status': task['status'],
         }, 202)
 
-    # --- Memory API handlers ---------------------------------------------
-    # The dashboard's Memory tab consumes these endpoints. They mirror the
-    # MCP tool surface (mcp_memory.py) so the dashboard and Claude share a
-    # single SQLite store with consistent semantics.
-
-    def _memory_unavailable(self):
-        if _MEMORY_AVAILABLE:
-            return False
-        self.send_json({
-            'error': 'memory subsystem unavailable',
-            'detail': 'memory.manager failed to import; check server logs',
-        }, 503)
-        return True
-
+    # Acting identity for a write, derived from the auth headers. Named for
+    # the memory API it was written for, but /api/claude/tasks and the push
+    # registry call it too, so it stays here rather than moving into
+    # handlers/memory.py with the rest of that domain (#100).
     def _memory_actor(self):
         """Derive a stable `source` string for memory writes."""
         email = self.headers.get('X-Auth-Request-Email') or ''
@@ -17779,356 +17742,6 @@ class BrowserHandler(docs_routes.DocsRoutes,
             fp = hashlib.sha256(tok.encode()).hexdigest()[:8]
             return f'api:{fp}'
         return 'unknown'
-
-    def _memory_error(self, e):
-        if isinstance(e, MemNotFound):
-            self.send_json({'error': str(e), 'code': 'not_found'}, 404)
-            return
-        if isinstance(e, MemConflict):
-            self.send_json({'error': str(e), 'code': 'conflict'}, 409)
-            return
-        if isinstance(e, MemValidationError):
-            self.send_json({'error': str(e), 'code': 'validation'}, 400)
-            return
-        if isinstance(e, MemError):
-            self.send_json({'error': str(e), 'code': e.code}, 400)
-            return
-        print(f'[memory] internal error: {e}', file=sys.stderr)
-        self.send_json({'error': str(e), 'code': 'internal'}, 500)
-
-    def handle_memory_list(self, query):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            rows = MemoryManager.list(
-                namespace=(query.get('namespace') or [None])[0],
-                kind=(query.get('kind') or [None])[0],
-                q=(query.get('q') or [None])[0],
-                limit=int((query.get('limit') or ['500'])[0]),
-                # Namespace-scoped retrieval (#359): confines results to one
-                # namespace root and everything nested under it, so a
-                # project-bound caller (the inject hook) never sees a sibling
-                # project's memories — plus `user.*`, which a scoped read always
-                # includes (#593). Absent => workspace-global, as before.
-                namespace_scope=(query.get('namespace_scope') or [None])[0],
-            )
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json({'memories': rows, 'count': len(rows)})
-
-    def handle_memory_get(self, namespace, key):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            row = MemoryManager.get(namespace=namespace, key=key)
-        except Exception as e:
-            self._memory_error(e); return
-        if row is None:
-            self.send_json({'error': 'not found', 'code': 'not_found'}, 404)
-            return
-        # Log read access.
-        try:
-            actor = self._memory_actor()
-            kind = actor.split(':', 1)[0]
-            ident = actor.split(':', 1)[1] if ':' in actor else actor
-            MemoryManager.log_ref(
-                namespace=namespace, key=key,
-                ref_kind=kind if kind in ('dashboard', 'api', 'cron', 'task') else 'api',
-                ref_id=ident, access_kind='read',
-            )
-        except Exception:
-            pass
-        self.send_json({'memory': row})
-
-    def handle_memory_history(self, namespace, key):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            rows = MemoryManager.history(namespace=namespace, key=key)
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json({'revisions': rows, 'count': len(rows)})
-
-    def handle_memory_refs(self, namespace, key):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            rows = MemoryManager.refs(namespace=namespace, key=key)
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json({'refs': rows, 'count': len(rows)})
-
-    def handle_memory_relations(self, namespace, key):
-        """GET /api/memory/{ns}/{key}/relations — the memory's graph edges with
-        ids, so the dashboard can render + unlink them (#134)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            rows = MemoryManager.relations(namespace=namespace, key=key)
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json({'relations': rows, 'count': len(rows)})
-
-    def handle_memory_neighbors(self, namespace, key, query):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        depth = int((query.get('depth') or ['1'])[0])
-        kinds = query.get('kind') or query.get('kinds') or None
-        try:
-            rows = MemoryManager.neighbors(
-                namespace=namespace, key=key, depth=depth,
-                kinds=kinds,
-            )
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json({'neighbors': rows, 'count': len(rows)})
-
-    def handle_memory_stats(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            stats = MemoryManager.stats()
-            # Surface syncer status so the dashboard can show "last
-            # imported N from Claude's auto-memory · X minutes ago".
-            try:
-                stats['claude_sync'] = ClaudeMemorySyncer.status()
-            except Exception:
-                pass
-            # Surface embedding-worker status so the Memory tab can show the
-            # semantic-search backlog draining (or that it's disabled).
-            try:
-                stats['embedding_worker'] = EmbeddingWorker.status()
-            except Exception:
-                pass
-            self.send_json(stats)
-        except Exception as e:
-            self._memory_error(e)
-
-    def handle_memory_sync_claude(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            res = ClaudeMemorySyncer.trigger_sync()
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json({'status': 'ok', 'result': res})
-
-    def handle_memory_upsert(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        if not isinstance(data, dict):
-            self.send_json({'error': 'body must be an object'}, 400)
-            return
-        try:
-            row = MemoryManager.upsert(
-                namespace=data.get('namespace', ''),
-                key=data.get('key', ''),
-                value=data.get('value', ''),
-                kind=data.get('kind', 'semantic'),
-                tags=data.get('tags', '') or '',
-                importance=float(data.get('importance', 0.5)),
-                confidence=float(data.get('confidence', 1.0)),
-                source=self._memory_actor(),
-                expires_at=data.get('expires_at'),
-            )
-        except Exception as e:
-            self._memory_error(e); return
-        try:
-            actor = self._memory_actor()
-            kind = actor.split(':', 1)[0]
-            ident = actor.split(':', 1)[1] if ':' in actor else actor
-            MemoryManager.log_ref(
-                namespace=row['namespace'], key=row['key'],
-                ref_kind=kind if kind in ('dashboard', 'api') else 'api',
-                ref_id=ident, access_kind='write',
-            )
-        except Exception:
-            pass
-        EventBroker.publish('memory.changed', {
-            'op': 'upsert', 'namespace': row['namespace'], 'key': row['key'],
-        })
-        # Feed (#469): a recorded decision is feed-worthy. tags_list is on the
-        # row; fall back to splitting the raw tags string.
-        tags = row.get('tags_list')
-        if tags is None:
-            tags = [t.strip() for t in (row.get('tags') or '').split(',') if t.strip()]
-        if 'decision' in tags:
-            FeedManager.emit_decision(row['namespace'], row['key'], row.get('value') or '')
-        self.send_json({'memory': row}, 200)
-
-    def handle_memory_delete(self, namespace, key):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            row = MemoryManager.soft_delete(
-                namespace=namespace, key=key,
-                source=self._memory_actor(),
-            )
-        except Exception as e:
-            self._memory_error(e); return
-        EventBroker.publish('memory.changed', {
-            'op': 'delete', 'namespace': namespace, 'key': key,
-        })
-        self.send_json({'memory': row, 'deleted': True})
-
-    def handle_memory_link(self, namespace, key):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        if not isinstance(data, dict):
-            self.send_json({'error': 'body must be an object'}, 400)
-            return
-        try:
-            rel = MemoryManager.link(
-                src_namespace=namespace, src_key=key,
-                dst_namespace=data.get('dst_namespace', ''),
-                dst_key=data.get('dst_key', ''),
-                kind=data.get('kind', 'related-to'),
-                weight=float(data.get('weight', 1.0)),
-                created_by=self._memory_actor(),
-            )
-        except Exception as e:
-            self._memory_error(e); return
-        EventBroker.publish('memory.changed', {
-            'op': 'link', 'namespace': namespace, 'key': key,
-        })
-        self.send_json({'relation': rel}, 201)
-
-    def handle_memory_unlink(self, namespace, key, relation_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            deleted = MemoryManager.unlink_by_id(
-                relation_id=relation_id, namespace=namespace, key=key)
-        except Exception as e:
-            self._memory_error(e); return
-        if deleted:
-            EventBroker.publish('memory.changed', {
-                'op': 'unlink', 'namespace': namespace, 'key': key,
-            })
-        self.send_json({'deleted': deleted}, 200 if deleted else 404)
-
-    def handle_memory_consolidate(self):
-        """Phase 1 stub. Returns 202 with a no-op so the dashboard button can
-        be wired ahead of Phase 3 landing the real worker."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        self.send_json({
-            'status': 'queued',
-            'detail': 'consolidation worker activates in Phase 3',
-        }, 202)
-
-    def handle_memory_export(self):
-        """GET /api/memory/export — JSON dump of live memories + relations,
-        suitable for backup or moving a corpus between workspaces (#107)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            payload = MemoryManager.export_json()
-        except Exception as e:
-            self._memory_error(e); return
-        self.send_json(payload)
-
-    def handle_memory_import(self):
-        """POST /api/memory/_import — load a corpus produced by export. Body:
-        {memories:[...], relations:[...], mode?:'merge'|'skip'}. Mutating, so
-        the do_POST readonly chokepoint already gates it (#107)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        if not isinstance(data, dict):
-            self.send_json({'error': 'body must be an object'}, 400)
-            return
-        try:
-            res = MemoryManager.import_json(
-                data, mode=data.get('mode', 'merge'),
-                source=self._memory_actor())
-        except Exception as e:
-            self._memory_error(e); return
-        EventBroker.publish('memory.changed', {'op': 'import'})
-        self.send_json({'status': 'ok', 'result': res})
-
-    def handle_memory_purge(self):
-        """POST /api/memory/_purge — hard-delete soft-deleted memories and
-        VACUUM. Body: {older_than_days?: number}. Mutating; readonly-gated by
-        the do_POST chokepoint (#107)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if self._memory_unavailable():
-            return
-        older = None
-        try:
-            data = self.read_json_body()  # {} when body is empty
-            if isinstance(data, dict) and data.get('older_than_days') is not None:
-                older = float(data['older_than_days'])
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        try:
-            res = MemoryManager.purge_deleted(older_than_days=older)
-        except Exception as e:
-            self._memory_error(e); return
-        EventBroker.publish('memory.changed', {'op': 'purge'})
-        self.send_json({'status': 'ok', 'result': res})
 
     # ── Subagents (spawned child tasks) ──────────────────────────
     # Lists real spawned sub-tasks filtered by parent_task_id.
@@ -19337,17 +18950,11 @@ class BrowserHandler(docs_routes.DocsRoutes,
                 self.handle_desktop_create()
             elif path == "/api/desktop/_reorder":
                 self.handle_desktop_reorder()
-            # Memory API (dashboard surface; mirrored by MCP)
-            elif path == "/api/memory":
-                self.handle_memory_upsert()
-            elif path == "/api/memory/_consolidate":
-                self.handle_memory_consolidate()
-            elif path == "/api/memory/_sync_claude":
-                self.handle_memory_sync_claude()
-            elif path == "/api/memory/_import":
-                self.handle_memory_import()
-            elif path == "/api/memory/_purge":
-                self.handle_memory_purge()
+            # Memory API (dashboard surface; mirrored by MCP) — all six POST
+            # routes are in handlers/memory.py's table, including the
+            # {ns}/{key}/relations one that used to sit in the regex block below.
+            elif memory_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Skills API (multi-harness SKILL.md surface) — both POST routes
             # are in handlers/skills.py's table, including the {name}/sync one
             # that used to sit in the regex block below.
@@ -19500,11 +19107,6 @@ class BrowserHandler(docs_routes.DocsRoutes,
                 if m:
                     self._page_watch_id = m.group(1)
                     self.handle_page_watch_check()
-                    return
-                # Memory: relations endpoint takes a (ns, key) pair.
-                m = re.match(r'^/api/memory/([a-zA-Z0-9._-]+)/([a-zA-Z0-9._-]+)/relations$', path)
-                if m:
-                    self.handle_memory_link(m.group(1), m.group(2))
                     return
                 self.send_response(404)
                 self.end_headers()
