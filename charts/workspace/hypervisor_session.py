@@ -365,6 +365,116 @@ def _lost_watcher_note(lost: List[str]) -> str:
     )
 
 
+# Foreground blocking waits (issue #747). #378 above made a LOST background
+# watcher honest, and the preambles say to arm a `watch` instead — but neither
+# closes the third door, which is the one agents actually walk through once
+# they learn background waiters die: blocking in the FOREGROUND for the rest
+# of the turn. Nothing dies, so _track_bg_watchers never sees it and no
+# corrective notice ever fires, while the chat is frozen for the duration (the
+# user cannot interject and sees an unexplained spinner) and the wait burns
+# against the turn timeout — if it trips, the turn dies and takes the awaited
+# result with it, which is strictly worse than the background case a `watch`
+# would have survived. Detect the shape, and tell the agent on the next turn.
+_FG_WAIT_SHOWN = 5
+
+# A short `sleep 2` to let a dev server bind is normal and must stay quiet, so
+# a bare sleep only counts from here up; anything shorter counts only inside a
+# poll loop, where the loop is the wait rather than the individual sleep.
+_FG_SLEEP_SECONDS = 60
+
+# Deliberately NOT a signal: a long Bash `timeout`. #747 proposed it, but
+# checked against a real session it produced no true positives the command
+# shapes below had not already caught, and it fired on `make python-tests` —
+# a 150s test suite given a generous ceiling, which is long WORK, not a wait.
+# Flagging honest work is how a corrective notice gets trained into noise, so
+# the detector under-reports on purpose: a wait it misses costs one turn, a
+# false positive costs the notice its credibility.
+
+# Each entry is a blocking wait on EXTERNAL work, not merely a slow command.
+# `--follow` is deliberately absent: `git log --follow` is a common, innocent
+# use and the false positive would train the agent to ignore the notice.
+_FG_WAIT_PATTERNS = (
+    ('gh run watch', re.compile(r'\bgh\s+run\s+watch\b', re.I)),
+    ('gh --watch', re.compile(r'\bgh\b[^|;&]*\s--watch\b', re.I)),
+    ('kubectl wait', re.compile(r'\bkubectl\s+wait\b', re.I)),
+    ('docker wait', re.compile(r'\bdocker\s+wait\b', re.I)),
+    ('--wait flag', re.compile(r'\b(?:helm|argocd|flux)\b[^|;&]*\s--wait\b', re.I)),
+)
+_FG_SLEEP_RE = re.compile(r'\bsleep\s+(\d+(?:\.\d+)?)')
+_FG_LOOP_RE = re.compile(r'\b(?:for|while|until)\b')
+
+
+def _foreground_wait_reason(tool_input: Any) -> str:
+    """Why this Bash call looks like a blocking wait — '' when it doesn't."""
+    d = tool_input if isinstance(tool_input, dict) else {}
+    if d.get('run_in_background'):
+        return ''  # the #378 path already owns that shape
+    cmd = ' '.join(str(d.get('command') or '').split())
+    if not cmd:
+        return ''
+    for label, rx in _FG_WAIT_PATTERNS:
+        if rx.search(cmd):
+            return label
+    longest = 0.0
+    for m in _FG_SLEEP_RE.finditer(cmd):
+        try:
+            longest = max(longest, float(m.group(1)))
+        except ValueError:
+            continue
+    if longest:
+        if _FG_LOOP_RE.search(cmd):
+            return 'poll loop with sleep'
+        if longest >= _FG_SLEEP_SECONDS:
+            return f'sleep {longest:g}s'
+    return ''
+
+
+def _describe_fg_wait(reason: str, tool_input: Any) -> str:
+    """One short line naming the blocking wait and why it was flagged."""
+    d = tool_input if isinstance(tool_input, dict) else {}
+    what = ' '.join(str(d.get('description') or d.get('command') or '').split())
+    if len(what) > 120:
+        what = what[:117] + '...'
+    return f'{reason}: {what}' if what else reason
+
+
+def _track_fg_waits(ctx: Dict[str, Any],
+                    events: List[Dict[str, Any]]) -> None:
+    """Record any foreground blocking wait this turn's tool calls performed."""
+    for e in events:
+        if e.get('type') != 'tool_call':
+            continue
+        tool = e.get('tool') or {}
+        if (tool.get('name') or '') != 'Bash':
+            continue
+        d = tool.get('input') if isinstance(tool.get('input'), dict) else {}
+        reason = _foreground_wait_reason(d)
+        if reason:
+            ctx.setdefault('_turn_fg_waits', []).append(
+                _describe_fg_wait(reason, d))
+
+
+def _fg_wait_note(waits: List[str]) -> str:
+    shown = waits[:_FG_WAIT_SHOWN]
+    listing = '; '.join(shown)
+    if len(waits) > len(shown):
+        listing += f'; +{len(waits) - len(shown)} more'
+    return (
+        '[Hypervisor turn-boundary notice] Last turn you waited by BLOCKING '
+        f'inside the turn: {listing}. Do not wait this way. It freezes the '
+        'chat for the whole wait — the user cannot interject and sees only an '
+        'unexplained spinner — and it spends the turn timeout, so a wait that '
+        'outlasts it kills the turn AND loses the result you were waiting '
+        'for. Knowing that background waiters die at the turn boundary is not '
+        'a reason to wait in the foreground instead; it is a reason not to '
+        'wait inside a turn at all. Arm a runner-owned watcher with the '
+        'dashboard `watch` tool (kind task / command / file) and END your '
+        'turn: the runner keeps polling after the turn is over and posts the '
+        'outcome into this chat, so nothing is lost and the user stays free '
+        'to talk to you in the meantime.'
+    )
+
+
 # In-flight background workflows (issue #462): the Workflow tool launches a
 # multi-agent run in the background of the turn, and the headless CLI stays
 # alive waiting for its completion notification — so when the CLI process dies
@@ -535,6 +645,14 @@ class ClaudeAdapter(Adapter):
         ctx.pop('_turn_bg_watchers', None)
         ctx.pop('_turn_wf_calls', None)
         ctx.pop('_turn_workflows', None)
+        # Foreground waits are the opposite case (#747): a stopped turn means
+        # the user sat through the block and gave up on it, which is the
+        # behaviour most worth correcting — so promote rather than drop. (A
+        # killed background watcher owes no notice; an interrupted foreground
+        # wait owes one precisely because the user had to intervene.)
+        interrupted = ctx.pop('_turn_fg_waits', None)
+        if interrupted:
+            ctx['fg_waits'] = (ctx.get('fg_waits') or []) + interrupted
         # The model is read fresh from this turn's own assistant events (#574) —
         # a stale one would misattribute usage after an in-chat model switch.
         ctx.pop('_turn_model', None)
@@ -564,6 +682,12 @@ class ClaudeAdapter(Adapter):
         lost = ctx.pop('lost_bg_watchers', None)
         if lost:
             sys_prompt.append(_lost_watcher_note(lost))
+        # Foreground blocking waits from the previous turn (#747): same
+        # one-shot system-prompt channel, different lesson — nothing died, the
+        # agent simply froze the chat instead of arming a watch.
+        fg_waits = ctx.pop('fg_waits', None)
+        if fg_waits:
+            sys_prompt.append(_fg_wait_note(fg_waits))
         # Workflow runs killed by an earlier CLI/server death (#462): same
         # one-shot system-prompt channel — the agent learns which runs died
         # and how to resume them before it answers "is that still going?".
@@ -622,6 +746,7 @@ class ClaudeAdapter(Adapter):
             events = _claude_assistant_events(
                 (o.get('message', {}) or {}).get('content'))
             _track_bg_watchers(ctx, events)
+            _track_fg_waits(ctx, events)
             _track_workflow_calls(ctx, events)
             return events
         if t == 'user':
@@ -663,6 +788,12 @@ class ClaudeAdapter(Adapter):
         armed = ctx.pop('_turn_bg_watchers', None)
         if armed:
             ctx['lost_bg_watchers'] = (ctx.get('lost_bg_watchers') or []) + armed
+        # Foreground blocking waits this turn performed (#747). They did not
+        # die — they ran to completion and froze the chat while they did — so
+        # the next turn gets a different note, but via the same persisted ctx.
+        waited = ctx.pop('_turn_fg_waits', None)
+        if waited:
+            ctx['fg_waits'] = (ctx.get('fg_waits') or []) + waited
         # Workflow runs launched this turn whose journal shows agents still
         # unfinished died with the process (#462) — tell the USER now (chat
         # notice with run id + journal path) and the AGENT next turn

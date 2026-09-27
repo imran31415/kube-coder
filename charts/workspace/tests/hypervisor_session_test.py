@@ -232,6 +232,147 @@ class BgWatcherNoticeTest(unittest.TestCase):
         self.assertIn('...', desc)
 
 
+class ForegroundWaitNoticeTest(unittest.TestCase):
+    """Blocking inside the turn is the third door (#747): nothing dies, so the
+    #378 tracker never sees it, while the chat stays frozen and the turn
+    timeout burns down. Detect the shape and correct it on the next turn."""
+
+    def setUp(self):
+        self.a = hs.ClaudeAdapter()
+        self.ctx = {'workdir': '/home/dev', 'preamble': 'PRE'}
+
+    @staticmethod
+    def _tool_line(name, tool_input):
+        return json.dumps({'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'id': 't1', 'name': name,
+             'input': tool_input}]}})
+
+    # ── what counts as a blocking wait ──────────────────────────────────
+
+    def test_the_shapes_that_count(self):
+        for cmd, expected in (
+                ('gh run watch 123', 'gh run watch'),
+                ('gh pr checks 744 --watch --interval 30', 'gh --watch'),
+                ('kubectl wait --for=condition=ready pod/x', 'kubectl wait'),
+                ('docker wait abc123', 'docker wait'),
+                ('helm upgrade app ./chart --wait', '--wait flag'),
+                ('for i in $(seq 1 18); do sleep 30; done', 'poll loop with sleep'),
+                ('sleep 120', 'sleep 120s'),
+        ):
+            self.assertEqual(hs._foreground_wait_reason({'command': cmd}),
+                             expected, cmd)
+
+    def test_ordinary_commands_stay_quiet(self):
+        # The detector is only useful if it is silent on normal work — a noisy
+        # notice trains the agent to ignore it.
+        for cmd in ('ls -la', 'git log --follow -- some/file.py',
+                    'sleep 2', 'npm run build', 'pytest -q',
+                    'gh pr view 744 --json state',
+                    'grep -rn "wait" charts/'):
+            self.assertEqual(hs._foreground_wait_reason({'command': cmd}), '',
+                             cmd)
+
+    def test_long_work_is_not_a_wait(self):
+        # A generous timeout on a genuinely long COMMAND is not a blocking
+        # wait. #747 proposed treating it as one; measured against a real
+        # session it caught nothing the shapes above missed and fired on the
+        # test suite itself, so it is deliberately not a signal.
+        self.assertEqual(
+            hs._foreground_wait_reason({'command': 'make python-tests',
+                                        'timeout': 540000}), '')
+
+    def test_background_calls_belong_to_the_other_tracker(self):
+        # Same command shape, but run_in_background is #378's business; double
+        # -reporting it would give the agent two contradictory notices.
+        self.assertEqual(
+            hs._foreground_wait_reason({'command': 'sleep 300',
+                                        'run_in_background': True}), '')
+
+    # ── tracking / promotion / delivery ─────────────────────────────────
+
+    def test_a_blocking_wait_is_tracked(self):
+        self.a.parse(self.ctx, self._tool_line(
+            'Bash', {'command': 'gh pr checks 744 --watch',
+                     'description': 'wait for CI'}))
+        self.assertEqual(self.ctx['_turn_fg_waits'],
+                         ['gh --watch: wait for CI'])
+
+    def test_a_normal_bash_call_is_not_tracked(self):
+        self.a.parse(self.ctx, self._tool_line('Bash', {'command': 'ls'}))
+        self.assertNotIn('_turn_fg_waits', self.ctx)
+
+    def test_finalize_promotes_waits(self):
+        self.ctx['_turn_fg_waits'] = ['gh --watch: wait for CI']
+        out = self.a.finalize(self.ctx, 0)
+        self.assertEqual(out, [])  # no transcript noise
+        self.assertNotIn('_turn_fg_waits', self.ctx)
+        self.assertEqual(self.ctx['fg_waits'], ['gh --watch: wait for CI'])
+
+    def test_an_interrupted_wait_is_promoted_not_dropped(self):
+        # A stopped turn skips finalize. For a killed background watcher that
+        # means no notice is owed — but a foreground wait the user had to
+        # interrupt is the single most corrective case there is, so build()
+        # must promote it rather than clear it as stale tracking.
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['_turn_fg_waits'] = ['poll loop with sleep: waiting on CI']
+        spec = self.a.build(self.ctx, 'stop doing that', first=False)
+        self.assertNotIn('_turn_fg_waits', self.ctx)
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('BLOCKING', note)
+        self.assertIn('waiting on CI', note)
+
+    def test_build_injects_notice_once(self):
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['fg_waits'] = ['gh --watch: wait for CI']
+        spec = self.a.build(self.ctx, 'any update?', first=False)
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('BLOCKING', note)
+        self.assertIn('wait for CI', note)
+        self.assertIn('`watch`', note)
+        # Consumed: the next build carries no notice.
+        self.assertNotIn('fg_waits', self.ctx)
+        spec2 = self.a.build(self.ctx, 'thanks', first=False)
+        self.assertNotIn('--append-system-prompt', spec2['argv'])
+
+    def test_notice_caps_listing(self):
+        note = hs._fg_wait_note([f'sleep {i}s: w{i}' for i in range(8)])
+        self.assertIn('w4', note)
+        self.assertNotIn('w5', note)
+        self.assertIn('+3 more', note)
+
+    def test_both_notices_can_ride_the_same_turn(self):
+        self.ctx['claude_session_id'] = 'sess-abc'
+        self.ctx['lost_bg_watchers'] = ['Monitor']
+        self.ctx['fg_waits'] = ['gh --watch: wait for CI']
+        spec = self.a.build(self.ctx, 'hi', first=False)
+        note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
+        self.assertIn('did NOT survive', note)
+        self.assertIn('BLOCKING', note)
+
+
+class ForegroundWaitPreambleTest(unittest.TestCase):
+    """The prohibition has to exist in the prompt, not just in the detector:
+    the notice only fires after the damage, the preamble is what prevents it."""
+
+    def test_both_preambles_forbid_in_turn_blocking(self):
+        import server
+        for name, text in (('HYPERVISOR_PREAMBLE', server.HYPERVISOR_PREAMBLE),
+                           ('CTO_PREAMBLE', server.CTO_PREAMBLE)):
+            self.assertIn('NEVER wait by blocking inside your turn', text, name)
+            self.assertIn('--watch', text, name)
+            self.assertIn('sleep', text, name)
+
+    def test_run_in_background_is_not_a_licence_to_wait(self):
+        # The old wording ("Only use run_in_background for work you will
+        # collect within the same turn") read as permission for exactly the
+        # foreground wait this issue is about.
+        import server
+        self.assertNotIn(
+            'Only use run_in_background for work you will collect within the '
+            'same turn', server.HYPERVISOR_PREAMBLE)
+        self.assertIn('never as a way to wait', server.HYPERVISOR_PREAMBLE)
+
+
 def _wf_result_text(run_dir, run_id='wf_ab12cd34-e56'):
     return (f'Workflow launched in background. Task ID: w1a2b3c4d\n'
             f'Summary: Deep research harness.\n'
