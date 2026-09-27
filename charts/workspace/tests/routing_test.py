@@ -3,7 +3,7 @@
 Three layers:
   * `RouteTable` itself — first match wins, exact vs regex patterns, capture
     groups, raw-vs-normalized path selection, the two query-string
-    columns, name-based handler lookup.
+    columns, the `sets=` column, name-based handler lookup.
   * The system domain's table — the ordering hazards that used to be nothing
     but a comment asking the next editor not to move the lines, asserted
     directly against the table with no HTTP request involved.
@@ -197,6 +197,45 @@ class RouteTableStripQueryTests(unittest.TestCase):
         t.dispatch(rec, 'DELETE', '/api/files?path=a.txt',
                    '/api/files?path=a.txt')
         self.assertEqual(rec.calls, [('alpha', ({'path': ['a.txt']},))])
+
+
+class RouteTableSetsTests(unittest.TestCase):
+    """The `sets=` column: capture groups stashed on the request for the
+    handlers that read their parameters off it rather than as arguments."""
+
+    def test_a_named_group_lands_on_the_request(self):
+        t = RouteTable()
+        t.add('GET', re.compile(r'^/api/webhooks/([^/]+)$'), 'alpha',
+              sets='_webhook_id')
+        rec = _Recorder()
+        t.dispatch(rec, 'GET', '/api/webhooks/wh1', '/api/webhooks/wh1')
+        self.assertEqual(rec._webhook_id, 'wh1')
+        self.assertEqual(rec.calls, [('alpha', ())])
+
+    def test_two_names_consume_two_groups_in_order(self):
+        t = RouteTable()
+        t.add('POST', re.compile(r'^/api/crons/([^/]+)/(suspend|resume)$'),
+              'alpha', sets=('_cron_id', '_cron_action'))
+        rec = _Recorder()
+        t.dispatch(rec, 'POST', '/api/crons/c1/resume', '/api/crons/c1/resume')
+        self.assertEqual((rec._cron_id, rec._cron_action), ('c1', 'resume'))
+        self.assertEqual(rec.calls, [('alpha', ())])
+
+    def test_groups_past_the_named_ones_are_still_positional(self):
+        t = RouteTable()
+        t.add('GET', re.compile(r'^/a/([^/]+)/([^/]+)$'), 'alpha', sets='_id')
+        rec = _Recorder()
+        t.dispatch(rec, 'GET', '/a/one/two', '/a/one/two')
+        self.assertEqual(rec._id, 'one')
+        self.assertEqual(rec.calls, [('alpha', ('two',))])
+
+    def test_a_route_without_the_column_sets_nothing(self):
+        t = RouteTable()
+        t.add('GET', re.compile(r'^/api/webhooks/([^/]+)$'), 'alpha')
+        rec = _Recorder()
+        t.dispatch(rec, 'GET', '/api/webhooks/wh1', '/api/webhooks/wh1')
+        self.assertFalse(hasattr(rec, '_webhook_id'))
+        self.assertEqual(rec.calls, [('alpha', ('wh1',))])
 
 
 class SystemRouteOrderTests(unittest.TestCase):
