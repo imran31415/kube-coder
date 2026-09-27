@@ -75,6 +75,7 @@ import push_notify
 import handlers
 from handlers import docs as docs_routes
 from handlers import files as files_routes
+from handlers import hypervisor as hypervisor_routes
 from handlers import memory as memory_routes
 from handlers import skills as skills_routes
 from handlers import tasks as task_routes
@@ -13270,6 +13271,7 @@ def _xvfb_running(display):
 
 class BrowserHandler(docs_routes.DocsRoutes,
                      files_routes.FilesRoutes,
+                     hypervisor_routes.HypervisorRoutes,
                      memory_routes.MemoryRoutes,
                      skills_routes.SkillsRoutes,
                      system_routes.SystemRoutes,
@@ -13417,20 +13419,22 @@ class BrowserHandler(docs_routes.DocsRoutes,
         # it against the real table rather than leaving it to inspection.
         if task_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
+        # --- Hypervisor chat threads ---
+        # Structured agent sessions (hypervisor_session.py); the frontend polls
+        # threads/{id} with ?since=<seq> for new canonical events. No SSE/tmux
+        # stream — there is no terminal to stream. Six GET routes (and this
+        # domain's POST/DELETE ones) are an ordered table in
+        # handlers/hypervisor.py; as with tasks, its branches were interleaved
+        # with the gateway ones rather than contiguous, so the module docstring
+        # states why collapsing them is behaviour-preserving and the test
+        # asserts it.
+        if hypervisor_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
+            return
         if claude_path == '/api/missioncontrol/queue':
             self.handle_missioncontrol_queue()
             return
         elif claude_path == '/api/claude/apps/session':
             self.handle_app_session_mint()
-            return
-        elif claude_path == '/api/hypervisor/config':
-            self.handle_hypervisor_config()
-            return
-        elif claude_path == '/api/hypervisor/threads':
-            self.handle_hypervisor_list_threads()
-            return
-        elif claude_path == '/api/hypervisor/health':
-            self.handle_hypervisor_health()
             return
         elif claude_path == '/api/workspace/dirs':
             self.handle_workspace_dirs()
@@ -13451,26 +13455,6 @@ class BrowserHandler(docs_routes.DocsRoutes,
             return
         elif claude_path == '/api/gateway/internal/transcript':
             self.handle_gateway_internal_transcript()
-            return
-
-        # --- Hypervisor chat threads ---
-        # Threads are structured agent sessions (hypervisor_session.py); the
-        # frontend polls this endpoint with ?since=<seq> for new canonical
-        # events. No SSE/tmux stream — there is no terminal to stream.
-        # /api/hypervisor/threads/{id}/activity — observability timeline +
-        # bounded runner.log tail (must precede the plain threads/{id} route).
-        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/activity$', claude_path)
-        if m:
-            self.handle_hypervisor_get_activity(m.group(1))
-            return
-        # /api/hypervisor/threads/{id}/watchers — cross-turn watchers (#402).
-        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/watchers$', claude_path)
-        if m:
-            self.handle_hypervisor_list_watchers(m.group(1))
-            return
-        m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', claude_path)
-        if m:
-            self.handle_hypervisor_get_thread(m.group(1))
             return
         # --- Provider keys (dashboard Settings) ---
         if claude_path == '/api/provider-keys':
@@ -13944,17 +13928,10 @@ class BrowserHandler(docs_routes.DocsRoutes,
             # carry strip_query — see handlers/tasks.py.
             if task_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
-            # /api/hypervisor/threads/{id}/watchers/{wid} — cancel one
-            # cross-turn watcher (#402). Must precede the plain threads/{id}
-            # delete route.
-            m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/watchers/'
-                         r'([A-Za-z0-9_-]+)$', path)
-            if m:
-                self.handle_hypervisor_cancel_watcher(m.group(1), m.group(2))
-                return
-            m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)$', path)
-            if m:
-                self.handle_hypervisor_delete_thread(m.group(1))
+            # Hypervisor: cancel one cross-turn watcher (#402), or soft-delete
+            # a whole thread. handlers/hypervisor.py keeps the watcher route
+            # ahead of the thread one.
+            if hypervisor_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             m = re.match(r'^/api/provider-keys/([A-Z_]+)$', path)
             if m:
@@ -15040,571 +15017,7 @@ class BrowserHandler(docs_routes.DocsRoutes,
         self.send_header('Cache-Control', 'no-store')
         self.end_headers()
 
-    # ── Hypervisor: structured agent-session chat ───────────────────────────
-    # Each thread is a HypervisorSession (see hypervisor_session.py): the
-    # selected CLI is run in its machine-readable streaming mode over pipes (no
-    # tmux, no TTY) and normalized into a canonical event stream persisted as
-    # events.jsonl. The frontend renders those events — it never sees a
-    # terminal, so there are no interactive dialogs to answer and no rendered
-    # pane to un-scrape. Adding an assistant means adding one adapter; this
-    # facade and the frontend don't change.
 
-    def _hv_session_or_404(self, thread_id):
-        s = HypervisorSession.get(thread_id) if _HYPERVISOR_AVAILABLE else None
-        if s is None:
-            self.send_json({'error': 'Thread not found'}, 404)
-            return None
-        return s
-
-    def handle_hypervisor_config(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        self.send_json({
-            'enabled': HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE,
-            # AI CTO gate (#467) — the SPA hides the /cto nav item and the CTO
-            # route when this is false. Rides the Hypervisor, so it's never true
-            # when the Hypervisor is unavailable.
-            'ctoEnabled': cto_available(),
-            'defaultAssistant': HYPERVISOR_DEFAULT_ASSISTANT,
-            'workdir': HYPERVISOR_WORKDIR,
-            'readOnly': READONLY_MODE,
-            'assistants': ClaudeTaskManager.available_assistants(),
-            'authHelp': {rid: {'label': entry['label'], 'instructions': entry['auth_help']}
-                         for rid, entry in runtimes.RUNTIMES.items()},
-            # Invocable skills + custom slash commands the composer's `/` picker
-            # offers (issue #302). Claude-scoped: the Hypervisor runs Claude at
-            # /home/dev and that adapter is the one confirmed to expand `/name`
-            # inline in headless print mode — so the frontend shows the picker
-            # only for the `claude` assistant. Provider expansion (ante/opencode)
-            # is a follow-up: the source can grow a `systems` filter without a
-            # client redesign.
-            'commands': self._hypervisor_commands(),
-            # Whether POST /api/hypervisor/transcribe has a provider key to
-            # work with (issue #396) — clients without a browser SpeechRecognition
-            # (the mobile app) show the mic only when this is true.
-            'stt': SpeechTranscriber.available(),
-        })
-
-    @staticmethod
-    def _hypervisor_commands():
-        """Composer picker source: custom `/commands` + invocable skills.
-
-        Each entry: {name, kind: 'command'|'skill', description,
-        argument_hint, scope}. Deduped by name (a custom command shadows a
-        same-named skill). Never raises — a discovery hiccup degrades to
-        fewer picker entries, never a broken config response."""
-        out = []
-        seen = set()
-        # Custom slash commands (.claude/commands/*.md) — Claude-native, not in
-        # the skills registry.
-        if _SKILLS_AVAILABLE and discover_commands is not None:
-            try:
-                for c in discover_commands():
-                    if c['name'] in seen:
-                        continue
-                    seen.add(c['name'])
-                    out.append({**c, 'kind': 'command'})
-            except Exception as e:
-                print(f'[hypervisor] command discovery failed: {e}',
-                      file=sys.stderr)
-        # Invocable skills the registry already tracks, filtered to those Claude
-        # can actually run (systems includes 'claude').
-        if _SKILLS_AVAILABLE and SkillsSyncer is not None:
-            try:
-                for r in SkillsSyncer.snapshot():
-                    if not r.user_invocable or 'claude' not in r.systems:
-                        continue
-                    if r.name in seen:
-                        continue
-                    seen.add(r.name)
-                    out.append({
-                        'name': r.name,
-                        'kind': 'skill',
-                        'description': r.description,
-                        'argument_hint': r.argument_hint,
-                        'scope': r.scope,
-                    })
-            except Exception as e:
-                print(f'[hypervisor] skill picker snapshot failed: {e}',
-                      file=sys.stderr)
-        out.sort(key=lambda c: c['name'])
-        return out
-
-    def handle_hypervisor_list_threads(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        # ?deleted=1 → the "Recently deleted" trash view (soft-deleted only).
-        # The query string is stripped from the route match, so re-parse it.
-        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        only_deleted = (qs.get('deleted') or [''])[0] in ('1', 'true')
-        if not _HYPERVISOR_AVAILABLE:
-            self.send_json({'threads': []})
-            return
-        threads = HypervisorSession.list(only_deleted=only_deleted)
-        # Persona/project filter (#465). No `persona` param → every thread,
-        # which is what the dashboard asks for since #683 merged the two lists;
-        # `persona=cto` → only CTO threads; `persona=default`/`none` → only
-        # plain Hypervisor threads; `project=<id>` → additionally that project.
-        # The narrow forms are kept: they are how an API client scopes a query,
-        # and dropping them would be a breaking change for no gain.
-        persona = (qs.get('persona') or [''])[0].strip().lower()
-        project = (qs.get('project') or [''])[0].strip()
-        if persona == 'cto':
-            threads = [t for t in threads if (t.get('persona') or '') == 'cto']
-        elif persona in ('default', 'none', 'hypervisor'):
-            threads = [t for t in threads if (t.get('persona') or '') != 'cto']
-        if project:
-            threads = [t for t in threads if (t.get('project_id') or '') == project]
-        self.send_json({'threads': threads})
-
-    def handle_hypervisor_create_thread(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not (HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE):
-            self.send_json({'error': 'Hypervisor is disabled'}, 404)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        message = (data.get('message') or '').strip()
-        # AI CTO persona (#465): a 'cto' thread swaps in CTO_PREAMBLE + the
-        # project's markdown brief (injected on turn 1 via the adapter's
-        # preamble path) and binds a project_id. Any other/absent persona is a
-        # normal Hypervisor thread — zero change from before.
-        persona = (data.get('persona') or '').strip().lower()
-        # Board Processor personas (#588/#589): 'board' works ONE item on an
-        # external board, 'board-gen' authors a connector. Both are honored only
-        # while the boards package is importable; otherwise the thread degrades
-        # to a plain chat rather than starting with a preamble describing tools
-        # that aren't there.
-        if persona in ('board', 'board-gen'):
-            if not _BOARDS_AVAILABLE:
-                persona = ''
-        # A CTO persona is honored only when the feature is enabled (#467);
-        # otherwise the thread degrades to a plain Hypervisor chat.
-        elif persona != 'cto' or not cto_available():
-            persona = ''
-        # A board thread binds to a board (and usually one item), the way a CTO
-        # thread binds to a project. An unknown board drops the binding so we
-        # never export a KC_BOARD_ID whose tools would 404 every call.
-        board_id = (data.get('board_id') or '').strip()
-        board_item_id = str(data.get('board_item_id') or '').strip()
-        if board_id and (not _BOARDS_AVAILABLE
-                         or not BoardsManager.valid_id(board_id)
-                         or BoardsManager.get(board_id) is None):
-            board_id, board_item_id = '', ''
-        if not board_id:
-            board_item_id = ''
-        # A project binding is no longer CTO-only (#358): an ordinary chat can be
-        # filed into a project too, which is what makes the chat list groupable
-        # and gives the turn a project memory namespace to work in.
-        project_id = (data.get('project_id') or '').strip()
-        # Drop an unknown/invalid binding so we never export a KC_PROJECT_ID that
-        # 404s every project tool — the thread just becomes a Workspace-scope
-        # chat (#465, review L5).
-        if project_id and (not ProjectsManager.valid_id(project_id)
-                           or ProjectsManager.get_project(project_id) is None):
-            project_id = ''
-        # Per-project assistant configuration (#483). A CTO thread whose body
-        # omits assistant/model/effort inherits the bound project's defaults,
-        # then the workspace default — so every client is correct, including the
-        # MCP and cron paths that never send the fields. An explicit body value
-        # always wins, and everything still runs through resolve_* so a stale or
-        # disabled project default degrades gracefully instead of launching a
-        # dead provider. Resolved here (after the project binding) rather than at
-        # the top of the handler because the defaults hang off that project.
-        # Deliberately still CTO-only: a project's assistant defaults are the
-        # ones its CTO threads and dispatched builds run on, and the Chat tab
-        # always sends its own explicit picker values — so a plain chat filed
-        # into a project (#358) keeps whatever agent the user chose for it.
-        p_assistant, p_model, p_effort = ProjectsManager.defaults_for(
-            project_id if persona == 'cto' else '')
-        # Same #702 rule as the build path: a chat the caller explicitly asked
-        # to run on a listed-but-unauthenticated agent is refused with the key
-        # named, rather than opening a thread whose every turn fails with
-        # "Authentication Fails". Only the caller's own choice is rejected — a
-        # stale PROJECT default still degrades through resolve_assistant, since
-        # nobody chose it for this turn.
-        not_ready = ClaudeTaskManager.assistant_not_ready_error(
-            data.get('assistant'))
-        if not_ready:
-            self.send_json({'error': not_ready}, 400)
-            return
-        assistant = ClaudeTaskManager.resolve_assistant(
-            data.get('assistant') or p_assistant or HYPERVISOR_DEFAULT_ASSISTANT)
-        # Per-thread model choice (#308) — validated against the assistant's
-        # allow-list; '' when the assistant offers no choice (adapter default).
-        model = ClaudeTaskManager.resolve_model(
-            assistant, data.get('model') or p_model)
-        # Per-thread reasoning effort (#362) — validated against the canonical
-        # 5-stop axis; '' when the assistant has no effort knob (selector hidden).
-        effort = ClaudeTaskManager.resolve_effort(
-            assistant, data.get('effort') or p_effort)
-        preamble = HYPERVISOR_PREAMBLE
-        if persona == 'cto':
-            preamble = CTO_PREAMBLE
-            brief = ProjectsManager.brief(project_id) if project_id else None
-            if brief and brief.get('brief_markdown'):
-                preamble = (
-                    CTO_PREAMBLE
-                    + f"[System: Project brief for `{project_id}` — a "
-                    "point-in-time snapshot; call get_project_brief for live "
-                    "state.]\n\n" + brief['brief_markdown'] + "\n\n")
-            # First-win fast-path (#486): the user's first-ever CTO thread that
-            # opens with a sentence should build immediately, without the
-            # ```choice gate. Append the addendum LAST so it overrides the
-            # DISPATCH rule for the opening turn. An empty opener (thread opened
-            # with no message) is not a build request, so it stays gated.
-            if message and _is_first_cto_thread():
-                preamble = preamble + CTO_FIRST_WIN_ADDENDUM
-        elif persona == 'board':
-            preamble = BOARD_PREAMBLE
-        elif persona == 'board-gen':
-            preamble = BOARD_GEN_PREAMBLE
-        # A CTO thread defaults its workdir to the project's first workdir (so
-        # relative paths + dispatched tasks land in the project) when the client
-        # didn't pin one; otherwise the usual hypervisor workdir.
-        workdir = data.get('workdir') or HYPERVISOR_WORKDIR
-        if persona == 'cto' and not data.get('workdir') and project_id:
-            proj = ProjectsManager.get_project(project_id)
-            if proj and proj.get('workdirs'):
-                workdir = proj['workdirs'][0]
-        # cli_cmd is only consumed by the non-structured fallback adapter; the
-        # Claude adapter builds its own argv. auto_approve keeps any fallback
-        # CLI from blocking on an approval it can't answer.
-        cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=True)
-        try:
-            session = HypervisorSession.create(
-                assistant=assistant, workdir=workdir, cli_cmd=cli_cmd,
-                preamble=preamble, title=message, model=model, effort=effort,
-                persona=persona, project_id=project_id)
-        except Exception as e:
-            self.send_json({'error': f'failed to start chat: {e}'}, 500)
-            return
-        # Bind AFTER create so the binding rides thread meta (and therefore the
-        # turn env) exactly like set_project's, rather than becoming another
-        # constructor argument every caller has to know about.
-        if board_id:
-            session.set_board(board_id, board_item_id)
-        if message:
-            session.send(message)
-        self.send_json({'thread': session.summary()}, 201)
-
-    def handle_hypervisor_get_thread(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        qs = self.path.split('?', 1)[1] if '?' in self.path else ''
-        try:
-            since = int((urllib.parse.parse_qs(qs).get('since') or ['0'])[0])
-        except (TypeError, ValueError):
-            since = 0
-        # Prefer Claude Code's own JSONL session log (structured, complete,
-        # restart-proof) for the transcript; fall back to the live events.jsonl
-        # capture when it's unavailable. `source` tells the client which won.
-        tx = session.transcript(since_seq=since)
-        self.send_json({
-            'thread': session.summary(),
-            'events': tx['events'],
-            'source': tx['source'],
-        })
-
-    def handle_hypervisor_get_activity(self, thread_id):
-        """Per-thread observability view: a normalized activity timeline (tool
-        calls + results + durations, errors, status transitions) derived from
-        events.jsonl, plus a bounded tail of the runner.log (subprocess stderr +
-        runner diagnostics). Read-only; behind the same auth gate as the thread
-        endpoint."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        if hv_build_activity is None:
-            self.send_json({'error': 'Hypervisor unavailable'}, 503)
-            return
-        activity = hv_build_activity(session.read_events())
-        activity['thread'] = session.summary()
-        activity['runner_log'] = session.read_runner_log()
-        self.send_json(activity)
-
-    def handle_hypervisor_health(self):
-        """Global hypervisor runner health: live turn/subprocess counts and a
-        per-thread status + recent-error snapshot. Read-only, auth-gated."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not _HYPERVISOR_AVAILABLE or hv_health is None:
-            self.send_json({'error': 'Hypervisor unavailable'}, 503)
-            return
-        self.send_json(hv_health())
-
-    def handle_hypervisor_send_message(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        message = (data.get('message') or '').strip()
-        if not message:
-            self.send_json({'error': 'message is required'}, 400)
-            return
-        if session.status() == 'running':
-            self.send_json({'error': 'assistant is still responding'}, 409)
-            return
-        session.send(message)
-        self.send_json({'ok': True})
-
-    def handle_hypervisor_transcribe(self):
-        """POST /api/hypervisor/transcribe (issue #396, tier 1) — raw audio in
-        the body, transcript out. Serves clients without a browser SpeechRecognition
-        (the Expo mobile app); the transcript feeds the ordinary send path
-        client-side, so this endpoint never touches a thread itself."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            content_length = int(self.headers.get('Content-Length', 0) or 0)
-        except ValueError:
-            self.send_json({'error': 'invalid Content-Length'}, 400)
-            return
-        if content_length <= 0:
-            self.send_json({'error': 'empty audio body'}, 400)
-            return
-        if content_length > SpeechTranscriber.MAX_AUDIO_BYTES:
-            self.send_json({'error': 'audio too large '
-                            f'(max {SpeechTranscriber.MAX_AUDIO_BYTES} bytes)'}, 413)
-            return
-        audio = self.rfile.read(content_length)
-        ctype = (self.headers.get('Content-Type')
-                 or 'application/octet-stream').split(';')[0].strip()
-        # URL-encoded like the file-upload headers (header values are ISO-8859-1).
-        filename = urllib.parse.unquote(
-            (self.headers.get('X-Filename') or '').strip()) or None
-        text, err = SpeechTranscriber.transcribe(audio, ctype, filename)
-        if err is not None:
-            self.send_json({'error': err[1]}, err[0])
-            return
-        self.send_json({'text': text})
-
-    def handle_hypervisor_rename_thread(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        title = (data.get('title') or '').strip()
-        if not title:
-            self.send_json({'error': 'title is required'}, 400)
-            return
-        summary = session.set_title(title)
-        if summary is None:
-            self.send_json({'error': 'not found'}, 404)
-            return
-        self.send_json({'thread': summary})
-
-    def handle_hypervisor_set_model(self, thread_id):
-        """Switch a live thread's model (#308). Takes effect on the next turn —
-        the Claude adapter reads ctx['model'] each build, and `--resume` carries
-        the same session across the change. Validated against the thread's own
-        assistant so a client can't smuggle in an off-list model."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        meta = session.read_meta() or {}
-        model = ClaudeTaskManager.resolve_model(
-            meta.get('assistant') or '', data.get('model'))
-        summary = session.set_model(model)
-        if summary is None:
-            self.send_json({'error': 'not found'}, 404)
-            return
-        self.send_json({'thread': summary})
-
-    def handle_hypervisor_set_effort(self, thread_id):
-        """Switch a live thread's reasoning effort (#362). Takes effect on the
-        next turn — each adapter reads ctx['effort'] fresh at build and maps it
-        to its CLI's native knob. Validated against the thread's own assistant
-        (canonical 5-stop axis); an assistant with no effort knob resolves to ''
-        and the field is simply cleared."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        meta = session.read_meta() or {}
-        effort = ClaudeTaskManager.resolve_effort(
-            meta.get('assistant') or '', data.get('effort'))
-        summary = session.set_effort(effort)
-        if summary is None:
-            self.send_json({'error': 'not found'}, 404)
-            return
-        self.send_json({'thread': summary})
-
-    def handle_hypervisor_set_project(self, thread_id):
-        """File a chat into a project, or clear the binding with '' (#358).
-
-        Takes effect on the next turn: _run_turn re-reads the thread meta each
-        turn, so the new project rides KC_PROJECT_ID (and with it the project's
-        memory namespace scope, #359) from then on. An unknown project id is a
-        400 rather than a silent drop — this is an explicit user action, and
-        pretending it worked would leave the chat filed nowhere. A CTO thread is
-        refused: its project brief is baked into the preamble at creation, so
-        re-binding one would leave the two disagreeing (#465)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        meta = session.read_meta() or {}
-        if (meta.get('persona') or '') == 'cto':
-            self.send_json(
-                {'error': "a CTO chat's project is fixed at creation"}, 400)
-            return
-        project_id = (data.get('project_id') or '').strip()
-        if project_id and (not ProjectsManager.valid_id(project_id)
-                           or ProjectsManager.get_project(project_id) is None):
-            self.send_json({'error': f'unknown project: {project_id}'}, 400)
-            return
-        summary = session.set_project(project_id)
-        if summary is None:
-            self.send_json({'error': 'not found'}, 404)
-            return
-        self.send_json({'thread': summary})
-
-    def handle_hypervisor_stop(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        stopped = session.stop()
-        # Idle threads are a safe no-op — report 'idle' rather than erroring so
-        # the client can fire-and-forget without racing the turn's completion.
-        self.send_json({'ok': True, 'stopped': stopped})
-
-    # ── Cross-turn watchers (issue #402) ──────────────────────────────────
-    # The runner-owned watch primitive: an in-turn agent arms a watcher here
-    # (via the dashboard MCP `watch` tool); hypervisor_session.WATCHERS polls
-    # the condition after the turn ends and injects the outcome back into the
-    # thread as a follow-up turn. These endpoints are thin wrappers over it.
-    def handle_hypervisor_list_watchers(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        if hv_watchers is None:
-            self.send_json({'error': 'Hypervisor unavailable'}, 503)
-            return
-        self.send_json({'watchers': hv_watchers.list(thread_id)})
-
-    def handle_hypervisor_create_watcher(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        if hv_watchers is None:
-            self.send_json({'error': 'Hypervisor unavailable'}, 503)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        try:
-            watcher = hv_watchers.arm(
-                thread_id,
-                kind=data.get('kind') or '',
-                target=data.get('target') or '',
-                note=data.get('note') or '',
-                interval=data.get('interval'),
-                timeout=data.get('timeout'))
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-            return
-        self.send_json({'watcher': watcher}, 201)
-
-    def handle_hypervisor_cancel_watcher(self, thread_id, watcher_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        if hv_watchers is None:
-            self.send_json({'error': 'Hypervisor unavailable'}, 503)
-            return
-        cancelled = hv_watchers.cancel(thread_id, watcher_id)
-        # Cancelling an already-finished/unknown watcher is a reported no-op,
-        # mirroring stop()'s fire-and-forget shape.
-        self.send_json({'ok': True, 'cancelled': cancelled})
-
-    def handle_hypervisor_delete_thread(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        # Soft-delete: the thread drops out of the default listing but its files
-        # survive so it can be restored from "Recently deleted".
-        session.delete()
-        self.send_json({'ok': True})
-
-    def handle_hypervisor_restore_thread(self, thread_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        session = self._hv_session_or_404(thread_id)
-        if session is None:
-            return
-        revived = session.revive()
-        self.send_json({'ok': True, 'restored': revived})
 
     # --- Webhook handlers ---
     # CRUD endpoints (list/get/create/delete) reuse check_claude_auth — they
@@ -17388,12 +16801,10 @@ class BrowserHandler(docs_routes.DocsRoutes,
             # below. All ten are in handlers/tasks.py's table.
             elif task_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
-            # Hypervisor chat threads
-            elif path == "/api/hypervisor/threads":
-                self.handle_hypervisor_create_thread()
-            # Voice interface (issue #396): server-side speech-to-text
-            elif path == "/api/hypervisor/transcribe":
-                self.handle_hypervisor_transcribe()
+            # Hypervisor chat threads: create, transcribe, and the eight
+            # per-thread actions that used to sit in the regex block below.
+            elif hypervisor_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Conversation Gateway (issue #306): inbound WhatsApp webhook
             # (provider-signature authed, NOT bearer) + link enrollment (bearer).
             elif path == "/api/gateway/whatsapp/webhook":
@@ -17548,48 +16959,6 @@ class BrowserHandler(docs_routes.DocsRoutes,
                 m = re.match(r'^/api/feed/(fd_[A-Za-z0-9_]+)/dismiss$', path)
                 if m:
                     self.handle_feed_dismiss(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/messages — chat follow-up
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/messages$', path)
-                if m:
-                    self.handle_hypervisor_send_message(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/stop — halt the running turn
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/stop$', path)
-                if m:
-                    self.handle_hypervisor_stop(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/restore — undo a soft-delete
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/restore$', path)
-                if m:
-                    self.handle_hypervisor_restore_thread(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/watchers — arm a cross-turn
-                # watcher (#402).
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/watchers$', path)
-                if m:
-                    self.handle_hypervisor_create_watcher(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/rename — set a custom chat title
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/rename$', path)
-                if m:
-                    self.handle_hypervisor_rename_thread(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/model — switch the model (#308)
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/model$', path)
-                if m:
-                    self.handle_hypervisor_set_model(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/effort — switch reasoning effort (#362)
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/effort$', path)
-                if m:
-                    self.handle_hypervisor_set_effort(m.group(1))
-                    return
-                # /api/hypervisor/threads/{id}/project — file the chat into a
-                # project, or clear the binding (#358)
-                m = re.match(r'^/api/hypervisor/threads/([A-Za-z0-9_-]+)/project$', path)
-                if m:
-                    self.handle_hypervisor_set_project(m.group(1))
                     return
                 # Desktop launcher per-item routes
                 # PUT-like update (POST + id == "update"); /launch fires

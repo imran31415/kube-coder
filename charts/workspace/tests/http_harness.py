@@ -159,6 +159,18 @@ class DomainRouteTests:
     query_handlers = frozenset()
     #: Handler names whose route carries `strip_query=True`. Exact, as above.
     strip_query_handlers = frozenset()
+    #: `(http_method, path)` pairs owned by routes this table was hoisted
+    #: ABOVE. A domain whose branches were interleaved with another's rather
+    #: than contiguous cannot be collapsed into one dispatch point without
+    #: moving its later routes over everything in between; listing what they
+    #: jumped means a route added here later that WOULD shadow one of them
+    #: fails in CI rather than in production. Empty for a domain that
+    #: occupied an unbroken run of elif branches and hoisted nothing.
+    hoisted_over_paths = ()
+    #: The literal path prefixes this domain owns. Declared alongside
+    #: `hoisted_over_paths` to show the hoist is safe structurally, not just
+    #: for the paths that happen to be sampled.
+    owned_prefixes = ()
 
     def resolve(self, http_method, path, raw=None):
         """The handler name this table would dispatch to, or None."""
@@ -195,6 +207,25 @@ class DomainRouteTests:
         for http_method, path in self.wrong_verb_samples:
             self.assertIsNone(self.resolve(http_method, path),
                               f'{http_method} {path}')
+
+    def test_no_route_matches_a_path_it_was_hoisted_above(self):
+        for http_method, path in self.hoisted_over_paths:
+            self.assertIsNone(
+                self.resolve(http_method, path),
+                f'{http_method} {path} is now shadowed by this table')
+
+    def test_the_hoisted_over_paths_are_outside_this_domains_prefixes(self):
+        # The structural reason the check above passes, rather than a
+        # property of the sample: disjoint literal prefixes.
+        if not self.hoisted_over_paths:
+            return
+        self.assertTrue(self.owned_prefixes,
+                        f'{type(self).__name__} hoisted over paths but '
+                        f'declares no owned_prefixes')
+        for _http_method, path in self.hoisted_over_paths:
+            self.assertFalse(
+                any(path.startswith(p) for p in self.owned_prefixes),
+                f'{path} shares a prefix with this domain')
 
     def test_only_the_declared_handlers_read_the_query_string(self):
         self.assertEqual({r.handler for r in self.table.routes if r.query},
