@@ -27,7 +27,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import triggers  # noqa: E402
 from handlers.routing import RouteTable  # noqa: E402
-from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
+from tests.http_harness import (  # noqa: E402
+    EndpointTestCase, dispatch_to_mock, handler_for)
 
 
 class TriggerRouteOrderTests(unittest.TestCase):
@@ -132,26 +133,21 @@ class TriggerCaptureAttributeTests(unittest.TestCase):
     """`sets=`: these handlers read their parameters off the request, and the
     chain assigned them at the dispatch site."""
 
-    def _dispatch(self, http_method, path):
-        h = mock.Mock(spec=server.BrowserHandler)
-        self.assertTrue(triggers.ROUTES.dispatch(h, http_method, path, path))
-        return h
-
     def test_the_id_lands_on_the_attribute_each_handler_reads(self):
         for http_method, path, attr, value in (
                 ('GET', '/api/webhooks/wh1', '_webhook_id', 'wh1'),
                 ('GET', '/api/crons/c1/runs', '_cron_id', 'c1'),
                 ('DELETE', '/api/page-watches/p1', '_page_watch_id', 'p1'),
                 ('POST', '/api/triggers/cron-fire/c2', '_cron_id', 'c2')):
-            h = self._dispatch(http_method, path)
+            h = dispatch_to_mock(triggers.ROUTES, http_method, path)
             self.assertEqual(getattr(h, attr), value, path)
 
     def test_an_action_route_sets_both_id_and_action(self):
-        h = self._dispatch('POST', '/api/crons/c1/rotate-token')
+        h = dispatch_to_mock(triggers.ROUTES, 'POST', '/api/crons/c1/rotate-token')
         self.assertEqual((h._cron_id, h._cron_action), ('c1', 'rotate-token'))
         h.handle_cron_action.assert_called_once_with()
 
-        h = self._dispatch('POST', '/api/page-watches/p1/check')
+        h = dispatch_to_mock(triggers.ROUTES, 'POST', '/api/page-watches/p1/check')
         self.assertEqual((h._page_watch_id, h._page_watch_action),
                          ('p1', 'check'))
         h.handle_page_watch_action.assert_called_once_with()
