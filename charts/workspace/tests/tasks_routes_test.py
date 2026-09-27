@@ -22,7 +22,6 @@ Run with:
     cd charts/workspace && python3 -m unittest tests.tasks_routes_test
 """
 
-import inspect
 import os
 import sys
 import unittest
@@ -33,13 +32,26 @@ import server  # noqa: E402
 from handlers import tasks  # noqa: E402
 from handlers.routing import RouteTable  # noqa: E402
 from tests.http_harness import (  # noqa: E402
-    EndpointTestCase, args_for, dispatch_to_mock, handler_for)
+    DomainEndpointTests, DomainRouteTests, EndpointTestCase, args_for,
+    dispatch_to_mock, handler_for)
 
 
-class TaskRouteResolutionTests(unittest.TestCase):
+class TaskRouteResolutionTests(DomainRouteTests, unittest.TestCase):
 
-    def _handler_for(self, http_method, path, raw=None):
-        return handler_for(tasks.ROUTES, http_method, path, raw)
+    table = tasks.ROUTES
+    foreign_paths = (('GET', '/api/claude'), ('GET', '/api/claude/tasks/'),
+                     ('GET', '/api/claude/tasksx'),
+                     ('GET', '/api/claude/tasks/t1/output/2'),
+                     ('GET', '/api/worktreesx'))
+    oauth_samples = (('GET', '/api/claude/tasks/t1'),
+                     ('POST', '/api/worktrees/sweep'),
+                     ('DELETE', '/api/claude/tasks/t1'))
+    wrong_verb_samples = (('DELETE', '/api/claude/tasks'),
+                          ('GET', '/api/worktrees/sweep'),
+                          ('POST', '/api/claude/tasks/t1/output'),
+                          ('GET', '/api/worktrees/repo/slug'))
+    strip_query_handlers = {'handle_task_worktree_remove',
+                            'handle_worktrees_remove'}
 
     def test_the_reads(self):
         for path, expected in (
@@ -50,7 +62,7 @@ class TaskRouteResolutionTests(unittest.TestCase):
                 ('/api/claude/tasks/t1/output', 'handle_claude_get_output'),
                 ('/api/claude/tasks/t1/stream', 'handle_claude_stream_output'),
                 ('/api/worktrees', 'handle_worktrees_list')):
-            self.assertEqual(self._handler_for('GET', path), expected, path)
+            self.assertEqual(self.resolve('GET', path), expected, path)
 
     def test_the_writes(self):
         for path, expected in (
@@ -69,7 +81,7 @@ class TaskRouteResolutionTests(unittest.TestCase):
                 ('/api/claude/tasks/t1/scroll-mode',
                  'handle_claude_scroll_mode'),
                 ('/api/claude/tasks/t1/key', 'handle_claude_send_key')):
-            self.assertEqual(self._handler_for('POST', path), expected, path)
+            self.assertEqual(self.resolve('POST', path), expected, path)
 
     def test_the_deletes(self):
         for path, expected in (
@@ -77,28 +89,28 @@ class TaskRouteResolutionTests(unittest.TestCase):
                 ('/api/claude/tasks/t1/worktree',
                  'handle_task_worktree_remove'),
                 ('/api/worktrees/repo/slug', 'handle_worktrees_remove')):
-            self.assertEqual(self._handler_for('DELETE', path), expected, path)
+            self.assertEqual(self.resolve('DELETE', path), expected, path)
 
     def test_the_worktree_route_split_on_the_optional_group(self):
         # Was one pattern, `/worktree(/diff)?`, whose handler branched on
         # whether group 2 matched. Two anchored routes, same resolution.
-        self.assertEqual(self._handler_for('GET', '/api/claude/tasks/t1/worktree'),
+        self.assertEqual(self.resolve('GET', '/api/claude/tasks/t1/worktree'),
                          'handle_task_worktree_status')
         self.assertEqual(
-            self._handler_for('GET', '/api/claude/tasks/t1/worktree/diff'),
+            self.resolve('GET', '/api/claude/tasks/t1/worktree/diff'),
             'handle_task_worktree_diff')
         # Nothing else under /worktree/ resolves, as before.
         self.assertIsNone(
-            self._handler_for('GET', '/api/claude/tasks/t1/worktree/other'))
+            self.resolve('GET', '/api/claude/tasks/t1/worktree/other'))
 
     def test_terminal_is_a_route_not_a_task_id(self):
         # POST /api/claude/tasks/terminal creates a plain-bash task. There is
         # no bare POST {id} route for it to be read as.
-        self.assertEqual(self._handler_for('POST', '/api/claude/tasks/terminal'),
+        self.assertEqual(self.resolve('POST', '/api/claude/tasks/terminal'),
                          'handle_claude_create_terminal_task')
         # On GET there never was a /terminal route, so "terminal" IS read as a
         # task id. Preserved, not fixed.
-        self.assertEqual(self._handler_for('GET', '/api/claude/tasks/terminal'),
+        self.assertEqual(self.resolve('GET', '/api/claude/tasks/terminal'),
                          'handle_claude_get_task')
 
     def test_the_specific_routes_are_safe_by_construction_not_by_order(self):
@@ -117,30 +129,7 @@ class TaskRouteResolutionTests(unittest.TestCase):
                 ('POST', '/api/claude/tasks/t1/message'),
                 ('DELETE', '/api/claude/tasks/t1/worktree')):
             self.assertEqual(inverted.match(http_method, path, path)[0].handler,
-                             self._handler_for(http_method, path), path)
-
-    def test_the_verb_is_part_of_the_match(self):
-        self.assertIsNone(self._handler_for('DELETE', '/api/claude/tasks'))
-        self.assertIsNone(self._handler_for('GET', '/api/worktrees/sweep'))
-        self.assertIsNone(self._handler_for('POST', '/api/claude/tasks/t1/output'))
-        self.assertIsNone(self._handler_for('GET', '/api/worktrees/repo/slug'))
-
-    def test_paths_outside_the_domain_do_not_match(self):
-        for path in ('/api/claude', '/api/claude/tasks/', '/api/claude/tasksx',
-                     '/api/claude/tasks/t1/output/2', '/api/worktreesx'):
-            self.assertIsNone(self._handler_for('GET', path), path)
-
-    def test_every_route_matches_the_normalized_path(self):
-        for http_method, path in (('GET', '/api/claude/tasks/t1'),
-                                  ('POST', '/api/worktrees/sweep'),
-                                  ('DELETE', '/api/claude/tasks/t1')):
-            self.assertIsNotNone(
-                self._handler_for(http_method, path, raw='/oauth' + path), path)
-
-    def test_every_route_names_a_real_handler_method(self):
-        for route in tasks.ROUTES.routes:
-            self.assertTrue(hasattr(server.BrowserHandler, route.handler),
-                            f'{route} names a method BrowserHandler lacks')
+                             self.resolve(http_method, path), path)
 
 
 #: Paths owned by routes that the task table was hoisted above. On GET the task
@@ -284,25 +273,12 @@ class TaskCaptureArgumentTests(unittest.TestCase):
         h = dispatch_to_mock(tasks.ROUTES, 'DELETE', '/api/worktrees/myrepo/my-slug')
         h.handle_worktrees_remove.assert_called_once_with('myrepo', 'my-slug')
 
-    def test_every_capture_group_is_either_set_or_declared_by_the_handler(self):
-        # A group that is neither would be passed to a handler that does not
-        # take it — a TypeError at request time.
-        for route in tasks.ROUTES.routes:
-            groups = 0 if isinstance(route.pattern, str) else route.pattern.groups
-            positional = groups - len(route.sets)
-            declared = [
-                p for name, p in inspect.signature(
-                    getattr(server.BrowserHandler, route.handler)).parameters.items()
-                if name != 'self'
-            ]
-            self.assertEqual(positional, len(declared),
-                             f'{route.handler}: {positional} positional '
-                             f'group(s) vs {len(declared)} parameter(s)')
 
 
 class TaskQueryStringTests(unittest.TestCase):
     """`strip_query=`: DELETE routes on the un-stripped path, and both worktree
-    deletes take their options from the query string."""
+    deletes take their options from the query string. (Which routes carry the
+    column is asserted generically — see `strip_query_handlers` above.)"""
 
     def _handler_for(self, http_method, path):
         return handler_for(tasks.ROUTES, http_method, path)
@@ -325,8 +301,14 @@ class TaskQueryStringTests(unittest.TestCase):
         self.assertIsNone(self._handler_for('DELETE', '/api/claude/tasks/t1?x=1'))
 
 
-class TaskEndpointBehaviourTests(EndpointTestCase):
+class TaskEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
     """Status codes for the migrated routes, over a real server."""
+
+    oauth_reachable = (('GET', '/api/claude/tasks'),
+                       ('POST', '/api/worktrees/sweep'),
+                       ('DELETE', '/api/claude/tasks/t1/worktree?force=1'))
+    unmatched_shapes = (('GET', '/api/claude/tasks/t1/nope'),
+                        ('GET', '/api/worktrees/only-one-segment'))
 
     def test_the_reads_are_auth_gated(self):
         # 401 rather than 404 is also the proof the route matched at all.
@@ -361,11 +343,6 @@ class TaskEndpointBehaviourTests(EndpointTestCase):
         self.assertEqual(self.get('/api/claude/auth/token')[0], 401)
         self.assertEqual(self.post('/api/claude/auth/token/regenerate')[0], 401)
 
-    def test_an_unknown_path_under_the_prefix_still_falls_through(self):
-        # /api/* is in NON_SPA_PREFIXES, so a typo keeps 404ing rather than
-        # being answered with the SPA shell.
-        self.assertEqual(self.get('/api/claude/tasks/t1/nope')[0], 404)
-        self.assertEqual(self.get('/api/worktrees/only-one-segment')[0], 404)
 
 
 if __name__ == '__main__':

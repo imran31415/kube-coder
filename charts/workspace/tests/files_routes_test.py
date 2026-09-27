@@ -23,13 +23,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import files  # noqa: E402
-from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
+from tests.http_harness import (  # noqa: E402
+    DomainEndpointTests, DomainRouteTests, EndpointTestCase,
+)
 
 
-class FilesRouteOrderTests(unittest.TestCase):
+class FilesRouteOrderTests(DomainRouteTests, unittest.TestCase):
 
-    def _handler_for(self, http_method, path, raw=None):
-        return handler_for(files.ROUTES, http_method, path, raw)
+    table = files.ROUTES
+    foreign_paths = (('GET', '/api/files/'), ('GET', '/api/files/list/deeper'),
+                     ('GET', '/api/filesx'))
+    oauth_samples = (('GET', '/api/files/list'), ('POST', '/api/files/mkdir'),
+                     ('DELETE', '/api/files'))
+    # These handlers parse self.path themselves, so no route carries query=;
+    # only the DELETE needs its query split off before matching (do_GET hands
+    # the table a path whose query is already gone).
+    wrong_verb_samples = (('GET', '/api/files/upload'),
+                          ('POST', '/api/files/list'),
+                          ('GET', '/api/files'),
+                          ('DELETE', '/api/files/list'))
+    strip_query_handlers = {'handle_file_delete'}
 
     def test_the_five_reads(self):
         for suffix, handler in (('list', 'handle_files_list'),
@@ -37,59 +50,32 @@ class FilesRouteOrderTests(unittest.TestCase):
                                 ('download', 'handle_file_download'),
                                 ('preview', 'handle_file_preview'),
                                 ('view', 'handle_file_view')):
-            self.assertEqual(self._handler_for('GET', '/api/files/' + suffix),
+            self.assertEqual(self.resolve('GET', '/api/files/' + suffix),
                              handler)
 
     def test_the_three_writes(self):
         for suffix, handler in (('upload', 'handle_file_upload'),
                                 ('mkdir', 'handle_file_mkdir'),
                                 ('rename', 'handle_file_rename')):
-            self.assertEqual(self._handler_for('POST', '/api/files/' + suffix),
+            self.assertEqual(self.resolve('POST', '/api/files/' + suffix),
                              handler)
 
     def test_delete_matches_despite_the_query_string(self):
         # do_DELETE routes on the path with its query still attached, so this
         # route only matches at all because of the strip_query column.
         for path in ('/api/files', '/api/files?path=notes.txt'):
-            self.assertEqual(self._handler_for('DELETE', path),
+            self.assertEqual(self.resolve('DELETE', path),
                              'handle_file_delete', path)
 
-    def test_only_the_delete_route_strips_the_query(self):
-        # do_GET hands the table a path whose query is already gone, so none
-        # of the reads need the column.
-        stripping = {r.handler for r in files.ROUTES.routes if r.strip_query}
-        self.assertEqual(stripping, {'handle_file_delete'})
 
-    def test_the_verb_is_part_of_the_match(self):
-        self.assertIsNone(self._handler_for('GET', '/api/files/upload'))
-        self.assertIsNone(self._handler_for('POST', '/api/files/list'))
-        self.assertIsNone(self._handler_for('GET', '/api/files'))
-        self.assertIsNone(self._handler_for('DELETE', '/api/files/list'))
-
-    def test_paths_outside_the_domain_do_not_match(self):
-        for path in ('/api/files/', '/api/files/list/deeper', '/api/filesx'):
-            self.assertIsNone(self._handler_for('GET', path), path)
-
-    def test_every_route_matches_the_normalized_path(self):
-        for http_method, path in (('GET', '/api/files/list'),
-                                  ('POST', '/api/files/mkdir'),
-                                  ('DELETE', '/api/files')):
-            self.assertIsNotNone(
-                self._handler_for(http_method, path, raw='/oauth' + path), path)
-
-    def test_no_route_reads_the_parsed_query(self):
-        # These handlers parse self.path themselves; the column would be a
-        # signature change, not a relocation.
-        self.assertEqual([r.handler for r in files.ROUTES.routes if r.query], [])
-
-    def test_every_route_names_a_real_handler_method(self):
-        for route in files.ROUTES.routes:
-            self.assertTrue(hasattr(server.BrowserHandler, route.handler),
-                            f'{route} names a method BrowserHandler lacks')
-
-
-class FilesEndpointBehaviourTests(EndpointTestCase):
+class FilesEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
     """Status codes for the migrated routes, over a real server."""
+
+    oauth_reachable = (('GET', '/api/files/list'), ('POST', '/api/files/mkdir'),
+                       ('DELETE', '/api/files?path=x'))
+    unmatched_shapes = (('GET', '/api/files/list/deeper'),
+                        ('POST', '/api/files/list'),
+                        ('DELETE', '/api/files/nope'))
 
     def test_reads_are_auth_gated(self):
         # 401 rather than 404 is also the proof the route matched at all.
@@ -106,17 +92,6 @@ class FilesEndpointBehaviourTests(EndpointTestCase):
         # 404 from the do_DELETE fall-through rather than the handler's 401.
         self.assertEqual(
             self.request('/api/files?path=notes.txt', method='DELETE')[0], 401)
-
-    def test_reachable_under_the_oauth_prefix(self):
-        self.assertEqual(self.get('/oauth/api/files/list')[0], 401)
-        self.assertEqual(self.post('/oauth/api/files/mkdir')[0], 401)
-        self.assertEqual(
-            self.request('/oauth/api/files?path=x', method='DELETE')[0], 401)
-
-    def test_unmatched_shapes_stay_404(self):
-        self.assertEqual(self.get('/api/files/list/deeper')[0], 404)
-        self.assertEqual(self.post('/api/files/list')[0], 404)
-        self.assertEqual(self.request('/api/files/nope', method='DELETE')[0], 404)
 
 
 if __name__ == '__main__':

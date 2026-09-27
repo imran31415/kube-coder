@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import docs  # noqa: E402
 from tests.http_harness import (  # noqa: E402
-    EndpointTestCase, args_for, handler_for,
+    DomainEndpointTests, DomainRouteTests, EndpointTestCase, args_for,
 )
 
 
@@ -38,42 +38,32 @@ class _Recorder:
         return lambda *args: self.calls.append((name, args))
 
 
-class DocsRouteOrderTests(unittest.TestCase):
+class DocsRouteOrderTests(DomainRouteTests, unittest.TestCase):
 
-    def _handler_for(self, path, raw=None):
-        return handler_for(docs.ROUTES, 'GET', path, raw)
+    table = docs.ROUTES
+    foreign_paths = (('GET', '/api/docs/'), ('GET', '/api/docs/a/b'),
+                     ('GET', '/api/docs/bad id'), ('GET', '/api/docsx'))
+    oauth_samples = (('GET', '/api/docs'), ('GET', '/api/docs/search'),
+                     ('GET', '/api/docs/tasks-api'))
+    wrong_verb_samples = (('POST', '/api/docs'), ('POST', '/api/docs/search'),
+                          ('DELETE', '/api/docs/tasks-api'))
+    query_handlers = {'handle_docs_search'}
 
     def test_search_is_not_read_as_a_page_id(self):
         # The hazard: `search` matches the page-id pattern, so the search
         # route only works while it stays registered first.
-        self.assertEqual(self._handler_for('/api/docs/search'),
+        self.assertEqual(self.resolve('GET', '/api/docs/search'),
                          'handle_docs_search')
 
     def test_manifest_and_page_routes(self):
-        self.assertEqual(self._handler_for('/api/docs'), 'handle_docs_manifest')
-        self.assertEqual(self._handler_for('/api/docs/tasks-concepts'),
+        self.assertEqual(self.resolve('GET', '/api/docs'),
+                         'handle_docs_manifest')
+        self.assertEqual(self.resolve('GET', '/api/docs/tasks-concepts'),
                          'handle_docs_page')
 
     def test_page_id_is_passed_as_a_capture_group(self):
         self.assertEqual(args_for(docs.ROUTES, 'GET', '/api/docs/tasks-concepts'),
                          ('tasks-concepts',))
-
-    def test_paths_outside_the_domain_do_not_match(self):
-        for path in ('/api/docs/', '/api/docs/a/b', '/api/docs/bad id',
-                     '/api/docsx'):
-            self.assertIsNone(self._handler_for(path), path)
-
-    def test_every_route_matches_the_normalized_path(self):
-        # The SPA prefixes its calls with /oauth; none of these are raw-only.
-        for path in ('/api/docs', '/api/docs/search', '/api/docs/tasks-api'):
-            self.assertIsNotNone(
-                self._handler_for(path, raw='/oauth' + path), path)
-
-    def test_only_search_reads_the_query_string(self):
-        by_handler = {r.handler: r.query for r in docs.ROUTES.routes}
-        self.assertEqual(by_handler, {'handle_docs_manifest': False,
-                                      'handle_docs_search': True,
-                                      'handle_docs_page': False})
 
     def test_search_is_handed_the_parsed_query(self):
         # do_GET used to parse this inline and pass it positionally.
@@ -84,29 +74,20 @@ class DocsRouteOrderTests(unittest.TestCase):
             rec.calls,
             [('handle_docs_search', ({'q': ['needle'], 'limit': ['5']},))])
 
-    def test_every_route_names_a_real_handler_method(self):
-        for route in docs.ROUTES.routes:
-            self.assertTrue(hasattr(server.BrowserHandler, route.handler),
-                            f'{route} names a method BrowserHandler lacks')
 
-
-class DocsEndpointBehaviourTests(EndpointTestCase):
+class DocsEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
     """Status codes for the migrated routes, over a real server."""
+
+    oauth_reachable = (('GET', '/api/docs'), ('GET', '/api/docs/search?q=x'),
+                       ('GET', '/api/docs/tasks-concepts'))
+    unmatched_shapes = (('GET', '/api/docs/'), ('GET', '/api/docs/a/b'),
+                        ('GET', '/api/docsx'))
 
     def test_the_whole_domain_is_auth_gated(self):
         # 401 rather than 404 is also the proof the route matched at all.
         for path in ('/api/docs', '/api/docs/search', '/api/docs/search?q=x',
                      '/api/docs/tasks-concepts'):
             self.assertEqual(self.get(path)[0], 401, path)
-
-    def test_reachable_under_the_oauth_prefix(self):
-        for path in ('/api/docs', '/api/docs/search?q=x',
-                     '/api/docs/tasks-concepts'):
-            self.assertEqual(self.get('/oauth' + path)[0], 401, path)
-
-    def test_unmatched_shapes_stay_404(self):
-        for path in ('/api/docs/', '/api/docs/a/b', '/api/docsx'):
-            self.assertEqual(self.get(path)[0], 404, path)
 
 
 if __name__ == '__main__':

@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
 from handlers import system  # noqa: E402
 from handlers.routing import RouteTable  # noqa: E402
-from tests.http_harness import EndpointTestCase, handler_for  # noqa: E402
+from tests.http_harness import (  # noqa: E402
+    DomainEndpointTests, DomainRouteTests, EndpointTestCase)
 
 
 class _Recorder:
@@ -238,11 +239,25 @@ class RouteTableSetsTests(unittest.TestCase):
         self.assertEqual(rec.calls, [('alpha', ('wh1',))])
 
 
-class SystemRouteOrderTests(unittest.TestCase):
+class SystemRouteOrderTests(DomainRouteTests, unittest.TestCase):
     """The hazards the old chain carried as comments, as assertions."""
 
+    table = system.ROUTES
+    foreign_paths = (('GET', '/health/'), ('GET', '/livezx'),
+                     ('GET', '/metrics/'), ('GET', '/api/github'),
+                     ('GET', '/api/workspace'))
+    # Only these four match the normalized path; the probes, /metrics and the
+    # VNC routes are raw-only, which the test below asserts instead.
+    oauth_samples = (('GET', '/metrics/prometheus'),
+                     ('GET', '/api/github/status'),
+                     ('GET', '/api/github/config'),
+                     ('GET', '/api/workspace/version'))
+    wrong_verb_samples = (('POST', '/livez'), ('POST', '/metrics'),
+                          ('DELETE', '/api/github/config'),
+                          ('POST', '/vnc'))
+
     def _handler_for(self, path, raw=None):
-        return handler_for(system.ROUTES, 'GET', path, raw)
+        return self.resolve('GET', path, raw)
 
     def test_bare_vnc_is_the_viewer_and_a_subpath_is_the_proxy(self):
         self.assertEqual(self._handler_for('/vnc'), 'send_vnc_viewer')
@@ -261,19 +276,8 @@ class SystemRouteOrderTests(unittest.TestCase):
             # Same normalized path, but the request arrived under /oauth.
             self.assertIsNone(self._handler_for(path, raw='/oauth' + path), path)
 
-    def test_spa_prefixed_reads_match_the_normalized_path(self):
-        for path in ('/metrics/prometheus', '/api/github/status',
-                     '/api/github/config', '/api/workspace/version'):
-            self.assertIsNotNone(
-                self._handler_for(path, raw='/oauth' + path), path)
 
-    def test_every_route_names_a_real_handler_method(self):
-        for route in system.ROUTES.routes:
-            self.assertTrue(hasattr(server.BrowserHandler, route.handler),
-                            f'{route} names a method BrowserHandler lacks')
-
-
-class SystemEndpointBehaviourTests(EndpointTestCase):
+class SystemEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
     """Status codes for the migrated routes, over a real server.
 
     EndpointTestCase pins AUTH_MODE to oauth2 — the mode where server.py is
@@ -282,6 +286,19 @@ class SystemEndpointBehaviourTests(EndpointTestCase):
     which is what separates "reached the handler" from "fell through to the
     404".
     """
+
+    oauth_reachable = (('GET', '/metrics/prometheus'),
+                       ('GET', '/api/github/status'),
+                       ('GET', '/api/github/config'),
+                       ('GET', '/api/workspace/version'))
+    # Pre-existing behaviour, captured rather than changed: the raw-only
+    # routes have always been compared against self.path, so the prefixed
+    # form falls through to the SPA history check and 404s (their prefixes
+    # are in NON_SPA_PREFIXES). The kubelet and in-pod curls use the bare
+    # form. Same for a query string on one of them.
+    unmatched_shapes = (('GET', '/oauth/livez'), ('GET', '/oauth/health'),
+                        ('GET', '/oauth/metrics'), ('GET', '/oauth/vnc'),
+                        ('GET', '/livez?probe=1'))
 
     def test_probes_answer_without_authentication(self):
         self.assertEqual(self.get('/livez'), (200, b'ok'))
@@ -301,21 +318,6 @@ class SystemEndpointBehaviourTests(EndpointTestCase):
                      '/api/github/config', '/api/workspace/version',
                      '/vnc', '/vnc/', '/vnc-proxy', '/vnc/core.js'):
             self.assertEqual(self.get(path)[0], 401, path)
-
-    def test_normalized_routes_are_reachable_under_the_oauth_prefix(self):
-        # The SPA and the oauth2 ingress prefix every call with /oauth.
-        for path in ('/metrics/prometheus', '/api/github/status',
-                     '/api/github/config', '/api/workspace/version'):
-            self.assertEqual(self.get('/oauth' + path)[0], 401, path)
-
-    def test_raw_only_routes_stay_404_under_the_oauth_prefix(self):
-        # Pre-existing behaviour, captured rather than changed: these have
-        # always been compared against self.path, so the prefixed form falls
-        # through to the SPA history check and 404s (the prefixes are in
-        # NON_SPA_PREFIXES). The kubelet and in-pod curls use the bare form.
-        for path in ('/oauth/livez', '/oauth/health', '/oauth/metrics',
-                     '/oauth/vnc', '/livez?probe=1'):
-            self.assertEqual(self.get(path)[0], 404, path)
 
 
 if __name__ == '__main__':
