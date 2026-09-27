@@ -36,16 +36,29 @@ class Route:
     #: time so overriding or patching it behaves exactly as it did when the
     #: chain called `self.<name>()` directly.
     handler: str
-    #: Match the raw request path rather than the normalized one.
+    #: Match the request's RAW path (query string and the SPA's `/oauth`
+    #: prefix still attached) instead of the normalized one. A handful of
+    #: routes have always been raw-only — the kubelet probes, /metrics and
+    #: the VNC endpoints — and stay that way.
     raw_path: bool
     #: Pass the request's parsed query string to the handler as its first
-    #: argument, ahead of any capture groups.
+    #: argument, ahead of any capture groups. The chains computed that dict
+    #: inline before calling the few handlers that read query parameters.
     query: bool
-    #: Drop the query string before matching. Only the verbs that route on
-    #: `_strip_route_prefix(self.path)` ever see one — do_GET strips it up
-    #: front — so this is how a DELETE route whose parameters ride the query
-    #: still matches its own path.
+    #: Drop the query string before matching. do_GET strips it up front, but
+    #: every other verb routes on `_strip_route_prefix(self.path)`, which
+    #: keeps it — so a route whose parameters ride the query
+    #: (`DELETE /api/files?path=…`) needs this to match at all. The chain
+    #: spelled it `path.split('?', 1)[0] == '/api/files'` per branch.
     strip_query: bool
+    #: Attribute names to stash the leading capture groups on, one per name.
+    #: A sizeable family of handlers reads its parameters off the request
+    #: (`self._webhook_id`) rather than taking them as arguments, and the
+    #: chain assigned them at the dispatch site; this is that assignment, as
+    #: data. Groups past the named ones are still passed positionally.
+    #: Giving those handlers real parameters is a later cleanup — doing it
+    #: now would mean editing bodies this series moves verbatim.
+    sets: tuple
 
     def match(self, path):
         """Capture groups for `path`, or None when the pattern doesn't match.
@@ -76,33 +89,20 @@ class RouteTable:
         self.routes = []
 
     def add(self, http_method, pattern, handler, *, raw_path=False,
-            query=False, strip_query=False):
-        """Append a route.
+            query=False, strip_query=False, sets=()):
+        """Append a route. Each keyword is one column — see `Route`.
 
         `pattern` is either an exact path string or a compiled regex — built
         with `re.compile` by the caller so which one it is reads at a glance.
-        `handler` is the *name* of a BrowserHandler method.
-
-        `raw_path=True` matches against the request's raw path (query string
-        and the SPA's `/oauth` prefix still attached) instead of the
-        normalized one. A handful of routes have always been raw-only — the
-        kubelet probes and the VNC endpoints — and stay that way.
-
-        `query=True` hands the handler `parse_query(raw_path)` as its first
-        argument. The chains computed that dict inline before calling the few
-        handlers that read query parameters; as a column it says which
-        handlers those are without reading their signatures.
-
-        `strip_query=True` matches the path with its query string removed.
-        Every verb except do_GET routes on a path that still carries one, so a
-        route whose parameters ride the query — `DELETE /api/files?path=…` —
-        needs this to match at all. The chain spelled it `path.split('?', 1)[0]
-        == '/api/files'` at each such branch.
+        `handler` is the *name* of a BrowserHandler method. `sets` accepts a
+        single attribute name as well as a tuple of them.
         """
         if isinstance(pattern, str) and not pattern.startswith('/'):
             raise ValueError(f'route pattern must be a path: {pattern!r}')
-        self.routes.append(
-            Route(http_method, pattern, handler, raw_path, query, strip_query))
+        if isinstance(sets, str):
+            sets = (sets,)
+        self.routes.append(Route(http_method, pattern, handler, raw_path,
+                                 query, strip_query, tuple(sets)))
 
     def match(self, http_method, path, raw_path):
         """First `(route, args)` whose method and pattern match, else None."""
@@ -120,6 +120,9 @@ class RouteTable:
         if hit is None:
             return False
         route, args = hit
+        for name, value in zip(route.sets, args):
+            setattr(request, name, value)
+        args = args[len(route.sets):]
         if route.query:
             args = (parse_query(raw_path),) + args
         getattr(request, route.handler)(*args)
