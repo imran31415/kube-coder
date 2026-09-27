@@ -27,6 +27,7 @@ import server  # noqa: E402
 from handlers import memory  # noqa: E402
 from tests.http_harness import (  # noqa: E402
     DomainEndpointTests, DomainRouteTests, EndpointTestCase, args_for,
+    dispatch_through_adapter,
 )
 
 
@@ -112,26 +113,20 @@ class MemoryAdapterTests(unittest.TestCase):
     stays a mock, which is the call being inspected.
     """
 
-    @staticmethod
-    def _handler(adapter):
-        h = mock.Mock(spec=server.BrowserHandler)
-        setattr(h, adapter,
-                functools.partial(getattr(server.BrowserHandler, adapter), h))
-        return h
-
     def test_neighbors_adapter_moves_the_query_to_the_end(self):
-        h = self._handler('route_memory_neighbors')
-        memory.ROUTES.dispatch(h, 'GET', '/api/memory/ns/key/neighbors',
-                               '/api/memory/ns/key/neighbors?depth=2')
+        h = dispatch_through_adapter(
+            memory.ROUTES, 'route_memory_neighbors', 'GET',
+            '/api/memory/ns/key/neighbors',
+            raw='/api/memory/ns/key/neighbors?depth=2')
         h.handle_memory_neighbors.assert_called_once_with(
             'ns', 'key', {'depth': ['2']})
 
     def test_unlink_adapter_converts_the_relation_id_to_an_int(self):
         # unlink_by_id matches an INTEGER primary key; the string the regex
         # captures would never match a row.
-        h = self._handler('route_memory_unlink')
-        memory.ROUTES.dispatch(h, 'DELETE', '/api/memory/ns/key/relations/42',
-                               '/api/memory/ns/key/relations/42')
+        h = dispatch_through_adapter(
+            memory.ROUTES, 'route_memory_unlink', 'DELETE',
+            '/api/memory/ns/key/relations/42')
         h.handle_memory_unlink.assert_called_once_with('ns', 'key', 42)
 
 
