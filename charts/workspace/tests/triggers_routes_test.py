@@ -28,38 +28,44 @@ import server  # noqa: E402
 from handlers import triggers  # noqa: E402
 from handlers.routing import RouteTable  # noqa: E402
 from tests.http_harness import (  # noqa: E402
-    EndpointTestCase, dispatch_to_mock, handler_for)
+    DomainEndpointTests, DomainRouteTests, EndpointTestCase, dispatch_to_mock)
 
 
-class TriggerRouteOrderTests(unittest.TestCase):
+class TriggerRouteOrderTests(DomainRouteTests, unittest.TestCase):
 
-    def _handler_for(self, http_method, path, raw=None):
-        return handler_for(triggers.ROUTES, http_method, path, raw)
+    table = triggers.ROUTES
+    foreign_paths = (('GET', '/api/webhooks/'), ('GET', '/api/crons/c1/runs/1'),
+                     ('GET', '/api/triggers'), ('GET', '/api/webhooksx'))
+    oauth_samples = (('GET', '/api/webhooks'), ('POST', '/api/crons/c1/suspend'),
+                     ('DELETE', '/api/page-watches/p1'))
+    wrong_verb_samples = (('DELETE', '/api/webhooks'),
+                          ('GET', '/api/triggers/cron-fire/c1'),
+                          ('POST', '/api/crons/c1/runs'))
 
     def test_the_reads(self):
         for base, kind in (('webhooks', 'webhook'), ('crons', 'cron'),
                            ('page-watches', 'page_watch')):
-            self.assertEqual(self._handler_for('GET', f'/api/{base}'),
+            self.assertEqual(self.resolve('GET', f'/api/{base}'),
                              f'handle_{kind}_list')
-            self.assertEqual(self._handler_for('GET', f'/api/{base}/t1'),
+            self.assertEqual(self.resolve('GET', f'/api/{base}/t1'),
                              f'handle_{kind}_get')
-            self.assertEqual(self._handler_for('GET', f'/api/{base}/t1/runs'),
+            self.assertEqual(self.resolve('GET', f'/api/{base}/t1/runs'),
                              f'handle_{kind}_runs')
 
     def test_the_creates_and_deletes(self):
         for base, kind in (('webhooks', 'webhook'), ('crons', 'cron'),
                            ('page-watches', 'page_watch')):
-            self.assertEqual(self._handler_for('POST', f'/api/{base}'),
+            self.assertEqual(self.resolve('POST', f'/api/{base}'),
                              f'handle_{kind}_create')
-            self.assertEqual(self._handler_for('DELETE', f'/api/{base}/t1'),
+            self.assertEqual(self.resolve('DELETE', f'/api/{base}/t1'),
                              f'handle_{kind}_delete')
 
     def test_webhook_test_is_not_read_as_the_inbound_receiver(self):
         # THE hazard of this domain. /test is dashboard-authed; the bare
         # route is the HMAC-authed receiver. They must not swap.
-        self.assertEqual(self._handler_for('POST', '/api/webhooks/wh1/test'),
+        self.assertEqual(self.resolve('POST', '/api/webhooks/wh1/test'),
                          'handle_webhook_test')
-        self.assertEqual(self._handler_for('POST', '/api/webhooks/wh1'),
+        self.assertEqual(self.resolve('POST', '/api/webhooks/wh1'),
                          'handle_webhook_receive')
 
     def test_the_specific_routes_are_safe_by_construction_not_by_order(self):
@@ -77,56 +83,34 @@ class TriggerRouteOrderTests(unittest.TestCase):
                 ('POST', '/api/crons/c1/suspend'),
                 ('POST', '/api/page-watches/p1/check')):
             self.assertEqual(inverted.match(http_method, path, path)[0].handler,
-                             self._handler_for(http_method, path), path)
+                             self.resolve(http_method, path), path)
 
     def test_the_cron_actions_are_an_allowlist(self):
         for action in ('suspend', 'resume', 'run', 'rotate-token'):
-            self.assertEqual(self._handler_for('POST', f'/api/crons/c1/{action}'),
+            self.assertEqual(self.resolve('POST', f'/api/crons/c1/{action}'),
                              'handle_cron_action', action)
-        self.assertIsNone(self._handler_for('POST', '/api/crons/c1/delete'))
+        self.assertIsNone(self.resolve('POST', '/api/crons/c1/delete'))
 
     def test_the_page_watch_actions_are_an_allowlist(self):
         for action in ('suspend', 'resume', 'check'):
             self.assertEqual(
-                self._handler_for('POST', f'/api/page-watches/p1/{action}'),
+                self.resolve('POST', f'/api/page-watches/p1/{action}'),
                 'handle_page_watch_action', action)
-        self.assertIsNone(self._handler_for('POST', '/api/page-watches/p1/run'))
+        self.assertIsNone(self.resolve('POST', '/api/page-watches/p1/run'))
 
     def test_the_cronjob_receivers(self):
-        self.assertEqual(self._handler_for('POST', '/api/triggers/cron-fire/c1'),
+        self.assertEqual(self.resolve('POST', '/api/triggers/cron-fire/c1'),
                          'handle_cron_fire')
         self.assertEqual(
-            self._handler_for('POST', '/api/triggers/page-watch-check/p1'),
+            self.resolve('POST', '/api/triggers/page-watch-check/p1'),
             'handle_page_watch_check')
 
     def test_webhook_ids_are_wider_than_cron_and_page_watch_slugs(self):
         # Preserved verbatim: webhook ids allow upper case and underscores.
-        self.assertEqual(self._handler_for('GET', '/api/webhooks/WH_1'),
+        self.assertEqual(self.resolve('GET', '/api/webhooks/WH_1'),
                          'handle_webhook_get')
-        self.assertIsNone(self._handler_for('GET', '/api/crons/C_1'))
-        self.assertIsNone(self._handler_for('GET', '/api/page-watches/P_1'))
-
-    def test_the_verb_is_part_of_the_match(self):
-        self.assertIsNone(self._handler_for('DELETE', '/api/webhooks'))
-        self.assertIsNone(self._handler_for('GET', '/api/triggers/cron-fire/c1'))
-        self.assertIsNone(self._handler_for('POST', '/api/crons/c1/runs'))
-
-    def test_paths_outside_the_domain_do_not_match(self):
-        for path in ('/api/webhooks/', '/api/crons/c1/runs/1',
-                     '/api/triggers', '/api/webhooksx'):
-            self.assertIsNone(self._handler_for('GET', path), path)
-
-    def test_every_route_matches_the_normalized_path(self):
-        for http_method, path in (('GET', '/api/webhooks'),
-                                  ('POST', '/api/crons/c1/suspend'),
-                                  ('DELETE', '/api/page-watches/p1')):
-            self.assertIsNotNone(
-                self._handler_for(http_method, path, raw='/oauth' + path), path)
-
-    def test_every_route_names_a_real_handler_method(self):
-        for route in triggers.ROUTES.routes:
-            self.assertTrue(hasattr(server.BrowserHandler, route.handler),
-                            f'{route} names a method BrowserHandler lacks')
+        self.assertIsNone(self.resolve('GET', '/api/crons/C_1'))
+        self.assertIsNone(self.resolve('GET', '/api/page-watches/P_1'))
 
 
 class TriggerCaptureAttributeTests(unittest.TestCase):
@@ -152,19 +136,15 @@ class TriggerCaptureAttributeTests(unittest.TestCase):
                          ('p1', 'check'))
         h.handle_page_watch_action.assert_called_once_with()
 
-    def test_every_route_with_a_capture_group_names_its_attributes(self):
-        # A regex route that captured but set nothing would call a no-arg
-        # handler with a positional argument — a TypeError at request time.
-        for route in triggers.ROUTES.routes:
-            if isinstance(route.pattern, str):
-                self.assertEqual(route.sets, (), route.handler)
-                continue
-            self.assertEqual(route.pattern.groups, len(route.sets),
-                             f'{route.handler}: {route.sets}')
 
 
-class TriggerEndpointBehaviourTests(EndpointTestCase):
+class TriggerEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
     """Status codes for the migrated routes, over a real server."""
+
+    oauth_reachable = (('GET', '/api/webhooks'), ('POST', '/api/crons'))
+    unmatched_shapes = (('GET', '/api/webhooks/'),
+                        ('POST', '/api/crons/c1/delete'),
+                        ('DELETE', '/api/triggers/cron-fire/c1'))
 
     def test_the_dashboard_routes_are_auth_gated(self):
         # 401 rather than 404 is also the proof the route matched at all.
@@ -200,16 +180,6 @@ class TriggerEndpointBehaviourTests(EndpointTestCase):
         status, body = self.post('/api/webhooks/wh1/nope')
         self.assertEqual(status, 404)
         self.assertTrue(body.startswith(b'API endpoint not found'), body)
-
-    def test_reachable_under_the_oauth_prefix(self):
-        self.assertEqual(self.get('/oauth/api/webhooks')[0], 401)
-        self.assertEqual(self.post('/oauth/api/crons')[0], 401)
-
-    def test_unmatched_shapes_stay_404(self):
-        self.assertEqual(self.get('/api/webhooks/')[0], 404)
-        self.assertEqual(self.post('/api/crons/c1/delete')[0], 404)
-        self.assertEqual(
-            self.request('/api/triggers/cron-fire/c1', method='DELETE')[0], 404)
 
 
 if __name__ == '__main__':
