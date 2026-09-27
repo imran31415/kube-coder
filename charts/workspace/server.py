@@ -11489,7 +11489,15 @@ class DesktopManager:
 
     @staticmethod
     def _load_all():
-        DesktopManager._ensure_dir()
+        # No _ensure_dir() here: creating the directory is a WRITE, and this is
+        # the read path every /api/desktop route goes through. os.makedirs
+        # raises when the config dir is absent and uncreatable — no /home/dev
+        # at all, or a read-only mount — and the OSError escaped straight out
+        # of the request handler, killing the worker thread so the client saw a
+        # dropped connection rather than a response (#748). The seeding write
+        # below is already wrapped, and _save_all calls _ensure_dir itself, so
+        # the directory still gets created on the path that actually needs it.
+        # Mirrors AppsManager._load_pins, which reads without ensuring.
         if not os.path.exists(DesktopManager.CONFIG_PATH):
             # First-ever load on this PVC — seed defaults so the Desktop
             # tab isn't an empty page on a fresh workspace. The user can
