@@ -1,0 +1,42 @@
+suite: networkpolicy tests
+templates:
+  - templates/networkpolicy.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: should name the policy after the user
+    asserts:
+      - equal:
+          path: metadata.name
+          value: ws-testuser-ingress
+
+  - it: should still admit the ingress controller namespace
+    asserts:
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: ingress-nginx
+
+  - it: should admit this workspace's own cron trigger pods
+    asserts:
+      - equal:
+          path: spec.ingress[1].from[0].podSelector.matchLabels.app
+          value: kube-coder-cron
+      - equal:
+          path: spec.ingress[1].from[0].podSelector.matchLabels["workspace-user"]
+          value: testuser
+
+  - it: should confine the cron exception to the API port
+    asserts:
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 6080
+      - equal:
+          path: spec.ingress[1].ports[0].protocol
+          value: TCP
+
+  - it: should not let the cron rule cross namespaces
+    # A bare podSelector is same-namespace by definition; assert no
+    # namespaceSelector ever gets added alongside it.
+    asserts:
+      - notExists:
+          path: spec.ingress[1].from[0].namespaceSelector

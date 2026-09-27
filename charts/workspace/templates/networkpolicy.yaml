@@ -14,6 +14,18 @@ different namespace, and this policy admits ingress only from the
 ingress-nginx namespace — so a pod in ws-<other> is denied by default.
 (The rule also holds if two workspaces ever share a namespace: the
 allow-list is the ingress controller alone, not same-namespace pods.)
+
+One narrow same-namespace exception: this workspace's own scheduled-trigger
+CronJob pods (`app: kube-coder-cron`, labelled in CronManager._apply_k8s).
+They are the timer half of the Triggers feature — the pod curls
+`<service>:6080/api/triggers/cron-fire/<id>` and the workspace pod is the
+executor. Without this rule every firing dies with `curl: (28) Connection
+timed out`, and the failure is silent: the CronJob exists, the Triggers tab
+looks healthy, and nothing ever runs. The exception stays tight — same
+namespace only (a bare podSelector never crosses namespaces), only pods
+carrying both labels this chart's own code applies (including
+workspace-user, so a co-tenant's cron pods are still denied), and only on
+the API port.
 Each workspace's pods only need to reach the outside world (GitHub,
 registries, model providers) and their own sidecars on localhost —
 neither is affected by this policy.
@@ -50,3 +62,11 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kube-coder-cron
+          workspace-user: {{ .Values.user.name }}
+    ports:
+    - protocol: TCP
+      port: 6080

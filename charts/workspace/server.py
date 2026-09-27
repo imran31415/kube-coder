@@ -10505,6 +10505,11 @@ spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 3600
       template:
+        metadata:
+          labels:
+            app: kube-coder-cron
+            workspace-user: {user}
+            cron-id: {cfg['id']}
         spec:
           restartPolicy: Never
           containers:
