@@ -10,6 +10,7 @@ Run with:    python3 -m unittest tests.hypervisor_session_test
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -20,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import hypervisor_session as hs  # noqa: E402
+import wait_guard  # noqa: E402
 from envassert import assert_env_lacks  # noqa: E402
 
 
@@ -348,6 +350,95 @@ class ForegroundWaitNoticeTest(unittest.TestCase):
         note = spec['argv'][spec['argv'].index('--append-system-prompt') + 1]
         self.assertIn('did NOT survive', note)
         self.assertIn('BLOCKING', note)
+
+
+class WaitGuardHookTest(unittest.TestCase):
+    """The PreToolUse hook is the part that actually PREVENTS #747 — the
+    notice only reports after the chat has already been frozen. Exercised as a
+    real subprocess over the documented stdin/stdout contract, because that is
+    how the CLI invokes it; importing the function would not prove the hook
+    wiring works."""
+
+    GUARD = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), 'wait_guard.py')
+
+    def _run(self, payload):
+        p = subprocess.run([sys.executable, self.GUARD],
+                           input=json.dumps(payload), capture_output=True,
+                           text=True, timeout=30)
+        return p.returncode, p.stdout.strip()
+
+    def test_a_blocking_wait_is_denied(self):
+        rc, out = self._run({'tool_name': 'Bash', 'tool_input': {
+            'command': 'gh pr checks 744 --watch'}})
+        self.assertEqual(rc, 0)
+        d = json.loads(out)['hookSpecificOutput']
+        self.assertEqual(d['hookEventName'], 'PreToolUse')
+        self.assertEqual(d['permissionDecision'], 'deny')
+        # The refusal must name the alternative, or the agent just finds the
+        # next workaround — which is exactly how #747 happened.
+        self.assertIn('`watch`', d['permissionDecisionReason'])
+        self.assertIn('one-shot', d['permissionDecisionReason'])
+
+    def test_a_poll_loop_is_denied(self):
+        rc, out = self._run({'tool_name': 'Bash', 'tool_input': {
+            'command': 'for i in $(seq 1 18); do sleep 30; gh pr view 1; done'}})
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)['hookSpecificOutput'][
+            'permissionDecision'], 'deny')
+
+    def test_ordinary_commands_are_allowed_silently(self):
+        for cmd in ('git status', 'make python-tests', 'sleep 2',
+                    'git log --follow -- x.py', 'gh pr checks 744'):
+            rc, out = self._run({'tool_name': 'Bash',
+                                 'tool_input': {'command': cmd}})
+            self.assertEqual((rc, out), (0, ''), cmd)
+
+    def test_other_tools_are_not_inspected(self):
+        rc, out = self._run({'tool_name': 'Read',
+                             'tool_input': {'file_path': '/etc/hosts'}})
+        self.assertEqual((rc, out), (0, ''))
+
+    def test_the_guard_fails_open(self):
+        # A guard that crashes CLOSED would take down every chat command —
+        # far worse than the wait it prevents. Every bad input allows.
+        for bad in ('not json', '', '[]', 'null', '{"tool_name": 42}'):
+            p = subprocess.run([sys.executable, self.GUARD], input=bad,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual((p.returncode, p.stdout.strip()), (0, ''),
+                             repr(bad))
+
+    def test_the_hook_is_registered_on_hypervisor_turns_only(self):
+        settings = json.loads(hs._HYPERVISOR_SETTINGS)
+        entry = settings['hooks']['PreToolUse'][0]
+        self.assertEqual(entry['matcher'], 'Bash')
+        self.assertIn('wait_guard.py', entry['hooks'][0]['command'])
+        # Delivered on the chat adapter's argv, not written to the shared
+        # ~/.claude/settings.json — a Build task runs in tmux and survives
+        # turns, so blocking its waits would be wrong.
+        ctx = {'workdir': '/home/dev', 'preamble': 'PRE',
+               'claude_session_id': 'sess-abc'}
+        argv = hs.ClaudeAdapter().build(ctx, 'hi', first=False)['argv']
+        self.assertIn('--settings', argv)
+        self.assertEqual(argv[argv.index('--settings') + 1],
+                         hs._HYPERVISOR_SETTINGS)
+
+    def test_the_guard_ships_where_the_hook_looks_for_it(self):
+        # The hook command is an absolute /tmp/browser path, which start.sh
+        # seeds from /opt/browser-src, which the Dockerfile fills with
+        # charts/workspace/*.py. So the guard must be a TOP-LEVEL module here
+        # (a package subdir would not be copied) and keep this basename.
+        entry = json.loads(hs._HYPERVISOR_SETTINGS)['hooks']['PreToolUse'][0]
+        cmd = entry['hooks'][0]['command']
+        self.assertEqual(cmd, 'python3 /tmp/browser/wait_guard.py')
+        self.assertTrue(os.path.isfile(self.GUARD), self.GUARD)
+        self.assertEqual(os.path.basename(cmd.split()[-1]),
+                         os.path.basename(self.GUARD))
+
+    def test_detection_has_one_definition(self):
+        # The guard and the notice must never disagree about what counts.
+        self.assertIs(hs._foreground_wait_reason,
+                      wait_guard.foreground_wait_reason)
 
 
 class ForegroundWaitPreambleTest(unittest.TestCase):

@@ -69,6 +69,11 @@ from typing import Any, Callable, Dict, List, Optional
 # marker, schema version). Colocated module, same delivery as this file.
 import token_usage as tu
 
+# Blocking-wait detection (#747). Shared with the PreToolUse hook that denies
+# these calls — same module is both the library and the hook entrypoint, so the
+# guard and the after-the-fact notice cannot drift apart.
+import wait_guard
+
 # Explicit provider failures only. A generic exit, timeout, or failing tool
 # does not establish that this agent needs credentials. Do not probe files:
 # runtimes may authenticate through their own keychains or local providers.
@@ -179,6 +184,23 @@ except ValueError:
 # token from $HOME and now resolves it from the workspace home directly. That
 # difference is why this path worked while board workers — which never forced
 # HOME — failed on every board tool (#633).
+# PreToolUse guard (#747). Passed inline via --settings so it applies to CHAT
+# turns only — the user's terminal `claude`, dispatched Build tasks and
+# sub-agents all keep their own settings and are unaffected. Blocking a wait is
+# only correct where a turn boundary exists to lose it; a Build runs in tmux
+# and survives, so waiting there is legitimate.
+#
+# Registered for Bash alone: it is the only tool that can express "sit here for
+# ten minutes". wait_guard fails open on every error path, so a broken guard
+# degrades to today's behaviour rather than to a chat that cannot run commands.
+_HYPERVISOR_SETTINGS = json.dumps({'hooks': {
+    'PreToolUse': [{
+        'matcher': 'Bash',
+        'hooks': [{'type': 'command',
+                   'command': 'python3 /tmp/browser/wait_guard.py'}],
+    }],
+}})
+
 _HYPERVISOR_MCP_CONFIG = json.dumps({'mcpServers': {
     'dashboard': {'type': 'stdio', 'command': 'python3',
                   'args': ['/tmp/browser/mcp_dashboard.py']},
@@ -377,56 +399,10 @@ def _lost_watcher_note(lost: List[str]) -> str:
 # would have survived. Detect the shape, and tell the agent on the next turn.
 _FG_WAIT_SHOWN = 5
 
-# A short `sleep 2` to let a dev server bind is normal and must stay quiet, so
-# a bare sleep only counts from here up; anything shorter counts only inside a
-# poll loop, where the loop is the wait rather than the individual sleep.
-_FG_SLEEP_SECONDS = 60
-
-# Deliberately NOT a signal: a long Bash `timeout`. #747 proposed it, but
-# checked against a real session it produced no true positives the command
-# shapes below had not already caught, and it fired on `make python-tests` —
-# a 150s test suite given a generous ceiling, which is long WORK, not a wait.
-# Flagging honest work is how a corrective notice gets trained into noise, so
-# the detector under-reports on purpose: a wait it misses costs one turn, a
-# false positive costs the notice its credibility.
-
-# Each entry is a blocking wait on EXTERNAL work, not merely a slow command.
-# `--follow` is deliberately absent: `git log --follow` is a common, innocent
-# use and the false positive would train the agent to ignore the notice.
-_FG_WAIT_PATTERNS = (
-    ('gh run watch', re.compile(r'\bgh\s+run\s+watch\b', re.I)),
-    ('gh --watch', re.compile(r'\bgh\b[^|;&]*\s--watch\b', re.I)),
-    ('kubectl wait', re.compile(r'\bkubectl\s+wait\b', re.I)),
-    ('docker wait', re.compile(r'\bdocker\s+wait\b', re.I)),
-    ('--wait flag', re.compile(r'\b(?:helm|argocd|flux)\b[^|;&]*\s--wait\b', re.I)),
-)
-_FG_SLEEP_RE = re.compile(r'\bsleep\s+(\d+(?:\.\d+)?)')
-_FG_LOOP_RE = re.compile(r'\b(?:for|while|until)\b')
-
-
-def _foreground_wait_reason(tool_input: Any) -> str:
-    """Why this Bash call looks like a blocking wait — '' when it doesn't."""
-    d = tool_input if isinstance(tool_input, dict) else {}
-    if d.get('run_in_background'):
-        return ''  # the #378 path already owns that shape
-    cmd = ' '.join(str(d.get('command') or '').split())
-    if not cmd:
-        return ''
-    for label, rx in _FG_WAIT_PATTERNS:
-        if rx.search(cmd):
-            return label
-    longest = 0.0
-    for m in _FG_SLEEP_RE.finditer(cmd):
-        try:
-            longest = max(longest, float(m.group(1)))
-        except ValueError:
-            continue
-    if longest:
-        if _FG_LOOP_RE.search(cmd):
-            return 'poll loop with sleep'
-        if longest >= _FG_SLEEP_SECONDS:
-            return f'sleep {longest:g}s'
-    return ''
+# Detection lives in wait_guard so the PreToolUse hook that BLOCKS these
+# calls and the notice that reports them can never disagree about what counts.
+_FG_WAIT_PATTERNS = wait_guard.FG_WAIT_PATTERNS   # re-exported for tests
+_foreground_wait_reason = wait_guard.foreground_wait_reason
 
 
 def _describe_fg_wait(reason: str, tool_input: Any) -> str:
@@ -666,6 +642,8 @@ class ClaudeAdapter(Adapter):
             # ONLY set for this run, overriding ~/.claude.json.
             '--mcp-config', _HYPERVISOR_MCP_CONFIG,
             '--strict-mcp-config',
+            # Denies foreground blocking waits before they run (#747).
+            '--settings', _HYPERVISOR_SETTINGS,
         ]
         sid = ctx.get('claude_session_id')
         sys_prompt: List[str] = []
