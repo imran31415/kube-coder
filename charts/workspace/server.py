@@ -74,11 +74,14 @@ import push_notify
 # happen at request time, so binding a half-initialized module here is fine.
 import handlers
 from handlers import boards as board_routes
+from handlers import desktop as desktop_routes
 from handlers import docs as docs_routes
+from handlers import feed as feed_routes
 from handlers import files as files_routes
 from handlers import gateway as gateway_routes
 from handlers import hypervisor as hypervisor_routes
 from handlers import memory as memory_routes
+from handlers import projects as project_routes
 from handlers import skills as skills_routes
 from handlers import tasks as task_routes
 from handlers import triggers as trigger_routes
@@ -13277,11 +13280,14 @@ def _xvfb_running(display):
 
 
 class BrowserHandler(board_routes.BoardRoutes,
+                     desktop_routes.DesktopRoutes,
                      docs_routes.DocsRoutes,
+                     feed_routes.FeedRoutes,
                      files_routes.FilesRoutes,
                      gateway_routes.GatewayRoutes,
                      hypervisor_routes.HypervisorRoutes,
                      memory_routes.MemoryRoutes,
+                     project_routes.ProjectRoutes,
                      skills_routes.SkillsRoutes,
                      system_routes.SystemRoutes,
                      task_routes.TaskRoutes,
@@ -13481,18 +13487,9 @@ class BrowserHandler(board_routes.BoardRoutes,
             return
 
         # --- Project registry / AI CTO brief (#464) ---
-        if claude_path == '/api/projects':
-            self.handle_project_list()
-            return
-        m = re.match(r'^/api/projects/([a-z0-9-]+)/brief$', claude_path)
-        if m:
-            self._project_id = m.group(1)
-            self.handle_project_brief()
-            return
-        m = re.match(r'^/api/projects/([a-z0-9-]+)$', claude_path)
-        if m:
-            self._project_id = m.group(1)
-            self.handle_project_get()
+        # handlers/projects.py, which also carries the _require_cto gate
+        # every one of these routes goes through.
+        if project_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Board Processor (#588/#589) ---
@@ -13505,25 +13502,14 @@ class BrowserHandler(board_routes.BoardRoutes,
         if board_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
-        # --- Feed (#469) ---
-        if claude_path == '/api/feed':
-            self.handle_feed_list()
-            return
-        if claude_path == '/api/feed/unread_count':
-            self.handle_feed_unread_count()
+        # --- Feed (#469), and the mobile push that delivers it ---
+        if feed_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Desktop launcher (dashboard) ---
-        if claude_path == '/api/desktop':
-            self.handle_desktop_list()
-            return
-        m = re.match(r'^/api/desktop/([a-z0-9]+)$', claude_path)
-        if m:
-            item = DesktopManager.get(m.group(1))
-            if item is None:
-                self.send_json({'error': 'item not found'}, 404)
-            else:
-                self.send_json(item)
+        # The {id} read used to be an inline dispatch branch rather than a
+        # method; it is handle_desktop_get in handlers/desktop.py now.
+        if desktop_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Memory API (dashboard surface; backs the Memory tab) ---
@@ -13907,19 +13893,14 @@ class BrowserHandler(board_routes.BoardRoutes,
             if gateway_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             # Project registry / AI CTO (#464)
-            m = re.match(r'^/api/projects/([a-z0-9-]+)$', path)
-            if m:
-                self._project_id = m.group(1)
-                self.handle_project_delete()
+            if project_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             # Board Processor (#588/#589): a credential, one strategy, or a
             # whole connector. handlers/boards.py keeps the reserved-id and
             # sub-resource routes ahead of the bare {id}.
             if board_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
-            m = re.match(r'^/api/desktop/([a-z0-9]+)$', path)
-            if m:
-                self.handle_desktop_delete(m.group(1))
+            if desktop_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             # Memory: unlink one relation, or soft-delete the memory itself.
             # The int() the unlink branch did here rides an adapter in
@@ -13962,243 +13943,7 @@ class BrowserHandler(board_routes.BoardRoutes,
 
     # --- Project registry / AI CTO brief (#464) ---
 
-    def _require_cto(self):
-        """Gate the AI CTO API behind cto_available() (#467). Sends a 404 and
-        returns False when the feature is off, so a disabled deployment exposes
-        no projects surface."""
-        if cto_available():
-            return True
-        self.send_json({'error': 'AI CTO is disabled'}, 404)
-        return False
-
-    def handle_project_list(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        self.send_json({'projects': ProjectsManager.list_projects()})
-
-    def handle_project_get(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        cfg = ProjectsManager.get_project(self._project_id)
-        if cfg is None:
-            self.send_json({'error': 'Project not found'}, 404)
-            return
-        self.send_json(cfg)
-
-    def handle_project_brief(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        brief = ProjectsManager.brief(self._project_id)
-        if brief is None:
-            self.send_json({'error': 'Project not found'}, 404)
-            return
-        self.send_json(brief)
-
-    def handle_project_create(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        cfg, err = ProjectsManager.create(data)
-        if err:
-            self.send_json({'error': err},
-                           409 if 'already exists' in err else 400)
-            return
-        EventBroker.publish('projects.changed', {'op': 'create', 'id': cfg['id']})
-        self.send_json(cfg, 201)
-
-    def handle_project_update(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        cfg, err = ProjectsManager.update(self._project_id, data)
-        if err:
-            self.send_json({'error': err},
-                           404 if err == 'not found' else 400)
-            return
-        EventBroker.publish('projects.changed', {'op': 'update', 'id': cfg['id']})
-        self.send_json(cfg)
-
-    def handle_project_delete(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        if not ProjectsManager.delete(self._project_id):
-            self.send_json({'error': 'Project not found'}, 404)
-            return
-        EventBroker.publish('projects.changed', {'op': 'delete', 'id': self._project_id})
-        self.send_json({'ok': True})
-
-    def handle_project_discover(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not self._require_cto():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-        result = ProjectsManager.discover(
-            auto_provision=bool(data.get('auto_provision', True)))
-        for pid in result.get('registered', []):
-            EventBroker.publish('projects.changed', {'op': 'create', 'id': pid})
-        self.send_json(result)
-
     # --- Feed (#469) ---
-
-    def handle_feed_list(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        try:
-            since = float(qs['since'][0]) if qs.get('since') else None
-        except (ValueError, IndexError):
-            since = None
-        project = (qs.get('project') or [''])[0] or None
-        kinds = [k for k in (qs.get('kinds') or [''])[0].split(',') if k] or None
-        unread_only = (qs.get('unread') or [''])[0] in ('1', 'true')
-        try:
-            limit = int((qs.get('limit') or ['50'])[0])
-        except ValueError:
-            limit = 50
-        self.send_json({'items': FeedManager.list(
-            since=since, project=project, kinds=kinds,
-            unread_only=unread_only, limit=limit)})
-
-    def handle_feed_unread_count(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        self.send_json({'count': FeedManager.unread_count()})
-
-    def handle_feed_create(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        kind = (data.get('kind') or '').strip()
-        title = (data.get('title') or '').strip()
-        if not title:
-            self.send_json({'error': 'title is required'}, 400)
-            return
-        links = data.get('links')
-        if links is not None and not isinstance(links, list):
-            self.send_json({'error': 'links must be a list'}, 400)
-            return
-        item = FeedManager.emit(
-            kind, title,
-            body_md=(data.get('body_md') or ''),
-            source=(data.get('source') or 'agent'),
-            project_id=(data.get('project_id') or ''),
-            links=links or [],
-            waiting=bool(data.get('waiting')),
-            dedupe_key=(data.get('dedupe_key') or None),
-        )
-        if item is None:
-            self.send_json({'error': f'kind must be one of {FeedManager.KINDS}'}, 400)
-            return
-        self.send_json(item, 201)
-
-    def handle_feed_read(self, item_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not FeedManager.mark_read(item_id):
-            self.send_json({'error': 'Feed item not found'}, 404)
-            return
-        self.send_json({'ok': True})
-
-    def handle_feed_dismiss(self, item_id):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not FeedManager.dismiss(item_id):
-            self.send_json({'error': 'Feed item not found'}, 404)
-            return
-        self.send_json({'ok': True})
-
-    def handle_push_register(self):
-        """Register a device's Expo push token (mobile app, after onboarding /
-        on cold start). Idempotent upsert keyed by the token."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        token = (data.get('token') or '').strip()
-        if not push_notify.is_expo_token(token):
-            self.send_json({'error': 'a valid Expo push token is required'}, 400)
-            return
-        platform = (data.get('platform') or '').strip().lower()
-        if platform not in ('ios', 'android', ''):
-            self.send_json({'error': "platform must be 'ios' or 'android'"}, 400)
-            return
-        try:
-            push_notify.PushTokenStore.register(token, platform, self._memory_actor())
-        except Exception as e:
-            print(f'[push] register failed: {e}', file=sys.stderr)
-            self.send_json({'error': 'could not store token'}, 500)
-            return
-        self.send_json({'ok': True}, 201)
-
-    def handle_push_unregister(self):
-        """Drop a device token (mobile logout / disconnect). Token via ?token=
-        query param or JSON body. Idempotent — absent token still returns ok."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        token = ''
-        if '?' in self.path:
-            qs = urllib.parse.urlparse(self.path).query
-            token = (urllib.parse.parse_qs(qs).get('token') or [''])[0].strip()
-        if not token:
-            try:
-                token = (self.read_json_body().get('token') or '').strip()
-            except (json.JSONDecodeError, ValueError):
-                token = ''
-        if not token:
-            self.send_json({'error': 'token is required'}, 400)
-            return
-        try:
-            push_notify.PushTokenStore.unregister(token)
-        except Exception as e:
-            print(f'[push] unregister failed: {e}', file=sys.stderr)
-            self.send_json({'error': 'could not remove token'}, 500)
-            return
-        self.send_json({'ok': True})
 
     # ── isolated worktrees (#701) ─────────────────────────────────────────
 
@@ -14313,137 +14058,6 @@ class BrowserHandler(board_routes.BoardRoutes,
     # check_claude_auth + allow_none_mode=True so the public-demo can
     # show the seeded launcher. Writes go through _readonly_block first so
     # the public-demo can't add/edit/delete icons.
-
-    def handle_desktop_list(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        self.send_json({'items': DesktopManager.list_items()})
-
-    def handle_desktop_create(self):
-        if self._readonly_block():
-            return
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            body = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        try:
-            item = DesktopManager.create(body)
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-            return
-        self.send_json(item, 201)
-
-    def handle_desktop_update(self, item_id):
-        if self._readonly_block():
-            return
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            body = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        try:
-            item = DesktopManager.update(item_id, body)
-        except ValueError as e:
-            code = 404 if 'not found' in str(e) else 400
-            self.send_json({'error': str(e)}, code)
-            return
-        self.send_json(item)
-
-    def handle_desktop_delete(self, item_id):
-        if self._readonly_block():
-            return
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            DesktopManager.delete(item_id)
-        except ValueError as e:
-            code = 404 if 'not found' in str(e) else 400
-            self.send_json({'error': str(e)}, code)
-            return
-        self.send_json({'ok': True})
-
-    def handle_desktop_reorder(self):
-        if self._readonly_block():
-            return
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            body = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        ids = body.get('order') if isinstance(body, dict) else None
-        try:
-            items = DesktopManager.reorder(ids or [])
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-            return
-        self.send_json({'items': items})
-
-    def handle_desktop_launch(self, item_id):
-        """Execute the icon's action server-side. `task` returns the
-        created task_id; `shell` returns stdout/stderr/exit_code; `url`
-        rejects (client opens the URL directly, server is just bookkeeping).
-        Mutations gated by _readonly_block — viewing the launcher in the
-        public demo is fine, firing it isn't."""
-        if self._readonly_block():
-            return
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        item = DesktopManager.get(item_id)
-        if not item:
-            self.send_json({'error': 'item not found'}, 404)
-            return
-        action = item.get('action', {})
-        kind = action.get('type')
-        if kind == 'task':
-            task = ClaudeTaskManager.create_task(
-                action.get('prompt', ''),
-                workdir=action.get('workdir') or '/home/dev',
-                source=f'desktop:{item_id}',
-                assistant=action.get('assistant'),
-            )
-            if task.get('status') == 'rejected':
-                self.send_json({'error': task.get('error')}, 429)
-                return
-            if task.get('status') == 'error':
-                self.send_json({'error': task.get('error') or 'task spawn failed'}, 500)
-                return
-            self.send_json({'kind': 'task', 'task_id': task.get('task_id')}, 201)
-        elif kind == 'shell':
-            try:
-                result = subprocess.run(
-                    ['bash', '-lc', action.get('command', 'true')],
-                    capture_output=True,
-                    text=True,
-                    timeout=int(action.get('timeout') or DesktopManager.SHELL_TIMEOUT_DEFAULT),
-                    cwd='/home/dev',
-                )
-                self.send_json({
-                    'kind': 'shell',
-                    'exit_code': result.returncode,
-                    'stdout': (result.stdout or '')[-8000:],
-                    'stderr': (result.stderr or '')[-2000:],
-                })
-            except subprocess.TimeoutExpired:
-                self.send_json({'error': 'command timed out', 'kind': 'shell'}, 504)
-        elif kind == 'url':
-            # The client opens URLs directly — no server work needed.
-            # Return ok so the client can still report a launch event.
-            self.send_json({'kind': 'url', 'url': action.get('url'), 'target': action.get('target', 'blank')})
-        else:
-            self.send_json({'error': f'unknown action type: {kind}'}, 400)
 
     def handle_provider_keys_list(self):
         # Secrets endpoint — must not be reachable in the unauth public demo
@@ -15498,10 +15112,7 @@ class BrowserHandler(board_routes.BoardRoutes,
         if gateway_routes.ROUTES.dispatch(self, 'PUT', path, self.path):
             return
         # Project registry / AI CTO (#464) — partial-merge update.
-        m = re.match(r'^/api/projects/([a-z0-9-]+)$', path)
-        if m:
-            self._project_id = m.group(1)
-            self.handle_project_update()
+        if project_routes.ROUTES.dispatch(self, 'PUT', path, self.path):
             return
         # Board Processor (#588/#589) — board credentials, then full-replace
         # of a connector (validated as a whole, so a partial merge could
@@ -15700,10 +15311,8 @@ class BrowserHandler(board_routes.BoardRoutes,
             elif trigger_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
             # Project registry / AI CTO (#464)
-            elif path == "/api/projects":
-                self.handle_project_create()
-            elif path == "/api/projects/_discover":
-                self.handle_project_discover()
+            elif project_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Board Processor (#588/#589). All eleven POST routes are in
             # handlers/boards.py's table, including the three whose item id
             # the chain percent-decoded at the dispatch site — those ride a
@@ -15717,19 +15326,14 @@ class BrowserHandler(board_routes.BoardRoutes,
                 self._handle_devcontainer_apply()
             elif path == "/api/devcontainer/reset":
                 self._handle_devcontainer_reset()
-            # Feed (#469)
-            elif path == "/api/feed":
-                self.handle_feed_create()
-            # Mobile push notifications (#push): device-token registration
-            elif path == "/api/push/register":
-                self.handle_push_register()
-            elif path == "/api/push/unregister":
-                self.handle_push_unregister()
-            # Desktop launcher (dashboard)
-            elif path == "/api/desktop":
-                self.handle_desktop_create()
-            elif path == "/api/desktop/_reorder":
-                self.handle_desktop_reorder()
+            # Feed (#469) + the mobile push that delivers it, including
+            # the two per-item routes that used to sit in the regex block.
+            elif feed_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
+            # Desktop launcher, including /{id}/launch and the POST-as-update
+            # from the regex block.
+            elif desktop_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Memory API (dashboard surface; mirrored by MCP) — all six POST
             # routes are in handlers/memory.py's table, including the
             # {ns}/{key}/relations one that used to sit in the regex block below.
@@ -15745,25 +15349,6 @@ class BrowserHandler(board_routes.BoardRoutes,
             elif files_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
             else:
-                # Feed (#469): mark read / dismiss one item.
-                m = re.match(r'^/api/feed/(fd_[A-Za-z0-9_]+)/read$', path)
-                if m:
-                    self.handle_feed_read(m.group(1))
-                    return
-                m = re.match(r'^/api/feed/(fd_[A-Za-z0-9_]+)/dismiss$', path)
-                if m:
-                    self.handle_feed_dismiss(m.group(1))
-                    return
-                # Desktop launcher per-item routes
-                # PUT-like update (POST + id == "update"); /launch fires
-                m = re.match(r'^/api/desktop/([a-z0-9]+)/launch$', path)
-                if m:
-                    self.handle_desktop_launch(m.group(1))
-                    return
-                m = re.match(r'^/api/desktop/([a-z0-9]+)$', path)
-                if m:
-                    self.handle_desktop_update(m.group(1))
-                    return
                 self.send_response(404)
                 self.end_headers()
                 self.wfile.write(f'API endpoint not found. Received: {self.path}'.encode())
