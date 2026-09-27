@@ -22,6 +22,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -84,6 +85,21 @@ def handler_for(table, http_method, path, raw=None):
     """
     hit = table.match(http_method, path, path if raw is None else raw)
     return hit[0].handler if hit else None
+
+
+def dispatch_to_mock(table, http_method, path, raw=None):
+    """Dispatch `path` at a stand-in request and return it.
+
+    The way to check a `sets=` column: the returned Mock carries whatever the
+    table assigned (`_webhook_id`, `_claude_task_id`, …) and records the call
+    the handler received. Asserts that something matched, because a test
+    inspecting the result has already established that it does.
+    """
+    request = mock.Mock(spec=server.BrowserHandler)
+    matched = table.dispatch(
+        request, http_method, path, path if raw is None else raw)
+    assert matched, f'{http_method} {path} matched no route'
+    return request
 
 
 def args_for(table, http_method, path, raw=None):
