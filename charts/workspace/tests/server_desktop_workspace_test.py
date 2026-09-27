@@ -57,6 +57,20 @@ class LoadSeedTests(DesktopBase):
         self.assertEqual(len(data['items']), len(DT._SEED_ITEMS))
         self.assertTrue(os.path.exists(DT.CONFIG_PATH))  # seed persisted
 
+    def test_an_uncreatable_config_dir_still_reads(self):
+        # #748: _load_all used to call _ensure_dir(), so an absent or
+        # read-only config dir raised OSError out of the read path — and
+        # since every /api/desktop route goes through here, that escaped the
+        # request handler and the client got a dropped connection instead of
+        # a response. A read must degrade to the in-memory seed, never raise.
+        DT.CONFIG_DIR = '/proc/nope/.kube-coder'
+        DT.CONFIG_PATH = '/proc/nope/.kube-coder/desktop.json'
+        data = DT._load_all()
+        self.assertEqual(len(data['items']), len(DT._SEED_ITEMS))
+        # And the callers the routes actually use stay non-raising too.
+        self.assertIsNone(DT.get('nosuchitem'))
+        self.assertEqual(len(DT.list_items()), len(DT._SEED_ITEMS))
+
     def test_corrupt_file_returns_empty(self):
         with open(DT.CONFIG_PATH, 'w') as f:
             f.write('{bad json')
