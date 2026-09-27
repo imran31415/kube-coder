@@ -73,7 +73,9 @@ import push_notify
 # execute a second copy of this file. Attribute lookups on the bound module all
 # happen at request time, so binding a half-initialized module here is fine.
 import handlers
+from handlers import apps as app_routes
 from handlers import boards as board_routes
+from handlers import devcontainer as devcontainer_routes
 from handlers import desktop as desktop_routes
 from handlers import docs as docs_routes
 from handlers import feed as feed_routes
@@ -86,6 +88,7 @@ from handlers import settings as settings_routes
 from handlers import skills as skills_routes
 from handlers import tasks as task_routes
 from handlers import triggers as trigger_routes
+from handlers import workspace as workspace_routes
 from handlers import system as system_routes
 handlers.bind(sys.modules[__name__])
 
@@ -13280,7 +13283,9 @@ def _xvfb_running(display):
         return False
 
 
-class BrowserHandler(board_routes.BoardRoutes,
+class BrowserHandler(app_routes.AppRoutes,
+                     board_routes.BoardRoutes,
+                     devcontainer_routes.DevcontainerRoutes,
                      desktop_routes.DesktopRoutes,
                      docs_routes.DocsRoutes,
                      feed_routes.FeedRoutes,
@@ -13294,6 +13299,7 @@ class BrowserHandler(board_routes.BoardRoutes,
                      system_routes.SystemRoutes,
                      task_routes.TaskRoutes,
                      trigger_routes.TriggerRoutes,
+                     workspace_routes.WorkspaceRoutes,
                      http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Force browsers (especially mobile Safari) to revalidate the
@@ -13368,63 +13374,20 @@ class BrowserHandler(board_routes.BoardRoutes,
         # Query string is already stripped at the top; handlers re-parse it from self.path when needed.
         claude_path = normalized_path
 
-        # /api/events — Server-Sent Events firehose of dashboard events
-        # (task.created / task.status). Lets the SPA replace per-route polling
-        # with push (issue #93).
-        if claude_path == '/api/events':
-            self.handle_events_stream()
+        # Workspace-level reads: /api/mode (unauthenticated on purpose),
+        # the /api/events SSE firehose, Mission Control, /api/subagents
+        # and the instruction scan — handlers/workspace.py.
+        if workspace_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
-
-        # /api/mode — public deployment-mode probe used by the SPA at boot to
-        # decide whether to hide mutation UI. Intentionally unauthenticated so
-        # the read-only public demo can fetch it without an auth proxy in
-        # front. Returns the two flags server.py was started with — never
-        # derived per-request, never user-controllable.
-        if claude_path == '/api/mode':
-            self.send_json({
-                'readOnly': READONLY_MODE,
-                'authed': AUTH_MODE != 'none',
-                'authMode': AUTH_MODE,
-                'demoShowAll': DEMO_SHOW_ALL,
-                # AI CTO gate (#467) — boot-loaded so the SPA can hide the /cto
-                # nav item before the route mounts. Rides the Hypervisor.
-                'ctoEnabled': cto_available(),
-                # devcontainer.json support (#594). Independent of ctoEnabled:
-                # reading the file a repo already carries is a workspace
-                # capability, not part of the AI CTO.
-                'devcontainerEnabled': DevcontainerManager.available(),
-                # Board Processor (#588/#589). Independent of ctoEnabled —
-                # working someone else's tracker and running an AI CTO over our
-                # own projects are separate capabilities.
-                'boardEnabled': _BOARDS_AVAILABLE,
-            })
+        # The Applications surface, and the app-session cookie the proxy
+        # below reads — handlers/apps.py.
+        if app_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
-        # /api/apps — Applications page list endpoint.
-        if claude_path == '/api/apps':
-            self._handle_apps_list()
-            return
-        # /api/security/instruction-scan — hidden-text scan of agent-readable
-        # instruction files (#559). Server-side on purpose: see the handler.
-        if claude_path == '/api/security/instruction-scan':
-            self._handle_instruction_scan()
-            return
-        # /api/devcontainer[/scan] — read a repo's own devcontainer.json (#594).
-        # Parse only; nothing here ever executes a lifecycle command.
-        if claude_path == '/api/devcontainer':
-            self._handle_devcontainer_get()
-            return
-        if claude_path == '/api/devcontainer/scan':
-            self._handle_devcontainer_scan()
+        # devcontainer.json (#594). Parse only; /apply is a POST.
+        if devcontainer_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
         # Reverse-proxy to a locally-listening web app.
         if self._dispatch_app_proxy(claude_path, 'GET'):
-            return
-        # /api/missioncontrol/cards/{kind}:{id} — drawer detail (#425 ph. 3).
-        m = re.match(
-            r'^/api/missioncontrol/cards/'
-            r'((?:build|chat|subagent):[A-Za-z0-9_-]+)$', claude_path)
-        if m:
-            self.handle_missioncontrol_card(m.group(1))
             return
         # --- Builds: Claude Task API + isolated worktrees ---
         # Nine GET routes (and this domain's POST/DELETE ones) now live in
@@ -13446,15 +13409,6 @@ class BrowserHandler(board_routes.BoardRoutes,
         # states why collapsing them is behaviour-preserving and the test
         # asserts it.
         if hypervisor_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
-            return
-        if claude_path == '/api/missioncontrol/queue':
-            self.handle_missioncontrol_queue()
-            return
-        elif claude_path == '/api/claude/apps/session':
-            self.handle_app_session_mint()
-            return
-        elif claude_path == '/api/workspace/dirs':
-            self.handle_workspace_dirs()
             return
         # --- Conversation Gateway (#306/#328/#329) ---
         # Five GET routes (and this domain's POST/PUT/DELETE ones) are an
@@ -13841,11 +13795,9 @@ class BrowserHandler(board_routes.BoardRoutes,
             return
         try:
             path = self._strip_route_prefix(self.path)
-            # /api/apps/pins/<port> — remove a pinned port. Match before the
-            # generic app-proxy dispatcher so the proxy doesn't swallow it.
-            m = re.match(r'^/api/apps/pins/(\d+)$', path)
-            if m:
-                self._handle_apps_pin_delete(int(m.group(1)))
+            # Remove a pinned port. Must precede the generic app-proxy
+            # dispatcher below, or the proxy swallows it.
+            if app_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             if self._dispatch_app_proxy(path, 'DELETE'):
                 return
@@ -13896,125 +13848,15 @@ class BrowserHandler(board_routes.BoardRoutes,
 
     # --- Claude Task API handlers ---
 
-    def handle_missioncontrol_queue(self):
-        """Mission Control board (#425): builds + chats + sub-agents as one
-        normalized card queue, grouped by what needs the human. Read-only."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        self.send_json(missioncontrol_queue())
-
-    def handle_missioncontrol_card(self, card_id):
-        """Drawer detail for one Mission Control card (#425 phase 3): the
-        card, a normalized activity timeline, and an output tail. Read-only."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        detail = missioncontrol_card_detail(card_id)
-        if detail is None:
-            self.send_json({'error': 'Card not found'}, 404)
-            return
-        self.send_json(detail)
-
-    def handle_workspace_dirs(self):
-        """List candidate working directories under /home/dev for the
-        new-task picker. Reuses Claude auth (OAuth header OR bearer token)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        self.send_json({'dirs': WorkspaceManager.list_dirs()})
-
     # --- Project registry / AI CTO brief (#464) ---
 
     # --- Feed (#469) ---
 
     # ── isolated worktrees (#701) ─────────────────────────────────────────
 
-    def handle_events_stream(self):
-        """Server-Sent Events firehose of dashboard events (task.created /
-        task.status). Subscribes to EventBroker and forwards each event as a
-        named SSE frame so the SPA can replace per-route polling (issue #93).
-
-        Framing mirrors handle_claude_stream_output: heartbeat comments keep
-        proxies from closing an idle connection, and STREAM_MAX_SECONDS caps
-        the lifetime so a never-disconnecting client can't pin a handler
-        thread forever (the SPA reconnects on the `end` event).
-        """
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/event-stream')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        self.send_header('X-Accel-Buffering', 'no')
-        self.send_header('Connection', 'keep-alive')
-        self.end_headers()
-
-        def write_raw(payload_bytes):
-            try:
-                self.wfile.write(payload_bytes)
-                self.wfile.flush()
-                return True
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                return False
-
-        q = EventBroker.subscribe()
-        started = time.time()
-        # Greet so the client can flip to "connected" and stop its poll fallback.
-        if not write_raw(b'event: ready\ndata: {}\n\n'):
-            EventBroker.unsubscribe(q)
-            return
-        try:
-            while True:
-                if time.time() - started > STREAM_MAX_SECONDS:
-                    write_raw(b'event: end\ndata: timeout\n\n')
-                    return
-                try:
-                    event = q.get(timeout=15)
-                except queue.Empty:
-                    if not write_raw(b': keep-alive\n\n'):
-                        return
-                    continue
-                payload = json.dumps(event.get('data', {}))
-                frame = f"event: {event.get('type', 'message')}\ndata: {payload}\n\n"
-                if not write_raw(frame.encode('utf-8')):
-                    return
-        finally:
-            EventBroker.unsubscribe(q)
-
     # Only ever bounce the WebView into the app proxy or the terminal proxy —
     # anything else would be an open redirect on an authenticated endpoint.
     _APP_SESSION_NEXT_RE = re.compile(r'^/api/(app-proxy/\d+|terminal-proxy)(/.*)?$')
-
-    def handle_app_session_mint(self):
-        """GET /api/claude/apps/session?next=/api/app-proxy/<port>/
-
-        Bearer-authenticated bootstrap for embedding an app in a native
-        WebView: validates the caller, mints a short-lived app-session cookie
-        (see ClaudeTaskManager.mint_app_session) and 302s to `next`. The
-        WebView attaches its Authorization header to this one request, stores
-        the Set-Cookie, follows the redirect, and every sub-resource the
-        embedded app loads from then on authenticates via the cookie."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        qs = urllib.parse.urlsplit(self.path).query
-        next_path = (urllib.parse.parse_qs(qs).get('next') or [''])[0]
-        if not self._APP_SESSION_NEXT_RE.match(next_path):
-            self.send_json({'error': 'next must be an /api/app-proxy/<port>/ path'}, 400)
-            return
-        value = ClaudeTaskManager.mint_app_session()
-        # Secure only when the edge says HTTPS — a hard Secure flag would break
-        # local http (kubectl port-forward) development.
-        secure = '; Secure' if self.headers.get('X-Forwarded-Proto', '') == 'https' else ''
-        cookie = (f'{self.APP_SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; '
-                  f'Max-Age={ClaudeTaskManager.APP_SESSION_TTL_SECONDS}{secure}')
-        self.send_response(302)
-        self.send_header('Set-Cookie', cookie)
-        self.send_header('Location', next_path)
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
 
 
 
@@ -14065,58 +13907,6 @@ class BrowserHandler(board_routes.BoardRoutes,
     # Lists real spawned sub-tasks filtered by parent_task_id.
     # Replaces the old read-only transcript scanner which was fragile
     # and version-dependent.
-
-    def handle_subagents_list(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        # Parse ?parent=<task_id> filter from query string
-        parent = None
-        if '?' in self.path:
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
-            parent_val = params.get('parent', [None])[0]
-            if parent_val:
-                parent = parent_val
-        if not parent:
-            self.send_json({'subagents': [], 'count': 0,
-                            'running_count': 0, 'completed_count': 0,
-                            'error_count': 0, 'note': 'pass ?parent=<task_id> to list sub-agents'})
-            return
-        tasks = ClaudeTaskManager.list_tasks(parent=parent)
-        subagents = []
-        running = 0
-        completed = 0
-        errored = 0
-        for t in tasks:
-            status = t['status']
-            sa = {
-                'tool_use_id': t['task_id'],
-                'tool': 'spawn_agent',
-                'timestamp': t['created_at'],
-                'session_id': t['task_id'],
-                'project': 'kube-coder',
-                'description': t.get('prompt', '')[:200],
-                'subagent_type': t.get('assistant', 'claude'),
-                'prompt': t.get('prompt', ''),
-                'status': status,
-                'ended_at': t.get('finished_at'),
-                'is_error': status == 'error',
-            }
-            subagents.append(sa)
-            if status == 'running':
-                running += 1
-            elif status in ('completed',):
-                completed += 1
-            elif status in ('error', 'killed'):
-                errored += 1
-        self.send_json({
-            'subagents': subagents,
-            'count': len(subagents),
-            'running_count': running,
-            'completed_count': completed,
-            'error_count': errored,
-        })
 
     # Per-CSP-directive splitter — used to strip frame-ancestors while keeping
     # the rest of the policy intact.
@@ -14671,260 +14461,7 @@ class BrowserHandler(board_routes.BoardRoutes,
 
     # --- Apps API (list + pin CRUD) ---
 
-    def _handle_instruction_scan(self):
-        """Scan agent-readable instruction files for hidden text (#559).
-
-        WHY THIS IS A SERVER ENDPOINT AND NOT AN MCP TOOL. The threat is a
-        cloned repo whose CLAUDE.md carries invisible instructions the agent
-        then obeys (the TrapDoor class). If the agent is already following
-        that file, asking the agent to scan is worthless — the injected text
-        just says "skip the scan" or "report clean". So detection runs here,
-        out of band, where a compromised agent cannot suppress it, and the
-        result lands in the Feed rather than in the agent's transcript.
-
-        Reports only. Nothing is stripped or rewritten: silently editing a
-        file an agent is about to read would itself be an injection vector,
-        and a false positive that mangles someone's README is unforgivable.
-        """
-        if not self.check_app_proxy_auth():
-            self.send_response(401)
-            self.end_headers()
-            return
-        if not _INSTRUCTION_SCAN_AVAILABLE:
-            self.send_json({'error': 'instruction_scan module unavailable'}, status=503)
-            return
-        qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
-        confine = os.path.realpath(INSTRUCTION_SCAN_ROOT)
-        requested = (qs.get('root') or [confine])[0]
-        # Confine the walk to the persistent volume. Without this, `root` is an
-        # arbitrary-path directory read for anyone who can reach the endpoint.
-        # Compare realpaths and require a separator on the prefix, so neither
-        # `<root>/../etc` nor a lookalike sibling like `/home/devious` passes.
-        root = os.path.realpath(requested)
-        if root != confine and not root.startswith(confine + os.sep):
-            self.send_json(
-                {'error': 'root must be under {}'.format(confine)}, status=400)
-            return
-        if not os.path.isdir(root):
-            self.send_json({'error': 'root is not a directory'}, status=404)
-            return
-        try:
-            report = instruction_scan.scan_tree(root)
-        except Exception as e:                      # never 500 on a scan
-            self.send_json({'error': 'scan failed: {}'.format(e)}, status=500)
-            return
-        # Surface high-severity hits in the Feed. Deduped per root so a repeated
-        # scan updates one item instead of spamming; the user sees this whether
-        # or not they were looking at the dashboard when it ran.
-        if report['high'] and 'FeedManager' in globals():
-            files = ', '.join(os.path.relpath(r['path'], root)
-                              for r in report['results'] if r['counts']['high'])[:200]
-            decoded = ' / '.join(r['decoded_hidden_text']
-                                 for r in report['results']
-                                 if r['decoded_hidden_text'])[:400]
-            body = [
-                'Hidden, non-rendering characters were found in files that '
-                'coding agents read as instructions.',
-                '',
-                '**Files:** {}'.format(files),
-                '**High-severity findings:** {}'.format(report['high']),
-            ]
-            if decoded:
-                body += ['', '**Decoded hidden text:**', '', '```', decoded, '```']
-            body += [
-                '',
-                'This is the technique used by the TrapDoor supply-chain campaign: '
-                'text invisible to a human reviewer but read verbatim by the agent. '
-                'Nothing has been modified — review these files before letting an '
-                'agent work in this tree.',
-            ]
-            FeedManager.emit(
-                'news',
-                'Hidden text found in agent instruction files',
-                body_md='\n'.join(body),
-                source='instruction-scan',
-                waiting=True,
-                dedupe_key='instruction-scan:{}'.format(root),
-            )
-        self.send_json(report)
-
     # ── devcontainer.json (#594) ─────────────────────────────────────────
-
-    def _devcontainer_gate(self):
-        """(ok, workdir_or_empty). 401 unauthenticated, 404 when the feature is
-        off. Deliberately NOT behind _require_cto: a deployment can run without
-        the AI CTO and still want a repo's own environment read."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return False
-        if not DevcontainerManager.available():
-            self.send_json({'error': 'devcontainer support is disabled'}, 404)
-            return False
-        return True
-
-    def _devcontainer_workdir(self, raw):
-        workdir, err = DevcontainerManager.resolve_workdir(raw)
-        if err:
-            self.send_json({'error': err}, 400)
-            return ''
-        return workdir
-
-    def _handle_devcontainer_get(self):
-        """GET /api/devcontainer?workdir=<abs> — parsed config + what we did.
-
-        A directory with no devcontainer.json answers 200 with found:false, not
-        404. "There is no devcontainer here" is a normal, useful answer; a 404
-        is indistinguishable from "the feature is disabled" and the SPA would
-        have to guess which it got.
-        """
-        if not self._devcontainer_gate():
-            return
-        qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
-        workdir = self._devcontainer_workdir((qs.get('workdir') or [''])[0])
-        if not workdir:
-            return
-        try:
-            self.send_json(DevcontainerManager.describe(workdir))
-        except Exception as e:
-            self.send_json({'error': f'read failed: {e}'}, 500)
-
-    def _handle_devcontainer_scan(self):
-        """GET /api/devcontainer/scan — every workspace dir that has one."""
-        if not self._devcontainer_gate():
-            return
-        try:
-            rows = DevcontainerManager.scan()
-        except Exception as e:
-            self.send_json({'error': f'scan failed: {e}'}, 500)
-            return
-        self.send_json({'devcontainers': rows, 'count': len(rows)})
-
-    def _handle_devcontainer_apply(self):
-        """POST /api/devcontainer/apply — the only executing route.
-
-        Body: {workdir, hooks: [], config_hash, auto_apply}. `hooks` empty means
-        appliers only (ports, settings, extensions, env) and nothing runs.
-        `config_hash` is REQUIRED whenever hooks is non-empty and must equal the
-        file's current hash — see DevcontainerManager.apply.
-        """
-        if not self._devcontainer_gate():
-            return
-        try:
-            length = int(self.headers.get('Content-Length', 0) or 0)
-            body = json.loads(self.rfile.read(length) or b'{}') if length else {}
-        except (ValueError, TypeError):
-            self.send_json({'error': 'invalid JSON body'}, 400)
-            return
-        if not isinstance(body, dict):
-            self.send_json({'error': 'body must be a JSON object'}, 400)
-            return
-        workdir = self._devcontainer_workdir(body.get('workdir'))
-        if not workdir:
-            return
-        hooks = body.get('hooks') or []
-        if not isinstance(hooks, list) or any(not isinstance(h, str) for h in hooks):
-            self.send_json({'error': 'hooks must be an array of strings'}, 400)
-            return
-        unknown = [h for h in hooks if h not in devcontainer.HOOKS]
-        if unknown:
-            self.send_json({'error': f'unknown hooks: {", ".join(unknown)}',
-                            'allowed': list(devcontainer.HOOKS)}, 400)
-            return
-        auto = body.get('auto_apply')
-        result, err = DevcontainerManager.apply(
-            workdir, hooks=hooks, config_hash=body.get('config_hash'),
-            auto_apply=None if auto is None else bool(auto))
-        if err:
-            code, message = err
-            status = {'not_found': 404, 'invalid': 422, 'hash_required': 400,
-                      'hash_mismatch': 409, 'busy': 409}.get(code, 500)
-            self.send_json({'error': message, 'code': code}, status)
-            return
-        # 202: appliers already ran synchronously, hooks (if any) are running in
-        # a daemon thread and the caller follows them via devcontainer.changed.
-        self.send_json(result, 202)
-
-    def _handle_devcontainer_reset(self):
-        """POST /api/devcontainer/reset — forget that we applied here."""
-        if not self._devcontainer_gate():
-            return
-        try:
-            length = int(self.headers.get('Content-Length', 0) or 0)
-            body = json.loads(self.rfile.read(length) or b'{}') if length else {}
-        except (ValueError, TypeError):
-            self.send_json({'error': 'invalid JSON body'}, 400)
-            return
-        if not isinstance(body, dict):
-            self.send_json({'error': 'body must be a JSON object'}, 400)
-            return
-        workdir = self._devcontainer_workdir(body.get('workdir'))
-        if not workdir:
-            return
-        try:
-            self.send_json(DevcontainerManager.reset(
-                workdir, unpin_ports=bool(body.get('unpin_ports'))))
-        except Exception as e:
-            self.send_json({'error': f'reset failed: {e}'}, 500)
-
-    def _handle_apps_list(self):
-        if not self.check_app_proxy_auth():
-            self.send_response(401)
-            self.end_headers()
-            return
-        # Embedded iframes need cookie-based auth; bearer-only deployments
-        # can't auth iframe sub-resource requests. Let the SPA show a clear
-        # explanation instead of the user staring at mysterious 401s.
-        unavailable = None
-        if AUTH_MODE != 'oauth2':
-            unavailable = ('Applications requires the workspace to run behind an OAuth2 '
-                           'proxy so iframe sub-resource requests can authenticate via cookies. '
-                           'Current AUTH_MODE is "{}".'.format(AUTH_MODE))
-        try:
-            apps = AppsManager.list_apps()
-        except Exception as e:
-            self.send_json({'error': str(e)}, 500)
-            return
-        self.send_json({
-            'apps': apps,
-            'unavailable_reason': unavailable,
-            'auth_mode': AUTH_MODE,
-        })
-
-    def _handle_apps_pin_create(self):
-        if not self.check_claude_auth():
-            self.send_response(401)
-            self.end_headers()
-            return
-        try:
-            body = self.read_json_body(max_bytes=4096) or {}
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-            return
-        except json.JSONDecodeError:
-            self.send_json({'error': 'invalid JSON'}, 400)
-            return
-        try:
-            pin = AppsManager.add_pin(
-                port=body.get('port'),
-                name=body.get('name'),
-                strip_prefix=bool(body.get('strip_prefix', False)),
-            )
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-            return
-        self.send_json({'ok': True, 'pin': {**pin, 'port': AppsManager._validate_port(body.get('port'))}}, 201)
-
-    def _handle_apps_pin_delete(self, port):
-        if not self.check_claude_auth():
-            self.send_response(401)
-            self.end_headers()
-            return
-        try:
-            removed = AppsManager.remove_pin(port)
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-            return
-        self.send_json({'ok': True, 'removed': bool(removed)})
 
     # --- Additional HTTP verbs for the app proxy ---
     #
@@ -15066,29 +14603,22 @@ class BrowserHandler(board_routes.BoardRoutes,
             # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
             path = self._strip_route_prefix(self.path)
             
-            # /api/apps/pins — add a pinned port to the Applications page.
-            if path == "/api/apps/pins":
-                self._handle_apps_pin_create()
+            # The Applications surface: pin a port, and the legacy browser
+            # launchers. The pin route has to precede the app-proxy dispatcher
+            # below or the proxy swallows it; the launchers used to sit after
+            # it, and moving them above is safe because /api/launch-*,
+            # /api/test-* and /api/open-localhost cannot match the proxy's
+            # /api/app-proxy/<port>/ prefix. The test asserts that.
+            if app_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
             # /api/app-proxy/<port>/... — forward to a locally-listening
             # web app. Match early so it short-circuits the explicit
             # endpoint list below.
             if self._dispatch_app_proxy(path, 'POST'):
                 return
-            if path == "/api/launch-chrome":
-                self.launch_chrome()
-            elif path == "/api/open-localhost":
-                self.open_localhost()
-            elif path == "/api/test-chrome":
-                self.test_chrome()
-            # Keep Firefox endpoints for backward compatibility
-            elif path == "/api/launch-firefox":
-                self.launch_chrome()
-            elif path == "/api/test-firefox":
-                self.test_chrome()
             # Workspace self-serve update + GitHub configuration. Both are
             # in handlers/system.py's table, beside the reads they pair with.
-            elif system_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+            if system_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
             # Builds: create a task, sweep worktrees, rotate the API token,
             # and the six per-task actions that used to sit in the regex block
@@ -15122,13 +14652,11 @@ class BrowserHandler(board_routes.BoardRoutes,
             # thin route_* adapter there.
             elif board_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
-            # devcontainer.json (#594). /apply is the ONLY route in the whole
-            # server that can run a command out of a cloned repo, and it does so
-            # only against a config hash the caller echoes back.
-            elif path == "/api/devcontainer/apply":
-                self._handle_devcontainer_apply()
-            elif path == "/api/devcontainer/reset":
-                self._handle_devcontainer_reset()
+            # devcontainer.json (#594). /apply is the ONLY route in the
+            # whole server that can run a command out of a cloned repo,
+            # and only against a config hash the caller echoes back.
+            elif devcontainer_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Feed (#469) + the mobile push that delivers it, including
             # the two per-item routes that used to sit in the regex block.
             elif feed_routes.ROUTES.dispatch(self, 'POST', path, self.path):
@@ -15182,236 +14710,6 @@ class BrowserHandler(board_routes.BoardRoutes,
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(body.encode())
-    
-    def test_chrome(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            # Test browser installation
-            browser_paths = [
-                '/usr/local/bin/browser',
-                '/usr/bin/lynx',
-                '/usr/bin/w3m', 
-                '/usr/bin/firefox-esr',
-                '/usr/bin/firefox',
-                '/usr/bin/chromium-browser',
-                '/usr/bin/google-chrome'
-            ]
-            
-            browser_path = None
-            for path in browser_paths:
-                if os.path.exists(path):
-                    browser_path = path
-                    break
-            
-            if not browser_path:
-                self.send_error_response('Browser not found. Installation may have failed.')
-                return
-            
-            # Test Xvfb display
-            display = os.environ.get('DISPLAY', ':99')
-            try:
-                result = subprocess.run(['xdpyinfo', '-display', display], 
-                                       capture_output=True, text=True, timeout=5)
-                if result.returncode != 0:
-                    # xdpyinfo failed, but check if Xvfb process is running instead.
-                    # Match the display too: since #716 there are two Xvfbs
-                    # (:99 for the user, :98 for agents), so a bare `pgrep Xvfb`
-                    # would report the human's display healthy on the strength
-                    # of the agent's.
-                    if not _xvfb_running(display):
-                        self.send_error_response(f'X11 display {display} not available')
-                        return
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                # xdpyinfo not available or timed out, check if Xvfb process is running
-                if not _xvfb_running(display):
-                    self.send_error_response(f'X11 display {display} not available (Xvfb not running)')
-                    return
-            
-            self.send_success_response(f'✅ Browser found at: {browser_path}\n✅ X11 display {display} available')
-            
-        except Exception as e:
-            self.send_error_response(f'Test failed: {str(e)}')
-    
-    def launch_chrome(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            # Try different Chrome/Chromium locations
-            browser_commands = [
-                ('/usr/local/bin/browser', []),
-                ('/usr/bin/firefox-esr', ['--safe-mode']),
-                ('/usr/bin/firefox', ['--safe-mode']),
-                ('firefox-esr', ['--safe-mode']),
-                ('firefox', ['--safe-mode']),
-                ('chromium-browser', ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']),
-                ('/usr/bin/chromium-browser', ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']),
-                ('/usr/bin/google-chrome', ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            ]
-            
-            browser_cmd = None
-            browser_args = []
-            for cmd, args in browser_commands:
-                if os.path.exists(cmd) or subprocess.run(['which', cmd], capture_output=True).returncode == 0:
-                    browser_cmd = cmd
-                    browser_args = args
-                    break
-            
-            if not browser_cmd:
-                self.send_error_response('No Chrome browser found. Download may have failed.')
-                return
-            
-            env = os.environ.copy()
-            env['DISPLAY'] = ':99'
-            
-            # Launch browser in background
-            cmd_list = [browser_cmd] + browser_args + ['--new-window']
-            process = subprocess.Popen(
-                cmd_list, 
-                env=env,
-                stdout=subprocess.DEVNULL, 
-                stderr=subprocess.DEVNULL
-            )
-            
-            # Give it a moment to start
-            time.sleep(2)
-            
-            if process.poll() is None:  # Process is still running
-                self.send_success_response(f'✅ Chrome launched successfully (PID: {process.pid})')
-            else:
-                self.send_error_response('Chrome process exited immediately')
-                
-        except FileNotFoundError:
-            self.send_error_response('Chrome not found. Please install Chrome first.')
-        except Exception as e:
-            self.send_error_response(f'Error launching Chrome: {str(e)}')
-    
-    def open_localhost(self):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            # Accept an optional {"port": <int>, "path": "<suffix>"} JSON
-            # body so the dashboard's Preview pane can re-point the in-pod
-            # browser without a code change. Path is appended after the
-            # port (e.g. localhost:8080/admin or localhost:3000/?dev=1);
-            # falls back to "/" when nothing is sent. The historical
-            # port-only body still works.
-            port = 8080
-            url_path = '/'
-            try:
-                content_length = int(self.headers.get('Content-Length', 0) or 0)
-                if content_length:
-                    raw = self.rfile.read(content_length).decode('utf-8')
-                    body = json.loads(raw) if raw else {}
-                    if isinstance(body, dict):
-                        if 'port' in body:
-                            port = int(body['port'])
-                        raw_path = str(body.get('path') or '').strip()
-                        if raw_path:
-                            # Normalize: ensure leading slash, no scheme,
-                            # no host, no embedded newlines. Reject if it
-                            # contains characters that don't belong in a
-                            # path/query/fragment.
-                            if '\n' in raw_path or '\r' in raw_path or ' ' in raw_path:
-                                self.send_error_response('path must not contain whitespace or newlines')
-                                return
-                            if raw_path.lower().startswith(('http://', 'https://')):
-                                self.send_error_response('path must be a relative suffix, not a full URL')
-                                return
-                            if not raw_path.startswith('/'):
-                                raw_path = '/' + raw_path
-                            url_path = raw_path
-            except (ValueError, json.JSONDecodeError):
-                self.send_error_response('Invalid JSON body — expected {"port": <int>, "path": "<suffix>"}')
-                return
-            if not (1 <= port <= 65535):
-                self.send_error_response('port must be between 1 and 65535')
-                return
-
-            env = os.environ.copy()
-            env['DISPLAY'] = ':99'
-
-            url = f'http://localhost:{port}{url_path}'
-
-            # Kill only browsers launched by this handler — pkill -f chrome
-            # would also kill any user-spawned dev tool whose name includes
-            # the substring (e.g. chrome-devtools-frontend). The marker dir
-            # is unique to this handler and appears in every launched
-            # browser's argv (chromium via --user-data-dir=, firefox via
-            # -profile <dir>) so pkill -f on the literal path matches both.
-            kc_user_data_dir = '/tmp/kc-managed-browser'
-            os.makedirs(kc_user_data_dir, exist_ok=True)
-            subprocess.run(['pkill', '-f', kc_user_data_dir],
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-            time.sleep(0.3)
-
-            # --app and --start-fullscreen together give a kiosk-like surface:
-            # no tabs, no URL bar, no window chrome — just the page. Combined
-            # with vnc.html?resize=scale on the dashboard side, the Preview
-            # pane ends up showing essentially only the browser content.
-            # --user-data-dir is the marker pkill uses above to scope the
-            # kill to only browsers we launched.
-            chrome_args = [
-                '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
-                f'--user-data-dir={kc_user_data_dir}',
-                '--start-fullscreen', f'--app={url}',
-            ]
-            # Firefox uses -profile <dir>; we mirror the chromium marker so
-            # both can be killed by the single pkill above.
-            firefox_args = ['--safe-mode', '-profile', kc_user_data_dir, '--kiosk', url]
-
-            browser_commands = [
-                ('chromium-browser', chrome_args),
-                ('/usr/bin/chromium-browser', chrome_args),
-                ('/usr/bin/google-chrome', chrome_args),
-                ('/usr/local/bin/browser', []),
-                ('/usr/bin/firefox-esr', firefox_args),
-                ('/usr/bin/firefox', firefox_args),
-                ('firefox-esr', firefox_args),
-                ('firefox', firefox_args),
-            ]
-
-            browser_cmd = None
-            browser_args = []
-            for cmd, args in browser_commands:
-                if os.path.exists(cmd) or subprocess.run(['which', cmd], capture_output=True).returncode == 0:
-                    browser_cmd = cmd
-                    browser_args = args
-                    break
-
-            if not browser_cmd:
-                self.send_error_response('No Chrome browser found. Download may have failed.')
-                return
-
-            # If we fell through to /usr/local/bin/browser (no args defined),
-            # append the URL so it still navigates somewhere.
-            cmd_list = [browser_cmd] + browser_args
-            if browser_cmd == '/usr/local/bin/browser':
-                cmd_list.append(url)
-
-            process = subprocess.Popen(
-                cmd_list,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-
-            # Give it a moment to start
-            time.sleep(1)
-
-            if process.poll() is None:  # Process is still running
-                self.send_success_response(f'✅ Chrome opened with {url} (PID: {process.pid})')
-            else:
-                self.send_error_response('Chrome process exited immediately')
-
-        except FileNotFoundError:
-            self.send_error_response('Chrome not found. Please install Chrome first.')
-        except Exception as e:
-            self.send_error_response(f'Error opening localhost in Chrome: {str(e)}')
 
 class EventBroker:
     """In-process fan-out of dashboard events to connected /api/events SSE
