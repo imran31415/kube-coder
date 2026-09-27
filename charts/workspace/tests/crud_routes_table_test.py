@@ -18,7 +18,9 @@ Run with:
 """
 
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -195,6 +197,24 @@ class CrudEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
         # check_claude_auth call, and lifting it into a named handler did not
         # add one. It answers its own 404 for an unknown item rather than the
         # 401 every neighbouring route gives.
+        #
+        # Fixture the launcher config first. This is the only test in the suite
+        # that reaches DesktopManager's storage, and its paths are absolute
+        # (/home/dev/.kube-coder): unfixtured, it reads — and on a fresh PVC
+        # seeds — the real workspace's desktop config. Worse, on a machine with
+        # no /home/dev at all (every CI runner) _load_all's _ensure_dir() is an
+        # unguarded os.makedirs, so it raises OSError straight out of the
+        # handler and the client sees a closed connection instead of the 404
+        # asserted below. That unguarded mkdir is a real robustness bug, but it
+        # predates this extraction and is left for its own change.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        for attr, value in (('CONFIG_DIR', tmp),
+                            ('CONFIG_PATH', os.path.join(tmp, 'desktop.json'))):
+            self.addCleanup(setattr, server.DesktopManager, attr,
+                            getattr(server.DesktopManager, attr))
+            setattr(server.DesktopManager, attr, value)
+
         status, body = self.get('/api/desktop/nosuchitem')
         self.assertEqual(status, 404)
         self.assertEqual(body, b'{"error": "item not found"}')
