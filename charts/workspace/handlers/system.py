@@ -390,6 +390,174 @@ class SystemRoutes:
             self.wfile.write(error_html.encode())
 
 
+    # ── the write side of the same surface ────────────────────────────────
+    # Reunited with the reads above: #733 moved /api/github/status,
+    # /api/github/config and /api/workspace/version here and left their
+    # POST counterparts behind in server.py. Nothing about the domain
+    # wanted that split; it was just where the contiguous GET block
+    # ended.
+
+    def handle_workspace_update(self):
+        """Broker a 'restart and pull latest' for THIS workspace to the
+        controller. The controller authorizes the action on our own user."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not handlers.server.UpdateManager.enabled():
+            self.send_json({'error': 'self-serve updates not configured'}, 501)
+            return
+        try:
+            n = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(n).decode('utf-8') if 0 < n <= handlers.server.MAX_REQUEST_BODY_BYTES else ''
+            data = json.loads(raw) if raw else {}
+        except (ValueError, OSError):
+            data = {}
+        status, payload = handlers.server.UpdateManager.do_update(data.get('version') or None)
+        self.send_json(payload, status)
+
+    def handle_workspace_restart(self):
+        """Broker a plain restart (current image, no version change) for THIS
+        workspace to the controller (#352). Same token-gated self-serve channel
+        as update, so the controller authorizes it on our own user only."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if not handlers.server.UpdateManager.enabled():
+            self.send_json({'error': 'self-serve restart not configured'}, 501)
+            return
+        status, payload = handlers.server.UpdateManager.do_restart()
+        self.send_json(payload, status)
+
+    def handle_ssh_generate(self):
+        """Handle SSH key generation request"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            email = data.get('email', 'user@example.com')
+            result = handlers.server.GitHubManager.generate_ssh_key(email)
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': str(e)}).encode())
+
+    def handle_git_config_post(self):
+        """Handle git config update request"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            name = data.get('name', '')
+            email = data.get('email', '')
+
+            if not name or not email:
+                self.send_response(400)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'Name and email are required'}).encode())
+                return
+
+            result = handlers.server.GitHubManager.set_git_config(name, email)
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': str(e)}).encode())
+
+    def handle_set_auth_mode(self):
+        """Switch the workspace GitHub auth mode: 'app' (managed installation
+        token) or 'personal' (the user's own `gh auth login`). Persists the
+        choice and re-points git's credential helper immediately (issue #256).
+        Auth-gated; blocked in read-only demo via the do_POST chokepoint."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+            mode = (data.get('mode') or '').strip()
+            status = handlers.server.GitHubManager.set_auth_mode(mode)
+            self.send_json(status, 200)
+        except ValueError as e:
+            self.send_json({'error': str(e)}, 400)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_gh_login_instructions(self):
+        """Return instructions for gh CLI authentication"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        instructions = handlers.server.GitHubManager.start_device_flow()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(instructions).encode())
+
+    def handle_gh_check_auth(self):
+        """Check if gh CLI authentication is complete"""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        status = handlers.server.GitHubManager.get_gh_cli_status()
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(status).encode())
+
+    def handle_gh_web_login_start(self):
+        """Start the browser-less 'Connect GitHub' device flow (issue #303) and
+        return the one-time code + verification URL for the dashboard to show.
+        Auth-gated; blocked in read-only demo via the do_POST chokepoint."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            self.send_json(handlers.server.GitHubManager.start_web_login(), 200)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 502)
+
+    def handle_gh_web_login_poll(self):
+        """Poll the in-flight device flow. On success the workspace is switched
+        to 'personal' mode server-side and the response carries connected:true."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        try:
+            self.send_json(handlers.server.GitHubManager.poll_web_login(), 200)
+        except Exception as e:
+            self.send_json({'error': str(e)}, 500)
+
+    def handle_gh_web_login_cancel(self):
+        """Abort an in-flight device flow (user closed the dialog)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        handlers.server.GitHubManager.cancel_web_login()
+        self.send_json({'ok': True}, 200)
+
 #: Consulted by do_GET immediately after the SPA roots, which is exactly where
 #: the elif chain these entries replace used to sit. Registration order is
 #: match order.
@@ -419,3 +587,21 @@ ROUTES.add('GET', '/vnc/', 'send_vnc_viewer', raw_path=True)
 ROUTES.add('GET', '/vnc-proxy', 'redirect_to_vnc', raw_path=True)
 ROUTES.add('GET', '/vnc-proxy/', 'redirect_to_vnc', raw_path=True)
 ROUTES.add('GET', re.compile(r'^/vnc/'), 'proxy_vnc_request', raw_path=True)
+
+# --- the write side ------------------------------------------------------
+# Self-serve update: both broker the action to the controller, which
+# authorizes it against this workspace's own user.
+ROUTES.add('POST', '/api/workspace/update', 'handle_workspace_update')
+ROUTES.add('POST', '/api/workspace/restart', 'handle_workspace_restart')
+
+# GitHub configuration. `/config` is the write counterpart of the GET above;
+# the rest drive the two login flows the Settings page offers (paste a token
+# from the `gh` CLI, or the device-code web flow).
+ROUTES.add('POST', '/api/github/ssh/generate', 'handle_ssh_generate')
+ROUTES.add('POST', '/api/github/config', 'handle_git_config_post')
+ROUTES.add('POST', '/api/github/auth-mode', 'handle_set_auth_mode')
+ROUTES.add('POST', '/api/github/cli/login-url', 'handle_gh_login_instructions')
+ROUTES.add('POST', '/api/github/cli/complete-auth', 'handle_gh_check_auth')
+ROUTES.add('POST', '/api/github/connect/start', 'handle_gh_web_login_start')
+ROUTES.add('POST', '/api/github/connect/poll', 'handle_gh_web_login_poll')
+ROUTES.add('POST', '/api/github/connect/cancel', 'handle_gh_web_login_cancel')

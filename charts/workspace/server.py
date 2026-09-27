@@ -82,6 +82,7 @@ from handlers import gateway as gateway_routes
 from handlers import hypervisor as hypervisor_routes
 from handlers import memory as memory_routes
 from handlers import projects as project_routes
+from handlers import settings as settings_routes
 from handlers import skills as skills_routes
 from handlers import tasks as task_routes
 from handlers import triggers as trigger_routes
@@ -13288,6 +13289,7 @@ class BrowserHandler(board_routes.BoardRoutes,
                      hypervisor_routes.HypervisorRoutes,
                      memory_routes.MemoryRoutes,
                      project_routes.ProjectRoutes,
+                     settings_routes.SettingsRoutes,
                      skills_routes.SkillsRoutes,
                      system_routes.SystemRoutes,
                      task_routes.TaskRoutes,
@@ -13463,19 +13465,10 @@ class BrowserHandler(board_routes.BoardRoutes,
         # handler, as before.
         elif gateway_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
-        # --- Provider keys (dashboard Settings) ---
-        if claude_path == '/api/provider-keys':
-            self.handle_provider_keys_list()
-            return
-
-        # --- User MCP servers (dashboard Settings, issue #353) ---
-        if claude_path == '/api/mcp-servers':
-            self.handle_mcp_servers_list()
-            return
-
-        # --- Subscription-login status (dashboard Settings) ---
-        if claude_path == '/api/subscriptions':
-            self.handle_subscriptions_list()
+        # --- Settings: provider keys, user MCP servers, subscriptions ---
+        # handlers/settings.py. The GitHub and workspace half of the same
+        # Settings page lives in handlers/system.py, next to its reads.
+        if settings_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Triggers: webhook / cron / page-watch CRUD (dashboard) ---
@@ -13871,19 +13864,9 @@ class BrowserHandler(board_routes.BoardRoutes,
             # ahead of the thread one.
             if hypervisor_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
-            m = re.match(r'^/api/provider-keys/([A-Z_]+)$', path)
-            if m:
-                self.handle_provider_keys_delete(m.group(1))
-                return
-            # User MCP servers (issue #353): remove + fan-out cleanup.
-            m = re.match(r'^/api/mcp-servers/([A-Za-z0-9_-]+)$', path)
-            if m:
-                self.handle_mcp_servers_delete(m.group(1))
-                return
-            # Log out of a subscription CLI (claude|codex) — DELETE the login.
-            m = re.match(r'^/api/subscriptions/([a-z]+)$', path)
-            if m:
-                self.handle_subscriptions_logout(m.group(1))
+            # Settings: drop a provider key, an MCP server, or a
+            # subscription login.
+            if settings_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             # Triggers: all three deletes are in handlers/triggers.py's table.
             if trigger_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
@@ -14058,158 +14041,6 @@ class BrowserHandler(board_routes.BoardRoutes,
     # check_claude_auth + allow_none_mode=True so the public-demo can
     # show the seeded launcher. Writes go through _readonly_block first so
     # the public-demo can't add/edit/delete icons.
-
-    def handle_provider_keys_list(self):
-        # Secrets endpoint — must not be reachable in the unauth public demo
-        # (same posture as send_git_config), so allow_none_mode=False.
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        # Masked view only — never returns the key itself.
-        self.send_json({'providers': ProviderKeysManager.public_view()})
-
-    def handle_provider_keys_set(self):
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        provider = (data.get('provider') or '').strip()
-        ok, err = ProviderKeysManager.set(provider, data.get('key'))
-        if not ok:
-            self.send_json({'error': err}, 400)
-            return
-        self.send_json({'ok': True, 'provider': provider})
-
-    def handle_provider_keys_delete(self, provider):
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        ProviderKeysManager.delete(provider)
-        self.send_json({'ok': True})
-
-    # --- User MCP servers (issue #353) ---
-    # Env values may hold API keys, so gate like provider-keys: never
-    # reachable in the unauth public demo (allow_none_mode=False), and the
-    # list view is redacted (mcp_registry.public_view — hints, never values).
-
-    def _mcp_registry_gate(self):
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return False
-        if not _MCP_REGISTRY_AVAILABLE:
-            self.send_json({'error': 'MCP registry unavailable'}, 503)
-            return False
-        return True
-
-    def handle_mcp_servers_list(self):
-        if not self._mcp_registry_gate():
-            return
-        self.send_json({'servers': mcp_registry.public_view()})
-
-    def handle_mcp_servers_set(self):
-        if not self._mcp_registry_gate():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        name = (data.get('name') or '').strip()
-        ok, err = mcp_registry.set_server(
-            name, data.get('command') or '',
-            args=data.get('args'), env=data.get('env'),
-            enabled=data.get('enabled', True))
-        if not ok:
-            self.send_json({'error': err}, 400)
-            return
-        self.send_json({'ok': True, 'name': name, 'sync': mcp_registry.sync_all()})
-
-    def handle_mcp_servers_delete(self, name):
-        if not self._mcp_registry_gate():
-            return
-        if not mcp_registry.delete_server(name):
-            self.send_json({'error': 'MCP server not found'}, 404)
-            return
-        self.send_json({'ok': True, 'sync': mcp_registry.sync_all()})
-
-    def handle_subscriptions_list(self):
-        # Reports subscription-login status only (plan/expiry) — no token
-        # material — but still a secrets-adjacent endpoint, so gate it like
-        # provider-keys (never reachable in the unauth public demo).
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        self.send_json({
-            'subscriptions': SubscriptionStatusManager.public_view(),
-            # Whether a spawned Claude session would have a working credential —
-            # the first-win gate (#494) reads this rather than re-deriving the
-            # oauth/api-key precedence in the SPA.
-            'claude_ready': SubscriptionStatusManager.claude_credential_present(),
-        })
-
-    def handle_subscriptions_logout(self, provider):
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        ok, err = SubscriptionStatusManager.logout(provider)
-        if not ok:
-            self.send_json({'error': err or 'logout failed'}, 400)
-            return
-        self.send_json({'ok': True})
-
-    # --- Browser-less "Connect Claude account" (dashboard Settings) ---
-    # Same gate as the other subscription endpoints: secrets-adjacent, so
-    # never reachable in the unauth public demo (allow_none_mode=False).
-
-    def _claude_login_gate(self):
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return False
-        return True
-
-    def handle_claude_login_start(self):
-        """Start the server-side `claude auth login` flow and return the OAuth
-        URL for the dashboard to open in the user's own browser."""
-        if not self._claude_login_gate():
-            return
-        try:
-            self.send_json(ClaudeWebLoginManager.start(), 200)
-        except RuntimeError as e:
-            self.send_json({'error': str(e)}, 502)
-
-    def handle_claude_login_code(self):
-        """Accept the authorization code the user pasted and feed it to the
-        waiting CLI. The code is a one-time secret — never logged or echoed."""
-        if not self._claude_login_gate():
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        ok, err = ClaudeWebLoginManager.submit_code(data.get('code'))
-        if not ok:
-            self.send_json({'error': err}, 400)
-            return
-        self.send_json({'ok': True})
-
-    def handle_claude_login_poll(self):
-        """Poll the in-flight login; on success the response carries
-        connected:true plus the refreshed subscription view."""
-        if not self._claude_login_gate():
-            return
-        self.send_json(ClaudeWebLoginManager.poll(), 200)
-
-    def handle_claude_login_cancel(self):
-        """Abort an in-flight login (user closed the dialog)."""
-        if not self._claude_login_gate():
-            return
-        ClaudeWebLoginManager.cancel()
-        self.send_json({'ok': True})
 
     # Acting identity for a write, derived from the auth headers. Named for
     # the memory API it was written for, but /api/claude/tasks and the push
@@ -15255,27 +15086,10 @@ class BrowserHandler(board_routes.BoardRoutes,
                 self.launch_chrome()
             elif path == "/api/test-firefox":
                 self.test_chrome()
-            elif path == "/api/workspace/update":
-                self.handle_workspace_update()
-            elif path == "/api/workspace/restart":
-                self.handle_workspace_restart()
-            # GitHub configuration endpoints
-            elif path == "/api/github/ssh/generate":
-                self.handle_ssh_generate()
-            elif path == "/api/github/config":
-                self.handle_git_config_post()
-            elif path == "/api/github/auth-mode":
-                self.handle_set_auth_mode()
-            elif path == "/api/github/cli/login-url":
-                self.handle_gh_login_instructions()
-            elif path == "/api/github/cli/complete-auth":
-                self.handle_gh_check_auth()
-            elif path == "/api/github/connect/start":
-                self.handle_gh_web_login_start()
-            elif path == "/api/github/connect/poll":
-                self.handle_gh_web_login_poll()
-            elif path == "/api/github/connect/cancel":
-                self.handle_gh_web_login_cancel()
+            # Workspace self-serve update + GitHub configuration. Both are
+            # in handlers/system.py's table, beside the reads they pair with.
+            elif system_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Builds: create a task, sweep worktrees, rotate the API token,
             # and the six per-task actions that used to sit in the regex block
             # below. All ten are in handlers/tasks.py's table.
@@ -15290,21 +15104,10 @@ class BrowserHandler(board_routes.BoardRoutes,
             # test-connection, and the two loopback preview routes.
             elif gateway_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
-            # Provider keys (dashboard Settings)
-            elif path == "/api/provider-keys":
-                self.handle_provider_keys_set()
-            # Browser-less "Connect Claude account" (dashboard Settings)
-            elif path == "/api/subscriptions/claude/login/start":
-                self.handle_claude_login_start()
-            elif path == "/api/subscriptions/claude/login/code":
-                self.handle_claude_login_code()
-            elif path == "/api/subscriptions/claude/login/poll":
-                self.handle_claude_login_poll()
-            elif path == "/api/subscriptions/claude/login/cancel":
-                self.handle_claude_login_cancel()
-            # User MCP servers (dashboard Settings, issue #353)
-            elif path == "/api/mcp-servers":
-                self.handle_mcp_servers_set()
+            # Settings: provider keys, the browser-less Claude login flow,
+            # and user MCP servers.
+            elif settings_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Triggers: webhook / cron / page-watch. All nine POST routes are
             # in handlers/triggers.py's table, including the six that used to
             # sit in the regex block below.
@@ -15379,167 +15182,6 @@ class BrowserHandler(board_routes.BoardRoutes,
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(body.encode())
-
-    def handle_workspace_update(self):
-        """Broker a 'restart and pull latest' for THIS workspace to the
-        controller. The controller authorizes the action on our own user."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not UpdateManager.enabled():
-            self.send_json({'error': 'self-serve updates not configured'}, 501)
-            return
-        try:
-            n = int(self.headers.get('Content-Length', 0))
-            raw = self.rfile.read(n).decode('utf-8') if 0 < n <= MAX_REQUEST_BODY_BYTES else ''
-            data = json.loads(raw) if raw else {}
-        except (ValueError, OSError):
-            data = {}
-        status, payload = UpdateManager.do_update(data.get('version') or None)
-        self.send_json(payload, status)
-
-    def handle_workspace_restart(self):
-        """Broker a plain restart (current image, no version change) for THIS
-        workspace to the controller (#352). Same token-gated self-serve channel
-        as update, so the controller authorizes it on our own user only."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if not UpdateManager.enabled():
-            self.send_json({'error': 'self-serve restart not configured'}, 501)
-            return
-        status, payload = UpdateManager.do_restart()
-        self.send_json(payload, status)
-
-    def handle_ssh_generate(self):
-        """Handle SSH key generation request"""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            data = json.loads(body) if body else {}
-
-            email = data.get('email', 'user@example.com')
-            result = GitHubManager.generate_ssh_key(email)
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
-        except Exception as e:
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': str(e)}).encode())
-
-    def handle_git_config_post(self):
-        """Handle git config update request"""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            data = json.loads(body) if body else {}
-
-            name = data.get('name', '')
-            email = data.get('email', '')
-
-            if not name or not email:
-                self.send_response(400)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({'error': 'Name and email are required'}).encode())
-                return
-
-            result = GitHubManager.set_git_config(name, email)
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
-        except Exception as e:
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': str(e)}).encode())
-
-    def handle_set_auth_mode(self):
-        """Switch the workspace GitHub auth mode: 'app' (managed installation
-        token) or 'personal' (the user's own `gh auth login`). Persists the
-        choice and re-points git's credential helper immediately (issue #256).
-        Auth-gated; blocked in read-only demo via the do_POST chokepoint."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            data = json.loads(body) if body else {}
-            mode = (data.get('mode') or '').strip()
-            status = GitHubManager.set_auth_mode(mode)
-            self.send_json(status, 200)
-        except ValueError as e:
-            self.send_json({'error': str(e)}, 400)
-        except Exception as e:
-            self.send_json({'error': str(e)}, 500)
-
-    def handle_gh_login_instructions(self):
-        """Return instructions for gh CLI authentication"""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        instructions = GitHubManager.start_device_flow()
-
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(instructions).encode())
-
-    def handle_gh_check_auth(self):
-        """Check if gh CLI authentication is complete"""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        status = GitHubManager.get_gh_cli_status()
-
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(status).encode())
-
-    def handle_gh_web_login_start(self):
-        """Start the browser-less 'Connect GitHub' device flow (issue #303) and
-        return the one-time code + verification URL for the dashboard to show.
-        Auth-gated; blocked in read-only demo via the do_POST chokepoint."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            self.send_json(GitHubManager.start_web_login(), 200)
-        except Exception as e:
-            self.send_json({'error': str(e)}, 502)
-
-    def handle_gh_web_login_poll(self):
-        """Poll the in-flight device flow. On success the workspace is switched
-        to 'personal' mode server-side and the response carries connected:true."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        try:
-            self.send_json(GitHubManager.poll_web_login(), 200)
-        except Exception as e:
-            self.send_json({'error': str(e)}, 500)
-
-    def handle_gh_web_login_cancel(self):
-        """Abort an in-flight device flow (user closed the dialog)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        GitHubManager.cancel_web_login()
-        self.send_json({'ok': True}, 200)
     
     def test_chrome(self):
         if not self.check_claude_auth():
