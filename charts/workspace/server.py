@@ -76,6 +76,7 @@ import handlers
 from handlers import boards as board_routes
 from handlers import docs as docs_routes
 from handlers import files as files_routes
+from handlers import gateway as gateway_routes
 from handlers import hypervisor as hypervisor_routes
 from handlers import memory as memory_routes
 from handlers import skills as skills_routes
@@ -13278,6 +13279,7 @@ def _xvfb_running(display):
 class BrowserHandler(board_routes.BoardRoutes,
                      docs_routes.DocsRoutes,
                      files_routes.FilesRoutes,
+                     gateway_routes.GatewayRoutes,
                      hypervisor_routes.HypervisorRoutes,
                      memory_routes.MemoryRoutes,
                      skills_routes.SkillsRoutes,
@@ -13446,22 +13448,14 @@ class BrowserHandler(board_routes.BoardRoutes,
         elif claude_path == '/api/workspace/dirs':
             self.handle_workspace_dirs()
             return
-        # Conversation Gateway (issue #306): Meta GET verify handshake (NO auth —
-        # the provider can't carry an OAuth session) + link list (bearer).
-        elif claude_path == '/api/gateway/whatsapp/webhook':
-            self.handle_gateway_whatsapp_verify()
-            return
-        elif claude_path == '/api/gateway/links':
-            self.handle_gateway_link_list()
-            return
-        elif claude_path == '/api/gateway/providers':
-            self.handle_gateway_providers()
-            return
-        elif claude_path == '/api/gateway/credentials':
-            self.handle_gateway_credentials_get()
-            return
-        elif claude_path == '/api/gateway/internal/transcript':
-            self.handle_gateway_internal_transcript()
+        # --- Conversation Gateway (#306/#328/#329) ---
+        # Five GET routes (and this domain's POST/PUT/DELETE ones) are an
+        # ordered table in handlers/gateway.py. Three auth postures share it:
+        # the Meta verify handshake carries NO session (the provider can't),
+        # link/credentials CRUD is bearer/OAuth, and the internal/* loopback
+        # routes are the bearer-authed in-app preview. Every gate is in the
+        # handler, as before.
+        elif gateway_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
         # --- Provider keys (dashboard Settings) ---
         if claude_path == '/api/provider-keys':
@@ -13908,15 +13902,9 @@ class BrowserHandler(board_routes.BoardRoutes,
             # Triggers: all three deletes are in handlers/triggers.py's table.
             if trigger_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
-            # Conversation Gateway (issue #306): revoke a link by id (== the
-            # sha256 identity hash).
-            m = re.match(r'^/api/gateway/link/([a-f0-9]{64})$', path)
-            if m:
-                self.handle_gateway_link_delete(m.group(1))
-                return
-            # Messaging provider credentials (issue #329): clear the store.
-            if path == '/api/gateway/credentials':
-                self.handle_gateway_credentials_delete()
+            # Conversation Gateway: revoke a link by id (== the sha256
+            # identity hash), or clear the provider credential store.
+            if gateway_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             # Project registry / AI CTO (#464)
             m = re.match(r'^/api/projects/([a-z0-9-]+)$', path)
@@ -14608,400 +14596,6 @@ class BrowserHandler(board_routes.BoardRoutes,
             return
         ClaudeWebLoginManager.cancel()
         self.send_json({'ok': True})
-
-    # --- Conversation Gateway handlers (issue #306) ---
-    # The inbound webhook + Meta GET handshake are intentionally NOT behind
-    # check_claude_auth: external providers (Twilio/Meta) can't carry an OAuth
-    # session, so they authenticate via the provider signature verified in the
-    # adapter — exactly the handle_webhook_receive posture. The link CRUD
-    # endpoints DO require bearer/OAuth (they manage identity bindings).
-
-    def _gateway_raw_request(self, method):
-        """Build a gateway.RawRequest from this HTTP request: raw body (capped),
-        parsed form (Twilio), full external URL (Twilio signs over it), headers,
-        and query. Returns None if the body exceeds the 1 MiB cap."""
-        try:
-            content_length = int(self.headers.get('Content-Length', 0) or 0)
-        except (TypeError, ValueError):
-            content_length = 0
-        if content_length < 0 or content_length > 1 * 1024 * 1024:
-            return None
-        raw_body = self.rfile.read(content_length) if content_length else b''
-        ctype = self.headers.get('Content-Type', '') or ''
-        form = {}
-        if 'application/x-www-form-urlencoded' in ctype and raw_body:
-            parsed = urllib.parse.parse_qs(
-                raw_body.decode('utf-8', 'replace'), keep_blank_values=True)
-            form = {k: v[0] for k, v in parsed.items()}
-        host = self.headers.get('Host', '')
-        proto = self.headers.get('X-Forwarded-Proto', 'https')
-        path = self.path.split('?', 1)[0]
-        url = f'{proto}://{host}{path}' if host else path
-        query = {k: v[0] for k, v in urllib.parse.parse_qs(
-            urllib.parse.urlparse(self.path).query).items()}
-        headers = {k: v for k, v in self.headers.items()}
-        return RawRequest(method=method, url=url, headers=headers,
-                          raw_body=raw_body, form=form, query=query)
-
-    def handle_gateway_whatsapp_webhook(self):
-        """Inbound WhatsApp webhook. Provider-signature authed (in the adapter),
-        idempotent on the provider message id, fast 200 so retries stop."""
-        if _gateway_disabled(self):
-            return
-        gw = get_gateway()
-        adapter = get_gateway_adapter()
-        if gw is None or adapter is None:
-            self.send_json({'error': 'gateway unavailable'}, 503)
-            return
-        raw = self._gateway_raw_request('POST')
-        if raw is None:
-            self.send_json({'error': 'payload too large'}, 413)
-            return
-        result = gw.handle_inbound(adapter, raw)
-        self.send_json({'status': result.action}, result.status)
-
-    def handle_gateway_whatsapp_verify(self):
-        """Meta Cloud API GET verification handshake — echo hub.challenge on a
-        verify-token match, else 403. No-op (403) for providers without a
-        handshake (Twilio)."""
-        adapter = get_gateway_adapter() if GATEWAY_ENABLED else None
-        if adapter is None:
-            self.send_response(503)
-            self.end_headers()
-            return
-        raw = self._gateway_raw_request('GET')
-        challenge = adapter.handshake(raw) if raw is not None else None
-        if challenge is not None:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(str(challenge).encode('utf-8'))
-        else:
-            self.send_response(403)
-            self.end_headers()
-
-    def _current_bearer_token(self):
-        """The workspace Bearer token the app already holds — stored with the
-        pairing so revoking/rotating the token also orphans the WhatsApp link."""
-        try:
-            with open(ClaudeTaskManager.TOKEN_FILE) as f:
-                return f.read().strip()
-        except OSError:
-            return ''
-
-    def handle_gateway_link_create(self):
-        """Mint a single-use pairing code (dashboard 'Link WhatsApp'). The user
-        sends this code once over WhatsApp to bind their number."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if _gateway_disabled(self):
-            return
-        # Each code is a live, bindable credential for 600s — cap how many can
-        # be minted per hour so a compromised session can't spray them.
-        if _GW_LINK_LIMITER is not None and not _GW_LINK_LIMITER.allow('link'):
-            self.send_json({'error': 'too many pairing codes — try again later'}, 429)
-            return
-        gw = get_gateway()
-        if gw is None:
-            self.send_json({'error': 'gateway unavailable'}, 503)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        workspace = (data.get('workspace') or 'workspace').strip()[:64] or 'workspace'
-        host = (data.get('workspace_host') or self.headers.get('Host', '')).strip()
-        token = self._current_bearer_token()
-        if not token:
-            self.send_json({'error': 'workspace has no API token yet'}, 409)
-            return
-        try:
-            code = gw.registry.mint_pairing_code(
-                workspace=workspace, workspace_host=host, token=token,
-                ttl_seconds=600)
-        except Exception as e:
-            self.send_json({'error': f'could not mint pairing code: {e}'}, 500)
-            return
-        self.send_json({
-            'code': code,
-            'expires_in': 600,
-            'whatsapp_number': GATEWAY_WHATSAPP_NUMBER,
-            'workspace': workspace,
-        }, 201)
-
-    def handle_gateway_link_list(self):
-        """List the identity bindings — redacted (no raw number, no token)."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        gw = get_gateway() if GATEWAY_ENABLED else None
-        if gw is None:
-            # Soft shape (not a 503): the Settings UI renders its "messaging
-            # unavailable" state from this rather than surfacing an error toast.
-            self.send_json({'links': [], 'available': False})
-            return
-        self.send_json({
-            'links': gw.registry.list_links(),
-            'available': True,
-            'whatsapp_number': GATEWAY_WHATSAPP_NUMBER,
-            'proactive': get_gateway_adapter().capabilities.proactive
-                if get_gateway_adapter() else False,
-        })
-
-    def handle_gateway_link_delete(self, link_id):
-        """Revoke a link by id (== identity hash). The `unlink` keyword does the
-        same over WhatsApp."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if _gateway_disabled(self):
-            return
-        gw = get_gateway()
-        if gw is None:
-            self.send_json({'error': 'gateway unavailable'}, 503)
-            return
-        ok = gw.registry.revoke(link_id)
-        self.send_json({'ok': ok}, 200 if ok else 404)
-
-    # --- Messaging provider config (issue #329) ---
-    # The data-driven catalog + per-workspace credential store the Settings
-    # "Messaging / WhatsApp" section (stage 3) drives. Credentials are stored on
-    # the PVC (0600, redacted in every read), and saving hot-swaps the live
-    # adapter so the inbound webhook uses the new provider with no pod restart.
-
-    def handle_gateway_providers(self):
-        """The provider catalog + each provider's field spec (issue #328), so the
-        Settings form is entirely data-driven. No secrets — just the schema."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if gw_list_providers is None or not GATEWAY_ENABLED:
-            # Soft shape so the Settings section renders "not available"
-            # instead of erroring when messaging is switched off.
-            self.send_json({'providers': [], 'available': False})
-            return
-        self.send_json({
-            'providers': [s.to_dict() for s in gw_list_providers()],
-            'available': True,
-        })
-
-    def handle_gateway_credentials_get(self):
-        """Current selection, redacted (never a secret value)."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if _gateway_disabled(self):
-            return
-        self.send_json({'credentials': GatewayCredentialsManager.public_view()})
-
-    def handle_gateway_credentials_put(self):
-        """Set provider + creds + sender number, then hot-swap the live adapter.
-        Responds with the redacted view (so the client never round-trips a
-        secret back)."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if _gateway_disabled(self):
-            return
-        # Credential writes share the test bucket — both touch provider config.
-        if _GW_TEST_LIMITER is not None and not _GW_TEST_LIMITER.allow('test'):
-            self.send_json({'error': 'too many requests — try again later'}, 429)
-            return
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        provider_id = (data.get('provider_id') or '').strip()
-        creds = data.get('creds')
-        if creds is not None and not isinstance(creds, dict):
-            self.send_json({'error': 'creds must be an object'}, 400)
-            return
-        ok, err = GatewayCredentialsManager.set(
-            provider_id, creds or {}, sender_number=data.get('sender_number'))
-        if not ok:
-            self.send_json({'error': err}, 400)
-            return
-        rebuild_gateway_adapter()
-        self.send_json({'ok': True,
-                        'credentials': GatewayCredentialsManager.public_view()})
-
-    def handle_gateway_credentials_delete(self):
-        """Clear the store (disables the channel) and hot-swap back to the env
-        fallback."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if _gateway_disabled(self):
-            return
-        GatewayCredentialsManager.clear()
-        rebuild_gateway_adapter()
-        self.send_json({'ok': True})
-
-    def handle_gateway_test(self):
-        """Validate the stored creds against the provider — no message to a real
-        user. 400 when nothing is configured yet."""
-        if not self.check_claude_auth(allow_none_mode=False):
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        if _gateway_disabled(self):
-            return
-        # This is the one endpoint that makes an OUTBOUND network call per
-        # request, so it's the real abuse vector — throttle it.
-        if _GW_TEST_LIMITER is not None and not _GW_TEST_LIMITER.allow('test'):
-            self.send_json({'error': 'too many test requests — try again later'}, 429)
-            return
-        ok, detail = GatewayCredentialsManager.validate_stored()
-        if not ok and detail == 'no credentials configured':
-            self.send_json({'ok': False, 'detail': detail}, 400)
-            return
-        self.send_json({'ok': ok, 'detail': detail})
-
-    # --- Walkie-Talkie preview (in-app loopback) ---
-    # Bearer-authed (it's the app user). Drives the SAME gateway core through the
-    # loopback adapter so the preview shows exactly what WhatsApp would see —
-    # projection, choice→buttons, chunking, ack/final, out-of-window template —
-    # while running a real Hypervisor turn locally.
-
-    def _gw_preview_bundle(self):
-        """(gateway, preview, loopback) or None if the gateway is unavailable."""
-        gw = get_gateway()
-        preview = get_gateway_preview()
-        loop = get_gateway_loopback()
-        if gw is None or preview is None or loop is None:
-            return None
-        return gw, preview, loop
-
-    def _gw_internal_status(self, gw):
-        """(thread_id, busy) for the internal identity's active thread."""
-        rec = gw.registry.lookup(INTERNAL_IDENTITY)
-        if not rec:
-            return None, False
-        binding = gw.registry.select_binding(rec)
-        thread_id = binding.get('default_thread_id') if binding else None
-        busy = False
-        if thread_id and _HYPERVISOR_AVAILABLE:
-            # Live in-process signal only (#474) — never trust thread.json's
-            # persisted status, which can be stuck at 'running' forever after a
-            # mid-turn crash (#462) and would otherwise pin the Walkie-Talkie
-            # orb on THINKING… indefinitely.
-            busy = HypervisorSession.is_turn_live(thread_id)
-        return thread_id, busy
-
-    def handle_gateway_internal_inbound(self):
-        """Send a message into the loopback as if it arrived over WhatsApp."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        bundle = self._gw_preview_bundle()
-        if bundle is None:
-            self.send_json({'error': 'gateway unavailable'}, 503)
-            return
-        gw, preview, loop = bundle
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        text = (data.get('text') or '').strip()
-        button = (data.get('button') or '').strip()
-        display = button or text
-        if not display:
-            self.send_json({'error': 'text is required'}, 400)
-            return
-        # Record the user's own bubble + the inbound "wire" (the provider webhook
-        # shape WhatsApp would POST) so the UI can show both sides of the wire.
-        # Added BEFORE dispatch so it appears instantly, but the thread it
-        # belongs to isn't known yet (a `new chat` mints a brand-new one inside
-        # handle_inbound) — back-fill it from the result below (#474).
-        item = preview.transcript.add('in', display, kind='message', wire={
-            'inbound': {'from': INTERNAL_IDENTITY, 'text': text, 'button': button}})
-        raw = RawRequest(method='POST', form={
-            'from': INTERNAL_IDENTITY, 'text': text, 'button': button})
-        result = gw.handle_inbound(loop, raw)
-        if result.thread_id:
-            preview.transcript.set_meta(item['seq'], {'thread_id': result.thread_id})
-        self.send_json({'ok': True, 'action': result.action,
-                        'cursor': preview.transcript.cursor()})
-
-    def handle_gateway_internal_transcript(self):
-        """Poll the preview transcript (both directions, each with its wire
-        payload) since a cursor, plus link/simulate/thread status."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        bundle = self._gw_preview_bundle()
-        if bundle is None:
-            self.send_json({'available': False, 'messages': []})
-            return
-        gw, preview, loop = bundle
-        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        try:
-            since = int((qs.get('since') or ['0'])[0])
-        except (TypeError, ValueError):
-            since = 0
-        thread_id, busy = self._gw_internal_status(gw)
-        self.send_json({
-            'available': True,
-            'messages': preview.transcript.since(since),
-            'cursor': preview.transcript.cursor(),
-            'linked': gw.registry.is_linked(INTERNAL_IDENTITY),
-            'simulate_out_of_window': preview.simulate_out_of_window,
-            'provider': loop.wire_provider.name,
-            'identity': INTERNAL_IDENTITY,
-            'busy': busy,
-            'thread_id': thread_id,
-        })
-
-    def handle_gateway_internal_control(self):
-        """Link (mint+inject a pairing code so the real enrollment path shows in
-        the transcript), toggle the out-of-window simulation, or reset."""
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        bundle = self._gw_preview_bundle()
-        if bundle is None:
-            self.send_json({'error': 'gateway unavailable'}, 503)
-            return
-        gw, preview, loop = bundle
-        try:
-            data = self.read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json({'error': 'Invalid JSON body'}, 400)
-            return
-        action = (data.get('action') or '').strip()
-        if action == 'link':
-            if gw.registry.is_linked(INTERNAL_IDENTITY):
-                self.send_json({'ok': True, 'linked': True})
-                return
-            token = self._current_bearer_token()
-            if not token:
-                self.send_json({'error': 'workspace has no API token yet'}, 409)
-                return
-            code = gw.registry.mint_pairing_code(
-                workspace=preview.workspace,
-                workspace_host=self.headers.get('Host', ''), token=token)
-            # Inject the code as a loopback inbound so the REAL pairing path runs
-            # and the code→"✅ Linked" exchange is visible in the transcript.
-            preview.transcript.add('in', code, kind='notice', wire={
-                'inbound': {'from': INTERNAL_IDENTITY, 'text': code}})
-            gw.handle_inbound(loop, RawRequest(form={
-                'from': INTERNAL_IDENTITY, 'text': code}))
-            self.send_json({'ok': True,
-                            'linked': gw.registry.is_linked(INTERNAL_IDENTITY)})
-        elif action == 'simulate':
-            preview.simulate_out_of_window = bool(data.get('on'))
-            self.send_json({'ok': True,
-                            'simulate_out_of_window': preview.simulate_out_of_window})
-        elif action == 'reset':
-            gw.registry.revoke_identity(INTERNAL_IDENTITY)
-            preview.transcript.clear()
-            preview.simulate_out_of_window = False
-            self.send_json({'ok': True})
-        else:
-            self.send_json({'error': "action must be 'link', 'simulate', or 'reset'"}, 400)
 
     # Acting identity for a write, derived from the auth headers. Named for
     # the memory API it was written for, but /api/claude/tasks and the push
@@ -15900,9 +15494,8 @@ class BrowserHandler(board_routes.BoardRoutes,
         path = self._strip_route_prefix(self.path)
         if self._dispatch_app_proxy(path, 'PUT'):
             return
-        # Messaging provider credentials (issue #329) — set provider + creds.
-        if path == '/api/gateway/credentials':
-            self.handle_gateway_credentials_put()
+        # Messaging provider credentials (#329) — set provider + creds.
+        if gateway_routes.ROUTES.dispatch(self, 'PUT', path, self.path):
             return
         # Project registry / AI CTO (#464) — partial-merge update.
         m = re.match(r'^/api/projects/([a-z0-9-]+)$', path)
@@ -16081,20 +15674,11 @@ class BrowserHandler(board_routes.BoardRoutes,
             # per-thread actions that used to sit in the regex block below.
             elif hypervisor_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
-            # Conversation Gateway (issue #306): inbound WhatsApp webhook
-            # (provider-signature authed, NOT bearer) + link enrollment (bearer).
-            elif path == "/api/gateway/whatsapp/webhook":
-                self.handle_gateway_whatsapp_webhook()
-            elif path == "/api/gateway/link":
-                self.handle_gateway_link_create()
-            # Messaging provider credentials (issue #329): test-connection.
-            elif path == "/api/gateway/test":
-                self.handle_gateway_test()
-            # Walkie-Talkie in-app loopback preview (bearer-authed).
-            elif path == "/api/gateway/internal/inbound":
-                self.handle_gateway_internal_inbound()
-            elif path == "/api/gateway/internal/control":
-                self.handle_gateway_internal_control()
+            # Conversation Gateway: the inbound WhatsApp webhook
+            # (provider-signature authed, NOT bearer), link enrollment,
+            # test-connection, and the two loopback preview routes.
+            elif gateway_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Provider keys (dashboard Settings)
             elif path == "/api/provider-keys":
                 self.handle_provider_keys_set()
