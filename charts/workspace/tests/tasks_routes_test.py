@@ -6,11 +6,11 @@ across three verbs, and the first domain in the series whose branches were
 
   * The table — every route resolves to its own handler, and the `{id}/…`
     family is shown safe by construction rather than by order.
-  * **Hoist safety** — the one thing this domain needs that the earlier ones
-    did not. Collapsing interleaved branches moved the later task routes above
-    the hypervisor, gateway and missioncontrol ones they used to sit under, so
-    the paths they jumped over are listed here by name and asserted not to
-    match anything in this table.
+  * **Hoist safety** — collapsing interleaved branches moved the later task
+    routes above the hypervisor, gateway and missioncontrol ones they used to
+    sit under. The paths they jumped are declared as `hoisted_over_paths` and
+    checked generically (see tests/http_harness.py); hypervisor needed the
+    same thing, which is why it lives there rather than here.
   * `sets=` and the capture groups, including the two that stay positional.
   * End-to-end over a real server.
 
@@ -36,6 +36,90 @@ from tests.http_harness import (  # noqa: E402
     dispatch_to_mock, handler_for)
 
 
+#: Every path the collapsed table was hoisted above. Collapsing this
+#: domain's interleaved branches moved its later routes over all of them,
+#: so none may resolve in the task table.
+_HOISTED_OVER = (
+    ('GET', '/api/missioncontrol/queue'),
+    ('GET', '/api/missioncontrol/cards/build:b1'),
+    ('GET', '/api/claude/apps/session'),
+    ('GET', '/api/hypervisor/config'),
+    ('GET', '/api/hypervisor/threads'),
+    ('GET', '/api/hypervisor/health'),
+    ('GET', '/api/hypervisor/threads/th1'),
+    ('GET', '/api/hypervisor/threads/th1/activity'),
+    ('GET', '/api/hypervisor/threads/th1/watchers'),
+    ('GET', '/api/workspace/dirs'),
+    ('GET', '/api/gateway/whatsapp/webhook'),
+    ('GET', '/api/gateway/links'),
+    ('GET', '/api/gateway/providers'),
+    ('GET', '/api/gateway/credentials'),
+    ('GET', '/api/gateway/internal/transcript'),
+    ('GET', '/api/provider-keys'),
+    ('GET', '/api/mcp-servers'),
+    ('GET', '/api/subscriptions'),
+    ('GET', '/api/webhooks'),
+    ('GET', '/api/crons/c1'),
+    ('GET', '/api/page-watches/p1'),
+    ('GET', '/api/projects'),
+    ('GET', '/api/projects/p1/brief'),
+    ('GET', '/api/boards'),
+    ('GET', '/api/boards/b1/items'),
+    ('GET', '/api/feed'),
+    ('GET', '/api/desktop'),
+    ('GET', '/api/memory/ns/key'),
+    ('GET', '/api/skills'),
+    ('GET', '/api/docs'),
+    ('GET', '/api/files/list'),
+    ('POST', '/api/hypervisor/threads'),
+    ('POST', '/api/hypervisor/transcribe'),
+    ('POST', '/api/hypervisor/threads/th1/messages'),
+    ('POST', '/api/hypervisor/threads/th1/stop'),
+    ('POST', '/api/hypervisor/threads/th1/restore'),
+    ('POST', '/api/hypervisor/threads/th1/watchers'),
+    ('POST', '/api/hypervisor/threads/th1/rename'),
+    ('POST', '/api/hypervisor/threads/th1/model'),
+    ('POST', '/api/hypervisor/threads/th1/effort'),
+    ('POST', '/api/hypervisor/threads/th1/project'),
+    ('POST', '/api/gateway/whatsapp/webhook'),
+    ('POST', '/api/gateway/link'),
+    ('POST', '/api/gateway/test'),
+    ('POST', '/api/gateway/internal/inbound'),
+    ('POST', '/api/gateway/internal/control'),
+    ('POST', '/api/provider-keys'),
+    ('POST', '/api/subscriptions/claude/login/start'),
+    ('POST', '/api/mcp-servers'),
+    ('POST', '/api/webhooks/wh1'),
+    ('POST', '/api/webhooks/wh1/test'),
+    ('POST', '/api/crons/c1/suspend'),
+    ('POST', '/api/triggers/cron-fire/c1'),
+    ('POST', '/api/projects'),
+    ('POST', '/api/projects/_discover'),
+    ('POST', '/api/boards'),
+    ('POST', '/api/boards/b1/runs'),
+    ('POST', '/api/devcontainer/apply'),
+    ('POST', '/api/feed'),
+    ('POST', '/api/feed/fd_1/read'),
+    ('POST', '/api/push/register'),
+    ('POST', '/api/desktop/_reorder'),
+    ('POST', '/api/memory'),
+    ('POST', '/api/skills/_scan'),
+    ('POST', '/api/files/upload'),
+    ('DELETE', '/api/hypervisor/threads/th1'),
+    ('DELETE', '/api/hypervisor/threads/th1/watchers/w1'),
+    ('DELETE', '/api/provider-keys/SOME_KEY'),
+    ('DELETE', '/api/mcp-servers/name'),
+    ('DELETE', '/api/subscriptions/claude'),
+    ('DELETE', '/api/webhooks/wh1'),
+    ('DELETE', '/api/gateway/credentials'),
+    ('DELETE', '/api/projects/p1'),
+    ('DELETE', '/api/boards/b1'),
+    ('DELETE', '/api/desktop/d1'),
+    ('DELETE', '/api/memory/ns/key'),
+    ('DELETE', '/api/files'),
+)
+
+
 class TaskRouteResolutionTests(DomainRouteTests, unittest.TestCase):
 
     table = tasks.ROUTES
@@ -52,6 +136,9 @@ class TaskRouteResolutionTests(DomainRouteTests, unittest.TestCase):
                           ('GET', '/api/worktrees/repo/slug'))
     strip_query_handlers = {'handle_task_worktree_remove',
                             'handle_worktrees_remove'}
+    hoisted_over_paths = _HOISTED_OVER
+    owned_prefixes = ('/api/claude/tasks', '/api/claude/auth',
+                      '/api/claude/assistants', '/api/worktrees')
 
     def test_the_reads(self):
         for path, expected in (
@@ -131,129 +218,6 @@ class TaskRouteResolutionTests(DomainRouteTests, unittest.TestCase):
             self.assertEqual(inverted.match(http_method, path, path)[0].handler,
                              self.resolve(http_method, path), path)
 
-
-#: Paths owned by routes that the task table was hoisted above. On GET the task
-#: branches straddled five hypervisor, five gateway, two missioncontrol and two
-#: other routes; on POST the six `{id}/…` ones sat below the whole rest of the
-#: chain. Collapsing the domain into one table moved the later task routes over
-#: all of these, which is behaviour-preserving only while none of them can be
-#: matched by anything in the table.
-_JUMPED_OVER = {
-    'GET': (
-        '/api/missioncontrol/queue',
-        '/api/missioncontrol/cards/build:b1',
-        '/api/claude/apps/session',
-        '/api/hypervisor/config',
-        '/api/hypervisor/threads',
-        '/api/hypervisor/health',
-        '/api/hypervisor/threads/th1',
-        '/api/hypervisor/threads/th1/activity',
-        '/api/hypervisor/threads/th1/watchers',
-        '/api/workspace/dirs',
-        '/api/gateway/whatsapp/webhook',
-        '/api/gateway/links',
-        '/api/gateway/providers',
-        '/api/gateway/credentials',
-        '/api/gateway/internal/transcript',
-        '/api/provider-keys',
-        '/api/mcp-servers',
-        '/api/subscriptions',
-        '/api/webhooks',
-        '/api/crons/c1',
-        '/api/page-watches/p1',
-        '/api/projects',
-        '/api/projects/p1/brief',
-        '/api/boards',
-        '/api/boards/b1/items',
-        '/api/feed',
-        '/api/desktop',
-        '/api/memory/ns/key',
-        '/api/skills',
-        '/api/docs',
-        '/api/files/list',
-    ),
-    'POST': (
-        '/api/hypervisor/threads',
-        '/api/hypervisor/transcribe',
-        '/api/hypervisor/threads/th1/messages',
-        '/api/hypervisor/threads/th1/stop',
-        '/api/hypervisor/threads/th1/restore',
-        '/api/hypervisor/threads/th1/watchers',
-        '/api/hypervisor/threads/th1/rename',
-        '/api/hypervisor/threads/th1/model',
-        '/api/hypervisor/threads/th1/effort',
-        '/api/hypervisor/threads/th1/project',
-        '/api/gateway/whatsapp/webhook',
-        '/api/gateway/link',
-        '/api/gateway/test',
-        '/api/gateway/internal/inbound',
-        '/api/gateway/internal/control',
-        '/api/provider-keys',
-        '/api/subscriptions/claude/login/start',
-        '/api/mcp-servers',
-        '/api/webhooks/wh1',
-        '/api/webhooks/wh1/test',
-        '/api/crons/c1/suspend',
-        '/api/triggers/cron-fire/c1',
-        '/api/projects',
-        '/api/projects/_discover',
-        '/api/boards',
-        '/api/boards/b1/runs',
-        '/api/devcontainer/apply',
-        '/api/feed',
-        '/api/feed/fd_1/read',
-        '/api/push/register',
-        '/api/desktop/_reorder',
-        '/api/memory',
-        '/api/skills/_scan',
-        '/api/files/upload',
-    ),
-    # DELETE's three task branches were already contiguous; nothing was
-    # hoisted. Listed anyway so a future edit that reorders them is covered.
-    'DELETE': (
-        '/api/hypervisor/threads/th1',
-        '/api/hypervisor/threads/th1/watchers/w1',
-        '/api/provider-keys/SOME_KEY',
-        '/api/mcp-servers/name',
-        '/api/subscriptions/claude',
-        '/api/webhooks/wh1',
-        '/api/gateway/credentials',
-        '/api/projects/p1',
-        '/api/boards/b1',
-        '/api/desktop/d1',
-        '/api/memory/ns/key',
-        '/api/files',
-    ),
-}
-
-
-class TaskHoistSafetyTests(unittest.TestCase):
-    """The proof that collapsing non-contiguous branches changed nothing.
-
-    Every domain lifted before this one occupied an unbroken run of elif
-    branches, so the old order was reproduced by copying. This one was
-    interleaved, so the argument has to be made explicitly — and checked, so
-    that a route added to this table later cannot quietly start shadowing one
-    of the endpoints it now sits above.
-    """
-
-    def test_no_task_route_matches_a_path_it_was_hoisted_above(self):
-        for http_method, paths in _JUMPED_OVER.items():
-            for path in paths:
-                self.assertIsNone(
-                    handler_for(tasks.ROUTES, http_method, path),
-                    f'{http_method} {path} is now shadowed by the task table')
-
-    def test_the_jumped_over_prefixes_are_disjoint_from_this_domain(self):
-        # The structural reason the check above passes: every path this table
-        # owns starts with one of four literals, and nothing hoisted over does.
-        owned = ('/api/claude/tasks', '/api/claude/auth', '/api/claude/assistants',
-                 '/api/worktrees')
-        for paths in _JUMPED_OVER.values():
-            for path in paths:
-                self.assertFalse(
-                    any(path.startswith(p) for p in owned),
-                    f'{path} shares a prefix with this domain')
 
 
 class TaskCaptureArgumentTests(unittest.TestCase):
