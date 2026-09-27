@@ -30,6 +30,7 @@ DOCS_DIR, a patched manager, the auth bypass. These base classes know about
 the socket and the table, nothing else.
 """
 
+import functools
 import http.server
 import inspect
 import os
@@ -112,6 +113,24 @@ def dispatch_to_mock(table, http_method, path, raw=None):
     inspecting the result has already established that it does.
     """
     request = mock.Mock(spec=server.BrowserHandler)
+    matched = table.dispatch(
+        request, http_method, path, path if raw is None else raw)
+    assert matched, f'{http_method} {path} matched no route'
+    return request
+
+
+def dispatch_through_adapter(table, adapter, http_method, path, raw=None):
+    """Dispatch with one `route_*` adapter left REAL on the stand-in request.
+
+    A `spec=` mock stubs every method, including the adapter under test, so
+    the conversion it exists to perform would never run. This binds the real
+    one and leaves the handler it delegates to a mock — which is the call
+    worth inspecting. Attributes the adapter assigns (`_board_id`, …) read
+    back normally, because setting them explicitly satisfies the spec.
+    """
+    request = mock.Mock(spec=server.BrowserHandler)
+    setattr(request, adapter,
+            functools.partial(getattr(server.BrowserHandler, adapter), request))
     matched = table.dispatch(
         request, http_method, path, path if raw is None else raw)
     assert matched, f'{http_method} {path} matched no route'
