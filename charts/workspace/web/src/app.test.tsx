@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/preact';
+import { render, screen, waitFor, within } from '@testing-library/preact';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { App } from './app';
 import { currentPath, navigate } from './store/router';
@@ -42,12 +42,25 @@ describe('App shell', () => {
     // life), so pick the rail-specific button. Resolved by text rather
     // than position so adding a new route to ROUTES doesn't break the
     // test (Desktop landed at index 2, Memory shifted to 3).
-    const railItems = Array.from(
-      container.querySelectorAll('.rail .rail-item'),
-    ) as HTMLButtonElement[];
-    const railMemory = railItems.find((el) => el.textContent?.includes('Memory'));
-    expect(railMemory, 'rail has a Memory entry').toBeTruthy();
-    railMemory!.click();
+    // Knowledge rests collapsed by default, so open it the way a user would
+    // before reaching for Memory.
+    const knowledge = Array.from(
+      container.querySelectorAll('.rail .rail-group-label'),
+    ).find((el) => el.textContent?.includes('Knowledge')) as
+      | HTMLButtonElement
+      | undefined;
+    expect(knowledge, 'rail has a Knowledge group').toBeTruthy();
+    knowledge!.click();
+
+    // Signal-driven re-render, so wait for the group to actually open.
+    const railMemory = (await waitFor(() => {
+      const found = (
+        Array.from(container.querySelectorAll('.rail .rail-item')) as HTMLButtonElement[]
+      ).find((el) => el.textContent?.includes('Memory'));
+      expect(found, 'rail has a Memory entry').toBeTruthy();
+      return found;
+    })) as HTMLButtonElement;
+    railMemory.click();
     expect(currentPath.value).toBe('/memory');
     // Heading swaps to the new route. The chunk is already resolved above, so
     // this is waiting only on Suspense to swap the fallback for the component —

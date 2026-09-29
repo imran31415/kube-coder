@@ -62,13 +62,24 @@ describe('Rail categories (#267)', () => {
     );
   });
 
-  it('auto-expands the group containing the active route on navigation', async () => {
+  it('reveals the group containing the active route without persisting it', async () => {
     render(<Rail />);
     collapsedRailGroups.value = ['knowledge'];
     await waitFor(() => expect(screen.queryByText('Memory')).toBeNull());
     navigate('/memory');
     await waitFor(() => expect(screen.getByText('Memory')).toBeInTheDocument());
-    expect(collapsedRailGroups.value).not.toContain('knowledge');
+    // The reveal is transient: the stored preference still says collapsed, so
+    // the five-row default survives a visit to a Knowledge route.
+    expect(collapsedRailGroups.value).toContain('knowledge');
+  });
+
+  it('re-collapses a revealed group once the active route leaves it', async () => {
+    render(<Rail />);
+    collapsedRailGroups.value = ['knowledge'];
+    navigate('/memory');
+    await waitFor(() => expect(screen.getByText('Memory')).toBeInTheDocument());
+    navigate('/hypervisor');
+    await waitFor(() => expect(screen.queryByText('Memory')).toBeNull());
   });
 
   it('collapsed rail flattens groups to icons with hairline dividers', () => {

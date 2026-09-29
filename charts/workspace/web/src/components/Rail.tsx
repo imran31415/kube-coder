@@ -12,7 +12,7 @@ import { serverMode } from '../store/server-mode';
 import {
   railCollapsed,
   previewFullscreen,
-  collapsedRailGroups,
+  isRailGroupExpanded,
   toggleRailGroup,
   expandRailGroup,
 } from '../store/ui';
@@ -54,7 +54,7 @@ function RailItem({ path, active }: { path: string; active: string }) {
 }
 
 function RailGroup({ group, active }: { group: NavGroup; active: string }) {
-  const expanded = !collapsedRailGroups.value.includes(group.id);
+  const expanded = isRailGroupExpanded(group.id);
   const containsActive =
     group.landing === active || group.items.some((i) => i.path === active);
   // When a collapsed group holds the active route, tint the header so the
@@ -123,11 +123,12 @@ export function Rail() {
     boardEnabled: serverMode.value.boardEnabled,
   });
 
-  // Auto-expand the group containing the active route (never auto-collapse
-  // others) so palette/bottom-nav jumps always land on a visible item.
+  // Reveal the group containing the active route so palette/bottom-nav jumps
+  // always land on a visible item. Transient by design (see store/ui.ts):
+  // leaving the route re-collapses the group, so the default five-row rail
+  // survives normal use instead of creeping back to thirteen.
   useEffect(() => {
-    const g = navGroupFor(active);
-    if (g) expandRailGroup(g.id);
+    expandRailGroup(navGroupFor(active)?.id ?? null);
   }, [active]);
 
   // Preview fullscreen hides the rail entirely (overrides collapse state).
