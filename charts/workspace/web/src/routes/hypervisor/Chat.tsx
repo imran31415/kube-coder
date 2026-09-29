@@ -542,6 +542,12 @@ export function Chat({
   // Inline feedback when the user tries to attach something we can't send
   // (video, or an unsupported type) — never a silent drop.
   const [attachError, setAttachError] = useState<string | null>(null);
+  // Draft text captured by a Send pressed while an attachment upload was still
+  // in flight (#755). A phone photo over cellular uploads for several seconds
+  // — exactly the window in which the user taps Send — and the old path
+  // silently dropped anything not yet 'ready'. Instead the send queues here
+  // and dispatches from the settle effect once the last upload lands.
+  const [pendingSend, setPendingSend] = useState<string | null>(null);
   // Slash-command / skill picker (issue #302): index of the highlighted entry
   // and a per-Esc dismiss flag (cleared on the next keystroke so re-typing the
   // token reopens it). The menu's *open* state is otherwise derived from the
@@ -718,9 +724,12 @@ export function Chat({
         .then((path) =>
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x))),
         )
-        .catch(() =>
-          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x))),
-        );
+        .catch(() => {
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x)));
+          // Say so out loud — an error chip alone is easy to miss, and a photo
+          // that silently never reaches the agent is the bug this guards (#755).
+          setAttachError(`${name} failed to upload — remove it and try again.`);
+        });
     }
   }
 
@@ -878,14 +887,9 @@ export function Chat({
     setVisibleTurns((v) => v + TURN_WINDOW_STEP);
   }
 
-  function submit(text?: string) {
-    if (blocked) return;
-    // Enter-to-send bypasses the disabled button, so the gate lives here too.
-    if (missingKey) return;
-    stopMic(); // sending finalizes dictation — don't keep transcribing into the next draft
-    pinnedRef.current = true; // sending your own message re-pins to the bottom
-    pinToBottom();
-    const value = (text ?? draft).trim();
+  /** The actual dispatch — only called once every attachment has settled, so
+   *  nothing still uploading can be silently left behind (#755). */
+  function doSend(value: string) {
     // Append each uploaded image's absolute path on its own line — Claude Code
     // reads the image by path (same as the Build tab composer).
     const paths = attachments
@@ -904,12 +908,55 @@ export function Chat({
     taRef.current?.focus();
   }
 
+  function submit(text?: string) {
+    if (blocked) return;
+    // Enter-to-send bypasses the disabled button, so the gate lives here too.
+    if (missingKey) return;
+    stopMic(); // sending finalizes dictation — don't keep transcribing into the next draft
+    pinnedRef.current = true; // sending your own message re-pins to the bottom
+    pinToBottom();
+    const value = (text ?? draft).trim();
+    if (!value && attachments.every((a) => a.status === 'error')) return;
+    // A failed upload never sends silently without its file: refuse, and keep
+    // the draft and chips intact so nothing is lost (#755).
+    if (attachments.some((a) => a.status === 'error')) {
+      setAttachError('An attachment failed to upload — remove it to send.');
+      return;
+    }
+    // Uploads still in flight (a phone photo on a slow link): queue the send
+    // instead of dropping the picture. The settle effect below dispatches the
+    // moment the last upload lands; `blocked` locks the composer meanwhile.
+    if (attachments.some((a) => a.status === 'uploading')) {
+      setPendingSend(value);
+      return;
+    }
+    doSend(value);
+  }
+
+  // Dispatch a queued send once every upload has settled (#755). On any
+  // failure the queue cancels with an inline error — draft and chips stay put.
+  useEffect(() => {
+    if (pendingSend === null) return;
+    if (attachments.some((a) => a.status === 'uploading')) return;
+    setPendingSend(null);
+    if (attachments.some((a) => a.status === 'error')) {
+      setAttachError('An attachment failed to upload — message not sent. Remove it and try again.');
+      return;
+    }
+    doSend(pendingSend);
+    // doSend is recreated per render but only reads this render's state, which
+    // is exactly the settled attachment set this effect just observed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachments, pendingSend]);
+
   const busy = sending.value;
   const working = status === 'running';
   // Input is locked whenever a turn is in flight — not just during the brief
   // send request — so the user can't queue a message the server would reject
   // (409 "assistant is still responding"). Stop is the only action then.
-  const blocked = busy || working;
+  // A send queued behind an in-flight upload locks it too (#755): the message
+  // dispatches the moment the upload lands, so edits would be lost anyway.
+  const blocked = busy || working || pendingSend !== null;
   const readOnly = config.value?.readOnly;
   const empty = !active && evts.length === 0;
   const cli = (active
@@ -932,8 +979,12 @@ export function Chat({
   // Show the thinking indicator while the agent is working, or right after we
   // sent and no assistant turn has landed yet.
   const thinking = working || (busy && active !== null && !hasAgentTail);
+  // An attachment still uploading counts as sendable — Send queues behind it
+  // (#755) rather than sitting greyed-out with no explanation on mobile.
   const canSend =
-    !missingKey && (!!draft.trim() || attachments.some((a) => a.status === 'ready'));
+    !missingKey &&
+    (!!draft.trim() ||
+      attachments.some((a) => a.status === 'ready' || a.status === 'uploading'));
 
   // New events re-pin, and so does the thinking placeholder appearing or being
   // replaced by the real turn — it is rendered outside `turns`, so on its own
@@ -1387,8 +1438,13 @@ export function Chat({
             <Icon name="close" size={12} /> {stopping.value ? 'Stopping…' : 'Stop'}
           </Button>
         ) : (
-          <Button type="submit" variant="primary" disabled={blocked || !canSend} title="Send (Enter)">
-            <Icon name="play" size={12} /> Send
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={blocked || !canSend}
+            title={pendingSend !== null ? 'Sends when the upload finishes' : 'Send (Enter)'}
+          >
+            <Icon name="play" size={12} /> {pendingSend !== null ? 'Uploading…' : 'Send'}
           </Button>
         )}
       </form>
