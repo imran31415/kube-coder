@@ -31,6 +31,7 @@ import sys
 import time
 
 import handlers
+import keeper_idle
 from handlers.routing import RouteTable
 
 
@@ -187,6 +188,45 @@ class SystemRoutes:
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(body)
+
+    def send_keeper_idle(self, query):
+        """GET /api/keeper/idle — may this workspace be put to sleep? (#728)
+
+        The workspace-side half of the always-on keeper's sleep decision. The
+        keeper runs outside the pod and can see neither tmux nor
+        `~/.claude-tasks`, so it polls this endpoint; `keeper_idle` holds the
+        observation and the fail-safe rules, and this method is only the wire.
+
+        `?idle_minutes=` lets the keeper state the threshold it was configured
+        with (`keeper.sleep.idleMinutes`) instead of the two having to be kept
+        in step; the response echoes whichever value was used. The facts
+        (`busy_signals`, `idle_for_s`) are reported alongside the verdict so a
+        keeper that disagrees — or an operator asking why a workspace never
+        sleeps — does not have to re-derive them.
+
+        Strictly auth-gated (allow_none_mode=False): it reports whether a human
+        is currently at the keyboard, and answering that unauthenticated on a
+        public demo would be an activity side-channel. It is also a WAKE
+        DECISION input, so the keeper authenticates with the Claude Task API
+        token like any other bearer caller.
+        """
+        if not self.check_claude_auth(allow_none_mode=False):
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        srv = handlers.server
+        runs = getattr(srv, 'BoardRunsManager', None)
+        report = keeper_idle.report(
+            list_tasks=srv.ClaudeTaskManager.list_tasks,
+            list_runs=(runs.list_runs if runs and srv._BOARDS_AVAILABLE
+                       else None),
+            is_live=(srv.boards.runs.is_live if srv._BOARDS_AVAILABLE
+                     else None),
+            idle_minutes=keeper_idle.parse_idle_minutes(
+                (query.get('idle_minutes') or [None])[0]),
+            # Don't count the caller as a user of the thing it is asking
+            # about — see `keeper_idle.established`.
+            exclude_peers=(self.client_address[0],))
+        self.send_json(report, 200)
 
     def send_github_status(self):
         """Send combined GitHub status as JSON.
@@ -578,6 +618,9 @@ ROUTES.add('GET', '/metrics/prometheus', 'send_prometheus_metrics')
 ROUTES.add('GET', '/api/github/status', 'send_github_status')
 ROUTES.add('GET', '/api/github/config', 'send_git_config')
 ROUTES.add('GET', '/api/workspace/version', 'send_workspace_version')
+# The keeper's sleep poll (#728). Bearer-only; `?idle_minutes=` is the
+# keeper's own threshold, so `query=True`.
+ROUTES.add('GET', '/api/keeper/idle', 'send_keeper_idle', query=True)
 
 # ORDERING HAZARD: the `^/vnc/` prefix pattern below also matches a bare
 # `/vnc/`, so the two exact viewer routes have to be registered ahead of it.
