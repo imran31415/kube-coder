@@ -27,3 +27,17 @@ export type DocsStackParams = {
 };
 
 export type DocsNav = NativeStackNavigationProp<DocsStackParams>;
+
+/** Stack routes for the Security tab (#726). A finding is reached inside the
+ *  scan rather than as its own route, because it only means anything in the
+ *  context of the scan that produced it. */
+export type SecurityStackParams = {
+  ScanList: undefined;
+  /** `startPort` opens the start sheet pre-filled — the Apps tab's Scan
+   *  button and a push both land here. */
+  ScanDetail: { id: string };
+  NewScan: { startPort?: number } | undefined;
+  ConnectScanner: undefined;
+};
+
+export type SecurityNav = NativeStackNavigationProp<SecurityStackParams>;

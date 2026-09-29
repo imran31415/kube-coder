@@ -40,6 +40,12 @@ const EVENT_TYPES = [
   'boards.changed',
   'boards.run',
   'boards.review',
+  // Security scans (#726). A scan rewrites its findings as it works, so the
+  // live view is driven by these rather than by polling a long-running job.
+  'scan.status',
+  'scan.finding',
+  'scan.usage',
+  'scan.done',
 ];
 
 let es: EventSource | null = null;

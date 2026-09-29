@@ -1,0 +1,187 @@
+/* Security scanning (#726). Layout only — every value comes from a token. */
+
+.route-security { display: flex; flex-direction: column; gap: var(--size-5); }
+
+.security-start,
+.security-connect,
+.security-list { display: flex; flex-direction: column; gap: var(--size-3); }
+
+.security-connect-head p,
+.security-fineprint { max-width: 62ch; }
+
+.security-form {
+  display: flex; flex-direction: column; gap: var(--size-4); max-width: 46rem;
+}
+
+.security-field { display: flex; flex-direction: column; gap: 6px; }
+.security-field > span { font-weight: var(--weight-semibold); }
+.security-field small { max-width: 62ch; line-height: 1.5; font-size: var(--text-sm); }
+
+.security-warn { color: var(--warn); }
+
+.security-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--size-2);
+}
+
+.security-note,
+.security-install,
+.security-result {
+  padding: var(--size-3);
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  line-height: 1.5;
+  max-width: 62ch;
+  font-size: var(--text-md);
+}
+
+.security-install-failed,
+.security-result.is-bad { border-left: 3px solid var(--danger); }
+.security-result.is-ok { border-left: 3px solid var(--success); }
+
+/* ---- list ---------------------------------------------------------- */
+
+.security-rows {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+.security-row > a {
+  display: flex; flex-wrap: wrap; justify-content: space-between;
+  align-items: center; gap: var(--size-2);
+  /* 44px keeps the whole row a comfortable touch target on a phone. */
+  min-height: 44px;
+  padding: var(--size-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: inherit;
+}
+
+.security-row > a:hover { border-color: var(--border-2); }
+
+.security-row-main {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--size-2);
+}
+
+.security-row-outcome { color: var(--text-muted); }
+
+.security-row-meta { font-size: var(--text-sm); }
+
+/* ---- one scan ------------------------------------------------------ */
+
+.security-detail { display: flex; flex-direction: column; gap: var(--size-4); }
+
+.security-detail-head {
+  display: flex; flex-wrap: wrap; justify-content: space-between;
+  align-items: flex-start; gap: var(--size-3);
+}
+
+.security-summary { max-width: 68ch; line-height: 1.5; }
+
+.security-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--size-3);
+  margin: 0;
+}
+
+.security-stats dt { font-size: var(--text-sm); color: var(--text-muted); }
+.security-stats dd { margin: 2px 0 0; word-break: break-all; font-size: var(--text-md); }
+
+.security-error {
+  white-space: pre-wrap; word-break: break-word;
+  padding: var(--size-3);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-sm);
+}
+
+.security-findings { display: flex; flex-direction: column; gap: 8px; }
+
+.security-findings-head {
+  display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: var(--size-2);
+}
+
+.security-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---- one finding --------------------------------------------------- */
+
+.finding {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--size-3);
+}
+
+.finding.is-dismissed { opacity: 0.55; }
+
+.finding-head { display: flex; align-items: center; gap: var(--size-2); }
+
+.finding-toggle {
+  display: flex; align-items: center; gap: var(--size-2);
+  flex: 1; min-height: 44px;
+  background: none; border: 0; padding: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+
+.finding-title { font-weight: var(--weight-semibold); }
+.finding-chevron { margin-left: auto; color: var(--text-muted); }
+
+.finding-facts {
+  display: flex; flex-wrap: wrap; gap: var(--size-3);
+  margin-top: 6px; font-size: var(--text-sm);
+}
+
+.finding-body {
+  margin-top: var(--size-3);
+  display: flex; flex-direction: column; gap: var(--size-3);
+}
+
+.finding-body h4 { margin: 0 0 4px; font-size: var(--text-lg); }
+
+.finding-body p {
+  margin: 0; max-width: 78ch; line-height: 1.55; white-space: pre-wrap;
+  font-size: var(--text-md);
+}
+
+/* A reproduction can be pages long; scroll it rather than let it push the
+   rest of the finding off screen. */
+.finding-body pre {
+  margin: 0;
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--size-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.finding-extras dt {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+  margin-top: var(--size-2);
+}
+
+.finding-extras dd { margin: 4px 0 0; }
+
+.security-settings { margin-top: var(--size-4); }
+
+.security-settings > summary {
+  cursor: pointer; min-height: 44px; display: flex; align-items: center;
+}
+
+@media (max-width: 640px) {
+  .security-row > a,
+  .security-detail-head { flex-direction: column; align-items: flex-start; }
+}
+
+.security-steps { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 6px; }
+.security-steps li { line-height: 1.5; }

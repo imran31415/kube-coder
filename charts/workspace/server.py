@@ -66,6 +66,17 @@ import runtimes
 # never affects server startup.
 import push_notify
 
+# Security scanning (#726). Three modules, split by what they are allowed to
+# touch: `scans` owns what a scan IS (lifecycle, findings, events) and reaches
+# this module only through callables it is handed at startup; `scan_backends`
+# owns WHERE one runs and is the only place that spawns anything; and
+# `strix_connection` owns the scanner's own model settings and is the only
+# place that handles a credential. Stdlib-only, so none of them can delay or
+# break startup.
+import scan_backends
+import scans
+import strix_connection
+
 # Per-domain HTTP handlers + the ordered route tables that dispatch to them
 # (#100). `handlers.bind` hands the package this module object: in the pod the
 # backend runs as `python3 server.py` (so it is `__main__`) while the test suite
@@ -89,6 +100,7 @@ from handlers import skills as skills_routes
 from handlers import tasks as task_routes
 from handlers import triggers as trigger_routes
 from handlers import workspace as workspace_routes
+from handlers import scans as scan_routes
 from handlers import system as system_routes
 handlers.bind(sys.modules[__name__])
 
@@ -348,6 +360,14 @@ def cto_available():
     """AI CTO is usable only when its flag is on AND the Hypervisor it rides is
     available (#467). Resolved at call time so it tracks _HYPERVISOR_AVAILABLE."""
     return CTO_ENABLED and HYPERVISOR_ENABLED and _HYPERVISOR_AVAILABLE
+
+
+# Security scanning (#726). Off by default, and deliberately so: a scan drives
+# a container sandbox, which this workspace only has when it was deployed with
+# build.mode=buildkit. The chart refuses to render the two settings in
+# disagreement, so this flag is only ever true where the sandbox can actually
+# run — see charts/workspace/templates/deployment.yaml.
+SCANS_ENABLED = os.environ.get('STRIX_ENABLED', 'false').lower() == 'true'
 
 
 def _is_first_cto_thread():
@@ -13366,6 +13386,7 @@ class BrowserHandler(app_routes.AppRoutes,
                      hypervisor_routes.HypervisorRoutes,
                      memory_routes.MemoryRoutes,
                      project_routes.ProjectRoutes,
+                     scan_routes.ScanRoutes,
                      settings_routes.SettingsRoutes,
                      skills_routes.SkillsRoutes,
                      system_routes.SystemRoutes,
@@ -13519,6 +13540,12 @@ class BrowserHandler(app_routes.AppRoutes,
         # hazard that is load-bearing: `credentials` and `templates` are
         # legal board ids, so their routes precede /api/boards/{id}.
         if board_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
+            return
+
+        # --- Security scans (#726) ---
+        # Its id pattern (`scn_` + 12) cannot match `targets` or `connection`,
+        # so unlike most domains here this table has no ordering hazard.
+        if scan_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
 
         # --- Feed (#469), and the mobile push that delivers it ---
@@ -13913,6 +13940,10 @@ class BrowserHandler(app_routes.AppRoutes,
             # The int() the unlink branch did here rides an adapter in
             # handlers/memory.py, since the table hands over strings.
             if memory_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
+                return
+            # Security scans (#726): remove a finished scan, or forget the
+            # saved model settings.
+            if scan_routes.ROUTES.dispatch(self, 'DELETE', path, self.path):
                 return
             self.send_json({'error': 'Not found'}, 404)
         except Exception as e:
@@ -14729,6 +14760,9 @@ class BrowserHandler(app_routes.AppRoutes,
             # and only against a config hash the caller echoes back.
             elif devcontainer_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
+            # Security scans (#726): start one, stop one, connect a model.
+            elif scan_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             # Feed (#469) + the mobile push that delivers it, including
             # the two per-item routes that used to sit in the regex block.
             elif feed_routes.ROUTES.dispatch(self, 'POST', path, self.path):
@@ -15177,6 +15211,34 @@ if __name__ == "__main__":
             BoardRunsManager.start()
         except Exception as e:
             print(f'[board-run] boot sweep failed: {e}', file=sys.stderr)
+
+    # Security scans (#726). The manager reaches the event bus, the feed and
+    # the apps list through callables handed over here rather than by importing
+    # this module — a handler-side module that imports server.py runs a second
+    # copy of it under a second name, with duplicate managers and duplicate
+    # background threads.
+    #
+    # Its boot sweep is the same idea as the board one above: at startup no
+    # scan process of a previous run can still be alive, so a record that still
+    # says `running` is settled as `interrupted` rather than left claiming to
+    # be in flight forever (#462).
+    if SCANS_ENABLED:
+        try:
+            scans.ScansManager.configure(
+                backend_factory=lambda: scan_backends.LocalStrixBackend(
+                    executable=strix_connection.executable_path(),
+                    redactor=strix_connection.redact_known_secrets),
+                publish=EventBroker.publish,
+                emit_feed=FeedManager.emit,
+                targets_provider=lambda: scans.scannable_targets(
+                    AppsManager.list_apps(), AppsManager.INTERNAL_PORTS),
+            )
+            reclaimed = scans.ScansManager.start()
+            if reclaimed:
+                print(f'[scan] boot sweep settled {len(reclaimed)} scan(s) '
+                      f'left running by a previous process')
+        except Exception as e:
+            print(f'[scan] boot sweep failed: {e}', file=sys.stderr)
 
     # devcontainer postStart pass (#594). A daemon thread from here rather than
     # a separate python3 invocation in start.sh, so it shares this process's

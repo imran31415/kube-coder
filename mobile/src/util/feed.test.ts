@@ -7,6 +7,7 @@ import {
   discussPrefix,
   countBoardsAwaitingReview,
 } from './feed';
+import { pushTargetFromData } from './push';
 import type { FeedItem } from '../api/types';
 
 const now = 1_700_000_000_000; // fixed ms
@@ -135,5 +136,27 @@ describe('countBoardsAwaitingReview', () => {
   it('does not count a malformed board ref it could not route to', () => {
     const items = [item({ waiting: true, read: false, links: [{ label: '', ref: 'board:acme' }] })];
     expect(countBoardsAwaitingReview(items)).toBe(0);
+  });
+});
+
+describe('security scan refs (#726)', () => {
+  it('resolves a scan ref to that scan', () => {
+    expect(resolveFeedRef({ label: 'Open scan', ref: 'scan:scn_abc123def456' })).toEqual({
+      kind: 'scan',
+      id: 'scn_abc123def456',
+    });
+  });
+
+  it('ignores a scan ref with no id rather than opening the wrong thing', () => {
+    expect(resolveFeedRef({ label: 'x', ref: 'scan:' }).kind).toBe('none');
+  });
+
+  it('routes a scan push to the same place as the feed link', () => {
+    // The push payload carries the same typed ref the feed uses, so a tap and
+    // a tap-through from the Feed have to agree — including from a cold start.
+    expect(pushTargetFromData({ ref: 'scan:scn_abc123def456' })).toEqual({
+      kind: 'scan',
+      id: 'scn_abc123def456',
+    });
   });
 });

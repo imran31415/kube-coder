@@ -61,6 +61,13 @@
       ]
     },
     {
+      "id": "security",
+      "title": "Security",
+      "pages": [
+        { "id": "security-scanning", "title": "Security scanning", "file": "security-scanning.md", "summary": "Check an app running in this workspace for security holes with an AI penetration tester that proves what it finds. Covers connecting a model and setting a spending limit, choosing how deep to scan, why an app bound to loopback cannot be reached, reading and dismissing findings, and why a clean result always says what it actually checked." }
+      ]
+    },
+    {
       "id": "administration",
       "title": "Administration",
       "pages": [

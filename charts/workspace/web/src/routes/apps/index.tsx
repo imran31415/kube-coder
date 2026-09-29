@@ -18,6 +18,7 @@ import {
   proxyUrl,
 } from '../../api/apps';
 import { ApiError } from '../../api/client';
+import { serverMode } from '../../store/server-mode';
 import { AppEmbed } from './AppEmbed';
 import './apps.css';
 
@@ -179,6 +180,21 @@ function AppRow({
         </div>
       </div>
       <div class="apps-row-actions">
+        {/* Security scanning (#726). Shown only on an app that is actually
+            running, and only where the deployment supports scanning — this is
+            where people discover the feature exists, so it lives next to the
+            app rather than only behind a nav item they have to already know
+            about. */}
+        {!blocked && !stopped && serverMode.value.scansEnabled ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate('/security')}
+            title="Check this app for security holes"
+          >
+            Scan
+          </Button>
+        ) : null}
         {!blocked && (
           <>
             <Button

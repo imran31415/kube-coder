@@ -42,6 +42,11 @@ import type {
   BoardReviewItem,
   TaskWorktreeView,
   WorktreeDiff,
+  Finding,
+  ScanConnection,
+  ScanDetail,
+  ScanSummary,
+  ScanTarget,
 } from '../api/types';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -345,6 +350,127 @@ export const mockDesktop: DesktopItem[] = [
     action: { type: 'url', url: 'https://github.com/imran31415/kube-coder#readme', target: 'blank' },
   },
 ];
+
+// ---- Security scans (#726) --------------------------------------------------
+// Enough shape for the screenshot build to render every state: one finished
+// scan with findings, one still running, and one that could not run at all —
+// which is the state most likely to be got wrong, because it looks identical
+// to a clean pass everywhere except the wording.
+
+export const mockScanTargets: ScanTarget[] = [
+  { port: 3000, name: 'storefront', addr: '0.0.0.0', reachable: true, reason: '' },
+  {
+    port: 5173,
+    name: 'admin',
+    addr: '127.0.0.1',
+    reachable: false,
+    reason:
+      'This app is bound to 127.0.0.1, which only accepts connections from inside the workspace itself. Restart it listening on 0.0.0.0 so the scanner can reach it.',
+  },
+];
+
+export const mockScanConnection: ScanConnection = {
+  model: 'openrouter/demo-model',
+  api_base: '',
+  has_key: true,
+  uses_subscription: false,
+  configured: true,
+  install: { state: 'ready', version: '1.6.2', error: '' },
+  backend: { ok: true, reason: '', detail: '' },
+};
+
+const mockFindings: Finding[] = [
+  {
+    id: 'v1',
+    severity: 'high',
+    title: 'Login form accepts injected SQL',
+    endpoint: '/api/login',
+    method: 'POST',
+    cwe: 'CWE-89',
+    cvss: 8.1,
+    confidence: 'high',
+    description:
+      "The login form passes what you type straight into a database query, so a crafted username changes what the query means.",
+    impact: 'Anyone can sign in as any user without knowing a password.',
+    poc_description: 'Send the username below with any password.',
+    poc_script_code:
+      'curl -X POST http://10.0.0.1:3000/api/login -d "user=\' OR 1=1--&pass=x"',
+    remediation_steps: 'Use parameterised queries instead of building the SQL by joining strings.',
+  },
+  {
+    id: 'v2',
+    severity: 'low',
+    title: 'Server version is advertised in responses',
+    endpoint: '/',
+    method: 'GET',
+    description: 'Every response names the exact server version, which helps someone pick a known exploit.',
+  },
+];
+
+export const mockScans: ScanSummary[] = [
+  {
+    id: 'scn_000000000001',
+    status: 'done',
+    backend: 'local-strix',
+    target: { port: 3000, name: 'storefront', url: 'http://10.0.0.1:3000' },
+    mode: 'quick',
+    model: 'openrouter/demo-model',
+    budget_usd: 5,
+    instruction: '',
+    usage: { requests: 42, input_tokens: 920100, output_tokens: 3700, total_tokens: 923800, cost_usd: 0.231 },
+    counts: { critical: 0, high: 1, medium: 0, low: 1, other: 0, total: 2 },
+    started_at: Math.floor(Date.now() / 1000) - 3600,
+    ended_at: Math.floor(Date.now() / 1000) - 3300,
+    error: null,
+  },
+  {
+    id: 'scn_000000000002',
+    status: 'running',
+    backend: 'local-strix',
+    target: { port: 5173, name: 'admin', url: 'http://10.0.0.1:5173' },
+    mode: 'standard',
+    model: 'openrouter/demo-model',
+    budget_usd: 10,
+    instruction: 'focus on the checkout flow',
+    usage: { requests: 8, input_tokens: 120400, output_tokens: 900, total_tokens: 121300, cost_usd: 0.041 },
+    counts: { critical: 0, high: 0, medium: 0, low: 0, other: 0, total: 0 },
+    started_at: Math.floor(Date.now() / 1000) - 240,
+    ended_at: null,
+    error: null,
+  },
+  {
+    id: 'scn_000000000003',
+    status: 'failed',
+    backend: 'local-strix',
+    target: { port: 8080, name: '', url: 'http://10.0.0.1:8080' },
+    mode: 'quick',
+    model: 'openrouter/demo-model',
+    budget_usd: 5,
+    instruction: '',
+    usage: { requests: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, cost_usd: 0 },
+    counts: { critical: 0, high: 0, medium: 0, low: 0, other: 0, total: 0 },
+    started_at: Math.floor(Date.now() / 1000) - 86400,
+    ended_at: Math.floor(Date.now() / 1000) - 86390,
+    error: 'The provider did not accept this key. Check that you copied all of it.',
+  },
+];
+
+const SCAN_SUMMARIES: Record<string, string> = {
+  scn_000000000001: 'A quick scan of storefront found 2 to look at.',
+  scn_000000000002: 'Scanning admin…',
+  scn_000000000003:
+    'The scan of port 8080 could not run, so nothing was checked. The provider did not accept this key.',
+};
+
+export function mockScanDetail(id: string): ScanDetail {
+  const summary = mockScans.find((s) => s.id === id) ?? mockScans[0];
+  return {
+    ...summary,
+    findings: summary.status === 'done' ? mockFindings : [],
+    dispositions: {},
+    summary: SCAN_SUMMARIES[summary.id] ?? '',
+  };
+}
 
 export const mockApps: AppEntry[] = [
   {

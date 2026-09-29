@@ -201,6 +201,96 @@ export interface AppEntry {
   addr: string;
 }
 
+// ---- Security scans (#726) --------------------------------------------------
+
+/** Ours, not the scanner's. `failed` is deliberately not `done`: a scan that
+ *  never ran produces an empty findings list, exactly like a clean pass. */
+export type ScanStatus = 'running' | 'done' | 'stopped' | 'failed' | 'interrupted';
+
+export type ScanMode = 'quick' | 'standard' | 'deep';
+
+export const SCAN_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
+export type Severity = (typeof SCAN_SEVERITIES)[number];
+
+/** A finding is the scanner's own record. Only the fields the UI reasons about
+ *  are typed; the rest ride along and are rendered generically, so a newer
+ *  scanner never has evidence silently dropped. */
+export interface Finding {
+  id: string;
+  severity?: string;
+  title?: string;
+  [k: string]: unknown;
+}
+
+export interface ScanTarget {
+  port: number;
+  name: string;
+  addr: string;
+  /** False when the app listens on loopback only, which the scanner cannot
+   *  reach — it would connect to nothing and report no problems. */
+  reachable: boolean;
+  reason: string;
+}
+
+export interface ScanUsage {
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+
+export interface ScanCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  /** Severities the scanner reported that we do not recognise. Never dropped. */
+  other: number;
+  total: number;
+}
+
+export interface ScanSummary {
+  id: string;
+  status: ScanStatus;
+  backend: string;
+  target: { port: number; name: string; url: string };
+  mode: ScanMode;
+  model: string;
+  budget_usd: number | null;
+  instruction: string;
+  usage: ScanUsage;
+  counts: ScanCounts;
+  started_at: number;
+  ended_at: number | null;
+  error: string | null;
+}
+
+export interface ScanDetail extends ScanSummary {
+  findings: Finding[];
+  /** What the USER decided, kept apart from what the scanner reported. */
+  dispositions: Record<string, 'dismissed'>;
+  /** One honest sentence about how it ended — never a bare "0 found". */
+  summary: string;
+}
+
+export interface ScanInstallState {
+  state: 'absent' | 'installing' | 'ready' | 'failed';
+  version: string;
+  error: string;
+}
+
+export interface ScanConnection {
+  model: string;
+  api_base: string;
+  /** Whether a key is stored. The key itself never reaches the phone. */
+  has_key: boolean;
+  uses_subscription: boolean;
+  configured: boolean;
+  install: ScanInstallState;
+  backend: { ok: boolean; reason: string; detail: string };
+}
+
 // ---- Mission Control (issue #425) ------------------------------------------
 // One unified queue of agent work — builds, hypervisor chats and sub-agents —
 // mirroring GET /api/missioncontrol/queue. Cards arrive pre-sorted by priority

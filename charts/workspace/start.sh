@@ -1043,6 +1043,30 @@ if [ "${READONLY_MODE:-false}" = "true" ]; then
 fi
 python3 server.py &
 
+# Security scanning (#726): fetch the scanner's sandbox image now, in the
+# background, so the first scan does not.
+#
+# The dind sidecar keeps its image cache on an emptyDir, so the cache is empty
+# after EVERY pod restart — not just the first boot. Without this, the first
+# scan of each pod's life sits silent for minutes while a multi-GB image
+# downloads, which reads as a hang and gets killed before it ever starts.
+#
+# Deliberately backgrounded and deliberately non-fatal: a registry that is slow
+# or unreachable must not delay or fail the workspace boot. A scan started
+# before this finishes still works — it just waits, exactly as it would have.
+if [ "${STRIX_ENABLED:-false}" = "true" ] && [ -n "${STRIX_IMAGE:-}" ]; then
+  (
+    for attempt in 1 2 3; do
+      if docker pull "$STRIX_IMAGE" >/dev/null 2>&1; then
+        log_stage "strix: sandbox image ready ($STRIX_IMAGE)"
+        exit 0
+      fi
+      sleep $((attempt * 20))
+    done
+    log_stage "WARNING: strix: could not pre-pull $STRIX_IMAGE; the first scan will pull it"
+  ) &
+fi
+
 log_stage "all services launched, entering supervision loop"
 tick=0
 while true; do

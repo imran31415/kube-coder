@@ -106,6 +106,7 @@ export function MoreSheet() {
     ...visibleNavGroups({
       ctoEnabled: serverMode.value.ctoEnabled,
       boardEnabled: serverMode.value.boardEnabled,
+      scansEnabled: serverMode.value.scansEnabled,
     }).map((g) => ({
       title: g.title,
       entries: [

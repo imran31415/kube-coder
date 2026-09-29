@@ -26,6 +26,8 @@ function openLink(link: FeedLink): void {
   // URL had nothing to open; with one list it does.
   else if (kind === 'thread') navigate(`/hypervisor/${encodeURIComponent(rest)}`);
   else if (kind === 'memory') navigate('/memory');
+  // A finished security scan (#726) — open that scan's findings.
+  else if (kind === 'scan') navigate(`/security/${encodeURIComponent(rest)}`);
   else if (kind === 'board') {
     // `board:<board_id>:<item_id>` — an item awaiting review (#588 Phase 5).
     // Item ids can contain colons (GraphQL global ids), so only the board id
