@@ -66,10 +66,10 @@ export function Topbar() {
           drawerOpen.value = null;
           sheetOpen.value = null;
           paletteOpen.value = false;
-          navigate('/desktop');
+          navigate('/mission');
         }}
-        aria-label="Go to home (Desktop)"
-        title="Home — Desktop"
+        aria-label="Go to home (Mission Control)"
+        title="Home — Mission Control"
       >
         <span class="brand-mark" aria-hidden>kc</span>
         <span class="brand-name">kube-coder</span>
