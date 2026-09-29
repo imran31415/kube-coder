@@ -20,9 +20,12 @@ import { MissionDrawer } from './MissionDrawer';
 import './mission.css';
 
 // Priority order: Waiting on you leads — it's the column that needs a human.
+// Review sits between Running and Done because it is finished work that still
+// wants something from you; Done is the genuinely closed pile.
 const COLUMNS: { state: MissionState; label: string }[] = [
   { state: 'waiting', label: 'Waiting on you' },
   { state: 'running', label: 'Running' },
+  { state: 'review', label: 'Waiting for review' },
   { state: 'done', label: 'Done' },
 ];
 
@@ -77,8 +80,12 @@ export function MissionRoute() {
             body: 'Builds, hypervisor chats and spawned sub-agents currently executing, each with a one-line headline of what it is doing right now.',
           },
           {
+            title: 'Waiting for review is work you can merge',
+            body: 'A build that succeeded and left a pull request behind lands here rather than in Done — the agent has finished, you have not. The card carries its PR link.',
+          },
+          {
             title: 'Done is the recent history',
-            body: 'Finished builds — completed, failed or killed — and idle chats settle in Done for the last 48 hours. Click a card for its timeline, recent output and a follow-up composer; Open jumps to the full session.',
+            body: 'Everything else that finished — completed, failed or killed — and idle chats settle in Done for the last 48 hours. Click a card for its timeline, recent output and a follow-up composer; Open jumps to the full session.',
           },
           {
             title: 'Filter to focus',
@@ -116,6 +123,9 @@ export function MissionRoute() {
           <span class={pulse.waiting > 0 ? 'mission-pulse-warn' : ''}>
             <b>{pulse.waiting}</b> waiting on you
           </span>
+          {pulse.review > 0 && (
+            <span><b>{pulse.review}</b> to review</span>
+          )}
           <span><b>{pulse.done_today}</b> done today</span>
           {pulse.oldest_wait_s > 0 && (
             <span>oldest wait <b class="mission-pulse-warn">{waitLabel(pulse.oldest_wait_s)}</b></span>

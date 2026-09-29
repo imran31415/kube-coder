@@ -156,6 +156,70 @@ class MissionControlQueueTests(unittest.TestCase):
         self.assertEqual(kill['state'], 'done')
         self.assertFalse(kill['outcome']['ok'])
 
+    # ── review column ────────────────────────────────────────────────────
+
+    def test_completed_build_with_a_pr_goes_to_review(self):
+        """Succeeded and left a PR behind: done for the agent, not for you."""
+        self._write_task('t_pr', status='completed',
+                         finished_at=time.time() - 300,
+                         output='opened https://github.com/o/r/pull/431\n')
+        card = self._card(self._queue(), 'build:t_pr')
+        self.assertEqual(card['state'], 'review')
+        # The outcome is untouched — Review is a bucket, not a verdict.
+        self.assertEqual(card['outcome'], {'ok': True, 'detail': 'completed'})
+
+    def test_completed_build_without_a_pr_stays_done(self):
+        self._write_task('t_nopr', status='completed',
+                         finished_at=time.time() - 300,
+                         output=' Tests  449 passed (449)\n')
+        self.assertEqual(self._card(self._queue(), 'build:t_nopr')['state'],
+                         'done')
+
+    def test_failed_build_with_a_pr_stays_done(self):
+        """A red build needs a look, not a merge."""
+        self._write_task('t_prbad', status='error', exit_code=1,
+                         finished_at=time.time() - 300,
+                         output='https://github.com/o/r/pull/9\n')
+        self.assertEqual(self._card(self._queue(), 'build:t_prbad')['state'],
+                         'done')
+
+    def test_killed_build_with_a_pr_stays_done(self):
+        self._write_task('t_prkill', status='killed',
+                         killed_at=time.time() - 300,
+                         output='https://github.com/o/r/pull/10\n')
+        self.assertEqual(self._card(self._queue(), 'build:t_prkill')['state'],
+                         'done')
+
+    def test_non_pr_links_do_not_trigger_review(self):
+        """Only a PR chip counts — an issue or commit URL is not a merge."""
+        self._write_task('t_issue', status='completed',
+                         finished_at=time.time() - 300,
+                         output='see https://github.com/o/r/issues/431\n')
+        self.assertEqual(self._card(self._queue(), 'build:t_issue')['state'],
+                         'done')
+
+    def test_review_sorts_between_running_and_done(self):
+        self._write_task('t_s_run', status='running')
+        self._write_task('t_s_wait', status='waiting-for-input')
+        self._write_task('t_s_rev', status='completed',
+                         finished_at=time.time() - 300,
+                         output='https://github.com/o/r/pull/1\n')
+        self._write_task('t_s_done', status='completed',
+                         finished_at=time.time() - 300)
+        states = [c['state'] for c in self._queue()['cards']]
+        self.assertEqual(states, ['waiting', 'running', 'review', 'done'])
+
+    def test_pulse_counts_review_without_losing_done_today(self):
+        """Promoting a card to Review must not make the day's tally drop."""
+        self._write_task('t_p_rev', status='completed',
+                         finished_at=time.time() - 300,
+                         output='https://github.com/o/r/pull/2\n')
+        self._write_task('t_p_done', status='completed',
+                         finished_at=time.time() - 300)
+        pulse = self._queue()['pulse']
+        self.assertEqual(pulse['review'], 1)
+        self.assertEqual(pulse['done_today'], 2)
+
     # ── evidence chips (#425) ────────────────────────────────────────────
 
     def test_done_card_carries_test_and_pr_evidence(self):
@@ -272,12 +336,13 @@ class MissionControlQueueTests(unittest.TestCase):
         states = [c['state'] for c in result['cards']]
         self.assertEqual(states, sorted(
             states, key=lambda s: {'waiting': 0, 'running': 1,
-                                   'done': 2}[s]))
+                                   'review': 2, 'done': 3}[s]))
         self.assertEqual(result['cards'][0]['id'], 'build:t_b')
         pulse = result['pulse']
         self.assertEqual(pulse['running'], 2)   # build + chat
         self.assertEqual(pulse['waiting'], 1)
-        self.assertNotIn('review', pulse)
+        # t_c completed without a PR, so nothing is reviewable here.
+        self.assertEqual(pulse['review'], 0)
         self.assertEqual(pulse['done_today'], 1)
         self.assertGreaterEqual(pulse['oldest_wait_s'], 499)
 

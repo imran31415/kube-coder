@@ -84,12 +84,12 @@
 }
 
 /* ---- board / columns ---- */
-/* One track per rendered column — COLUMNS in index.tsx is Waiting/Running/Done.
-   The old `repeat(4, …)` left a phantom empty track on the right of every
-   desktop board (#504); keep this in step if a column is ever added. */
+/* One track per rendered column — COLUMNS in index.tsx is
+   Waiting/Running/Review/Done. A count that drifts from COLUMNS leaves either a
+   phantom empty track (#504) or a squeezed last column; keep this in step. */
 .mission-board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(250px, 1fr));
+  grid-template-columns: repeat(4, minmax(230px, 1fr));
   gap: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -132,6 +132,7 @@
 }
 .mission-col-dot-running { background: var(--info); }
 .mission-col-dot-waiting { background: var(--warn); }
+.mission-col-dot-review { background: var(--success); }
 .mission-col-dot-done { background: var(--text-subtle); }
 
 .mission-col-cards {
