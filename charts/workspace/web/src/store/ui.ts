@@ -51,33 +51,73 @@ export const railCollapsed = signal<boolean>(initial.railCollapsed);
 
 // Per-group disclosure state for the categorized rail (#267). Stored under
 // its own versioned key (not kube-coder.ui) so the group schema can evolve
-// without migrating the main prefs blob. Holds *collapsed* group ids —
-// default is every group expanded.
+// without migrating the main prefs blob. Holds *collapsed* group ids.
 const RAIL_GROUPS_KEY = 'kc.rail.groups.v1';
 
-function loadCollapsedGroups(): string[] {
-  if (typeof localStorage === 'undefined') return [];
+/**
+ * Groups that start collapsed in a browser that has never set a preference.
+ *
+ * The rail then rests at five rows — Mission Control and its agent surfaces —
+ * instead of thirteen. Workspace and Knowledge are destinations you go to
+ * deliberately, not ones you scan, so they cost a click rather than permanent
+ * vertical space. Every route still exists and every deep link still resolves;
+ * this is disclosure state only.
+ */
+export const DEFAULT_COLLAPSED_GROUPS = ['workspace', 'knowledge'];
+
+export function loadCollapsedGroups(): string[] {
+  if (typeof localStorage === 'undefined') return [...DEFAULT_COLLAPSED_GROUPS];
   try {
     const raw = localStorage.getItem(RAIL_GROUPS_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+    // Distinguish "never set" from "set to empty". A user who deliberately
+    // expanded both groups has a stored `[]`, and must keep it — only a
+    // browser with no stored key inherits the new default.
+    if (raw === null) return [...DEFAULT_COLLAPSED_GROUPS];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((v): v is string => typeof v === 'string')
+      : [...DEFAULT_COLLAPSED_GROUPS];
   } catch {
-    return [];
+    return [...DEFAULT_COLLAPSED_GROUPS];
   }
 }
 
-/** Ids of rail nav groups the user has collapsed. */
+/** Ids of rail nav groups the user has collapsed. Persisted. */
 export const collapsedRailGroups = signal<string[]>(loadCollapsedGroups());
+
+/**
+ * The group auto-revealed because the active route lives inside it.
+ *
+ * Deliberately NOT persisted and deliberately separate from
+ * `collapsedRailGroups`: navigating to /memory should show you where you are,
+ * but it should not silently re-expand Knowledge forever. Otherwise the
+ * five-row default erodes to thirteen within a session or two and this whole
+ * change delivers nothing durable. Only an explicit chevron click — which goes
+ * through `toggleRailGroup` — is remembered.
+ */
+export const autoExpandedGroup = signal<string | null>(null);
+
+/** True when `id` should render expanded: not collapsed, or transiently open. */
+export function isRailGroupExpanded(id: string): boolean {
+  return !collapsedRailGroups.value.includes(id) || autoExpandedGroup.value === id;
+}
 
 export function toggleRailGroup(id: string) {
   const cur = collapsedRailGroups.value;
+  // An explicit toggle is the user's real preference, so it also clears the
+  // transient reveal — otherwise collapsing the group you're standing in
+  // would appear to do nothing.
+  if (autoExpandedGroup.value === id) autoExpandedGroup.value = null;
   collapsedRailGroups.value = cur.includes(id) ? cur.filter((g) => g !== id) : [...cur, id];
 }
 
-/** Expand (only) — used to auto-reveal the group containing the active route. */
-export function expandRailGroup(id: string) {
-  const cur = collapsedRailGroups.value;
-  if (cur.includes(id)) collapsedRailGroups.value = cur.filter((g) => g !== id);
+/**
+ * Transiently reveal the group containing the active route (never persisted).
+ * Pass null when the active route belongs to no group, so the previous
+ * reveal is cleared rather than left standing.
+ */
+export function expandRailGroup(id: string | null) {
+  if (autoExpandedGroup.value !== id) autoExpandedGroup.value = id;
 }
 
 if (typeof localStorage !== 'undefined') {
