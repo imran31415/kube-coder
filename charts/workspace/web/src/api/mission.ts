@@ -7,7 +7,9 @@ import { apiGet } from './client';
  */
 
 export type MissionKind = 'build' | 'chat' | 'subagent';
-export type MissionState = 'running' | 'waiting' | 'done';
+/** `review` is a finished build that left a PR behind — done for the agent,
+ *  not done for you. Derived server-side from the evidence chips. */
+export type MissionState = 'running' | 'waiting' | 'review' | 'done';
 
 /** One tappable choice parsed off a waiting task's screen — same shape as
  *  tasks.ts PendingPrompt/PromptOption (server parse_screen_prompt, #204). */
@@ -77,6 +79,7 @@ export interface MissionCard {
 export interface MissionPulse {
   running: number;
   waiting: number;
+  review: number;
   done_today: number;
   oldest_wait_s: number;
   generated_at: number;
@@ -87,8 +90,8 @@ export interface MissionQueue {
   pulse: MissionPulse;
 }
 
-/** Cards arrive pre-sorted: waiting → running → done, newest first within
- *  each group. Pure read — safe to poll. */
+/** Cards arrive pre-sorted: waiting → running → review → done, newest first
+ *  within each group. Pure read — safe to poll. */
 export const getMissionQueue = () => apiGet<MissionQueue>('/api/missioncontrol/queue');
 
 /** One normalized activity-timeline entry in the card detail drawer. Chats

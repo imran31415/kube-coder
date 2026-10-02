@@ -58,7 +58,7 @@ const sample: MissionCard[] = [
 ];
 
 const samplePulse: MissionPulse = {
-  running: 1, waiting: 1, done_today: 2, oldest_wait_s: 840, generated_at: now,
+  running: 1, waiting: 1, review: 0, done_today: 2, oldest_wait_s: 840, generated_at: now,
 };
 
 const realFetch = globalThis.fetch;
@@ -85,11 +85,13 @@ afterEach(() => {
 });
 
 describe('MissionRoute', () => {
-  it('renders all three columns in priority order with cards bucketed by state', () => {
+  it('renders all four columns in priority order with cards bucketed by state', () => {
     render(<MissionRoute />);
     const cols = screen.getAllByRole('region');
+    // Review sits between Running and Done: finished work that still wants
+    // something from you, ahead of the genuinely closed pile.
     expect(cols.map((c) => c.getAttribute('aria-label'))).toEqual([
-      'Waiting on you', 'Running', 'Done',
+      'Waiting on you', 'Running', 'Waiting for review', 'Done',
     ]);
     expect(screen.getByText('Memory GC defaults')).toBeInTheDocument();
     expect(screen.getByText('Trigger history')).toBeInTheDocument();

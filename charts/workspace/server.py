@@ -12880,6 +12880,37 @@ def _mc_evidence_from_log(text):
     return chips
 
 
+def _mc_is_reviewable(card):
+    """True when a finished card is work waiting for a human to merge it.
+
+    A build that succeeded AND left a pull request behind is not 'done' in any
+    sense the user cares about — the agent is finished, the work is not. It
+    gets its own column so it stops being buried among the genuinely closed.
+
+    Derived purely from the evidence chips `_mc_evidence_from_log` already
+    parsed off the output tail, so this costs nothing in a queue polled every
+    ten seconds. That cheapness has a price, and it is worth stating plainly:
+
+      * The tail is bounded (_MC_TAIL_BYTES). A build that opens its PR early
+        and then runs a chatty test suite pushes the URL out of the window,
+        and the card stays in Done. A miss, never a wrong answer.
+      * _MC_EV_PR_RE matches github.com pull URLs only.
+      * A worktree branch with commits but no PR never reaches Review.
+
+    If those misses start to bite, widen the tail for the PR scan specifically
+    before reaching for a git call — `git rev-list` against every finished
+    task's base is a per-poll cost this endpoint should not take on.
+    """
+    outcome = card.get('outcome') or {}
+    if not outcome.get('ok'):
+        # A failed or killed build needs a look, not a merge. It stays in Done.
+        return False
+    return any(
+        chip.get('link') and str(chip.get('label', '')).startswith('PR #')
+        for chip in card.get('evidence') or ()
+    )
+
+
 def _mc_headline_from_events(events_path, fallback=''):
     """Latest human-meaningful event of a hypervisor thread."""
     best = ''
@@ -13001,6 +13032,8 @@ def _mc_task_card(meta, task_dir, now):
             detail = ('error' if exit_code in (None, '')
                       else f'error · exit {exit_code}')
             card['outcome'] = {'ok': False, 'detail': detail}
+        if _mc_is_reviewable(card):
+            card['state'] = 'review'
     return card
 
 
@@ -13111,7 +13144,7 @@ def missioncontrol_queue():
                 })
 
     # Urgency first (waiting → running → done), newest within a group.
-    order = {'waiting': 0, 'running': 1, 'done': 2}
+    order = {'waiting': 0, 'running': 1, 'review': 2, 'done': 3}
     cards.sort(key=lambda c: (order.get(c['state'], 9), -(c['updated_at'] or 0)))
 
     waiting = [c for c in cards if c['state'] == 'waiting']
@@ -13123,9 +13156,13 @@ def missioncontrol_queue():
     pulse = {
         'running': sum(1 for c in cards if c['state'] == 'running'),
         'waiting': len(waiting),
+        'review': sum(1 for c in cards if c['state'] == 'review'),
+        # Reviewable cards ARE finished work, so they keep counting toward
+        # done_today — promoting a card to Review must not make the day's
+        # tally go down.
         'done_today': sum(
             1 for c in cards
-            if c['state'] == 'done'
+            if c['state'] in ('done', 'review')
             and (c['finished_at'] or c['updated_at'] or 0) >= day_ago),
         'oldest_wait_s': oldest_wait_s,
         'generated_at': now,

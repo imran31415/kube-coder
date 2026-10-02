@@ -31,6 +31,7 @@ const MAX_CARDS = 4;
 const STATE_LABEL: Record<MissionState, string> = {
   waiting: 'Waiting',
   running: 'Running',
+  review: 'Review',
   done: 'Done',
 };
 
@@ -155,6 +156,11 @@ export function DesktopMissionStrip() {
           <span class={pulse.waiting > 0 ? 'dt-mc-pulse-warn' : ''}>
             <b>{pulse.waiting}</b> waiting on you
           </span>
+          {pulse.review > 0 && (
+            <span>
+              <b>{pulse.review}</b> to review
+            </span>
+          )}
           <span>
             <b>{pulse.done_today}</b> done today
           </span>
