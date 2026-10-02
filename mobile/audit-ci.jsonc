@@ -3,41 +3,49 @@
   // Fails CI on high/critical advisories. See docs/SUPPLY_CHAIN.md.
   //
   // Runtime vs. development dependencies:
-  //   - PRODUCTION deps (expo, react-native, @react-navigation/*, expo-* — the
-  //     code actually bundled onto the device by EAS/Expo) currently carry NO
-  //     high/critical advisory, so none are allowlisted here. A new high/critical
-  //     in a shipped dependency MUST fail this job.
-  //   - The two allowlisted advisories below are both in test/build-time
-  //     devDependencies (vitest UI + its bundled vite). They never ship in the
-  //     Expo bundle installed on a device and are not reachable as a network
-  //     service in the app — they only matter when a developer runs `vitest`
-  //     locally with the UI server enabled. Fixing them requires the vitest v4
-  //     major (a semver-major bump that would rewrite the test config); tracked
-  //     for that upgrade rather than blocking CI in the meantime. These are the
-  //     same advisories the two web SPAs allowlist for the same reason.
+  //   - PRODUCTION deps (react-native, @react-navigation/*, expo-* — the code
+  //     actually bundled onto the device by EAS/Expo) carry NO high/critical
+  //     advisory. A new high/critical in a shipped dependency MUST fail this job.
+  //   - The allowlisted advisories below are all in code that runs on a
+  //     developer's or EAS build machine, never inside the Metro bundle
+  //     installed on a device. Each documents why no bump clears it.
   //
-  // brace-expansion (GHSA-3jxr-9vmj-r5cp and GHSA-mh99-v99m-4gvg, both high)
-  // and the uuid moderate are NOT allowlisted: brace-expansion is forced to
-  // 5.0.8 via a blanket npm `override` in package.json (GHSA-mh99-v99m-4gvg
-  // affects every line <=5.0.7 with no backported fix, so 5.0.8 is the only
-  // clean version; serve-handler's minimatch@3 tolerates it because our
-  // rewrite patterns contain no braces, so expand() is never invoked), and
-  // uuid is a moderate build-tool-only advisory that sits below this high+
-  // gate. Keep the allowlist minimal so a genuinely new high/critical still
-  // fails the job.
+  // brace-expansion is NOT allowlisted: it is forced to 5.0.12 via a blanket
+  // npm `override` in package.json. 5.0.10 and 5.0.11 are the patched versions
+  // for the two stack-exhaustion advisories (GHSA-6j4f-fj2g-mc7p and
+  // GHSA-qhr7-859c-m2p7, both high, published 2026-09-29), which supersede the
+  // earlier GHSA-3jxr-9vmj-r5cp / GHSA-mh99-v99m-4gvg pair the override was
+  // first added for. serve-handler's minimatch@3 still tolerates the 5.x export
+  // shape because our rewrite patterns contain no braces, so expand() is never
+  // invoked. The uuid moderate sits below this high+ gate. Keep the allowlist
+  // minimal so a genuinely new high/critical still fails the job.
   //
   // Each exception documents owner + reason + review date. Prune an entry once
   // its dependency is bumped past the patched version.
   "high": true,
   "allowlist": [
-    // owner: security@kube-coder | review: 2026-10-01 | dev-only (vitest test UI)
+    // owner: security@kube-coder | review: 2026-10-02 | dev-only (vitest test UI)
     "GHSA-5xrq-8626-4rwp", // vitest  <=3.2.5  UI server arbitrary file read/exec — needs vitest v4
-    // owner: security@kube-coder | review: 2026-10-01 | dev-only (vite via vitest)
-    "GHSA-fx2h-pf6j-xcff"  // vite    <=6.4.2  server.fs.deny bypass (Windows) — cleared by vitest v4
-    // The two image-size entries that sat here are pruned: the SDK 57.0.22
-    // bump dropped metro's dependency on it entirely, so `npm ls image-size`
-    // is empty and audit-ci now reports both as allowlisted-but-not-found.
-    // That was the condition their own comment set for removal.
+    // owner: security@kube-coder | review: 2026-10-02 | dev-only (vite via vitest)
+    "GHSA-fx2h-pf6j-xcff", // vite    <=6.4.2  server.fs.deny bypass (Windows) — cleared by vitest v4
+    // owner: security@kube-coder | review: 2026-10-02 | build-time only, NO FIX PUBLISHED
+    //
+    // node-forge <=1.4.0 accepts extra nested DigestAlgorithm elements when
+    // verifying RSA PKCS#1 v1.5 signatures. first_patched_version is null —
+    // there is no release to bump to, so this cannot be resolved by a version
+    // change. The advisory itself is not new (published 2026-09-03); it began
+    // failing this job on 2026-10-01 when its affected range was widened to
+    // include 1.4.0, which is why it appeared across all branches at once.
+    //
+    // Reachable only through the Expo CLI toolchain — `expo` > `@expo/cli` and
+    // `@expo/code-signing-certificates` — which runs on the developer/EAS build
+    // machine. It is not imported by app code, so Metro does not bundle it onto
+    // a device, and nothing in the app verifies attacker-supplied RSA
+    // signatures with it at runtime.
+    //
+    // Re-check when Expo ships a release that moves off node-forge, or when
+    // node-forge publishes a patched line.
+    "GHSA-86w9-cpqp-85rv"  // node-forge <=1.4.0  RSA PKCS#1 v1.5 signature forgery — no patch exists
   ],
   "report-type": "summary"
 }
