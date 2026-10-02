@@ -124,8 +124,9 @@ describe('matchRoute()', () => {
   });
 
   it('falls back to the default route for unknown paths', () => {
-    // Default = ROUTES[0]; currently Desktop, was Build pre-launcher.
-    expect(matchRoute('/nonsense').path).toBe('/desktop');
+    // Default = ROUTES[0]; currently Mission Control, was Desktop before
+    // that and Build pre-launcher.
+    expect(matchRoute('/nonsense').path).toBe('/mission');
   });
 
   it('treats nested paths as their top-level route (detail handled inside)', () => {
@@ -133,7 +134,7 @@ describe('matchRoute()', () => {
   });
 
   it('treats `/` as the default landing route', () => {
-    expect(matchRoute('/').path).toBe('/desktop');
-    expect(matchRoute('').path).toBe('/desktop');
+    expect(matchRoute('/').path).toBe('/mission');
+    expect(matchRoute('').path).toBe('/mission');
   });
 });

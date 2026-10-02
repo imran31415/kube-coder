@@ -15,7 +15,7 @@ describe('BottomNav', () => {
 
   it('takes every slot label from navLabel so nav surfaces cannot drift', () => {
     render(<BottomNav />);
-    for (const path of ['/desktop', '/hypervisor', '/tasks', '/memory']) {
+    for (const path of ['/mission', '/hypervisor', '/tasks', '/memory']) {
       expect(screen.getByText(navLabel(path))).toBeInTheDocument();
     }
   });

@@ -72,11 +72,12 @@ export interface RouteDef {
 }
 
 export const ROUTES: RouteDef[] = [
-  // Desktop is the default landing route — matchRoute('/') falls through
-  // to ROUTES[0], so this order also controls what the user sees on a
-  // bare visit to the dashboard.
-  { path: '/desktop', title: 'Desktop' },
+  // Mission Control is the default landing route — matchRoute('/') falls
+  // through to ROUTES[0], so this order also controls what the user sees on
+  // a bare visit to the dashboard. It leads because "what needs me?" is the
+  // question you arrive with; Desktop is a place you go on purpose.
   { path: '/mission', title: 'Mission Control' },
+  { path: '/desktop', title: 'Desktop' },
   // Kept resolvable, not navigable (#683): /cto is a permanent redirect into
   // Chat with CTO mode pre-selected, so old bookmarks and doc links still land
   // somewhere sensible. It is deliberately absent from NAV_GROUPS below.
