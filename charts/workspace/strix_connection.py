@@ -308,14 +308,19 @@ def ensure_installed(runner=None):
     global _install_thread
     if is_installed():
         return install_state()
+    # Start the thread while holding the lock, but read the state back outside
+    # it. install_state() acquires `_lock` itself, so returning it from inside
+    # this block deadlocks the moment a second Save arrives mid-install -- and
+    # because the thread dies holding the lock, every later save_connection,
+    # clear_connection and GET /api/scans/connection hangs too, until the pod
+    # restarts. See tests/strix_connection_test.py for the two-call case.
     with _lock:
-        if _install_thread_alive():
-            return install_state()
-        _write_install_state('installing')
-        _install_thread = threading.Thread(
-            target=_install, args=(runner or _Installer(), venv_dir()),
-            name='scanner-install', daemon=True)
-        _install_thread.start()
+        if not _install_thread_alive():
+            _write_install_state('installing')
+            _install_thread = threading.Thread(
+                target=_install, args=(runner or _Installer(), venv_dir()),
+                name='scanner-install', daemon=True)
+            _install_thread.start()
     return install_state()
 
 

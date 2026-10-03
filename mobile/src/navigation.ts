@@ -32,12 +32,14 @@ export type DocsNav = NativeStackNavigationProp<DocsStackParams>;
  *  scan rather than as its own route, because it only means anything in the
  *  context of the scan that produced it. */
 export type SecurityStackParams = {
-  ScanList: undefined;
-  /** `startPort` opens the start sheet pre-filled — the Apps tab's Scan
-   *  button and a push both land here. */
+  /** `startPort` opens the start form pre-filled on that app — the Apps tab's
+   *  Scan button lands here. The start form lives on this screen, so the port
+   *  belongs on this route: the `NewScan` and `ConnectScanner` routes that
+   *  used to be declared here were never registered in `SecurityStack`, so
+   *  the Scan button could only switch tabs and drop the app it was
+   *  pressed on. */
+  ScanList: { startPort?: number } | undefined;
   ScanDetail: { id: string };
-  NewScan: { startPort?: number } | undefined;
-  ConnectScanner: undefined;
 };
 
 export type SecurityNav = NativeStackNavigationProp<SecurityStackParams>;

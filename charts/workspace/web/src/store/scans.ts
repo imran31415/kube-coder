@@ -43,6 +43,17 @@ import { pushToast } from './ui';
 
 export const scans = signal<ScanSummary[]>([]);
 export const scansLoaded = signal(false);
+
+/**
+ * The port a Scan button was pressed on, for the start form to pre-select.
+ *
+ * The Apps page used to `navigate('/security')` with nothing attached, so the
+ * form fell back to "first reachable app" -- i.e. pressing Scan on port 8080
+ * could open a form aimed at port 3000 and send real attack traffic there.
+ * Consumed and cleared by the form so a later visit is not still aimed at an
+ * app the user has moved on from.
+ */
+export const requestedPort = signal<number | null>(null);
 export const scansError = signal<string | null>(null);
 
 export const openScan = signal<ScanDetail | null>(null);
@@ -81,12 +92,28 @@ export async function loadScans(quiet = false): Promise<void> {
   }
 }
 
+let openScanSeq = 0;
+
+/**
+ * Load one scan's detail.
+ *
+ * Guarded by a sequence token, the same way `boards.ts` guards its review
+ * read. Without it a late reply for the previously-open scan overwrites the
+ * current one, and because the detail view only renders when
+ * `scan.id === scanId` the page then sits on "Loading…" with nothing able to
+ * recover it: the route effect will not re-run, and both the event handler
+ * and the poll only ever refetch whichever scan is already in `openScan`.
+ */
 export async function loadScan(id: string, quiet = false): Promise<void> {
+  const seq = ++openScanSeq;
+  const stale = () => seq !== openScanSeq;
   try {
     const detail = await getScan(id);
+    if (stale()) return;
     openScan.value = detail;
     openScanError.value = null;
   } catch (err) {
+    if (stale()) return;
     if (!quiet) openScanError.value = describe(err);
   }
 }
@@ -160,7 +187,7 @@ export const signInBusy = signal(false);
 
 let signInPoll: number | null = null;
 
-function stopSignInPoll(): void {
+export function stopSignInPoll(): void {
   if (signInPoll !== null) window.clearInterval(signInPoll);
   signInPoll = null;
 }
@@ -314,7 +341,11 @@ function onEvent(ev: DashboardEvent): void {
 }
 
 function tick(): void {
-  if (!hasLiveScan()) return;
+  // Refresh the list unconditionally. Gating this on `hasLiveScan()` made the
+  // fallback unable to do the one job it exists for: with the stream down, a
+  // scan started from the mobile app or the HTTP API is not in `scans.value`
+  // yet, so the gate read false forever and the tab stayed stale until a
+  // manual reload. A list read every 15s is the cost of that being correct.
   void loadScans(true);
   const current = openScan.value;
   if (current && isLiveScan(current)) void loadScan(current.id, true);

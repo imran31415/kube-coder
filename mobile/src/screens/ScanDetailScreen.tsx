@@ -2,7 +2,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import type { RouteProp } from '@react-navigation/native';
 import { useRoute } from '@react-navigation/native';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getScan, setFindingDisposition, stopScan } from '../api/client';
@@ -46,6 +46,19 @@ export default function ScanDetailScreen() {
   // A scan rewrites its findings as it confirms them, so this fills in while
   // it runs rather than showing a frozen screen for minutes at a time.
   usePolling(load, 6000);
+
+  // Clear the previous scan the moment the route is re-pointed at a new one.
+  // A push tapped while this screen is already mounted updates `params` on
+  // the existing route key rather than mounting a fresh screen, and
+  // usePolling's effect is keyed on the interval only -- so the screen kept
+  // rendering the old scan's status, spend and findings for up to 6s while
+  // `id` had already moved, and a "Stop scan" tap in that window acted on
+  // the NEW scan while describing the old one.
+  useEffect(() => {
+    setScan(null);
+    setError(null);
+    void load();
+  }, [id, load]);
 
   if (!scan) {
     return (

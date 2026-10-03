@@ -4,7 +4,13 @@ import { Input } from '../../components/primitives/Input';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { navigate } from '../../store/router';
 import { MODE_LABELS, type ScanMode } from '../../api/scans';
-import { connection, loadTargets, startScan, targets } from '../../store/scans';
+import {
+  connection,
+  loadTargets,
+  requestedPort,
+  startScan,
+  targets,
+} from '../../store/scans';
 
 /**
  * Start a scan (#726).
@@ -19,6 +25,24 @@ import { connection, loadTargets, startScan, targets } from '../../store/scans';
  * * **The budget field is always visible**, and says plainly what an empty one
  *   means. It is optional, as it is in the scanner, but never invisible.
  */
+/**
+ * The typed spending limit as the API wants it, or `'invalid'`.
+ *
+ * `Number(budget)` was used directly here, and anything unparseable becomes
+ * NaN -- which `JSON.stringify` writes as `null`, which the server reads as
+ * "no cap". So "$5" (or a comma decimal separator) silently started an
+ * uncapped scan, under helper text promising it would stop. The server's own
+ * validator could not catch it either, because the bad value arrives as
+ * `null` rather than as a bad number. A comma is accepted rather than
+ * rejected: on a comma-decimal locale it is the correct way to type this.
+ */
+function parseBudget(raw: string): number | null | 'invalid' {
+  const text = raw.trim();
+  if (text === '') return null;
+  const value = Number(text.replace(',', '.'));
+  return Number.isFinite(value) && value > 0 ? value : 'invalid';
+}
+
 export function ScanForm() {
   const [port, setPort] = useState<number | null>(null);
   const [mode, setMode] = useState<ScanMode>('quick');
@@ -34,12 +58,20 @@ export function ScanForm() {
   const chosen = rows.find((t) => t.port === port) ?? null;
   const conn = connection.value;
 
-  // Pre-select the first app the scanner can actually reach.
+  // Pre-select the app the Scan button was pressed on; failing that, the
+  // first one the scanner can actually reach.
   useEffect(() => {
-    if (port === null && rows.length) {
+    if (!rows.length) return;
+    const asked = requestedPort.value;
+    if (asked !== null) {
+      if (rows.some((t) => t.port === asked)) setPort(asked);
+      requestedPort.value = null;
+      return;
+    }
+    if (port === null) {
       setPort((rows.find((t) => t.reachable) ?? rows[0]).port);
     }
-  }, [rows.length]);
+  }, [rows.length, requestedPort.value]);
 
   if (!rows.length) {
     return (
@@ -63,14 +95,17 @@ export function ScanForm() {
     );
   }
 
+  const parsedBudget = parseBudget(budget);
+  const budgetInvalid = parsedBudget === 'invalid';
+
   async function submit(e: Event) {
     e.preventDefault();
-    if (port === null) return;
+    if (port === null || parsedBudget === 'invalid') return;
     setStarting(true);
     const id = await startScan({
       port,
       mode,
-      budget_usd: budget.trim() === '' ? null : Number(budget),
+      budget_usd: parsedBudget,
       instruction: instruction.trim(),
     });
     setStarting(false);
@@ -123,10 +158,16 @@ export function ScanForm() {
             placeholder="No limit"
             onInput={(e) => setBudget((e.target as HTMLInputElement).value)}
           />
-          <small class={budget.trim() === '' ? 'security-warn' : 'muted'}>
-            {budget.trim() === ''
-              ? 'With no limit the scan runs until it finishes. A deep scan can take hours and spend accordingly.'
-              : 'The scan stops cleanly when it reaches this much.'}
+          <small
+            class={
+              budgetInvalid || budget.trim() === '' ? 'security-warn' : 'muted'
+            }
+          >
+            {budgetInvalid
+              ? 'Enter an amount like 5 or 2.50, or clear the field for no limit.'
+              : budget.trim() === ''
+                ? 'With no limit the scan runs until it finishes. A deep scan can take hours and spend accordingly.'
+                : 'The scan stops cleanly when it reaches this much.'}
           </small>
         </label>
 
@@ -144,7 +185,9 @@ export function ScanForm() {
             <Button
               type="submit"
               variant="primary"
-              disabled={starting || port === null || !conn?.configured}
+              disabled={
+                starting || port === null || budgetInvalid || !conn?.configured
+              }
             >
               {starting ? 'Starting…' : 'Start scan'}
             </Button>

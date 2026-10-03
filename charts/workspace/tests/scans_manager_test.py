@@ -273,6 +273,37 @@ class AbsorbTests(ManagerTestCase):
         self.assertEqual(len(self.feed), feed_before)
 
 
+class DeleteTests(ManagerTestCase):
+
+    def test_deleting_a_running_scan_announces_nothing(self):
+        """delete() stops the scan first, and stop() announced -- posting a
+        feed row and a `waiting` push whose "Open scan" link pointed at a
+        directory removed on the very next line. The row outlived its target
+        and the link 404d."""
+        record = self.create()
+        feed_before = len(self.feed)
+        self.assertTrue(scans.ScansManager.delete(record['id']))
+        self.assertEqual(len(self.feed), feed_before,
+                         'delete posted a feed item for a deleted scan')
+        self.assertIsNone(scans.ScansManager.get(record['id']))
+
+    def test_stopping_a_running_scan_still_announces(self):
+        """The announce must stay for the ordinary stop -- that is the signal
+        the user is waiting on."""
+        record = self.create()
+        feed_before = len(self.feed)
+        scans.ScansManager.stop(record['id'])
+        self.assertEqual(len(self.feed), feed_before + 1)
+
+    def test_stop_returns_none_once_the_scan_is_gone(self):
+        """The handler reads the record, then stop() re-reads it; a DELETE
+        landing between the two made `record.get(...)` raise and 500 a
+        request that merely lost a race."""
+        record = self.create()
+        scans.ScansManager.delete(record['id'])
+        self.assertIsNone(scans.ScansManager.stop(record['id']))
+
+
 class PollerTests(ManagerTestCase):
 
     poller = True

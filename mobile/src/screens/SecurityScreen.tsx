@@ -1,7 +1,7 @@
 /** Security scans (#726) — the list, and starting one from the phone. */
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
-import React, { useCallback, useState } from 'react';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   FlatList,
   RefreshControl,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
+  ApiError,
   createScan,
   getScanConnection,
   listScanTargets,
@@ -33,10 +34,16 @@ import type {
   ScanSummary,
   ScanTarget,
 } from '../api/types';
-import type { SecurityNav } from '../navigation';
+import type { SecurityNav, SecurityStackParams } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 import { usePolling } from '../util/usePolling';
-import { outcomeLabel, spendLabel, scanAgeLabel, MODE_LABELS } from '../util/scans';
+import {
+  outcomeLabel,
+  spendLabel,
+  scanAgeLabel,
+  parseBudget,
+  MODE_LABELS,
+} from '../util/scans';
 
 const STATUS_COLOR: Record<string, string> = {
   running: colors.accent,
@@ -54,6 +61,9 @@ export default function SecurityScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
+  const [disabled, setDisabled] = useState(false);
+  const route = useRoute();
+  const startPort = (route.params as SecurityStackParams['ScanList'])?.startPort;
 
   const load = useCallback(async () => {
     try {
@@ -68,7 +78,12 @@ export default function SecurityScreen() {
       setError(null);
     } catch (e) {
       setError((e as Error).message);
-      setScans((prev) => prev ?? []);
+      // `code` is the server's stable signal (see ApiError) -- the message
+      // text this used to regex can be reworded at any time, and when it is,
+      // the dedicated "switched off" state silently degrades into the
+      // misleading "No scans yet" empty state below.
+      if (e instanceof ApiError && e.code === 'disabled') setDisabled(true);
+      setScans((prev) => prev ?? null);
     }
   }, []);
 
@@ -77,13 +92,17 @@ export default function SecurityScreen() {
   // than a person would notice.
   usePolling(load, 10000);
 
+  // Open the start form on the app whose Scan button was pressed.
+  useEffect(() => {
+    if (startPort !== undefined) setComposing(true);
+  }, [startPort]);
+
   const onRefresh = async () => {
     setRefreshing(true);
     await load();
     setRefreshing(false);
   };
 
-  const disabled = /switched off/i.test(error ?? '');
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -96,7 +115,7 @@ export default function SecurityScreen() {
         />
       ) : (
         <>
-          {error && scans !== null && scans.length > 0 ? (
+          {error && scans && scans.length > 0 ? (
             <ErrorBanner message={error} />
           ) : null}
 
@@ -112,6 +131,7 @@ export default function SecurityScreen() {
           ) : composing ? (
             <StartScanForm
               targets={targets}
+              startPort={startPort}
               onCancel={() => setComposing(false)}
               onStarted={async (id) => {
                 setComposing(false);
@@ -132,7 +152,18 @@ export default function SecurityScreen() {
             </View>
           )}
 
-          {scans === null ? (
+          {scans === null && error ? (
+            /* An empty list after a FAILED read used to render as "No scans
+               yet — Scan an app you are running to see what an intruder
+               would find.", with the error invisible. On this surface an
+               error must never be able to read as an all-clear. Same shape
+               AppsScreen already uses. */
+            <EmptyState
+              icon="cloud-offline-outline"
+              title="Couldn't load scans"
+              subtitle={error}
+            />
+          ) : scans === null ? (
             <Loading label="Loading scans" />
           ) : scans.length === 0 ? (
             <EmptyState
@@ -184,15 +215,20 @@ function ScanRow({ scan, onPress }: { scan: ScanSummary; onPress: () => void }) 
 
 function StartScanForm({
   targets,
+  startPort,
   onCancel,
   onStarted,
 }: {
   targets: ScanTarget[];
+  startPort?: number;
   onCancel: () => void;
   onStarted: (id: string) => void;
 }) {
+  // The app the Scan button was pressed on wins over "first reachable".
   const [port, setPort] = useState<number>(
-    (targets.find((t) => t.reachable) ?? targets[0])?.port ?? 0,
+    (startPort !== undefined && targets.some((t) => t.port === startPort)
+      ? startPort
+      : (targets.find((t) => t.reachable) ?? targets[0])?.port) ?? 0,
   );
   const [mode, setMode] = useState<ScanMode>('quick');
   const [budget, setBudget] = useState('5');
@@ -200,15 +236,18 @@ function StartScanForm({
   const [err, setErr] = useState<string | null>(null);
 
   const chosen = targets.find((t) => t.port === port) ?? null;
+  const parsedBudget = parseBudget(budget);
+  const budgetInvalid = parsedBudget === 'invalid';
 
   async function start() {
+    if (parsedBudget === 'invalid') return;
     setBusy(true);
     setErr(null);
     try {
       const id = await createScan({
         port,
         mode,
-        budget_usd: budget.trim() === '' ? null : Number(budget),
+        budget_usd: parsedBudget,
       });
       onStarted(id);
     } catch (e) {
@@ -262,16 +301,22 @@ function StartScanForm({
         placeholder="No limit"
         placeholderTextColor={colors.textMuted}
       />
-      <Text style={budget.trim() === '' ? styles.warn : styles.hint}>
-        {budget.trim() === ''
-          ? 'With no limit the scan runs until it finishes, and spends accordingly.'
-          : 'The scan stops cleanly when it reaches this much.'}
+      <Text style={budgetInvalid || budget.trim() === '' ? styles.warn : styles.hint}>
+        {budgetInvalid
+          ? 'Enter an amount like 5 or 2.50, or clear the field for no limit.'
+          : budget.trim() === ''
+            ? 'With no limit the scan runs until it finishes, and spends accordingly.'
+            : 'The scan stops cleanly when it reaches this much.'}
       </Text>
 
       {err ? <ErrorBanner message={err} /> : null}
 
       <View style={styles.formActions}>
-        <Button title={busy ? 'Starting…' : 'Start scan'} onPress={start} disabled={busy || !port} />
+        <Button
+          title={busy ? 'Starting…' : 'Start scan'}
+          onPress={start}
+          disabled={busy || !port || budgetInvalid}
+        />
         <Button title="Cancel" onPress={onCancel} variant="secondary" />
       </View>
       <Text style={styles.fineprint}>

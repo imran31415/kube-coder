@@ -99,3 +99,23 @@ export function fieldText(value: unknown): string {
   if (value === null || value === undefined) return '';
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
+
+/**
+ * The typed spending limit as the API wants it, or `'invalid'`.
+ *
+ * `Number(budget)` was used directly at the call site, and anything it cannot
+ * parse becomes NaN -- which `JSON.stringify` writes as `null`, which the
+ * server reads as "no cap". The field is a `decimal-pad`, which renders a
+ * comma separator on de/fr/es, so a user typing `5,50` -- the correct way to
+ * write it there -- silently started an *uncapped* deep scan under a label
+ * promising a limit. The server's own validator cannot catch it either,
+ * because the bad value arrives as `null` rather than as a bad number.
+ *
+ * A comma is accepted rather than rejected, for that same reason.
+ */
+export function parseBudget(raw: string): number | null | 'invalid' {
+  const text = (raw ?? '').trim();
+  if (text === '') return null;
+  const value = Number(text.replace(',', '.'));
+  return Number.isFinite(value) && value > 0 ? value : 'invalid';
+}

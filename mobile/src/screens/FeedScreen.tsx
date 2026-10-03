@@ -94,7 +94,29 @@ export default function FeedScreen() {
         requestBoardFocus(target.boardId, target.itemId);
         nav.navigate('Board', {});
       }
+      // A scan chip rides on every finished-scan feed item (scans.py emits
+      // `scan:<id>`), and resolveFeedRef parses it — but this chain had no
+      // branch for it, so the chip marked the row read and did nothing. Same
+      // defect #692 fixed for board chips.
+      else if (target.kind === 'scan') {
+        nav.navigate('Security', {
+          screen: 'ScanDetail',
+          params: { id: target.id },
+          initial: false,
+        });
+      }
       else if (target.kind === 'external') void Linking.openURL(target.url).catch(() => {});
+      else if (target.kind === 'none') {
+        // Nothing to open — an unparseable ref. Explicit so the check below
+        // stays meaningful.
+      } else {
+        // Exhaustiveness guard: a new FeedRefTarget kind with no branch above
+        // stops compiling here. Both the board chip (#692) and the scan chip
+        // shipped inert for exactly that reason -- the ref resolved, no branch
+        // consumed it, and the tap silently did nothing but mark the row read.
+        const unhandled: never = target;
+        void unhandled;
+      }
     },
     [nav],
   );

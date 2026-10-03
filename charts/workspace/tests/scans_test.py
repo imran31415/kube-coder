@@ -100,6 +100,26 @@ class TargetTests(unittest.TestCase):
         self.assertTrue(shop['reachable'])
         self.assertEqual(shop['reason'], '')
 
+    def test_an_ipv4_mapped_loopback_is_still_loopback(self):
+        """AppsManager canonicalises a v4-mapped listener to
+        `::ffff:127.0.0.1` -- which a `127.` prefix test misses, so the app
+        was offered as scannable and the scan ended "found nothing" having
+        reached nothing. A JVM binding 127.0.0.1 on an AF_INET6 socket
+        produces exactly this."""
+        for addr in ('::ffff:127.0.0.1', '::ffff:7f00:1', '::1', '127.1.2.3'):
+            apps = [{'status': 'running', 'port': 4100, 'name': 'jvm',
+                     'addr': addr}]
+            target = scans.scannable_targets(apps)[0]
+            self.assertFalse(target['reachable'], addr)
+            self.assertIn('0.0.0.0', target['reason'])
+
+    def test_a_wildcard_bind_is_not_mistaken_for_loopback(self):
+        for addr in ('0.0.0.0', '::'):
+            apps = [{'status': 'running', 'port': 4200, 'name': 'app',
+                     'addr': addr}]
+            self.assertTrue(scans.scannable_targets(apps)[0]['reachable'],
+                            addr)
+
     def test_empty_and_malformed_input_yield_no_targets(self):
         self.assertEqual(scans.scannable_targets(None), [])
         self.assertEqual(scans.scannable_targets([{'status': 'running'}]), [])
@@ -251,6 +271,25 @@ class SeverityTests(unittest.TestCase):
         self.assertEqual(scans.highest_severity([]), '')
 
 
+class SortOrderTests(unittest.TestCase):
+    """`sort_findings` promises newest-first within a severity. Its old single
+    `(severity_rank, ts)` key sorted ascending, i.e. oldest-first, and no test
+    pinned the timestamp order either way."""
+
+    def test_newest_is_first_within_a_severity(self):
+        old = dict(finding('v-old', 'high'), timestamp='2026-01-01T00:00:00Z')
+        new = dict(finding('v-new', 'high'), timestamp='2026-06-01T00:00:00Z')
+        got = scans.sort_findings([old, new])
+        self.assertEqual([f['id'] for f in got], ['v-new', 'v-old'])
+
+    def test_severity_still_outranks_recency(self):
+        low = dict(finding('v-low', 'low'), timestamp='2026-06-01T00:00:00Z')
+        crit = dict(finding('v-crit', 'critical'),
+                    timestamp='2026-01-01T00:00:00Z')
+        got = scans.sort_findings([low, crit])
+        self.assertEqual([f['id'] for f in got], ['v-crit', 'v-low'])
+
+
 class DiffTests(unittest.TestCase):
 
     def test_a_first_read_is_all_additions(self):
@@ -320,6 +359,23 @@ class ApplyArtifactsTests(unittest.TestCase):
         self.assertEqual(rec['counts']['critical'], 1)
         self.assertAlmostEqual(rec['usage']['cost_usd'], 0.1)
         self.assertEqual(rec['status'], 'running')
+
+    def test_a_mid_write_read_does_not_zero_the_spend(self):
+        """`run.json` is caught mid-rewrite on every confirmed finding, and
+        the backend then reports an empty run. Overwriting usage from it
+        flickered the live spend to $0.00 -- and made it permanent for any
+        scan ending through the `not alive` path, which never re-reads a
+        good run.json."""
+        rec = self.record()
+        scans.apply_artifacts(rec, {
+            'run': {'status': 'running', 'llm_usage': {'cost': 0.23}},
+            'findings': [],
+        })
+        self.assertAlmostEqual(rec['usage']['cost_usd'], 0.23)
+
+        scans.apply_artifacts(rec, {'run': {}, 'findings': None})
+        self.assertAlmostEqual(rec['usage']['cost_usd'], 0.23,
+                               msg='a mid-write read wiped the spend')
 
     def test_completion_moves_the_record_terminal_and_stamps_the_end(self):
         rec = self.record()
@@ -396,10 +452,24 @@ class ResultSummaryTests(unittest.TestCase):
         self.assertIn('nothing was checked', text)
         self.assertIn('No model configured.', text)
 
-    def test_an_interrupted_scan_says_the_rest_was_not_checked(self):
-        text = self.summary(status='interrupted')
+    def test_a_scan_interrupted_by_a_restart_says_so(self):
+        text = self.summary(status='interrupted',
+                            interrupted_reason='restart')
         self.assertIn('not', text)
         self.assertIn('restart', text.lower())
+
+    def test_an_interrupted_scan_does_not_invent_a_restart(self):
+        """The poller also reaches `interrupted` when the process vanished
+        under it (OOM kill, a `kill` from a terminal, dind dropping the
+        sandbox). Telling the user the workspace restarted would be a plain
+        falsehood on the one surface that must not misrepresent how a scan
+        ended, so only the boot sweep's own case may claim it."""
+        text = self.summary(status='interrupted',
+                            interrupted_reason='vanished')
+        self.assertNotIn('restart', text.lower())
+        self.assertIn('not', text)
+        # A record written before this field existed must still not claim it.
+        self.assertNotIn('restart', self.summary(status='interrupted').lower())
 
     def test_a_stopped_scan_says_only_part_was_checked(self):
         self.assertIn('part', self.summary(status='stopped'))

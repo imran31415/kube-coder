@@ -18,6 +18,7 @@ import {
   proxyUrl,
 } from '../../api/apps';
 import { ApiError } from '../../api/client';
+import { requestedPort } from '../../store/scans';
 import { serverMode } from '../../store/server-mode';
 import { AppEmbed } from './AppEmbed';
 import './apps.css';
@@ -189,7 +190,13 @@ function AppRow({
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('/security')}
+            onClick={() => {
+              // Carry the app this button belongs to. Without it the start
+              // form fell back to "first reachable", so pressing Scan on one
+              // app could aim real attack traffic at another.
+              requestedPort.value = app.port;
+              navigate('/security');
+            }}
             title="Check this app for security holes"
           >
             Scan

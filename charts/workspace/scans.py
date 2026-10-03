@@ -30,6 +30,7 @@ A user's *disposition* of a finding (open / dismissed) is ours, not the
 scanner's, so it is stored beside the findings rather than inside them.
 """
 
+import ipaddress
 import os
 import re
 import shutil
@@ -189,6 +190,29 @@ def validate_create(body, targets, *, connected_model=''):
     }, None
 
 
+def _is_loopback_addr(addr):
+    """True when `addr` only accepts connections from inside this namespace.
+
+    Not a `127.` prefix test. AppsManager canonicalises a v4-mapped listener
+    to `::ffff:127.0.0.1` (a JVM that binds 127.0.0.1 on an AF_INET6 socket
+    routinely produces exactly that), which no prefix check matches, so the
+    app was offered as scannable and the scan ended "found nothing" having
+    reached nothing at all -- the precise outcome this warning exists to stop.
+    Parsing the address instead of pattern-matching it covers that form, the
+    `::ffff:7f00:1` hex spelling, and 127.x/::1, without a list to maintain.
+    """
+    text = (addr or '').strip()
+    if not text:
+        return False
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        # Not an address we can parse (a hostname, or a format we have not
+        # seen). Fall back to the literal checks rather than guessing.
+        return text.startswith('127.') or text == '::1'
+    return (ip.ipv4_mapped or ip if ip.version == 6 else ip).is_loopback
+
+
 def scannable_targets(apps, internal_ports=()):
     """The apps a scan may point at, derived from the Applications list.
 
@@ -208,7 +232,7 @@ def scannable_targets(apps, internal_ports=()):
         if not isinstance(port, int) or port in tuple(internal_ports):
             continue
         addr = app.get('addr') or ''
-        loopback_only = addr.startswith('127.') or addr == '::1'
+        loopback_only = _is_loopback_addr(addr)
         out.append({
             'port': port,
             'name': app.get('name') or '',
@@ -270,11 +294,18 @@ def severity_rank(finding):
 
 
 def sort_findings(findings):
-    """Severity first, then newest-reported first within a severity."""
-    def key(f):
-        ts = f.get('timestamp') or f.get('updated_at') or ''
-        return (severity_rank(f), str(ts))
-    return sorted(findings or [], key=key)
+    """Severity first, then newest-reported first within a severity.
+
+    Two stable passes rather than one tuple key: severity sorts ascending
+    while the timestamp sorts descending, and a tuple cannot express both
+    directions over a string. The single key this replaced read
+    `(severity_rank, ts)` ascending, i.e. oldest-first -- the opposite of
+    the documented order, with no test pinning it either way.
+    """
+    def recency(f):
+        return str(f.get('timestamp') or f.get('updated_at') or '')
+    return sorted(sorted(findings or [], key=recency, reverse=True),
+                  key=severity_rank)
 
 
 def count_severities(findings):
@@ -363,7 +394,16 @@ def apply_artifacts(record, artifacts):
         added, changed = diff_findings(record.get('findings'), findings)
     record['findings'] = findings
     record['counts'] = count_severities(findings)
-    record['usage'] = parse_usage(run.get('llm_usage'))
+    # Same reasoning as the findings above, for the same reason: an empty
+    # `run` is what a mid-rewrite read of run.json looks like, and that read
+    # happens on every confirmed finding. Overwriting unconditionally flickers
+    # the live spend to $0.00 -- and makes it permanent for any scan that ends
+    # through the `not alive` branch, which never re-reads a good run.json.
+    reported_usage = run.get('llm_usage')
+    if reported_usage is not None:
+        record['usage'] = parse_usage(reported_usage)
+    elif not record.get('usage'):
+        record['usage'] = parse_usage(None)
 
     # Only a status the backend actually reported may move the record. An
     # empty read is the normal state for the first seconds of every scan —
@@ -430,9 +470,21 @@ def result_summary(record):
         return (f'The scan of {where} could not run, so nothing was checked. '
                 f'{record.get("error") or ""}'.strip())
     if status == 'interrupted':
-        return (f'The scan of {where} stopped when the workspace restarted. '
-                f'Anything found before that is below; the rest was not '
-                f'checked.')
+        # Two different paths reach `interrupted`. The boot sweep knows the
+        # workspace restarted; the poller only knows the process vanished
+        # under it (an OOM kill, a `kill` from a terminal, dind taking the
+        # sandbox down). Claiming a restart for the second case states
+        # something that did not happen, on the one surface whose whole
+        # thesis is never misrepresenting how a scan ended -- so each path
+        # records why, and an older record with no reason gets the sentence
+        # that is true either way.
+        if record.get('interrupted_reason') == 'restart':
+            return (f'The scan of {where} stopped when the workspace '
+                    f'restarted. Anything found before that is below; the '
+                    f'rest was not checked.')
+        return (f'The scan of {where} stopped before it finished, because '
+                f'the scanner process ended unexpectedly. Anything found '
+                f'before that is below; the rest was not checked.')
     if status == 'stopped':
         return (f'The scan of {where} was stopped early, so only part of the '
                 f'app was checked.')
@@ -686,6 +738,7 @@ class ScansManager:
                     record['error'] = cls._failure_detail(backend, handle)
                 else:
                     record['status'] = 'interrupted'
+                    record['interrupted_reason'] = 'vanished'
                 record['ended_at'] = time.time()
             return None
 
@@ -766,8 +819,13 @@ class ScansManager:
     # ── stopping, dispositions, housekeeping ───────────────────────────────
 
     @classmethod
-    def stop(cls, scan_id):
-        """End a running scan. Returns the record, or None when unknown."""
+    def stop(cls, scan_id, *, announce=True):
+        """End a running scan. Returns the record, or None when unknown.
+
+        `announce=False` is for the delete path: announcing posts a feed item
+        and a push whose "Open scan" link points at a scan that is removed on
+        the next line, so the row outlives its target and the link 404s.
+        """
         record = cls.get(scan_id)
         if record is None:
             return None
@@ -788,7 +846,8 @@ class ScansManager:
         record, wrote = cls._record(scan_id).update(mutate)
         if wrote:
             cls._fire('scan.status', {'id': scan_id, 'status': 'stopped'})
-            cls._announce(record)
+            if announce:
+                cls._announce(record)
         return record
 
     @classmethod
@@ -823,7 +882,7 @@ class ScansManager:
         if record is None:
             return False
         if not is_terminal(record.get('status')):
-            cls.stop(scan_id)
+            cls.stop(scan_id, announce=False)
         shutil.rmtree(cls.scan_dir(scan_id), ignore_errors=True)
         cls._fire('scan.status', {'id': scan_id, 'status': 'deleted'})
         return True
@@ -871,6 +930,7 @@ class ScansManager:
                 if rec.get('status') != 'running':
                     return False
                 rec['status'] = 'interrupted'
+                rec['interrupted_reason'] = 'restart'
                 rec['ended_at'] = time.time()
                 rec['error'] = ('The workspace restarted while this scan was '
                                 'running, so it did not finish.')

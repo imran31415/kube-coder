@@ -10,6 +10,7 @@ import {
   severityRank,
   sortFindings,
   spendLabel,
+  parseBudget,
 } from './scans';
 import type { Finding, ScanSummary } from '../api/types';
 
@@ -110,5 +111,27 @@ describe('scan helpers', () => {
       expect(entry.label).toBeTruthy();
       expect(entry.label).not.toBe(entry.key);
     }
+  });
+});
+
+describe('parseBudget', () => {
+  it('accepts a comma decimal separator rather than silently uncapping', () => {
+    // The field is a decimal-pad, which types `,` on de/fr/es. `Number('5,50')`
+    // is NaN, JSON.stringify writes NaN as null, and the server reads null as
+    // "no cap" -- so the locale-correct way to type five-fifty started an
+    // UNCAPPED deep scan under a label promising a limit.
+    expect(parseBudget('5,50')).toBeCloseTo(5.5);
+    expect(parseBudget('5.50')).toBeCloseTo(5.5);
+  });
+
+  it('reports unparseable text as invalid instead of as no limit', () => {
+    for (const raw of ['$5', '5 usd', 'abc', '-1', '0', 'NaN']) {
+      expect(parseBudget(raw)).toBe('invalid');
+    }
+  });
+
+  it('treats only an empty field as a deliberate no-limit', () => {
+    expect(parseBudget('')).toBeNull();
+    expect(parseBudget('   ')).toBeNull();
   });
 });

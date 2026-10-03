@@ -132,7 +132,18 @@ export default function AppsScreen() {
                     style={styles.scanButton}
                     accessibilityRole="button"
                     accessibilityLabel={`Scan ${appTitle(item)} for security holes`}
-                    onPress={() => nav.getParent()?.navigate('Security')}
+                    onPress={() =>
+                      // Carry the app this button belongs to, and reset the
+                      // Security stack: tab state persists, so a bare
+                      // navigate() restored whatever scan was last open
+                      // instead of the start form, and dropped the port so
+                      // the form fell back to a different app entirely.
+                      nav.getParent()?.navigate('Security', {
+                        screen: 'ScanList',
+                        params: { startPort: item.port },
+                        initial: false,
+                      })
+                    }
                   >
                     <Ionicons
                       name="shield-checkmark-outline"

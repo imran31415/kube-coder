@@ -136,6 +136,12 @@ class ScanRoutes:
         if self._scan_or_404(scan_id) is None:
             return
         record = scans.ScansManager.stop(scan_id)
+        if record is None:
+            # A concurrent DELETE can land between the check above and here,
+            # in which case stop() returns None and the attribute access
+            # below would 500 on a request that simply lost a race.
+            self.send_json({'error': 'No such scan.'}, 404)
+            return
         self.send_json({'ok': True, 'status': record.get('status')})
 
     def handle_scan_delete(self, scan_id):

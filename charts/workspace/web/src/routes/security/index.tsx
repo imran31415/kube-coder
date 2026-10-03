@@ -15,9 +15,12 @@ import {
   loadScan,
   loadScans,
   openScan,
+  openScanError,
   scans,
   scansDisabled,
+  scansError,
   scansLoaded,
+  stopSignInPoll,
   watchScans,
 } from '../../store/scans';
 import { ConnectStrix } from './ConnectStrix';
@@ -48,7 +51,15 @@ export function SecurityRoute() {
   useEffect(() => {
     void loadConnection();
     void loadScans();
-    return watchScans();
+    const unwatch = watchScans();
+    return () => {
+      unwatch();
+      // The sign-in poll is a module-level interval that only its own
+      // terminal states cleared, so leaving this route mid-sign-in left the
+      // tab POSTing /connection/signin/poll every 2s for its whole life --
+      // each one shelling out to `tmux capture-pane` in the pod.
+      stopSignInPoll();
+    };
   }, []);
 
   useEffect(() => {
@@ -96,6 +107,14 @@ export function SecurityRoute() {
         </header>
         {scan && scan.id === scanId ? (
           <ScanLive scan={scan} />
+        ) : openScanError.value ? (
+          /* Without this the store set the error and nothing read it, so a
+             deleted scan (a feed link outliving its target) rendered as a
+             permanent "Loading…". */
+          <EmptyState
+            title="This scan could not be opened"
+            description={<>{openScanError.value}</>}
+          />
         ) : (
           <p class="muted">Loading…</p>
         )}
@@ -180,6 +199,14 @@ export function SecurityRoute() {
               <ScanRow key={scan.id} scan={scan} />
             ))}
           </ul>
+        ) : scansError.value ? (
+          /* "No scans yet." over a failed request asserts the history is
+             empty when it is actually unknown. On this surface an error must
+             never be able to read as an all-clear. */
+          <p class="security-list-error">
+            Your scan history could not be loaded, so this list may be
+            incomplete. {scansError.value}
+          </p>
         ) : (
           <p class="muted">No scans yet.</p>
         )}

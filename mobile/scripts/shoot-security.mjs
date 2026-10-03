@@ -67,7 +67,11 @@ async function waitVisible(loc, what, timeout = 15000) {
 }
 
 async function clickVisible(loc, what) {
-  (await waitVisible(loc, what)).click();
+  // Awaited: an unawaited click rejection surfaced as ERR_UNHANDLED_REJECTION
+  // instead of waitVisible's own "timed out waiting for:" message, and the
+  // screenshot that follows leaned on the sleep rather than on the click
+  // having actually landed.
+  await (await waitVisible(loc, what)).click();
   await sleep(700);
 }
 

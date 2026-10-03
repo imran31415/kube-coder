@@ -18,6 +18,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -204,6 +205,48 @@ class InstallStateTests(ConnectionTestCase):
     def test_ensure_installed_returns_at_once_when_already_present(self):
         self.mod._install(self.fake_install())
         self.assertEqual(self.mod.ensure_installed()['state'], 'ready')
+
+    def test_a_second_save_during_an_install_does_not_deadlock(self):
+        """`ensure_installed` used to call `install_state()` while holding the
+        module lock, and `install_state()` takes that same non-reentrant lock.
+
+        A second Save mid-install therefore blocked forever *holding* the
+        lock, so every later save_connection / clear_connection / GET
+        connection hung too, until the pod restarted. Run it on a worker so a
+        regression fails the test instead of hanging the whole suite.
+        """
+        release = threading.Event()
+
+        class Slow:
+            def install(self, venv_dir, package, version):
+                release.wait(10)
+                return True, ''
+
+        first = self.mod.ensure_installed(runner=Slow())
+        self.addCleanup(release.set)
+        self.assertEqual(first['state'], 'installing')
+
+        done, box = threading.Event(), {}
+
+        def second():
+            try:
+                box['state'] = self.mod.ensure_installed(runner=Slow())
+            except Exception as e:                        # pragma: no cover
+                box['error'] = e
+            finally:
+                done.set()
+
+        threading.Thread(target=second, daemon=True).start()
+        self.assertTrue(done.wait(5),
+                        'ensure_installed deadlocked on the second call')
+        self.assertIsNone(box.get('error'))
+        self.assertEqual(box['state']['state'], 'installing')
+
+        # The lock must be free afterwards, which is the half that turned one
+        # stuck request into a permanently broken connection surface.
+        release.set()
+        self.assertIsNotNone(self.mod.install_state())
+        self.assertIsNotNone(self.mod.clear_connection())
 
 
 class ConnectionTestProbeTests(ConnectionTestCase):
