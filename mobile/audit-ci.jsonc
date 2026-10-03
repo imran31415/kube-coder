@@ -45,7 +45,26 @@
     //
     // Re-check when Expo ships a release that moves off node-forge, or when
     // node-forge publishes a patched line.
-    "GHSA-86w9-cpqp-85rv"  // node-forge <=1.4.0  RSA PKCS#1 v1.5 signature forgery — no patch exists
+    "GHSA-86w9-cpqp-85rv", // node-forge <=1.4.0  RSA PKCS#1 v1.5 signature forgery — no patch exists
+    // owner: security@kube-coder | review: 2026-10-03 | build-time only, NO FIX PUBLISHED
+    //
+    // braces <=3.0.3 exhausts the stack on a deeply nested pattern.
+    // first_patched_version is null — 3.0.3 is the newest release and is
+    // itself in range, so no bump clears this. Published 2026-09-18, but it
+    // began failing this job on 2026-10-02 when the affected range widened
+    // to include 3.0.3, which is why it appeared on every branch at once
+    // rather than with any one change.
+    //
+    // Reachable only through the Metro bundler's own file-map
+    // (metro > metro-file-map > micromatch > braces, plus the same path via
+    // @expo/metro and @react-native/community-cli-plugin). Metro runs on the
+    // developer or EAS build machine over this repo's own glob patterns; it
+    // is not in the bundle shipped to a device, and no attacker-supplied
+    // pattern reaches it. A DoS against our own build is a failed build.
+    //
+    // Re-check when braces publishes a patched line, or when Metro moves off
+    // micromatch.
+    "GHSA-vfj7-8cjw-p6xm"  // braces <=3.0.3  stack exhaustion via nested patterns — no patch exists
   ],
   "report-type": "summary"
 }
