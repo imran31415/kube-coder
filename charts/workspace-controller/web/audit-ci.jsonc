@@ -11,7 +11,23 @@
   "high": true,
   "allowlist": [
     "GHSA-5xrq-8626-4rwp", // vitest     <3.2.6    UI server RCE
-    "GHSA-fx2h-pf6j-xcff"  // vite       <6.4.3    server.fs.deny bypass (Windows)
+    "GHSA-fx2h-pf6j-xcff", // vite       <6.4.3    server.fs.deny bypass (Windows)
+    // owner: security@kube-coder | review: 2026-10-03 | build-time only, NO FIX PUBLISHED
+    //
+    // braces <=3.0.3 exhausts the stack on a deeply nested pattern.
+    // first_patched_version is null — 3.0.3 is the newest release and is
+    // itself in range, so no bump clears this. Published 2026-09-18 but it
+    // only began failing this job on 2026-10-02, when the affected range
+    // widened to include 3.0.3 — which is why it appeared on every branch at
+    // once rather than alongside any change of ours.
+    //
+    // Reached only through the bundler: vite-plugin-singlefile > micromatch >
+    // braces, matching our own glob patterns at build time. It is not in the
+    // image this SPA is served from, and no attacker-supplied pattern reaches
+    // it — a DoS against our own build is a failed build.
+    //
+    // Prune when braces publishes a patched line, or micromatch drops it.
+    "GHSA-vfj7-8cjw-p6xm"  // braces     <=3.0.3   stack exhaustion — no patch exists
   ],
   "report-type": "summary"
 }
