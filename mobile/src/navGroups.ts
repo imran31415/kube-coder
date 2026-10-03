@@ -50,6 +50,10 @@ export const NAV_GROUPS: NavGroupDef[] = [
       // else's tracker.
       { name: 'Board', label: 'Board', icon: 'clipboard-outline' },
       { name: 'Tasks', label: 'Builds', icon: 'layers-outline' },
+      // Security scans (#726) sit here for the same reason Board does: they
+      // answer "what needs me?" — Board about someone else's tracker, this
+      // about the app the user is building.
+      { name: 'Security', label: 'Security', icon: 'shield-checkmark-outline' },
       { name: 'Walkie', label: 'Walkie-Talkie', icon: 'radio-outline' },
       // Triggers fire builds — agent ops, not workspace plumbing (same
       // reasoning as the web rail, which files /triggers under Mission Control).

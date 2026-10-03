@@ -497,6 +497,38 @@ hypervisor:
 cto:
   enabled: true
 
+# Security scanning (#726) — run an AI penetration test against an app the user
+# is running in this workspace, from the dashboard or the phone.
+#
+# OFF BY DEFAULT, and it cannot simply be switched on: the scanner drives its
+# own container sandbox, so it needs `build.mode: buildkit` — which adds the
+# privileged `dind` sidecar described above, with everything that implies on a
+# shared cluster. Setting `enabled: true` with `build.mode: kaniko` FAILS the
+# render with a message saying so, rather than installing a workspace where
+# every scan dies at the first step for a reason nobody can see.
+#
+# Turning it on is a per-workspace decision for a workspace whose owner wants
+# it, never a cluster-wide default.
+strix:
+  enabled: false
+  # The scanner is installed on first use into its own virtual environment,
+  # not baked into the image — most workspaces never scan anything, and the
+  # dependency tree is large. This pin decides WHAT gets installed, so the
+  # version is the cluster operator's choice rather than whenever a user first
+  # pressed the button. Bump deliberately.
+  version: "1.6.2"
+  # The sandbox image the scanner runs its tools inside. Pulled at pod boot
+  # when enabled, because the dind sidecar's image cache is an emptyDir and is
+  # therefore empty after every restart — without the pre-pull the first scan
+  # sits silent for minutes while a multi-GB image downloads, which reads as a
+  # hang and gets killed.
+  image: "ghcr.io/usestrix/strix-sandbox:1.3.0"
+  # The scanner reports anonymous usage to its authors by default. Set false to
+  # turn that off for this workspace. Findings and app content are NOT part of
+  # it, but the user's own model provider does see the traffic of a scan, which
+  # is what the in-app explanation says.
+  telemetry: true
+
 # devcontainer.json support (#594) — read the environment file a repo already
 # carries (Codespaces / Coder / Ona / DevPod all use it) and apply the parts
 # that work inside this pod: forwarded ports land on the Apps page, VS Code

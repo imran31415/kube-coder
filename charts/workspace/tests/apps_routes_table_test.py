@@ -155,12 +155,13 @@ class ModeResponseTests(unittest.TestCase):
         (payload,), _ = h.send_json.call_args
         self.assertEqual(set(payload), {
             'readOnly', 'authed', 'authMode', 'demoShowAll', 'ctoEnabled',
-            'devcontainerEnabled', 'boardEnabled'})
+            'devcontainerEnabled', 'boardEnabled', 'scansEnabled'})
         self.assertEqual(payload['readOnly'], server.READONLY_MODE)
         self.assertEqual(payload['authMode'], server.AUTH_MODE)
         self.assertEqual(payload['authed'], server.AUTH_MODE != 'none')
         self.assertEqual(payload['demoShowAll'], server.DEMO_SHOW_ALL)
         self.assertEqual(payload['boardEnabled'], server._BOARDS_AVAILABLE)
+        self.assertEqual(payload['scansEnabled'], server.SCANS_ENABLED)
 
     def test_the_flags_follow_the_server_module(self):
         # Read through handlers.server, so a patched value is visible — which

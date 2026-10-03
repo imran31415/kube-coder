@@ -36,6 +36,7 @@ const SettingsRoute = lazy<ComponentType>(() => import('./settings/index').then(
 const DocsRoute = lazy<ComponentType>(() => import('./docs/index').then((m) => ({ default: m.DocsRoute })));
 const AppsRoute = lazy<ComponentType>(() => import('./apps/index').then((m) => ({ default: m.AppsRoute })));
 const SkillsRoute = lazy<ComponentType>(() => import('./skills/index').then((m) => ({ default: m.SkillsRoute })));
+const SecurityRoute = lazy<ComponentType>(() => import('./security/index').then((m) => ({ default: m.SecurityRoute })));
 
 const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/tasks': TasksRoute,
@@ -49,6 +50,7 @@ const ROUTE_COMPONENTS: Record<string, ComponentType> = {
   '/memory': MemoryRoute,
   '/skills': SkillsRoute,
   '/apps': AppsRoute,
+  '/security': SecurityRoute,
   '/triggers': TriggersRoute,
   '/files': FilesRoute,
   '/docs': DocsRoute,

@@ -31,6 +31,10 @@ export interface ServerMode {
    *  external tracker and running an AI CTO over our own projects are separate
    *  capabilities. False hides the /board nav item and route. */
   boardEnabled?: boolean;
+  /** Security scanning (#726). Independent of every other gate: it needs a
+   *  container runtime in the pod rather than an assistant, so a workspace can
+   *  have all the others and not this. False hides /security entirely. */
+  scansEnabled?: boolean;
 }
 
 export const getMode = () => apiGet<ServerMode>('/api/mode');

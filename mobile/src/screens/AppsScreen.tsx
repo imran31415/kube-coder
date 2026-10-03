@@ -2,7 +2,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useState } from 'react';
-import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import {
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { listApps } from '../api/client';
 import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
@@ -117,6 +124,34 @@ export default function AppsScreen() {
                     </Text>
                   </View>
                 </View>
+                {/* Security scanning (#726). Only on an app that is really
+                    running — this is where people discover the feature, next
+                    to the thing it acts on. */}
+                {openable ? (
+                  <TouchableOpacity
+                    style={styles.scanButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Scan ${appTitle(item)} for security holes`}
+                    onPress={() =>
+                      // Carry the app this button belongs to, and reset the
+                      // Security stack: tab state persists, so a bare
+                      // navigate() restored whatever scan was last open
+                      // instead of the start form, and dropped the port so
+                      // the form fell back to a different app entirely.
+                      nav.getParent()?.navigate('Security', {
+                        screen: 'ScanList',
+                        params: { startPort: item.port },
+                        initial: false,
+                      })
+                    }
+                  >
+                    <Ionicons
+                      name="shield-checkmark-outline"
+                      size={18}
+                      color={colors.textMuted}
+                    />
+                  </TouchableOpacity>
+                ) : null}
                 {openable ? (
                   <Ionicons name="chevron-forward" size={18} color={colors.textFaint} />
                 ) : null}
@@ -133,6 +168,8 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   list: { paddingHorizontal: space.lg, paddingBottom: space.xl, gap: space.md },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  // 44pt touch target, as every tappable control on this screen has.
+  scanButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   appIcon: {
     width: 42,
     height: 42,

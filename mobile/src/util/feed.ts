@@ -11,12 +11,13 @@ export type FeedRefTarget =
   | { kind: 'thread'; id: string }
   | { kind: 'memory' }
   | { kind: 'board'; boardId: string; itemId: string }
+  | { kind: 'scan'; id: string }
   | { kind: 'external'; url: string }
   | { kind: 'none' };
 
 /** Resolve a feed link to a native navigation target. task: → TaskDetail,
  *  thread: → CtoScreen, memory: → MemoryScreen, board: → BoardScreen with the
- *  named item focused, href → in-app browser. */
+ *  named item focused, scan: → ScanDetail, href → in-app browser. */
 export function resolveFeedRef(link: FeedLink): FeedRefTarget {
   if (link.href) return { kind: 'external', url: link.href };
   const ref = link.ref || '';
@@ -28,6 +29,8 @@ export function resolveFeedRef(link: FeedLink): FeedRefTarget {
   if (kind === 'task' && rest) return { kind: 'task', id: rest };
   if (kind === 'thread' && rest) return { kind: 'thread', id: rest };
   if (kind === 'memory') return { kind: 'memory' };
+  // A finished security scan (#726) — opens that scan's findings.
+  if (kind === 'scan' && rest) return { kind: 'scan', id: rest };
   if (kind === 'board' && rest) {
     const [boardId, itemId] = splitOnce(rest);
     if (boardId && itemId) return { kind: 'board', boardId, itemId };

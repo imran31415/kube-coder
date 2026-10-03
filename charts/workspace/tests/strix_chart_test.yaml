@@ -1,0 +1,149 @@
+suite: Security scanning (#726) — the buildkit guard, env wiring and headroom
+# deployment.yaml `include`s the configmaps for its checksum annotations, so
+# they have to be rendered alongside it — same list as deployment_test.yaml.
+templates:
+  - templates/deployment.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  # THE POINT OF THIS FILE. The scanner runs its tools inside a container
+  # sandbox, so with build.mode=kaniko there is no container runtime for it to
+  # start one with and EVERY scan dies at the first step. Failing the render is
+  # what turns that into an install-time error somebody reads, instead of a
+  # workspace that looks configured and silently cannot scan.
+  #
+  # build.mode is set explicitly here because this suite's test-values.yaml
+  # pins buildkit. kaniko is the CHART's default, so an operator who sets only
+  # strix.enabled hits this same guard.
+  - it: refuses to install scanning without a container runtime
+    template: templates/deployment.yaml
+    set:
+      strix.enabled: true
+      build.mode: kaniko
+    asserts:
+      - failedTemplate:
+          errorMessage: "strix.enabled=true needs build.mode=buildkit: the scanner runs its tools in a container sandbox, and kaniko mode gives the workspace no container runtime to start one with. Set build.mode=buildkit (which adds the privileged dind sidecar — see the build.mode notes in values.yaml), or leave strix.enabled=false."
+
+  - it: is off by default, and injects nothing when off
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_ENABLED
+            value: "true"
+
+  - it: stays off even where the runtime would allow it
+    template: templates/deployment.yaml
+    set:
+      build.mode: buildkit
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_ENABLED
+            value: "true"
+
+  - it: wires the flag, the pinned version and the sandbox image when enabled
+    template: templates/deployment.yaml
+    set:
+      strix.enabled: true
+      build.mode: buildkit
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_VERSION
+            value: "1.6.2"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_IMAGE
+            value: "ghcr.io/usestrix/strix-sandbox:1.3.0"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_TELEMETRY
+            value: "true"
+
+  - it: lets the operator pin a different scanner version
+    template: templates/deployment.yaml
+    set:
+      strix.enabled: true
+      build.mode: buildkit
+      strix.version: "1.7.0"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_VERSION
+            value: "1.7.0"
+
+  # Same `dig`-not-`default` rule as the devcontainer flags: sprig's `default`
+  # treats boolean false as empty, so `default true` on an explicit
+  # `telemetry: false` would render "true" and silently re-enable reporting an
+  # operator turned off.
+  - it: honours an explicit telemetry=false
+    template: templates/deployment.yaml
+    set:
+      strix.enabled: true
+      build.mode: buildkit
+      strix.telemetry: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STRIX_TELEMETRY
+            value: "false"
+
+  # A scan runs its sandbox, a proxy, a browser and several agents inside the
+  # dind sidecar. The limit that is ample for a build is not ample for a scan,
+  # and an over-limit daemon is killed with nothing the dashboard can show.
+  - it: gives the sidecar more memory when scanning is enabled
+    template: templates/deployment.yaml
+    set:
+      strix.enabled: true
+      build.mode: buildkit
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: dind
+      - equal:
+          path: spec.template.spec.containers[1].resources.limits.memory
+          value: 8Gi
+
+  - it: leaves the build-only sidecar at its usual limit
+    template: templates/deployment.yaml
+    set:
+      build.mode: buildkit
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[1].resources.limits.memory
+          value: 4Gi
+
+  - it: still lets an operator set the sidecar's resources explicitly
+    template: templates/deployment.yaml
+    set:
+      strix.enabled: true
+      build.mode: buildkit
+      build.dindResources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: "4"
+          memory: 16Gi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[1].resources.limits.memory
+          value: 16Gi

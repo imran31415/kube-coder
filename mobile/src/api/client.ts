@@ -46,6 +46,10 @@ import {
   mockDecideBoardItem,
   mockWorktreeDiff,
   mockWorktreeView,
+  mockScans,
+  mockScanDetail,
+  mockScanTargets,
+  mockScanConnection,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -93,6 +97,11 @@ import type {
   WebhookRecord,
   TaskWorktreeView,
   WorktreeDiff,
+  ScanSummary,
+  ScanDetail,
+  ScanTarget,
+  ScanMode,
+  ScanConnection,
 } from './types';
 
 export class ApiError extends Error {
@@ -717,6 +726,98 @@ export async function listApps(): Promise<AppEntry[]> {
   }
   const data = await request<{ apps?: AppEntry[] }>('/api/apps');
   return data.apps ?? [];
+}
+
+// ---- Security scans (#726) ---------------------------------------------------
+
+/** Scans in this workspace, newest first. */
+export async function listScans(): Promise<ScanSummary[]> {
+  if (getConfig().mock) {
+    await delay(120);
+    return [...mockScans];
+  }
+  const data = await request<{ scans?: ScanSummary[] }>('/api/scans');
+  return data.scans ?? [];
+}
+
+export async function getScan(id: string): Promise<ScanDetail> {
+  if (getConfig().mock) {
+    await delay(120);
+    return mockScanDetail(id);
+  }
+  return request<ScanDetail>(`/api/scans/${id}`);
+}
+
+/** The apps a scan may point at — running only, each saying whether the
+ *  scanner can actually reach it. */
+export async function listScanTargets(): Promise<ScanTarget[]> {
+  if (getConfig().mock) {
+    await delay(100);
+    return [...mockScanTargets];
+  }
+  const data = await request<{ targets?: ScanTarget[] }>('/api/scans/targets');
+  return data.targets ?? [];
+}
+
+export async function createScan(input: {
+  port: number;
+  mode: ScanMode;
+  budget_usd?: number | null;
+  instruction?: string;
+}): Promise<string> {
+  if (getConfig().mock) {
+    await delay(150);
+    return mockScans[0].id;
+  }
+  const res = await request<{ scan_id: string }>('/api/scans', {
+    method: 'POST',
+    body: input,
+  });
+  return res.scan_id;
+}
+
+export async function stopScan(id: string): Promise<void> {
+  if (getConfig().mock) return;
+  await request(`/api/scans/${id}/stop`, { method: 'POST', body: {} });
+}
+
+export async function setFindingDisposition(
+  scanId: string,
+  findingId: string,
+  disposition: 'open' | 'dismissed',
+): Promise<Record<string, 'dismissed'>> {
+  if (getConfig().mock) return {};
+  const res = await request<{ dispositions: Record<string, 'dismissed'> }>(
+    `/api/scans/${scanId}/findings/${encodeURIComponent(findingId)}/disposition`,
+    { method: 'POST', body: { disposition } },
+  );
+  return res.dispositions;
+}
+
+/** The saved model settings. Never includes the key itself. */
+export async function getScanConnection(): Promise<ScanConnection> {
+  if (getConfig().mock) {
+    await delay(80);
+    return mockScanConnection;
+  }
+  return request<ScanConnection>('/api/scans/connection');
+}
+
+export async function saveScanConnection(body: {
+  model?: string;
+  api_key?: string;
+  api_base?: string;
+}): Promise<ScanConnection> {
+  if (getConfig().mock) return mockScanConnection;
+  return request<ScanConnection>('/api/scans/connection', { method: 'POST', body });
+}
+
+export async function testScanConnection(): Promise<{ ok: boolean; detail: string }> {
+  if (getConfig().mock) return { ok: true, detail: 'The model answered.' };
+  return request<{ ok: boolean; detail: string }>('/api/scans/connection/test', {
+    method: 'POST',
+    body: {},
+  });
 }
 
 /**

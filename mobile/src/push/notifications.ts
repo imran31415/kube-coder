@@ -219,6 +219,15 @@ export function handleNotificationTap(data: PushData | undefined): void {
       requestBoardFocus(target.boardId, target.itemId);
       navigateTo('Board');
       break;
+    case 'scan':
+      // A finished security scan (#726). Nested like Tasks, because Security
+      // is a stack and the notification points at one scan inside it.
+      navigationRef.navigate(
+        // @ts-expect-error — nested route params are validated at the navigator
+        'Security',
+        { screen: 'ScanDetail', params: { id: target.id }, initial: false },
+      );
+      break;
     case 'external':
       Linking.openURL(target.url).catch(() => {});
       break;

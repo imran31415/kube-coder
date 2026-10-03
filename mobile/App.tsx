@@ -26,6 +26,8 @@ import WalkieScreen from './src/screens/WalkieScreen';
 import MissionControlScreen from './src/screens/MissionControlScreen';
 import FeedScreen from './src/screens/FeedScreen';
 import BoardScreen from './src/screens/BoardScreen';
+import SecurityScreen from './src/screens/SecurityScreen';
+import ScanDetailScreen from './src/screens/ScanDetailScreen';
 import MemoryScreen from './src/screens/MemoryScreen';
 import FilesScreen from './src/screens/FilesScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
@@ -37,7 +39,12 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import ControllerScreen from './src/screens/ControllerScreen';
 import { NavDrawer } from './src/components/NavDrawer';
 import { MenuButton } from './src/components/ui';
-import type { AppsStackParams, DocsStackParams, TasksStackParams } from './src/navigation';
+import type {
+  AppsStackParams,
+  DocsStackParams,
+  SecurityStackParams,
+  TasksStackParams,
+} from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
 import { initPush, registerForPush } from './src/push/notifications';
@@ -105,6 +112,24 @@ function AppsStack() {
   );
 }
 
+const SecurityStackNav = createNativeStackNavigator<SecurityStackParams>();
+function SecurityStack() {
+  return (
+    <SecurityStackNav.Navigator screenOptions={stackScreenOptions}>
+      <SecurityStackNav.Screen
+        name="ScanList"
+        component={SecurityScreen}
+        options={{ headerShown: false }}
+      />
+      <SecurityStackNav.Screen
+        name="ScanDetail"
+        component={ScanDetailScreen}
+        options={{ title: 'Scan' }}
+      />
+    </SecurityStackNav.Navigator>
+  );
+}
+
 const DocsStackNav = createNativeStackNavigator<DocsStackParams>();
 function DocsStack() {
   return (
@@ -147,6 +172,7 @@ function MainTabs() {
         <Tab.Screen name="Feed" component={FeedScreen} />
         <Tab.Screen name="Board" component={BoardScreen} />
         <Tab.Screen name="Tasks" component={TasksStack} />
+        <Tab.Screen name="Security" component={SecurityStack} />
         <Tab.Screen name="Apps" component={AppsStack} />
         <Tab.Screen name="Memory" component={MemoryScreen} />
         <Tab.Screen name="Files" component={FilesScreen} />

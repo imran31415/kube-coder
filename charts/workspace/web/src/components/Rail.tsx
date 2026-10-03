@@ -121,6 +121,7 @@ export function Rail() {
   const groups = visibleNavGroups({
     ctoEnabled: serverMode.value.ctoEnabled,
     boardEnabled: serverMode.value.boardEnabled,
+    scansEnabled: serverMode.value.scansEnabled,
   });
 
   // Reveal the group containing the active route so palette/bottom-nav jumps

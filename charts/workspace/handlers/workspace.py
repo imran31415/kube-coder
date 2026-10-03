@@ -57,6 +57,10 @@ class WorkspaceRoutes:
             # working someone else's tracker and running an AI CTO over our
             # own projects are separate capabilities.
             'boardEnabled': handlers.server._BOARDS_AVAILABLE,
+            # Security scanning (#726). Independent of everything above: it
+            # needs a container sandbox rather than an assistant, so a
+            # workspace can have every other capability and not this one.
+            'scansEnabled': handlers.server.SCANS_ENABLED,
         })
 
     def handle_missioncontrol_queue(self):

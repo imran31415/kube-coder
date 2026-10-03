@@ -19,6 +19,7 @@ describe('NAV_GROUPS (#267)', () => {
         'Memory',
         'Metrics',
         'MissionControl',
+        'Security',
         'Settings',
         'Skills',
         'Tasks',
@@ -27,6 +28,15 @@ describe('NAV_GROUPS (#267)', () => {
       ].sort(),
     );
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('files security scanning under Mission Control, beside Board', () => {
+    // Both answer "what needs me?" — Board about someone else's tracker,
+    // Security about the app the user is building (#726).
+    const mission = NAV_GROUPS.find((g) => g.title === 'Mission Control');
+    const names = (mission?.items ?? []).map((i) => i.name);
+    expect(names).toContain('Security');
+    expect(names).toContain('Board');
   });
 
   it('uses the same category titles as the web dashboard, plus an untitled tail', () => {

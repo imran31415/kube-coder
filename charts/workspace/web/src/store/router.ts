@@ -92,6 +92,7 @@ export const ROUTES: RouteDef[] = [
   { path: '/memory', title: 'Memory' },
   { path: '/skills', title: 'Skills' },
   { path: '/apps', title: 'Apps' },
+  { path: '/security', title: 'Security' },
   { path: '/triggers', title: 'Triggers' },
   { path: '/files', title: 'Files' },
   { path: '/docs', title: 'Docs' },
@@ -135,6 +136,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/board', label: 'Board' },
       { path: '/feed', label: 'Feed' },
       { path: '/tasks', label: 'Builds' },
+      // Security scans (#726) answer "what needs me?" about the app the
+      // user is building, which is the question this group is for.
+      { path: '/security' },
       { path: '/walkie' },
       // Triggers fire builds — agent ops, not workspace plumbing.
       { path: '/triggers' },
@@ -165,10 +169,14 @@ export const NAV_GROUPS: NavGroup[] = [
 export function visibleNavGroups(caps: {
   ctoEnabled?: boolean;
   boardEnabled?: boolean;
+  scansEnabled?: boolean;
 }): NavGroup[] {
   const hidden = new Set<string>();
   if (caps.ctoEnabled === false) hidden.add('/feed');
   if (caps.boardEnabled === false) hidden.add('/board');
+  // Scanning needs a container runtime the workspace may not have, so unlike
+  // the gates above this one is off unless the deployment turned it on.
+  if (caps.scansEnabled !== true) hidden.add('/security');
   if (hidden.size === 0) return NAV_GROUPS;
   return NAV_GROUPS.map((g) => ({
     ...g,
