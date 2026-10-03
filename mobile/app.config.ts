@@ -110,6 +110,17 @@ export function buildConfig(): ExpoConfig {
         {
           microphonePermission:
             'Allow kube-coder to record a voice message to dictate to your workspace.',
+          // No background audio. Recording is strictly foreground push-to-talk,
+          // and the app never plays audio through expo-audio (replies are read
+          // back by on-device expo-speech while the app is in front) — so the
+          // app has no persistent-audio feature. The plugin defaults
+          // enableBackgroundPlayback to TRUE, which adds `audio` to
+          // UIBackgroundModes; App Review rejects that key for an app that
+          // isn't a music/streaming player. Turning it off also drops the
+          // Android mediaPlayback foreground service and its FOREGROUND_SERVICE
+          // / FOREGROUND_SERVICE_MEDIA_PLAYBACK permissions.
+          enableBackgroundPlayback: false,
+          enableBackgroundRecording: false,
         },
       ],
       [

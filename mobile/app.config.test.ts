@@ -62,6 +62,41 @@ describe('app.config push notifications', () => {
   });
 });
 
+function pluginOpts(
+  config: ReturnType<typeof buildConfig>,
+  name: string,
+): Record<string, unknown> | undefined {
+  for (const p of config.plugins ?? []) {
+    if (Array.isArray(p) && p[0] === name) return (p[1] ?? {}) as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+// App Review rejects `audio` in UIBackgroundModes for an app with no
+// persistent-audio feature. Nothing here sets that key directly — it is added
+// by expo-audio (enableBackgroundPlayback defaults to TRUE) and can be added by
+// expo-video (background playback / Picture-in-Picture). Recording is foreground
+// push-to-talk and playback is on-device expo-speech, so every one of those
+// switches must stay off.
+describe('app.config background audio', () => {
+  it('turns off expo-audio background playback and recording', () => {
+    const opts = pluginOpts(buildConfig(), 'expo-audio');
+    expect(opts).toBeDefined();
+    expect(opts?.enableBackgroundPlayback).toBe(false);
+    expect(opts?.enableBackgroundRecording).toBe(false);
+  });
+
+  it('does not opt expo-video into background playback or Picture-in-Picture', () => {
+    const opts = pluginOpts(buildConfig(), 'expo-video') ?? {};
+    expect(opts.supportsBackgroundPlayback).not.toBe(true);
+    expect(opts.supportsPictureInPicture).not.toBe(true);
+  });
+
+  it('declares no UIBackgroundModes in the app config itself', () => {
+    expect(buildConfig().ios?.infoPlist?.UIBackgroundModes).toBeUndefined();
+  });
+});
+
 describe('app.config transport posture — development/preview (env=1)', () => {
   it('allows arbitrary iOS loads', () => {
     process.env.EXPO_PUBLIC_ALLOW_CLEARTEXT = '1';
