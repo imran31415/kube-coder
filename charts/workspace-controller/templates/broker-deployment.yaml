@@ -1,0 +1,125 @@
+{{- if .Values.provision.enabled }}
+{{- $brokerNs := .Values.provision.broker.namespace }}
+{{- $provSecret := .Values.provision.existingSecretName | default "workspace-controller-provision" }}
+# The provisioning broker (#421) — a single reconciler that watches
+# ProvisionRequests and stamps the privileged Job from its own immutable
+# template. It lives in the provisioner namespace; the controller does not.
+#
+# One replica, Recreate: two brokers reconciling the same request would race.
+# Job creation is idempotent (the Job takes the request's name, so a duplicate
+# stamp hits AlreadyExists rather than starting a second privileged helm
+# upgrade), but a single writer keeps the status transitions readable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-provision-broker
+  namespace: {{ $brokerNs }}
+  labels:
+    app: workspace-provision-broker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: workspace-provision-broker
+  template:
+    metadata:
+      labels:
+        app: workspace-provision-broker
+      annotations:
+        # broker.py ships via ConfigMap, so the image digest alone would not
+        # roll the pod when the reconciler changes.
+        checksum/broker: {{ include (print $.Template.BasePath "/broker-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.provision.broker.serviceAccount }}
+      {{- if .Values.controller.image.pullSecretName }}
+      # NB this Secret must exist in the BROKER namespace, not the controller's
+      # — see broker-namespace.yaml and scripts/ensure-provision-broker-namespace.sh.
+      imagePullSecrets:
+      - name: {{ .Values.controller.image.pullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: broker
+        image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+        command: ["python3", "/broker/broker.py"]
+        env:
+        - name: HOME
+          value: /home/broker
+        - name: TMPDIR
+          value: /tmp
+        # The broker's own namespace: where requests are read and Jobs stamped.
+        - name: BROKER_NAMESPACE
+          value: {{ $brokerNs | quote }}
+        # The control-plane namespace the workspace deploy copies the shared
+        # regcred image-pull Secret FROM (provision.sh's NAMESPACE contract).
+        # Distinct from the namespace the Job now runs in.
+        - name: CONTROL_PLANE_NAMESPACE
+          value: {{ .Values.namespace | quote }}
+        - name: WORKSPACE_PREFIX
+          value: {{ .Values.controller.workspacePrefix | quote }}
+        # --- everything below is what the REQUEST may not control -----------
+        - name: PROVISIONER_SERVICE_ACCOUNT
+          value: {{ .Values.provision.serviceAccount | quote }}
+        - name: PROVISIONER_PULL_SECRET
+          value: {{ .Values.controller.image.pullSecretName | quote }}
+        {{- if .Values.provision.image }}
+        - name: PROVISIONER_IMAGE
+          value: {{ .Values.provision.image | quote }}
+        {{- end }}
+        - name: CHART_REPO
+          value: {{ .Values.provision.chart.repo | quote }}
+        # Empty ref auto-pins to this chart's own release tag (v<appVersion>),
+        # matching the controller's previous behaviour (#459).
+        - name: CHART_REF
+          value: {{ .Values.provision.chart.ref | default (printf "v%s" .Chart.AppVersion) | quote }}
+        - name: ALLOW_MUTABLE_CHART_REF
+          value: {{ if hasKey .Values.provision.chart "allowMutableRef" }}{{ .Values.provision.chart.allowMutableRef | quote }}{{ else }}"false"{{ end }}
+        - name: GITOPS_REPO
+          value: {{ required "provision.gitops.repo is required when provision.enabled" .Values.provision.gitops.repo | quote }}
+        - name: GITOPS_BRANCH
+          value: {{ .Values.provision.gitops.branch | quote }}
+        - name: GITOPS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ $provSecret }}
+              key: git-token
+        - name: POLL_SECONDS
+          value: {{ .Values.provision.broker.pollSeconds | quote }}
+        - name: RETAIN_HOURS
+          value: {{ .Values.provision.broker.retainHours | quote }}
+        volumeMounts:
+        - name: broker-app
+          mountPath: /broker
+        - name: home
+          mountPath: /home/broker
+        - name: tmp
+          mountPath: /tmp
+        resources:
+{{ toYaml .Values.provision.broker.resources | indent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: broker-app
+        configMap:
+          name: workspace-provision-broker-app
+          defaultMode: 0444
+      - name: home
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+{{- end }}

@@ -1,4 +1,4 @@
-suite: provisioner RBAC (#103 per-workspace namespaces)
+suite: provisioner RBAC (#103 per-workspace namespaces, broker-namespace move)
 templates:
   - templates/provisioner-rbac.yaml
 values:
@@ -73,7 +73,25 @@ tests:
             resources: ["roles", "rolebindings"]
             verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  - it: binds the ClusterRole to the provisioner SA in the controller namespace
+  - it: places the privileged SA in the BROKER namespace, not the controller's
+    set:
+      provision.enabled: true
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: kind
+          value: ServiceAccount
+      # #421 AC 1/2. The controller can create Jobs nowhere the provisioner SA
+      # exists, because the SA no longer exists in a namespace the controller
+      # has any workload verb in. test-values.yaml's namespace is `test`.
+      - equal:
+          path: metadata.namespace
+          value: kube-coder-provision
+      - notEqual:
+          path: metadata.namespace
+          value: test
+
+  - it: binds the ClusterRole to the provisioner SA in the broker namespace
     set:
       provision.enabled: true
     documentIndex: 2
@@ -88,6 +106,15 @@ tests:
           path: roleRef.name
           value: workspace-provisioner
       - contains:
+          path: subjects
+          content:
+            kind: ServiceAccount
+            name: workspace-provisioner
+            namespace: kube-coder-provision
+      # A binding still naming the control-plane namespace would either grant
+      # nothing (the SA is not there) or, worse, re-grant it if someone
+      # recreated the SA there. Assert the old subject is gone.
+      - notContains:
           path: subjects
           content:
             kind: ServiceAccount

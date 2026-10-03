@@ -129,22 +129,14 @@ spec:
           value: {{ required "provision.gitops.repo is required when provision.enabled" .Values.provision.gitops.repo | quote }}
         - name: GITOPS_BRANCH
           value: {{ .Values.provision.gitops.branch | quote }}
-        - name: CHART_REPO
-          value: {{ .Values.provision.chart.repo | quote }}
-        # Empty ref auto-pins to this chart's own release tag (v<appVersion>) so
-        # a default install provisions from the matching immutable release
-        # instead of shipping a mutable ref the guard below rejects (#459).
-        - name: CHART_REF
-          value: {{ .Values.provision.chart.ref | default (printf "v%s" .Chart.AppVersion) | quote }}
-        # Fail closed on a mutable/floating chart ref unless explicitly opted in
-        # (finding 7). The provisioner Job clones CHART_REF and runs its make
-        # deploy under the cluster-privileged provisioner SA, so it must be pinned.
-        - name: ALLOW_MUTABLE_CHART_REF
-          value: {{ if hasKey .Values.provision.chart "allowMutableRef" }}{{ .Values.provision.chart.allowMutableRef | quote }}{{ else }}"false"{{ end }}
-        - name: PROVISIONER_SERVICE_ACCOUNT
-          value: {{ .Values.provision.serviceAccount | quote }}
-        - name: PROVISIONER_PULL_SECRET
-          value: {{ .Values.controller.image.pullSecretName | quote }}
+        # Where to file a ProvisionRequest. Since #421 this is the ONLY thing the
+        # controller knows about the privileged path: the chart repo/ref, the
+        # provisioner image, its ServiceAccount and its pull secret are the
+        # broker's configuration (see broker-deployment.yaml) and are
+        # deliberately not injected here. A constant the controller does not
+        # hold is a constant a controller compromise cannot forge.
+        - name: PROVISION_BROKER_NAMESPACE
+          value: {{ .Values.provision.broker.namespace | quote }}
         - name: WORKSPACE_IMAGE_TAG
           value: {{ .Values.provision.workspaceImageTag | quote }}
         # Shared cluster Secrets projected into each provisioned workspace so the
@@ -154,12 +146,11 @@ spec:
           value: {{ .Values.provision.workspaceSelfServeSecret | quote }}
         - name: WORKSPACE_ASSISTANT_SECRET
           value: {{ .Values.provision.workspaceAssistantSecret | quote }}
-        {{- if .Values.provision.image }}
-        - name: PROVISIONER_IMAGE
-          value: {{ .Values.provision.image | quote }}
-        {{- end }}
         # Runtime credential: the git push token, from the chart-rendered Secret
         # (see provisioner-secret.yaml) or provision.existingSecretName if set.
+        # The controller needs it for its OWN work — pushing generated values to
+        # the users-private repo and reading the GitHub API. It no longer passes
+        # it to the Job; the broker injects its own copy (broker-secret.yaml).
         {{- $provSecret := .Values.provision.existingSecretName | default "workspace-controller-provision" }}
         - name: GITOPS_TOKEN
           valueFrom:

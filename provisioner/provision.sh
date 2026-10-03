@@ -4,6 +4,8 @@
 #
 # This script used to be a Python string in the controller
 # (controller.py :: PROVISION_JOB_SCRIPT), injected as the Job's `command`.
+# The Job is stamped by the broker (charts/workspace-controller/broker.py) since
+# #421; the controller no longer builds a manifest at all.
 # That meant whoever could build the Job manifest also chose the code that ran
 # under the cluster-privileged `workspace-provisioner` ServiceAccount — so a
 # controller compromise was arbitrary code execution at provisioner privilege,
@@ -15,17 +17,19 @@
 #
 # CONTRACT — the Job passes these as env and nothing else:
 #   SLUG           workspace/user slug being provisioned
-#   NAMESPACE      control-plane namespace the Job runs in (regcred source)
+#   NAMESPACE      control-plane namespace regcred is copied FROM. Since #421
+#                  the Job itself runs in the BROKER's namespace, which is a
+#                  third, distinct namespace — do not conflate them.
 #   WS_NAMESPACE   the workspace's own per-user namespace, ws-<slug> (#103)
 #   CHART_REPO     kube-coder chart repo to clone
-#   CHART_REF      immutable ref to clone (validated controller-side: 40-hex
-#                  SHA or vX.Y.Z tag, unless ALLOW_MUTABLE_CHART_REF)
+#   CHART_REF      immutable ref to clone (validated broker-side: 40-hex SHA or
+#                  vX.Y.Z tag, unless ALLOW_MUTABLE_CHART_REF)
 #   GITOPS_REPO    users-private GitOps repo host/path
 #   GITOPS_BRANCH  branch of that repo
 #   GITOPS_TOKEN   token for it (never logged)
 #
-# Keep this file in lockstep with build_job_manifest() in controller.py: it is
-# the *only* consumer of that env, and controller tests assert the two agree.
+# Keep this file in lockstep with build_job_manifest() in broker.py: it is the
+# *only* consumer of that env, and broker tests assert the two agree.
 set -euo pipefail
 export HOME=/tmp
 
@@ -73,6 +77,7 @@ mkdir -p /tmp/kc/users-private
 cp -r "/tmp/cfg/users-private/${SLUG}" "/tmp/kc/users-private/${SLUG}"
 cd /tmp/kc
 # Per-workspace namespace (#103): deploy into ws-<slug>, and copy the regcred
-# image-pull Secret from the control-plane namespace into it. `make deploy`
+# image-pull Secret from the control-plane namespace (NOT this Job's own
+# namespace, which is the broker's since #421) into it. `make deploy`
 # creates+labels the namespace and replicates regcred (see REGCRED_SRC_NAMESPACE).
 make deploy USER="${SLUG}" NAMESPACE="${WS_NAMESPACE}" REGCRED_SRC_NAMESPACE="${NAMESPACE}"
