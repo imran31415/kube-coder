@@ -47,6 +47,19 @@ class ConnectionTestCase(unittest.TestCase):
         self.addCleanup(restore)
         self.mod = strix_connection
         self.addCleanup(setattr, strix_connection, '_install_thread', None)
+        # Cleanups run last-in-first-out, so this one runs before the three
+        # above. A test that started a real install thread must let it finish
+        # first: its final state write otherwise races the temp-dir removal
+        # ("Directory not empty: …/.strix-venv"), or, once HOME is restored,
+        # lands in the real ~/.strix-venv of whoever ran the suite.
+        self.addCleanup(self._wait_for_install_thread)
+
+    def _wait_for_install_thread(self):
+        thread = strix_connection._install_thread
+        if thread is not None:
+            thread.join(10)
+            self.assertFalse(thread.is_alive(),
+                             'the scanner-install thread outlived the test')
 
 
 class SaveTests(ConnectionTestCase):
