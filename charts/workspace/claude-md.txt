@@ -43,7 +43,10 @@ Docker does NOT run natively. The CLI is pre-configured with `DOCKER_HOST`, `DOC
 ## Cloud & DevOps
 
 - **kubectl** — connected to the host Kubernetes cluster (namespace: `coder`)
-- **gh** — GitHub CLI. Authenticate with `gh auth login`
+- **gh** — GitHub CLI. Authenticate with `gh auth login`. The pod has no
+  browser of its own, so `$BROWSER` is `kc-open-url`: when `gh` (or any CLI
+  login) "opens" a page, it prints the link for the user to open on their
+  own computer, and the login carries on waiting.
 - **git** — user name/email set via environment variables or `git config --global`
 
 ## Utilities

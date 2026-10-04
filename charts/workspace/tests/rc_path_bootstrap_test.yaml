@@ -59,3 +59,37 @@ tests:
       - matchRegex:
           path: data["entrypoint.sh"]
           pattern: 'export PATH="/home/dev/\.local/bin:\$PATH"'
+
+  # Issue #763: no xdg-open/BROWSER in the pod, so `gh auth login --web` printed
+  # "Failed opening a web browser". start.sh installs kc-open-url and points an
+  # UNSET $BROWSER at it (code-server's own helper must keep winning).
+  - it: installs kc-open-url and exports it as $BROWSER only when unset
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'cat > /home/dev/\.local/bin/kc-open-url <<''OPENURL'''
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'chmod 0755 /home/dev/\.local/bin/kc-open-url'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'bootstrap_rc ''kc-open-url'''
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'if \[ -z "\$\{BROWSER:-\}" \] && \[ -x /home/dev/\.local/bin/kc-open-url \]; then'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'export BROWSER=/home/dev/\.local/bin/kc-open-url'
+
+  - it: mirrors the $BROWSER hook into the SSH sidecar when ssh is enabled
+    template: templates/ssh-server-configmap.yaml
+    set:
+      ssh.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["entrypoint.sh"]
+          pattern: 'grep -qF ''kc-open-url'' "\$rc"'
+      - matchRegex:
+          path: data["entrypoint.sh"]
+          pattern: 'export BROWSER=/home/dev/\.local/bin/kc-open-url'

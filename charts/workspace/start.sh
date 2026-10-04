@@ -113,6 +113,34 @@ bootstrap_rc '/home/dev/.local/bin' '# --- kube-coder: user-installed tools on t
   *) export PATH="/home/dev/.local/bin:$PATH" ;;
 esac'
 
+# A browser for CLIs that open a login page (issue #763). `gh auth login`,
+# `gh … --web`, Python's webbrowser, gcloud and friends look for $BROWSER,
+# then xdg-open / x-www-browser / wslview. This pod has none of them (and no
+# desktop for them to drive), so they fail with a red "Failed opening a web
+# browser … executable file not found" that reads like the login broke — even
+# though gh is still polling. The user's real browser is on their own machine,
+# so the honest handler just prints the link to click or copy and exits 0.
+# Only fills in an UNSET $BROWSER: code-server exports its own helper into its
+# terminals, which opens the link in the user's browser and should win.
+cat > /home/dev/.local/bin/kc-open-url <<'OPENURL'
+#!/usr/bin/env bash
+# kube-coder's $BROWSER (issue #763): print the link instead of opening it.
+if [ "$#" -eq 0 ]; then
+  echo "usage: kc-open-url URL..." >&2
+  exit 2
+fi
+{
+  printf '\n  This workspace has no browser of its own. Open this link on your computer:\n'
+  for url in "$@"; do printf '\n    %s\n' "$url"; done
+  printf '\n'
+} >&2
+OPENURL
+chmod 0755 /home/dev/.local/bin/kc-open-url
+bootstrap_rc 'kc-open-url' '# --- kube-coder: print links that CLIs try to open (issue #763) ---
+if [ -z "${BROWSER:-}" ] && [ -x /home/dev/.local/bin/kc-open-url ]; then
+  export BROWSER=/home/dev/.local/bin/kc-open-url
+fi'
+
 # CLAUDE.md is chart-managed (describes the workspace environment to
 # Claude). Always overwrite from the configmap so chart updates land
 # — previously we preserved any existing file, which meant edits to
