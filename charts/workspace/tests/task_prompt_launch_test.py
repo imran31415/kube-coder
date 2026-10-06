@@ -167,6 +167,125 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         self.assertNotIn('customApiKeyResponses', self._read())
 
 
+class ClaudeConfigPathTests(unittest.TestCase):
+    """`$KC_CLAUDE_CONFIG_PATH` — the override the Makefile's python-tests
+    target sets so a test that launches a Build cannot answer Claude Code's
+    dialogs in the developer's real config (#762)."""
+
+    def test_unset_or_blank_is_the_users_config(self):
+        home = os.path.expanduser('~/.claude.json')
+        self.assertEqual(server._resolve_claude_config_path({}), home)
+        for blank in ('', '   ', '\n'):
+            self.assertEqual(server._resolve_claude_config_path(
+                {'KC_CLAUDE_CONFIG_PATH': blank}), home)
+
+    def test_set_is_used_trimmed(self):
+        self.assertEqual(server._resolve_claude_config_path(
+            {'KC_CLAUDE_CONFIG_PATH': ' /tmp/kc/claude.json \n'}),
+            '/tmp/kc/claude.json')
+
+
+class AutoModeSetupDismissTests(unittest.TestCase):
+    """Pre-answering "Don't show again" to the auto-mode setup nudge (#762).
+
+    Claude Code shows "Set up auto mode for your environment?" after a turn
+    in an auto-mode session and records "Don't show again" GLOBALLY as
+    autoModeEnvSetup.dismissed, next to its own `denials` / `dismissedAt`.
+    """
+
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        self.cfg = home.name + os.sep + '.claude.json'
+
+    def _read(self):
+        with open(self.cfg) as f:
+            return json.load(f)
+
+    def _seed_others(self, **extra):
+        """Write a config where every OTHER answer is already in place for
+        '/w', so a write is attributable to the auto-mode answer alone."""
+        cfg = {'hasCompletedOnboarding': True,
+               'projects': {'/w': {'hasTrustDialogAccepted': True}}, **extra}
+        with open(self.cfg, 'w') as f:
+            f.write(json.dumps(cfg))
+
+    def test_missing_file_seeds_dismissed(self):
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertEqual(self._read()['autoModeEnvSetup'], {'dismissed': True})
+
+    def test_cli_counters_preserved(self):
+        self._seed_others(autoModeEnvSetup={'denials': 7, 'dismissedAt': 123})
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertEqual(self._read()['autoModeEnvSetup'],
+                         {'denials': 7, 'dismissedAt': 123, 'dismissed': True})
+
+    def test_already_dismissed_is_a_no_op(self):
+        self._seed_others(autoModeEnvSetup={'dismissed': True, 'denials': 9})
+        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertEqual(self._read()['autoModeEnvSetup'],
+                         {'dismissed': True, 'denials': 9})
+
+    def test_only_this_answer_missing_triggers_write(self):
+        self._seed_others()
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertIs(self._read()['autoModeEnvSetup']['dismissed'], True)
+
+    def test_malformed_value_is_replaced(self):
+        for bad in (None, 'x', [], 3):
+            with self.subTest(bad=bad):
+                self._seed_others(autoModeEnvSetup=bad)
+                self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+                self.assertEqual(self._read()['autoModeEnvSetup'], {'dismissed': True})
+
+    def test_helper_reports_change_only_once(self):
+        cfg = {}
+        self.assertTrue(CTM._dismiss_auto_mode_setup(cfg))
+        self.assertFalse(CTM._dismiss_auto_mode_setup(cfg))
+        self.assertEqual(cfg, {'autoModeEnvSetup': {'dismissed': True}})
+
+    def test_falsy_dismissed_is_set_true(self):
+        # The CLI only ever writes `true` here, so `false` is not a user answer.
+        self._seed_others(autoModeEnvSetup={'dismissed': False})
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertIs(self._read()['autoModeEnvSetup']['dismissed'], True)
+
+    def test_new_workdir_after_dismissal_keeps_it_global(self):
+        # The answer lives once at the top level; a second workdir only adds
+        # its own trust entry and never a per-project copy of the answer.
+        CTM._ensure_claude_trust('/a', config_path=self.cfg)
+        self.assertTrue(CTM._ensure_claude_trust('/b', config_path=self.cfg))
+        cfg = self._read()
+        self.assertEqual(cfg['projects'], {'/a': {'hasTrustDialogAccepted': True},
+                                           '/b': {'hasTrustDialogAccepted': True}})
+        self.assertEqual(cfg['autoModeEnvSetup'], {'dismissed': True})
+
+    def test_unrelated_keys_untouched(self):
+        self._seed_others(
+            oauthAccount={'userID': 'abc'},
+            mcpServers={'memory': {'type': 'stdio'}},
+            customApiKeyResponses={'approved': ['t' * 20], 'rejected': []},
+            numStartups=42,
+        )
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        cfg = self._read()
+        self.assertEqual(cfg['oauthAccount'], {'userID': 'abc'})
+        self.assertEqual(cfg['mcpServers'], {'memory': {'type': 'stdio'}})
+        self.assertEqual(cfg['customApiKeyResponses'],
+                         {'approved': ['t' * 20], 'rejected': []})
+        self.assertEqual(cfg['numStartups'], 42)
+
+    def test_lands_with_api_key_answer_in_one_write(self):
+        key = 'synthetic-test-key-' + 'y' * 40 + 'AbCdEfGhIjKlMnOpQrSt'
+        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                                 reject_api_key=key))
+        cfg = self._read()
+        self.assertEqual(cfg['customApiKeyResponses']['rejected'], [key[-20:]])
+        self.assertIs(cfg['autoModeEnvSetup']['dismissed'], True)
+        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+                                                  reject_api_key=key))
+
+
 class ApiKeyToRejectTests(unittest.TestCase):
     """Gating for which env ANTHROPIC_API_KEY gets pre-rejected."""
 
