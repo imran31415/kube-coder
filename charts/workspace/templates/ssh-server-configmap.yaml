@@ -122,6 +122,16 @@ data:
       *) export PATH="/home/dev/.local/bin:$PATH" ;;
     esac
     PATHRC
+      # $BROWSER for CLI logins (issue #763; kept in sync with start.sh). The
+      # ide container writes kc-open-url to the shared PVC; the -x guard keeps
+      # this a no-op until it exists.
+      grep -qF 'kc-open-url' "$rc" || cat >> "$rc" <<'BROWSERRC'
+
+    # --- kube-coder: print links that CLIs try to open (issue #763) ---
+    if [ -z "${BROWSER:-}" ] && [ -x /home/dev/.local/bin/kc-open-url ]; then
+      export BROWSER=/home/dev/.local/bin/kc-open-url
+    fi
+    BROWSERRC
       chown ubuntu:ubuntu "$rc" 2>/dev/null || true
     done
 

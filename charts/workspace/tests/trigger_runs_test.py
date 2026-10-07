@@ -21,6 +21,7 @@ Run:  python3 -m unittest tests.trigger_runs_test   (from charts/workspace/)
 
 import hashlib
 import hmac
+import http.client
 import http.server
 import json
 import os
@@ -435,8 +436,17 @@ class WebhookLedgerTests(_ApiBase):
         """Verification has not run at the size check, so the entry carries no
         signature_verified: a cross there would read as 'the HMAC was wrong'."""
         self._webhook()
-        raw = b'x' * (1024 * 1024 + 1)
-        status, _ = self._req('POST', '/api/webhooks/gh-pr', raw=raw)
+        # Declare the oversized length but send no body. The handler rejects
+        # on Content-Length alone and never reads the body, so streaming a real
+        # 1 MiB only raced the server closing the socket: the client sometimes
+        # got EPIPE mid-upload instead of the 413 (~1 in 20 runs locally).
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=20)
+        self.addCleanup(conn.close)
+        conn.putrequest('POST', '/api/webhooks/gh-pr')
+        conn.putheader('Content-Type', 'application/json')
+        conn.putheader('Content-Length', str(1024 * 1024 + 1))
+        conn.endheaders()
+        status = conn.getresponse().status
         self.assertEqual(status, 413)
         run = self._only('webhooks', 'gh-pr')
         self.assertEqual(run['reason'], 'payload_too_large')
