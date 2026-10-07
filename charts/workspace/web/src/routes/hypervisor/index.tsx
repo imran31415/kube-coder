@@ -6,6 +6,7 @@ import { Pill } from '../../components/primitives/Pill';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import { usePoll } from '../../hooks/usePoll';
 import {
   config,
   configError,
@@ -36,6 +37,7 @@ import {
   removeThread,
   reviveThread,
   refreshDeletedThreads,
+  refreshThreads,
   renameThreadTitle,
   closeThread,
   seedChatConfig,
@@ -123,6 +125,13 @@ export function HypervisorRoute() {
   const cramped = useMediaQuery(`(max-width: ${BRIEF_AUTO_COLLAPSE_MAX}px)`);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatTab, setChatTab] = useState<ChatTab>('active');
+  const [threadsReady, setThreadsReady] = useState(false);
+  const firstListPoll = useRef(true);
+  usePoll(() => {
+    // initHypervisor already loaded the list; avoid a second immediate fetch.
+    if (firstListPoll.current) { firstListPoll.current = false; return; }
+    return refreshThreads({ rethrow: true });
+  }, 5000, { enabled: threadsReady });
   // Which thread modes the list shows (#683). 'all' is the default and the
   // only state a workspace that has never started a CTO chat ever sees.
   const [modeFilter, setModeFilter] = useState<ThreadModeFilter>('all');
@@ -225,6 +234,7 @@ export function HypervisorRoute() {
     let cancelled = false;
     void initHypervisor().then(() => {
       if (cancelled) return;
+      setThreadsReady(true);
       if (handoff) {
         // The thread list is in, so a send now creates the bound thread and
         // lands the prefix as its first turn.
