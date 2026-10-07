@@ -256,20 +256,64 @@ export async function initHypervisor(): Promise<void> {
   await refreshThreads();
 }
 
-export async function refreshThreads(): Promise<void> {
-  threadsLoading.value = true;
+let threadsRequest: Promise<void> | null = null;
+let threadRevision = 0;
+let threadMutations = 0;
+
+/** Invalidate reads across writes, including changes that do not touch updated_at. */
+async function mutateThread<T>(write: () => Promise<T>): Promise<T> {
+  threadRevision++;
+  threadMutations++;
+  try {
+    return await write();
+  } finally {
+    threadMutations--;
+    threadRevision++;
+  }
+}
+
+/** Share concurrent refreshes; retry snapshots overtaken by a local update. */
+async function loadThreads(): Promise<void> {
+  while (!threadMutations) {
+    const revision = threadRevision;
+    const previous = threads.value;
+    const next = await listThreads();
+    if (threadMutations) return; // The writer refreshes after it finishes.
+    if (revision !== threadRevision || previous !== threads.value) continue;
+    threads.value = next;
+    return;
+  }
+}
+
+export async function refreshThreads({ rethrow = false } = {}): Promise<void> {
   try {
     // ONE list (#683). Every thread, whatever its persona; the modes are a
     // badge + a filter chip in the sidebar (routes/hypervisor/threadMode.ts),
     // not two disjoint lists. Chat used to send `persona=default` and the AI
     // CTO page `persona=cto`, which made a CTO thread invisible to every
     // thread-management affordance Chat has — #663, by construction.
-    threads.value = await listThreads();
-  } catch {
-    /* keep last-good list */
-  } finally {
-    threadsLoading.value = false;
+    if (!threadsRequest) {
+      threadsLoading.value = threads.value.length === 0;
+      threadsRequest = loadThreads().finally(() => {
+        threadsRequest = null;
+        threadsLoading.value = false;
+      });
+    }
+    await threadsRequest;
+  } catch (e) {
+    // Interactive callers keep the last-good list; usePoll needs rejection
+    // to back off on a broken endpoint instead of hammering it every tick.
+    if (rethrow) throw e;
   }
+}
+
+/** Update an existing row only: late detail responses must not restore deletions. */
+function updateThreadSummary(thread: HypervisorThread): void {
+  const previous = threads.value.find(t => t.id === thread.id);
+  if (!previous || (Object.keys(thread) as (keyof HypervisorThread)[])
+    .every(key => thread[key] === previous[key])) return;
+  threads.value = threads.value.map(t => t.id === thread.id ? thread : t)
+    .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
 }
 
 export async function refreshDeletedThreads(): Promise<void> {
@@ -320,12 +364,16 @@ export function sameTranscript(
 async function pollActive(): Promise<void> {
   const id = activeThreadId.value;
   if (!id) return;
+  const revision = threadRevision;
+  const previous = threads.value.find(t => t.id === id);
   try {
     // Re-fetch the full (small) transcript each tick — simplest correct model
     // for a chat.
     const detail = await getThread(id, 0);
     // Guard against a late poll landing after the user switched threads.
     if (activeThreadId.value !== id) return;
+    if (revision !== threadRevision || threadMutations) return;
+    if (threads.value.find(t => t.id === id) !== previous) return;
     // Only swap `events` when content actually changed, keeping its identity
     // stable across idle ticks — see sameTranscript (#348).
     const source = detail.source ?? null;
@@ -333,6 +381,7 @@ async function pollActive(): Promise<void> {
       events.value = detail.events;
     }
     activeStatus.value = detail.thread.status;
+    updateThreadSummary(detail.thread);
     transcriptSource.value = source;
   } catch {
     /* transient — next tick retries */
@@ -350,7 +399,7 @@ export async function openThread(id: string): Promise<void> {
   transcriptSource.value = null;
   chatError.value = null;
   await pollActive();
-  startPolling();
+  if (activeThreadId.value === id) startPolling();
 }
 
 export function closeThread(): void {
@@ -367,6 +416,7 @@ let optimisticSeq = -1;
 export async function sendMessage(text: string): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed || sending.value) return;
+  const id = activeThreadId.value;
   // Readiness is provider-specific. Never block another runtime on Claude's
   // login, and use the existing thread's agent rather than a new-chat default.
   const assistant = activeThreadId.value
@@ -387,8 +437,8 @@ export async function sendMessage(text: string): Promise<void> {
   ];
   activeStatus.value = 'running';
   try {
-    if (!activeThreadId.value) {
-      const thread = await createThread({
+    if (!id) {
+      const thread = await mutateThread(() => createThread({
         message: trimmed,
         assistant: selectedAssistant.value || undefined,
         model: selectedModel.value || undefined,
@@ -407,7 +457,7 @@ export async function sendMessage(text: string): Promise<void> {
         persona: newChatMode.value || undefined,
         // The project this chat is filed into (#358) — undefined when none.
         project_id: selectedProject.value || undefined,
-      });
+      }));
       await refreshThreads();
       await openThread(thread.id);
       // Reflect the new thread in the URL so a refresh reopens it. Guarded so
@@ -417,12 +467,18 @@ export async function sendMessage(text: string): Promise<void> {
         navigate(`/hypervisor/${encodeURIComponent(thread.id)}`, true);
       }
     } else {
-      await sendThreadMessage(activeThreadId.value, trimmed);
-      startPolling();
-      await pollActive();
+      await mutateThread(() => sendThreadMessage(id, trimmed));
+      if (activeThreadId.value === id) {
+        startPolling();
+        await pollActive();
+      }
+      await refreshThreads();
     }
   } catch (e) {
-    chatError.value = e instanceof Error ? e.message : 'Failed to send';
+    if (activeThreadId.value === id) {
+      chatError.value = e instanceof Error ? e.message : 'Failed to send';
+      await pollActive();
+    }
   } finally {
     sending.value = false;
   }
@@ -437,8 +493,9 @@ export async function stopMessage(): Promise<void> {
   if (!id || stopping.value) return;
   stopping.value = true;
   try {
-    await stopThread(id);
+    await mutateThread(() => stopThread(id));
     await pollActive();
+    await refreshThreads();
   } catch (e) {
     chatError.value = e instanceof Error ? e.message : 'Failed to stop';
   } finally {
@@ -460,7 +517,7 @@ export async function renameThreadTitle(id: string, title: string): Promise<void
   const prev = threads.value;
   threads.value = prev.map((t) => (t.id === id ? { ...t, title: trimmed } : t));
   try {
-    await renameThread(id, trimmed);
+    await mutateThread(() => renameThread(id, trimmed));
     await refreshThreads();
   } catch {
     // Roll back to the last-good list on failure.
@@ -480,7 +537,7 @@ export async function setActiveThreadModel(model: string): Promise<void> {
   const prev = threads.value;
   threads.value = prev.map((t) => (t.id === id ? { ...t, model } : t));
   try {
-    await setThreadModel(id, model);
+    await mutateThread(() => setThreadModel(id, model));
     await refreshThreads();
   } catch {
     threads.value = prev;
@@ -499,7 +556,7 @@ export async function setActiveThreadEffort(effort: string): Promise<void> {
   const prev = threads.value;
   threads.value = prev.map((t) => (t.id === id ? { ...t, effort } : t));
   try {
-    await setThreadEffort(id, effort);
+    await mutateThread(() => setThreadEffort(id, effort));
     await refreshThreads();
   } catch {
     threads.value = prev;
@@ -522,7 +579,7 @@ export async function setActiveThreadProject(projectId: string): Promise<void> {
   const prev = threads.value;
   threads.value = prev.map((t) => (t.id === id ? { ...t, project_id: projectId } : t));
   try {
-    await setThreadProject(id, projectId);
+    await mutateThread(() => setThreadProject(id, projectId));
     await refreshThreads();
   } catch (e) {
     threads.value = prev;
@@ -535,7 +592,7 @@ export async function setActiveThreadProject(projectId: string): Promise<void> {
  *  current if it's already been expanded. */
 export async function removeThread(id: string): Promise<void> {
   try {
-    await deleteThread(id);
+    await mutateThread(() => deleteThread(id));
   } catch {
     /* best effort */
   }
@@ -549,7 +606,7 @@ export async function removeThread(id: string): Promise<void> {
 /** Undo a soft-delete: the chat reappears in the main list. */
 export async function reviveThread(id: string): Promise<void> {
   try {
-    await restoreThread(id);
+    await mutateThread(() => restoreThread(id));
   } catch {
     /* best effort */
   }
