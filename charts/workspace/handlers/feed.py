@@ -116,7 +116,11 @@ class FeedRoutes:
             self.send_json({'error': "platform must be 'ios' or 'android'"}, 400)
             return
         try:
-            push_notify.PushTokenStore.register(token, platform, self._memory_actor())
+            workspace_host = data.get('workspace_host', '')
+            if not isinstance(workspace_host, str) or len(workspace_host) > 500:
+                self.send_json({'error': 'Invalid workspace host'}, 400)
+                return
+            push_notify.PushTokenStore.register(token, platform, self._memory_actor(), workspace_host)
         except Exception as e:
             print(f'[push] register failed: {e}', file=sys.stderr)
             self.send_json({'error': 'could not store token'}, 500)

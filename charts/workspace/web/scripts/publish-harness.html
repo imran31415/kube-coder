@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Build publishing local test</title>
+<body style="margin:0;padding:12px;background:var(--bg);color:var(--text);font-family:system-ui">
+<div id="app"></div>
+<script type="module">
+import { render, h } from 'preact';
+import { PublishPanel } from '/src/routes/tasks/PublishPanel.tsx';
+import '/src/styles/tokens.css';
+window.__KC_AUTH_PREFIX__ = '';
+render(h(PublishPanel, {taskId:'t1'}), document.getElementById('app'));
+</script>
+</body></html>

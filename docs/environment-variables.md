@@ -244,3 +244,7 @@ python3 charts/workspace/server.py
 ## Default Values Reference
 
 Default values are defined in code. To override, set the environment variable to your desired value. Boolean variables accept `true`/`false`, `1`/`0`, `yes`/`no` (case-insensitive).
+
+### Build publishing (#710)
+
+`KC_PUBLISH_DIR` overrides the durable publishing state directory (default: `publishing/` beneath the task store). Keep it on the workspace PVC. Tests must point it at disposable storage.

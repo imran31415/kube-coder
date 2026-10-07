@@ -17,9 +17,13 @@ const setHandler = vi.fn();
 const getPermissions = vi.fn();
 const requestPermissions = vi.fn();
 const getExpoToken = vi.fn();
+const getLastResponse = vi.fn<() => Promise<unknown>>(async () => null);
+const clearLastResponse = vi.fn(async () => {});
 const device = { isDevice: false };
 
 vi.mock('expo-notifications', () => ({
+  getLastNotificationResponseAsync: (...a: []) => getLastResponse(...a),
+  clearLastNotificationResponseAsync: (...a: []) => clearLastResponse(...a),
   setNotificationHandler: (...a: unknown[]) => setHandler(...a),
   addNotificationResponseReceivedListener: (...a: unknown[]) =>
     addResponseListener(...a),
@@ -71,6 +75,8 @@ vi.mock('../store/config', () => ({
 // Every case starts from the same inert world: not a device, not connected,
 // push on, no permission, no token, and a server that accepts everything.
 beforeEach(() => {
+  getLastResponse.mockReset().mockResolvedValue(null);
+  clearLastResponse.mockClear();
   device.isDevice = false;
   cfg = { host: '', token: '', pushEnabled: true, loaded: true };
   cfgListeners.clear();
@@ -88,9 +94,10 @@ beforeEach(() => {
 const navigateTo = vi.fn();
 const navigate = vi.fn();
 let navReady = false;
+let navRoutes = ['Tasks'];
 vi.mock('../store/nav', () => ({
   navigateTo: (...a: unknown[]) => navigateTo(...a),
-  navigationRef: { isReady: () => navReady, navigate: (...a: unknown[]) => navigate(...a) },
+  navigationRef: { isReady: () => navReady, getRootState: () => ({ routeNames: navRoutes }), navigate: (...a: unknown[]) => navigate(...a) },
 }));
 
 describe('initPush — must never break app boot', () => {
@@ -356,5 +363,87 @@ describe('handleNotificationTap — a tap marks the alert read', () => {
     expect(() => handleNotificationTap({ ref: 'task:t9', feedId: 'fd_10' })).not.toThrow();
     await flush();
     expect(navigate).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('publishing notification recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks(); vi.resetModules();
+    navReady = false; navRoutes = ['Tasks'];
+    cfg = { host: '', token: '', pushEnabled: true, loaded: false };
+  });
+  it('deduplicates the listener and cold-start response', async () => {
+    cfg = { ...cfg, host: 'https://ws.example', token: 'token', loaded: true };
+    navReady = true;
+    const response = { actionIdentifier: 'default', notification: { request: {
+      identifier: 'ready-1', content: { data: { source: 'build-publish',
+        workspaceHost: cfg.host, ref: 'task:t1', feedId: 'ready-1' } },
+    } } };
+    getLastResponse.mockResolvedValue(response);
+    addResponseListener.mockReturnValue({ remove: vi.fn() });
+    const push = await import('./notifications');
+    const detach = push.attachNotificationResponseListener();
+    addResponseListener.mock.calls.at(-1)![0](response);
+    await flush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+    detach();
+  });
+  it('ignores a cold-start response that arrives after detach', async () => {
+    cfg = { ...cfg, host: 'https://ws.example', token: 'token', loaded: true };
+    navReady = true;
+    let resolve!: (value: unknown) => void;
+    getLastResponse.mockReturnValue(new Promise(r => { resolve = r; }));
+    addResponseListener.mockReturnValue({ remove: vi.fn() });
+    const push = await import('./notifications');
+    const detach = push.attachNotificationResponseListener();
+    detach();
+    resolve({ actionIdentifier: 'default', notification: { request: {
+      identifier: 'late', content: { data: { ref: 'task:t1' } },
+    } } });
+    await flush();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(cfgListeners.size).toBe(0);
+  });
+  it('waits for both hydration and navigation then opens Changes once', async () => {
+    const push = await import('./notifications');
+    push.handleNotificationTap({ source: 'build-publish', workspaceHost: 'https://ws.example', ref: 'task:t1', feedId: 'ready-1' });
+    push.flushPendingNotification();
+    expect(navigate).not.toHaveBeenCalled();
+    cfg = { ...cfg, host: 'https://ws.example', token: 'token', loaded: true };
+    push.flushPendingNotification();
+    expect(navigate).not.toHaveBeenCalled();
+    navReady = true;
+    push.flushPendingNotification();
+    push.flushPendingNotification();
+    await flush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('Tasks', { screen: 'TaskDetail', params: { id: 't1', tab: 'changes' }, initial: false });
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+  });
+  it('does not acknowledge or navigate to a different workspace task', async () => {
+    cfg = { ...cfg, host: 'https://new.example', token: 'token', loaded: true };
+    navReady = true;
+    const push = await import('./notifications');
+    push.handleNotificationTap({ source: 'build-publish', workspaceHost: 'https://old.example', ref: 'task:t1', feedId: 'old-feed' });
+    await flush();
+    expect(markFeedRead).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalledWith('Tasks', expect.anything());
+  });
+});
+
+
+describe('connected navigator readiness', () => {
+  it('waits until Tasks is registered after hydration', async () => {
+    vi.clearAllMocks(); vi.resetModules();
+    navReady = true; navRoutes = [];
+    cfg = { host: 'https://ws.example', token: 'token', loaded: true, pushEnabled: true };
+    const push = await import('./notifications');
+    push.handleNotificationTap({ source: 'build-publish', workspaceHost: cfg.host, ref: 'task:t1' });
+    expect(navigate).not.toHaveBeenCalled();
+    navRoutes = ['Tasks'];
+    push.flushPendingNotification();
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 });

@@ -262,7 +262,7 @@ export default function MissionControlScreen() {
       }
       // initial: false → TaskList stays beneath the detail screen, so it opens
       // with a back button instead of becoming the stack's only (trapped) route.
-      nav.navigate('Tasks', { screen: 'TaskDetail', params: { id: card.ref_id }, initial: false });
+      nav.navigate('Tasks', { screen: 'TaskDetail', params: { id: card.ref_id, ...(card.has_worktree && card.state === 'done' ? { tab: 'changes' } : {}) }, initial: false });
     },
     [nav],
   );

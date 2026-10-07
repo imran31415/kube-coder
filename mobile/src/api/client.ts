@@ -359,7 +359,7 @@ export async function registerPushToken(
   platform: 'ios' | 'android',
 ): Promise<void> {
   if (getConfig().mock) return;
-  await request('/api/push/register', { method: 'POST', body: { token, platform } });
+  await request('/api/push/register', { method: 'POST', body: { token, platform, workspace_host: getConfig().host } });
 }
 
 /** Drop this device's push token (on disconnect). Idempotent. */
@@ -1811,3 +1811,16 @@ export async function decideBoardItem(
     throw e;
   }
 }
+
+
+// Durable Build publishing (#710). Old servers return 404; consumers hide it.
+import type { PublishStatus } from './publishTypes';
+import { mockPublish, mockPublishAction } from '../mock/publish';
+const publishPath = (id: string) => `/api/claude/tasks/${encodeURIComponent(id)}/publish`;
+export const getBuildPublish = (id: string) => getConfig().mock
+  ? Promise.resolve(mockPublish(id))
+  : request<PublishStatus>(publishPath(id));
+export const buildPublishAction = (id: string, action: string, body: unknown = {}) =>
+  getConfig().mock ? Promise.resolve().then(() => mockPublishAction(id, action, body)) : request<PublishStatus>(publishPath(id) + (action ? '/' + action : ''), { method: 'POST', body });
+export const getBuildPublishDiff = (id: string, preparation: string, file: string) =>
+  getConfig().mock ? Promise.resolve({ diff: `diff --git a/${file} b/${file}\n+Health check implementation`, truncated: false }) : request<{ diff: string; truncated: boolean }>(publishPath(id) + '/diff', { query: { preparation_id: preparation, file } });

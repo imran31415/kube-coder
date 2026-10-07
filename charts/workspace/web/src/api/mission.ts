@@ -45,6 +45,8 @@ export interface MissionChildRef {
 }
 
 export interface MissionCard {
+  has_worktree?: boolean;
+  publication?: { stage: string | null; pr: { number: number; url: string } | null };
   /** Namespaced id like `build:<id>` / `chat:<id>` / `subagent:<id>`. */
   id: string;
   /** Raw id for task/thread API calls (kill, follow-up, navigation). */

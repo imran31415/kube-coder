@@ -451,7 +451,7 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     wt_env = []
     for k, v in (worktrees.session_env(wt) if wt else {}).items():
         wt_env += ['-e', f'{k}={v}']
-    tmux_result = subprocess.run(
+    tmux_result = worktrees.launch_writer(workdir,
         ['tmux', 'new-session', '-d',
          '-s', session_name,
          '-x', '220', '-y', '50',
@@ -459,7 +459,7 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
          '-e', f'KC_AGENT_DEPTH={depth + 1}',
          *wt_env,
          'bash', '-lc', shell_cmd],
-        capture_output=True, text=True,
+        runner=subprocess.run, capture_output=True, text=True,
     )
     if tmux_result.returncode != 0:
         meta['status'] = 'error'

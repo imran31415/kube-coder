@@ -326,6 +326,8 @@ export interface MissionEvidence {
 }
 
 export interface MissionCard {
+  has_worktree?: boolean;
+  publication?: { stage: string | null; pr: { number: number; url: string } | null };
   /** Namespaced id, e.g. "build:<id>" | "chat:<id>" | "subagent:<id>". */
   id: string;
   /** Raw id inside the kind's own namespace (task id / thread id). */

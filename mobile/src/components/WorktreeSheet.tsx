@@ -10,6 +10,8 @@ import * as Clipboard from 'expo-clipboard';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Modal,
   Pressable,
   ScrollView,
@@ -29,6 +31,7 @@ import { colors, font, radius, space } from '../theme';
 import { confirmAction } from '../util/confirm';
 import { formatDiffStat, removeErrorKind } from '../util/worktree';
 import { Button } from './ui';
+import { BuildPublishPanel, type PublishAction } from './BuildPublishPanel';
 
 const BLOCKED: Record<string, string> = {
   live: 'Stop the Build before removing its worktree.',
@@ -51,6 +54,7 @@ export function WorktreeSheet({
   const [diff, setDiff] = useState<WorktreeDiff | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [publishAction, setPublishAction] = useState<PublishAction | null>(null);
 
   const load = useCallback(async (fresh = false) => {
     try {
@@ -149,8 +153,10 @@ export function WorktreeSheet({
         ) : null}
         {error && !view ? <Text style={styles.error}>{error}</Text> : null}
 
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         {view ? (
-          <ScrollView contentContainerStyle={styles.body}>
+          <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+            {visible && <BuildPublishPanel taskId={taskId} onAction={setPublishAction} />}
             <Text style={styles.branch} selectable>⎇ {st?.branch || view.worktree.branch}</Text>
             <Text style={styles.muted}>
               from {view.worktree.base_ref || 'HEAD'} @ {view.worktree.base_sha.slice(0, 7)}
@@ -239,6 +245,8 @@ export function WorktreeSheet({
             ) : null}
           </ScrollView>
         ) : null}
+        {publishAction && <View style={{ padding: space.md, borderTopWidth: 1, borderTopColor: colors.border }}><Button {...publishAction} /></View>}
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
   );

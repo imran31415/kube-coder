@@ -243,6 +243,7 @@ export function MissionCard({
       )}
 
       <div class="mission-card-foot" onClick={(e) => e.stopPropagation()}>
+        {card.has_worktree && <button type="button" class="mission-foot-btn" onClick={() => navigate(`/tasks/${card.ref_id}/changes`)}>Review changes</button>}
         <button type="button" class="mission-foot-btn mission-foot-primary" onClick={open}>
           Open
         </button>

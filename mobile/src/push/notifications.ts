@@ -32,7 +32,7 @@ import { requestBoardFocus } from '../store/boardFocus';
 import { pushTargetFromData, type PushData } from '../util/push';
 
 let handlerConfigured = false;
-let responseSub: Notifications.EventSubscription | null = null;
+let detachResponseListener: (() => void) | null = null;
 let lastRegistered = '';
 
 /** Show high-signal pushes while the app is foregrounded (they'd otherwise be
@@ -189,6 +189,33 @@ function markTappedRead(feedId: string): void {
 /** Route a notification tap to the screen its ref points at, reusing the Feed's
  *  mapping. Unknown/empty refs open the Feed so a tap is never a dead end. */
 export function handleNotificationTap(data: PushData | undefined): void {
+  pendingTap = data || {};
+  if (data?.source !== 'build-publish' && data?.feedId?.trim()) {
+    markTappedRead(data.feedId.trim());
+    pendingTap = { ...pendingTap, feedId: undefined };
+  }
+  flushPendingNotification();
+}
+
+let pendingTap: PushData | null = null;
+const handledResponses = new Set<string>();
+
+/** Called after connection hydration AND after the navigator becomes ready. */
+export function flushPendingNotification(): void {
+  if (!pendingTap || !getConfig().loaded || !navigationRef.isReady()) return;
+  // onReady can fire while the hydration gate still renders onboarding.
+  // Wait for the actual connected navigator, not just its container.
+  if (typeof navigationRef.getRootState === 'function' &&
+      !navigationRef.getRootState()?.routeNames?.includes('Tasks')) return;
+  const data = pendingTap;
+  pendingTap = null;
+  try { void Notifications.clearLastNotificationResponseAsync().catch(() => {}); } catch { /* older runtime */ }
+  // A Build identifier is only meaningful inside the workspace that sent it.
+  if (data.source === 'build-publish' && (!data.workspaceHost ||
+      data.workspaceHost.replace(/\/+$/, '') !== getConfig().host.replace(/\/+$/, ''))) {
+    navigateTo('Feed');
+    return;
+  }
   // Reading happens even when navigation can't: the server re-sends a repeat of
   // this alert only once its row has been read (#685).
   const feedId = (data?.feedId || '').trim();
@@ -200,7 +227,7 @@ export function handleNotificationTap(data: PushData | undefined): void {
       navigationRef.navigate(
         // @ts-expect-error — nested route params are validated at the navigator
         'Tasks',
-        { screen: 'TaskDetail', params: { id: target.id }, initial: false },
+        { screen: 'TaskDetail', params: { id: target.id, ...(data?.source === 'build-publish' ? { tab: 'changes' } : {}) }, initial: false },
       );
       break;
     case 'thread':
@@ -238,16 +265,29 @@ export function handleNotificationTap(data: PushData | undefined): void {
 
 /** Attach the tap→navigate listener. Returns a detach function. */
 export function attachNotificationResponseListener(): () => void {
-  responseSub?.remove();
-  responseSub = Notifications.addNotificationResponseReceivedListener((resp) => {
-    handleNotificationTap(
-      resp.notification.request.content.data as PushData | undefined,
-    );
-  });
-  return () => {
-    responseSub?.remove();
-    responseSub = null;
+  detachResponseListener?.();
+  let active = true;
+  const receive = (resp: Notifications.NotificationResponse | null) => {
+    if (!active || !resp) return;
+    const key = `${resp.notification.request.identifier}:${resp.actionIdentifier}`;
+    if (handledResponses.has(key)) return;
+    handledResponses.add(key);
+    if (handledResponses.size > 100) handledResponses.delete(handledResponses.values().next().value!);
+    handleNotificationTap(resp.notification.request.content.data as PushData | undefined);
   };
+  const responseSub = Notifications.addNotificationResponseReceivedListener(receive);
+  // Listener and last-response can deliver the same cold-start tap.
+  try { void Notifications.getLastNotificationResponseAsync().then(receive).catch(() => {}); } catch { /* older runtime */ }
+  const unsubscribe = subscribe(() => flushPendingNotification());
+  const detach = () => {
+    if (!active) return;
+    active = false;
+    unsubscribe();
+    responseSub.remove();
+    if (detachResponseListener === detach) detachResponseListener = null;
+  };
+  detachResponseListener = detach;
+  return detach;
 }
 
 /** One-call init from App boot: display handler + tap routing + registration.

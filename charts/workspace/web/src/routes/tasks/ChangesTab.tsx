@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { PublishPanel } from './PublishPanel';
 import {
   getTaskWorktree,
   getTaskWorktreeDiff,
@@ -166,6 +167,7 @@ export function ChangesTab({ taskId, live }: { taskId: string; live: boolean }) 
           {view.live && <Pill tone="success">running</Pill>}
         </div>
       </header>
+      <MutatorOnly><PublishPanel taskId={taskId} /></MutatorOnly>
 
       {!view.exists ? (
         <p class="wt-note" role="status">

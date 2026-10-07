@@ -17,6 +17,8 @@ export interface PushData {
   feedId?: string;
   kind?: string;
   waiting?: boolean;
+  source?: string;
+  workspaceHost?: string;
 }
 
 /** Resolve a push's data payload to a navigation target, reusing the Feed's ref

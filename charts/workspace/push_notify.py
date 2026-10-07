@@ -182,12 +182,13 @@ class PushTokenStore:
                               PushTokenStore._read_unlocked, mutate)
 
     @staticmethod
-    def register(token, platform, owner):
+    def register(token, platform, owner, workspace_host=''):
         def mut(data):
             data['tokens'][token] = {
                 'owner': owner or 'unknown',
                 'platform': platform or '',
                 'ts': time.time(),
+                'workspace_host': workspace_host,
             }
         PushTokenStore._update(mut)
 
@@ -292,7 +293,7 @@ def should_push(item):
     predicate so a maintainer can widen it in one place."""
     if not isinstance(item, dict):
         return False
-    return bool(item.get('waiting')) or item.get('kind') == 'decision'
+    return bool(item.get('waiting')) or item.get('kind') == 'decision' or item.get('source') == 'build-publish'
 
 
 def _build_messages(item, tokens):
@@ -311,6 +312,8 @@ def _build_messages(item, tokens):
     feed_id = item.get('id') or ''
     data = {'ref': ref, 'feedId': feed_id, 'kind': item.get('kind') or '',
             'waiting': bool(item.get('waiting'))}
+    if item.get('source') == 'build-publish':
+        data['source'] = 'build-publish'
     msg = {
         'to': None,  # filled per token below
         'title': title,
@@ -328,10 +331,14 @@ def _build_messages(item, tokens):
     if feed_id and len(feed_id.encode('utf-8')) <= _COLLAPSE_ID_MAX:
         msg['collapseId'] = feed_id
         msg['tag'] = feed_id
+    registered = PushTokenStore._read_unlocked().get('tokens', {}) if item.get('source') == 'build-publish' else {}
     out = []
     for t in tokens:
         m = dict(msg)
         m['to'] = t
+        if item.get('source') == 'build-publish':
+            details = registered.get(t, {})
+            m['data'] = dict(data, workspaceHost=details.get('workspace_host', ''))
         out.append(m)
     return out
 
