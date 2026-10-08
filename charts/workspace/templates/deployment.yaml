@@ -554,9 +554,10 @@ spec:
         # ample for a build is not ample for a scan — and an over-limit daemon
         # is killed with no message the dashboard can see. The default is
         # therefore raised when scanning is enabled; an explicit
-        # build.dindResources still wins either way.
+        # build.dindResources still wins either way. Defaults live in
+        # workspace.dindDefaults (_helpers.tpl), which the quota sums too.
         resources:
-{{ toYaml (.Values.build.dindResources | default (dict "requests" (dict "cpu" "50m" "memory" "256Mi") "limits" (dict "cpu" "2" "memory" (ternary "8Gi" "4Gi" (dig "enabled" false (.Values.strix | default dict)))))) | indent 10 }}
+{{ toYaml (.Values.build.dindResources | default (include "workspace.dindDefaults" . | fromYaml)) | indent 10 }}
         volumeMounts:
         - name: docker-certs
           mountPath: /certs/client
