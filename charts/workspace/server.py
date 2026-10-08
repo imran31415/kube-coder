@@ -2113,6 +2113,18 @@ Host github.com
         }
 
 
+def _resolve_claude_config_path(env=None):
+    """`$KC_CLAUDE_CONFIG_PATH`, or `~/.claude.json` when unset/blank (#762).
+
+    Same blank-means-default contract as `$KC_FEED_DIR`: every test that
+    launches a Build pre-answers Claude Code's dialogs in this file, and the
+    auto-mode answer is global, so a test run must not reach the developer's
+    real config. Leave it unset in every deployment."""
+    src = os.environ if env is None else env
+    return ((src.get('KC_CLAUDE_CONFIG_PATH') or '').strip()
+            or os.path.expanduser('~/.claude.json'))
+
+
 class ClaudeTaskManager:
     """Manages Claude Code tasks running in tmux sessions"""
 
@@ -2126,8 +2138,8 @@ class ClaudeTaskManager:
     TOKEN_FILE = os.path.join(TASKS_DIR, '.api-token')
     # Claude Code's per-user config; we pre-accept folder-trust here so a freshly
     # launched interactive task doesn't block on the trust dialog (see
-    # _ensure_claude_trust).
-    CLAUDE_CONFIG_PATH = os.path.expanduser('~/.claude.json')
+    # _ensure_claude_trust). Tests redirect it (_resolve_claude_config_path).
+    CLAUDE_CONFIG_PATH = _resolve_claude_config_path()
 
     @staticmethod
     def ensure_tasks_dir():
@@ -3852,7 +3864,8 @@ class ClaudeTaskManager:
         Claude Code records answers as the key's LAST 20 CHARACTERS (verified
         against a live config — not a hash) under
         `customApiKeyResponses.{approved,rejected}`; an existing answer in
-        either list is the user's and is respected. Idempotent:
+        either list is the user's and is respected. The auto-mode setup nudge
+        is pre-dismissed too (#762, _dismiss_auto_mode_setup). Idempotent:
         only writes when a value is actually missing, so steady-state launches
         do zero writes and don't race a live Claude rewriting the same file.
         Best-effort — never raises, never clobbers an unreadable/invalid config.
@@ -3890,6 +3903,8 @@ class ClaudeTaskManager:
                         proj['hasTrustDialogAccepted'] = True
                         changed = True
 
+                    changed |= ClaudeTaskManager._dismiss_auto_mode_setup(cfg)
+
                     if reject_api_key:
                         tail = reject_api_key[-20:]
                         resp = cfg.get('customApiKeyResponses')
@@ -3920,6 +3935,27 @@ class ClaudeTaskManager:
             print(f'[ClaudeTaskManager] trust-seed for {workdir} failed: {e}',
                   file=sys.stderr)
             return False
+
+    @staticmethod
+    def _dismiss_auto_mode_setup(cfg):
+        """Answer "Don't show again" to the auto-mode setup nudge in `cfg`.
+
+        The nudge is "Set up auto mode for your environment?" in Claude Code
+        2.1.233 and "Teach auto mode about your environment?" in 2.1.284. It
+        appears after a turn ends in an auto-mode session, so an unattended
+        Build finishes its work and then sits on the dialog forever (#762).
+        The answer is GLOBAL, not per-project: the CLI stores it as top-level
+        `autoModeEnvSetup.dismissed` (verified against both shipped CLIs). The
+        CLI's own fields in that object (`denials`, `dismissedAt`) are kept;
+        a malformed value is replaced. Returns True if `cfg` changed.
+        """
+        setup = cfg.get('autoModeEnvSetup')
+        if not isinstance(setup, dict):
+            setup = {}
+        if setup.get('dismissed') is True:
+            return False
+        cfg['autoModeEnvSetup'] = {**setup, 'dismissed': True}
+        return True
 
     @staticmethod
     def _capture_pane(session_name):
