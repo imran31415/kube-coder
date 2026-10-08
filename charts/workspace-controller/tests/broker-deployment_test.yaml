@@ -1,0 +1,190 @@
+suite: provisioning broker Deployment (#421)
+# The broker is the process that now holds every constant which shapes the
+# cluster-privileged provisioner Job. These assertions are the other half of
+# deployment_test.yaml's "the controller holds none of them": each value has to
+# be SOMEWHERE, and this is where it must be.
+templates:
+  - templates/broker-deployment.yaml
+  - templates/broker-configmap.yaml
+  - templates/broker-namespace.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: renders nothing unless provisioning is enabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: refuses to render if the broker shares the controller's namespace
+    template: templates/broker-namespace.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+      provision.broker.namespace: test        # == .Values.namespace in test-values
+    asserts:
+      - failedTemplate:
+          errorMessage: "provision.broker.namespace must differ from .Values.namespace: co-locating the privileged provisioner ServiceAccount with the internet-facing controller is exactly the privilege bridge #421 removed (a principal that can create a workload beside another SA inherits it). Pick a separate namespace."
+
+  - it: runs in the broker namespace, never the controller's
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: kube-coder-provision
+      # test-values.yaml's namespace is `test`; co-locating the two rebuilds the
+      # privilege bridge #421 removed.
+      - notEqual:
+          path: metadata.namespace
+          value: test
+
+  - it: runs as the broker SA, not the privileged provisioner SA
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: workspace-provision-broker
+      - notEqual:
+          path: spec.template.spec.serviceAccountName
+          value: workspace-provisioner
+
+  - it: is a single writer
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: holds the provisioner image + SA the request may not choose
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+      provision.image: ghcr.io/o/provisioner@sha256:abc
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PROVISIONER_IMAGE
+            value: ghcr.io/o/provisioner@sha256:abc
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PROVISIONER_SERVICE_ACCOUNT
+            value: workspace-provisioner
+      # The Job's own namespace vs the regcred source namespace are different
+      # things since #421 — broker.py keeps them apart and so must the env.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BROKER_NAMESPACE
+            value: kube-coder-provision
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CONTROL_PLANE_NAMESPACE
+            value: test
+
+  - it: runs the broker from its ConfigMap, not a third release image
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: ["python3", "/broker/broker.py"]
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: broker-app
+            configMap:
+              name: workspace-provision-broker-app
+              defaultMode: 0444
+
+  - it: drops privileges like the controller does
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+
+  - it: should auto-pin the default chart ref to the chart's own release tag
+    template: templates/broker-deployment.yaml
+    chart:
+      appVersion: 9.9.9
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+    asserts:
+      # Secure default: mutable refs rejected unless explicitly opted in (finding 7).
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALLOW_MUTABLE_CHART_REF
+            value: "false"
+      # Empty provision.chart.ref defaults to v<appVersion> — an immutable
+      # release tag the fail-closed guard accepts, so a default install can
+      # actually provision (#459).
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CHART_REF
+            value: v9.9.9
+
+  - it: should pass an explicitly pinned chart ref through unchanged
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+      provision.chart.ref: 1234567890abcdef1234567890abcdef12345678
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CHART_REF
+            value: 1234567890abcdef1234567890abcdef12345678
+
+  - it: should thread the allowMutableRef escape hatch when enabled
+    template: templates/broker-deployment.yaml
+    set:
+      provision.enabled: true
+      provision.workspaceDomain: dev.example.com
+      provision.gitops.repo: github.com/o/users.git
+      provision.chart.allowMutableRef: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALLOW_MUTABLE_CHART_REF
+            value: "true"
+

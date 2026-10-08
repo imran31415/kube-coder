@@ -245,8 +245,9 @@ The same job now builds **two** images from one matrix: `devlaptop` and
 
 ## Privileged provisioner image (finding 7)
 
-The self-service provisioner Job (`charts/workspace-controller/controller.py`)
-runs `make deploy` under the cluster-privileged `workspace-provisioner`
+The self-service provisioner Job — stamped by the broker
+(`charts/workspace-controller/broker.py`) since #421, by the controller before
+that — runs `make deploy` under the cluster-privileged `workspace-provisioner`
 ServiceAccount. It used to reuse the fat workspace image **and install Helm at
 runtime** with a `curl` from `get.helm.sh` — a moving part on a privileged path.
 That is now closed:
@@ -262,13 +263,14 @@ That is now closed:
   shape the Job manifest chose the code that ran under the cluster-privileged
   provisioner SA. Now the image carries the code and the Job carries only env,
   the ValidatingAdmissionPolicy **denies `command`/`args`** on any Job under
-  that SA, and the controller **fails closed** if `provision.image` is unset
+  that SA, and the broker **fails closed** if `provision.image` is unset
   (there is no controller-image fallback — a Job with no command on another
-  image would run *that* image's entrypoint). Two consequences: controller
-  compromise no longer yields arbitrary code execution at provisioner
-  privilege, and the Job template is finally immutable enough for the
+  image would run *that* image's entrypoint). Two consequences: a compromise of
+  whoever builds the manifest no longer yields arbitrary code execution at
+  provisioner privilege, and the Job template became immutable enough for the
   constrained broker in
-  [#421](https://github.com/imran31415/kube-coder/issues/421) to stamp.
+  [#421](https://github.com/imran31415/kube-coder/issues/421) to stamp — which
+  it now does. See [`PROVISIONING_BROKER.md`](PROVISIONING_BROKER.md).
 - **Signed + attested** — built, keyless-cosign **signed**, and SBOM/SLSA-
   provenance **attested** by the release workflow, exactly like `devlaptop`.
 - **Pinned by digest** — set `provision.image` to a `repo@sha256:…` ref. The CEL

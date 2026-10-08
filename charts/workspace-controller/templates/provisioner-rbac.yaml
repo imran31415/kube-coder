@@ -1,38 +1,45 @@
 {{- if .Values.provision.enabled }}
-# The privileged half of provisioning. A dedicated ServiceAccount the
-# short-lived provisioner Job runs as — it holds every create/update the
-# `workspace` chart needs to `helm upgrade --install` a new workspace. The
-# always-on, internet-facing controller pod NEVER gets these verbs; it only
-# `create`s a Job (see serviceaccount.yaml) that RUNS AS this identity.
+# The privileged half of provisioning — and since #421 it lives in its OWN
+# namespace ({{ .Values.provision.broker.namespace }}), not the controller's.
 #
-# BLAST RADIUS — stated honestly (security review July 2026, finding 4). A
-# principal that can create a Job and select this ServiceAccount in the same
-# namespace effectively INHERITS this ClusterRole: Kubernetes hands the Job's
-# pod a token for the SA it names. So a controller compromise (RCE, k8s-token
-# theft, or any flaw giving arbitrary Job-manifest control) does NOT stay "can
-# start Jobs" — it bridges to every verb below, cluster-wide. Do not understate
-# this. The defense-in-depth that keeps it acceptable, short of the full
-# separate-namespace-broker rearchitecture (recommended follow-up):
-#   * it belongs to a short-lived Job, not the always-on controller;
-#   * the controller can only *launch* that Job (namespaced `create jobs`),
-#     never assume its verbs directly;
-#   * provisioning is opt-in (provision.enabled) and off by default;
-#   * a ValidatingAdmissionPolicy (provisioner-vap.yaml) pins the shape of any
-#     Job that runs as this SA — exact SA name, approved image, single expected
-#     container, and no privileged/hostPath/hostNetwork/added-capability escape —
-#     so a tampered manifest cannot run an attacker's workload as this identity.
+# A dedicated ServiceAccount the short-lived provisioner Job runs as; it holds
+# every create/update the `workspace` chart needs to `helm upgrade --install` a
+# new workspace. The always-on, internet-facing controller never gets these
+# verbs — and, as of #421, cannot get them indirectly either.
+#
+# BLAST RADIUS — what changed, stated honestly. The July 2026 review's finding 4
+# was not "this SA is too powerful"; it is powerful because standing up a tenant
+# genuinely requires it. The finding was that the SA lived in the SAME namespace
+# the internet-facing controller could `create jobs` in, and Kubernetes hands a
+# pod a token for whatever SA its manifest names. So "the controller can start
+# Jobs" silently meant "the controller can become this identity". #416's
+# ValidatingAdmissionPolicy pinned the shape of such a Job and #420 pinned the
+# code it ran, but the bridge itself stayed.
+#
+# It is removed structurally now:
+#   * this SA exists only in the broker's namespace;
+#   * the controller holds NO binding in that namespace — its one grant there is
+#     `create` on ProvisionRequests, a resource with a single string field
+#     (templates/broker-rbac.yaml);
+#   * the Job is stamped by the broker (broker.py) from a template the request
+#     cannot see or shape, and admission still pins that template's shape;
+#   * the program the Job runs is the signed image's baked entrypoint (#422),
+#     not anything carried in the manifest.
+# What a controller compromise buys is a workspace slug. That is the whole
+# surface. Provisioning also remains opt-in and off by default.
 #
 # Cluster-scoped under per-workspace namespaces (#103): standing up a new
-# tenant now means CREATING its `ws-<user>` Namespace and stamping the workspace
+# tenant means CREATING its `ws-<user>` Namespace and stamping the workspace
 # objects (Deployment, Secrets, quota, RBAC, the regcred image-pull Secret)
 # into it. Namespace creation is inherently cluster-scoped, and RBAC cannot
 # scope `create` to a namespace that does not exist yet — so this identity is a
-# ClusterRole/ClusterRoleBinding.
+# ClusterRole/ClusterRoleBinding. Per-tenant scoped provisioners remain an open
+# question on #421; they would need the namespace to pre-exist.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ .Values.provision.serviceAccount }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Values.provision.broker.namespace }}
   labels:
     {{- include "wc.labels" . | nindent 4 }}
 ---
@@ -117,5 +124,5 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: {{ .Values.provision.serviceAccount }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Values.provision.broker.namespace }}
 {{- end }}

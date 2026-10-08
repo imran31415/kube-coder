@@ -1,0 +1,107 @@
+{{- if .Values.provision.enabled }}
+# ProvisionRequest CRD — the constrained request surface between the
+# internet-facing controller and the privileged provisioner (#421).
+#
+# THE SPEC IS ONE STRING, ON PURPOSE. `slug` is the only legitimate variable in
+# a provisioning request: image, entrypoint, env, serviceAccountName, volumes,
+# resources, namespace and chart ref are all broker-side constants (they were
+# already controller-side constants before this issue — see the scoping comment
+# on #421). Because the schema is structural and declares exactly one property,
+# the API server PRUNES every other field before the object is persisted, so a
+# compromised controller cannot smuggle `spec.image` or `spec.command` through
+# to the privileged Job — the field does not survive the write.
+#
+# Note the mechanism precisely: structural schemas *prune* unknown fields, they
+# do not reject the request. `additionalProperties: false` is not usable
+# alongside `properties` in a structural schema, so pruning is the enforcement.
+# The security outcome is the same (the broker never sees the field); the error
+# message an attacker gets is not.
+#
+# Using a CRD rather than a broker HTTP API means the API SERVER is the auth
+# boundary: no shared secret, no internal endpoint to harden, no mTLS. The
+# controller's grant is `create` (plus reads) on this resource in the broker's
+# namespace and nothing else — notably NOT `provisionrequests/status`, so it
+# can ask and observe but cannot forge an outcome.
+#
+# Lives in templates/ rather than crds/ deliberately: Helm never upgrades or
+# deletes anything in crds/, and this CRD is gated on provision.enabled so that
+# disabling provisioning removes the whole privileged path (#421 AC 6).
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: provisionrequests.kube-coder.dev
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+spec:
+  group: kube-coder.dev
+  scope: Namespaced
+  names:
+    kind: ProvisionRequest
+    listKind: ProvisionRequestList
+    plural: provisionrequests
+    singular: provisionrequest
+    shortNames: ["pvr"]
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      # Separating status is what lets RBAC give the controller `create` on the
+      # resource while withholding write access to the outcome.
+      status: {}
+    additionalPrinterColumns:
+    - name: Slug
+      type: string
+      jsonPath: .spec.slug
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Job
+      type: string
+      jsonPath: .status.jobName
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: >-
+          A request for the privileged broker to provision (or reconcile) one
+          workspace. The requester supplies a slug; the broker supplies
+          everything else.
+        properties:
+          spec:
+            type: object
+            required: ["slug"]
+            properties:
+              slug:
+                type: string
+                description: >-
+                  The workspace/user slug to provision. The broker derives the
+                  target namespace, chart ref, image, ServiceAccount and env
+                  from its own configuration — nothing else may be requested.
+                # Same shape a DNS-1123 label allows, which is what the
+                # ws-<slug> namespace and the Job name must both remain valid
+                # as. Re-checked in broker.py so a schema regression cannot
+                # widen what reaches a shell.
+                minLength: 1
+                maxLength: 40
+                pattern: '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$'
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                description: Pending | Running | Succeeded | Failed
+                enum: ["Pending", "Running", "Succeeded", "Failed"]
+              jobName:
+                type: string
+                description: The privileged Job the broker stamped for this request.
+              message:
+                type: string
+                description: Human-readable detail for a failure.
+              startedAt:
+                type: string
+              finishedAt:
+                type: string
+{{- end }}

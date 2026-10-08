@@ -1,0 +1,104 @@
+suite: ProvisionRequest CRD — the constrained request surface
+# AC 3 ("the broker rejects unapproved image / command / env / volume / SA
+# overrides") is satisfied HERE, by schema, before any broker code runs: a
+# structural schema that declares one property causes the API server to prune
+# every other field on write. These assertions guard that the schema stays that
+# shape — a single added property is a single new thing an attacker may choose.
+templates:
+  - templates/provisionrequest-crd.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: renders nothing unless provisioning is enabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: AC6 — disabling provisioning removes the request surface with everything else
+    set:
+      provision.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: the spec has exactly one property, and it is required
+    set:
+      provision.enabled: true
+    asserts:
+      - equal:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.required
+          value: ["slug"]
+      - exists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.slug
+      # The overrides the July 2026 review named, one assertion each, so a
+      # regression names itself in the failure output.
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.image
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.command
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.args
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.env
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.volumes
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.serviceAccountName
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.namespace
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.resources
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.securityContext
+
+  - it: pruning is preserved — no x-kubernetes-preserve-unknown-fields escape hatch
+    set:
+      provision.enabled: true
+    asserts:
+      # Setting this anywhere in the schema would let arbitrary fields survive
+      # the write, which is precisely the property this CRD exists to deny.
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.x-kubernetes-preserve-unknown-fields
+      - notExists:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.x-kubernetes-preserve-unknown-fields
+
+  - it: the slug is pattern-bounded so it cannot become a shell or path argument
+    set:
+      provision.enabled: true
+    asserts:
+      - equal:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.slug.pattern
+          value: '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$'
+      - equal:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.slug.maxLength
+          value: 40
+      - equal:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.slug.type
+          value: string
+
+  - it: status is a subresource, so RBAC can withhold it from the requester
+    set:
+      provision.enabled: true
+    asserts:
+      - exists:
+          path: spec.versions[0].subresources.status
+      - equal:
+          path: spec.versions[0].schema.openAPIV3Schema.properties.status.properties.phase.enum
+          value: ["Pending", "Running", "Succeeded", "Failed"]
+
+  - it: is namespaced, so the grant can be confined to the broker's namespace
+    set:
+      provision.enabled: true
+    asserts:
+      - equal:
+          path: kind
+          value: CustomResourceDefinition
+      - equal:
+          path: metadata.name
+          value: provisionrequests.kube-coder.dev
+      - equal:
+          path: spec.scope
+          value: Namespaced
+      - equal:
+          path: spec.group
+          value: kube-coder.dev

@@ -62,7 +62,8 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
   short-lived **privileged Job** that runs `helm upgrade`. The always-on
   controller never holds workspace write power itself — it only validates input,
   does the manifest exchange, pushes to git, and `create`s the Job (which assumes
-  a separate `workspace-provisioner` ServiceAccount). See **Provisioning** below.
+  a separate `workspace-provisioner` ServiceAccount in its own namespace).
+  See **Provisioning** below.
 
 ## Architecture
 
@@ -87,9 +88,10 @@ ingress ──▶ oauth2-proxy (reverse-proxy, --github-user gate) ──▶ con
   `pods`/`ingresses`/`persistentvolumeclaims` reads for status, links, and disk
   size. No `metrics.k8s.io` (this cluster has no metrics-server — metrics come
   from Prometheus over HTTP, needing no k8s RBAC). When `provision.enabled`, the
-  controller additionally gets `batch/jobs` (get/list/watch/**create**) — and a
-  *separate* `workspace-provisioner` SA gets the broad create/update the Job
-  needs, so that power never sits directly on the internet-facing controller pod.
+  controller additionally gets `create` (plus reads) on `provisionrequests` **in
+  the broker's namespace** — and nothing else there. The broad create/update the
+  Job needs sits on a *separate* `workspace-provisioner` SA in that namespace,
+  which the controller has no way to select (#421).
   See **[Provisioning privilege model](#provisioning-privilege-model)** for the
   honest blast radius and the guardrails that constrain it.
 
@@ -163,58 +165,79 @@ block to add to your controller values plus the remaining manual steps:
 | `provision.chart.repo` / `.ref` | Where the Job pulls the `workspace` chart from (your fork if customised). `ref` must be immutable — a `vX.Y.Z` release tag or full 40-hex commit SHA; empty (the default) auto-pins to this chart's own `v<appVersion>` release tag. Mutable refs (`main`, …) are rejected fail-closed unless `provision.chart.allowMutableRef=true` (dev-only escape hatch) |
 | `provision.gitToken` / `.stateSecret` | Runtime creds — set via the gitignored secrets overlay |
 | `provision.existingSecretName` | Use a Secret you manage instead of chart-rendering one |
-| `provision.serviceAccount` | SA the privileged Job runs as |
+| `provision.serviceAccount` | SA the privileged Job runs as (lives in `provision.broker.namespace`) |
+| `provision.broker.namespace` | Namespace the broker + the privileged provisioner live in. Must differ from the controller's (#421) |
+| `provision.broker.serviceAccount` | SA the broker process itself runs as — *not* the privileged one |
 | `provision.image` | **Required** when provisioning is on: the dedicated provisioner image pinned by digest (`ghcr.io/imran31415/kube-coder/provisioner@sha256:…`). It bakes helm/kubectl/git/make *and* the provisioning script itself as its entrypoint (#422), so the Job supplies env only. Empty fails closed — there is no controller-image fallback |
 | `provision.admissionPolicy.enabled` | Ship the provisioner-Job ValidatingAdmissionPolicy (default on; needs k8s ≥ 1.30) |
 
 ### Provisioning privilege model
 
-Stated honestly (security review July 2026, finding 4). Provisioning splits
-privilege deliberately: the always-on, internet-facing **controller** holds no
-cluster-wide write verbs — only namespaced `create jobs` in its own namespace.
-The broad cluster-wide ClusterRole (create/update on namespaces, deployments,
-services, PVCs, configmaps, secrets, serviceaccounts, roles, rolebindings,
-ingresses, networkpolicies, jobs) lives on a *separate* short-lived
-`workspace-provisioner` ServiceAccount that only the provisioner Job runs as.
+Provisioning splits privilege across **three** identities and **two**
+namespaces (#421):
 
-**The catch:** in Kubernetes, a principal that can create a workload *and* select
-another ServiceAccount in the same namespace effectively inherits that SA's
-identity — the kubelet mounts a token for whatever SA the Job names. So a
-controller compromise (RCE, k8s-token theft, or any flaw giving arbitrary
-Job-manifest control) does **not** stay "can start Jobs"; it bridges to the full
-provisioner ClusterRole. This is a conditional privilege-escalation path, not a
-standalone RCE, and it only exists when `provision.enabled=true` (off by default).
+| Identity | Where | What it can do |
+|---|---|---|
+| `workspace-controller` | control-plane ns | The console. No cluster-wide write verbs. In the provisioner namespace its ONLY grant is `create` (plus reads) on `provisionrequests` |
+| `workspace-provision-broker` | `provision.broker.namespace` | Reads requests, writes their status, stamps Jobs — in its own namespace only. Not itself privileged |
+| `workspace-provisioner` | `provision.broker.namespace` | The broad cluster-wide ClusterRole the workspace chart needs. Only the short-lived Job runs as it |
 
-Guardrails shipped here (defense-in-depth):
+**What #421 fixed.** Until then the controller held namespaced `create jobs` in
+its *own* namespace — and the Job it created selected the `workspace-provisioner`
+SA, which lived in that same namespace. In Kubernetes a principal that can
+create a workload *and* name another SA beside it effectively inherits that SA's
+identity: the kubelet mounts a token for whatever SA the manifest names. So a
+controller compromise did not stay "can start Jobs"; it bridged to the full
+provisioner ClusterRole (security review July 2026, finding 4). #416's admission
+policy and #420's immutable chart refs constrained the *shape* of that Job. The
+bridge itself remained until the SA moved out of the controller's reach.
+
+It is removed structurally now:
+
+- the privileged SA exists only in `provision.broker.namespace`, where the
+  controller holds **no workload verb of any kind**;
+- the request is a `ProvisionRequest` custom resource whose **entire spec is one
+  string** (`slug`). Because the CRD's structural schema declares exactly one
+  property, the API server **prunes** any attempt to add `image`, `command`,
+  `env`, `volumes` or `serviceAccountName` before the object is persisted —
+  they do not survive the write. (Pruning, not rejection: structural schemas
+  drop unknown fields rather than erroring. Same outcome, different error text.)
+- the **API server is the authentication boundary**, which is why this is a CRD
+  and not an internal HTTP API: no shared secret, no endpoint to harden, no mTLS;
+- the request's `status` is a subresource the controller cannot write, so a
+  provisioning outcome cannot be forged back at the console.
+
+What a controller compromise now buys is the ability to ask for a workspace by
+slug. See [`docs/PROVISIONING_BROKER.md`](../../docs/PROVISIONING_BROKER.md) for
+the topology, the upgrade path and the `kubectl auth can-i` matrix to verify it
+on a live cluster.
+
+Guardrails that remain, as defense-in-depth behind that architecture:
 
 - **`ValidatingAdmissionPolicy`** (`templates/provisioner-vap.yaml`, on by default
   when provisioning is enabled) pins the shape of any Job that runs as the
   provisioner SA: exact SA name, approved image repository, exactly one expected
   container (no extra/init/ephemeral containers), and no privileged
-  securityContext / added capabilities / hostPath / hostNetwork|PID|IPC. A
-  tampered manifest therefore cannot run an attacker-controlled workload under the
-  provisioner identity. Requires k8s ≥ 1.30; disable via
+  securityContext / added capabilities / hostPath / hostNetwork|PID|IPC. It is
+  now scoped to the **broker's** namespace — it defends against a compromise of
+  the broker, or a future refactor that reintroduces a second creator of
+  provisioner-SA Jobs. Requires k8s ≥ 1.30; disable via
   `provision.admissionPolicy.enabled=false` on older clusters.
 - **No caller-supplied program** (#422). The provisioning script is baked into
   the signed provisioner image as its entrypoint (`provisioner/provision.sh`);
   the Job carries env and no `command`, and the policy above **denies
-  `command`/`args`** outright. This is the rule that closes the gap the others
-  left: pinning the workload's *shape* still allowed `command: [bash, -c, …]`,
-  so manifest control was arbitrary code execution at provisioner privilege.
-  Now it buys an attacker the *inputs* to one fixed, signed program.
-  Upgrade note: the policy rejects Jobs from a pre-#422 controller, which still
-  sets `command` — roll the chart and the controller image together.
+  `command`/`args`** outright. This is the precondition #421 needed: a template
+  is only immutable if the caller cannot supply the program. Upgrade note: the
+  policy rejects Jobs from a pre-#422 creator — roll chart, controller and
+  broker together.
 - **No cluster-wide namespace `delete`** on the provisioner ClusterRole — normal
   provisioning only creates+labels namespaces; teardown is a manual admin runbook.
 - **`automountServiceAccountToken: false`** on oauth2-proxy (it never calls the
   k8s API), removing a standing token an attacker could otherwise lift.
 
-**Recommended endgame (not yet implemented):** move the privileged provisioner
-into a *separate* namespace fronted by a constrained broker service that builds
-Jobs from an immutable, in-cluster template — so the internet-facing controller
-never shares a namespace with the provisioner SA and cannot express a Job
-manifest at all. That is a multi-service refactor tracked as follow-up; the VAP
-above is the mergeable interim mitigation.
+**Still open** (tracked on #421): per-tenant scoped provisioners instead of one
+cluster-wide identity, and splitting the controller's public API from its GitOps
+writer.
 
 ## Key values
 

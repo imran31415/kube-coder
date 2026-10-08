@@ -1,0 +1,20 @@
+{{- if .Values.provision.enabled }}
+# The broker program, shipped the same way controller.py is: as a ConfigMap
+# mounted into the shared image. Deliberately NOT a new container image —
+# everything privileged in this chart is digest-pinned and cosign-signed
+# (release.yml builds exactly two images), and adding a third release artifact
+# to gain a ~400-line reconciler would be cost without security benefit. The
+# broker is not the privileged identity; the Job it stamps is, and that Job
+# still runs the signed, digest-pinned provisioner image whose entrypoint is
+# baked in (#422).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-provision-broker-app
+  namespace: {{ .Values.provision.broker.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+data:
+  broker.py: |
+{{ .Files.Get "broker.py" | indent 4 }}
+{{- end }}
