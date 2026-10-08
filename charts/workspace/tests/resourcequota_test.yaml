@@ -63,6 +63,68 @@ tests:
           path: spec.hard["limits.memory"]
           value: 16384Mi
 
+  - it: counts the scan-sized dind sidecar when strix is enabled
+    # strix raises dind to 8Gi. ide 4Gi + dind 8Gi + overhead 4Gi = 16384Mi.
+    # Before dind's defaults had one definition, the quota still counted 4Gi
+    # here, so ide 8Gi + dind 8Gi filled a 16Gi quota with the pod alone and
+    # the namespace refused it (or starved oauth2-proxy).
+    set:
+      user.name: alice
+      namespace: ws-alice
+      build.mode: buildkit
+      strix.enabled: true
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.hard["limits.memory"]
+          value: 16384Mi
+
+  - it: keeps the 4Gi of headroom for a heavier ide with strix enabled
+    # ide 8Gi + dind 8Gi + overhead 4Gi = 20480Mi (20Gi).
+    set:
+      user.name: alice
+      namespace: ws-alice
+      build.mode: buildkit
+      strix.enabled: true
+      resources.limits.memory: 8Gi
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.hard["limits.memory"]
+          value: 20480Mi
+
+  - it: sums an explicit build.dindResources over the strix default
+    set:
+      user.name: alice
+      namespace: ws-alice
+      build.mode: buildkit
+      strix.enabled: true
+      build.dindResources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: "4"
+          memory: 16Gi
+    documentIndex: 0
+    asserts:
+      # ide 4Gi + dind 16Gi + overhead 4Gi
+      - equal:
+          path: spec.hard["limits.memory"]
+          value: 24576Mi
+
+  - it: counts dind's request at the 50m the Deployment actually asks for
+    # ide 100m + dind 50m + overheadReq 500m. The quota used to assume 100m.
+    set:
+      user.name: alice
+      namespace: ws-alice
+      build.mode: buildkit
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.hard["requests.cpu"]
+          value: "650m"
+
   - it: renders a LimitRange with container defaults
     set:
       user.name: alice
