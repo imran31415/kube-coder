@@ -18,9 +18,12 @@ Run with:
 import ast
 import json
 import os
+import socket
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -28,18 +31,41 @@ import scan_backends  # noqa: E402
 import scans  # noqa: E402
 
 
+def inspect_output(*gateways):
+    """`docker network inspect bridge` output, trimmed to the fields read.
+
+    The shape is the real one — a list of networks, each with IPAM.Config
+    entries — as the live workspace's docker:27-dind daemon prints it.
+    """
+    return json.dumps([{
+        'Name': 'bridge',
+        'Driver': 'bridge',
+        'IPAM': {'Driver': 'default', 'Options': None,
+                 'Config': [{'Subnet': '172.17.0.0/16', 'Gateway': g}
+                            for g in gateways]},
+    }], indent=4)
+
+
 class StubRunner:
     """Records what the backend asked the OS to do, and answers as told."""
 
-    def __init__(self, *, route='default via 172.17.0.1 dev eth0\n',
-                 runtime=(True, '')):
-        self.route = route
+    def __init__(self, *, network=None, runtime=(True, ''), answers=True):
+        self.network = (network if network is not None
+                        else (inspect_output('172.17.0.1'), ''))
         self.runtime = runtime
+        self.answers = answers
+        self.inspected = []
+        self.probed = []
         self.spawned = []
         self.terminated = []
 
-    def default_route(self):
-        return self.route
+    def network_inspect(self, name):
+        self.inspected.append(name)
+        return self.network
+
+    def port_answers(self, host, port):
+        self.probed.append((host, port))
+        return self.answers
 
     def container_runtime_ready(self):
         return self.runtime
@@ -62,38 +88,98 @@ def backend(**kw):
 
 class GatewayParsingTests(unittest.TestCase):
 
-    def test_the_gateway_is_read_from_real_route_output(self):
-        out = ('default via 172.17.0.1 dev eth0 \n'
-               '172.17.0.0/16 dev eth0 scope link  src 172.17.0.2\n')
-        self.assertEqual(scan_backends.parse_default_gateway(out), '172.17.0.1')
+    def test_the_gateway_is_read_from_real_inspect_output(self):
+        out = inspect_output('172.17.0.1')
+        self.assertEqual(scan_backends.parse_bridge_gateway(out), '172.17.0.1')
 
     def test_a_different_gateway_is_honoured_not_assumed(self):
         """172.17.0.1 is a convention the runtime may change. Assuming it is
         the silent-empty-result failure."""
         self.assertEqual(
-            scan_backends.parse_default_gateway('default via 10.200.0.1 dev eth0'),
+            scan_backends.parse_bridge_gateway(inspect_output('10.200.0.1')),
             '10.200.0.1')
 
-    def test_output_without_a_default_route_yields_nothing(self):
-        for out in ('', None, '172.17.0.0/16 dev eth0 scope link', 'garbage'):
-            self.assertIsNone(scan_backends.parse_default_gateway(out))
+    def test_an_ipv6_entry_beside_the_ipv4_one_is_passed_over(self):
+        """A dual-stack bridge lists both. The URL is built for IPv4."""
+        out = inspect_output('fd00:dead:beef::1', '172.18.0.1')
+        self.assertEqual(scan_backends.parse_bridge_gateway(out), '172.18.0.1')
+
+    def test_output_without_a_gateway_yields_nothing(self):
+        for out in ('', None, '[]', '{}', 'garbage',
+                    'Error response from daemon: network bridge not found',
+                    '[{"Name": "bridge", "IPAM": {"Config": []}}]',
+                    '[{"IPAM": {"Config": [{"Subnet": "172.17.0.0/16"}]}}]',
+                    '[{"IPAM": null}]', '["bridge"]'):
+            self.assertIsNone(scan_backends.parse_bridge_gateway(out), out)
 
     def test_a_non_address_is_refused_rather_than_interpolated(self):
-        """The value lands in a URL, so anything unexpected is rejected."""
-        for out in ('default via not-an-ip dev eth0',
-                    'default via 172.17.0.1;rm -rf / dev eth0',
-                    'default via 999.999.999.999.999 dev eth0'):
-            self.assertIsNone(scan_backends.parse_default_gateway(out))
+        """The value lands in a URL, so anything unexpected is rejected —
+        including addresses that would point the sandbox back at itself."""
+        for gateway in ('not-an-ip', '172.17.0.1;rm -rf /',
+                        '999.999.999.999', '172.17.0.1:80', 3232235521,
+                        '127.0.0.1', '0.0.0.0', ''):
+            self.assertIsNone(
+                scan_backends.parse_bridge_gateway(inspect_output(gateway)),
+                gateway)
 
     def test_resolve_target_builds_the_url_from_what_it_read(self):
-        b = backend(runner=StubRunner(route='default via 10.0.0.1 dev eth0'))
+        b = backend(runner=StubRunner(network=(inspect_output('10.0.0.1'), '')))
         self.assertEqual(b.resolve_target(3000), 'http://10.0.0.1:3000')
 
     def test_resolve_target_refuses_to_guess_when_it_cannot_tell(self):
-        b = backend(runner=StubRunner(route=''))
+        b = backend(runner=StubRunner(network=('', '')))
         with self.assertRaises(scan_backends.BackendError) as ctx:
             b.resolve_target(3000)
         self.assertIn('check nothing', str(ctx.exception))
+
+    def test_the_runtimes_own_error_reaches_the_user(self):
+        """The first release dropped the cause, so a missing tool read exactly
+        like every other failure and could not be diagnosed from the UI."""
+        why = 'Error response from daemon: network bridge not found'
+        b = backend(runner=StubRunner(network=('', why)))
+        with self.assertRaises(scan_backends.BackendError) as ctx:
+            b.resolve_target(3000)
+        self.assertIn(why, str(ctx.exception))
+
+    def test_the_default_network_is_the_one_the_sandbox_joins_unset(self):
+        runner = StubRunner()
+        backend(runner=runner).resolve_target(3000)
+        self.assertEqual(runner.inspected, ['bridge'])
+
+    def test_the_scanners_own_network_setting_is_followed(self):
+        """Set, the sandbox joins that network instead, so its gateway is the
+        one to read."""
+        runner = StubRunner(network=(inspect_output('172.20.0.1'), ''))
+        b = backend(runner=runner,
+                    env={'STRIX_DOCKER_SANDBOX_NETWORK': ' scans-net '})
+        self.assertEqual(b.resolve_target(3000), 'http://172.20.0.1:3000')
+        self.assertEqual(runner.inspected, ['scans-net'])
+
+    def test_a_network_setting_that_is_not_a_name_never_reaches_docker(self):
+        """A leading dash would be read as a flag by the docker CLI."""
+        for value in ('--format={{json .}}', 'a b', 'net;rm', '-x'):
+            runner = StubRunner()
+            b = backend(runner=runner,
+                        env={'STRIX_DOCKER_SANDBOX_NETWORK': value})
+            with self.assertRaises(scan_backends.BackendError):
+                b.resolve_target(3000)
+            self.assertEqual(runner.inspected, [], value)
+
+    def test_the_address_is_proven_to_answer_before_it_is_returned(self):
+        runner = StubRunner()
+        backend(runner=runner).resolve_target(3000)
+        self.assertEqual(runner.probed, [('172.17.0.1', 3000)])
+
+    def test_an_app_that_does_not_answer_is_refused_before_a_scan(self):
+        """Stopped since the list was read, or bound to loopback only: either
+        way a scan would spend money and report a clean result against
+        nothing."""
+        b = backend(runner=StubRunner(answers=False))
+        with self.assertRaises(scan_backends.BackendError) as ctx:
+            b.resolve_target(4545)
+        message = str(ctx.exception)
+        self.assertIn('4545', message)
+        self.assertIn('0.0.0.0', message)
 
     def test_no_gateway_address_is_baked_into_the_code(self):
         """Prose may name the conventional address; code may not contain one.
@@ -118,6 +204,78 @@ class GatewayParsingTests(unittest.TestCase):
                     and id(n) not in docstrings]
         offenders = [s for s in literals if '172.17.0.1' in s]
         self.assertEqual(offenders, [])
+
+
+class BridgeNetworkRunnerTests(unittest.TestCase):
+    """The real runner, with only `subprocess.run` replaced.
+
+    Every other test here stubs the runner, which is how the first release
+    shipped reading the wrong table with a tool the image does not have: no
+    test ever saw which command produced the address.
+    """
+
+    def run_with(self, fake):
+        with mock.patch.object(scan_backends.subprocess, 'run', fake):
+            return scan_backends._SubprocessRunner().network_inspect('bridge')
+
+    def test_the_address_is_asked_of_the_runtime_not_of_this_container(self):
+        """`ip route` here reads the pod's table, whose default route leads to
+        the Kubernetes node — a scan aimed there attacks the wrong machine."""
+        calls = []
+
+        def fake(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=inspect_output('172.17.0.1'), stderr='')
+
+        out, why = self.run_with(fake)
+        self.assertEqual(calls, [['docker', 'network', 'inspect', 'bridge']])
+        self.assertEqual(scan_backends.parse_bridge_gateway(out), '172.17.0.1')
+        self.assertEqual(why, '')
+
+    def test_a_daemon_error_is_returned_as_the_reason(self):
+        def fake(argv, **kw):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout='',
+                stderr='Cannot connect to the Docker daemon at tcp://localhost:2375.\n')
+
+        out, why = self.run_with(fake)
+        self.assertEqual(out, '')
+        self.assertIn('Cannot connect to the Docker daemon', why)
+
+    def test_a_missing_docker_command_is_named(self):
+        def fake(argv, **kw):
+            raise FileNotFoundError(argv[0])
+
+        out, why = self.run_with(fake)
+        self.assertEqual(out, '')
+        self.assertIn('docker', why)
+
+    def test_a_hung_daemon_does_not_hang_the_request(self):
+        def fake(argv, **kw):
+            self.assertIn('timeout', kw)
+            raise subprocess.TimeoutExpired(argv, kw['timeout'])
+
+        out, why = self.run_with(fake)
+        self.assertEqual(out, '')
+        self.assertTrue(why)
+
+
+class PortProbeTests(unittest.TestCase):
+    """The real reachability check, against a loopback socket this test owns
+    — still nothing leaves the machine."""
+
+    def test_a_listening_port_answers_and_a_closed_one_does_not(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(('127.0.0.1', 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        runner = scan_backends._SubprocessRunner()
+        try:
+            self.assertTrue(runner.port_answers('127.0.0.1', port))
+        finally:
+            server.close()
+        self.assertFalse(runner.port_answers('127.0.0.1', port))
 
 
 class ArgvTests(unittest.TestCase):
@@ -182,6 +340,15 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertEqual(result['reason'], 'no_container_runtime')
         self.assertIn('buildkit', result['detail'])
+
+    def test_an_address_that_cannot_be_resolved_is_caught_before_a_scan(self):
+        """The live failure: readiness said yes while the one thing that
+        could never work went unchecked."""
+        b = backend(runner=StubRunner(network=('', 'no such network')))
+        result = b.preflight()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['reason'], 'no_target_address')
+        self.assertIn('no such network', result['detail'])
 
     def test_a_ready_workspace_passes(self):
         self.assertTrue(backend().preflight()['ok'])

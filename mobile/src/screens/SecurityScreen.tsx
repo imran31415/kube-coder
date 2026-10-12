@@ -315,7 +315,7 @@ function StartScanForm({
         <Button
           title={busy ? 'Starting…' : 'Start scan'}
           onPress={start}
-          disabled={busy || !port || budgetInvalid}
+          disabled={busy || !port || budgetInvalid || (chosen !== null && !chosen.reachable)}
         />
         <Button title="Cancel" onPress={onCancel} variant="secondary" />
       </View>

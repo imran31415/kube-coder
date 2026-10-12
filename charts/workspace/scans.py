@@ -137,7 +137,10 @@ def validate_create(body, targets, *, connected_model=''):
 
     `targets` is the list of currently scannable apps (see `scannable_targets`)
     — the port is checked against live state rather than trusted, so a scan can
-    never be pointed at a port nothing is serving.
+    never be pointed at a port nothing is serving, nor at one the scanner
+    cannot reach. The second is refused here and not only greyed out in a UI:
+    it is the scan that runs, spends, and reports a clean result against
+    nothing.
     """
     if not isinstance(body, dict):
         return None, 'Invalid request body.'
@@ -156,6 +159,10 @@ def validate_create(body, targets, *, connected_model=''):
     if target is None:
         return None, (f'Nothing is running on port {port}. Start the app '
                       f'first, then scan it.')
+    if not target.get('reachable', True):
+        return None, (target.get('reason') or
+                      'The scanner cannot reach this app, so a scan would '
+                      'check nothing.')
 
     mode = (body.get('mode') or DEFAULT_SCAN_MODE).strip().lower()
     if mode not in SCAN_MODES:
@@ -629,14 +636,17 @@ class ScansManager:
         if not ready.get('ok'):
             return None, ready.get('detail') or 'Scanning is not available.'
 
-        scan_id = new_scan_id()
-        directory = cls.scan_dir(scan_id)
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-
         try:
             target_url = backend.resolve_target(spec['port'])
         except Exception as e:
             return None, str(e)
+
+        # Only now, once nothing before the spawn can fail without a record:
+        # a directory with no record in it is invisible to `_prune`, so every
+        # refused start used to leave one behind for good.
+        scan_id = new_scan_id()
+        directory = cls.scan_dir(scan_id)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
 
         record = {
             'id': scan_id,

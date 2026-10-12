@@ -30,11 +30,13 @@ any log this module writes. The subprocess reads the file itself.
 """
 
 import errno
+import ipaddress
 import json
 import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -54,6 +56,22 @@ LOG_MAX_BYTES = 512 * 1024
 
 #: How long a stopped process gets to exit cleanly before it is killed.
 STOP_GRACE_SECONDS = 10
+
+#: The scanner's own setting for which container network its sandbox joins
+#: (`strix/runtime/docker_client.py` in 1.6.2). Unset — as the chart leaves it —
+#: the sandbox joins the runtime's default network, which docker names
+#: "bridge". Read here so the address is looked up on the network the sandbox
+#: is actually on, not on the one it usually is.
+SANDBOX_NETWORK_ENV = 'STRIX_DOCKER_SANDBOX_NETWORK'
+DEFAULT_SANDBOX_NETWORK = 'bridge'
+#: Docker's own rule for a network name. Anything else is refused before it
+#: reaches a command line, where a leading dash would read as a flag.
+_NETWORK_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+
+#: How long the reachability check waits for the app to accept a connection.
+#: The address belongs to this pod, so the answer is immediate or never; the
+#: limit only matters if something is badly wrong.
+PROBE_TIMEOUT_SECONDS = 3
 
 
 class ScanBackend(ABC):
@@ -75,8 +93,9 @@ class ScanBackend(ABC):
     def resolve_target(self, port):
         """An address this backend can reach the workspace's port on.
 
-        Discovered at call time. A hardcoded address that is wrong does not
-        error — it produces a clean report against nothing.
+        Discovered at call time, and raises `BackendError` rather than return
+        an address it cannot vouch for. A wrong address does not error on its
+        own — it produces a clean report against nothing.
         """
 
     @abstractmethod
@@ -103,25 +122,54 @@ class ScanBackend(ABC):
 
 # ── pure helpers (unit-tested without a scanner, a daemon or a network) ─────
 
-_GATEWAY_RE = re.compile(r'^default\s+via\s+(\S+)', re.MULTILINE)
-#: Conservative: an IPv4 dotted quad or a bracketable IPv6 literal. The value
-#: goes into a URL, so anything else is refused rather than interpolated.
-_IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
+def _usable_gateway(value):
+    """Is this an IPv4 address a sandbox could reach the workspace on?
 
-
-def parse_default_gateway(route_output):
-    """The default gateway address from `ip route` output, or None.
-
-    This is the address the workspace's own ports are reachable on from inside
-    a sibling container. It is conventionally 172.17.0.1, but that is a default
-    the container runtime is free to change, and a wrong guess here is the
-    silent-empty-result failure — so it is read, never assumed.
+    The value goes into a URL, so anything that is not a plain address is
+    refused rather than interpolated. Loopback and the unspecified address are
+    refused too: from inside the sandbox they mean the sandbox itself.
     """
-    match = _GATEWAY_RE.search(route_output or '')
-    if not match:
+    if not isinstance(value, str):
+        return False
+    try:
+        addr = ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return not (addr.is_loopback or addr.is_unspecified)
+
+
+def parse_bridge_gateway(inspect_output):
+    """The gateway of the sandbox's container network, or None.
+
+    `inspect_output` is what `docker network inspect <network>` prints for the
+    network the sandbox joins — the default "bridge" unless the scanner is
+    told otherwise (`SANDBOX_NETWORK_ENV`). Because the runtime shares this
+    pod's network namespace, the bridge's gateway is this pod — the address
+    the workspace's own ports answer on from inside the sandbox. It is
+    conventionally 172.17.0.1, but that is a default the runtime is free to
+    change, and a wrong guess here is the silent-empty-result failure — so it
+    is read, never assumed.
+
+    Not `ip route` in this container, which is what this once did. That reads
+    the pod's own routing table, whose default route leads out to the
+    Kubernetes node: a scan aimed there attacks the wrong machine and reports
+    it clean. (The `ip` tool is not even installed in the workspace image,
+    which is how the mistake surfaced.)
+    """
+    try:
+        networks = json.loads(inspect_output or '')
+    except ValueError:
         return None
-    addr = match.group(1)
-    return addr if _IPV4_RE.match(addr) else None
+    if isinstance(networks, dict):
+        networks = [networks]
+    for net in networks if isinstance(networks, list) else []:
+        ipam = net.get('IPAM') if isinstance(net, dict) else None
+        configs = ipam.get('Config') if isinstance(ipam, dict) else None
+        for cfg in configs if isinstance(configs, list) else []:
+            gateway = cfg.get('Gateway') if isinstance(cfg, dict) else None
+            if _usable_gateway(gateway):
+                return gateway
+    return None
 
 
 def build_argv(spec, *, executable='strix'):
@@ -246,17 +294,59 @@ class LocalStrixBackend(ScanBackend):
                               'workspace, and the scanner needs it to run. '
                               'This workspace has to be deployed with '
                               'build.mode set to buildkit.'}
+        # Part of readiness, not only of starting: a workspace that can never
+        # resolve an address is not ready, and the connection view says so
+        # without a scan having to be attempted first.
+        _, problem = self._gateway()
+        if problem:
+            return {'ok': False, 'reason': 'no_target_address',
+                    'detail': problem}
         return {'ok': True, 'reason': '', 'detail': ''}
 
     def resolve_target(self, port):
-        out = self._runner.default_route()
-        gateway = parse_default_gateway(out)
-        if not gateway:
+        gateway, problem = self._gateway()
+        if problem:
+            raise BackendError(problem)
+        port = int(port)
+        # The last check before money is spent. The apps list says what is
+        # listening and on which address, but only a connection proves the
+        # sandbox's address reaches it — and the app may have stopped since
+        # the list was read. This pod owns the gateway address, so a
+        # connection from here meets the same sockets the sandbox's will.
+        if not self._runner.port_answers(gateway, port):
             raise BackendError(
-                'Could not work out the address the scanner should use to '
-                'reach this workspace, so the scan was not started. Without '
-                'it a scan would check nothing and report no problems.')
-        return f'http://{gateway}:{int(port)}'
+                f'Nothing answered on port {port} at {gateway}, the address '
+                f'the scanner reaches this workspace on, so the scan was not '
+                f'started. Check the app is still running and listening on '
+                f'0.0.0.0, not only on 127.0.0.1.')
+        return f'http://{gateway}:{port}'
+
+    def _sandbox_network(self):
+        """The container network the scanner's sandbox will join."""
+        return ((self._env.get(SANDBOX_NETWORK_ENV) or '').strip()
+                or DEFAULT_SANDBOX_NETWORK)
+
+    def _gateway(self):
+        """`(address, None)`, or `(None, a sentence saying why not)`.
+
+        The runtime's own error is carried into the sentence. Without it every
+        cause — no daemon, no such network, an address we refused — reads the
+        same, and the one that shipped first went undiagnosed for that reason.
+        """
+        problem = ('Could not work out the address the scanner should use to '
+                   'reach this workspace, so the scan was not started. Without '
+                   'it a scan would check nothing and report no problems.')
+        network = self._sandbox_network()
+        if not _NETWORK_NAME_RE.match(network):
+            return None, (f'{problem} {SANDBOX_NETWORK_ENV} is set to '
+                          f'something that is not a network name.')
+        out, why = self._runner.network_inspect(network)
+        gateway = parse_bridge_gateway(out)
+        if gateway:
+            return gateway, None
+        if why:
+            problem += f' The container runtime said: {why}'
+        return None, problem
 
     # -- running ------------------------------------------------------------
 
@@ -353,13 +443,37 @@ class _SubprocessRunner:
     the suite passes a stub and asserts on what would have been run.
     """
 
-    def default_route(self):
+    def network_inspect(self, name):
+        """`(inspect output, '')`, or `('', why it could not be read)`.
+
+        Asked of the container runtime, which owns the network the sandbox
+        joins — never of this container's routing table (see
+        `parse_bridge_gateway`). Needs only the docker CLI the scanner
+        already requires.
+        """
         try:
-            r = subprocess.run(['ip', 'route'], capture_output=True, text=True,
-                               timeout=10)
-            return r.stdout if r.returncode == 0 else ''
-        except (OSError, subprocess.SubprocessError):
-            return ''
+            r = subprocess.run(['docker', 'network', 'inspect', name],
+                               capture_output=True, text=True, timeout=20)
+        except FileNotFoundError:
+            return '', 'the docker command is not installed.'
+        except (OSError, subprocess.SubprocessError) as e:
+            return '', str(e)
+        if r.returncode == 0:
+            return r.stdout, ''
+        lines = (r.stderr or '').strip().splitlines()
+        return '', lines[-1] if lines else ''
+
+    def port_answers(self, host, port, *, timeout=PROBE_TIMEOUT_SECONDS):
+        """Does anything accept a TCP connection on `host:port` right now?
+
+        Opens and closes one connection and sends nothing, so the app sees a
+        client that hung up rather than a request.
+        """
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
     def container_runtime_ready(self):
         try:

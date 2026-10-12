@@ -152,6 +152,18 @@ class ValidateCreateTests(unittest.TestCase):
         self.assertIsNone(spec)
         self.assertIn('9999', err)
 
+    def test_a_port_the_scanner_cannot_reach_is_refused_with_the_reason(self):
+        """Greying the button out is not enough: the API is also reached from
+        the phone and the MCP tools, and a scan of a loopback-only app spends
+        money and reports a clean result against nothing."""
+        targets = scans.scannable_targets(
+            [{'status': 'running', 'port': 4545, 'addr': '127.0.0.1'}])
+        spec, err = scans.validate_create({'port': 4545}, targets,
+                                          connected_model='prov/model')
+        self.assertIsNone(spec)
+        self.assertIn('127.0.0.1', err)
+        self.assertIn('0.0.0.0', err)
+
     def test_a_missing_or_non_integer_port_is_refused(self):
         for port in (None, '3000', 3000.5, True):
             spec, err = scans.validate_create({'port': port}, self.TARGETS,

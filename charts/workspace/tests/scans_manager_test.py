@@ -38,11 +38,14 @@ class StubBackend(scan_backends.ScanBackend):
         self.stopped = []
         self.log = ''
         self.start_error = None
+        self.resolve_error = None
 
     def preflight(self):
         return self.ready
 
     def resolve_target(self, port):
+        if self.resolve_error:
+            raise scan_backends.BackendError(self.resolve_error)
         return f'http://gateway.test:{port}'
 
     def start(self, spec):
@@ -158,6 +161,17 @@ class CreateTests(ManagerTestCase):
         self.assertIsNone(record)
         self.assertEqual(err, 'Needs buildkit.')
         self.assertEqual(scans.ScansManager.list_scans(), [])
+
+    def test_an_address_that_cannot_be_resolved_leaves_nothing_behind(self):
+        """A folder with no record in it is invisible to pruning, so a refused
+        start that made one first leaked a directory per click, forever."""
+        self.backend.resolve_error = 'Could not work out the address.'
+        record, err = scans.ScansManager.create(self.spec())
+        self.assertIsNone(record)
+        self.assertEqual(err, 'Could not work out the address.')
+        self.assertEqual(self.backend.started, [])
+        store = scans.ScansManager.scans_dir()
+        self.assertEqual(os.listdir(store) if os.path.isdir(store) else [], [])
 
     def test_a_backend_that_cannot_start_records_a_failed_scan(self):
         """Not a silent nothing: the user gets a scan they can open and read."""
