@@ -19,7 +19,8 @@ import {
  *
  * * **The target is picked from a list**, never typed. The list comes from the
  *   apps actually listening in this workspace, and an app that the scanner
- *   cannot reach is shown with the reason rather than silently offered.
+ *   cannot reach is shown with the reason and cannot be started — the server
+ *   refuses it too.
  * * **Depth carries its time cost** in the label. The scanner's own default is
  *   its deepest mode — hours of work — so the shallow one leads here.
  * * **The budget field is always visible**, and says plainly what an empty one
@@ -186,7 +187,11 @@ export function ScanForm() {
               type="submit"
               variant="primary"
               disabled={
-                starting || port === null || budgetInvalid || !conn?.configured
+                starting ||
+                port === null ||
+                budgetInvalid ||
+                !conn?.configured ||
+                (chosen !== null && !chosen.reachable)
               }
             >
               {starting ? 'Starting…' : 'Start scan'}
