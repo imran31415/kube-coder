@@ -246,15 +246,19 @@ class SystemRouteOrderTests(DomainRouteTests, unittest.TestCase):
     foreign_paths = (('GET', '/health/'), ('GET', '/livezx'),
                      ('GET', '/metrics/'), ('GET', '/api/github'),
                      ('GET', '/api/workspace'))
-    # Only these four match the normalized path; the probes, /metrics and the
+    # Only these match the normalized path; the probes, /metrics and the
     # VNC routes are raw-only, which the test below asserts instead.
     oauth_samples = (('GET', '/metrics/prometheus'),
                      ('GET', '/api/github/status'),
                      ('GET', '/api/github/config'),
-                     ('GET', '/api/workspace/version'))
+                     ('GET', '/api/workspace/version'),
+                     ('GET', '/api/keeper/idle'))
     wrong_verb_samples = (('POST', '/livez'), ('POST', '/metrics'),
                           ('DELETE', '/api/github/config'),
                           ('POST', '/vnc'))
+    # The keeper's sleep poll is the one route here that reads a query
+    # parameter (`?idle_minutes=`, its own configured threshold) — see #728.
+    query_handlers = ('send_keeper_idle',)
 
     def _handler_for(self, path, raw=None):
         return self.resolve('GET', path, raw)
