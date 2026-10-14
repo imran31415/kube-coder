@@ -27,6 +27,8 @@
  * node-side vitest suite can cover it without a React Native renderer.
  */
 
+import { isDownError } from './workspaceReach';
+
 export type Decision = 'approve' | 'reject' | 'send-back';
 
 export interface QueuedApproval {
@@ -149,9 +151,10 @@ export async function enqueue(
   return entry;
 }
 
-/** What `drain` calls per entry. Resolves with the HTTP status; throws for a
- *  transport failure (no status), which is treated as retryable. */
-export type Sender = (entry: QueuedApproval) => Promise<{ status: number }>;
+/** What `drain` calls per entry. Resolves with the HTTP status (and the error
+ *  code, when the client knows it); throws for a transport failure (no
+ *  status), which is treated as retryable. */
+export type Sender = (entry: QueuedApproval) => Promise<{ status: number; code?: string }>;
 
 /**
  * Try to send everything, oldest first.
@@ -160,6 +163,11 @@ export type Sender = (entry: QueuedApproval) => Promise<{ status: number }>;
  * `TERMINAL_STATUSES`. Anything else (a network error, a 5xx) leaves the entry
  * in place with its attempt count raised, so the next focus/foreground tries
  * again with the SAME `approval_id`.
+ *
+ * A workspace that is asleep or away (#728) is not a failed attempt: nothing
+ * was refused, it simply isn't there. The drain stops at the first such answer
+ * and keeps every entry as it was, so a long sleep can never use up
+ * `MAX_ATTEMPTS`; the next drain after it wakes sends them.
  */
 export async function drain(
   storage: QueueStorage,
@@ -172,15 +180,20 @@ export async function drain(
   if (queue.length === 0) return result;
 
   const kept: QueuedApproval[] = [];
-  for (const entry of queue) {
+  for (const [i, entry] of queue.entries()) {
     let status = 0;
+    let code: string | undefined;
     let message = '';
     try {
-      status = (await send(entry)).status;
+      ({ status, code } = await send(entry));
     } catch (e) {
       message = e instanceof Error ? e.message : String(e);
     }
 
+    if (isDownError({ code })) {
+      kept.push({ ...entry, last_error: 'Waiting for the workspace to wake up' }, ...queue.slice(i + 1));
+      break;
+    }
     if (status >= 200 && status < 300) {
       result.sent += 1;
       continue;

@@ -29,7 +29,9 @@ import { markFeedRead, registerPushToken, unregisterPushToken } from '../api/cli
 import { getConfig, setPushEnabled, subscribe } from '../store/config';
 import { navigateTo, navigationRef } from '../store/nav';
 import { requestBoardFocus } from '../store/boardFocus';
+import { onceAwake } from '../store/workspaceState';
 import { pushTargetFromData, type PushData } from '../util/push';
+import { isDownError } from '../util/workspaceReach';
 
 let handlerConfigured = false;
 let responseSub: Notifications.EventSubscription | null = null;
@@ -168,12 +170,16 @@ export async function unregisterForPush(): Promise<void> {
 
 /** Mark a tapped alert's Feed row read. A tap that cold-starts the app arrives
  *  before the saved connection is hydrated, when a request has no host or token
- *  to use — so wait for hydration instead of sending one that cannot land. */
+ *  to use — so wait for hydration instead of sending one that cannot land.
+ *  A tap on a sleeping workspace (#728) waits for it to wake: losing the read
+ *  would silence every later repeat of this alert. */
 function markTappedRead(feedId: string): void {
   const send = () => {
     Promise.resolve()
       .then(() => markFeedRead(feedId))
-      .catch(() => {});
+      .catch((e) => {
+        if (isDownError(e)) onceAwake(send);
+      });
   };
   if (getConfig().loaded) {
     send();

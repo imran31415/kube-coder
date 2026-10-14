@@ -1,0 +1,41 @@
+suite: holding page (#184) on a phone (#728)
+templates:
+  - templates/holding-configmap.yaml
+  - templates/holding-deployment.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: fits a phone and respects reduced motion
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: 'name="viewport" content="width=device-width, initial-scale=1"'
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: '@media \(max-width: 400px\)'
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: '@media \(prefers-reduced-motion: reduce\)'
+
+  - it: checks again as soon as a backgrounded tab is shown
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "addEventListener\\('visibilitychange'"
+
+  - it: rolls the holding pod when the page changes (subPath mounts never update)
+    template: templates/holding-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/holding-page"]
+          pattern: '^[0-9a-f]{64}$'
+
+  - it: renders nothing when the holding page is off
+    set:
+      holdingPage.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

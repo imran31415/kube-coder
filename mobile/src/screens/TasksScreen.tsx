@@ -6,8 +6,9 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { listTasks } from '../api/client';
-import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StatusPill } from '../components/ui';
+import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StaleNote, StatusPill } from '../components/ui';
 import { getConfig } from '../store/config';
+import { useOnAwake, useWorkspaceState } from '../store/useWorkspaceState';
 import type { TasksNav } from '../navigation';
 import type { TaskSummary } from '../api/types';
 import { colors, font, gradients, radius, space, statusColor } from '../theme';
@@ -34,16 +35,19 @@ export default function TasksScreen() {
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
   // Default to Active: the everyday view is "what's running right now" —
   // finished tasks live behind the Done segment instead of cluttering it.
   const [segment, setSegment] = useState<Segment>('active');
   const [query, setQuery] = useState('');
+  const away = useWorkspaceState().reach !== 'awake';
 
   const load = useCallback(async () => {
     try {
       const t = await listTasks();
       t.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
       setTasks(t);
+      setSyncedAt(Date.now());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -52,6 +56,7 @@ export default function TasksScreen() {
   }, []);
 
   usePolling(load, 4000);
+  useOnAwake(load);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -79,7 +84,12 @@ export default function TasksScreen() {
         title="kube-coder"
         subtitle={`${hostLabel()}${running ? `  ·  ${running} active` : ''}`}
         right={
-          <Pressable onPress={() => nav.navigate('NewTask')}>
+          <Pressable
+            onPress={() => nav.navigate('NewTask')}
+            disabled={away}
+            style={away && styles.disabled}
+            accessibilityLabel="New task"
+          >
             <LinearGradient
               colors={gradients.primary}
               start={{ x: 0, y: 0 }}
@@ -93,7 +103,9 @@ export default function TasksScreen() {
         }
       />
 
-      {error && tasks !== null && tasks.length > 0 ? <ErrorBanner message={error} /> : null}
+      {tasks !== null && tasks.length > 0 ? (
+        away ? <StaleNote at={syncedAt} /> : error ? <ErrorBanner message={error} /> : null
+      ) : null}
 
       {tasks !== null && tasks.length > 0 ? (
         <View style={styles.filters}>
@@ -140,7 +152,13 @@ export default function TasksScreen() {
       {tasks === null ? (
         <Loading label="Loading tasks…" />
       ) : tasks.length === 0 ? (
-        error ? (
+        away ? (
+          <EmptyState
+            icon="moon-outline"
+            title="Workspace not available"
+            subtitle="Wake it from the bar below to load your tasks."
+          />
+        ) : error ? (
           <EmptyState icon="cloud-offline-outline" title="Couldn't reach your workspace" subtitle={error} />
         ) : (
           <EmptyState
@@ -169,6 +187,7 @@ export default function TasksScreen() {
         <FlatList
           data={visible}
           keyExtractor={(t) => t.id}
+          style={away && styles.stale}
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
@@ -260,4 +279,6 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   meta: { color: colors.textMuted, fontSize: font.size.xs, flexShrink: 1 },
   metaDot: { color: colors.textFaint, marginHorizontal: 2 },
+  disabled: { opacity: 0.4 },
+  stale: { opacity: 0.6 },
 });

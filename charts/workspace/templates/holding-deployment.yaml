@@ -27,6 +27,10 @@ spec:
     metadata:
       labels:
         app: holding-{{ .Values.user.name }}
+      annotations:
+        # The page and nginx config are subPath mounts, which never see a
+        # ConfigMap update — without this an upgrade keeps serving the old page.
+        checksum/holding-page: {{ include (print $.Template.BasePath "/holding-configmap.yaml") . | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true

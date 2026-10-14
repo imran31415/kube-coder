@@ -10,14 +10,22 @@ import { NotificationsCard } from '../components/NotificationsCard';
 import { ProviderKeysCard } from '../components/ProviderKeysCard';
 import { MessagingCard } from '../components/MessagingCard';
 import { UpdatesCard } from '../components/UpdatesCard';
+import { mockSleep } from '../mock/mockData';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
 import { unregisterForPush } from '../push/notifications';
 import { useConfig } from '../store/useConfig';
+import { reportDown } from '../store/workspaceState';
 import { colors, font, space } from '../theme';
 import { confirmAction } from '../util/confirm';
+import { SLEEPING } from '../util/workspaceReach';
 
 function mask(t: string): string {
   return t ? t.slice(0, 4) + '••••••••' + t.slice(-2) : '';
+}
+
+function simulateSleep(): void {
+  mockSleep.asleep = true;
+  reportDown(SLEEPING);
 }
 
 export default function SettingsScreen() {
@@ -85,7 +93,16 @@ export default function SettingsScreen() {
             onPress={disconnect}
             style={{ marginTop: space.sm }}
           />
-        ) : null}
+        ) : (
+          // Shows the sleeping-workspace flow (#728) without a cluster.
+          <Button
+            title="Simulate a sleeping workspace"
+            icon="moon-outline"
+            variant="secondary"
+            onPress={simulateSleep}
+            style={{ marginTop: space.sm }}
+          />
+        )}
 
         {/* Push on/off for this phone (#685). Not on the public demo, which
             refuses registration; shown in the mock build, where it is inert. */}

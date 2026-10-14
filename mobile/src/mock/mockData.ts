@@ -311,6 +311,16 @@ export const mockHealth: Health = {
   ok: true,
 };
 
+/** Demo-mode stand-in for a sleeping workspace (#728): Settings puts it to
+ *  sleep, and a wake brings it back after a pod-start-like delay. */
+export const mockSleep = { asleep: false };
+const MOCK_WAKE_MS = 6000;
+export function wakeMockWorkspace(): void {
+  setTimeout(() => {
+    mockSleep.asleep = false;
+  }, MOCK_WAKE_MS);
+}
+
 export const mockDesktop: DesktopItem[] = [
   {
     id: 'seed-build',

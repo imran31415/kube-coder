@@ -42,8 +42,10 @@ import {
   listBoards,
   decideBoardItem,
 } from '../api/client';
-import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
+import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StaleNote } from '../components/ui';
+import { useOnAwake, useWorkspaceState } from '../store/useWorkspaceState';
 import { colors, font, radius, space } from '../theme';
+import { isDownError } from '../util/workspaceReach';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
 import { formatDiffStat, worktreeRemoved } from '../util/worktree';
@@ -135,7 +137,9 @@ export default function BoardScreen() {
   const [focusNote, setFocusNote] = useState<string | null>(null);
   const [queued, setQueued] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const away = useWorkspaceState().reach !== 'awake';
   const [refreshing, setRefreshing] = useState(false);
   const [sendingBack, setSendingBack] = useState<BoardReviewItem | null>(null);
   const [note, setNote] = useState('');
@@ -165,8 +169,9 @@ export default function BoardScreen() {
           : {}),
       },
     );
-    if (res.error) setNotice(res.error);
-    return { status: res.status };
+    // Away is not a failure of this decision — the WakeBanner says it once.
+    if (res.error && !isDownError(res)) setNotice(res.error);
+    return { status: res.status, code: res.code };
   }, []);
 
   const load = useCallback(async () => {
@@ -194,6 +199,7 @@ export default function BoardScreen() {
       setStanding(active ? await standingOrNull(active) : null);
       setGroups(active ? await getBoardReview(active) : []);
       setGroupsBoard(active);
+      setSyncedAt(Date.now());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -202,6 +208,8 @@ export default function BoardScreen() {
   }, [boardId, boards, send]);
 
   usePolling(load, 15000);
+  // Waking up flushes decisions queued while asleep: load() drains first.
+  useOnAwake(load);
 
   // usePolling holds `fn` in a ref keyed only on the interval, so selecting a
   // different board does not restart the poll: the queue simply stayed blank
@@ -401,7 +409,7 @@ export default function BoardScreen() {
           one grey sentence and no way to tell a busy board from a broken one. */}
       {standing && <StandingBanner standing={standing} />}
 
-      {error && <ErrorBanner message={error} />}
+      {away ? !!rows?.length && <StaleNote at={syncedAt} /> : error && <ErrorBanner message={error} />}
       {notice && <ErrorBanner message={notice} />}
       {focusNote && (
         <Text style={styles.focusNote} role="status">
@@ -417,6 +425,12 @@ export default function BoardScreen() {
         />
       ) : rows === null ? (
         <Loading />
+      ) : rows.length === 0 && away ? (
+        <EmptyState
+          icon="moon-outline"
+          title="Workspace not available"
+          subtitle="Wake it from the bar below to load the review queue."
+        />
       ) : rows.length === 0 ? (
         <EmptyState
           title="Nothing to review"
@@ -431,6 +445,7 @@ export default function BoardScreen() {
           ref={listRef}
           data={rows}
           keyExtractor={(r) => r.key}
+          style={away && styles.stale}
           contentContainerStyle={styles.list}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -712,6 +727,7 @@ function ReviewCard({
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   list: { padding: space.md, gap: space.sm },
+  stale: { opacity: 0.6 },
   chips: {
     flexDirection: 'row',
     flexWrap: 'wrap',

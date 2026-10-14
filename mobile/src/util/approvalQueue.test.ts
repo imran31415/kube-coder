@@ -121,6 +121,42 @@ describe('approvalQueue', () => {
     expect(await readQueue(storage)).toEqual([]);
   });
 
+  it('a sleeping workspace never uses up the attempts (#728)', async () => {
+    /* A night asleep is many drains (every focus, every poll). Counting them
+       would silently drop an approval the user made before bed. */
+    const entry = await enqueue(storage, decision());
+    for (let i = 0; i < MAX_ATTEMPTS * 2; i += 1) {
+      await drain(storage, async () => ({ status: 503, code: 'workspace_unreachable' }));
+    }
+    const [kept] = await readQueue(storage);
+    expect(kept.attempts).toBe(0);
+    expect(kept.last_error).toMatch(/wake/i);
+
+    const sentIds: string[] = [];
+    const res = await drain(storage, async (e) => {
+      sentIds.push(e.approval_id);
+      return { status: 200 };
+    });
+    expect(res.sent).toBe(1);
+    expect(sentIds).toEqual([entry.approval_id]);
+  });
+
+  it('stops at the first "asleep" answer and keeps the rest untouched', async () => {
+    await enqueue(storage, decision({ item_id: 'a' }));
+    await enqueue(storage, decision({ item_id: 'b' }));
+    const calls: string[] = [];
+    const res = await drain(storage, async (e) => {
+      calls.push(e.item_id);
+      return { status: 503, code: 'workspace_sleeping' };
+    });
+    expect(calls).toEqual(['a']);
+    expect(res).toMatchObject({ sent: 0, failed: 0, dropped: 0, remaining: 2 });
+    expect((await readQueue(storage)).map((e) => [e.item_id, e.attempts])).toEqual([
+      ['a', 0],
+      ['b', 0],
+    ]);
+  });
+
   it('a second decision on the same item REPLACES the first', async () => {
     /* Tapping Approve then Reject before either has been sent means the
        second one. Sending both would be a write followed by a contradiction. */
