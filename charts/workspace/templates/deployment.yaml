@@ -6,7 +6,19 @@ metadata:
   labels: 
     app: ws-{{ .Values.user.name }}
 spec:
+  {{- /*
+  Who owns `replicas` (#728, docs/always-on-keeper.md §2.2). With keeper sleep
+  on, the keeper scales this Deployment 0 ↔ 1, so the chart must not declare the
+  field: a declared `replicas: 1` would make every `helm upgrade` or GitOps
+  reconcile wake a sleeping workspace. Sleep off (the default) keeps today's
+  `replicas: 1` byte for byte.
+  */}}
+  {{- if and .Values.keeper.sleep.enabled (not .Values.keeper.enabled) }}
+  {{- fail "keeper.sleep.enabled requires keeper.enabled — sleep without a keeper would leave nothing to wake the workspace (#728)" }}
+  {{- end }}
+  {{- if not (and .Values.keeper.enabled .Values.keeper.sleep.enabled) }}
   replicas: 1
+  {{- end }}
   strategy:
     type: Recreate
   selector: 
@@ -97,6 +109,18 @@ spec:
         # pod) a regex strips incorrectly.
         - name: WORKSPACE_USER
           value: {{ .Values.user.name | quote }}
+        {{- if .Values.keeper.enabled }}
+        {{- /* keeper_idle.py int()s this at import, so a non-number would stop
+        server.py from starting — refuse it at render time instead. */}}
+        {{- $idleMinutes := int .Values.keeper.sleep.idleMinutes }}
+        {{- if lt $idleMinutes 1 }}
+        {{- fail (printf "keeper.sleep.idleMinutes must be a whole number of minutes >= 1 (got %v)" .Values.keeper.sleep.idleMinutes) }}
+        {{- end }}
+        # Idle threshold GET /api/keeper/idle answers with when the keeper asks
+        # without ?idle_minutes= (keeper_idle.py; #728).
+        - name: KC_KEEPER_IDLE_MINUTES
+          value: {{ $idleMinutes | quote }}
+        {{- end }}
         {{- if .Values.claude.apiKey }}
         - name: ANTHROPIC_API_KEY
           valueFrom:

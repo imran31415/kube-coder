@@ -3,11 +3,12 @@
 Design note for **issue #728** ("always-on keeper — tiny Go/Rust server for
 webhooks + crons so idle workspaces can sleep").
 
-**Status: nothing in this document is enabled.** No keeper exists, no chart
-template references one, and no workspace can sleep. One slice of the proposal
-*is* implemented — the workspace-side idle contract, `GET /api/keeper/idle`
-(§4.1) — because it is the same whichever way the open questions in §3 are
-answered, and because getting it wrong is what kills somebody's running agent.
+**Status: nothing in this document is enabled.** No keeper exists and no
+workspace can sleep. Two slices of the proposal *are* implemented: the
+workspace-side idle contract, `GET /api/keeper/idle` (§4.1) — because it is the
+same whichever way the open questions in §3 are answered, and because getting it
+wrong is what kills somebody's running agent — and the chart's `keeper:` values
+block with the `replicas` ownership change (§2.2, step 2), all defaulting off.
 The rest is written down here rather than built, for the reasons in §3 and §6.
 
 This page is not in `docs/_manifest.json` (the in-app docs nav): there is no
@@ -111,6 +112,38 @@ own one field. The options, in the order I would try them:
 `deployment.yaml`, the controller, and the acceptance criterion
 "`keeper.enabled=false` renders exactly today's chart".
 
+**Decided in the #728 thread: option 1 (landed as step 2).**
+`templates/deployment.yaml` renders `replicas: 1` unless
+`keeper.enabled && keeper.sleep.enabled`, so with sleep off the chart is byte
+for byte what it was. `keeper.sleep.enabled` without `keeper.enabled` fails the
+render — sleep with nothing to wake the workspace is never what anyone meant.
+Two consequences are documented next to the flag in `values.yaml`, where an
+operator will be looking when they happen:
+
+- **Turning sleep on wakes a sleeping workspace once** (Helm 3, which the
+  provisioner and CI run). The upgrade that drops the field from the chart
+  makes Helm 3's three-way merge delete it, and the API server defaults it back
+  to 1. Later upgrades leave it alone. Helm 4 applies server-side: `kubectl
+  scale` already took ownership of the field, so dropping it from the chart
+  removes nothing and that first upgrade does not wake.
+- **Turning sleep off hands the field back to the chart**, so that upgrade also
+  sets 1 (both Helm versions).
+
+Checked on a real cluster (minikube, Kubernetes v1.35.1, `base-infrastructure`
+then the workspace chart, stop/start via `kubectl scale` — the call
+`scale_workspace` makes). Each row: stop the workspace, then `helm upgrade`:
+
+| Chart | Helm 3.21.4 | Helm 4.2.3 |
+|---|---|---|
+| Before this change | wakes | wakes |
+| Sleep off (default) | wakes — unchanged | — |
+| Upgrade that turns sleep on | wakes once | stays at 0 |
+| Sleep on, three upgrades (incl. a pod-template change) | stays at 0 | stays at 0 |
+| Upgrade that turns sleep off | wakes | wakes |
+
+A fresh install with sleep on starts at 1, and a Start after a sleep-on Stop
+survives the next upgrade.
+
 ---
 
 ## 3. The open questions, with a recommendation
@@ -164,7 +197,8 @@ people tap, and flip the default if they always do.
 
 ### 3.6 The question the issue is missing: who owns `replicas`?
 
-See §2.2. This one has to be answered first.
+See §2.2. This one had to be answered first — answered: option 1, the chart
+stops declaring `replicas` when sleep is on.
 
 ---
 
@@ -269,7 +303,7 @@ the two PRs that carry real risk come after the cheap ones.
 | # | Scope | Depends on |
 |---|---|---|
 | 1 | **The idle contract** — `keeper_idle.py`, `GET /api/keeper/idle`, tests. No keeper, no behaviour change. | — (done) |
-| 2 | **Decide §2.2 and §3.1.** Land the `replicas` ownership change and the chart's `keeper:` values block with everything defaulting off, so PR 3 has somewhere to plug in. | §2.2 answered |
+| 2 | **Decide §2.2 and §3.1.** Land the `replicas` ownership change and the chart's `keeper:` values block with everything defaulting off, so PR 3 has somewhere to plug in. `keeper.sleep.idleMinutes` → `KC_KEEPER_IDLE_MINUTES`. | — (done) |
 | 3 | **The keeper itself** — proxy, wake, on-disk queue, RBAC, Deployment, image, CI job. `keeper.enabled=false` by default; `enabled=false` must render byte-identical to today. | 2 |
 | 4 | **Trigger-ID and token-hash push** from `server.py`, CronJob re-apply on URL change. Wakes now work for webhooks and crons. | 3 |
 | 5 | **Sleep** — the idle loop, the rate limiter, `sleep.enabled=false` by default, the keeper-owned sleep record from §2.1, controller sleeping-vs-stopped. | 4 |
