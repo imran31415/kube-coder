@@ -38,6 +38,7 @@ import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ControllerScreen from './src/screens/ControllerScreen';
 import { NavDrawer } from './src/components/NavDrawer';
+import { WakeBanner } from './src/components/WakeBanner';
 import { MenuButton } from './src/components/ui';
 import type {
   AppsStackParams,
@@ -183,6 +184,7 @@ function MainTabs() {
         {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
         <Tab.Screen name="Settings" component={SettingsScreen} />
       </Tab.Navigator>
+      <WakeBanner />
       <NavDrawer />
     </View>
   );

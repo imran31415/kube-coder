@@ -231,6 +231,19 @@ export function ErrorBanner({ message }: { message: string }) {
   );
 }
 
+/** Stands in for a screen's ErrorBanner while the workspace is away (#728):
+ *  the WakeBanner says why, so this only dates the data still on screen. */
+export function StaleNote({ at }: { at: number | null }) {
+  if (at === null) return null;
+  const d = new Date(at);
+  const time = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return (
+    <Text style={styles.staleNote} accessibilityRole="text">
+      Showing data from {time}
+    </Text>
+  );
+}
+
 export { Ionicons };
 
 const styles = StyleSheet.create({
@@ -323,4 +336,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.danger + '14',
   },
   errBannerText: { flex: 1, color: colors.danger, fontSize: font.size.sm },
+  staleNote: {
+    color: colors.textFaint,
+    fontSize: font.size.xs,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.xs,
+  },
 });

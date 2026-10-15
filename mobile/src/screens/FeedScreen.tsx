@@ -9,7 +9,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, Linking, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { listFeed, markFeedRead, dismissFeedItem } from '../api/client';
-import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader } from '../components/ui';
+import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StaleNote } from '../components/ui';
 import { Markdown } from '../components/Markdown';
 import { Ionicons } from '@expo/vector-icons';
 import type { FeedItem, FeedKind, FeedLink } from '../api/types';
@@ -18,6 +18,7 @@ import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
 import { groupByDay, resolveFeedRef, feedSourceLabel, discussPrefix } from '../util/feed';
 import { requestBoardFocus } from '../store/boardFocus';
+import { useOnAwake, useWorkspaceState } from '../store/useWorkspaceState';
 
 type Nav = { navigate: (tab: string, opts?: object) => void };
 
@@ -43,12 +44,15 @@ export default function FeedScreen() {
   const [items, setItems] = useState<FeedItem[] | null>(null);
   const [filter, setFilter] = useState<FeedKind | 'all'>('all');
   const [error, setError] = useState<string | null>(null);
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const away = useWorkspaceState().reach !== 'awake';
 
   const load = useCallback(async () => {
     try {
       const next = await listFeed(filter === 'all' ? {} : { kinds: [filter] });
       setItems(next);
+      setSyncedAt(Date.now());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -57,6 +61,7 @@ export default function FeedScreen() {
   }, [filter]);
 
   usePolling(load, 15000);
+  useOnAwake(load);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -173,7 +178,12 @@ export default function FeedScreen() {
               <Pressable style={[styles.chip, styles.chipPrimary]} onPress={() => discuss(item)}>
                 <Text style={styles.chipText}>Discuss with CTO</Text>
               </Pressable>
-              <Pressable style={styles.dismiss} onPress={() => void dismiss(item)} accessibilityLabel="Dismiss">
+              <Pressable
+                style={[styles.dismiss, away && styles.disabled]}
+                onPress={() => void dismiss(item)}
+                disabled={away}
+                accessibilityLabel="Dismiss"
+              >
                 <Ionicons name="close" size={15} color={colors.textFaint} />
               </Pressable>
             </View>
@@ -181,7 +191,7 @@ export default function FeedScreen() {
         </Card>
       );
     },
-    [openLink, discuss, dismiss],
+    [openLink, discuss, dismiss, away],
   );
 
   return (
@@ -198,9 +208,17 @@ export default function FeedScreen() {
           </Pressable>
         ))}
       </View>
-      {error && items && items.length > 0 ? <ErrorBanner message={error} /> : null}
+      {items && items.length > 0 ? (
+        away ? <StaleNote at={syncedAt} /> : error ? <ErrorBanner message={error} /> : null
+      ) : null}
       {!rows ? (
         <Loading label="Loading feed…" />
+      ) : rows.length === 0 && away ? (
+        <EmptyState
+          icon="moon-outline"
+          title="Workspace not available"
+          subtitle="Wake it from the bar below to load your feed."
+        />
       ) : rows.length === 0 ? (
         <EmptyState
           icon="newspaper-outline"
@@ -212,6 +230,7 @@ export default function FeedScreen() {
           data={rows}
           keyExtractor={(r) => r.key}
           renderItem={renderRow}
+          style={away && styles.stale}
           contentContainerStyle={styles.list}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
         />
@@ -242,4 +261,6 @@ const styles = StyleSheet.create({
   chipPrimary: { borderColor: colors.accent },
   chipText: { color: colors.text, fontSize: font.size.xs },
   dismiss: { marginLeft: 'auto', padding: 4 },
+  disabled: { opacity: 0.35 },
+  stale: { opacity: 0.6 },
 });

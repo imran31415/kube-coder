@@ -88,6 +88,10 @@ data:
           animation: slide 1.4s ease-in-out infinite;
         }
         @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+        @media (max-width: 400px) { .card { padding: 32px 22px; } }
+        @media (prefers-reduced-motion: reduce) {
+          .spinner, .bar::before { animation: none; }
+        }
         @media (prefers-color-scheme: dark) {
           body { background: #0f1420; color: #e6ebf2; }
           .card { background: #161c28; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
@@ -111,6 +115,7 @@ data:
         // the live workspace. While the pod is down /health is itself
         // intercepted and returns 503, so a 2xx unambiguously means "back up".
         var POLL_MS = 4000;
+        var timer;
         function check() {
           fetch('/health', { cache: 'no-store', redirect: 'manual' })
             .then(function (r) {
@@ -119,9 +124,14 @@ data:
             })
             .catch(schedule);
         }
-        function schedule() { setTimeout(check, POLL_MS); }
+        function schedule() { clearTimeout(timer); timer = setTimeout(check, POLL_MS); }
+        // Phones pause timers in background tabs: check the moment the page is
+        // looked at again instead of waiting out a stalled poll.
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') { clearTimeout(timer); check(); }
+        });
         // Small initial delay so the old pod has begun terminating.
-        setTimeout(check, 1500);
+        timer = setTimeout(check, 1500);
       </script>
     </body>
     </html>

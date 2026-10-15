@@ -335,6 +335,38 @@ describe('handleNotificationTap — a tap marks the alert read', () => {
     expect(cfgListeners.size).toBe(0); // unsubscribed after the one send
   });
 
+  it('a tap on a sleeping workspace marks the row read once it wakes (#728)', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const state = await import('../store/workspaceState');
+    state.reportDown('workspace_unreachable');
+    markFeedRead.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('asleep'), { code: 'workspace_unreachable' });
+    });
+    handleNotificationTap({ ref: 'task:t1', feedId: 'fd_sleep' });
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalled(); // the tap still lands on its screen
+
+    state.reportAwake();
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(2);
+    expect(markFeedRead).toHaveBeenLastCalledWith('fd_sleep');
+  });
+
+  it('a mark-read that fails for another reason is not retried', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const state = await import('../store/workspaceState');
+    markFeedRead.mockImplementationOnce(async () => {
+      throw new Error('500');
+    });
+    handleNotificationTap({ feedId: 'fd_err' });
+    await flush();
+    state.reportDown('workspace_unreachable');
+    state.reportAwake();
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+  });
+
   it('a tap without a feed id marks nothing', async () => {
     const { handleNotificationTap } = await import('./notifications');
     handleNotificationTap({ ref: 'task:t1' });

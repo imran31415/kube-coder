@@ -14,7 +14,9 @@
  * same fallback the dashboard SPA uses when the event stream is unavailable.
  */
 import { getConfig } from '../store/config';
+import { reportAwake, reportDown } from '../store/workspaceState';
 import { validateHost } from '../util/urlPolicy';
+import { classifyDown, SLEEPING, UNREACHABLE } from '../util/workspaceReach';
 import {
   mockApps,
   mockDesktop,
@@ -50,6 +52,8 @@ import {
   mockScanDetail,
   mockScanTargets,
   mockScanConnection,
+  mockSleep,
+  wakeMockWorkspace,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -120,7 +124,14 @@ interface ReqOpts {
   method?: string;
   body?: unknown;
   query?: Record<string, string | number | undefined>;
+  /** A keeper route (#728): its answer says nothing about the workspace pod. */
+  keeper?: boolean;
 }
+
+const DOWN_MESSAGES = {
+  [SLEEPING]: 'Your workspace is asleep.',
+  [UNREACHABLE]: "Can't reach your workspace — it may be asleep or restarting.",
+};
 
 function buildUrl(host: string, path: string, query?: ReqOpts['query']): string {
   const base = host.replace(/\/+$/, '');
@@ -180,10 +191,16 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
       res.status || 0,
     );
   }
-  const ctype = res.headers.get('Content-Type') || '';
-  const parsed: unknown = ctype.includes('application/json')
-    ? await res.json().catch(() => null)
-    : await res.text();
+  const isJson = (res.headers.get('Content-Type') || '').includes('application/json');
+  const parsed: unknown = isJson ? await res.json().catch(() => null) : await res.text();
+  // A sleeping/stopped workspace never answers itself: the ingress (or the
+  // keeper) does. Report it app-wide and throw an error screens can recognise.
+  const down = res.ok ? null : classifyDown(res.status, isJson, parsed);
+  if (down) {
+    reportDown(down);
+    throw new ApiError(DOWN_MESSAGES[down], res.status, down);
+  }
+  if (!opts.keeper) reportAwake();
   if (!res.ok) {
     const msg =
       parsed && typeof parsed === 'object' && 'error' in parsed
@@ -895,6 +912,7 @@ interface RawHealth {
 export async function getHealth(): Promise<Health> {
   if (getConfig().mock) {
     await delay(100);
+    if (mockSleep.asleep) throw new ApiError(DOWN_MESSAGES[SLEEPING], 503, SLEEPING);
     return mockHealth;
   }
   const d = await request<RawHealth>('/health');
@@ -904,6 +922,27 @@ export async function getHealth(): Promise<Health> {
     browser: d.services?.browser,
     ok: d.status === 'healthy',
   };
+}
+
+/**
+ * Ask the always-on keeper (#728 step 3) to wake the workspace. False when no
+ * keeper sits in front of it yet: the request then dies at the bare ingress
+ * (HTML 50x) or reaches a server.py without the route (404/405).
+ */
+export async function wakeViaKeeper(): Promise<boolean> {
+  if (getConfig().mock) {
+    wakeMockWorkspace();
+    return true;
+  }
+  try {
+    await request('/api/keeper/wake', { method: 'POST', keeper: true });
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && (e.code === UNREACHABLE || e.status === 404 || e.status === 405)) {
+      return false;
+    }
+    throw e;
+  }
 }
 
 // ---- Hypervisor chat -------------------------------------------------------
@@ -1790,7 +1829,7 @@ export async function decideBoardItem(
     reason?: string;
     note?: string;
   },
-): Promise<{ status: number; error?: string }> {
+): Promise<{ status: number; error?: string; code?: string }> {
   if (getConfig().mock) {
     await delay(200);
     mockDecideBoardItem(
@@ -1807,7 +1846,7 @@ export async function decideBoardItem(
     );
     return { status: 200 };
   } catch (e) {
-    if (e instanceof ApiError) return { status: e.status, error: e.message };
+    if (e instanceof ApiError) return { status: e.status, error: e.message, code: e.code };
     throw e;
   }
 }
