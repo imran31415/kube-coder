@@ -117,6 +117,11 @@ This document describes all environment variables used by kube-coder components.
 | `KC_WT_LOCK_TIMEOUT` | `60` | Seconds to wait for another worktree operation to finish before answering 503. |
 | `KC_WT`, `KC_WT_BRANCH`, `PORT`, `KC_PORT` | — | **Automatically set** inside an isolated Build: its worktree folder, branch and leased port. |
 
+### Always-on keeper (#728)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KC_KEEPER_IDLE_MINUTES` | `30` | Minutes every activity signal must stay quiet before `GET /api/keeper/idle` reports the workspace idle, when the keeper asks without `?idle_minutes=`. Read once at import. Set from `keeper.sleep.idleMinutes` (only rendered when `keeper.enabled`); the chart refuses anything below 1. See [always-on-keeper.md](always-on-keeper.md). |
+
 ### Dashboard & UI
 | Variable | Default | Description |
 |----------|---------|-------------|

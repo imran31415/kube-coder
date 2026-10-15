@@ -95,6 +95,30 @@ holdingPage:
       cpu: 50m
       memory: 32Mi
 
+# Always-on keeper (#728). A tiny per-workspace server that receives webhooks
+# and cron fires while the workspace pod sleeps, wakes it on demand, and scales
+# it to 0 when idle. Staged — see docs/always-on-keeper.md §5. Everything is off
+# by default; with these defaults the chart renders exactly as it did before.
+keeper:
+  # Step 3 adds the keeper Deployment behind this flag. Today it only wires the
+  # workspace side (KC_KEEPER_IDLE_MINUTES for GET /api/keeper/idle).
+  enabled: false
+  sleep:
+    # Let the keeper scale this workspace to 0 when idle. Requires
+    # keeper.enabled. Turning it on removes `replicas` from the workspace
+    # Deployment so `helm upgrade` / GitOps reconciles stop waking a sleeping
+    # workspace — the keeper owns the field from then on.
+    #
+    # ⚠ With Helm 3 (what the provisioner and CI run), the FIRST upgrade that
+    # turns this on wakes a sleeping workspace once: the field leaves the chart
+    # and Kubernetes defaults it back to 1. Later upgrades leave it alone.
+    # Turning it back off returns ownership to the chart, so that upgrade also
+    # sets replicas to 1.
+    enabled: false
+    # Minutes every activity signal must stay quiet before the workspace counts
+    # as idle. Exported as KC_KEEPER_IDLE_MINUTES (keeper_idle.py).
+    idleMinutes: 30
+
 # OAuth2 (GitHub) settings — only used when ingress.auth.type=oauth2.
 # Real credentials should come from a gitignored overlay (e.g.
 # secrets/<user>/oauth2.yaml). Public-repo defaults leave them empty,

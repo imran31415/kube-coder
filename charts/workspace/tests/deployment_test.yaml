@@ -653,3 +653,85 @@ tests:
           content:
             name: KC_MEMORY_INJECT_MAX_CHARS
             value: "2048"
+
+  # ── Always-on keeper: who owns `replicas` (#728 step 2) ───────────────────
+  # With sleep on the keeper scales the workspace 0 <-> 1, so the chart must not
+  # declare replicas — otherwise every helm upgrade / GitOps reconcile wakes a
+  # sleeping workspace. Off (the default) must stay exactly today's chart.
+
+  - it: keeps replicas 1 and no keeper env by default
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_KEEPER_IDLE_MINUTES
+
+  - it: keeps replicas 1 when the keeper is on but sleep is off
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_KEEPER_IDLE_MINUTES
+            value: "30"
+
+  - it: leaves replicas to the keeper when sleep is on
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.enabled: true
+    asserts:
+      - notExists:
+          path: spec.replicas
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: exports a custom idle threshold to the workspace
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 5
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_KEEPER_IDLE_MINUTES
+            value: "5"
+
+  - it: refuses sleep without a keeper to wake the workspace
+    template: templates/deployment.yaml
+    set:
+      keeper.sleep.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.sleep.enabled requires keeper.enabled — sleep without a keeper would leave nothing to wake the workspace (#728)"
+
+  - it: refuses an idle threshold below one minute
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.idleMinutes: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.sleep.idleMinutes must be a whole number of minutes >= 1 (got 0)"
+
+  - it: refuses a non-numeric idle threshold (server.py int()s it at import)
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.idleMinutes: soon
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.sleep.idleMinutes must be a whole number of minutes >= 1 (got soon)"
