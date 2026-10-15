@@ -37,7 +37,10 @@ SETTINGS_PATH = os.path.expanduser('~/.claude/settings.json')
 # hypervisor_session.py). This pre-accepts the one-time "Bypass Permissions
 # mode" acknowledgement so no interactive dialog can gate a headless run. It is
 # ONLY consulted when a bypass/dangerous flag is passed, so it does NOT affect
-# the Build tab's plain `claude` (which still prompts).
+# the Build tab's plain `claude` (which still prompts). Every unattended Build
+# launched with --dangerously-skip-permissions relies on it too (hypervisor-tool,
+# webhook, cron and board sources; see resolve_auto_approve, #769): without it
+# that acknowledgement would sit in front of a terminal nobody is watching.
 ENFORCED_SETTINGS = {
     'skipDangerousModePermissionPrompt': True,
 }

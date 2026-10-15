@@ -223,7 +223,8 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 | `workdir` | string | No | Working directory for the task. Defaults to `/home/dev`. |
 | `response_url` | string | No | Where to POST the task's terminal state when it reaches `completed` / `error` / `killed`. Must be `http(s)`. See [Completion hooks](#completion-hooks-response_url). |
 | `response_secret` | string | No | If set, the completion-hook POST is signed with HMAC-SHA256 in `X-Kube-Coder-Signature-256: sha256=<hex>`. |
-| `source` | string | No | Free-form provenance string surfaced on the dashboard (`webhook:<id>`, `cron:<id>`, etc.). Webhook and cron receivers set this automatically. |
+| `source` | string | No | Free-form provenance string surfaced on the dashboard (`webhook:<id>`, `cron:<id>`, etc.). Webhook and cron receivers set this automatically. It also sets the `auto_approve` default below. |
+| `auto_approve` | boolean | No | Launch the CLI with its skip-permissions flag (`claude --dangerously-skip-permissions`, `ante --yolo`, `codex --dangerously-bypass-approvals-and-sandbox`, which also turns off Codex's sandbox; no effect for CLIs without one). When omitted it is on for sources nobody watches (`hypervisor-tool`, `webhook:*`, `cron:*`, `desktop:*`, `board:*`) and off otherwise. An explicit value wins. |
 | `isolate` | boolean | No | `true` runs the task in its own git worktree on its own `kc/<name>` branch with its own `$PORT` ([Isolated worktrees](#isolated-worktrees-701)). `workdir` must be inside a git repository. Only a JSON `true` counts. |
 | `base_ref` | string | No | With `isolate`: the branch, tag or commit to start from. Default: the folder's current commit. |
 | `worktree_slug` | string | No | With `isolate`: continue in the named worktree (e.g. `issue-701`) instead of a fresh one. Refused with `409 busy` while another live task uses it. |
@@ -959,6 +960,15 @@ rendered prompts are deliberately absent — follow `task_id` for those. The
 ledger is byte-capped per trigger, so `total` counts what is still on disk
 rather than every fire since the beginning.
 
+**Permissions.** Nobody watches a webhook task's terminal, so a signed fire
+and a fire from the Test button launch the CLI with its skip-permissions flag
+(see `auto_approve` above); otherwise a permission prompt would stall the task
+forever. An unsigned webhook (`KC_ALLOW_UNSIGNED_WEBHOOKS=1` with no
+`hmac_secret`) keeps the prompts, because anyone who can reach its URL can fire
+it. A signature proves who sent the call, not that its payload is safe: text in
+a PR or issue body still reaches an agent that will not ask before acting, so
+only point a webhook at senders whose content you trust.
+
 ### Provider signature reference
 
 | Provider | Header(s) read | Signed string |
@@ -1006,6 +1016,10 @@ pod via the Secret; the receiver checks it constant-time.
 
 The auto-minted `fire_token` is **not** returned in the response; you'd only
 need it directly if hand-editing the CronJob.
+
+A cron-fired task launches the CLI with its skip-permissions flag (see
+`auto_approve` above): it runs on your schedule, authenticated by its
+`fire_token`, and nobody is watching its terminal to answer a prompt.
 
 ### Other endpoints
 

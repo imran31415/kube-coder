@@ -2776,11 +2776,22 @@ class ClaudeTaskManager:
     def resolve_auto_approve(source, explicit=None):
         """Decide whether a new task launches its CLI with skip-permissions.
 
-        An explicit request (the body's `auto_approve` flag) always wins, in
-        both directions. When it is absent (None), fall back to the source
-        default: unattended sources (hypervisor-tool, webhook:*, cron:*,
-        desktop:*) auto-approve so they don't stall on prompts; the interactive
-        Build tab (source null / 'manual') stays off. See issue #296."""
+        An explicit value always wins, in both directions. When it is None,
+        the source decides: unattended sources (hypervisor-tool, webhook:*,
+        cron:*, desktop:*, board:*) auto-approve so a launch nobody watches
+        doesn't stall on a prompt or dialog; everything else stays off,
+        including the interactive Build tab (source null / 'manual') and
+        page-watch:*. See issues #296 and #769.
+
+        Who asks, and with what `explicit`:
+          * POST /api/claude/tasks: the body's `auto_approve` flag.
+          * The cron fire (handlers/triggers.py): None.
+          * The webhook fire: None when the sender proved itself (a verified
+            HMAC, or the owner's Test button), False for an unsigned webhook.
+          * Board runs: None.
+        The page-watch fire never asks; it passes False outright (see
+        PageWatchManager). The desktop launcher doesn't ask yet either, so
+        `desktop:` only takes effect through POST /api/claude/tasks."""
         if explicit is not None:
             return bool(explicit)
         return ClaudeTaskManager._is_unattended_source(source)
@@ -7216,9 +7227,14 @@ class WebhookManager:
         """Apply the prompt template to the inbound payload.
 
         Two modes, chosen by the config:
-          * 'attach' (default, safe): prompt = template + fenced JSON of payload.
-            No interpolation, so payload contents can't smuggle instructions
-            into the rendered prompt — they appear as data in a code fence.
+          * 'attach' (default): prompt = template + fenced JSON of payload.
+            No interpolation, so payload contents can't rewrite the template's
+            instruction line — they appear as data in a code fence. It is
+            still text the model reads, though: a fence is a convention, not a
+            boundary, and words inside a payload (a PR title, an issue body)
+            can still steer the agent. A signed webhook's task launches with
+            skip-permissions (#769), and the HMAC proves who sent the call,
+            not that what it carries is safe.
           * 'interpolate': substitute {{ payload.x.y }} references with the
             matching JSON value. Caller-controlled values land verbatim in the
             instruction line — only use when the payload source is trusted.
@@ -10667,19 +10683,25 @@ class PageWatchManager:
       The fire passes `auto_approve=False` to create_task explicitly, and
       `page-watch:` is deliberately kept OUT of
       ClaudeTaskManager._UNATTENDED_SOURCE_PREFIXES — the whitelist consulted
-      by resolve_auto_approve, which governs the generic /api/tasks path and
-      board runs. Adding it there "for consistency with cron:" would mean a
-      task carrying source='page-watch:<id>' launches the CLI with
-      --dangerously-skip-permissions.
+      by resolve_auto_approve, which governs POST /api/claude/tasks, the cron
+      and webhook fire paths, and board runs. Adding it there "for consistency
+      with cron:" would mean a task carrying source='page-watch:<id>' launches
+      the CLI with --dangerously-skip-permissions.
 
       Why the asymmetry with cron: and webhook: is correct, not an oversight:
-      those fire on the operator's own schedule or from their own signed
-      sender. A page-watch fires because a third-party web page changed. An
-      arbitrary page must not be able to start a permission-skipping agent on
-      a timer. Stalling on a permission prompt is the RIGHT behaviour here —
-      putting a decision in front of a human is the entire point of the
-      feature. See tests/page_watch_api_test.py for the regression that pins
-      the prefix out of that tuple.
+      a cron fires on the operator's own schedule, authenticated by its
+      fire_token, and a webhook skips only when its sender proved itself (a
+      verified HMAC or the owner's Test button; an unsigned webhook does not).
+      A page-watch fires because a third-party web page changed. An arbitrary
+      page must not be able to start a permission-skipping agent on a timer.
+      Without the flag the CLI runs in the account's default permission mode:
+      by default it stops at the first permission prompt, which is the RIGHT
+      behaviour here — putting a decision in front of a human is the entire
+      point of the feature. (An account whose default mode is `auto` lets
+      Claude Code's classifier decide instead; that is the owner's setting,
+      not this server's.) tests/page_watch_api_test.py pins the prefix out of
+      that tuple, and tests/trigger_runs_test.py pins the False at the fire
+      site (#769).
 
     * **Fetches go through safe_http**, at creation (a cheap pre-flight, so an
       internal target is refused while the user is still looking at the form)

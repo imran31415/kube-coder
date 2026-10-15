@@ -58,6 +58,7 @@ import safe_http  # noqa: E402
 import server  # noqa: E402
 from live_state import (  # noqa: E402
     isolate_feed_and_push,
+    isolate_provider_keys,
     isolate_trigger_runs,
     silence_prompt_delivery,
 )
@@ -80,14 +81,18 @@ class FakeTasks:
 
     Every outcome the fire paths branch on is a status string, so the fake is a
     dial rather than a mock: set `status` and assert what the ledger wrote.
+    `calls` keeps every launch's kwargs, so a test can pin what a fire site
+    decided (auto_approve, #769) rather than only what the ledger recorded.
     """
 
     def __init__(self):
         self.n = 0
         self.status = 'running'
         self.error = None
+        self.calls = []
 
     def create_task(self, prompt, **kw):
+        self.calls.append({'prompt': prompt, **kw})
         self.n += 1
         task_id = f'tk-{self.n}'
         out = {'task_id': task_id, 'status': self.status, 'prompt': prompt}
@@ -231,6 +236,9 @@ class _ApiBase(unittest.TestCase):
     the trigger handlers touch."""
 
     AUTH_OK = True
+    # False runs the REAL create_task (with tmux mocked), for the few tests
+    # that must see the command line a fire actually launches.
+    FAKE_CREATE_TASK = True
 
     @classmethod
     def setUpClass(cls):
@@ -283,16 +291,17 @@ class _ApiBase(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         p = mock.patch('server.subprocess.run', side_effect=_kubectl_ok)
-        p.start()
+        self.subprocess_run = p.start()
         self.addCleanup(p.stop)
         p = mock.patch.object(safe_http, 'is_safe_url', lambda url, **kw: True)
         p.start()
         self.addCleanup(p.stop)
         self.tasks = FakeTasks()
-        p = mock.patch.object(server.ClaudeTaskManager, 'create_task',
-                              self.tasks.create_task)
-        p.start()
-        self.addCleanup(p.stop)
+        if self.FAKE_CREATE_TASK:
+            p = mock.patch.object(server.ClaudeTaskManager, 'create_task',
+                                  self.tasks.create_task)
+            p.start()
+            self.addCleanup(p.stop)
 
     # ── request helpers ──────────────────────────────────────────────────────
 
@@ -347,6 +356,13 @@ class _ApiBase(unittest.TestCase):
         return self._req('POST', f'/api/triggers/cron-fire/{cron_id}',
                          body={}, headers={'Authorization': f'Bearer {token}'})
 
+    def _cron_fires(self, cron_id='nightly'):
+        """A new cron fired once with its real token. Returns the 202 body."""
+        cfg = self._cron(cron_id)
+        status, body = self._fire_cron(cron_id, cfg['fire_token'])
+        self.assertEqual(status, 202, body)
+        return body
+
     def _watch(self, watch_id='ci', **over):
         data = {'id': watch_id, 'url': 'https://example.test/build',
                 'schedule': '*/5 * * * *', 'prompt_template': 'CI moved'}
@@ -363,11 +379,29 @@ class _ApiBase(unittest.TestCase):
             return self._req('POST', f'/api/triggers/page-watch-check/{watch_id}',
                              body={}, headers={'Authorization': f'Bearer {token}'})
 
-    def _runs(self, kind_path, trigger_id, query=''):
-        status, payload = self._req(
-            'GET', f'/api/{kind_path}/{trigger_id}/runs{query}')
-        self.assertEqual(status, 200, payload)
+    def _watch_fires(self, watch_id='ci'):
+        """A watch whose page changes between two scheduled checks: the first
+        check records the baseline, the second spawns. Returns the 202 body."""
+        cfg = self._watch(watch_id)
+        self._check_watch(watch_id, cfg['fire_token'])
+        status, body = self._check_watch(watch_id, cfg['fire_token'],
+                                         body='<p>now passing</p>')
+        self.assertEqual(status, 202, body)
+        return body
+
+    def _expect(self, want, method, path, **kw):
+        status, payload = self._req(method, path, **kw)
+        self.assertEqual(status, want, payload)
         return payload
+
+    def _press_test_button(self, webhook_id):
+        """The dashboard's Test button: bearer auth, no HMAC."""
+        return self._expect(202, 'POST', f'/api/webhooks/{webhook_id}/test',
+                            body={'payload': {'n': 1}})
+
+    def _runs(self, kind_path, trigger_id, query=''):
+        return self._expect(200, 'GET',
+                            f'/api/{kind_path}/{trigger_id}/runs{query}')
 
     def _only(self, kind_path, trigger_id):
         runs = self._runs(kind_path, trigger_id)['runs']
@@ -541,9 +575,7 @@ class WebhookLedgerTests(_ApiBase):
 
 class CronLedgerTests(_ApiBase):
     def test_a_scheduled_fire_records_its_task(self):
-        cfg = self._cron()
-        status, body = self._fire_cron('nightly', cfg['fire_token'])
-        self.assertEqual(status, 202, body)
+        body = self._cron_fires()
         run = self._only('crons', 'nightly')
         self.assertEqual(run['outcome'], 'spawned')
         self.assertEqual(run['task_id'], body['task_id'])
@@ -618,11 +650,7 @@ class PageWatchLedgerTests(_ApiBase):
         self.assertEqual(reasons, ['unchanged', 'baseline'])
 
     def test_a_change_records_the_task_it_spawned(self):
-        cfg = self._watch()
-        self._check_watch('ci', cfg['fire_token'])
-        status, body = self._check_watch('ci', cfg['fire_token'],
-                                         body='<p>now passing</p>')
-        self.assertEqual(status, 202, body)
+        body = self._watch_fires()
         run = self._runs('page-watches', 'ci')['runs'][0]
         self.assertEqual(run['outcome'], 'spawned')
         self.assertEqual(run['task_id'], body['task_id'])
@@ -655,6 +683,184 @@ class PageWatchLedgerTests(_ApiBase):
         run = self._runs('page-watches', 'ci')['runs'][0]
         self.assertTrue(run['manual'])
         self.assertNotIn('signature_verified', run)
+
+
+# ══ skip-permissions at the three fire sites (#769) ══════════════════════════
+
+class _OpenWebhookMixin:
+    def _open_webhook(self, webhook_id='open-hook'):
+        """A webhook with no hmac_secret. create_or_update auto-mints a secret,
+        so an open webhook can only be a hand-written or migrated config."""
+        path = os.path.join(server.WebhookManager.WEBHOOKS_DIR, f'{webhook_id}.json')
+        with open(path, 'w') as f:
+            json.dump({'id': webhook_id, 'prompt_template': 'Do it',
+                       'workdir': '/home/dev', 'interpolate_mode': 'attach',
+                       'provider': 'generic'}, f)
+
+
+class TriggerAutoApproveTests(_OpenWebhookMixin, _ApiBase):
+    """Which fires launch their CLI with skip-permissions (#769, #296).
+
+    Nobody watches a trigger's terminal. A Build launched without the flag runs
+    in the account's default permission mode, and when that mode is `auto` it
+    can stop on a prompt or dialog that nobody will answer (#762).
+    resolve_auto_approve has said "cron: and webhook: skip" since #296, but the
+    two fire handlers never asked it. These pin what each site passes; a
+    missing kwarg fails instead of quietly inheriting create_task's False."""
+
+    def _launched(self):
+        self.assertEqual(len(self.tasks.calls), 1, self.tasks.calls)
+        call = self.tasks.calls[0]
+        self.assertIn('auto_approve', call,
+                      "the fire site must decide auto_approve, not inherit "
+                      "create_task's default")
+        return call
+
+    def test_a_cron_fire_launches_with_skip_permissions(self):
+        self._cron_fires()
+        call = self._launched()
+        self.assertEqual(call['source'], 'cron:nightly')
+        self.assertIs(call['auto_approve'], True)
+
+    def test_a_signed_webhook_launches_with_skip_permissions(self):
+        for provider in ('generic', 'github'):
+            with self.subTest(provider=provider):
+                self.tasks.calls.clear()
+                self._webhook(f'hook-{provider}', provider=provider)
+                status, body = self._signed(f'hook-{provider}')
+                self.assertEqual(status, 202, body)
+                call = self._launched()
+                self.assertEqual(call['source'], f'webhook:hook-{provider}')
+                self.assertIs(call['auto_approve'], True)
+
+    def test_the_dashboard_test_button_launches_with_skip_permissions(self):
+        self._webhook()
+        self._press_test_button('gh-pr')
+        self.assertIs(self._launched()['auto_approve'], True)
+
+    def test_an_unsigned_webhook_skips_permissions_only_from_the_test_button(self):
+        """Anyone who can reach an open webhook's URL can fire it with any
+        payload. The reason cron: and webhook: may skip is that they fire on the
+        owner's schedule or from the owner's signed sender; an unsigned POST is
+        neither, so it keeps the CLI's prompts. The Test button is still the
+        owner's own authenticated session."""
+        self._open_webhook()
+        with mock.patch.dict(os.environ, {'KC_ALLOW_UNSIGNED_WEBHOOKS': '1'}):
+            status, body = self._req('POST', '/api/webhooks/open-hook',
+                                     body={'n': 1})
+        self.assertEqual(status, 202, body)
+        self._press_test_button('open-hook')
+        self.assertEqual(
+            [c.get('auto_approve', '<not passed>') for c in self.tasks.calls],
+            [False, True])
+
+    def test_a_page_watch_change_never_skips_permissions(self):
+        """A page-watch fires because a third-party page changed (#699)."""
+        self._watch_fires()
+        call = self._launched()
+        self.assertEqual(call['source'], 'page-watch:ci')
+        self.assertIs(call['auto_approve'], False)
+
+    def test_check_now_on_a_page_watch_never_skips_permissions(self):
+        self._watch()
+        for body, want in (('<p>seed</p>', 200), ('<p>moved</p>', 202)):
+            with mock.patch.object(safe_http, 'fetch',
+                                   lambda url, b=body, **kw: _page(b)):
+                status, resp = self._req('POST', '/api/page-watches/ci/check',
+                                         body={})
+            self.assertEqual(status, want, resp)
+        self.assertIs(self._launched()['auto_approve'], False)
+
+    def test_a_turned_away_fire_launches_nothing(self):
+        """The ledger side of each refusal is pinned above; this pins that none
+        of them reaches create_task, now that a launch skips permissions."""
+        self._webhook()
+        cron = self._cron()
+        self._cron('paused')
+        server.CronManager.set_suspended('paused', True)
+        paused_token = server.CronManager.get_cron(
+            'paused', include_secrets=True)['fire_token']
+        self._open_webhook()
+        cases = (
+            ('bad signature', lambda: self._req(
+                'POST', '/api/webhooks/gh-pr', body={'n': 1},
+                headers={'X-Hub-Signature-256': 'sha256=deadbeef'}), 404),
+            ('missing signature', lambda: self._req(
+                'POST', '/api/webhooks/gh-pr', body={'n': 1}), 404),
+            ('stale cron token', lambda: self._fire_cron('nightly', 'nope'), 404),
+            ('unknown cron', lambda: self._fire_cron('ghost', cron['fire_token']), 404),
+            ('suspended cron', lambda: self._fire_cron('paused', paused_token), 409),
+            ('unsigned, not allowed', lambda: self._req(
+                'POST', '/api/webhooks/open-hook', body={'n': 1}), 404),
+        )
+        with mock.patch.dict(os.environ, {'KC_ALLOW_UNSIGNED_WEBHOOKS': ''}):
+            for name, fire, want in cases:
+                with self.subTest(name):
+                    self.assertEqual(fire()[0], want)
+        self.assertEqual(self.tasks.calls, [])
+
+    def test_a_replayed_webhook_launches_once(self):
+        self._webhook()
+        self.assertEqual(self._signed('gh-pr', {'same': 'body'})[0], 202)
+        self.assertEqual(self._signed('gh-pr', {'same': 'body'})[0], 409)
+        self.assertEqual(len(self.tasks.calls), 1)
+
+
+class TriggerLaunchCommandTests(_ApiBase):
+    """The same three sites through the REAL create_task, down to the tmux
+    command line. The kwarg tests above stop at create_task's door; this proves
+    the decision reaches the CLI that actually starts (#769)."""
+
+    FAKE_CREATE_TASK = False
+
+    def setUp(self):
+        super().setUp()
+        isolate_provider_keys(self)
+        ctm = server.ClaudeTaskManager
+        for p in (
+            # This suite also runs outside `make`, so never write the real
+            # ~/.claude.json. What that call writes is covered in
+            # task_prompt_launch_test.
+            mock.patch.object(ctm, '_ensure_claude_trust', lambda *a, **k: False),
+            mock.patch.object(ctm, '_api_key_to_reject', lambda: None),
+            # Skip the `claude --help` probe, and don't cache its mocked answer.
+            mock.patch.object(ctm, '_CLAUDE_SESSION_ID_SUPPORTED', False),
+            # Pin the assistant: a workspace or project default must not
+            # change which skip flag is expected.
+            mock.patch.object(server, 'WORKSPACE_DEFAULT_ASSISTANT', 'claude'),
+            mock.patch.object(server.ProjectsManager, 'project_for_workdir',
+                              lambda workdir: ''),
+            mock.patch.object(server, '_DEVCONTAINER_AVAILABLE', False),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _launch_cmd(self):
+        """The shell command the one `tmux new-session` ran."""
+        launches = [c.args[0] for c in self.subprocess_run.call_args_list
+                    if c.args and list(c.args[0][:2]) == ['tmux', 'new-session']]
+        self.assertEqual(len(launches), 1, launches)
+        return launches[0][-1]
+
+    def test_cron_and_signed_webhook_fires_start_claude_with_skip_permissions(self):
+        cron = self._cron()
+        self._webhook()
+        for name, fire in (
+            ('cron', lambda: self._fire_cron('nightly', cron['fire_token'])),
+            ('webhook', lambda: self._signed('gh-pr')),
+        ):
+            with self.subTest(name):
+                self.subprocess_run.reset_mock()
+                status, body = fire()
+                self.assertEqual(status, 202, body)
+                self.assertRegex(self._launch_cmd(),
+                                 r'&& claude --dangerously-skip-permissions\b')
+
+    def test_a_page_watch_change_starts_claude_without_it(self):
+        self._watch_fires()
+        cmd = self._launch_cmd()
+        self.assertRegex(cmd, r'&& claude\b')
+        self.assertNotIn('--dangerously-skip-permissions', cmd)
 
 
 # ── AC 3: the read endpoints ────────────────────────────────────────────────
