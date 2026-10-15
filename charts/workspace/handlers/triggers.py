@@ -219,12 +219,19 @@ class TriggerRoutes:
     def _fire_webhook(self, cfg, payload, status=202, *,
                       signature_verified=None, manual=False):
         prompt = handlers.server.WebhookManager.render_prompt(cfg, payload)
+        source = f"webhook:{cfg['id']}"
+        # Unattended, so skip-permissions (#296, #769), but only for a caller
+        # that proved who it is: a verified HMAC or the owner's Test button.
+        # Anyone who can reach an unsigned webhook can fire it, so it prompts.
+        sender_proven = manual or signature_verified is True
         task = handlers.server.ClaudeTaskManager.create_task(
             prompt,
             workdir=cfg.get('workdir') or '/home/dev',
             response_url=cfg.get('response_url'),
             response_secret=cfg.get('response_secret'),
-            source=f"webhook:{cfg['id']}",
+            source=source,
+            auto_approve=handlers.server.ClaudeTaskManager.resolve_auto_approve(
+                source, None if sender_proven else False),
         )
 
         def _ledger(outcome, reason=None, **kw):
@@ -456,12 +463,17 @@ class TriggerRoutes:
             self.send_json({'error': 'cron is suspended'}, 409)
             return
         prompt = handlers.server.CronManager.render_prompt(cfg)
+        source = f"cron:{cfg['id']}"
         task = handlers.server.ClaudeTaskManager.create_task(
             prompt,
             workdir=cfg.get('workdir') or '/home/dev',
             response_url=cfg.get('response_url'),
             response_secret=cfg.get('response_secret'),
-            source=f"cron:{cfg['id']}",
+            source=source,
+            # The owner's schedule, authenticated by the fire_token above, and
+            # nobody watching: skip-permissions (#296, #769).
+            auto_approve=handlers.server.ClaudeTaskManager.resolve_auto_approve(
+                source),
         )
         if task.get('status') == 'rejected':
             _ledger('rejected', 'at_capacity', signature_verified=True,
