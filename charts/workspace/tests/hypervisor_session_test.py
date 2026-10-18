@@ -168,6 +168,31 @@ class BgWatcherNoticeTest(unittest.TestCase):
         self.a.parse(self.ctx, self._tool_line('Monitor', {}))
         self.assertEqual(self.ctx['_turn_bg_watchers'], ['Monitor'])
 
+    def test_background_agent_is_tracked(self):
+        # The Agent tool backgrounds BY DEFAULT (#780) — a call that omits
+        # run_in_background entirely is exactly the shape that died in the
+        # wild, so the absent key must count as background.
+        self.a.parse(self.ctx, self._tool_line(
+            'Agent', {'description': 'Fix bot AI stage awareness',
+                      'subagent_type': 'general-purpose',
+                      'isolation': 'worktree'}))
+        self.assertEqual(self.ctx['_turn_bg_watchers'],
+                         ['Background subagent: Fix bot AI stage awareness'])
+
+    def test_legacy_task_tool_name_is_tracked_too(self):
+        self.a.parse(self.ctx, self._tool_line(
+            'Task', {'description': 'review diff', 'run_in_background': True}))
+        self.assertEqual(self.ctx['_turn_bg_watchers'],
+                         ['Background subagent: review diff'])
+
+    def test_foreground_agent_is_not_tracked(self):
+        # Explicit run_in_background:false means the turn waits for the
+        # subagent — nothing crosses the boundary, nothing to mourn.
+        self.a.parse(self.ctx, self._tool_line(
+            'Agent', {'description': 'quick search',
+                      'run_in_background': False}))
+        self.assertNotIn('_turn_bg_watchers', self.ctx)
+
     def test_foreground_bash_is_not_tracked(self):
         self.a.parse(self.ctx, self._tool_line('Bash', {'command': 'ls'}))
         self.a.parse(self.ctx, self._tool_line(
@@ -394,6 +419,42 @@ class WaitGuardHookTest(unittest.TestCase):
                                  'tool_input': {'command': cmd}})
             self.assertEqual((rc, out), (0, ''), cmd)
 
+    def test_a_background_subagent_is_denied(self):
+        # The exact shape that died in the wild (#780): run_in_background
+        # omitted (the tool's default is background), worktree fan-out.
+        rc, out = self._run({'tool_name': 'Agent', 'tool_input': {
+            'description': 'Fix bot AI stage awareness',
+            'prompt': 'Work issue #15 …', 'subagent_type': 'general-purpose',
+            'isolation': 'worktree'}})
+        self.assertEqual(rc, 0)
+        d = json.loads(out)['hookSpecificOutput']
+        self.assertEqual(d['permissionDecision'], 'deny')
+        # The refusal must name BOTH alternatives — the same-turn foreground
+        # form and the cross-turn create_task+watch form — or the agent just
+        # finds the next way to lose the work.
+        self.assertIn('run_in_background: false', d['permissionDecisionReason'])
+        self.assertIn('create_task', d['permissionDecisionReason'])
+        self.assertIn('`watch`', d['permissionDecisionReason'])
+
+    def test_legacy_task_tool_name_is_denied_too(self):
+        rc, out = self._run({'tool_name': 'Task', 'tool_input': {
+            'description': 'review diff', 'run_in_background': True}})
+        self.assertEqual(json.loads(out)['hookSpecificOutput'][
+            'permissionDecision'], 'deny')
+
+    def test_a_foreground_subagent_is_allowed(self):
+        rc, out = self._run({'tool_name': 'Agent', 'tool_input': {
+            'description': 'quick search', 'prompt': 'find X',
+            'run_in_background': False}})
+        self.assertEqual((rc, out), (0, ''))
+
+    def test_monitor_is_denied(self):
+        rc, out = self._run({'tool_name': 'Monitor', 'tool_input': {
+            'condition': 'CI goes green'}})
+        d = json.loads(out)['hookSpecificOutput']
+        self.assertEqual(d['permissionDecision'], 'deny')
+        self.assertIn('`watch`', d['permissionDecisionReason'])
+
     def test_other_tools_are_not_inspected(self):
         rc, out = self._run({'tool_name': 'Read',
                              'tool_input': {'file_path': '/etc/hosts'}})
@@ -411,7 +472,7 @@ class WaitGuardHookTest(unittest.TestCase):
     def test_the_hook_is_registered_on_hypervisor_turns_only(self):
         settings = json.loads(hs._HYPERVISOR_SETTINGS)
         entry = settings['hooks']['PreToolUse'][0]
-        self.assertEqual(entry['matcher'], 'Bash')
+        self.assertEqual(entry['matcher'], 'Bash|Agent|Task|Monitor')
         self.assertIn('wait_guard.py', entry['hooks'][0]['command'])
         # Delivered on the chat adapter's argv, not written to the shared
         # ~/.claude/settings.json — a Build task runs in tmux and survives
@@ -439,6 +500,8 @@ class WaitGuardHookTest(unittest.TestCase):
         # The guard and the notice must never disagree about what counts.
         self.assertIs(hs._foreground_wait_reason,
                       wait_guard.foreground_wait_reason)
+        self.assertIs(hs._background_agent_reason,
+                      wait_guard.background_agent_reason)
 
 
 class ForegroundWaitPreambleTest(unittest.TestCase):
@@ -452,6 +515,18 @@ class ForegroundWaitPreambleTest(unittest.TestCase):
             self.assertIn('NEVER wait by blocking inside your turn', text, name)
             self.assertIn('--watch', text, name)
             self.assertIn('sleep', text, name)
+
+    def test_both_preambles_name_the_agent_tool_default(self):
+        # #780: the preambles warned only about Bash/Monitor, so the agent
+        # correctly concluded the Agent tool was a different thing and lost
+        # four subagents to the boundary. The warning must name the tool AND
+        # its background-by-default behaviour.
+        import server
+        for name, text in (('HYPERVISOR_PREAMBLE', server.HYPERVISOR_PREAMBLE),
+                           ('CTO_PREAMBLE', server.CTO_PREAMBLE)):
+            self.assertIn('Agent-tool subagents', text, name)
+            self.assertIn('BY DEFAULT', text, name)
+            self.assertIn('run_in_background:false', text, name)
 
     def test_run_in_background_is_not_a_licence_to_wait(self):
         # The old wording ("Only use run_in_background for work you will
