@@ -25,6 +25,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -202,6 +203,154 @@ class AppsManagerUnit(unittest.TestCase):
             self.assertFalse(ok)
         finally:
             server.AppsManager.parse_listen_ports = staticmethod(orig)
+
+
+class AppNamingTests(unittest.TestCase):
+    """An unpinned app is named after its project, not "port 3000".
+
+    /proc is faked with real symlinks — `fd/N -> socket:[inode]` and
+    `cwd -> <project dir>` are exactly what the kernel shows — so the lookup
+    runs unmodified against a tree the test controls.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='kc-appname-')
+        self.proc = os.path.join(self.tmpdir, 'proc')
+        self.home = os.path.join(self.tmpdir, 'home', 'dev')
+        os.makedirs(self.proc)
+        os.makedirs(self.home)
+        server.AppsManager._detected_names.clear()
+
+    def tearDown(self):
+        server.AppsManager._detected_names.clear()
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _process(self, pid, inode, cwd):
+        fd_dir = os.path.join(self.proc, str(pid), 'fd')
+        os.makedirs(fd_dir)
+        os.symlink('/dev/null', os.path.join(fd_dir, '0'))
+        os.symlink(f'socket:[{inode}]', os.path.join(fd_dir, '7'))
+        os.symlink(cwd, os.path.join(self.proc, str(pid), 'cwd'))
+
+    def _project(self, *parts, files=None):
+        path = os.path.join(self.home, *parts)
+        os.makedirs(path, exist_ok=True)
+        for name, body in (files or {}).items():
+            with open(os.path.join(path, name), 'w') as f:
+                f.write(body)
+        return path
+
+    def _detect(self, inode):
+        return server.AppsManager.detected_name(
+            inode, proc_root=self.proc, stop_at=self.home)
+
+    def test_names_the_app_from_its_package_json(self):
+        app = self._project('juice-shop', files={
+            'package.json': json.dumps({'name': 'juice-shop', 'version': '1'})})
+        self._process(4242, 777, app)
+        self.assertEqual(self._detect(777), 'juice-shop')
+
+    def test_a_dev_server_started_in_a_subfolder_belongs_to_the_project(self):
+        self._project('shop', files={
+            'package.json': json.dumps({'name': '@acme/shop'})})
+        web = self._project('shop', 'web', 'src')
+        self._process(4243, 778, web)
+        self.assertEqual(self._detect(778), '@acme/shop')
+
+    def test_reads_a_python_project_name(self):
+        app = self._project('api', files={
+            'pyproject.toml': '[project]\nname = "orders-api"\nversion = "0.1"\n'})
+        self._process(4244, 779, app)
+        self.assertEqual(self._detect(779), 'orders-api')
+
+    def test_falls_back_to_the_folder_name(self):
+        app = self._project('my-blog')
+        self._process(4245, 780, app)
+        self.assertEqual(self._detect(780), 'my-blog')
+
+    def test_a_folder_that_names_nothing_is_not_a_name(self):
+        # `python3 -m http.server` run from the home directory, or from a
+        # bare `src/`, must stay "port N" rather than become "dev" or "src".
+        self._process(4246, 781, self.home)
+        self._process(4247, 782, self._project('src'))
+        self.assertEqual(self._detect(781), '')
+        self.assertEqual(self._detect(782), '')
+
+    def test_never_reads_a_project_file_above_home(self):
+        with open(os.path.join(os.path.dirname(self.home), 'package.json'), 'w') as f:
+            f.write(json.dumps({'name': 'not-this-one'}))
+        self._process(4248, 783, self._project('src'))
+        self.assertEqual(self._detect(783), '')
+
+    def test_unknown_socket_and_unreadable_proc_give_no_name(self):
+        self.assertEqual(self._detect(999999), '')
+        self.assertEqual(server.AppsManager.detected_name(
+            1, proc_root=os.path.join(self.tmpdir, 'missing')), '')
+        self.assertEqual(self._detect(0), '')
+
+    def test_a_malformed_package_json_falls_through(self):
+        app = self._project('tool', files={'package.json': '{not json'})
+        self._process(4249, 784, app)
+        self.assertEqual(self._detect(784), 'tool')
+
+    def test_one_pass_over_proc_names_every_port(self):
+        # The Apps page refreshes on a timer, so a workspace running several
+        # services must not re-read every process's descriptors per port.
+        self._process(5001, 900, self._project('alpha', files={
+            'package.json': json.dumps({'name': 'alpha'})}))
+        self._process(5002, 901, self._project('beta'))
+        real = server.AppsManager.socket_owner_pids
+        calls = []
+
+        def counted(inodes, proc_root='/proc'):
+            calls.append(sorted(inodes))
+            return real(inodes, proc_root=proc_root)
+
+        with mock.patch.object(server.AppsManager, 'socket_owner_pids',
+                               staticmethod(counted)):
+            names = server.AppsManager.detected_names(
+                [900, 901, 0], proc_root=self.proc, stop_at=self.home)
+        self.assertEqual(names, {900: 'alpha', 901: 'beta', 0: ''})
+        self.assertEqual(calls, [[900, 901]])
+
+    def test_a_second_refresh_walks_proc_again_for_nothing(self):
+        self._process(5003, 902, self._project('gamma'))
+        kwargs = {'proc_root': self.proc, 'stop_at': self.home}
+        self.assertEqual(
+            server.AppsManager.detected_names([902], **kwargs), {902: 'gamma'})
+        with mock.patch.object(server.AppsManager, 'socket_owner_pids',
+                               staticmethod(lambda *a, **k: self.fail(
+                                   'cached inodes must not re-walk /proc'))):
+            self.assertEqual(
+                server.AppsManager.detected_names([902], **kwargs),
+                {902: 'gamma'})
+
+    def test_the_answer_is_cached_per_socket(self):
+        app = self._project('cached', files={
+            'package.json': json.dumps({'name': 'cached'})})
+        self._process(4250, 785, app)
+        self.assertEqual(self._detect(785), 'cached')
+        import shutil
+        shutil.rmtree(os.path.join(self.proc, '4250'))
+        self.assertEqual(self._detect(785), 'cached')
+
+    def test_list_apps_names_discovered_apps_and_keeps_pin_names(self):
+        listeners = staticmethod(lambda: [
+            {'port': 3000, 'addr': '0.0.0.0', 'inode': 11},
+            {'port': 5000, 'addr': '0.0.0.0', 'inode': 12},
+        ])
+        names = classmethod(
+            lambda cls, inodes: {i: {11: 'juice-shop'}.get(i, '') for i in inodes})
+        with mock.patch.object(server.AppsManager, 'PINS_PATH',
+                               os.path.join(self.tmpdir, 'apps.json')), \
+                mock.patch.object(server.AppsManager, 'parse_listen_ports', listeners), \
+                mock.patch.object(server.AppsManager, 'detected_names', names):
+            server.AppsManager.add_pin(port=5000, name='My API')
+            by_port = {r['port']: r for r in server.AppsManager.list_apps()}
+        self.assertEqual(by_port[3000]['name'], 'juice-shop')
+        self.assertFalse(by_port[3000]['pinned'])
+        self.assertEqual(by_port[5000]['name'], 'My API')
 
 
 # --- HTTP endpoint tests (auth bypassed) -------------------------------

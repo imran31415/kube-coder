@@ -12031,6 +12031,168 @@ class AppsManager:
             return True
         return False
 
+    # --- naming a discovered app ---
+    #
+    # An unpinned app used to be "port 3000" everywhere — the Apps list, the
+    # Security tab, every scan notification — although the workspace knows
+    # exactly which project is serving it. The listening socket's inode leads
+    # to the process holding it, the process to the folder it was started in,
+    # and the folder to the name the project already gives itself.
+
+    #: Folder names that say nothing about which app is running, so they are
+    #: never offered as its name.
+    _GENERIC_DIRS = frozenset({
+        'app', 'apps', 'src', 'server', 'web', 'frontend', 'backend', 'dist',
+        'build', 'public', 'tmp', 'dev', 'home', 'root', 'srv', 'workspace',
+        'workspaces', 'code', 'project', 'projects',
+    })
+    #: How far up from the process's folder to look for a project file — a
+    #: dev server started from `web/` or `src/` still belongs to the project
+    #: one or two levels above.
+    _NAME_SEARCH_DEPTH = 4
+    _PYPROJECT_NAME_RE = re.compile(
+        r'^\s*name\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+    #: inode → detected name. An inode belongs to one socket for that socket's
+    #: whole life, so an entry can never go stale: a restarted app listens on a
+    #: new socket with a new inode. Cleared wholesale when it grows, because
+    #: dead sockets' entries are never looked up again.
+    _detected_names = {}
+    _DETECTED_NAMES_MAX = 256
+
+    @staticmethod
+    def socket_owner_pids(inodes, proc_root='/proc'):
+        """`{inode: pid}` for whichever of `inodes` a process still holds open.
+
+        One pass over /proc for the whole set rather than one per inode: the
+        Apps page refreshes on a timer, and a workspace running a dozen
+        services would otherwise re-read every process's file descriptors
+        once per unnamed port. The pass stops as soon as every inode asked
+        about has an owner.
+
+        Only processes this server may inspect are visible — the same user's,
+        which is every app the user started in the workspace. Anything else
+        (another user's process, a pid that exits mid-walk) is skipped.
+        """
+        wanted = {f'socket:[{inode}]': inode for inode in inodes if inode}
+        found = {}
+        if not wanted:
+            return found
+        try:
+            pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+        except OSError:
+            return found
+        for pid in pids:
+            fd_dir = os.path.join(proc_root, pid, 'fd')
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    link = os.readlink(os.path.join(fd_dir, fd))
+                except OSError:
+                    continue
+                inode = wanted.get(link)
+                if inode is not None:
+                    found.setdefault(inode, int(pid))
+            if len(found) == len(wanted):
+                break
+        return found
+
+    @classmethod
+    def project_name(cls, path, stop_at=None):
+        """The name the project at or above `path` gives itself, or ''.
+
+        `package.json` "name", then `pyproject.toml` name, searched upward a
+        few levels but never past `stop_at` (the home directory) — a project
+        file there belongs to the user's whole home, not to this app. Failing
+        both, the folder's own name, unless it is one that names nothing
+        (`src`, `web`, the home directory itself).
+        """
+        if not path or not os.path.isabs(path):
+            return ''
+        stop_at = os.path.normpath(stop_at or os.path.expanduser('~'))
+        start = os.path.normpath(path)
+        current = start
+        for _ in range(cls._NAME_SEARCH_DEPTH):
+            if current in (stop_at, os.path.dirname(current)):
+                break
+            name = cls._name_from_project_files(current)
+            if name:
+                return name
+            current = os.path.dirname(current)
+        folder = os.path.basename(start)
+        if start == stop_at or folder.lower() in cls._GENERIC_DIRS:
+            return ''
+        return folder if cls._NAME_RE.match(folder) else ''
+
+    #: Both project files are read with a cap rather than whole: this runs on
+    #: a page refresh, against files nobody validated, and a name that is not
+    #: in the first chunk of either format is not worth a large read.
+    _PROJECT_FILE_MAX = 256 * 1024
+
+    @classmethod
+    def _name_from_project_files(cls, folder):
+        try:
+            with open(os.path.join(folder, 'package.json'), encoding='utf-8') as f:
+                data = json.loads(f.read(cls._PROJECT_FILE_MAX))
+            name = data.get('name') if isinstance(data, dict) else None
+            if isinstance(name, str) and cls._NAME_RE.match(name.strip()):
+                return name.strip()
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(os.path.join(folder, 'pyproject.toml'), encoding='utf-8') as f:
+                m = cls._PYPROJECT_NAME_RE.search(f.read(cls._PROJECT_FILE_MAX))
+            if m and cls._NAME_RE.match(m.group(1).strip()):
+                return m.group(1).strip()
+        except OSError:
+            pass
+        return ''
+
+    @classmethod
+    def detected_names(cls, inodes, proc_root='/proc', stop_at=None):
+        """`{inode: name}` for every inode asked about — '' where none was found.
+
+        Never raises: a name is a nicety, and the list has to render without
+        one. A miss is cached like a hit, so a port whose name cannot be
+        worked out does not re-walk /proc on every refresh.
+        """
+        out = {}
+        unknown = []
+        for inode in inodes:
+            if not inode:
+                out[inode] = ''
+            elif inode in cls._detected_names:
+                out[inode] = cls._detected_names[inode]
+            else:
+                unknown.append(inode)
+        if not unknown:
+            return out
+        owners = cls.socket_owner_pids(unknown, proc_root=proc_root)
+        for inode in unknown:
+            name = ''
+            pid = owners.get(inode)
+            if pid:
+                try:
+                    cwd = os.readlink(os.path.join(proc_root, str(pid), 'cwd'))
+                    name = cls.project_name(cwd, stop_at=stop_at)
+                except OSError:
+                    name = ''
+            if len(cls._detected_names) >= cls._DETECTED_NAMES_MAX:
+                cls._detected_names.clear()
+            cls._detected_names[inode] = name
+            out[inode] = name
+        return out
+
+    @classmethod
+    def detected_name(cls, inode, proc_root='/proc', stop_at=None):
+        """A name for the app listening on socket `inode`, or ''."""
+        names = cls.detected_names([inode], proc_root=proc_root,
+                                   stop_at=stop_at)
+        return names.get(inode, '')
+
     # --- pin persistence ---
 
     @staticmethod
@@ -12152,11 +12314,17 @@ class AppsManager:
                 'strip_prefix': bool(pin.get('strip_prefix')),
                 'addr': listeners.get(port, {}).get('addr', ''),
             })
-        for port in sorted(listeners.keys()):
-            if port in seen or port in cls.INTERNAL_PORTS:
-                continue
+        # A pin's name is the user's choice and always wins; an unpinned app
+        # gets the name its own project gives it, all of them resolved in one
+        # pass over /proc rather than one per port.
+        discovered = [p for p in sorted(listeners.keys())
+                      if p not in seen and p not in cls.INTERNAL_PORTS]
+        names = cls.detected_names(
+            [listeners[p].get('inode') for p in discovered])
+        for port in discovered:
             rows.append({
-                'port': port, 'name': '',
+                'port': port,
+                'name': names.get(listeners[port].get('inode'), ''),
                 'pinned': False, 'status': 'running',
                 'strip_prefix': False,
                 'addr': listeners[port].get('addr', ''),
