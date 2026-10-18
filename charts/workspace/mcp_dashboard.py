@@ -1133,7 +1133,8 @@ TOOLS: Dict[str, Any] = {
         'Arm a CROSS-TURN watcher owned by the workspace runner: it keeps '
         'polling after your turn ends and posts the outcome into this chat as '
         'a new message (so you get a real notification — no re-polling, and '
-        'unlike Bash run_in_background it survives the turn boundary). Kinds: '
+        'unlike Bash run_in_background, Monitor, or a background Agent '
+        'subagent it survives the turn boundary). Kinds: '
         "'task' — target is a task_id (from create_task); fires when the task "
         "completes, errors, is killed, or goes waiting-for-input. 'command' — "
         "target is a shell command; fires when it exits 0. 'file' — target is "

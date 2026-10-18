@@ -184,18 +184,21 @@ except ValueError:
 # token from $HOME and now resolves it from the workspace home directly. That
 # difference is why this path worked while board workers — which never forced
 # HOME — failed on every board tool (#633).
-# PreToolUse guard (#747). Passed inline via --settings so it applies to CHAT
-# turns only — the user's terminal `claude`, dispatched Build tasks and
+# PreToolUse guard (#747, #780). Passed inline via --settings so it applies to
+# CHAT turns only — the user's terminal `claude`, dispatched Build tasks and
 # sub-agents all keep their own settings and are unaffected. Blocking a wait is
 # only correct where a turn boundary exists to lose it; a Build runs in tmux
-# and survives, so waiting there is legitimate.
+# and survives, so waiting (or backgrounding a subagent) there is legitimate.
 #
-# Registered for Bash alone: it is the only tool that can express "sit here for
-# ten minutes". wait_guard fails open on every error path, so a broken guard
-# degrades to today's behaviour rather than to a chat that cannot run commands.
+# Registered for the three tools that can lose work to the boundary: Bash
+# (foreground blocking waits, #747), Agent/Task (background subagents die with
+# the turn's process, #780 — background is that tool's DEFAULT) and Monitor
+# (same death as #378, now denied at arm time). wait_guard fails open on every
+# error path, so a broken guard degrades to today's behaviour rather than to a
+# chat that cannot run commands.
 _HYPERVISOR_SETTINGS = json.dumps({'hooks': {
     'PreToolUse': [{
-        'matcher': 'Bash',
+        'matcher': 'Bash|Agent|Task|Monitor',
         'hooks': [{'type': 'command',
                    'command': 'python3 /tmp/browser/wait_guard.py'}],
     }],
@@ -328,11 +331,15 @@ class Adapter:
 
 
 # Background watchers (issue #378): each Hypervisor turn is its OWN `claude -p`
-# process, so a `Bash run_in_background` poll loop or a `Monitor` armed mid-turn
+# process, so a `Bash run_in_background` poll loop, a `Monitor`, or a background
+# `Agent` subagent (#780 — background is that tool's default) armed mid-turn
 # dies (or is orphaned untracked) the moment the turn ends — the next turn's
 # fresh process resumes the transcript but not the background-task registry, and
 # the agent gets only a misleading "no completion record / may have been
-# stopped" ghost notification. We can't keep those watchers alive, but we can be
+# stopped" ghost notification. The wait_guard PreToolUse hook denies the
+# Agent/Monitor shapes before they run; this tracker is the fail-open BACKSTOP
+# (and still the primary path for Bash backgrounds, which are legitimate for
+# same-turn collection). We can't keep lost watchers alive, but we can be
 # truthful about them: track arms during the turn, persist the lost ones in the
 # adapter ctx at turn end, and open the NEXT turn with a system-prompt notice
 # telling the agent exactly what died and how to wait across turns instead.
@@ -345,6 +352,9 @@ def _describe_bg_watcher(name: str, tool_input: Any) -> str:
     if name == 'Bash':
         what = d.get('description') or d.get('command') or ''
         label = 'Bash background command'
+    elif name in wait_guard.AGENT_TOOLS:
+        what = d.get('description') or d.get('prompt') or ''
+        label = 'Background subagent'
     else:
         what = d.get('description') or d.get('command') or d.get('condition') or ''
         label = name
@@ -363,7 +373,10 @@ def _track_bg_watchers(ctx: Dict[str, Any],
         tool = e.get('tool') or {}
         name = tool.get('name') or ''
         d = tool.get('input') if isinstance(tool.get('input'), dict) else {}
-        if (name == 'Bash' and d.get('run_in_background')) or name == 'Monitor':
+        if ((name == 'Bash' and d.get('run_in_background'))
+                or name == 'Monitor'
+                or (name in wait_guard.AGENT_TOOLS
+                    and wait_guard.background_agent_reason(d))):
             ctx.setdefault('_turn_bg_watchers', []).append(
                 _describe_bg_watcher(name, d))
 
@@ -376,14 +389,17 @@ def _lost_watcher_note(lost: List[str]) -> str:
     return (
         '[Hypervisor turn-boundary notice] Background watchers you armed last '
         'turn did NOT survive it — each Hypervisor turn runs in a fresh '
-        'headless CLI process, so Bash run_in_background commands and Monitors '
-        'die when the turn ends. Any "no completion record / may have been '
-        'stopped" task notification about them means exactly that; the user '
-        f'did not stop anything. Lost: {listing}. If you were waiting on a '
-        'condition, re-check it directly now. To wait across turns, arm a '
-        'runner-owned watcher with the dashboard `watch` tool (it polls after '
-        'your turn ends and posts the outcome into this chat), or use '
-        'create_task (tmux-backed, survives turns).'
+        'headless CLI process, so Bash run_in_background commands, Monitors '
+        'and background Agent subagents die when the turn ends. Any "no '
+        'completion record / may have been stopped" task notification about '
+        'them means exactly that; the user did not stop anything. '
+        f'Lost: {listing}. If you were waiting on a condition, re-check it '
+        'directly now. A lost subagent may have left real partial work on '
+        'disk (edited files, worktree branches) — check before redoing it '
+        'from scratch, and do NOT report its task as finished. To wait across '
+        'turns, arm a runner-owned watcher with the dashboard `watch` tool '
+        '(it polls after your turn ends and posts the outcome into this '
+        'chat), or use create_task (tmux-backed, survives turns).'
     )
 
 
@@ -403,6 +419,7 @@ _FG_WAIT_SHOWN = 5
 # calls and the notice that reports them can never disagree about what counts.
 _FG_WAIT_PATTERNS = wait_guard.FG_WAIT_PATTERNS   # re-exported for tests
 _foreground_wait_reason = wait_guard.foreground_wait_reason
+_background_agent_reason = wait_guard.background_agent_reason
 
 
 def _describe_fg_wait(reason: str, tool_input: Any) -> str:
@@ -642,7 +659,8 @@ class ClaudeAdapter(Adapter):
             # ONLY set for this run, overriding ~/.claude.json.
             '--mcp-config', _HYPERVISOR_MCP_CONFIG,
             '--strict-mcp-config',
-            # Denies foreground blocking waits before they run (#747).
+            # Denies foreground blocking waits (#747) and background
+            # subagents/Monitors that would die at the turn boundary (#780).
             '--settings', _HYPERVISOR_SETTINGS,
         ]
         sid = ctx.get('claude_session_id')
