@@ -22,6 +22,14 @@ export function isLiveScan(scan: { status: string }): boolean {
   return scan.status === 'running';
 }
 
+/**
+ * What the scan is OF: the app's name, else its port. Never the address the
+ * scanner reached it on — an internal container address the user cannot open.
+ */
+export function scanTitle(scan: { target: { name: string; port: number } }): string {
+  return scan.target.name || `Port ${scan.target.port}`;
+}
+
 /** Sort key: worst first, unknown severity last but never hidden. */
 export function severityRank(finding: Finding): number {
   const sev = (finding.severity || '').toLowerCase();

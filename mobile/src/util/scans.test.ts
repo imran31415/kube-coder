@@ -11,6 +11,7 @@ import {
   sortFindings,
   spendLabel,
   parseBudget,
+  scanTitle,
 } from './scans';
 import type { Finding, ScanSummary } from '../api/types';
 
@@ -133,5 +134,13 @@ describe('parseBudget', () => {
   it('treats only an empty field as a deliberate no-limit', () => {
     expect(parseBudget('')).toBeNull();
     expect(parseBudget('   ')).toBeNull();
+  });
+});
+
+describe('scanTitle', () => {
+  it('names the app, falling back to the port, never the address', () => {
+    expect(scanTitle(scan())).toBe('shop');
+    const unnamed = scan({ target: { port: 3000, name: '', url: 'http://172.17.0.1:3000' } });
+    expect(scanTitle(unnamed)).toBe('Port 3000');
   });
 });
