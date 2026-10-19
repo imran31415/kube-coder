@@ -1,0 +1,50 @@
+{{- if .Values.keeper.enabled }}
+# The keeper's whole API surface: read ws-<user>, and write its scale. Pinned by
+# resourceNames, so the token can't touch any other Deployment — not even its
+# own — and the scale subresource can change replicas but never the pod
+# template, so a compromised keeper can stop or start the workspace but not
+# run code in it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+rules:
+# get: replicas, readiness, and managedFields — who owns spec.replicas is how
+# the keeper tells a workspace it put to sleep from one an admin stopped.
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  resourceNames: ["ws-{{ .Values.user.name }}"]
+  verbs: ["get"]
+# patch: the server-side apply of spec.replicas (wake and sleep).
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  resourceNames: ["ws-{{ .Values.user.name }}"]
+  verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keeper-{{ .Values.user.name }}
+subjects:
+- kind: ServiceAccount
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+{{- end }}

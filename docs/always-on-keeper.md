@@ -3,13 +3,14 @@
 Design note for **issue #728** ("always-on keeper — tiny Go/Rust server for
 webhooks + crons so idle workspaces can sleep").
 
-**Status: nothing in this document is enabled.** No keeper exists and no
-workspace can sleep. Two slices of the proposal *are* implemented: the
-workspace-side idle contract, `GET /api/keeper/idle` (§4.1) — because it is the
-same whichever way the open questions in §3 are answered, and because getting it
-wrong is what kills somebody's running agent — and the chart's `keeper:` values
-block with the `replicas` ownership change (§2.2, step 2), all defaulting off.
-The rest is written down here rather than built, for the reasons in §3 and §6.
+**Status: built through step 3, all off by default.** Implemented: the
+workspace-side idle contract, `GET /api/keeper/idle` (§4.1, step 1); the chart's
+`keeper:` values block with the `replicas` ownership change (§2.2, step 2); and
+the keeper itself — a page that also wakes a workspace it put to sleep, when a
+logged-in user visits (§4.3, step 3). Nothing puts a workspace to sleep on its
+own yet: until step 5's idle loop, that is an operator's `keeper sleep`. Webhook
+and cron wakes (step 4) and the idle loop (step 5) are written down here rather
+than built.
 
 This page is not in `docs/_manifest.json` (the in-app docs nav): there is no
 user-facing behaviour to document yet. It belongs there when sleep ships.
@@ -26,7 +27,7 @@ proposal is aimed at the right seams.
 |---|---|---|
 | Webhooks land in `server.py`, ingress-routed straight at `ws-<user>:6080` | true | `WebhookManager` — `charts/workspace/server.py:6834`; backend in `charts/workspace/templates/ingress-webhooks.yaml:44-51` |
 | Cron and page-watch fires are a CronJob `curl` at `WORKSPACE_INTERNAL_URL` | true | the generated command — `charts/workspace/server.py:10556`; `CronManager:10136`, `PageWatchManager:10588` |
-| `holding-<user>` is always up, its own Deployment, and is the ingress custom-error backend | true | `charts/workspace/templates/holding-deployment.yaml`; `ingress.yaml:30-31` and `ingress-oauth2.yaml:23-24` (`custom-http-errors` + `default-backend`) |
+| `holding-<user>` is always up, its own Deployment, and is the ingress custom-error backend | true | `charts/workspace/templates/holding-deployment.yaml`; `ingress.yaml:35-36` and `ingress-oauth2.yaml:28-29` (`custom-http-errors` + `default-backend`; with `keeper.enabled` the keeper takes this role, §4.3) |
 | `ingress-claude-api.yaml` (the bearer/mobile path) has **no** custom-error backend | true | no `custom-http-errors` or `default-backend` anywhere in that file — a scaled-to-0 workspace really does give the phone a raw nginx 503 |
 | A phone user cannot wake a stopped workspace without an admin token | true | `start`/`stop` is `check_admin()`-gated — `charts/workspace-controller/controller.py:2709-2731` |
 | Auth still runs in front of a sleeping workspace, so the waking page is never shown pre-auth | true, and load-bearing | oauth2-proxy is its **own** Deployment (`charts/workspace/templates/oauth2-proxy.yaml:14`), so it survives the workspace going to 0 |
@@ -48,6 +49,8 @@ And one against:
   `Cargo.toml`. Everything is Python, Helm and TypeScript. Q1 is therefore not
   a language preference; it adds a third toolchain, a third test runner in
   `ci.yml`, and a second image to build and push in `release.yml`. See §3.1.
+  (Step 3 paid that cost once, as small as it goes: `keeper/` is Go with the
+  standard library only — no `go.sum`, no client-go.)
 
 ---
 
@@ -81,6 +84,14 @@ it points the wrong way.
 Either a `ConfigMap` the keeper owns (created by the keeper, not the chart, so
 Helm never reconciles it) or a record on the keeper's own volume. Whatever
 Q3 decides for the event queue can hold this too.
+
+**What step 3 did instead:** neither — the API server already keeps the
+record. With sleep on, the chart does not declare `replicas` (§2.2), so the
+Deployment's `managedFields` say who owns that field, and the keeper writes it
+by server-side apply under its own field manager. "Asleep" is "at 0, and the
+keeper is the field's only owner"; an admin's Stop takes the field over. It
+survives Helm 3 and Helm 4 upgrades and keeper restarts, and needs no storage.
+§4.3 has the rule, the measurements, and its one gap.
 
 ### 2.2 Nobody owns `replicas`
 
@@ -289,9 +300,210 @@ would otherwise pin the workspace awake for ever.
   Unknown ID ⇒ 404 and no wake.
 - `POST /api/keeper/token-hash` (workspace → keeper): SHA-256 of the API token,
   so the keeper can reject a bad bearer without holding the credential.
-- `GET /api/keeper/status`, `POST /api/keeper/wake` (keeper, for the app).
+- `GET /api/keeper/status`, `POST /api/keeper/wake` **for the app**, on the
+  bearer ingress (`ingress-claude-api.yaml`), checked against the token hash
+  above, plus the keeper as that ingress's custom-error backend answering the
+  `workspace_sleeping` JSON the app already understands (#778). The browser's
+  versions of these two exist (§4.3) — behind basic auth or oauth2-proxy, and in
+  oauth2 mode under `/oauth`, so they leave `/api/keeper/*` free for this.
 - Re-applying existing CronJobs at boot when `WORKSPACE_INTERNAL_URL` changed,
   so old manifests pick up the keeper's address.
+
+### 4.3 The keeper — implemented (step 3)
+
+`keeper.enabled=true` (with `keeper.image`) runs `keeper-<user>`: one static Go
+binary on distroless, standard library only — a 4 MB image that idles at about
+2 MiB. It **replaces `holding-<user>`** as the workspace ingresses'
+custom-error backend and serves the same page, so a Recreate restart still
+shows "restarting…". What it adds is what the page does when the workspace is
+asleep:
+
+```
+browser ──> ingress ws-<user> / ws-<user>-oauth2    (dashboard; auth as today)
+              │ workspace has no Ready pod (502/503/504)
+              ▼
+            Service keeper-<user>        ──> :8080  the page, every path, 503.
+                                                    Acts on nothing.
+page JS ──> ingress keeper-<user>        (basic auth, or oauth2-proxy)
+              │ /api/keeper/status, /api/keeper/wake
+              │ (oauth2 mode: /oauth/api/keeper/…)
+              ▼
+            Service keeper-<user>-wake   ──> :8081  status, and wake (0 -> 1)
+```
+
+**Why two Services.** In oauth2 mode the root ingress carries no auth, and the
+keeper is its default backend, so `:8080` must never act whatever it is sent.
+The wake listener sits behind a Service that only the authenticated keeper
+ingress routes to; the default-backend Service does not expose that port at
+all, so which port ingress-nginx picks for a default backend never matters
+(it is not the first one — measured).
+
+**Wake guards**, each pinned by a test:
+
+- the keeper ingress's auth — a signed-out oauth2 visitor gets the page with a
+  "Sign in" link, and every keeper call 302s to sign-in;
+- `POST` with `X-Keeper-Wake: 1` — a header a cross-site form can't send, and a
+  cross-site fetch can't send without a CORS preflight the keeper never grants;
+- only a page someone is looking at (`visibilityState === 'visible'`) asks — a
+  tab restored in the background does not;
+- never inside another site's frame: every keeper response carries
+  `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`, so a page a
+  signed-in user happens to visit can't show (and so wake) their workspace in
+  an iframe. Same-origin frames stay allowed, since the ingress serves this page
+  in place of the dashboard's own framed tools while the workspace is away;
+- `Sec-Fetch-Site`, where the browser sends it, must be `same-origin` — a
+  sibling workspace's subdomain is same-*site* but not same-origin;
+- exact paths, checked **by the keeper**: on a host where any other Ingress
+  uses a regex or `rewrite-target` (both auth modes), ingress-nginx renders the
+  keeper ingress's `Exact` paths as case-insensitive *prefix* regexes, so
+  `/api/keeper/wake/` and `/API/KEEPER/WAKE` reach the keeper (still through
+  auth) and are 404'd there.
+
+**Asleep vs stopped — the rule.** The keeper wakes only a workspace it put to
+sleep itself; one an admin stopped stays stopped. "Asleep" is: `spec.replicas`
+is 0 **and** the Deployment's `managedFields` name `kube-coder-keeper` as the
+only owner of `spec.replicas`. The keeper writes replicas by server-side apply
+on the `/scale` subresource (`force`, with the `resourceVersion` it decided on
+as a precondition, so a Stop that lands in between wins with a 409 and the
+decision is re-made). Measured on Kubernetes 1.35.1:
+
+| Write to `spec.replicas` | Owner afterwards |
+|---|---|
+| keeper: *merge patch* on `/scale` (the obvious way) | **nobody** — an update via `/scale` that sets 0 records no owner, so it can't tell sleep from Stop |
+| keeper: *apply* on `/scale` | `kube-coder-keeper` (Apply, scale) |
+| deployment-controller status writes | unchanged |
+| `helm upgrade` while asleep, pod template changed — Helm 3.21.4 and 4.2.3 | unchanged (the chart omits `replicas`) |
+| admin `kubectl scale` 1 -> 0 or 0 -> 1 (the controller's Stop/Start) | keeper loses it |
+| admin `kubectl scale` 0 -> 0 | unchanged (see the gap below) |
+
+Neither a keeper-side copy of the `resourceVersion` nor of the `generation`
+could carry this: status writes move the first seconds after every scale, and a
+release bump moves the second, so both would mark every sleeping workspace
+"stopped" — silently, and in the direction that never wakes it.
+
+**RBAC.** `keeper-<user>`'s Role is `get` on `deployments` and `patch` on
+`deployments/scale`, both `resourceNames: [ws-<user>]`. The scale subresource
+can change replicas but not the pod template, so a compromised keeper can stop
+or start its workspace but not run code in it. A NetworkPolicy admits only the
+ingress-nginx namespace, on 8080/8081.
+
+**Putting it to sleep** is by hand until step 5:
+
+```
+kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep    # -> asleep
+kubectl -n <ns> exec deploy/keeper-<user> -- /keeper status   # awake | starting | asleep | stopped
+```
+
+`sleep` is exactly as forceful as the controller's Stop — running agents are
+killed — and it refuses two things: a workspace an admin stopped (turning that
+into "asleep" would let the next visit undo the Stop), and running at all
+unless `keeper.sleep.enabled`, because otherwise the chart still sets
+`replicas` and the next upgrade wakes it.
+
+**Known gap.** A Stop on a workspace that is *already asleep* is 0 -> 0, which
+changes nothing, so the keeper still owns the field and the next visit wakes
+it. The controller cannot do this — it offers Stop only on a running
+workspace — so only a hand-typed `kubectl scale --replicas=0` can. Step 5's
+controller sleeping-vs-stopped view is the place to close it.
+
+#### Running it
+
+**Turning it on** — the workspace must use `ingress.auth.type` `basic` or
+`oauth2` (the chart refuses `none`: the keeper wakes for anyone who passes the
+ingress auth):
+
+```yaml
+keeper:
+  enabled: true
+  image: ghcr.io/imran31415/kube-coder/keeper:<version>@sha256:<digest>
+  sleep:
+    enabled: true   # only needed to put it to sleep; see below
+```
+
+The upgrade swaps `holding-<user>` for `keeper-<user>` as the ingresses'
+default backend; nothing else about the workspace changes.
+
+**Checking it** — the keeper's first log lines say whether it can do its job:
+
+```
+$ kubectl -n <ns> logs deploy/keeper-<user>
+keeper 1.72.0: looking after ws-<user>/ws-<user>; page :8080, wake :8081
+startup check: ws-<user>/ws-<user> is awake
+```
+
+Every wake, and every wake refused because an admin stopped the workspace, is
+logged with who asked — the signed-in user in oauth2 mode (from the header the
+keeper ingress sets from oauth2-proxy's answer, never one a client sent) and
+the client address:
+
+```
+wake: ws-<user>/ws-<user> scaled 0 -> 1 for user=alice client=203.0.113.9
+wake: ws-<user>/ws-<user> is stopped by an admin; not woken for user=alice client=203.0.113.9
+```
+
+**When something is wrong:**
+
+| What you see | Why | What to do |
+|---|---|---|
+| `startup check: cannot read …: 403` in the log; status and wake answer 502 | the Role or RoleBinding `keeper-<user>` is missing or edited | re-run the upgrade; `kubectl -n <ns> auth can-i get deployment/ws-<user> --as system:serviceaccount:<ns>:keeper-<user>` |
+| `startup check: cannot read …: dial tcp … i/o timeout` | something blocks the keeper pod's egress to the API server (a cluster-wide default-deny egress policy, say) | allow egress from `app: keeper-<user>` to the API server — the chart sets no egress policy for the keeper |
+| the page says "Your workspace is stopped" | `spec.replicas` is 0 and the keeper isn't its only owner: an admin stopped it | Start it from the controller. To see the owners: `kubectl -n <ns> get deploy ws-<user> --show-managed-fields -o json` and look for `f:replicas` |
+| a sleeping workspace woke with nobody visiting | an upgrade or GitOps sync with `keeper.sleep.enabled=false` declares `replicas: 1` again | keep `keeper.sleep.enabled=true` in every values file that deploys this workspace |
+| `keeper sleep` says `keeper.sleep.enabled is off` | without it the chart still sets `replicas`, so the next upgrade would wake it | set `keeper.sleep.enabled=true` |
+| the page says "Your workspace isn't running" with a "Sign in" link | the browser isn't signed in to this workspace (oauth2-proxy answered the keeper call with a sign-in redirect) | sign in; a visit after that wakes it |
+
+**Turning it off** — wake the workspace first (visit it, or Start it), then
+upgrade with `keeper.enabled=false` and `keeper.sleep.enabled=false` (the chart
+refuses sleep without a keeper, since nothing would wake the workspace). The
+chart declares `replicas: 1` again, `holding-<user>` comes back, and
+`keeper-<user>` and its RBAC are removed. Waking it first matters for a release
+that Helm 4 manages by server-side apply (one it installed; the controller's
+provisioner runs Helm 3, which just wakes the workspace): while asleep, the
+keeper owns `spec.replicas` at 0, and Helm applying `replicas: 1` over it is a
+field conflict — `conflict with "kube-coder-keeper" with subresource "scale":
+.spec.replicas` — that fails the upgrade. Awake, both agree on 1, so there is
+nothing to conflict over. If it already failed: wake it, and run the upgrade
+again. (Measured: Helm 4.2.3 server-side install, sleep, upgrade while asleep
+→ still asleep; turn sleep off while asleep → that conflict; wake, then turn it
+off → deployed. Helm 3.21.4, same steps → no conflict, replicas back to 1.)
+
+**Not in step 3:** the idle loop and its rate limit (step 5), webhook and cron
+wakes and any queueing (step 4), and the phone — its `/api/keeper/wake` still
+reaches the bare bearer ingress and gets the plain 503 it falls back to the
+controller on, as before.
+
+**Verified on minikube** (Kubernetes 1.35.1, Calico, ingress-nginx, the real
+chart and image; `keeper.sleep.enabled=true`):
+
+- basic auth, 64 checks: the RBAC above with the keeper's own token (and
+  `can-i`); sleep → visit → Ready in about a minute → the page hands back to the
+  live workspace; every unauthenticated, header-less, `GET`, encoded, suffixed,
+  cross-site (`Sec-Fetch-Site`) and default-backend variant refused with nothing
+  woken; the frame and content-type headers on the page and on the JSON,
+  through the ingress; the startup check and the wake line in the log, with no
+  user in basic mode; an admin Stop stays stopped; Helm 3 and Helm 4 upgrades
+  while asleep leave it asleep and wakeable; a restarted keeper still knows;
+  the NetworkPolicy blocks the workspace pod and another namespace;
+  `kubectl top` 2 MiB.
+- a browser (Chromium, 360 px and 1280 px), 13 checks: a visible tab wakes it
+  with one `POST`, a hidden tab sends none, a stopped workspace says so and
+  starts nothing.
+- clickjacking: a page on another origin frames the workspace while the browser
+  holds its basic-auth credentials. With this keeper Chromium refuses to render
+  the frame and nothing is called. The same test against a build without the
+  frame headers renders the page and wakes the workspace, so the check can
+  fail.
+- oauth2, signed out, 13 checks: the root page shows "Sign in" and can't be
+  framed, every keeper call 302s, a forged identity header does not pass,
+  nothing wakes, and the phone's bearer path still answers the plain 503. The
+  `/oauth/api/keeper/*` routes were checked in the generated nginx config to go
+  to the wake Service ahead of the dashboard's `/oauth/(api/.*)`.
+- oauth2 in a browser, 14 checks: signed out, "Sign in" and no keeper call
+  answered; signed in through real GitHub and oauth2-proxy, the visit wakes it
+  with one `POST` and hands over to the live workspace at `/oauth/`.
+  The wake carried a forged `X-Auth-Request-User: mallory`, and the log named
+  the real GitHub user: the keeper ingress overwrites that header from
+  oauth2-proxy's answer.
 
 ---
 
@@ -304,10 +516,10 @@ the two PRs that carry real risk come after the cheap ones.
 |---|---|---|
 | 1 | **The idle contract** — `keeper_idle.py`, `GET /api/keeper/idle`, tests. No keeper, no behaviour change. | — (done) |
 | 2 | **Decide §2.2 and §3.1.** Land the `replicas` ownership change and the chart's `keeper:` values block with everything defaulting off, so PR 3 has somewhere to plug in. `keeper.sleep.idleMinutes` → `KC_KEEPER_IDLE_MINUTES`. | — (done) |
-| 3 | **The keeper itself** — proxy, wake, on-disk queue, RBAC, Deployment, image, CI job. `keeper.enabled=false` by default; `enabled=false` must render byte-identical to today. | 2 |
-| 4 | **Trigger-ID and token-hash push** from `server.py`, CronJob re-apply on URL change. Wakes now work for webhooks and crons. | 3 |
-| 5 | **Sleep** — the idle loop, the rate limiter, `sleep.enabled=false` by default, the keeper-owned sleep record from §2.1, controller sleeping-vs-stopped. | 4 |
-| 6 | **Mobile** — `workspaceState`, `WakeBanner`, the sleeping-503 JSON in `client.ts`, approval-queue flush, push-tap deferral, demo mode. Independent of 5's default. | 3 (needs `status`/`wake`) |
+| 3 | **The keeper itself** — replaces `holding-<user>`, a logged-in visit wakes a workspace it put to sleep, `keeper sleep`, RBAC, Deployment, image, CI job, release image (§4.3). No queue, no proxying, no idle loop. `keeper.enabled=false` renders byte-identical to before. | 2 (done) |
+| 4 | **Trigger-ID and token-hash push** from `server.py`, CronJob re-apply on URL change; the phone's `status`/`wake` on the bearer ingress and the `workspace_sleeping` JSON (§4.2). Wakes now work for webhooks, crons and the app. | 3 |
+| 5 | **Sleep** — the idle loop, the rate limiter, `sleep.enabled=false` by default, controller sleeping-vs-stopped (which also closes §4.3's 0 -> 0 gap). The sleep record of §2.1 is the `managedFields` ownership step 3 already uses. | 4 |
+| 6 | **Mobile** — `workspaceState`, `WakeBanner`, the sleeping-503 JSON in `client.ts`, approval-queue flush, push-tap deferral, demo mode. Independent of 5's default. | done (#778); its keeper path goes live with step 4 |
 
 PR 6 is the whole second half of #728 and is a workstream in its own right: 13
 files in `mobile/`, its own vitest suite, and a phone to test on. It should be
@@ -328,5 +540,8 @@ So "the keeper's ServiceAccount cannot scale any other Deployment", "queued
 events survive a keeper restart", "≤ 20 MiB RSS when idle" and every mobile
 criterion are cluster work, not something a PR check can assert. What *can* be
 asserted here, and is: the idle decision table, the `/proc` parsing, the
-endpoint's auth gate and route wiring, and (once PR 2 lands) `helm unittest`
-on the rendered chart with the keeper on and off.
+endpoint's auth gate and route wiring, `helm unittest` on the rendered chart
+with the keeper on and off, and (step 3) the keeper's `go test -race` suite
+against a fake API server that keeps `managedFields` the way the real one was
+measured to. The cluster half of step 3 — RBAC with the real token, ingress
+routing and auth, NetworkPolicy, idle memory — was run on minikube (§4.3).

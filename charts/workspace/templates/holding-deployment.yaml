@@ -1,4 +1,5 @@
-{{- if .Values.holdingPage.enabled }}
+{{- /* With keeper.enabled the keeper serves this page instead (keeper-deployment.yaml). */}}
+{{- if and .Values.holdingPage.enabled (not .Values.keeper.enabled) }}
 # Always-up "restarting…" holding backend (issue #184).
 #
 # During a self-serve update the workspace Deployment does a Recreate rollout

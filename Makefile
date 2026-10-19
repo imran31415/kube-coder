@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
+.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
 
 # =============================================================================
 # Generic per-user helpers
@@ -603,6 +603,10 @@ test-coverage: ## Run tests with terminal coverage summary
 
 coverage: ## Run all tests with comprehensive coverage reports and HTML output
 	@./scripts/coverage-report.sh
+
+keeper-test: ## Run the always-on keeper's Go tests (gofmt, vet, race; #728)
+	@test -z "$$(gofmt -l keeper/)" || { gofmt -l keeper/; echo "gofmt needed"; exit 1; }
+	cd keeper && go vet ./... && go test -race -count=1 ./...
 
 test-all-units: dashboard-web-test python-tests controller-web-test controller-python-tests ## Run dashboard SPA + server.py + controller SPA + controller.py tests
 
