@@ -181,8 +181,10 @@ jobs:
         # The keeper has no dependencies, so its whole attack surface from
         # outside is the Go standard library: fail on a known vulnerability the
         # code actually reaches, so the fix is a Go bump before the next release.
+        # It has to be new enough to parse the Go it runs under: v1.1.4 panics
+        # on Go 1.27's standard library ("unexpected expr: *ast.KeyValueExpr").
         working-directory: keeper
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   web-tests:
     name: Dashboard SPA Tests
