@@ -39,6 +39,16 @@ type Server struct {
 	// response (oauth2 mode); empty in basic mode, where a client could send it.
 	UserHeader string
 
+	// Store holds what the workspace pushed: the token hash the app's bearer is
+	// checked against, and the trigger ids that may wake it (#728 step 4). Nil
+	// where no step-4 listener runs — the page and the browser's wake never
+	// consult it, so they work without one.
+	Store *Store
+	// ControlSecretFile is the shared secret the workspace authenticates its
+	// pushes with, a mounted Secret. Re-read per request, like Kube.TokenFile,
+	// so rotating it needs no restart.
+	ControlSecretFile string
+
 	mu        sync.Mutex
 	cached    string
 	cachedAt  time.Time
@@ -60,7 +70,16 @@ type statusResponse struct {
 // wokenWindow is how long after a wake a starting workspace counts as woken.
 const wokenWindow = 10 * time.Minute
 
-// PageHandler serves :8080.
+// codeSleeping is the marker the phone app looks for on a non-2xx JSON body to
+// tell "the workspace is away" from "the workspace answered with an error"
+// (#778, mobile/src/util/workspaceReach.ts). Changing this string breaks a
+// shipped app.
+const codeSleeping = "workspace_sleeping"
+
+// PageHandler serves :8080 — the away answer, for whoever the ingress sends
+// here. It never touches the Kubernetes API: in oauth2 mode the root ingress
+// has no auth annotation, so this listener takes unauthenticated requests and
+// must not act, or even look.
 func (s *Server) PageHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
@@ -68,7 +87,48 @@ func (s *Server) PageHandler() http.Handler {
 			_, _ = w.Write([]byte("ok\n"))
 			return
 		}
+		if wantsJSON(r) {
+			s.serveSleepingJSON(w)
+			return
+		}
 		s.servePage(w, r)
+	})
+}
+
+// wantsJSON reports whether the caller asked for JSON rather than a page.
+//
+// Two headers, because this listener is reached two ways: directly, where the
+// client's own Accept arrives, and as the ingress's custom-error backend, where
+// ingress-nginx passes the original Accept along as X-Format.
+//
+// Keyed on what the caller asked for, never on the path. A path rule looks
+// tempting — "/api/… is an API" — but /health and /api/keeper/wake are both
+// paths a browser lands on while the workspace is away, and they must still get
+// the page. The app sends exactly "application/json"; a browser sends a long
+// text/html,…,*/* list that never names JSON; curl sends */*. So naming JSON is
+// the signal, and everything else, including no Accept at all, gets the page.
+func wantsJSON(r *http.Request) bool {
+	for _, h := range []string{r.Header.Get("Accept"), r.Header.Get("X-Format")} {
+		if strings.Contains(strings.ToLower(h), "application/json") {
+			return true
+		}
+	}
+	return false
+}
+
+// serveSleepingJSON is the away answer for an API caller, in the shape the app
+// already understands.
+//
+// It names no state, because this listener never reads the API. "Away" is all
+// it can honestly say, and all the app needs: it shows its banner and offers
+// Wake, and the wake listener — which does know — answers that.
+func (s *Server) serveSleepingJSON(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"code": codeSleeping,
+		// For a person running curl. The app ignores this and shows its own
+		// wording, keyed off the code above.
+		"error": "Your workspace is asleep.",
 	})
 }
 
@@ -168,15 +228,28 @@ func (s *Server) wake(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin wake refused"})
 		return
 	}
+	state, _, err := s.doWake(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not wake the workspace"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.response(state))
+}
+
+// doWake is the wake itself, with no view attached. The guards in front of it
+// and the reply after it differ between the browser page and the app
+// (bearer.go) — the decision does not. It serialises wakes so concurrent
+// callers make one write, logs who caused one, and refreshes the cache so the
+// next status poll costs no API read.
+func (s *Server) doWake(r *http.Request) (state string, woke bool, err error) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	s.wakeMu.Lock()
-	state, woke, err := Wake(ctx, s.Kube)
+	state, woke, err = Wake(ctx, s.Kube)
 	s.wakeMu.Unlock()
 	if err != nil {
 		log.Printf("wake: %s/%s for %s: %v", s.Kube.Namespace, s.Kube.Name, s.who(r), err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not wake the workspace"})
-		return
+		return "", false, err
 	}
 	switch {
 	case woke:
@@ -190,7 +263,7 @@ func (s *Server) wake(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cached, s.cachedAt = state, time.Now()
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, s.response(state))
+	return state, woke, nil
 }
 
 // who names the requester for the log: the signed-in user where the ingress

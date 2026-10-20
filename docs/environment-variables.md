@@ -121,6 +121,21 @@ This document describes all environment variables used by kube-coder components.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KC_KEEPER_IDLE_MINUTES` | `30` | Minutes every activity signal must stay quiet before `GET /api/keeper/idle` reports the workspace idle, when the keeper asks without `?idle_minutes=`. Read once at import. Set from `keeper.sleep.idleMinutes` (only rendered when `keeper.enabled`); the chart refuses anything below 1. See [always-on-keeper.md](always-on-keeper.md). |
+| `KEEPER_CONTROL_URL` | — | The keeper's control listener, e.g. `http://keeper-<user>-control.<ns>.svc.cluster.local`. Where `keeper_push.py` sends the trigger ids and the hash of the API token. **Unset disables every push**, which is what a workspace with no keeper wants. Set by the chart when `keeper.enabled`. |
+| `KEEPER_CONTROL_SECRET` | — | The shared secret those pushes are authenticated with, from the `keeper-<user>-control` Secret (or `keeper.controlSecret.existingSecretName`). Pushes are skipped unless this *and* `KEEPER_CONTROL_URL` are both set. |
+| `WORKSPACE_INTERNAL_URL` | `http://ws-<user>.<ns>.svc.cluster.local:6080` | The address the scheduled-trigger CronJobs curl to fire a cron or a page-watch. Read at apply time by `CronManager._apply_k8s` and `PageWatchManager._apply_k8s`, so changing it only affects CronJobs applied afterwards. Step 4b points it at the keeper so a schedule can fire into a sleeping workspace. |
+| `KC_KEEPER_PUSH_ATTEMPTS` | `4` | How many times `keeper_push.py` retries one push before giving up. A lost push is repaired by the next workspace boot, which pushes unconditionally. |
+
+The keeper process itself (the Go binary, not the workspace) reads these; they are set by `keeper-deployment.yaml` and are listed here only so the whole surface is in one place.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KEEPER_NAMESPACE` / `KEEPER_DEPLOYMENT` | — | Which Deployment the keeper looks after. Both required. |
+| `KEEPER_PAGE` | `/etc/keeper/page/holding.html` | The away page, re-read per request so a ConfigMap edit lands without a restart. |
+| `KEEPER_SLEEP_ENABLED` | `false` | `keeper sleep` refuses unless this is exactly `true`, because without `keeper.sleep.enabled` the chart still sets `replicas` and the next `helm upgrade` would undo the sleep. |
+| `KEEPER_USER_HEADER` | — | The header carrying the signed-in user, for the wake log. Set to `X-Auth-Request-User` in oauth2 mode only, where the ingress overwrites it from oauth2-proxy's answer. |
+| `KEEPER_STATE_DIR` | — | Where the trigger ids, the token hash and (step 4b) the queue live. **Setting it is what turns the step-4 listeners on**, so a step-4 image on a step-3 chart runs as step 3 rather than crashlooping on an unmounted volume. |
+| `KEEPER_CONTROL_SECRET_FILE` | `/etc/keeper/control/secret` | The mounted shared secret, re-read per request so rotating it needs no restart. |
 
 ### Dashboard & UI
 | Variable | Default | Description |

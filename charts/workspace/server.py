@@ -46,6 +46,14 @@ except ImportError:      # pragma: no cover - module always ships beside server.
 # Fail closed.
 import safe_http
 
+# What the workspace tells the always-on keeper (#728 step 4): which trigger
+# ids exist, and the hash of the API token. Unguarded because a silent failure
+# here is a webhook that answers 404 for ever while the workspace sleeps, which
+# looks like a broken trigger rather than a missing module. Every entry point
+# is a no-op without KEEPER_CONTROL_URL, so a keeper-less workspace is
+# unaffected.
+import keeper_push
+
 # Page-watch content extraction, normalization and hashing (#681). Pure and
 # dependency-free. Unguarded for the same reason as safe_http: scan_excerpt is
 # part of the defence that keeps untrusted page text out of an agent's prompt,
@@ -6912,6 +6920,30 @@ class TriggerRunsManager:
             return False
 
 
+def _push_triggers_to_keeper():
+    """Tell the keeper which trigger ids exist now (#728 step 4).
+
+    Called after every create and delete across the three trigger kinds. The
+    keeper replaces its whole set from each push, so this is idempotent: a
+    rapid sequence of edits sending several pushes is harmless, and a push lost
+    to a keeper restart self-heals at the workspace's next boot.
+
+    It matters most on delete. The keeper's "is this id real?" answer is what
+    stops a stranger's request waking the pod, so an id that stays behind after
+    its trigger is gone is a webhook that still costs money. Hence: push the
+    whole set, and push it from the delete path, not only the create path.
+
+    Never raises — a keeper that is down must not turn into a failed save.
+    """
+    try:
+        keeper_push.KeeperPush.push_triggers(
+            WebhookManager.WEBHOOKS_DIR,
+            CronManager.CRONS_DIR,
+            PageWatchManager.PAGE_WATCHES_DIR)
+    except Exception as e:
+        print(f'[keeper-push] could not start a trigger push: {e}', file=sys.stderr)
+
+
 class WebhookManager:
     """Inbound HTTP webhooks that spawn Claude tasks.
 
@@ -7078,6 +7110,7 @@ class WebhookManager:
             json.dump(cfg, f, indent=2)
         os.chmod(tmp, 0o600)
         os.rename(tmp, path)
+        _push_triggers_to_keeper()
         return cfg, None
 
     @staticmethod
@@ -7091,6 +7124,7 @@ class WebhookManager:
         TriggerRunsManager.delete('webhook', webhook_id)
         try:
             os.remove(path)
+            _push_triggers_to_keeper()
             return True
         except FileNotFoundError:
             return False
@@ -10407,6 +10441,10 @@ class CronManager:
             json.dump(cfg, f, indent=2)
         os.chmod(tmp, 0o600)
         os.rename(tmp, path)
+        # Before the kubectl apply below, which can fail and leave the config
+        # in place: the trigger exists from here on, so the keeper should know
+        # its id even if the CronJob did not get created.
+        _push_triggers_to_keeper()
 
         # Apply (or re-apply) the K8s CronJob + Secret. If this fails, the
         # local config still lives — the user can re-apply by editing.
@@ -10432,6 +10470,7 @@ class CronManager:
         TriggerRunsManager.delete('cron', cron_id)   # see WebhookManager.delete
         try:
             os.remove(CronManager._config_path(cron_id))
+            _push_triggers_to_keeper()
             return True
         except FileNotFoundError:
             # Still report success if we cleaned up k8s objects above
@@ -11055,6 +11094,9 @@ class PageWatchManager:
 
             PageWatchManager._save(cfg)
 
+        # As in CronManager.create_or_update: the trigger exists now, so the
+        # keeper learns its id whether or not the apply below works.
+        _push_triggers_to_keeper()
         try:
             PageWatchManager._apply_k8s(cfg)
         except Exception as e:
@@ -11076,6 +11118,7 @@ class PageWatchManager:
         try:
             os.remove(PageWatchManager._config_path(watch_id))
             removed = True
+            _push_triggers_to_keeper()
         except FileNotFoundError:
             removed = False
         # Drop the lock pair too, so a workspace that creates and deletes many
@@ -15066,6 +15109,25 @@ if __name__ == "__main__":
               f'{ClaudeTaskManager.TOKEN_FILE}')
     except Exception as e:
         print(f'[tasks] token materialization failed: {e}', file=sys.stderr)
+
+    # Tell the always-on keeper what it cannot find out for itself (#728 step
+    # 4): the hash of the token above, and which trigger ids exist. It has to
+    # happen at every boot, not only when something changed — while this
+    # workspace was asleep the keeper may have restarted, been deployed for the
+    # first time, or lost its store, and nothing else can repair that. Runs in
+    # a daemon thread so an unreachable keeper cannot delay the server
+    # accepting requests, and is a no-op without KEEPER_CONTROL_URL.
+    try:
+        keeper_push.KeeperPush.start(
+            ClaudeTaskManager.get_or_create_token(),
+            WebhookManager.WEBHOOKS_DIR,
+            CronManager.CRONS_DIR,
+            PageWatchManager.PAGE_WATCHES_DIR)
+        if keeper_push.KeeperPush.enabled():
+            print(f'[keeper-push] telling {keeper_push.KeeperPush.control_url()} '
+                  'the trigger ids and the token hash')
+    except Exception as e:
+        print(f'[keeper-push] boot push failed to start: {e}', file=sys.stderr)
 
     # Initialize the persistent-memory subsystem (runs migrations, opens DB).
     # Failure here is non-fatal: the rest of the server keeps working, and

@@ -100,10 +100,13 @@ holdingPage:
 # it to 0 when idle. Staged — see docs/always-on-keeper.md §5. Everything is off
 # by default; with these defaults the chart renders exactly as it did before.
 keeper:
-  # Runs keeper-<user> (step 3): it replaces holding-<user> as the page shown
-  # while the workspace is away, and a logged-in visit to a workspace it put to
-  # sleep wakes it. A workspace an admin stopped stays stopped. Needs
-  # ingress.auth.type basic or oauth2.
+  # Runs keeper-<user> (steps 3 and 4): it replaces holding-<user> as the page
+  # shown while the workspace is away, and wakes a workspace it put to sleep
+  # for a logged-in visit (step 3) or for the phone app (step 4). A workspace
+  # an admin stopped stays stopped. Needs ingress.auth.type basic or oauth2.
+  #
+  # The app's route to it exists in oauth2 mode only, because that is the only
+  # mode in which the phone's bearer ingress exists at all.
   enabled: false
   # The keeper image (keeper/Dockerfile). Required when enabled until a release
   # publishes ghcr.io/imran31415/kube-coder/keeper; the default is then pinned
@@ -117,6 +120,20 @@ keeper:
     limits:
       cpu: 100m
       memory: 32Mi
+  # The keeper's own small volume: the trigger ids and the token hash the
+  # workspace pushes it, and from step 4b the queued webhook bodies. It needs
+  # to be a volume rather than memory because a keeper that restarted while the
+  # workspace slept cannot ask the workspace anything. 1Gi is far more than the
+  # content needs; it is the smallest many storage classes will issue.
+  storage:
+    size: 1Gi
+  # The shared secret the workspace authenticates those pushes with. Left empty,
+  # the chart generates one and preserves it across `helm upgrade`
+  # (keeper-secret.yaml). Pin `value`, or point `existingSecretName` at a Secret
+  # with a `secret` key, if your GitOps flow needs it declared.
+  controlSecret:
+    value: ""
+    existingSecretName: ""
   sleep:
     # Let the keeper scale this workspace to 0 when idle. Requires
     # keeper.enabled. Until step 5's idle loop lands, sleep is by hand:
