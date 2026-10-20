@@ -89,6 +89,25 @@ spec:
           value: /etc/keeper/control/secret
         # Step 4b: the queue of requests that arrived while the workspace was
         # away, and the cap on how often an unattended caller may start it.
+        {{- /* int64 on every one of these: Helm reads a YAML number as a
+        float64, and `quote` then renders anything from about ten million up in
+        scientific notation — maxBytes came out as "6.7108864e+07", which the
+        keeper cannot parse and would silently replace with its own default. */}}
+        - name: KEEPER_QUEUE_MAX_ENTRIES
+          value: {{ .Values.keeper.queue.maxEntries | default 256 | int64 | quote }}
+        - name: KEEPER_QUEUE_MAX_BYTES
+          value: {{ .Values.keeper.queue.maxBytes | default 67108864 | int64 | quote }}
+        - name: KEEPER_QUEUE_TTL_SECONDS
+          value: {{ .Values.keeper.queue.ttlSeconds | default 3600 | int64 | quote }}
+        - name: KEEPER_MAX_INFLIGHT
+          value: {{ .Values.keeper.queue.maxInFlight | default 4 | int64 | quote }}
+        - name: KEEPER_MAX_WAKES_PER_HOUR
+          value: {{ .Values.keeper.maxWakesPerHour | default 0 | int64 | quote }}
+        # Where a proxied request is forwarded. The same address server.py
+        # computes for a CronJob, spelled out here so a cluster whose DNS suffix
+        # is not cluster.local has one place to change it.
+        - name: KEEPER_WORKSPACE_URL
+          value: http://ws-{{ .Values.user.name }}.{{ .Values.namespace }}.svc.cluster.local:6080
         # Keep the Go heap under the container limit instead of being OOM-killed.
         - name: GOMEMLIMIT
           valueFrom:

@@ -296,40 +296,36 @@ would otherwise pin the workspace awake for ever.
 
 ### 4.2 Still to build
 
-Step 4a built the pushes and the phone path; see §4.4. What is left is step 4b:
+Steps 4a and 4b are built; see 4.4 and 4.5. What is left is **step 5, the idle
+loop** — the thing that actually puts a workspace to sleep. Until it lands,
+sleep is an operator typing:
 
-- The keeper in front of the webhook and cron traffic: pass requests through
-  byte for byte while the workspace is awake, and while it is asleep answer 202,
-  queue the raw request, wake the workspace and replay it unchanged — so
-  `server.py` still checks the signature itself. An unknown ID answers 404 and
-  wakes nothing (the ID set from §4.4 is what makes that possible).
-- The queue: a 1 MiB body cap, a bounded size, and durability across a keeper
-  restart (§3.3 — it shares the volume §4.4 added).
-- The wake limit. §5 put it in step 5, but step 4b is the first time a
-  stranger's request to a public URL can start a pod, so the cap belongs with
-  that capability. An exhausted budget queues the request and does **not** wake:
-  GitHub does not retry a failed delivery, so discarding would lose the event
-  for good, while delaying it only delays it.
-- Re-applying existing CronJobs at boot when `WORKSPACE_INTERNAL_URL` changed,
-  so old manifests pick up the keeper's address.
+```bash
+kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
+```
 
-Two findings from building 4a that shape 4b, both measured in the tree rather
-than assumed:
+Everything else about a sleeping workspace now works: a visit wakes it, the app
+wakes it, and a webhook or a schedule that fires while it is away is kept and
+replayed. Step 5 also closes 4.3's `0 -> 0` gap, by teaching the controller to
+show "asleep" as distinct from "stopped".
+
+Two findings from building 4a shaped 4b, both measured in the tree rather than
+assumed, and both are why 4b looks the way it does:
 
 - **Slack and Stripe signatures expire; GitHub's does not.**
   `TIMESTAMP_TOLERANCE = 300` is enforced for Slack (`server.py:7180`) *and*
   Stripe (`server.py:7217`), so a request queued across a 60-second wake can
   verify for `github`/`generic` and cannot for the other two — and it fails as
   `404 Not found or unauthorized` with ledger `reason='bad_signature'`, which
-  reads as "your secret is wrong". That is why §4.4's push carries each
-  webhook's `provider`: 4b gives those two a short queue TTL and expires them
-  with a clear log line instead of replaying them into a misleading 404.
+  reads as "your secret is wrong". That is why 4.4's push carries each webhook's
+  `provider`, and why 4b expires those two inside their own window with a log
+  line that names the real cause.
 - **Double delivery is not safe in general.** `_ReplayCache` is in-memory only
   (`server.py:6670`) with a 300-second TTL, so it catches a duplicate inside one
   pod lifetime and nothing more — and across a sleep, which is exactly this
   case, it is empty. `handle_cron_fire` has no dedup at all
-  (`handlers/triggers.py:428`). So 4b has to choose semantics per kind rather
-  than inherit them: webhooks at-least-once, cron and page-watch at-most-once.
+  (`handlers/triggers.py:428`). So 4b chooses semantics per kind rather than
+  inheriting them: webhooks at-least-once, cron and page-watch at-most-once.
 
 ### 4.3 The keeper — implemented (step 3)
 
@@ -636,8 +632,185 @@ This listener still never touches the Kubernetes API, so it reports no state —
 "away" is all it can honestly say, and all the app needs before offering Wake.
 
 **Not in step 4a:** the webhook and cron proxy, the queue and the wake limit
-(step 4b, §4.2), and the idle loop (step 5). A webhook or a cron arriving at a
-sleeping workspace still fails as it did before.
+(step 4b, §4.5), and the idle loop (step 5).
+
+### 4.5 The webhook and cron front door — implemented (step 4b)
+
+A webhook or a schedule that fires while the workspace is asleep now runs its
+task. Before this it did not: the request hit an ingress with no pod behind it
+and got a raw nginx 503, and **GitHub does not retry a failed delivery**, so the
+event was gone. A cron fire was worse — the CronJob's `curl -f` failed, the Job
+retried twice and gave up, and the Triggers tab went on looking healthy.
+
+The keeper now stands in front of the three receivers:
+
+| Path | Caller | Reaches the keeper via |
+|---|---|---|
+| `POST /api/webhooks/<id>` | the internet | `ingress-webhooks.yaml`, repointed to `keeper-<user>-api` |
+| `POST /api/triggers/cron-fire/<id>` | a CronJob pod | `WORKSPACE_INTERNAL_URL` |
+| `POST /api/triggers/page-watch-check/<id>` | a CronJob pod | the same |
+
+While the workspace is awake it forwards and mirrors the answer, so nothing
+changes for a sender. While it is away it writes the request down, answers 202,
+wakes the workspace and replays it unchanged. **The keeper never decides whether
+a request is authentic**: it knows which ids exist, which is enough to answer
+404 and wake nothing for a stranger walking URLs, and the signature is still
+checked inside `server.py`, the only place that holds the secret. A request for
+a *known* id with a bad signature therefore wakes the workspace and is then
+rejected by it — the cost of a wake, not of a task.
+
+**The decision table.** Decided from the outcome of the forward, never from
+cached state alone; the state is a one-second-old guess that only picks the
+first action.
+
+| Cached state | Action | Outcome | Reply | Wakes? | Entry |
+|---|---|---|---|---|---|
+| unknown id | reject | — | 404, server.py's wording | **never** | none |
+| `awake` | forward | a response | mirror status + body verbatim | no | deleted |
+| `awake` | forward | **dial** failed | re-read state, re-decide | per new state | per new state |
+| `awake` | forward | written, no answer | 202 | no | per kind (below) |
+| `starting` | enqueue | — | 202 | **no** — it is already coming | kept |
+| `asleep` | enqueue **then** wake | — | 202 | yes, if the budget allows | kept |
+| `asleep`, budget spent | enqueue | — | 202 | **no** — drains at the next wake | kept |
+| `stopped` | reject | — | 503 `workspace_stopped` | **never** | **none** |
+| `Kube.Get` failed | enqueue | — | 202 | no | kept |
+
+Four invariants make "loses no event" structural rather than argued:
+
+1. **Durable before acknowledged.** The entry is written and `fsync`ed before
+   the 202 and before the wake. Only that order closes the window the
+   PersistentVolume exists for.
+2. **One owner per entry.** A claim *is* a `rename` into `inflight/`, so of two
+   goroutines racing for one entry exactly one gets it and a drain landing
+   mid-forward cannot double-deliver. Measured: 8 goroutines over 60 entries
+   gave 60 distinct claims, 0 duplicates and 366 cleanly lost races.
+3. **Per-kind semantics, as a named constant.** Webhooks **at-least-once**: the
+   sender's own delivery id and the replay cache absorb a duplicate, and a
+   duplicated agent run is recoverable. Cron and page-watch **at-most-once**: an
+   ambiguous entry is dropped with a log line, because `handle_cron_fire` has no
+   dedup at all and two replays are two agent runs, while a missed tick simply
+   fires again on schedule and `concurrencyPolicy: Forbid` makes that cheap.
+4. **Per-provider TTL.** `slack` and `stripe` entries expire after 240 s with a
+   line that says a signed timestamp went stale, rather than being replayed into
+   a misleading `bad_signature` 404. `github`/`generic` keep for the configured
+   hour.
+
+**The one trap worth naming.** The forward buffers the body and re-sends it with
+an explicit `Content-Length`, using a plain `http.Client` over a
+`bytes.Reader` — **not** `httputil.ReverseProxy`. `handle_webhook_receive` reads
+exactly `int(headers['Content-Length'])` (`handlers/triggers.py:156`) and
+nothing in `server.py` de-chunks a request, so a chunked forward would run the
+HMAC over an empty body and answer `404 bad_signature`: silent loss, and a
+diagnosis that sends its owner hunting for a wrong secret. There is a test for
+it, and the mutation that drops the explicit length turns that test red.
+
+That is also why the cap is exactly 1 MiB, the same number as nginx's
+`proxy-body-size: 1m` and `handle_webhook_receive`'s own check: a body of
+exactly 1 MiB passes and one byte more is a 413 in server.py's own wording. If
+the keeper's cap disagreed with either, one of them would be lying about what it
+accepts.
+
+**The wake budget** (`keeper.maxWakesPerHour`, default 10; `0` means
+unlimited). Step 4b is the first time a request to a public URL from someone who
+is not signed in can start a 4 GiB pod, so the cap arrives with that capability.
+Exhausting it discards nothing — the request is queued and answered 202, and the
+drain loop delivers it at the next wake from any cause, including the budget
+freeing up. It does not apply to a person: a signed-in visit and the app's Wake
+button are not what it protects against. The budget is persisted on the volume,
+because a keeper that crashlooped would otherwise come back with a full budget
+every few seconds, which turns a crash into an unlimited-wake primitive.
+
+**The queue** lives on the volume 4.4 added, 0700 with 0600 files.
+`keeper.queue.maxEntries` / `maxBytes` bound it (both, because 256 one-line
+crons and 256 1 MiB webhooks are different shapes of the same problem); past
+either the keeper refuses an away request with a visible 503 rather than
+accepting bytes it has nowhere to keep, since a sender can retry a refusal and
+cannot retry a silent loss. While the workspace is *awake* a full queue is
+ignored instead: the entry is only crash insurance when the answer is being
+mirrored back anyway.
+
+**A queued cron entry holds a live `Authorization: Bearer <fire_token>` on
+disk.** That is unavoidable if the replay is to be byte-identical — the token is
+part of the request. Mode 0600 on a volume no other pod mounts, and nothing in
+the queue ever logs a header value; there is a test that plants a fire token in
+an entry, drives the paths that log about it, and fails if the token appears.
+
+**`keeper.resources.limits.memory` rises from 32Mi to 128Mi**, because each
+proxied body is buffered whole and `GOMEMLIMIT` is wired from that number. One
+1 MiB body fits in 32Mi; several at once do not, and the old value would have
+the keeper fighting the GC during exactly the burst it must not drop.
+`keeper.queue.maxInFlight` (4) is the other half — the limit bounds the damage,
+the semaphore bounds the demand — and it is acquired **after** the entry is
+durable, because shedding load in front of the queue would lose the events the
+queue exists to keep.
+
+**Two chart rules without which every forward dies on a connect timeout.**
+`networkpolicy.yaml` gains a third ingress rule admitting `app: keeper-<user>`
+on 6080, and `keeper-networkpolicy.yaml` admits this workspace's CronJob pods on
+8082 — matched on both `app` and `workspace-user`, so a co-tenant's cron pods
+stay denied. Worse than the silent cron failure that rule's comment already
+describes: here the keeper has already told the sender 202.
+
+**Existing CronJobs self-heal.** Turning the keeper on changes where a fire has
+to go, and the CronJobs already on the cluster have the old address baked into
+their `curl`. Nothing would ever rewrite them — a CronJob is re-applied only
+when someone edits its trigger — so a workspace whose crons all predate the
+keeper would go on firing at a workspace that is asleep. Both `_apply_k8s`
+methods now stamp `kube-coder.dev/internal-url`, and
+`CronManager.reconcile_internal_url()` re-applies on a mismatch at boot, and on
+nothing else. A missing annotation counts as a mismatch, so every pre-4b CronJob
+repairs itself exactly once and then costs nothing. No new RBAC: the workspace
+already holds get and patch on cronjobs (`serviceaccount.yaml:22`).
+
+**One line of UX.** The status JSON gains `reason` (`visit` | `app` | `webhook`
+| `cron`), set only while a wake the keeper started is still coming up, and the
+holding page turns it into one sentence: *"A scheduled task is due, so it is
+starting to run it."* A workspace that starts without anybody asking should say
+which thing asked.
+
+**What 4b does not change:** nothing on `:8080`, `:8081` or `:8083`; no mobile
+code; and with `keeper.enabled=false` the chart renders identically to step 3 in
+basic mode, and in oauth2 mode differs only by comment text in
+`ingress-webhooks.yaml` — no rendered field.
+
+#### What has been verified, and what has not
+
+Stated plainly, so nobody reads a green suite as more than it is — the same rule
+§6 sets out for step 3.
+
+**Verified locally.** 122 Go tests, `gofmt`/`vet`/`-race` clean in WSL (Linux, Go
+1.26.4 + gcc 15.2.0, 0 data races); 289 `helm unittest` cases across 30 suites;
+`helm lint` clean with the keeper on and off; 14 new Python tests for the
+annotation and the boot reconcile. And the whole chart rendered with
+`keeper.enabled=false` was diffed against step 3's output: identical in basic
+mode, and in oauth2 mode different only in comment text.
+
+**Shown capable of failing.** Thirteen deliberate breakages were applied to a
+copy of the source and each turned the suite red: skipping the trigger-id check,
+forwarding without an explicit `Content-Length`, dropping the per-provider TTL,
+claiming an entry without the rename, making every kind at-least-once, queueing
+for a stopped workspace, ignoring the wake budget, forgetting it across a
+restart, dropping the query string, forwarding only the first value of a
+repeated header, and removing the page's wake reason. One of those found a real
+defect in the suite rather than the code: the budget test passed *vacuously*,
+because the one-second state cache answered "starting" to the second webhook and
+the budget was never consulted. The test now disables that cache and the
+mutation turns it red.
+
+**Two things the in-process suite cannot catch, confirmed by running them
+anyway.** Removing the `fsync` before the 202 leaves every test green — "durable"
+versus "in the page cache" needs a real `kubectl delete pod`, not a reopened
+file handle. Replacing `hmac.Equal` with `==` also leaves it green, which is
+expected: the two agree on every input and differ only in timing. Both belong to
+the cluster leg, and neither should be read as covered here.
+
+**Not verified: everything that needs a cluster.** No live run has happened —
+the queue surviving a killed keeper pod, the NetworkPolicy rules (meaningless
+without a CNI that enforces them), a real GitHub delivery into a sleeping
+workspace, the webhook ingress at all (it renders only under oauth2, which needs
+a real HTTPS host), and the idle RSS with a buffered body in flight. The
+cron and page-watch half *is* reachable on local minikube, since it goes through
+an in-cluster Service rather than an ingress; the public-webhook half is not.
 
 ---
 
@@ -652,7 +825,7 @@ the two PRs that carry real risk come after the cheap ones.
 | 2 | **Decide §2.2 and §3.1.** Land the `replicas` ownership change and the chart's `keeper:` values block with everything defaulting off, so PR 3 has somewhere to plug in. `keeper.sleep.idleMinutes` → `KC_KEEPER_IDLE_MINUTES`. | — (done) |
 | 3 | **The keeper itself** — replaces `holding-<user>`, a logged-in visit wakes a workspace it put to sleep, `keeper sleep`, RBAC, Deployment, image, CI job, release image (§4.3). No queue, no proxying, no idle loop. `keeper.enabled=false` renders byte-identical to before. | 2 (done) |
 | 4a | **Trigger-ID and token-hash push** from `server.py`; the phone's `status`/`wake` on its own bearer ingress, and the `workspace_sleeping` JSON on the error path (§4.4). The app's Wake button starts working. No proxying, no queue. `keeper.enabled=false` still renders byte-identical. | 3 (done) |
-| 4b | **The webhook and cron front door** — pass-through while awake; queue, wake and replay while asleep; the per-provider queue TTL; the wake limit; CronJob re-apply on URL change (§4.2). Wakes then work for webhooks and crons too. | 4a |
+| 4b | **The webhook and cron front door** — pass-through while awake; queue, wake and replay while asleep; the per-provider queue TTL; the wake limit; CronJob re-apply on URL change (§4.5). Wakes now work for webhooks and crons too. | 4a (done) |
 | 5 | **Sleep** — the idle loop, `sleep.enabled=false` by default, controller sleeping-vs-stopped (which also closes §4.3's 0 -> 0 gap). The sleep record of §2.1 is the `managedFields` ownership step 3 already uses. The rate limiter moved to 4b, where the first unattended caller arrives. | 4b |
 | 6 | **Mobile** — `workspaceState`, `WakeBanner`, the sleeping-503 JSON in `client.ts`, approval-queue flush, push-tap deferral, demo mode. Independent of 5's default. | done (#778); its keeper path went live with step 4a |
 

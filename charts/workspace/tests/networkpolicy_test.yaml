@@ -40,3 +40,33 @@ tests:
     asserts:
       - notExists:
           path: spec.ingress[1].from[0].namespaceSelector
+
+  # ── The keeper's forwards (#728 step 4b) ──────────────────────────────────
+  # The keeper stands in front of the webhook and cron receivers, so every
+  # request it passes on arrives from its own pod. Without this rule each one
+  # dies on a connect timeout, and worse than a cron's silent failure: the
+  # keeper has already answered the sender 202.
+  - it: should admit the keeper to the API port when the keeper is on
+    set:
+      keeper.enabled: true
+      keeper.image: ghcr.io/imran31415/kube-coder/keeper:test
+    asserts:
+      - equal:
+          path: spec.ingress[2].from[0].podSelector.matchLabels.app
+          value: keeper-testuser
+      - equal:
+          path: spec.ingress[2].ports[0].port
+          value: 6080
+      - equal:
+          path: spec.ingress[2].ports[0].protocol
+          value: TCP
+      # Same-namespace by construction, like the cron rule above: a
+      # namespaceSelector would admit a co-tenant's keeper.
+      - notExists:
+          path: spec.ingress[2].from[0].namespaceSelector
+
+  - it: should add no keeper rule when the keeper is off
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 2

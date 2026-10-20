@@ -131,6 +131,18 @@ spec:
             secretKeyRef:
               name: {{ .Values.keeper.controlSecret.existingSecretName | default (printf "keeper-%s-control" .Values.user.name) }}
               key: secret
+        # Where a CronJob pod sends its fire (#728 step 4b). With the keeper in
+        # front, a fire that lands while the workspace is asleep is queued,
+        # wakes it and is replayed; without it the fire dies on an nginx 503 and
+        # the task simply never runs. CronManager._apply_k8s bakes this into
+        # each CronJob's curl command and records it as an annotation, so
+        # reconcile_internal_url() re-points existing CronJobs at the next boot.
+        #
+        # Left unset when there is no keeper, so server.py's own inline default
+        # — the workspace's Service — still applies. The chart has never set
+        # this variable before.
+        - name: WORKSPACE_INTERNAL_URL
+          value: http://keeper-{{ .Values.user.name }}-api.{{ .Values.namespace }}.svc.cluster.local
         {{- end }}
         {{- if .Values.claude.apiKey }}
         - name: ANTHROPIC_API_KEY

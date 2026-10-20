@@ -49,11 +49,31 @@ type Server struct {
 	// so rotating it needs no restart.
 	ControlSecretFile string
 
+	// Queue holds the webhook and cron requests that arrived while the
+	// workspace was away (#728 step 4b). Nil where no proxy listener runs.
+	Queue *Queue
+	// Limiter caps how many wakes unattended callers may cause. A nil Limiter
+	// is unlimited, which is what step 3's tests expect.
+	Limiter *WakeLimiter
+	// WorkspaceURL is where a proxied request is forwarded. Empty means the
+	// in-cluster Service of the Deployment this keeper looks after.
+	WorkspaceURL string
+	// forwards bounds deliveries in flight, because each one holds its body in
+	// memory. Nil is unbounded.
+	forwards chan struct{}
+
+	clientOnce sync.Once
+	httpClient *http.Client
+
 	mu        sync.Mutex
 	cached    string
 	cachedAt  time.Time
 	cacheFor  time.Duration
 	lastWoken time.Time
+	// wokenFor is why the last wake happened, so the holding page can say
+	// "waking up to run a scheduled task" rather than leaving someone to
+	// wonder why their workspace started on its own.
+	wokenFor string
 
 	fetchMu sync.Mutex // one API read at a time for status, however many pages poll
 	wakeMu  sync.Mutex // one wake at a time: concurrent tabs make one write, not a 409 storm
@@ -65,6 +85,11 @@ type statusResponse struct {
 	// Woken is true while a wake the keeper started is still coming up, so the
 	// page can say "waking" rather than "restarting" for the same pod start.
 	Woken bool `json:"woken,omitempty"`
+	// Reason is what caused that wake — visit, app, webhook or cron — and is
+	// set only while Woken is. The holding page turns it into one line of copy;
+	// a workspace that started because a schedule fired should say so, since
+	// nobody asked for it and the alternative is a mystery.
+	Reason string `json:"reason,omitempty"`
 }
 
 // wokenWindow is how long after a wake a starting workspace counts as woken.
@@ -228,7 +253,7 @@ func (s *Server) wake(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin wake refused"})
 		return
 	}
-	state, _, err := s.doWake(r)
+	state, _, err := s.doWake(r, reasonVisit)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not wake the workspace"})
 		return
@@ -236,30 +261,37 @@ func (s *Server) wake(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.response(state))
 }
 
-// doWake is the wake itself, with no view attached. The guards in front of it
-// and the reply after it differ between the browser page and the app
-// (bearer.go) — the decision does not. It serialises wakes so concurrent
-// callers make one write, logs who caused one, and refreshes the cache so the
-// next status poll costs no API read.
-func (s *Server) doWake(r *http.Request) (state string, woke bool, err error) {
+// doWake is the wake for a caller that has a request attached: the browser page
+// and the app. The guards in front of it and the reply after it differ between
+// those two (bearer.go) — the decision does not.
+func (s *Server) doWake(r *http.Request, reason string) (state string, woke bool, err error) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
+	return s.wakeNow(ctx, s.who(r), reason)
+}
+
+// wakeNow is the wake itself, with no request and no view attached — the proxy
+// wakes for a webhook whose sender has already been answered and may have hung
+// up, so it passes a context of its own. It serialises wakes so concurrent
+// callers make one write, logs who caused one, and refreshes the cache so the
+// next status poll costs no API read.
+func (s *Server) wakeNow(ctx context.Context, who, reason string) (state string, woke bool, err error) {
 	s.wakeMu.Lock()
 	state, woke, err = Wake(ctx, s.Kube)
 	s.wakeMu.Unlock()
 	if err != nil {
-		log.Printf("wake: %s/%s for %s: %v", s.Kube.Namespace, s.Kube.Name, s.who(r), err)
+		log.Printf("wake: %s/%s for %s: %v", s.Kube.Namespace, s.Kube.Name, who, err)
 		return "", false, err
 	}
 	switch {
 	case woke:
-		log.Printf("wake: %s/%s scaled 0 -> 1 for %s", s.Kube.Namespace, s.Kube.Name, s.who(r))
+		log.Printf("wake: %s/%s scaled 0 -> 1 for %s (%s)", s.Kube.Namespace, s.Kube.Name, who, reason)
 	case state == StateStopped:
-		log.Printf("wake: %s/%s is stopped by an admin; not woken for %s", s.Kube.Namespace, s.Kube.Name, s.who(r))
+		log.Printf("wake: %s/%s is stopped by an admin; not woken for %s", s.Kube.Namespace, s.Kube.Name, who)
 	}
 	s.mu.Lock()
 	if woke {
-		s.lastWoken = time.Now()
+		s.lastWoken, s.wokenFor = time.Now(), reason
 	}
 	s.cached, s.cachedAt = state, time.Now()
 	s.mu.Unlock()
@@ -298,6 +330,17 @@ func (s *Server) cachedState(ctx context.Context) (string, error) {
 	if state, ok := fresh(); ok { // another poll fetched it while this one waited
 		return state, nil
 	}
+	return s.freshState(ctx)
+}
+
+// freshState reads the Deployment now, whatever the cache holds, and replaces
+// the cache with what it finds.
+//
+// The proxy needs this for one row of its decision table: a forward that failed
+// to connect to a workspace the cache called awake usually means the pod went
+// away between the two, and re-deciding from the same stale answer would just
+// fail the same way.
+func (s *Server) freshState(ctx context.Context) (string, error) {
 	d, err := s.Kube.Get(ctx)
 	if err != nil {
 		return "", err
@@ -313,7 +356,12 @@ func (s *Server) response(state string) statusResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	woken := !s.lastWoken.IsZero() && time.Since(s.lastWoken) < wokenWindow
-	return statusResponse{State: state, Woken: woken && (state == StateStarting || state == StateAwake)}
+	woken = woken && (state == StateStarting || state == StateAwake)
+	r := statusResponse{State: state, Woken: woken}
+	if woken {
+		r.Reason = s.wokenFor
+	}
+	return r
 }
 
 func methodNotAllowed(w http.ResponseWriter, allow string) {

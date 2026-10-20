@@ -104,7 +104,7 @@ func (s *Server) authApp(w http.ResponseWriter, r *http.Request) bool {
 // crons), not a person holding this workspace's own token. A Wake button that
 // silently did nothing would be a worse failure than an extra pod start.
 func (s *Server) appWake(w http.ResponseWriter, r *http.Request) {
-	state, _, err := s.doWake(r)
+	state, _, err := s.doWake(r, reasonApp)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Couldn't reach Kubernetes to wake your workspace. Try again in a moment."})
 		return

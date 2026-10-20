@@ -172,8 +172,19 @@ data:
               return r.json();
             });
           }
-          function waking() {
-            say('Waking up your workspace…', 'It was asleep while nobody was using it.',
+          // Why it is starting, where the keeper knows (#728 step 4b). A
+          // workspace that started because a schedule fired or a webhook
+          // arrived did so without anybody asking it to, and saying which is
+          // the difference between "that explains it" and "why is this
+          // running?". Any other reason, or none at all, keeps step 3's
+          // wording, which is still right for a visit.
+          var WHY = {
+            webhook: 'A webhook arrived while it was asleep, so it is starting to handle it.',
+            cron: 'A scheduled task is due, so it is starting to run it.',
+            app: 'You asked for it from the mobile app.'
+          };
+          function waking(reason) {
+            say('Waking up your workspace…', WHY[reason] || 'It was asleep while nobody was using it.',
               'This usually takes about a minute — the page refreshes automatically when it\'s ready.', true);
           }
           function show(s) {
@@ -181,13 +192,13 @@ data:
               say('Your workspace is stopped',
                 'It was stopped from the workspace controller, so visiting won\'t start it. Start it there, or ask your admin.', '', false);
             } else if (s.state === 'asleep') {
-              waking();
+              waking(s.reason);
               if (!asked && document.visibilityState === 'visible') {
                 asked = true;
                 call('POST', 'wake').then(show, failed);
               }
             } else if (s.woken) {
-              waking();
+              waking(s.reason);
             }
           }
           function failed(e) {
