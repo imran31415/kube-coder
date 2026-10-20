@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -111,6 +112,7 @@ func serve() error {
 		PageFile:          page,
 		UserHeader:        os.Getenv("KEEPER_USER_HEADER"),
 		ControlSecretFile: os.Getenv("KEEPER_CONTROL_SECRET_FILE"),
+		WorkspaceURL:      os.Getenv("KEEPER_WORKSPACE_URL"),
 		cacheFor:          time.Second,
 	}
 	servers := []*http.Server{
@@ -118,6 +120,8 @@ func serve() error {
 		newHTTPServer(":8081", s.WakeHandler()),
 	}
 	listening := "page :8080, wake :8081"
+	ctx, stopDrain := context.WithCancel(context.Background())
+	defer stopDrain()
 
 	// Step 4's listeners run only once the chart has given the keeper somewhere
 	// to keep what the workspace pushes. Without that the keeper is exactly
@@ -129,16 +133,30 @@ func serve() error {
 			return serr
 		}
 		s.Store = store
+		// The queue and the wake budget, step 4b. Both live on the same volume
+		// as the store, and both are read back here: a keeper that restarted
+		// while the workspace slept must come back holding the requests it
+		// accepted and the budget it had already spent.
+		queue, qerr := NewQueue(filepath.Join(dir, "queue"), queueLimitsFromEnv())
+		if qerr != nil {
+			return qerr
+		}
+		s.Queue = queue
+		s.Limiter = NewWakeLimiter(envInt("KEEPER_MAX_WAKES_PER_HOUR", 0), store)
+		if n := envInt("KEEPER_MAX_INFLIGHT", 4); n > 0 {
+			s.forwards = make(chan struct{}, n)
+		}
 		servers = append(servers,
-			newHTTPServer(":8082", s.AppHandler()),
+			newHTTPServer(":8082", s.ProxyHandler()),
 			newHTTPServer(":8083", s.ControlHandler()),
 		)
-		listening += ", app :8082, control :8083"
+		listening += ", app and webhooks :8082, control :8083"
 		held := "not pushed yet, so the app cannot wake this workspace"
 		if store.HasTokenHash() {
 			held = "present"
 		}
 		log.Printf("store: %d trigger ids; token hash %s", store.TriggerCount(), held)
+		go s.DrainLoop(ctx)
 	} else {
 		log.Printf("step 4 is off (KEEPER_STATE_DIR unset): webhooks, crons and the app cannot wake this workspace; a logged-in visit still can")
 	}
@@ -155,10 +173,11 @@ func serve() error {
 	case err = <-errc: // a listener died: exit so the kubelet restarts the pod
 	case <-stop:
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stopDrain()
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, srv := range servers {
-		_ = srv.Shutdown(ctx)
+		_ = srv.Shutdown(shutdown)
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil

@@ -119,7 +119,15 @@ keeper:
       memory: 16Mi
     limits:
       cpu: 100m
-      memory: 32Mi
+      # 128Mi, not the 32Mi steps 3 and 4a needed. From step 4b the keeper
+      # buffers each proxied request whole — it has to, because the HMAC covers
+      # the exact bytes and a streamed forward cannot state the Content-Length
+      # server.py reads. One 1 MiB body fits in 32Mi; several at once do not,
+      # and GOMEMLIMIT is wired from this number, so the old value would have
+      # the keeper fighting the GC during exactly the burst it must not drop.
+      # queue.maxInFlight below is the other half: the limit bounds the damage,
+      # the semaphore bounds the demand.
+      memory: 128Mi
   # The keeper's own small volume: the trigger ids and the token hash the
   # workspace pushes it, and from step 4b the queued webhook bodies. It needs
   # to be a volume rather than memory because a keeper that restarted while the
@@ -134,6 +142,43 @@ keeper:
   controlSecret:
     value: ""
     existingSecretName: ""
+  # Requests that arrived while the workspace was away and are waiting to be
+  # replayed (#728 step 4b). They live on the volume above.
+  queue:
+    # How many requests may wait. Past this the keeper refuses with a visible
+    # 503 rather than accepting a request it has nowhere to keep — a sender can
+    # retry a refusal and cannot retry a silent loss.
+    maxEntries: 256
+    # And how many bytes, because 256 one-line crons and 256 1 MiB webhooks are
+    # different shapes of the same problem.
+    maxBytes: 67108864
+    # How long a waiting request may still be replayed. Past this it is dropped
+    # with a log line that says why.
+    #
+    # Slack and Stripe override this downwards on their own: both sign a
+    # timestamp and both refuse anything older than 5 minutes, so the keeper
+    # expires those inside that window instead of replaying them into a
+    # `404 bad_signature` that reads to its owner as a wrong secret. GitHub and
+    # generic signatures cover the body alone and keep for the full hour.
+    ttlSeconds: 3600
+    # Forwards in flight at once. Each one holds a body in memory, so this and
+    # resources.limits.memory are one decision. Applied after the request is
+    # durable, never before: shedding load in front of the queue would lose the
+    # events the queue exists to keep.
+    maxInFlight: 4
+  # How many times an hour an unattended caller — a webhook or a cron — may
+  # start this workspace. 0 means no cap.
+  #
+  # Step 4b is the first time a request to a public URL from someone who is not
+  # signed in can start a 4 GiB pod, so the cap arrives with that capability.
+  # Exhausting it discards nothing: the request is queued and answered 202, and
+  # it is delivered at the next wake from any cause, including this budget
+  # freeing up. GitHub does not retry a failed delivery, so dropping would lose
+  # the event for good while delaying it only delays it.
+  #
+  # It deliberately does not apply to a person: a signed-in visit, and the Wake
+  # button in the app, are not what this protects against.
+  maxWakesPerHour: 10
   sleep:
     # Let the keeper scale this workspace to 0 when idle. Requires
     # keeper.enabled. Until step 5's idle loop lands, sleep is by hand:
