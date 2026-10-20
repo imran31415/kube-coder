@@ -1,9 +1,20 @@
 {{- if .Values.keeper.enabled }}
-# Only the ingress controller may reach the keeper, on its two ports — the same
-# rule networkpolicy.yaml applies to the workspace pod. The keeper holds a
-# token that can stop and start the workspace, so no other pod in the cluster
-# (including the workspace's own) gets to talk to it directly. Kubelet probes
-# are not subject to NetworkPolicy.
+# Who may reach the keeper, port by port. The keeper holds a token that can stop
+# and start the workspace, so every port admits exactly one class of caller and
+# nothing else in the cluster gets to talk to it. Kubelet probes are not subject
+# to NetworkPolicy.
+#
+#   8080 page, 8081 browser wake, 8082 the app  <- the ingress controller
+#   8083 trigger ids and the token hash         <- the workspace pod, only
+#
+# Step 3 denied the workspace pod altogether. Step 4 gives it the one port it
+# needs and no more: it may push facts in, and it still cannot reach the wake
+# listener or the app listener.
+#
+# This file is only half the lock. A NetworkPolicy does nothing at all unless
+# the cluster's CNI implements it — minikube's default accepts every policy and
+# enforces none — so the control port also requires the shared secret in
+# keeper-secret.yaml. Neither is trusted alone.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -27,4 +38,16 @@ spec:
       port: 8080
     - protocol: TCP
       port: 8081
+    - protocol: TCP
+      port: 8082
+  # The workspace's own pushes. A bare podSelector, so it is same-namespace by
+  # construction and a co-tenant's workspace in another namespace cannot match
+  # — the shape networkpolicy.yaml uses for the cron pods, for the same reason.
+  - from:
+    - podSelector:
+        matchLabels:
+          app: ws-{{ .Values.user.name }}
+    ports:
+    - protocol: TCP
+      port: 8083
 {{- end }}

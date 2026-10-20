@@ -59,6 +59,21 @@ jobs:
             --set keeper.image=ghcr.io/imran31415/kube-coder/keeper:ci \
             > /dev/null
 
+      # oauth2 as well as basic, because the keeper objects that only exist in
+      # oauth2 mode are exactly the step-4 ones — the app's ingress and the
+      # error backend on the phone's bearer ingress. A render error in either
+      # would pass the basic-mode check above untouched.
+      - name: Template workspace chart (keeper on, oauth2, #728 step 4)
+        run: |
+          helm template test-ws charts/workspace/ \
+            -f charts/workspace/tests/test-values.yaml \
+            --set keeper.enabled=true --set keeper.sleep.enabled=true \
+            --set keeper.image=ghcr.io/imran31415/kube-coder/keeper:ci \
+            --set ingress.auth.type=oauth2 \
+            --set oauth2.cookieSecret=AAAAAAAAAAAAAAAAAAAAAA== \
+            --set oauth2.clientId=ci --set oauth2.clientSecret=ci \
+            > /dev/null
+
       - name: Lint workspace-controller chart
         run: helm lint charts/workspace-controller/ -f charts/workspace-controller/tests/test-values.yaml
 

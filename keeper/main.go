@@ -1,16 +1,24 @@
 // Command keeper is the always-on half of a kube-coder workspace (#728).
 //
-// Step 3 of docs/always-on-keeper.md §5: it stands in for the holding page
-// while the workspace is away, and a logged-in visit to an asleep workspace
-// wakes it (0 -> 1). It never wakes a workspace an admin stopped. Webhooks,
-// crons and the idle loop that puts the workspace to sleep are later steps;
-// for now an operator puts it to sleep by hand:
+// Steps 3 and 4 of docs/always-on-keeper.md §5: it stands in for the holding
+// page while the workspace is away, and wakes an asleep workspace (0 -> 1) for
+// a logged-in visit (step 3) or for the phone app (step 4). It never wakes a
+// workspace an admin stopped. The idle loop that puts the workspace to sleep is
+// step 5; for now an operator does it by hand:
 //
 //	kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
 //
+// One listener per class of caller, so the chart's NetworkPolicy can admit each
+// from exactly where it should come from:
+//
+//	:8080  the page         anyone through the ingress; never touches the API
+//	:8081  browser wake     the ingress, behind basic auth or oauth2-proxy
+//	:8082  the app          the ingress, checked against the token hash
+//	:8083  the workspace     trigger ids and the token hash, shared secret
+//
 // Usage:
 //
-//	keeper [serve]   run the page (:8080) and wake (:8081) listeners
+//	keeper [serve]   run the listeners
 //	keeper sleep     scale the workspace to 0 as the keeper
 //	keeper status    print awake | starting | asleep | stopped
 //	keeper version
@@ -98,12 +106,43 @@ func serve() error {
 	if page == "" {
 		page = "/etc/keeper/page/holding.html"
 	}
-	s := &Server{Kube: k, PageFile: page, UserHeader: os.Getenv("KEEPER_USER_HEADER"), cacheFor: time.Second}
+	s := &Server{
+		Kube:              k,
+		PageFile:          page,
+		UserHeader:        os.Getenv("KEEPER_USER_HEADER"),
+		ControlSecretFile: os.Getenv("KEEPER_CONTROL_SECRET_FILE"),
+		cacheFor:          time.Second,
+	}
 	servers := []*http.Server{
 		newHTTPServer(":8080", s.PageHandler()),
 		newHTTPServer(":8081", s.WakeHandler()),
 	}
-	log.Printf("keeper %s: looking after %s/%s; page :8080, wake :8081", version, k.Namespace, k.Name)
+	listening := "page :8080, wake :8081"
+
+	// Step 4's listeners run only once the chart has given the keeper somewhere
+	// to keep what the workspace pushes. Without that the keeper is exactly
+	// step 3, so this image on an older chart keeps working rather than
+	// crashlooping on a volume that isn't mounted yet.
+	if dir := os.Getenv("KEEPER_STATE_DIR"); dir != "" {
+		store, serr := NewStore(dir)
+		if serr != nil {
+			return serr
+		}
+		s.Store = store
+		servers = append(servers,
+			newHTTPServer(":8082", s.AppHandler()),
+			newHTTPServer(":8083", s.ControlHandler()),
+		)
+		listening += ", app :8082, control :8083"
+		held := "not pushed yet, so the app cannot wake this workspace"
+		if store.HasTokenHash() {
+			held = "present"
+		}
+		log.Printf("store: %d trigger ids; token hash %s", store.TriggerCount(), held)
+	} else {
+		log.Printf("step 4 is off (KEEPER_STATE_DIR unset): webhooks, crons and the app cannot wake this workspace; a logged-in visit still can")
+	}
+	log.Printf("keeper %s: looking after %s/%s; %s", version, k.Namespace, k.Name, listening)
 	go startupCheck(k)
 
 	errc := make(chan error, len(servers))

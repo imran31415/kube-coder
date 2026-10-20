@@ -1,0 +1,74 @@
+{{- if and .Values.keeper.enabled (eq .Values.ingress.auth.type "oauth2") }}
+# The app's route to the keeper (#728 step 4).
+#
+# oauth2 mode only, because that is the only mode in which the phone's bearer
+# ingress exists at all (ingress-claude-api.yaml is gated the same way). In
+# basic mode there is no bearer API surface for this to sit beside, so there is
+# nothing to route.
+#
+# Carries NO auth annotations, unlike keeper-ingress.yaml, and that is the
+# point: the app holds a bearer token, not a browser session, so oauth2-proxy
+# would turn its wake into a 302 it cannot follow. The keeper authenticates the
+# request itself, against the SHA-256 of the API token that the workspace
+# pushed to it — so the credential is checked at the edge of the keeper without
+# the keeper ever being able to mint one.
+#
+# Its own Ingress object, not a path added to ingress-claude-api.yaml, because
+# that object carries `rewrite-target: /bearer-api/$1` at the object level: a
+# path added there would be rewritten into the workspace's bearer-marker prefix
+# and never reach the keeper.
+#
+# `use-regex` with an alternation rather than two `pathType: Exact` paths. On
+# this host other Ingresses use rewrite-target, which makes ingress-nginx render
+# every location as a regex — so an Exact path is widened to a case-insensitive
+# prefix and wins or loses on emission order rather than on exactness. The
+# matching rule in ingress-claude-api.yaml excludes these two paths explicitly,
+# so the two location sets are disjoint and nothing here depends on that order.
+# The keeper still checks the exact path itself and 404s anything else.
+#
+# Anchored with $ so that it excludes exactly what the other rule excludes.
+# That lookahead ends in $, so unanchored, /api/keeper/wake/ and
+# /api/keeper/wakeX match both locations and only emission order separates
+# them. Measured on ingress-nginx v1.13.9 and v1.15.1 the other location is
+# emitted first, so those paths reach the workspace with or without the
+# anchor and it changes no behaviour today. It is here so that routing does
+# not rest on an emission order ingress-nginx does not document: of the 21
+# regex locations this host generates, 20 come out in descending path-length
+# order and one does not, so the key is not one to rely on.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keeper-{{ .Values.user.name }}-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    {{- if .Values.ingress.tls.enabled }}
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: /api/keeper/(status|wake)$
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: keeper-{{ .Values.user.name }}-api
+            port:
+              name: http
+{{- end }}

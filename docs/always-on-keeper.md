@@ -3,14 +3,15 @@
 Design note for **issue #728** ("always-on keeper — tiny Go/Rust server for
 webhooks + crons so idle workspaces can sleep").
 
-**Status: built through step 3, all off by default.** Implemented: the
+**Status: built through step 4a, all off by default.** Implemented: the
 workspace-side idle contract, `GET /api/keeper/idle` (§4.1, step 1); the chart's
-`keeper:` values block with the `replicas` ownership change (§2.2, step 2); and
-the keeper itself — a page that also wakes a workspace it put to sleep, when a
-logged-in user visits (§4.3, step 3). Nothing puts a workspace to sleep on its
-own yet: until step 5's idle loop, that is an operator's `keeper sleep`. Webhook
-and cron wakes (step 4) and the idle loop (step 5) are written down here rather
-than built.
+`keeper:` values block with the `replicas` ownership change (§2.2, step 2); the
+keeper itself — a page that also wakes a workspace it put to sleep, when a
+logged-in user visits (§4.3, step 3); and the two things the workspace tells the
+keeper, plus the phone's way in (§4.4, step 4a). Nothing puts a workspace to
+sleep on its own yet: until step 5's idle loop, that is an operator's
+`keeper sleep`. The webhook and cron proxy with its queue (step 4b) and the idle
+loop (step 5) are written down here rather than built.
 
 This page is not in `docs/_manifest.json` (the in-app docs nav): there is no
 user-facing behaviour to document yet. It belongs there when sleep ships.
@@ -295,19 +296,40 @@ would otherwise pin the workspace awake for ever.
 
 ### 4.2 Still to build
 
-- `POST /api/keeper/triggers` (workspace → keeper): the **IDs** of webhooks,
-  crons and page-watches, pushed on create/delete and at boot. No secrets.
-  Unknown ID ⇒ 404 and no wake.
-- `POST /api/keeper/token-hash` (workspace → keeper): SHA-256 of the API token,
-  so the keeper can reject a bad bearer without holding the credential.
-- `GET /api/keeper/status`, `POST /api/keeper/wake` **for the app**, on the
-  bearer ingress (`ingress-claude-api.yaml`), checked against the token hash
-  above, plus the keeper as that ingress's custom-error backend answering the
-  `workspace_sleeping` JSON the app already understands (#778). The browser's
-  versions of these two exist (§4.3) — behind basic auth or oauth2-proxy, and in
-  oauth2 mode under `/oauth`, so they leave `/api/keeper/*` free for this.
+Step 4a built the pushes and the phone path; see §4.4. What is left is step 4b:
+
+- The keeper in front of the webhook and cron traffic: pass requests through
+  byte for byte while the workspace is awake, and while it is asleep answer 202,
+  queue the raw request, wake the workspace and replay it unchanged — so
+  `server.py` still checks the signature itself. An unknown ID answers 404 and
+  wakes nothing (the ID set from §4.4 is what makes that possible).
+- The queue: a 1 MiB body cap, a bounded size, and durability across a keeper
+  restart (§3.3 — it shares the volume §4.4 added).
+- The wake limit. §5 put it in step 5, but step 4b is the first time a
+  stranger's request to a public URL can start a pod, so the cap belongs with
+  that capability. An exhausted budget queues the request and does **not** wake:
+  GitHub does not retry a failed delivery, so discarding would lose the event
+  for good, while delaying it only delays it.
 - Re-applying existing CronJobs at boot when `WORKSPACE_INTERNAL_URL` changed,
   so old manifests pick up the keeper's address.
+
+Two findings from building 4a that shape 4b, both measured in the tree rather
+than assumed:
+
+- **Slack and Stripe signatures expire; GitHub's does not.**
+  `TIMESTAMP_TOLERANCE = 300` is enforced for Slack (`server.py:7180`) *and*
+  Stripe (`server.py:7217`), so a request queued across a 60-second wake can
+  verify for `github`/`generic` and cannot for the other two — and it fails as
+  `404 Not found or unauthorized` with ledger `reason='bad_signature'`, which
+  reads as "your secret is wrong". That is why §4.4's push carries each
+  webhook's `provider`: 4b gives those two a short queue TTL and expires them
+  with a clear log line instead of replaying them into a misleading 404.
+- **Double delivery is not safe in general.** `_ReplayCache` is in-memory only
+  (`server.py:6670`) with a 300-second TTL, so it catches a duplicate inside one
+  pod lifetime and nothing more — and across a sleep, which is exactly this
+  case, it is empty. `handle_cron_fire` has no dedup at all
+  (`handlers/triggers.py:428`). So 4b has to choose semantics per kind rather
+  than inherit them: webhooks at-least-once, cron and page-watch at-most-once.
 
 ### 4.3 The keeper — implemented (step 3)
 
@@ -507,6 +529,118 @@ chart and image; `keeper.sleep.enabled=true`):
 
 ---
 
+### 4.4 The two pushes and the phone — implemented (step 4a)
+
+The keeper now knows two things it cannot find out for itself, and the phone can
+wake a sleeping workspace. Everything stays behind `keeper.enabled`, and with it
+off the chart renders byte-identical to step 3 in both auth modes.
+
+**One listener per class of caller.** Step 3 had two; step 4a adds two more, and
+the chart's NetworkPolicy admits each from exactly one place:
+
+| Port | Service | Reached from | Authenticated by |
+|---|---|---|---|
+| 8080 | `keeper-<user>` | anyone, through the ingress | nothing — it never acts |
+| 8081 | `keeper-<user>-wake` | the ingress controller | the ingress (basic auth / oauth2-proxy) |
+| 8082 | `keeper-<user>-api` | the ingress controller | the keeper, against the token hash |
+| 8083 | `keeper-<user>-control` | the workspace pod only | the keeper, against a shared secret |
+
+**What the workspace pushes** (`charts/workspace/keeper_push.py`):
+
+- `POST /api/keeper/triggers` — the ids of every webhook, cron and page-watch,
+  each with its kind and, for webhooks, its provider name. **The whole set every
+  time, never a delta**: a delete that raced a keeper restart would otherwise
+  leave a deleted id behind, and a deleted webhook that still wakes the
+  workspace is the failure this design exists to prevent.
+- `POST /api/keeper/token-hash` — `hashlib.sha256(token).hexdigest()`. Enough to
+  check the bearer the app presents, not enough to mint one.
+
+Both go at every boot, not only when something changed, because while the
+workspace slept the keeper may have restarted, been deployed for the first time,
+or lost its store — and nothing else can repair that. Both are also fired on
+create and delete, and the token hash on rotation (the one place the token
+changes, `handle_claude_regenerate_token`). They run in daemon threads: a keeper
+that is down must never turn into a failed save, and a lost push is repaired by
+the next boot.
+
+**No secret can leave**, and that is enforced by shape rather than by vigilance.
+The projection reads ids from *filenames* and opens a config only to read
+`provider`, which is checked against an allowlist. `tests/keeper_push_test.py`
+asserts it twice: by name, hunting every secret field the three managers write;
+and structurally, requiring every pushed entry's key set to be a subset of
+`{kind, id, provider}` — which fails for a field added to a trigger config next
+year that nobody thought to add to the first list.
+
+**Why a shared secret as well as the NetworkPolicy.** A `NetworkPolicy` does
+nothing whatsoever unless the cluster's CNI implements it — minikube's default
+accepts every policy and enforces none, silently. A port that can be made to
+hand out wake authority must not have the CNI as its only lock. The secret is
+generated by the chart and preserved across `helm upgrade` by a `lookup`, the
+same way the controller's admin token is.
+
+**The keeper's own volume.** `keeper-<user>-state`, ReadWriteOnce, 1Gi. It
+exists because the facts above can only be pushed while the workspace is awake,
+so an in-memory store would come back empty after a restart during a sleep and
+every webhook would answer 404 for ever. Two consequences that are easy to miss
+and both cost a broken deploy: the Deployment must use `strategy: Recreate`, or
+a rolling update deadlocks waiting for a volume the old pod still holds; and the
+pod needs `fsGroup: 65532`, or the keeper — non-root with a read-only root
+filesystem — cannot write the one directory it is allowed to write. Unlike
+`pvc.yaml` it carries no `helm.sh/resource-policy: keep`: everything on it is
+re-pushed at the next boot, so keeping it past the release would only orphan
+volumes.
+
+**The phone's path.** `POST /api/keeper/wake` and `GET /api/keeper/status` on
+`keeper-ingress-api.yaml`, oauth2 mode only — that is the only mode in which the
+phone's bearer ingress exists at all. Three things about it are deliberate and
+each would be a bug the other way:
+
+- **It carries no ingress auth.** oauth2-proxy would answer a bearer request
+  with a 302 the app cannot follow. The keeper checks the token hash itself.
+- **It requires neither `X-Keeper-Wake` nor a same-origin `Sec-Fetch-Site`.**
+  Those defend a *cookie*-authenticated browser against another site acting for
+  the user; a bearer token is never attached automatically, so there is nothing
+  to forge, and requiring either would break the shipped app, which sends
+  neither.
+- **An admin-stopped workspace answers 409, not 200.** The browser's handler
+  answers 200 with the state in the body and lets the page read it; the app
+  parses no state field and reads any 2xx as "it is coming up", so a 200 here
+  would leave the banner saying "Starting your workspace…" for ever about a pod
+  that will never start. Not 404 or 405 either — the app reads those as "no
+  keeper here" and goes to the admin controller instead of showing the reason.
+  The error strings on this listener are therefore user-facing copy, because the
+  app renders `{"error": …}` verbatim in the banner.
+
+**Routing, and why it is not left to luck.** On this host every nginx location
+renders as a regex, because several Ingresses here use `rewrite-target` — so
+`pathType: Exact` is widened to a case-insensitive prefix and the winner is
+settled by emission order. Step 3's keeper paths happened to be the longer
+string and won; the app's `/api/keeper/wake` is **shorter** than the bearer
+ingress's pattern, so relying on the same luck would be a coin toss. Instead the
+two location sets are made disjoint: `ingress-claude-api.yaml` excludes exactly
+those two paths with a negative lookahead,
+`/(api/(?!keeper/(?:status|wake)$).*|metrics|health)`, anchored with `$` so that
+step 1's `/api/keeper/idle` still reaches the workspace. Ordering then cannot
+matter. The keeper still checks the exact path itself and 404s everything else.
+
+**The away answer for an API caller.** `:8080` keeps serving the page, and now
+answers `{"code":"workspace_sleeping"}` with a 503 when the caller asked for
+JSON. The choice is keyed on `Accept` — and on `X-Format`, which is how
+ingress-nginx passes the original `Accept` to an error backend — never on the
+path: `/health` and `/api/keeper/wake` are both paths a browser lands on while
+the workspace is away, and they must still get the page. That marker is what
+`mobile/src/util/workspaceReach.ts` reads to tell "asleep" from "unreachable",
+so `ingress-claude-api.yaml` also gains the keeper as its custom-error backend;
+without it the app gets a raw nginx HTML 503 and can only say the vaguer thing.
+This listener still never touches the Kubernetes API, so it reports no state —
+"away" is all it can honestly say, and all the app needs before offering Wake.
+
+**Not in step 4a:** the webhook and cron proxy, the queue and the wake limit
+(step 4b, §4.2), and the idle loop (step 5). A webhook or a cron arriving at a
+sleeping workspace still fails as it did before.
+
+---
+
 ## 5. Staging plan
 
 Ordered so each step is separately reviewable and separately revertible, and so
@@ -517,9 +651,10 @@ the two PRs that carry real risk come after the cheap ones.
 | 1 | **The idle contract** — `keeper_idle.py`, `GET /api/keeper/idle`, tests. No keeper, no behaviour change. | — (done) |
 | 2 | **Decide §2.2 and §3.1.** Land the `replicas` ownership change and the chart's `keeper:` values block with everything defaulting off, so PR 3 has somewhere to plug in. `keeper.sleep.idleMinutes` → `KC_KEEPER_IDLE_MINUTES`. | — (done) |
 | 3 | **The keeper itself** — replaces `holding-<user>`, a logged-in visit wakes a workspace it put to sleep, `keeper sleep`, RBAC, Deployment, image, CI job, release image (§4.3). No queue, no proxying, no idle loop. `keeper.enabled=false` renders byte-identical to before. | 2 (done) |
-| 4 | **Trigger-ID and token-hash push** from `server.py`, CronJob re-apply on URL change; the phone's `status`/`wake` on the bearer ingress and the `workspace_sleeping` JSON (§4.2). Wakes now work for webhooks, crons and the app. | 3 |
-| 5 | **Sleep** — the idle loop, the rate limiter, `sleep.enabled=false` by default, controller sleeping-vs-stopped (which also closes §4.3's 0 -> 0 gap). The sleep record of §2.1 is the `managedFields` ownership step 3 already uses. | 4 |
-| 6 | **Mobile** — `workspaceState`, `WakeBanner`, the sleeping-503 JSON in `client.ts`, approval-queue flush, push-tap deferral, demo mode. Independent of 5's default. | done (#778); its keeper path goes live with step 4 |
+| 4a | **Trigger-ID and token-hash push** from `server.py`; the phone's `status`/`wake` on its own bearer ingress, and the `workspace_sleeping` JSON on the error path (§4.4). The app's Wake button starts working. No proxying, no queue. `keeper.enabled=false` still renders byte-identical. | 3 (done) |
+| 4b | **The webhook and cron front door** — pass-through while awake; queue, wake and replay while asleep; the per-provider queue TTL; the wake limit; CronJob re-apply on URL change (§4.2). Wakes then work for webhooks and crons too. | 4a |
+| 5 | **Sleep** — the idle loop, `sleep.enabled=false` by default, controller sleeping-vs-stopped (which also closes §4.3's 0 -> 0 gap). The sleep record of §2.1 is the `managedFields` ownership step 3 already uses. The rate limiter moved to 4b, where the first unattended caller arrives. | 4b |
+| 6 | **Mobile** — `workspaceState`, `WakeBanner`, the sleeping-503 JSON in `client.ts`, approval-queue flush, push-tap deferral, demo mode. Independent of 5's default. | done (#778); its keeper path went live with step 4a |
 
 PR 6 is the whole second half of #728 and is a workstream in its own right: 13
 files in `mobile/`, its own vitest suite, and a phone to test on. It should be
