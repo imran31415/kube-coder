@@ -1,0 +1,33 @@
+{{- if .Values.provision.enabled }}
+{{- if eq .Values.provision.broker.namespace .Values.namespace }}
+{{- fail "provision.broker.namespace must differ from .Values.namespace: co-locating the privileged provisioner ServiceAccount with the internet-facing controller is exactly the privilege bridge #421 removed (a principal that can create a workload beside another SA inherits it). Pick a separate namespace." }}
+{{- end }}
+# The provisioner's own namespace (#421).
+#
+# This is the whole point of the rearchitecture: the cluster-privileged
+# `workspace-provisioner` ServiceAccount and the Jobs that run as it live HERE,
+# and the internet-facing controller holds no workload-creation rights in this
+# namespace at all — its only grant here is `create` on ProvisionRequests
+# (broker-rbac.yaml). Creating a Job in the SAME namespace as a privileged SA is
+# what bridged a controller compromise to that SA's ClusterRole; moving the SA
+# out of the controller's namespace removes the bridge rather than narrowing it.
+#
+# Rendered by the chart (not a prerequisite) so that `provision.enabled=false`
+# tears the entire privileged path down with it (#421 AC 6).
+#
+# ONE OPERATOR STEP IS STILL REQUIRED: the shared `regcred` image-pull Secret
+# must be copied into this namespace before the broker Deployment and the
+# provisioner Jobs can pull their images — a pod can only pull from a Secret in
+# its own namespace, and the chart has no registry credentials to render. Run
+# `scripts/ensure-provision-broker-namespace.sh` with your admin kubeconfig
+# after installing. Until then the broker pod sits in ImagePullBackOff and
+# recovers by itself once the Secret lands.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.provision.broker.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+    kube-coder.dev/managed: "true"
+    kube-coder.dev/role: provisioner
+{{- end }}

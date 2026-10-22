@@ -246,7 +246,7 @@ tests:
       - notExists:
           path: spec.validations[8]
 
-  - it: binds the policy in Deny mode scoped to the control-plane namespace
+  - it: binds the policy in Deny mode scoped to the BROKER namespace
     set:
       provision.enabled: true
       provision.workspaceDomain: dev.test.io
@@ -263,6 +263,13 @@ tests:
       - contains:
           path: spec.validationActions
           content: Deny
+      # #421 moved the provisioner Job out of the control-plane namespace
+      # (test-values.yaml's `test`) into the broker's. A binding still scoped to
+      # the old namespace would fail OPEN — it would simply never match — so
+      # this assertion is load-bearing, not cosmetic.
       - equal:
+          path: spec.matchResources.namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: kube-coder-provision
+      - notEqual:
           path: spec.matchResources.namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
           value: test

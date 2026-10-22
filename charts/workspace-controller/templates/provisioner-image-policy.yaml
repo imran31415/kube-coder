@@ -40,7 +40,9 @@ spec:
               kinds:
                 - Pod
               namespaces:
-                - {{ .Values.namespace | quote }}
+                # The broker's namespace since #421 — that is where the
+                # provisioner Pod runs now, not the control-plane namespace.
+                - {{ .Values.provision.broker.namespace | quote }}
       # Only gate Pods that actually run as the provisioner SA — every other
       # workload in the namespace is out of scope and passes untouched.
       preconditions:
@@ -65,8 +67,9 @@ spec:
 # --- engine: sigstore (Sigstore policy-controller) ---------------------------
 # Native cosign policy: only images matching the approved repo AND carrying a
 # keyless signature from the configured identity/issuer are admitted. Scope it to
-# the provisioner by labelling the control-plane namespace for policy-controller
-# enforcement (see docs/SUPPLY_CHAIN.md).
+# the provisioner by labelling the BROKER namespace
+# ({{ .Values.provision.broker.namespace }}) for policy-controller enforcement
+# — since #421 that is where the provisioner Pod runs (see docs/SUPPLY_CHAIN.md).
 apiVersion: policy.sigstore.dev/v1beta1
 kind: ClusterImagePolicy
 metadata:

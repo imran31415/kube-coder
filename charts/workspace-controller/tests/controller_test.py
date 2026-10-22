@@ -360,151 +360,139 @@ class ProvisionPureLogicTest(unittest.TestCase):
         self.assertIn('clientSecret: "supersecret"', text)
         self.assertNotIn('clientId', text)
 
-    def test_job_manifest_uses_provisioner_sa_and_slug(self):
-        controller.PROVISIONER_IMAGE = 'example/img:1'
-        controller.PROVISIONER_SA = 'workspace-provisioner'
-        controller.NAMESPACE = 'coder'
-        # Provisioning now requires an immutable pinned chart ref (finding 7).
-        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
-        controller.CHART_REF = 'v1.40.1'
-        job = controller.build_job_manifest('octo')
-        self.assertEqual(job['kind'], 'Job')
-        self.assertEqual(job['spec']['template']['spec']['serviceAccountName'], 'workspace-provisioner')
-        self.assertEqual(job['metadata']['labels']['provisionUser'], 'octo')
-        env = {e['name']: e.get('value') for e in job['spec']['template']['spec']['containers'][0]['env']}
-        self.assertEqual(env['SLUG'], 'octo')
-        # The Job runs in the control-plane namespace (regcred source) but deploys
-        # the workspace into its own ws-<slug> namespace (#103).
-        self.assertEqual(job['metadata']['namespace'], 'coder')
-        self.assertEqual(env['NAMESPACE'], 'coder')
-        self.assertEqual(env['WS_NAMESPACE'], 'ws-octo')
-        self.assertIn('ttlSecondsAfterFinished', job['spec'])
-        self.assertEqual(job['spec']['template']['spec']['restartPolicy'], 'Never')
-
-    def test_job_manifest_conforms_to_admission_policy_invariants(self):
-        """The real provisioner Job must satisfy every invariant the
-        ValidatingAdmissionPolicy (templates/provisioner-vap.yaml) enforces on
-        provisioner-SA Jobs — otherwise deploying the VAP would reject the
-        controller's own legitimate Job (finding 4). Keep code + policy in sync."""
-        controller.PROVISIONER_IMAGE = 'test-registry/coder:tag'
-        controller.PROVISIONER_SA = 'workspace-provisioner'
-        controller.NAMESPACE = 'coder'
-        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
-        controller.CHART_REF = 'v1.40.1'   # immutable pinned ref (finding 7)
-        pod = controller.build_job_manifest('octo')['spec']['template']['spec']
-        # Exactly one container named 'provision'; no init/ephemeral containers.
-        self.assertEqual(len(pod['containers']), 1)
-        self.assertEqual(pod['containers'][0]['name'], 'provision')
-        self.assertNotIn('initContainers', pod)
-        self.assertNotIn('ephemeralContainers', pod)
-        # No command/args override — the image's baked entrypoint is the program
-        # (#422). The VAP denies these outright, so the controller's own Job must
-        # not set them or it would reject itself.
-        self.assertNotIn('command', pod['containers'][0])
-        self.assertNotIn('args', pod['containers'][0])
-        # Approved image repository.
-        self.assertTrue(pod['containers'][0]['image'].startswith('test-registry/coder'))
-        # No privileged securityContext, no host namespaces, no hostPath volumes.
-        for c in pod['containers']:
-            sc = c.get('securityContext', {})
-            self.assertFalse(sc.get('privileged'))
-            self.assertFalse(sc.get('allowPrivilegeEscalation'))
-            self.assertNotEqual(sc.get('runAsUser'), 0)
-            self.assertFalse(sc.get('capabilities', {}).get('add'))
-        self.assertFalse(pod.get('hostNetwork'))
-        self.assertFalse(pod.get('hostPID'))
-        self.assertFalse(pod.get('hostIPC'))
-        for v in pod.get('volumes', []):
-            self.assertNotIn('hostPath', v)
+    # NB the Job-manifest tests that used to live here moved to broker_test.py
+    # with the code (#421). The controller no longer builds the privileged Job;
+    # asserting its shape against this module would assert the bridge is back.
 
 
-class ChartRefSupplyChainTest(unittest.TestCase):
-    """Finding 7: the provisioner Job clones CHART_REF and runs its make deploy
-    under the cluster-privileged provisioner SA, so the ref must be immutable.
-    Mutable/floating refs are rejected fail-closed unless the operator opts in
-    via ALLOW_MUTABLE_CHART_REF, and every provision logs the ref it used."""
+class ProvisionRequestSurfaceTest(unittest.TestCase):
+    """#421 — what the internet-facing controller is still able to ask for.
+
+    The chart-ref supply-chain suite (finding 7) moved to broker_test.py along
+    with the code it guards: CHART_REF is the broker's constant now, and the
+    controller cannot supply one. What is left to assert here is the shape of
+    the request itself, which IS the new trust boundary."""
 
     def setUp(self):
-        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
-        self.addCleanup(setattr, controller, 'ALLOW_MUTABLE_CHART_REF',
-                        controller.ALLOW_MUTABLE_CHART_REF)
-        self.addCleanup(setattr, controller, 'PROVISIONER_IMAGE',
-                        controller.PROVISIONER_IMAGE)
-        self.addCleanup(setattr, controller, 'PROVISIONER_SA', controller.PROVISIONER_SA)
-        self.addCleanup(setattr, controller, 'NAMESPACE', controller.NAMESPACE)
-        controller.PROVISIONER_IMAGE = 'example/img:1'
-        controller.PROVISIONER_SA = 'workspace-provisioner'
-        controller.NAMESPACE = 'coder'
-        controller.ALLOW_MUTABLE_CHART_REF = False
+        self.addCleanup(setattr, controller, 'PROVISION_BROKER_NAMESPACE',
+                        controller.PROVISION_BROKER_NAMESPACE)
+        controller.PROVISION_BROKER_NAMESPACE = 'kube-coder-provision'
 
-    def test_classify_chart_ref(self):
-        self.assertEqual(controller.classify_chart_ref('a' * 40), 'commit-sha')
-        self.assertEqual(controller.classify_chart_ref('b' * 64), 'commit-sha')
-        self.assertEqual(controller.classify_chart_ref('v1.40.1'), 'release-tag')
-        for mut in ('main', 'latest', 'HEAD', 'feature/x', 'develop', 'abc1234'):
-            self.assertEqual(controller.classify_chart_ref(mut), 'mutable', mut)
+    def test_request_spec_is_exactly_one_field(self):
+        """The entire attack surface. A second field here is a second thing a
+        compromised controller gets to choose about a cluster-privileged Job."""
+        req = controller.build_provision_request('octo')
+        self.assertEqual(req['spec'], {'slug': 'octo'})
+        self.assertEqual(req['kind'], 'ProvisionRequest')
+        self.assertEqual(req['apiVersion'], 'kube-coder.dev/v1alpha1')
 
-    def test_rejects_mutable_refs_by_default(self):
-        for mut in ('main', 'latest', 'HEAD', 'feature/x'):
-            controller.CHART_REF = mut
-            with self.assertRaises(controller.ProvisionError):
-                controller.validate_chart_ref(mut)
-            # create_provision_job -> build_job_manifest must fail closed too.
-            with self.assertRaises(controller.ProvisionError):
-                controller.build_job_manifest('octo')
+    def test_request_is_filed_in_the_broker_namespace(self):
+        req = controller.build_provision_request('octo')
+        self.assertEqual(req['metadata']['namespace'], 'kube-coder-provision')
+        self.assertNotEqual(req['metadata']['namespace'], controller.NAMESPACE)
 
-    def test_error_message_names_the_escape_hatch(self):
-        with self.assertRaises(controller.ProvisionError) as ctx:
-            controller.validate_chart_ref('main')
-        msg = str(ctx.exception)
-        self.assertIn('allowMutableRef', msg)
-        self.assertIn('immutable', msg)
+    def test_request_is_labelled_for_status_lookup(self):
+        req = controller.build_provision_request('octo')
+        self.assertEqual(req['metadata']['labels']['provisionUser'], 'octo')
 
-    def test_accepts_immutable_sha_and_release_tag(self):
-        for ref in ('a' * 40, 'c' * 64, 'v1.40.1'):
-            controller.CHART_REF = ref
-            self.assertTrue(controller.chart_ref_is_immutable(ref))
-            job = controller.build_job_manifest('octo')   # must not raise
-            env = {e['name']: e.get('value')
-                   for e in job['spec']['template']['spec']['containers'][0]['env']}
-            self.assertEqual(env['CHART_REF'], ref)
+    def test_request_name_is_unique_per_call_and_dns_safe(self):
+        # Re-provisioning the same slug is routine (the update path reconciles
+        # config through it), so a request is an event, not a singleton.
+        a = controller.build_provision_request('octo')['metadata']['name']
+        self.assertTrue(a.startswith('provision-octo-'))
+        self.assertLessEqual(len(a), 63)
+        long_name = controller.build_provision_request('o' * 60)['metadata']['name']
+        self.assertLessEqual(len(long_name), 63)
 
-    def test_escape_hatch_permits_mutable_ref(self):
-        controller.ALLOW_MUTABLE_CHART_REF = True
-        controller.CHART_REF = 'main'
-        self.assertEqual(controller.validate_chart_ref('main'), 'mutable')
-        job = controller.build_job_manifest('octo')       # must not raise
-        env = {e['name']: e.get('value')
-               for e in job['spec']['template']['spec']['containers'][0]['env']}
-        self.assertEqual(env['CHART_REF'], 'main')
+    def test_controller_holds_none_of_the_privileged_constants(self):
+        """The strongest form of "it cannot shape the Job": it does not know
+        what the Job looks like. Each of these used to live in this module and
+        was injected into the Job manifest; all of them are the broker's now."""
+        for gone in ('build_job_manifest', 'PROVISIONER_IMAGE', 'PROVISIONER_SA',
+                     'PROVISIONER_PULL_SECRET', 'CHART_REPO', 'CHART_REF',
+                     'ALLOW_MUTABLE_CHART_REF', 'classify_chart_ref',
+                     'validate_chart_ref', 'create_provision_job'):
+            self.assertFalse(hasattr(controller, gone),
+                             f'{gone} belongs to broker.py since #421 — a copy here '
+                             f'is a value a controller compromise can choose again')
 
-    def test_resolved_ref_is_logged(self):
-        controller.CHART_REF = 'v1.40.1'
-        buf = io.StringIO()
-        orig = sys.stderr
-        sys.stderr = buf
-        try:
-            controller.build_job_manifest('octo')
-        finally:
-            sys.stderr = orig
-        out = buf.getvalue()
-        self.assertIn('v1.40.1', out)
-        self.assertIn('release-tag', out)
-        self.assertIn('octo', out)
+    def test_create_uses_kubectl_create_not_apply(self):
+        """`create` is the only write verb the controller is granted on
+        ProvisionRequests; `apply` would also need patch. Keeping the command
+        aligned with the grant means an RBAC widening shows up in review."""
+        calls = []
+        self.addCleanup(setattr, controller, 'subprocess', controller.subprocess)
+        fake = types.SimpleNamespace(
+            run=lambda cmd, **kw: calls.append((cmd, kw)) or types.SimpleNamespace(
+                returncode=0, stdout='provisionrequest/provision-octo-1 created', stderr=''))
+        controller.subprocess = fake
+        controller.create_provision_request('octo')
+        cmd = calls[0][0]
+        self.assertEqual(cmd[:2], ['kubectl', 'create'])
+        self.assertNotIn('apply', cmd)
+        self.assertIn('kube-coder-provision', cmd)
+        body = json.loads(calls[0][1]['input'])
+        self.assertEqual(body['spec'], {'slug': 'octo'})
 
-    def test_escape_hatch_decision_is_logged(self):
-        controller.ALLOW_MUTABLE_CHART_REF = True
-        controller.CHART_REF = 'main'
-        buf = io.StringIO()
-        orig = sys.stderr
-        sys.stderr = buf
-        try:
-            controller.build_job_manifest('octo')
-        finally:
-            sys.stderr = orig
-        out = buf.getvalue()
-        self.assertIn('allowMutableRef=True', out)
-        self.assertIn('(mutable)', out)
+
+class ProvisionStatusTest(unittest.TestCase):
+    """The console's contract is unchanged: provision_status still returns the
+    same `job` vocabulary it did when it polled Jobs directly. Only the source
+    of truth moved — it now reads the request's status, which the broker owns
+    and the controller cannot write."""
+
+    def setUp(self):
+        self.addCleanup(setattr, controller, '_kubectl_json', controller._kubectl_json)
+        self.addCleanup(setattr, controller, 'find_workspace', controller.find_workspace)
+        self.addCleanup(setattr, controller, 'WORKSPACE_DOMAIN', controller.WORKSPACE_DOMAIN)
+        controller.WORKSPACE_DOMAIN = 'dev.example.com'
+        controller.find_workspace = lambda slug: None
+
+    def _items(self, *statuses):
+        items = []
+        for n, st in enumerate(statuses):
+            items.append({'metadata': {'name': f'r{n}', 'creationTimestamp': f'2026-01-0{n + 1}T00:00:00Z'},
+                          'spec': {'slug': 'octo'}, 'status': st})
+        controller._kubectl_json = lambda args, namespace=None: {'items': items}
+        return items
+
+    def test_no_requests_reads_as_none(self):
+        self._items()
+        self.assertEqual(controller.provision_status('octo')['job'], 'none')
+
+    def test_phase_maps_onto_the_legacy_job_vocabulary(self):
+        for phase, expected in (('Pending', 'pending'), ('Running', 'running'),
+                                ('Succeeded', 'succeeded'), ('Failed', 'failed'),
+                                ('', 'pending')):
+            self._items({'phase': phase})
+            self.assertEqual(controller.provision_status('octo')['job'], expected, phase)
+
+    def test_an_unknown_future_phase_degrades_to_pending(self):
+        self._items({'phase': 'SomethingNew'})
+        self.assertEqual(controller.provision_status('octo')['job'], 'pending')
+
+    def test_latest_request_wins(self):
+        self._items({'phase': 'Failed'}, {'phase': 'Succeeded'})
+        self.assertEqual(controller.provision_status('octo')['job'], 'succeeded')
+
+    def test_broker_message_is_surfaced(self):
+        """Misconfiguration of the privileged path (unset provision.image, a
+        mutable chart ref) is invisible to the controller now, so the broker's
+        message is the only way an admin sees the reason."""
+        self._items({'phase': 'Failed', 'message': 'refusing to provision: provision.image is not set'})
+        self.assertIn('provision.image', controller.provision_status('octo')['message'])
+
+    def test_status_is_read_from_the_broker_namespace(self):
+        seen = {}
+
+        def fake(args, namespace=None):
+            seen['args'], seen['ns'] = args, namespace
+            return {'items': []}
+        controller._kubectl_json = fake
+        controller.provision_status('octo')
+        self.assertEqual(seen['ns'], controller.PROVISION_BROKER_NAMESPACE)
+        self.assertIn('provisionrequests.kube-coder.dev', seen['args'])
+        self.assertIn('provisionUser=octo', seen['args'])
 
 
 # Repo root, for the provisioner image sources the Job now runs FROM rather than
@@ -600,51 +588,11 @@ class ProvisionScriptIsBakedIntoImageTest(unittest.TestCase):
                          'the script lives in provisioner/provision.sh; a copy here is code '
                          'the Job manifest could inject again')
 
-    def test_job_container_supplies_no_command_or_args(self):
-        controller.PROVISIONER_IMAGE = 'example/provisioner@sha256:abc'
-        controller.PROVISIONER_SA = 'workspace-provisioner'
-        controller.NAMESPACE = 'coder'
-        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
-        controller.CHART_REF = 'v1.40.1'
-        container = controller.build_job_manifest('octo')['spec']['template']['spec']['containers'][0]
-        self.assertNotIn('command', container)
-        self.assertNotIn('args', container)
-
-    def test_job_still_passes_the_full_env_contract(self):
-        """Env is the whole input surface now, so it must stay complete — the
-        script fails closed on any empty one."""
-        controller.PROVISIONER_IMAGE = 'example/provisioner@sha256:abc'
-        controller.PROVISIONER_SA = 'workspace-provisioner'
-        controller.NAMESPACE = 'coder'
-        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
-        self.addCleanup(setattr, controller, 'GITOPS_REPO', controller.GITOPS_REPO)
-        self.addCleanup(setattr, controller, 'GITOPS_TOKEN', controller.GITOPS_TOKEN)
-        controller.CHART_REF = 'v1.40.1'
-        controller.GITOPS_REPO = 'github.com/x/y.git'
-        controller.GITOPS_TOKEN = 'tok'
-        container = controller.build_job_manifest('octo')['spec']['template']['spec']['containers'][0]
-        names = {e['name'] for e in container['env']}
-        required = {'SLUG', 'NAMESPACE', 'WS_NAMESPACE', 'CHART_REPO', 'CHART_REF',
-                    'GITOPS_REPO', 'GITOPS_BRANCH', 'GITOPS_TOKEN'}
-        self.assertEqual(required, names & required)
-        # …and the script validates exactly that set, so neither side can drop
-        # one silently.
-        script = _read(PROVISION_SH)
-        for var in required:
-            self.assertIn(var, script)
-
-    def test_provisioning_fails_closed_without_a_provisioner_image(self):
-        """No fallback to the controller image any more. With the script baked
-        in, a Job with no command on the controller image would run ubuntu's
-        default shell — exit 0, nothing provisioned. Refuse at build time."""
-        self.addCleanup(setattr, controller, 'PROVISIONER_IMAGE',
-                        controller.PROVISIONER_IMAGE)
-        self.addCleanup(setattr, controller, 'CHART_REF', controller.CHART_REF)
-        controller.CHART_REF = 'v1.40.1'
-        controller.PROVISIONER_IMAGE = ''
-        with self.assertRaises(controller.ProvisionError) as ctx:
-            controller.build_job_manifest('octo')
-        self.assertIn('provision.image', str(ctx.exception))
+    # The three Job-manifest assertions that used to close this class — no
+    # command/args, the full env contract, and fail-closed on an unset
+    # provision.image — moved to broker_test.py with build_job_manifest (#421).
+    # They still run; they just cannot be expressed against this module any
+    # more, which is the property the class above now asserts directly.
 
 
 class ResourceLimitTest(unittest.TestCase):
@@ -962,9 +910,10 @@ class SetWorkspaceImageTest(unittest.TestCase):
                         controller.gitops_update_image_tag)
         controller.gitops_update_image_tag = lambda slug, tag: True
         launched = {}
-        self.addCleanup(setattr, controller, 'create_provision_job',
-                        controller.create_provision_job)
-        controller.create_provision_job = lambda slug: launched.update(slug=slug) or 'job/x'
+        self.addCleanup(setattr, controller, 'create_provision_request',
+                        controller.create_provision_request)
+        controller.create_provision_request = (
+            lambda slug: launched.update(slug=slug) or 'provisionrequest/x')
         return launched
 
     def test_config_reconcile_job_launched_on_update(self):

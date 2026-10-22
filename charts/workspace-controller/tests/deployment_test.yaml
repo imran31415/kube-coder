@@ -180,66 +180,46 @@ tests:
             name: SELF_SERVE_ALLOW_SHARED_TOKEN
             value: "false"
 
-  - it: should not wire provisioning chart env when provisioning is off
+  # #421 — the controller no longer holds ANY of the values that shape the
+  # privileged Job. The chart-ref / provisioner-image env moved to the broker's
+  # Deployment (see the block after this one); what the controller keeps is the
+  # address it files a ProvisionRequest at.
+  - it: should not wire provisioning env when provisioning is off
     template: templates/deployment.yaml
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: ALLOW_MUTABLE_CHART_REF
-            value: "false"
+            name: PROVISION_BROKER_NAMESPACE
+            value: kube-coder-provision
 
-  - it: should auto-pin the default chart ref to the chart's own release tag
-    template: templates/deployment.yaml
-    chart:
-      appVersion: 9.9.9
-    set:
-      provision.enabled: true
-      provision.workspaceDomain: dev.example.com
-      provision.gitops.repo: github.com/o/users.git
-    asserts:
-      # Secure default: mutable refs rejected unless explicitly opted in (finding 7).
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: ALLOW_MUTABLE_CHART_REF
-            value: "false"
-      # Empty provision.chart.ref defaults to v<appVersion> — an immutable
-      # release tag the fail-closed guard accepts, so a default install can
-      # actually provision (#459).
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: CHART_REF
-            value: v9.9.9
-
-  - it: should pass an explicitly pinned chart ref through unchanged
+  - it: tells the controller only where to file a request, never how to build a Job
     template: templates/deployment.yaml
     set:
       provision.enabled: true
       provision.workspaceDomain: dev.example.com
       provision.gitops.repo: github.com/o/users.git
-      provision.chart.ref: 1234567890abcdef1234567890abcdef12345678
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: CHART_REF
-            value: 1234567890abcdef1234567890abcdef12345678
-
-  - it: should thread the allowMutableRef escape hatch when enabled
-    template: templates/deployment.yaml
-    set:
-      provision.enabled: true
-      provision.workspaceDomain: dev.example.com
-      provision.gitops.repo: github.com/o/users.git
-      provision.chart.allowMutableRef: true
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: ALLOW_MUTABLE_CHART_REF
-            value: "true"
+            name: PROVISION_BROKER_NAMESPACE
+            value: kube-coder-provision
+      # Every one of these used to be injected here and threaded into the Job
+      # manifest. A regression that reintroduces one is a regression that hands
+      # an attacker back a value to choose.
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "CHART_REF")]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "CHART_REPO")]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "ALLOW_MUTABLE_CHART_REF")]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "PROVISIONER_IMAGE")]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "PROVISIONER_SERVICE_ACCOUNT")]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "PROVISIONER_PULL_SECRET")]
 
   - it: should mount the controller code + SPA from ConfigMaps
     template: templates/deployment.yaml
