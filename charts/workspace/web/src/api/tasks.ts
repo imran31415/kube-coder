@@ -333,9 +333,31 @@ export const scrollTerminal = (
  *  deployment's auth prefix (empty under basic auth, /oauth behind oauth2). */
 export const terminalUrl = () => `${authPrefix()}/terminal/?t=${Date.now()}`;
 
+/**
+ * The WebSocket path noVNC must ask for, relative to the host root.
+ *
+ * noVNC does NOT derive this from the page's own directory. `app/ui.js` reads
+ * the `path` setting (default `'websockify'`) and builds the socket URL as
+ * `wss://<host>:<port>/<path>` — so a viewer served from
+ * `/oauth/vnc-direct/vnc.html` still asks for `/websockify` at the root
+ * unless it is told otherwise. In oauth2 mode no such route exists (the
+ * websockify ingress is `/oauth/websockify`, so that oauth2-proxy actually
+ * sees the request), the catch-all `/` ingress sends it to the dashboard on
+ * 6080 instead, and server.py 404s it because `/websockify` is one of its
+ * NON_SPA_PREFIXES. The VNC tab then reports "Failed to connect to server"
+ * while websockify's own log stays empty, because nothing ever reached it.
+ *
+ * No leading slash: noVNC concatenates `'/' + path`. Under basic auth the
+ * prefix is empty and this returns plain `websockify`, which is exactly the
+ * default — so that mode keeps its existing, working behaviour.
+ */
+export const vncWsPath = (prefix = authPrefix()) =>
+  `${prefix.replace(/^\/+/, '')}${prefix ? '/' : ''}websockify`;
+
 /** Absolute URL for the embedded noVNC viewer. */
 export const vncUrl = () =>
-  `${authPrefix()}/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
+  `${authPrefix()}/vnc-direct/vnc.html?path=${encodeURIComponent(vncWsPath())}` +
+  `&autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
 
 /** URL that opens code-server at `folder`, via the deployment's auth prefix
  *  (empty under basic auth, /oauth behind the oauth2 ingress). */
