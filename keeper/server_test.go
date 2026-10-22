@@ -42,6 +42,52 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) statusResponse {
 	return s
 }
 
+// testControlSecret is the shared secret newStep4Server writes out.
+const testControlSecret = "shared-control-secret"
+
+// newStep4Server is newServer plus what step 4's two listeners need: a store on
+// disk and a shared control secret. Kept separate from newServer so the step-3
+// tests keep constructing exactly what they did before.
+func newStep4Server(t *testing.T, f *fakeAPI, k *Kube) *Server {
+	t.Helper()
+	s := newServer(t, f, k)
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Store = store
+	secret := filepath.Join(t.TempDir(), "secret")
+	// With a trailing newline, because that is what a mounted Secret and an
+	// `echo` both produce, and the reader has to tolerate it.
+	if err := os.WriteFile(secret, []byte(testControlSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.ControlSecretFile = secret
+	return s
+}
+
+// doBody is do() with a request body. Separate rather than a wider do(), which
+// has more than twenty call sites across the step-3 tests.
+func doBody(h http.Handler, method, target string, body []byte, header map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, bytes.NewReader(body))
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// errorOf pulls the user-facing "error" field out of a reply.
+func errorOf(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var m map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+	return m["error"]
+}
+
 func TestPageAnswersEveryPathWithTheHoldingPage(t *testing.T) {
 	f, k := newFake(t, 0, 0, FieldManager)
 	h := newServer(t, f, k).PageHandler()
@@ -201,19 +247,85 @@ func TestWakeFromTheSameOrigin(t *testing.T) {
 
 // The page wakes the workspace when it is shown, so another site must not be
 // able to show it in a frame; same-origin frames (the dashboard's) are fine.
+// Every acting response carries the headers. This map is hand-written, so a
+// new route added without a line here is simply not covered — add one with the
+// route. (/healthz is deliberately absent: PageHandler answers it before
+// servePage, so securityHeaders never runs for it.)
 func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 	f, k := newFake(t, 0, 0, FieldManager)
 	s := newServer(t, f, k)
+	s4 := newAppServer(t, f, k)
 	for name, rec := range map[string]*httptest.ResponseRecorder{
-		"page":   do(s.PageHandler(), http.MethodGet, "/", nil),
-		"status": do(s.WakeHandler(), http.MethodGet, "/api/keeper/status", nil),
-		"404":    do(s.WakeHandler(), http.MethodGet, "/nope", nil),
+		"page":              do(s.PageHandler(), http.MethodGet, "/", nil),
+		"status":            do(s.WakeHandler(), http.MethodGet, "/api/keeper/status", nil),
+		"404":               do(s.WakeHandler(), http.MethodGet, "/nope", nil),
+		"sleeping json":     do(s.PageHandler(), http.MethodGet, "/api/claude/tasks", map[string]string{"Accept": "application/json"}),
+		"app status":        do(s4.AppHandler(), http.MethodGet, "/api/keeper/status", appAuth()),
+		"app wake":          do(s4.AppHandler(), http.MethodPost, "/api/keeper/wake", appAuth()),
+		"app forbidden":     do(s4.AppHandler(), http.MethodPost, "/api/keeper/wake", nil),
+		"app 404":           do(s4.AppHandler(), http.MethodGet, "/nope", appAuth()),
+		"control accepted":  doBody(s4.ControlHandler(), http.MethodPost, "/api/keeper/triggers", []byte(`{"triggers":[]}`), authed()),
+		"control forbidden": doBody(s4.ControlHandler(), http.MethodPost, "/api/keeper/triggers", []byte(`{}`), nil),
+		"control 404":       doBody(s4.ControlHandler(), http.MethodPost, "/nope", []byte(`{}`), authed()),
 	} {
 		h := rec.Header()
 		if h.Get("X-Frame-Options") != "SAMEORIGIN" || h.Get("Content-Security-Policy") != "frame-ancestors 'self'" ||
 			h.Get("X-Content-Type-Options") != "nosniff" {
 			t.Errorf("%s: headers %v", name, h)
 		}
+	}
+}
+
+// The page listener answers an API caller with JSON and a browser with the
+// page. All four shapes are pinned because the difference between them is a
+// header a client chooses, and getting it wrong is either a browser staring at
+// raw JSON or an app that cannot tell "away" from "broken".
+func TestPageNegotiatesJSONForAPICallers(t *testing.T) {
+	cases := []struct {
+		name   string
+		header map[string]string
+		json   bool
+	}{
+		{"the app's Accept", map[string]string{"Accept": "application/json"}, true},
+		// ingress-nginx passes the original Accept to a custom-error backend
+		// as X-Format, so the same request arriving that way must agree.
+		{"the error backend's X-Format", map[string]string{"X-Format": "application/json"}, true},
+		{"a charset parameter", map[string]string{"Accept": "application/json; charset=utf-8"}, true},
+		{"a browser", map[string]string{"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}, false},
+		// curl's default. The page is the friendlier answer, and it matches
+		// what no Accept at all does.
+		{"curl's */*", map[string]string{"Accept": "*/*"}, false},
+		{"no Accept at all", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, k := newFake(t, 0, 0, FieldManager)
+			s := newServer(t, f, k)
+			rec := do(s.PageHandler(), http.MethodGet, "/api/claude/tasks", c.header)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("code = %d; want 503 either way", rec.Code)
+			}
+			ct := rec.Header().Get("Content-Type")
+			body := rec.Body.String()
+			if c.json {
+				// Exactly what mobile/src/util/workspaceReach.ts needs: a
+				// non-2xx, a JSON content type, and the marker in the body.
+				if !strings.Contains(ct, "application/json") {
+					t.Fatalf("content-type = %q; the app only classifies JSON", ct)
+				}
+				if !strings.Contains(body, codeSleeping) {
+					t.Fatalf("body = %q; want the %s marker", body, codeSleeping)
+				}
+			} else {
+				if !strings.Contains(ct, "text/html") || !strings.Contains(body, "Waking up") {
+					t.Fatalf("content-type = %q, body = %q; want the page", ct, body)
+				}
+			}
+			// Either way the page listener must not have looked at the API.
+			if f.gets != 0 || len(f.scales) != 0 {
+				t.Fatalf("the page listener touched the API: %d gets, %+v", f.gets, f.scales)
+			}
+		})
 	}
 }
 

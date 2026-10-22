@@ -23,6 +23,13 @@ metadata:
     app: keeper-{{ .Values.user.name }}
 spec:
   replicas: 1
+  # Recreate, not the default RollingUpdate, because the state volume below is
+  # ReadWriteOnce: a rolling update would wait for the new pod to mount a volume
+  # the old pod still holds, and deadlock the upgrade. deployment.yaml does the
+  # same, for the same reason, with the workspace's home volume. The cost is a
+  # few seconds without the page during a keeper upgrade.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: keeper-{{ .Values.user.name }}
@@ -40,6 +47,11 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        # A fresh PersistentVolume arrives owned by root. Without fsGroup the
+        # keeper — uid 65532, read-only root filesystem — cannot write to the
+        # one directory it is supposed to be able to write to, and every push
+        # would fail with EACCES after the listener had already accepted it.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -66,6 +78,17 @@ spec:
         - name: KEEPER_USER_HEADER
           value: X-Auth-Request-User
         {{- end }}
+        # Step 4 (#728): where what the workspace pushes is kept, and the shared
+        # secret those pushes are authenticated with. Setting KEEPER_STATE_DIR
+        # is what turns the app (:8082) and control (:8083) listeners on, so
+        # this image on a step-3 chart runs as step 3 rather than crashlooping
+        # on a volume that is not mounted yet.
+        - name: KEEPER_STATE_DIR
+          value: /var/lib/keeper
+        - name: KEEPER_CONTROL_SECRET_FILE
+          value: /etc/keeper/control/secret
+        # Step 4b: the queue of requests that arrived while the workspace was
+        # away, and the cap on how often an unattended caller may start it.
         # Keep the Go heap under the container limit instead of being OOM-killed.
         - name: GOMEMLIMIT
           valueFrom:
@@ -82,11 +105,22 @@ spec:
           name: http
         - containerPort: 8081
           name: wake
+        - containerPort: 8082
+          name: app
+        - containerPort: 8083
+          name: control
         volumeMounts:
         # A directory mount, not subPath: the keeper reads the page per
         # request, so an upgrade that edits the copy lands without a restart.
         - name: page
           mountPath: /etc/keeper/page
+          readOnly: true
+        # The only writable path in the container. Holds the trigger ids and
+        # the token hash — and, from step 4b, the queued webhook bodies.
+        - name: state
+          mountPath: /var/lib/keeper
+        - name: control
+          mountPath: /etc/keeper/control
           readOnly: true
         # /healthz never touches the API server, so the API being slow or down
         # can't fail these and take the page away with it. The timeouts leave
@@ -122,6 +156,16 @@ spec:
           items:
           - key: holding.html
             path: holding.html
+      - name: state
+        persistentVolumeClaim:
+          claimName: keeper-{{ .Values.user.name }}-state
+      - name: control
+        secret:
+          secretName: {{ .Values.keeper.controlSecret.existingSecretName | default (printf "keeper-%s-control" .Values.user.name) }}
+          items:
+          - key: secret
+            path: secret
+          defaultMode: 0400
 ---
 # The page. The ingresses' default backend: it answers every path with the
 # holding page and never acts, because in oauth2 mode the root ingress sends it
@@ -157,5 +201,43 @@ spec:
   ports:
   - port: 80
     targetPort: wake
+    name: http
+---
+# The app's status and wake (#728 step 4), and from step 4b the webhook and cron
+# pass-through. Its own Service for the same reason the wake listener has one:
+# only keeper-ingress-api.yaml routes here, and what arrives is authenticated by
+# the keeper against the token hash rather than by the ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: app
+    name: http
+---
+# What the workspace pushes in (#728 step 4). Reached only from the workspace
+# pod — keeper-networkpolicy.yaml admits nothing else to this port, and the
+# shared secret is the second lock, because a NetworkPolicy does nothing at all
+# unless the cluster's CNI implements it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}-control
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: control
     name: http
 {{- end }}

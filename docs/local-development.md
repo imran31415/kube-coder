@@ -175,6 +175,30 @@ make local-down DELETE=1     # also delete the minikube profile entirely
   for multi-tenant clusters.
 - **No TLS.** Local mode serves plain HTTP. That's fine on localhost; don't
   expose it.
+- **NetworkPolicy is not enforced by default — and nothing tells you.**
+  minikube's default CNI accepts every `NetworkPolicy` object and enforces none
+  of them. `kubectl get networkpolicy` lists them, `kubectl describe` looks
+  right, and traffic they forbid flows anyway. So a local test of an isolation
+  rule passes without proving anything, which is worse than not running it.
+  For a cluster that really enforces them:
+
+  ```bash
+  make local-down DELETE=1
+  make local-up LOCAL_CNI=calico
+  ```
+
+  Needed for the always-on keeper's isolation checks (#728 — the workspace pod
+  may reach the keeper's control port and nothing else) and for anything else
+  that asserts on `networkpolicy.yaml` or `networkpolicy-egress.yaml`.
+- **Basic auth, so the bearer and webhook ingresses do not exist.**
+  `ingress-claude-api.yaml` (the phone's API) and `ingress-webhooks.yaml` (the
+  public webhook receiver) are both gated on `ingress.auth.type=oauth2`, and
+  the local overlay is `basic`. They are simply absent here. oauth2 mode needs
+  a real HTTPS host, because `oauth2-proxy.yaml` hardcodes
+  `--cookie-secure=true` and an `https://` redirect URL — so the phone and
+  public-webhook paths cannot be exercised end-to-end on a local cluster at
+  all. Test those against a real host, or drive the keeper's listeners
+  directly from inside the cluster.
 - **Resources.** Defaults are laptop-sized; heavy builds/tests inside the
   workspace may want a bigger `minikube start --memory`.
 - **Apple Silicon: the in-workspace browser/Desktop is degraded.** The image

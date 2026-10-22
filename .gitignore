@@ -72,3 +72,10 @@ charts/workspace/.devdata/
 # this is the second lock on the same door. .dockerignore carries the same entry
 # for image builds, which ignore this file. See docs/BACKUP_RESTORE.md.
 backups/
+
+# The keeper binary, when someone runs `go build` inside keeper/ instead of
+# `go vet` / `go test` (#728). The Dockerfile builds to /out, so a stray
+# executable here is always a local accident — and a 7 MB one that git would
+# happily take.
+keeper/keeper
+keeper/keeper.exe

@@ -735,3 +735,36 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "keeper.sleep.idleMinutes must be a whole number of minutes >= 1 (got soon)"
+  # ── The workspace's side ──────────────────────────────────────────────────
+  - it: tells the workspace where to push, and what to push with
+    set:
+      keeper.enabled: true
+      keeper.image: ghcr.io/imran31415/kube-coder/keeper:test
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_CONTROL_URL
+            value: http://keeper-testuser-control.test.svc.cluster.local
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_CONTROL_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: keeper-testuser-control
+                key: secret
+
+  - it: says nothing about a keeper to a workspace without one
+    set:
+      keeper.enabled: false
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KEEPER_CONTROL_URL

@@ -120,6 +120,17 @@ spec:
         # without ?idle_minutes= (keeper_idle.py; #728).
         - name: KC_KEEPER_IDLE_MINUTES
           value: {{ $idleMinutes | quote }}
+        # Where to push the trigger ids and the hash of the API token, and the
+        # shared secret to authenticate those pushes with (#728 step 4,
+        # keeper_push.py). Both must be set or keeper_push does nothing, which
+        # is what a keeper-less workspace wants.
+        - name: KEEPER_CONTROL_URL
+          value: http://keeper-{{ .Values.user.name }}-control.{{ .Values.namespace }}.svc.cluster.local
+        - name: KEEPER_CONTROL_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.keeper.controlSecret.existingSecretName | default (printf "keeper-%s-control" .Values.user.name) }}
+              key: secret
         {{- end }}
         {{- if .Values.claude.apiKey }}
         - name: ANTHROPIC_API_KEY

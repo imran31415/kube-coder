@@ -1,9 +1,14 @@
-suite: always-on keeper (#728 step 3)
+suite: always-on keeper (#728 steps 3 and 4)
 templates:
   - templates/keeper-deployment.yaml
   - templates/keeper-rbac.yaml
   - templates/keeper-ingress.yaml
+  - templates/keeper-ingress-api.yaml
   - templates/keeper-networkpolicy.yaml
+  - templates/keeper-pvc.yaml
+  - templates/keeper-secret.yaml
+  - templates/networkpolicy-egress.yaml
+  - templates/ingress-claude-api.yaml
   - templates/holding-deployment.yaml
   - templates/holding-configmap.yaml
   - templates/ingress.yaml
@@ -302,7 +307,10 @@ tests:
           pattern: "document.visibilityState === 'visible'"
 
   # ── Only the ingress controller reaches it ────────────────────────────────
-  - it: admits only ingress-nginx, on the keeper's two ports
+  # One class of caller per port. The ingress controller reaches the page, the
+  # browser's wake and the app's; the workspace pod reaches the control port and
+  # nothing else, so it can push facts in but cannot wake itself (#728 step 4).
+  - it: admits ingress-nginx to the public ports and only the workspace to control
     template: templates/keeper-networkpolicy.yaml
     asserts:
       - equal:
@@ -320,3 +328,268 @@ tests:
                   port: 8080
                 - protocol: TCP
                   port: 8081
+                - protocol: TCP
+                  port: 8082
+            - from:
+                - podSelector:
+                    matchLabels:
+                      app: ws-testuser
+              ports:
+                - protocol: TCP
+                  port: 8083
+      # Same-namespace by construction: a namespaceSelector here would let a
+      # co-tenant's workspace push to this keeper.
+      - notExists:
+          path: spec.ingress[1].from[0].namespaceSelector
+
+  # ── Step 4: nothing new renders with the keeper off ───────────────────────
+  - it: renders no state volume when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-pvc.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no control secret when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no app ingress when off
+    set:
+      keeper.enabled: false
+      ingress.auth.type: oauth2
+    template: templates/keeper-ingress-api.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: leaves the bearer ingress exactly as it was when off
+    set:
+      keeper.enabled: false
+      ingress.auth.type: oauth2
+    template: templates/ingress-claude-api.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /(api/.*|metrics|health)
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+
+  # ── The app's route in (step 4) ───────────────────────────────────────────
+  # oauth2 only, because ingress-claude-api.yaml — the bearer API this sits
+  # beside — does not exist in basic mode.
+  - it: has no app ingress in basic mode, where there is no bearer API
+    template: templates/keeper-ingress-api.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: routes the app status and wake to the keeper, with no ingress auth
+    set:
+      ingress.auth.type: oauth2
+    template: templates/keeper-ingress-api.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          # Anchored: unanchored, /api/keeper/wakeX would match both this
+          # location and ingress-claude-api.yaml's, and emission order
+          # would decide which backend served it.
+          value: /api/keeper/(status|wake)$
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: keeper-testuser-api
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/use-regex"]
+          value: "true"
+      # oauth2-proxy would answer a bearer wake with a 302 the app cannot
+      # follow. The keeper checks the token hash itself instead.
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+      # A rewrite-target here would rewrite the path into the workspace's
+      # bearer-marker prefix, and it would never reach the keeper.
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+
+  # The two location sets must be disjoint: on this host every location renders
+  # as a regex, so an overlap is settled by emission order, and the app's path
+  # is the shorter of the two.
+  - it: hands those two paths over on the bearer ingress, and keeps idle
+    set:
+      ingress.auth.type: oauth2
+    template: templates/ingress-claude-api.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /(api/(?!keeper/(?:status|wake)$).*|metrics|health)
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+          value: keeper-testuser
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/custom-http-errors"]
+          value: "502,503,504"
+
+  # ── The pod (step 4) ──────────────────────────────────────────────────────
+  - it: recreates rather than rolling, and can write its own volume
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      # A RollingUpdate would wait for the new pod to mount a ReadWriteOnce
+      # volume the old pod still holds, and deadlock the upgrade.
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      # A fresh volume arrives owned by root; without this the keeper runs as
+      # 65532 and cannot write the one directory it is allowed to write.
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            containerPort: 8082
+            name: app
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            containerPort: 8083
+            name: control
+      # Setting this is what turns the step-4 listeners on, so this image on a
+      # step-3 chart keeps running as step 3 instead of crashlooping.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_STATE_DIR
+            value: /var/lib/keeper
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: state
+            persistentVolumeClaim:
+              claimName: keeper-testuser-state
+
+  - it: gives the app listener its own Service
+    template: templates/keeper-deployment.yaml
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-api
+      - equal:
+          path: spec.ports[0].targetPort
+          value: app
+
+  - it: keeps the control listener on a Service of its own
+    template: templates/keeper-deployment.yaml
+    documentIndex: 4
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-control
+      - equal:
+          path: spec.ports[0].targetPort
+          value: control
+
+  # ── The state volume ──────────────────────────────────────────────────────
+  - it: claims a small volume and does not outlive the release
+    template: templates/keeper-pvc.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-state
+      - equal:
+          path: spec.accessModes[0]
+          value: ReadWriteOnce
+      - equal:
+          path: spec.resources.requests.storage
+          value: 1Gi
+      # Deliberately unlike pvc.yaml: everything here is re-pushed at the next
+      # boot, so keeping it past the release would only orphan volumes.
+      - notExists:
+          path: metadata.annotations["helm.sh/resource-policy"]
+
+  # ── The shared secret ─────────────────────────────────────────────────────
+  - it: uses a pinned control secret when one is given
+    set:
+      keeper.controlSecret.value: pinned-secret-value
+    template: templates/keeper-secret.yaml
+    asserts:
+      - equal:
+          path: stringData.secret
+          value: pinned-secret-value
+
+  - it: renders no secret of its own when told to use an existing one
+    set:
+      keeper.controlSecret.existingSecretName: byo-keeper-secret
+    template: templates/keeper-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: mounts whichever secret it was told to use
+    set:
+      keeper.controlSecret.existingSecretName: byo-keeper-secret
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: control
+            secret:
+              secretName: byo-keeper-secret
+              items:
+                - key: secret
+                  path: secret
+              defaultMode: 0400
+
+  # ── Egress: the workspace may reach the control port, and only that ───────
+  - it: opens the control port to the workspace in the portable policy
+    template: templates/networkpolicy-egress.yaml
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - podSelector:
+                  matchLabels:
+                    app: keeper-testuser
+            ports:
+              - protocol: TCP
+                port: 8083
+
+  - it: opens the control port to the workspace in the Cilium policy
+    set:
+      networkPolicy.egress.flavor: cilium
+    template: templates/networkpolicy-egress.yaml
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            toEndpoints:
+              - matchLabels:
+                  io.kubernetes.pod.namespace: test
+                  app: keeper-testuser
+            toPorts:
+              - ports:
+                  - port: "8083"
+                    protocol: TCP
+
+  - it: adds no keeper egress rule when the keeper is off
+    set:
+      keeper.enabled: false
+    template: templates/networkpolicy-egress.yaml
+    asserts:
+      - notContains:
+          path: spec.egress
+          any: true
+          content:
+            ports:
+              - protocol: TCP
+                port: 8083

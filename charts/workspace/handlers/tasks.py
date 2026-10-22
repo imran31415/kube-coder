@@ -278,6 +278,12 @@ class TaskRoutes:
             self.send_json({'error': 'This endpoint requires OAuth2 authentication (browser session)'}, 401)
             return
         token = handlers.server.ClaudeTaskManager.regenerate_token()
+        # The one place the API token changes, so the one place the keeper's
+        # copy of its hash goes stale (#728 step 4). Without this the phone
+        # would be refused with its new, correct token until the next boot.
+        # Fire-and-forget: a keeper that is down must not fail the rotation the
+        # user just asked for — the boot push repairs it.
+        handlers.server.keeper_push.KeeperPush.push_token_hash(token)
         self.send_json({'token': token})
 
     def _query_params(self):
