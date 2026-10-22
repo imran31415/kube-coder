@@ -264,6 +264,51 @@ export function durationLabel(scan: ScanSummary, now: number = Date.now()): stri
 }
 
 /**
+ * What the scan is OF, in the user's terms: the app's name, else its port.
+ *
+ * Never the address the scanner reached it on — that is an internal container
+ * address (172.17.0.1) the user did not choose and cannot open.
+ */
+export function scanTitle(scan: { target: { name: string; port: number } }): string {
+  return scan.target.name || `Port ${scan.target.port}`;
+}
+
+/** "Quick scan", "Deep scan" — the depth as a phrase, without the estimate. */
+export function modePhrase(mode: string): string {
+  const word = (mode || 'quick').trim();
+  return `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()} scan`;
+}
+
+/** "Started 13:56", or "Started Oct 17, 13:56" when it was not today. */
+export function startedLabel(ts: number, now: Date = new Date()): string {
+  const at = new Date(ts * 1000);
+  const time = at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (at.toDateString() === now.toDateString()) return `Started ${time}`;
+  const day = at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `Started ${day}, ${time}`;
+}
+
+/**
+ * Dollars, as precise as the amount needs.
+ *
+ * Cents once there are cents to show; four places below that, because a
+ * scan's first minute costs fractions of a cent and "$0.00" would read as
+ * "this is free" while money is in fact being spent.
+ */
+export function moneyLabel(usd: number): string {
+  const n = Number.isFinite(usd) ? Math.max(0, usd) : 0;
+  return n >= 0.01 || n === 0 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+}
+
+/** How much of the budget is spent, 0..1, or null when there is no cap. */
+export function budgetFraction(scan: { usage?: ScanUsage; budget_usd: number | null }): number | null {
+  const cap = scan.budget_usd;
+  if (!cap || cap <= 0) return null;
+  const spent = scan.usage?.cost_usd ?? 0;
+  return Math.min(1, Math.max(0, spent / cap));
+}
+
+/**
  * The fields of a finding that get their own section, in reading order.
  *
  * Anything the scanner reports that is NOT listed here is still rendered,

@@ -80,15 +80,130 @@
 
 .security-summary { max-width: 68ch; line-height: 1.5; }
 
-.security-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: var(--size-3);
-  margin: 0;
+/* The app's name leads; the status sits beside it. */
+.scan-title {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--size-2) var(--size-3);
+  margin: 0; font-size: var(--text-5xl); font-weight: var(--weight-bold);
+  letter-spacing: -0.01em; word-break: break-word;
 }
 
-.security-stats dt { font-size: var(--text-sm); color: var(--text-muted); }
-.security-stats dd { margin: 2px 0 0; word-break: break-all; font-size: var(--text-md); }
+.scan-live {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 3px 10px 3px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--info) 45%, transparent);
+  background: color-mix(in srgb, var(--info) 10%, transparent);
+  color: var(--info);
+  font-size: var(--text-sm); font-weight: var(--weight-semibold);
+  letter-spacing: 0;
+}
+
+.scan-pulse {
+  position: relative; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--info);
+}
+
+.scan-pulse::after {
+  content: ""; position: absolute; inset: 0;
+  border-radius: 50%; background: var(--info);
+  animation: scan-ping 1.6s ease-out infinite;
+}
+
+@keyframes scan-ping {
+  from { transform: scale(1); opacity: 0.7; }
+  to { transform: scale(2.6); opacity: 0; }
+}
+
+.scan-sub {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  margin: 6px 0 0; color: var(--text-muted); font-size: var(--text-lg);
+}
+
+.scan-sub > span + span::before {
+  content: "·"; margin-right: 10px; color: var(--text-subtle);
+}
+
+.scan-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--size-3);
+  margin: 0;
+  padding: var(--size-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.scan-stats dt { font-size: var(--text-sm); color: var(--text-muted); }
+
+.scan-stats dd {
+  margin: 2px 0 0;
+  font-size: var(--text-3xl); font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-stats dd small {
+  font-size: var(--text-md); font-weight: var(--weight-normal); color: var(--text-muted);
+}
+
+.scan-stats dd.is-problem { color: var(--danger); }
+.scan-stats > div > small { display: block; margin-top: 6px; font-size: var(--text-sm); }
+
+.scan-meter {
+  height: 4px; margin-top: 8px; overflow: hidden;
+  border-radius: 2px; background: var(--surface-3);
+}
+
+.scan-meter > span {
+  display: block; height: 100%;
+  border-radius: 2px; background: var(--text-muted);
+  transition: width var(--motion-base);
+}
+
+.scan-empty {
+  margin: 0; padding: var(--size-4);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted); line-height: 1.5;
+}
+
+.scan-details > summary {
+  cursor: pointer; min-height: 44px; display: inline-flex; align-items: center;
+  color: var(--text-muted); font-size: var(--text-md);
+  list-style: none;
+}
+
+/* `display: inline-flex` drops the native disclosure marker, so draw one. */
+.scan-details > summary::-webkit-details-marker { display: none; }
+.scan-details > summary::before {
+  content: "▸"; display: inline-block; width: 14px;
+  transition: transform var(--motion-fast);
+}
+.scan-details[open] > summary::before { transform: rotate(90deg); }
+
+.scan-details > dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: var(--size-3);
+  margin: 0;
+  padding: var(--size-3) var(--size-4);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.scan-details dt { font-size: var(--text-sm); color: var(--text-muted); }
+.scan-details dd { margin: 2px 0 0; word-break: break-all; font-size: var(--text-md); }
+
+@media (max-width: 640px) {
+  .scan-title { font-size: var(--text-4xl); }
+  .scan-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scan-stats > div:last-child { grid-column: 1 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-pulse::after { animation: none; }
+  .scan-meter > span { transition: none; }
+}
 
 .security-error {
   white-space: pre-wrap; word-break: break-word;
@@ -115,6 +230,14 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--size-3);
+}
+
+/* A problem reads as one at a glance: a soft red wash and edge, while the
+   rest of the page stays neutral. A dismissed one drops back to plain. */
+.finding:not(.is-dismissed) {
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-left: 3px solid var(--danger);
 }
 
 .finding.is-dismissed { opacity: 0.55; }

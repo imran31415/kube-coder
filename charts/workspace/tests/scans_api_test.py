@@ -324,6 +324,22 @@ class CreateTests(ApiTestCase):
         self.assertEqual(body['status'], 'running')
         self.assertEqual(body['target']['url'], 'http://gateway.test:3000')
 
+    def test_a_scan_carries_the_app_name_into_its_record(self):
+        """The scan is titled by the app, not by the address it was reached on.
+
+        The name comes off the targets list, which the workspace works out
+        from the process holding the port, so the whole page — title, list
+        row, the sentence in a finished scan's summary — reads "shop" rather
+        than a port number or an internal container address nobody chose.
+        """
+        self.connect()
+        status, body = self.start_scan()
+        self.assertEqual(status, 202, body)
+        status, view = self.request(f'/api/scans/{body["scan_id"]}')
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view['target']['name'], 'shop')
+        self.assertIn('shop', view['summary'])
+
     def test_create_answers_without_waiting_for_the_scan(self):
         """The promise this endpoint makes. A scan runs for minutes to hours;
         holding the request open would pin a handler thread for all of it."""

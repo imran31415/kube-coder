@@ -10,8 +10,13 @@ import {
   stopScan,
   testScanConnection,
   agoLabel,
+  budgetFraction,
   durationLabel,
   extraFields,
+  modePhrase,
+  moneyLabel,
+  scanTitle,
+  startedLabel,
   isLiveScan,
   outcomeLabel,
   severityRank,
@@ -218,5 +223,46 @@ describe('scan presentation helpers', () => {
   it('renders a structured extra field as readable text', () => {
     const extras = extraFields({ id: 'v1', odd: { nested: [1, 2] } });
     expect(extras[0].value).toContain('nested');
+  });
+});
+
+describe('live scan page helpers', () => {
+  it('titles a scan by its app, falling back to the port — never the address', () => {
+    expect(scanTitle(scan())).toBe('shop');
+    const unnamed = scan({ target: { port: 3000, name: '', url: 'http://172.17.0.1:3000' } });
+    expect(scanTitle(unnamed)).toBe('Port 3000');
+    expect(scanTitle(unnamed)).not.toContain('172.17');
+  });
+
+  it('says the depth as a phrase', () => {
+    expect(modePhrase('quick')).toBe('Quick scan');
+    expect(modePhrase('DEEP')).toBe('Deep scan');
+    expect(modePhrase('')).toBe('Quick scan');
+  });
+
+  it('gives a clock time today and a date otherwise', () => {
+    // In the viewer's own locale: 13:56 here, 1:56 PM in en-US.
+    const at = new Date(2026, 9, 18, 13, 56);
+    const time = at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    const started = at.getTime() / 1000;
+    expect(startedLabel(started, new Date(2026, 9, 18, 14, 30))).toBe(`Started ${time}`);
+    const older = startedLabel(started, new Date(2026, 9, 20, 9, 0));
+    expect(older).toMatch(/^Started .*18.*, /);
+    expect(older.endsWith(time)).toBe(true);
+  });
+
+  it('never rounds money being spent down to $0.00', () => {
+    expect(moneyLabel(0)).toBe('$0.00');
+    expect(moneyLabel(0.0042)).toBe('$0.0042');
+    expect(moneyLabel(0.2906)).toBe('$0.29');
+    expect(moneyLabel(12.5)).toBe('$12.50');
+    expect(moneyLabel(Number.NaN)).toBe('$0.00');
+  });
+
+  it('measures the budget only when there is one', () => {
+    expect(budgetFraction(scan({ budget_usd: 1, usage: { ...scan().usage, cost_usd: 0.29 } }))).toBeCloseTo(0.29);
+    expect(budgetFraction(scan({ budget_usd: null }))).toBeNull();
+    // A provider that overshoots the cap must not draw past the end of the bar.
+    expect(budgetFraction(scan({ budget_usd: 1, usage: { ...scan().usage, cost_usd: 1.4 } }))).toBe(1);
   });
 });
