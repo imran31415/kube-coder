@@ -1,0 +1,161 @@
+{{- if .Values.keeper.enabled }}
+{{- if eq .Values.ingress.auth.type "none" }}
+{{- fail "keeper.enabled needs ingress.auth.type basic or oauth2: the keeper wakes the workspace for any visitor who passes the ingress auth, and auth.type=none has none" }}
+{{- end }}
+# Always-on keeper (#728 step 3, docs/always-on-keeper.md).
+#
+# Takes over from holding-<user> (#184): the workspace ingresses use
+# keeper-<user> as their custom-error backend, so the same "restarting…" page is
+# served while the workspace pod is away. On top of that, a logged-in visit to
+# a workspace the keeper put to sleep wakes it (0 -> 1); one an admin stopped
+# stays stopped. Its own Deployment for the same reason as the holding page: it
+# has to outlive the workspace pod.
+#
+# One static Go binary on distroless (keeper/Dockerfile): non-root, read-only
+# root filesystem, no capabilities, and RBAC that can read and scale exactly one
+# Deployment (keeper-rbac.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keeper-{{ .Values.user.name }}
+  template:
+    metadata:
+      labels:
+        app: keeper-{{ .Values.user.name }}
+    spec:
+      serviceAccountName: keeper-{{ .Values.user.name }}
+      {{- if .Values.image.pullSecretName }}
+      imagePullSecrets:
+      - name: {{ .Values.image.pullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: keeper
+        image: {{ required "keeper.image is required when keeper.enabled (ghcr.io/imran31415/kube-coder/keeper:<version>@sha256:<digest>)" .Values.keeper.image }}
+        imagePullPolicy: {{ .Values.keeper.imagePullPolicy | default "IfNotPresent" }}
+        args: ["serve"]
+        env:
+        - name: KEEPER_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: KEEPER_DEPLOYMENT
+          value: ws-{{ .Values.user.name }}
+        - name: KEEPER_PAGE
+          value: /etc/keeper/page/holding.html
+        # Without keeper.sleep.enabled the chart still sets replicas, so the
+        # next helm upgrade would undo a sleep; `keeper sleep` refuses.
+        - name: KEEPER_SLEEP_ENABLED
+          value: {{ .Values.keeper.sleep.enabled | quote }}
+        {{- if eq .Values.ingress.auth.type "oauth2" }}
+        # Who woke it, for the log. keeper-ingress.yaml sets this header from
+        # oauth2-proxy's answer; basic mode has no such header, so it is unset.
+        - name: KEEPER_USER_HEADER
+          value: X-Auth-Request-User
+        {{- end }}
+        # Keep the Go heap under the container limit instead of being OOM-killed.
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.memory
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8081
+          name: wake
+        volumeMounts:
+        # A directory mount, not subPath: the keeper reads the page per
+        # request, so an upgrade that edits the copy lands without a restart.
+        - name: page
+          mountPath: /etc/keeper/page
+          readOnly: true
+        # /healthz never touches the API server, so the API being slow or down
+        # can't fail these and take the page away with it. The timeouts leave
+        # room for a busy node: the 1s default restarted the keeper on a
+        # starved test node, and a restart only drops the page meanwhile.
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: {{ .Values.keeper.resources.requests.cpu | default "5m" | quote }}
+            memory: {{ .Values.keeper.resources.requests.memory | default "16Mi" | quote }}
+          limits:
+            cpu: {{ .Values.keeper.resources.limits.cpu | default "100m" | quote }}
+            memory: {{ .Values.keeper.resources.limits.memory | default "32Mi" | quote }}
+      volumes:
+      - name: page
+        configMap:
+          name: holding-{{ .Values.user.name }}
+          items:
+          - key: holding.html
+            path: holding.html
+---
+# The page. The ingresses' default backend: it answers every path with the
+# holding page and never acts, because in oauth2 mode the root ingress sends it
+# requests that passed no auth.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: http
+    name: http
+---
+# Status and wake. A separate Service so that no default-backend request can
+# reach the wake listener, whatever port ingress-nginx picks; only
+# keeper-ingress.yaml, which carries the auth annotations, routes here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}-wake
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: wake
+    name: http
+{{- end }}

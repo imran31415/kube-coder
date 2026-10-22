@@ -100,12 +100,28 @@ holdingPage:
 # it to 0 when idle. Staged — see docs/always-on-keeper.md §5. Everything is off
 # by default; with these defaults the chart renders exactly as it did before.
 keeper:
-  # Step 3 adds the keeper Deployment behind this flag. Today it only wires the
-  # workspace side (KC_KEEPER_IDLE_MINUTES for GET /api/keeper/idle).
+  # Runs keeper-<user> (step 3): it replaces holding-<user> as the page shown
+  # while the workspace is away, and a logged-in visit to a workspace it put to
+  # sleep wakes it. A workspace an admin stopped stays stopped. Needs
+  # ingress.auth.type basic or oauth2.
   enabled: false
+  # The keeper image (keeper/Dockerfile). Required when enabled until a release
+  # publishes ghcr.io/imran31415/kube-coder/keeper; the default is then pinned
+  # here by digest, like provision.image in the controller chart.
+  image: ""
+  imagePullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 32Mi
   sleep:
     # Let the keeper scale this workspace to 0 when idle. Requires
-    # keeper.enabled. Turning it on removes `replicas` from the workspace
+    # keeper.enabled. Until step 5's idle loop lands, sleep is by hand:
+    #   kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
+    # Turning it on removes `replicas` from the workspace
     # Deployment so `helm upgrade` / GitOps reconciles stop waking a sleeping
     # workspace — the keeper owns the field from then on.
     #

@@ -1,11 +1,13 @@
 # Release: build the release images, publish them to GHCR, and sign each with
 # keyless cosign (Sigstore OIDC — no long-lived keys, logged to Rekor) plus
-# BuildKit-native SBOM and SLSA provenance attestations. Two images are built
+# BuildKit-native SBOM and SLSA provenance attestations. Three images are built
 # from one matrix (identical sign/attest path):
 #   * devlaptop   — the general workspace/controller image.
 #   * provisioner — the minimal tool-baked image the privileged provisioner Job
 #     runs (supply-chain finding 7). It is pinned by digest in the controller
 #     chart and verified at admission, so it MUST be signed here too.
+#   * keeper      — the always-on per-workspace keeper (#728). It holds a token
+#     that can scale the workspace, and the workspace chart pins it by digest.
 #
 # Fires on the repo's release tags — `v<X.Y.Z>`, cut from green main by
 # scripts/release.sh (`TAG="$VER"`). NB: `<image>-v<X.Y.Z>` is the *image* tag,
@@ -15,7 +17,7 @@
 # artifact. No secrets required — the built-in GITHUB_TOKEN pushes to GHCR and
 # the OIDC id-token mints the signing certificate.
 #
-# Verify a released image (swap devlaptop/provisioner):
+# Verify a released image (swap devlaptop/provisioner/keeper):
 #   cosign verify ghcr.io/imran31415/kube-coder/provisioner:<version> \
 #     --certificate-identity-regexp '^https://github.com/imran31415/kube-coder/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
@@ -52,12 +54,14 @@ jobs:
       id-token: write   # keyless cosign (Sigstore OIDC)
     strategy:
       fail-fast: false
-      # Two images share this identical build→sign→attest path:
+      # Three images share this identical build→sign→attest path:
       #   * devlaptop   — the general workspace/controller image.
       #   * provisioner — the minimal, tool-baked image the privileged
       #     provisioner Job runs (finding 7). Building it here means it is
       #     signed + SBOM/provenance-attested exactly like devlaptop, so the
       #     controller chart can pin it by digest and admission can verify it.
+      #   * keeper      — one static Go binary on distroless (#728), pinned by
+      #     digest in the workspace chart (keeper.image).
       matrix:
         include:
           - name: devlaptop
@@ -65,6 +69,9 @@ jobs:
             target: runtime
           - name: provisioner
             file: provisioner/Dockerfile
+            target: ""
+          - name: keeper
+            file: keeper/Dockerfile
             target: ""
     env:
       IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
@@ -109,6 +116,8 @@ jobs:
           push: ${{ env.PUSH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # `keeper version` prints it; the other Dockerfiles declare no VERSION.
+          build-args: VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # BuildKit attaches an in-toto SBOM + max-mode SLSA provenance

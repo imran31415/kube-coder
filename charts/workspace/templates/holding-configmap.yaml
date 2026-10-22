@@ -1,4 +1,6 @@
-{{- if .Values.holdingPage.enabled }}
+{{- /* The keeper (#728 step 3) serves holding.html too: it needs this ConfigMap
+even with holdingPage.enabled=false, and adds its own script below. */}}
+{{- if or .Values.holdingPage.enabled .Values.keeper.enabled }}
 # Static assets for the always-up "workspace is restarting…" holding backend
 # (issue #184). Served by the holding-<user> Deployment (nginx), which the
 # workspace ingresses point at as their custom-error backend so the raw nginx
@@ -133,6 +135,78 @@ data:
         // Small initial delay so the old pod has begun terminating.
         timer = setTimeout(check, 1500);
       </script>
+      {{- if .Values.keeper.enabled }}
+      <script>
+        // Keeper (#728 step 3): this page is also what an ASLEEP workspace
+        // shows. Ask the keeper what state the workspace is in — behind the
+        // same login as the dashboard — and if the keeper put it to sleep,
+        // wake it; the /health poll above then brings the live workspace
+        // back. One an admin stopped stays stopped. Only a page someone is
+        // looking at wakes it, never a tab restored in the background.
+        (function () {
+          {{- if eq .Values.ingress.auth.type "oauth2" }}
+          var API = '/oauth/api/keeper/', SIGN_IN = '/oauth2/start?rd=';
+          {{- else }}
+          var API = '/api/keeper/', SIGN_IN = '';
+          {{- end }}
+          // Screen readers hear the state changes below, not just the first copy.
+          document.querySelector('main').setAttribute('aria-live', 'polite');
+          var h1 = document.querySelector('h1');
+          var lead = document.querySelector('main p');
+          var eta = document.querySelector('.eta');
+          var busy = [document.querySelector('.spinner'), document.querySelector('.bar')];
+          var asked = false, retry;
+          function say(title, text, note, spinning) {
+            h1.textContent = title; document.title = title;
+            lead.textContent = text; eta.textContent = note;
+            busy.forEach(function (el) { el.style.display = spinning ? '' : 'none'; });
+          }
+          function call(method, name) {
+            return fetch(API + name, {
+              method: method, cache: 'no-store', redirect: 'manual', credentials: 'same-origin',
+              headers: method === 'POST' ? { 'X-Keeper-Wake': '1' } : {}
+            }).then(function (r) {
+              // Signed out: oauth2-proxy answers with a redirect to sign in.
+              if (r.type === 'opaqueredirect' || r.status === 401) { throw 'signin'; }
+              if (!r.ok) { throw r.status; }
+              return r.json();
+            });
+          }
+          function waking() {
+            say('Waking up your workspace…', 'It was asleep while nobody was using it.',
+              'This usually takes about a minute — the page refreshes automatically when it\'s ready.', true);
+          }
+          function show(s) {
+            if (s.state === 'stopped') {
+              say('Your workspace is stopped',
+                'It was stopped from the workspace controller, so visiting won\'t start it. Start it there, or ask your admin.', '', false);
+            } else if (s.state === 'asleep') {
+              waking();
+              if (!asked && document.visibilityState === 'visible') {
+                asked = true;
+                call('POST', 'wake').then(show, failed);
+              }
+            } else if (s.woken) {
+              waking();
+            }
+          }
+          function failed(e) {
+            asked = false;
+            if (e !== 'signin') { clearTimeout(retry); retry = setTimeout(check, 10000); return; }
+            say('Your workspace isn\'t running', 'If it\'s asleep, signing in wakes it.', '', false);
+            var a = document.createElement('a');
+            a.href = SIGN_IN ? SIGN_IN + encodeURIComponent(location.pathname + location.search) : location.href;
+            a.textContent = 'Sign in';
+            eta.appendChild(a);
+          }
+          function check() { call('GET', 'status').then(show, failed); }
+          document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'visible') { check(); }
+          });
+          check();
+        })();
+      </script>
+      {{- end }}
     </body>
     </html>
 {{- end }}
