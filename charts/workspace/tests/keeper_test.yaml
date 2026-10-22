@@ -9,6 +9,7 @@ templates:
   - templates/keeper-secret.yaml
   - templates/networkpolicy-egress.yaml
   - templates/ingress-claude-api.yaml
+  - templates/ingress-webhooks.yaml
   - templates/holding-deployment.yaml
   - templates/holding-configmap.yaml
   - templates/ingress.yaml
@@ -337,10 +338,32 @@ tests:
               ports:
                 - protocol: TCP
                   port: 8083
+            # This workspace's scheduled triggers, from step 4b: a cron fire
+            # now lands on the keeper so that it survives a sleep. Both labels
+            # are required, so a co-tenant's cron pods stay denied.
+            - from:
+                - podSelector:
+                    matchLabels:
+                      app: kube-coder-cron
+                      workspace-user: testuser
+                - podSelector:
+                    matchLabels:
+                      app: kube-coder-page-watch
+                      workspace-user: testuser
+              ports:
+                - protocol: TCP
+                  port: 8082
       # Same-namespace by construction: a namespaceSelector here would let a
       # co-tenant's workspace push to this keeper.
       - notExists:
           path: spec.ingress[1].from[0].namespaceSelector
+      - notExists:
+          path: spec.ingress[2].from[0].namespaceSelector
+      # The cron rule must not reach the control port: a CronJob pod is not
+      # allowed to tell the keeper which triggers exist.
+      - equal:
+          path: spec.ingress[2].ports[0].port
+          value: 8082
 
   # ── Step 4: nothing new renders with the keeper off ───────────────────────
   - it: renders no state volume when off
@@ -593,3 +616,126 @@ tests:
             ports:
               - protocol: TCP
                 port: 8083
+
+  # ── Step 4b: the queue, the wake cap and the webhook front door ───────────
+  - it: wires the queue limits and the wake cap into the keeper
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_QUEUE_MAX_ENTRIES
+            value: "256"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_QUEUE_MAX_BYTES
+            value: "67108864"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_QUEUE_TTL_SECONDS
+            value: "3600"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_MAX_INFLIGHT
+            value: "4"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_MAX_WAKES_PER_HOUR
+            value: "10"
+      # Where a proxied request goes: the workspace's own Service, by the same
+      # name server.py computes for a CronJob.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_WORKSPACE_URL
+            value: http://ws-testuser.test.svc.cluster.local:6080
+
+  - it: lets the cap be turned off, because zero has to mean unlimited
+    set:
+      keeper.maxWakesPerHour: 0
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_MAX_WAKES_PER_HOUR
+            value: "0"
+
+  # From step 4b the keeper buffers each proxied body whole, because the HMAC
+  # covers the exact bytes and a streamed forward cannot state the
+  # Content-Length server.py reads. One 1 MiB body fits in 32Mi; several at
+  # once do not, and GOMEMLIMIT is wired from this number.
+  - it: gives the keeper room for the buffered bodies
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 128Mi
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GOMEMLIMIT
+            valueFrom:
+              resourceFieldRef:
+                resource: limits.memory
+
+  - it: sends the public webhook route to the keeper
+    set:
+      ingress.auth.type: oauth2
+    template: templates/ingress-webhooks.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: keeper-testuser-api
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.name
+          value: http
+      # The path is unchanged, so the keeper receives exactly what server.py
+      # would have: the rewrite-target still hands on /api/webhooks/<id>.
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /api/webhooks/([a-zA-Z0-9_-]+)
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+          value: /api/webhooks/$1
+      # The body cap the keeper's own 1 MiB limit has to agree with.
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: 1m
+
+  - it: leaves the webhook route on the workspace when the keeper is off
+    set:
+      keeper.enabled: false
+      ingress.auth.type: oauth2
+    template: templates/ingress-webhooks.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: ws-testuser
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 6080
+
+  # The holding page says why a workspace it did not ask for is starting.
+  - it: tells the page what a wake was for
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: 'function waking\(reason\)'
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "A scheduled task is due"
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "A webhook arrived while it was asleep"
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: 'waking\(s\.reason\)'

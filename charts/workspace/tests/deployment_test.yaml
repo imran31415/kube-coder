@@ -768,3 +768,34 @@ tests:
           any: true
           content:
             name: KEEPER_CONTROL_URL
+
+
+  # ── The always-on keeper in front of the scheduled triggers (#728 4b) ────
+  # Points this workspace's CronJobs at the keeper, so a fire that lands during
+  # a sleep is queued and replayed instead of dying on an nginx 503.
+  - it: points the workspace's scheduled triggers at the keeper
+    set:
+      keeper.enabled: true
+      keeper.image: ghcr.io/imran31415/kube-coder/keeper:test
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKSPACE_INTERNAL_URL
+            value: http://keeper-testuser-api.test.svc.cluster.local
+
+  # Unset without a keeper, so server.py's own inline default — the workspace's
+  # Service — still applies. The chart has never set this variable before.
+  - it: leaves the cron receiver address unset when the keeper is off
+    set:
+      keeper.enabled: false
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: WORKSPACE_INTERNAL_URL

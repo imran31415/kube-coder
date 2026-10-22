@@ -199,6 +199,12 @@ make local-down DELETE=1     # also delete the minikube profile entirely
   public-webhook paths cannot be exercised end-to-end on a local cluster at
   all. Test those against a real host, or drive the keeper's listeners
   directly from inside the cluster.
+
+  The **cron and page-watch** half of the keeper's front door (#728 step 4b) is
+  not affected and does work here: a CronJob pod reaches the keeper through
+  `WORKSPACE_INTERNAL_URL`, an in-cluster Service, with no ingress involved. So
+  "a schedule that fires while the workspace is asleep still runs its task" is
+  checkable locally; "a GitHub delivery that arrives while it is asleep" is not.
 - **Resources.** Defaults are laptop-sized; heavy builds/tests inside the
   workspace may want a bigger `minikube start --memory`.
 - **Apple Silicon: the in-workspace browser/Desktop is degraded.** The image

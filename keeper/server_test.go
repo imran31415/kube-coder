@@ -255,6 +255,12 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 	f, k := newFake(t, 0, 0, FieldManager)
 	s := newServer(t, f, k)
 	s4 := newAppServer(t, f, k)
+	// The proxy's own replies are in here too. This map is hand-written, so a
+	// route added without a row goes unchecked rather than failing — hence a
+	// row per reply the proxy can produce itself. A mirrored workspace answer
+	// is deliberately absent: that one is forwarded verbatim, headers and all,
+	// and is an API answer to an API caller rather than a page in a browser.
+	p, _ := newProxyServer(t, f, k)
 	for name, rec := range map[string]*httptest.ResponseRecorder{
 		"page":              do(s.PageHandler(), http.MethodGet, "/", nil),
 		"status":            do(s.WakeHandler(), http.MethodGet, "/api/keeper/status", nil),
@@ -267,6 +273,10 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		"control accepted":  doBody(s4.ControlHandler(), http.MethodPost, "/api/keeper/triggers", []byte(`{"triggers":[]}`), authed()),
 		"control forbidden": doBody(s4.ControlHandler(), http.MethodPost, "/api/keeper/triggers", []byte(`{}`), nil),
 		"control 404":       doBody(s4.ControlHandler(), http.MethodPost, "/nope", []byte(`{}`), authed()),
+		"proxy unknown id":  post(p.ProxyHandler(), "/api/webhooks/nope", []byte(`{}`), nil),
+		"proxy queued":      post(p.ProxyHandler(), "/api/webhooks/gh", []byte(`{}`), nil),
+		"proxy too large":   post(p.ProxyHandler(), "/api/webhooks/gh", make([]byte, proxyMaxBody+1), nil),
+		"proxy 405":         do(p.ProxyHandler(), http.MethodGet, "/api/webhooks/gh", nil),
 	} {
 		h := rec.Header()
 		if h.Get("X-Frame-Options") != "SAMEORIGIN" || h.Get("Content-Security-Policy") != "frame-ancestors 'self'" ||

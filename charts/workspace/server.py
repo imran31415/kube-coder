@@ -10334,6 +10334,100 @@ class CronManager:
         user = CronManager.detect_user()
         return f'cron-{user}-{cron_id}'[:50]
 
+    # Annotation recording which receiver URL a CronJob was written against
+    # (#728 step 4b). It is what reconcile_internal_url() compares, so a
+    # workspace that gains or loses a keeper re-points its existing CronJobs
+    # instead of leaving them curling an address that no longer answers.
+    INTERNAL_URL_ANNOTATION = 'kube-coder.dev/internal-url'
+
+    @staticmethod
+    def internal_url():
+        """Where a CronJob pod should send its fire.
+
+        Normally the workspace's own in-cluster Service. With the always-on
+        keeper in front (#728 step 4b) the chart points this at the keeper
+        instead, so a fire that lands while the workspace is asleep is queued
+        and replayed rather than dying on an nginx 503 — see
+        docs/always-on-keeper.md. cluster.local is the safe default for a
+        cluster that has not overridden the suffix.
+        """
+        user = CronManager.detect_user()
+        ns = CronManager.detect_namespace()
+        return os.environ.get(
+            'WORKSPACE_INTERNAL_URL',
+            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
+        )
+
+    @staticmethod
+    def _cronjob_annotation(name, ns, key):
+        """One annotation off a CronJob, or None when it cannot be read.
+
+        Bracket-quoted jsonpath because the key contains dots and a slash, and
+        the dotted form would read `kube-coder.dev/internal-url` as four nested
+        fields. None means "no CronJob there, or no cluster to ask" — which is
+        deliberately different from the empty string, "a CronJob with no such
+        annotation", because only the second is something to repair.
+        """
+        r = subprocess.run(
+            ['kubectl', 'get', 'cronjob', name, '-n', ns,
+             '-o', "jsonpath={.metadata.annotations['" + key + "']}"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return None
+        return r.stdout.strip()
+
+    @staticmethod
+    def reconcile_internal_url():
+        """Re-apply any CronJob whose receiver URL is out of date (#728 4b).
+
+        Turning the keeper on changes where a cron fire has to go, and the
+        CronJobs already on the cluster have the old address baked into their
+        curl command. Nothing else would ever rewrite them: a CronJob is
+        re-applied only when someone edits that trigger, so a workspace whose
+        crons all predate the keeper would go on firing straight at a workspace
+        that is asleep — the exact failure this step exists to fix.
+
+        Compares the annotation rather than the command line, re-applies only on
+        a mismatch, and counts a missing annotation as a mismatch, so CronJobs
+        written before this existed self-heal exactly once and then stop costing
+        anything. Needs no new RBAC: the workspace already holds get and patch
+        on cronjobs (serviceaccount.yaml).
+
+        Never raises. A boot step that cannot reach kubectl must not stop the
+        server from starting.
+        """
+        want = CronManager.internal_url()
+        ns = CronManager.detect_namespace()
+        fixed = checked = 0
+        for mgr in (CronManager, PageWatchManager):
+            if mgr is CronManager:
+                views, load = CronManager.list_crons(), CronManager.get_cron
+            else:
+                views, load = (PageWatchManager.list_page_watches(),
+                               PageWatchManager.get_page_watch)
+            for view in views:
+                cid = view.get('id')
+                if not cid:
+                    continue
+                checked += 1
+                name = mgr.k8s_object_name(cid)
+                got = CronManager._cronjob_annotation(
+                    name, ns, CronManager.INTERNAL_URL_ANNOTATION)
+                if got is None or got == want:
+                    continue
+                cfg = load(cid, include_secrets=True)
+                if cfg is None or not cfg.get('fire_token'):
+                    continue
+                try:
+                    mgr._apply_k8s(cfg)
+                    fixed += 1
+                except Exception as e:
+                    print(f'[cron-reconcile] {name}: {e}', file=sys.stderr)
+        if fixed:
+            print(f'[cron-reconcile] re-pointed {fixed} of {checked} scheduled '
+                  f'trigger(s) at {want}')
+        return fixed
+
     @staticmethod
     def list_crons():
         CronManager.ensure_dir()
@@ -10623,13 +10717,11 @@ class CronManager:
         # base64 the token for the Secret (kubectl apply requires base64 for `data:`)
         token_b64 = base64.b64encode(cfg['fire_token'].encode('utf-8')).decode('ascii')
 
-        # The receiver URL: in-cluster service DNS. Using cluster.local is the
-        # safe default; if the cluster uses a different DNS suffix, override
-        # via the WORKSPACE_INTERNAL_URL env var.
-        internal_url = os.environ.get(
-            'WORKSPACE_INTERNAL_URL',
-            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
-        )
+        # The receiver URL: the workspace's own Service, or the keeper when one
+        # stands in front of it (#728 step 4b). Recorded as an annotation as
+        # well as baked into the command, so reconcile_internal_url() can tell
+        # at boot whether this CronJob still points at the right place.
+        internal_url = CronManager.internal_url()
 
         manifest = f"""
 apiVersion: v1
@@ -10650,6 +10742,8 @@ kind: CronJob
 metadata:
   name: {name}
   namespace: {ns}
+  annotations:
+    {CronManager.INTERNAL_URL_ANNOTATION}: {internal_url}
   labels:
     app: kube-coder-cron
     workspace-user: {user}
@@ -11166,10 +11260,7 @@ class PageWatchManager:
         user = CronManager.detect_user()
         token_b64 = base64.b64encode(
             cfg['fire_token'].encode('utf-8')).decode('ascii')
-        internal_url = os.environ.get(
-            'WORKSPACE_INTERNAL_URL',
-            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
-        )
+        internal_url = CronManager.internal_url()
         manifest = f"""
 apiVersion: v1
 kind: Secret
@@ -11189,6 +11280,8 @@ kind: CronJob
 metadata:
   name: {name}
   namespace: {ns}
+  annotations:
+    {CronManager.INTERNAL_URL_ANNOTATION}: {internal_url}
   labels:
     app: kube-coder-page-watch
     workspace-user: {user}
@@ -15128,6 +15221,16 @@ if __name__ == "__main__":
                   'the trigger ids and the token hash')
     except Exception as e:
         print(f'[keeper-push] boot push failed to start: {e}', file=sys.stderr)
+
+    # Re-point any CronJob whose receiver URL has changed (#728 step 4b).
+    # Turning the keeper on moves where a cron fire has to go, and the CronJobs
+    # already on the cluster carry the old address in their curl command; only
+    # editing the trigger would otherwise rewrite them. Re-applies on a
+    # mismatch alone, so this is a no-op on every boot after the first.
+    try:
+        CronManager.reconcile_internal_url()
+    except Exception as e:
+        print(f'[cron-reconcile] failed: {e}', file=sys.stderr)
 
     # Initialize the persistent-memory subsystem (runs migrations, opens DB).
     # Failure here is non-fatal: the rest of the server keeps working, and
