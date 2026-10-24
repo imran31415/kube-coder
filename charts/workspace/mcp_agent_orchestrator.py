@@ -825,7 +825,12 @@ TOOLS: Dict[str, Any] = {
                            'get_agent_status / wait_for_agent to monitor. '
                            'Defaults to headless mode: the agent runs the '
                            'prompt to completion and exits, so wait_for_agent '
-                           'returns its result. Capped by depth and concurrency.',
+                           'returns its result. Capped by depth and '
+                           'concurrency. Tell every sub-agent that writes code '
+                           'to commit and push the moment it compiles, before '
+                           'validating: this pod can restart, and a restart '
+                           "loses uncommitted work and the agent's report "
+                           'while a pushed branch survives (#792).',
             'inputSchema': {
                 'type': 'object',
                 'properties': {

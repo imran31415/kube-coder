@@ -196,6 +196,25 @@ and `/home/dev/.credentials/` are still shared with every other agent (see
 below). The user reviews your work on the Build's **Changes** tab and pushes
 the branch from there.
 
+### Push early — the pod can restart under you
+
+This pod restarts sometimes: resource pressure, node recycling, maintenance.
+A restart kills every tmux session, so a task loses everything it had not
+committed AND never gets to report. Three habits, in order of value:
+
+- **Commit and push the moment your code compiles** — before you validate,
+  gather evidence or write the PR body. A pushed branch survives a restart; a
+  worktree may not. Then carry on and amend/add commits as you go.
+- **Never background a long job and then wait for it.** Your session ends when
+  your turn ends, which kills the job — this bites agents that launch a long
+  run and say "I'll wait for the results". Foreground `timeout N …`, or arm the
+  dashboard `watch` tool, which the workspace runner polls after your turn.
+- **A task whose status is `terminated` is not a result.** It means a restart
+  wiped it mid-run (not that it failed, and definitely not that it finished).
+  If you are orchestrating: commit whatever its worktree holds as a labelled
+  unvalidated checkpoint, push it, then launch a short "finish line" task to
+  rebase, validate once and open the PR. Never read `terminated` as success.
+
 ## Key Constraints
 
 - **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl -H "Authorization: Bearer $(cat /home/dev/.claude-tasks/.api-token)" localhost:6080/metrics`.

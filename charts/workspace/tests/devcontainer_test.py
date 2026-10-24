@@ -20,6 +20,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -569,6 +570,29 @@ class StateTests(unittest.TestCase):
         self.assertEqual(first, dc.boot_id())
         os.remove(dc.BOOT_MARKER)          # simulates a pod restart wiping /tmp
         self.assertNotEqual(first, dc.boot_id())
+
+    def test_boot_id_losing_a_create_race_adopts_the_winners_token(self):
+        """Two processes, one boot, one token (#792).
+
+        Task status reconciliation compares the boot stamped on a task against
+        the caller's own, so two callers minting different tokens for the same
+        boot would report a pod restart that never happened.
+        """
+        real_link = os.link
+
+        def publish_then_link(src, dst):
+            # Stand-in for the other process: it published between our read
+            # and our link, so our link must lose and we must adopt its token.
+            with open(dst, 'w', encoding='utf-8') as f:
+                f.write('winner-token')
+            return real_link(src, dst)     # now raises FileExistsError
+
+        with mock.patch.object(dc.os, 'link', side_effect=publish_then_link):
+            self.assertEqual(dc.boot_id(), 'winner-token')
+        self.assertEqual(dc.boot_id(), 'winner-token')
+        # And no temp file left behind to be read as a marker later.
+        self.assertEqual(
+            [n for n in os.listdir(self.tmp) if n.startswith('boot.')], [])
 
     def _parsed(self, **hooks):
         life = {h: [] for h in dc.HOOKS}

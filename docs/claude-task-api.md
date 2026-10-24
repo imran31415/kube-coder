@@ -221,7 +221,7 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 |---|---|---|---|
 | `prompt` | string | Yes | The prompt to send to Claude Code. |
 | `workdir` | string | No | Working directory for the task. Defaults to `/home/dev`. |
-| `response_url` | string | No | Where to POST the task's terminal state when it reaches `completed` / `error` / `killed`. Must be `http(s)`. See [Completion hooks](#completion-hooks-response_url). |
+| `response_url` | string | No | Where to POST the task's terminal state when it reaches `completed` / `error` / `killed` / `terminated`. Must be `http(s)`. See [Completion hooks](#completion-hooks-response_url). |
 | `response_secret` | string | No | If set, the completion-hook POST is signed with HMAC-SHA256 in `X-Kube-Coder-Signature-256: sha256=<hex>`. |
 | `source` | string | No | Free-form provenance string surfaced on the dashboard (`webhook:<id>`, `cron:<id>`, etc.). Webhook and cron receivers set this automatically. It also sets the `auto_approve` default below. |
 | `auto_approve` | boolean | No | Launch the CLI with its skip-permissions flag (`claude --dangerously-skip-permissions`, `ante --yolo`, `codex --dangerously-bypass-approvals-and-sandbox`, which also turns off Codex's sandbox; no effect for CLIs without one). When omitted it is on for sources nobody watches (`hypervisor-tool`, `webhook:*`, `cron:*`, `desktop:*`, `board:*`) and off otherwise. An explicit value wins. |
@@ -247,7 +247,7 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 |---|---|
 | `task_id` | Unique identifier for the task (`{unix_timestamp}-{random_hex}`). |
 | `session_id` | UUID for the session. |
-| `status` | Task status: `running`, `completed`, `error`, or `killed`. |
+| `status` | Task status: `running`, `waiting-for-input`, `completed`, `error`, `killed`, or `terminated`. See [Statuses](#statuses). |
 | `tmux_session` | Name of the tmux session running the task. Attach to this to interact with Claude. |
 
 ---
@@ -691,7 +691,7 @@ while True:
     status = task["status"]
     print(f"Status: {status}")
 
-    if status in ("completed", "error", "killed"):
+    if status in ("completed", "error", "killed", "terminated"):
         break
 
     time.sleep(10)
@@ -782,9 +782,70 @@ POST /tasks  -->  status: "running"
                        +---> status: "completed"
                        |
   DELETE /tasks/{id}  -+---> explicitly killed -->  status: "killed"
+                       |
+  pod restarts        -+---> session wiped mid-run -> status: "terminated"
 ```
 
-Status reconciliation happens automatically: when any API call queries a task whose tmux session has ended, the server updates the status to `completed`.
+Status reconciliation happens automatically: when any API call queries a task whose tmux session has ended, the server settles its status.
+
+#### Statuses
+
+| Status | Meaning |
+|---|---|
+| `running` | The tmux session is alive and the pane is changing. |
+| `waiting-for-input` | Alive but quiescent — finished a turn, or sitting at a prompt. |
+| `completed` | The CLI exited. This is the only "the work is done" status. |
+| `error` | The CLI exited non-zero (sub-agent tasks, which record an exit code). |
+| `killed` | `DELETE /tasks/{id}` — somebody stopped it on purpose. |
+| `terminated` | **The pod restarted and wiped the tmux session before the task finished** (#792). Also sets `terminated_at` and `termination_reason: "pod_restart"`, and the completion hook carries both. |
+
+`terminated` exists because a dead tmux session is ambiguous: the CLI may have
+exited, or the pod may have gone down and taken every session with it. Each
+task records the pod boot that launched it (`boot_id`), so a task found dead by
+a *different* boot is reported as wiped rather than finished. Orchestrators
+should treat it as "this work did not happen" — see
+[Surviving pod restarts](#surviving-pod-restarts).
+
+The inference is conservative in one direction on purpose: when the boot is
+unknowable (an older task.json with no stamp, an unreadable `/tmp`), the status
+falls back to `completed`. A false `terminated` would make an orchestrator redo
+work that was actually finished.
+
+### Surviving pod restarts
+
+Pods restart — resource pressure, node recycling, maintenance. A task is one
+prompt run to completion, so a restart before its final push loses everything
+it had not committed, and its report never arrives. The habits that matter,
+learned the hard way over a 20-agent run (#792):
+
+**Tell every task to commit and push the moment its code compiles**, long
+before it has evidence or a finished PR. A pushed branch survives a restart; a
+worktree may not. This is the single highest-value instruction you can put in a
+task prompt:
+
+```
+Commit and push your branch as soon as your change compiles — before you
+validate, gather evidence or open a PR. Push early, push often.
+```
+
+**Never have a task background a long job and then wait for it.** The session
+ends when the prompt ends, which kills the job. Foreground `timeout N …` is the
+only reliable shape.
+
+**Poll for `terminated` and relaunch, rather than trusting a clean sweep.** If
+every live task goes terminal in the same minute, that is a restart, not a
+batch of successes:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" localhost:6080/api/claude/tasks \
+  | jq -r '.tasks[] | select(.status == "terminated") | .task_id'
+```
+
+For each one, commit whatever its worktree holds as an explicitly-labelled
+unvalidated checkpoint, push it, then launch a short "finish line" task
+(rebase, validate once, open the PR) against that branch. That recovers most
+of the work; a restart is cheap to survive and expensive to mistake for
+success.
 
 ### Concurrency
 
@@ -869,7 +930,9 @@ kubectl logs $(kubectl get pod -n coder -l app=ws-{user} -o name) -n coder -c id
 ## Completion hooks (`response_url`)
 
 When `response_url` is supplied on task creation, the server POSTs the task's
-terminal state to that URL once it transitions out of `running`. The body is JSON:
+terminal state to that URL once it transitions out of `running`. The body is JSON
+(`termination_reason` is `"pod_restart"` when `status` is `terminated`, and
+`null` otherwise):
 
 ```json
 {
@@ -880,6 +943,7 @@ terminal state to that URL once it transitions out of `running`. The body is JSO
   "source": "webhook:gh-pr",
   "created_at": 1707000000.123,
   "finished_at": 1707000045.678,
+  "termination_reason": null,
   "output": "<last 200 lines of tmux pane>"
 }
 ```

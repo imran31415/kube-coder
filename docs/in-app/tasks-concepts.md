@@ -11,6 +11,7 @@
         pending ─► running ─► completed     (clean exit)
                        └────► error         (non-zero exit)
                        └────► killed        (you hit Stop)
+                       └────► terminated    (a pod restart wiped it)
 ```
 
 `pending` is brief — the dashboard creates the task row before tmux
@@ -43,7 +44,12 @@ Each task has:
 
 A pod restart drops the tmux session but keeps everything in
 `~/.claude-tasks/`. Re-opening the task shows the transcript; the
-session itself is gone (status will read `completed` or `killed`).
+session itself is gone, and anything that was still running reads
+**`terminated`** — not `completed` (#792). That distinction matters: a
+terminated task produced no result and may have left uncommitted work in
+its worktree, so it needs re-running or finishing off, while a completed
+one is done. Every status but `terminated` is something the task itself
+did; `terminated` is something that happened to it.
 
 ## Two views, one task
 

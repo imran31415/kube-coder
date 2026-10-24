@@ -37,6 +37,9 @@ BASE_META_KEYS = {
     'project_id', 'status', 'created_at', 'tmux_session', 'assistant', 'model',
     'effort', 'parent_task_id', 'board_id', 'board_item_id',
     'resumed_session_id', 'sub_task_ids', 'memory_injected',
+    # The pod boot that launched the Build (#792) — how a `terminated` task is
+    # told apart from a `completed` one after a restart.
+    'boot_id',
 }
 WT_ENV = ('KC_WT', 'KC_WT_BRANCH', 'PORT', 'KC_PORT')
 

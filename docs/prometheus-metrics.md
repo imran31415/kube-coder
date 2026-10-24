@@ -95,7 +95,10 @@ Label vocabularies:
   different rates, which is why they are kept apart.
 * `coverage` — `measured`, `not_instrumented`, `no_session_id`. See below.
 * `status` — `running`, `waiting-for-input`, `completed`, `error`, `killed`,
-  `unknown`. Anything else folds into `unknown`.
+  `terminated`, `unknown`. Anything else folds into `unknown`. `terminated`
+  means a pod restart wiped the task's tmux session before it finished
+  (#792) — a spike in it is a restart, not a batch of finished work, and it
+  is the one terminal status that says the work still needs doing.
 * `model` — the model id from the ledger, capped at 20 values per scope with the
   remainder folded into `model="other"`, plus `unknown` (a ledger entry with no
   model) and `unattributed` (see below).

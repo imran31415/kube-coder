@@ -4288,6 +4288,10 @@ class ClaudeTaskManager:
             'source': meta.get('source'),
             'created_at': meta.get('created_at'),
             'finished_at': meta.get('finished_at') or meta.get('killed_at'),
+            # Only set on `terminated` (#792). A receiver that cares just about
+            # done-ness can keep reading `status`; one that auto-recovers needs
+            # to know the run was wiped rather than finished.
+            'termination_reason': meta.get('termination_reason'),
             'output': tail_output,
         }
         body = json.dumps(payload).encode('utf-8')
