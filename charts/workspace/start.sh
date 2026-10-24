@@ -34,40 +34,90 @@ fi
 log_stage "preparing home and credential directories"
 cd /home/dev
 mkdir -p /home/dev/.local/bin /home/dev/.local/share/code-server/extensions
-mkdir -p ~/.config ~/.config/git ~/.config/gh
+# Spell both homes out; never `~`/$HOME here. Which home a process gets is
+# not ours to predict (#793): /home/ubuntu for PID 1, terminal tabs and sshd,
+# /home/dev for the CLIs server.py spawns. A credential symlink written
+# through `~` therefore lands wherever that lottery fell — and `ln -sf`
+# through a `~` that already resolves to a link would write *inside* the
+# credential store instead of replacing the link.
+mkdir -p /home/ubuntu/.config /home/ubuntu/.config/git /home/ubuntu/.config/gh
 mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh
 chmod 700 /home/dev/.credentials/.ssh
-ln -sf /home/dev/.credentials/.ssh ~/.ssh
 touch /home/dev/.credentials/.config/git/config
-ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
+# .ssh and .gitconfig are linked by persist_cred below, which covers BOTH
+# homes and migrates safely (#795). This one stays here because `gh`'s link
+# is broken in a different way — `ln -sf` nests it inside the directory the
+# mkdir above just created — and is fixed separately in #797.
 ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
 
-# Persist per-tool API logins across pod restarts (issue #243). The
-# interactive terminals (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
-# which is ephemeral — so `eas login` (Expo), `npm login`, `docker login`,
-# `aws configure`, `gcloud auth` etc. are lost on every restart. Redirect
-# those credential files/dirs onto the persistent /home/dev/.credentials
-# store, the same way ~/.ssh and ~/.gitconfig are handled above. Dirs and
-# single files are treated separately so we never shadow a real login with
-# an empty stub, and any pre-existing ephemeral login is migrated onto the
-# PVC once (no-clobber) so upgrading an established workspace keeps a session
-# that was active before this change shipped.
+# Persist per-tool API logins across pod restarts (issue #243) and keep BOTH
+# homes reading the SAME store (issue #795).
+#
+# The interactive terminals (ttyd, code-server, SSH) run with
+# HOME=/home/ubuntu, which is ephemeral — so `eas login` (Expo), `npm login`,
+# `docker login`, `aws configure`, `gcloud auth` etc. are lost on every
+# restart. That is what this helper was written for. But server.py forces
+# HOME=/home/dev on the CLIs it spawns (agent tasks, hooks, the hypervisor),
+# and /home/dev is a real directory that had grown its own *unmanaged*
+# .gitconfig, .ssh, .git-credentials, .expo and .docker — so an agent shell
+# read a different identity than the user's terminal, and a re-login from one
+# was invisible to the other. The sharpest edge was `git push`:
+# /home/dev/.gitconfig carried the issue #454 empty-`helper =` chain reset,
+# and no self-heal reached it because every heal writes the managed file that
+# only /home/ubuntu/.gitconfig linked to. Linking .gitconfig from both homes
+# makes `git config --global` — the boot-time --configure-git, its 50-minute
+# re-assert, and the extraheader scrub — land on one file for every context.
+#
+# This loop now runs over real PVC data, so it obeys stricter rules than the
+# ephemeral-only version did:
+#   * It NEVER deletes. A real file/dir shadowing the store is merged in
+#     where merging is safe, then MOVED ASIDE to <path>.pre795.<epoch>: a
+#     reversible rename, logged, so a judgement call about someone's
+#     credentials is never made silently. (The displaced copy is yours to
+#     delete once you have looked at it.)
+#   * Directories merge no-clobber (`cp -an`): a key only the shadowing copy
+#     has — e.g. a deploy key in /home/dev/.ssh — is carried into the store,
+#     and the managed copy always wins a name collision.
+#   * A single file is a unit, not a merge: the managed copy wins unless it
+#     is still an empty stub. Importing a shadowing .gitconfig over a
+#     configured one would reinstate exactly the #454 breakage above.
+#   * Already-linked, dangling-link and nested-link cases are no-ops: `-L`
+#     skips migration, and `ln -sfn` replaces the link itself rather than
+#     resolving through it (plain `ln -sf` writes *inside* the target dir).
+#   * A target that lives inside its own link is refused, not linked — the
+#     store is a subdirectory of /home/dev, so a wrong subpath could
+#     otherwise bury it under the link that is supposed to reach it.
 persist_cred() {                      # $1 = subpath under HOME, $2 = dir|file
-  local sub="$1" kind="$2"
-  local target="/home/dev/.credentials/$sub"
+                                      # $3 = subpath under .credentials,
+                                      #      default $1 (see .gitconfig)
+  local sub="$1" kind="$2" rel="${3:-$1}"
+  local target="/home/dev/.credentials/$rel"
   if [ "$kind" = dir ]; then
     mkdir -p "$target"; chmod 700 "$target"
   else
     mkdir -p "$(dirname "$target")"; touch "$target"; chmod 600 "$target"
   fi
-  for HOME_DIR in /home/ubuntu; do
+  for HOME_DIR in /home/ubuntu /home/dev; do
     [ -d "$HOME_DIR" ] || continue
-    local link="$HOME_DIR/$sub"
-    if [ -e "$link" ] && [ ! -L "$link" ]; then   # migrate a real login once
+    local link="$HOME_DIR/$sub" aside=""
+    case "$target" in                 # never bury the store under its link
+      "$link"|"$link"/*)
+        log_stage "persist_cred: refusing $link -> $target (target is inside the link)"
+        continue ;;
+    esac
+    if [ -e "$link" ] && [ ! -L "$link" ]; then   # a real file/dir is here
       if [ "$kind" = dir ]; then
-        cp -an "$link/." "$target/" 2>/dev/null || true; rm -rf "$link"
+        cp -an "$link/." "$target/" 2>/dev/null || true
+      elif [ ! -s "$target" ]; then   # adopt only into an empty stub
+        cp -a "$link" "$target" 2>/dev/null || true
+      fi
+      aside="$link.pre795.$(date +%s)"
+      [ -e "$aside" ] && aside="$aside.$$"
+      if mv -T "$link" "$aside" 2>/dev/null; then
+        log_stage "persist_cred: $link shadowed the credential store; merged what was safe and kept the original at $aside"
       else
-        cp -an "$link" "$target" 2>/dev/null || true; rm -f "$link"
+        log_stage "persist_cred: WARNING $link is in the way and could not be moved aside — left untouched, so $HOME_DIR keeps its own copy of $sub"
+        continue
       fi
     fi
     mkdir -p "$(dirname "$link")"
@@ -75,6 +125,8 @@ persist_cred() {                      # $1 = subpath under HOME, $2 = dir|file
     chown -h ubuntu:ubuntu "$link" 2>/dev/null || true
   done
 }
+persist_cred .ssh             dir    # SSH keys, config, known_hosts (#795)
+persist_cred .gitconfig       file .config/git/config  # git identity + the #454 helper chain (#795)
 persist_cred .expo            dir    # Expo / EAS (eas login, expo login)
 persist_cred .docker          dir    # docker login (registry auth)
 persist_cred .aws             dir    # aws configure / SSO cache
@@ -210,9 +262,10 @@ tmux source-file /home/dev/.tmux.conf 2>/dev/null || true
 # from the workspace's own kube-coder clone AND the global config on every boot
 # so this self-heals instead of wedging the user. Safe to always remove: we
 # never legitimately set one for github.com.
-# Target the workspace's persisted global config file directly (the interactive
-# terminals' ~/.gitconfig symlinks here), not `--global` — start.sh's own $HOME
-# may differ from the terminal user's.
+# Target the workspace's persisted global config file directly, not
+# `--global` — start.sh's own $HOME may differ from the terminal user's.
+# Both homes' .gitconfig symlink onto this file (persist_cred, #795), so one
+# scrub now heals terminals and agent shells alike.
 git config --file /home/dev/.credentials/.config/git/config \
   --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 if [ -d /home/dev/kube-coder/.git ]; then
