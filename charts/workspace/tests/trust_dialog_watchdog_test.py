@@ -202,6 +202,38 @@ class EnsureClaudeTrustRetryTests(unittest.TestCase):
         self.assertEqual(cfg['customApiKeyResponses']['rejected'], ['x' * 20])
 
 
+class WaitForPaneReadyStopsAtTheDialogTests(unittest.TestCase):
+    """The composer never paints while the modal is up — don't wait for it."""
+
+    def test_dialog_ends_the_wait_immediately(self):
+        with mock.patch.object(CTM, '_capture_pane', return_value=TRUST_DIALOG) as cap, \
+             mock.patch.object(server.time, 'sleep'):
+            self.assertFalse(
+                CTM._wait_for_pane_ready('sess', floor=0, ceiling=45, interval=0,
+                                         expect_composer=True))
+        self.assertEqual(cap.call_count, 1)   # not ~75 polls over 45s
+
+    def test_a_dialog_that_appears_mid_wait_also_ends_it(self):
+        panes = iter(['starting', 'still starting', TRUST_DIALOG, COMPOSER_READY])
+        clock = iter(range(0, 200))
+        with mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(panes)), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=lambda: next(clock)):
+            self.assertFalse(
+                CTM._wait_for_pane_ready('sess', floor=0, ceiling=45, interval=0,
+                                         expect_composer=True))
+
+    def test_a_normal_cold_start_is_unaffected(self):
+        panes = iter(['starting', COMPOSER_READY])
+        clock = iter(range(0, 200))
+        with mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(panes)), \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=lambda: next(clock)):
+            self.assertTrue(
+                CTM._wait_for_pane_ready('sess', floor=0, ceiling=45, interval=0,
+                                         expect_composer=True))
+
+
 class ClearTrustDialogTests(unittest.TestCase):
     def test_no_dialog_sends_no_keys(self):
         with mock.patch.object(CTM, '_capture_pane', return_value=COMPOSER_READY), \

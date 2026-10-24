@@ -4410,7 +4410,9 @@ class ClaudeTaskManager:
         falls back to the old settle heuristic — two identical captures
         `interval` apart — so those launches don't stall. Gives up after
         `ceiling` seconds either way so a perpetually-animating UI still gets
-        the prompt (the paste path then verifies + retries delivery).
+        the prompt (the paste path then verifies + retries delivery). Returns
+        False straight away on Claude's folder-trust modal: no composer is
+        coming while it is up, and the caller has to answer it first (#800).
         Best-effort; safe if capture fails.
         """
         if ceiling is None:
@@ -4420,6 +4422,13 @@ class ClaudeTaskManager:
         prev = ClaudeTaskManager._capture_pane(session_name)
         if ClaudeTaskManager._pane_input_ready(prev):
             return True
+        # A composer behind the folder-trust modal is never going to appear, so
+        # waiting out the ceiling for it just delays the answer by 45s per
+        # wedged launch — and with 8–10 Builds starting at once that is the
+        # whole problem (#800). Hand back to the caller, which answers the
+        # dialog and then waits again for the composer it was covering.
+        if ClaudeTaskManager._pane_shows_trust_dialog(prev):
+            return False
         # A capture that FAILS is not a pane that is still drawing — tmux says
         # "can't find session". Waiting out the full ceiling for a session that
         # no longer exists buys nothing: the paste that follows cannot land
@@ -4431,6 +4440,8 @@ class ClaudeTaskManager:
             cur = ClaudeTaskManager._capture_pane(session_name)
             if ClaudeTaskManager._pane_input_ready(cur):
                 return True
+            if ClaudeTaskManager._pane_shows_trust_dialog(cur):
+                return False
             if cur is None:
                 misses += 1
                 if misses >= ClaudeTaskManager.PANE_GONE_STRIKES:
