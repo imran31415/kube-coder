@@ -245,6 +245,20 @@ class IsolatedCreateTests(_IsolatedBase):
         self.assertIn('Settings', out['error'])
         self.assertEqual(self.task_dirs(), [first['task_id']])
 
+    def test_cap_counts_a_worktree_a_build_was_launched_into(self):
+        repo = worktrees.resolve_repo(self.repo, home_root=self.home)
+        info = worktrees.ensure(repo, 'issue-791', wt_root=WM.root(),
+                                listening=set())          # like worktree.sh
+        task = self.create(workdir=info['path'])          # launched INTO it
+        self.live.add(self.session_of(task))
+        with mock.patch.dict(os.environ, {'KC_MAX_WORKTREES': '1',
+                                          'KC_WORKTREE_GRACE_S': '0'}):
+            out = self.create(isolate=True)
+        self.assertEqual((out['status'], out['code']), ('rejected', 'worktree_cap'))
+        self.assertEqual(out['live_count'], 1)
+        self.assertIn('1 owned by a running task and not removable', out['error'])
+        self.assertTrue(os.path.isdir(info['path']))      # reclaim left it alone
+
     def test_cap_reclaims_a_dead_pristine_worktree(self):
         with mock.patch.dict(os.environ, {'KC_MAX_WORKTREES': '1',
                                           'KC_WORKTREE_GRACE_S': '0'}):
@@ -414,6 +428,12 @@ class WorktreeRouteTests(_IsolatedBase):
         with mock.patch.dict(os.environ, {'KC_MAX_WORKTREES': '1'}):
             status, body = self.post_task(isolate=True)
         self.assertEqual((status, body['code']), (429, 'worktree_cap'))
+        # #791: the one worktree in the way is running, so pruning cannot
+        # free it — the refusal says so instead of sending the operator to
+        # Settings for nothing.
+        self.assertEqual(body['live_count'], 1)
+        self.assertIn('(1/1; 1 owned by a running task and not removable)',
+                      body['error'])
 
     def test_status_diff_and_remove(self):
         _s, task = self.post_task(isolate=True)
@@ -506,6 +526,33 @@ class WorktreeRouteTests(_IsolatedBase):
         self.assertEqual(status, 200)
         self.assertFalse(os.path.exists(a['worktree']['path']))
         self.assertTrue(CTM.read_meta(a['task_id'])['worktree']['removed_at'])
+
+    def test_a_hand_made_worktree_someone_works_in_is_not_removable(self):
+        """#791: the manifest names nobody, so nothing on disk separates
+        "a Build started in here seconds ago" from "finished and merged"."""
+        repo = worktrees.resolve_repo(self.repo, home_root=self.home)
+        info = worktrees.ensure(repo, 'issue-791', wt_root=WM.root(),
+                                listening=set())              # like worktree.sh
+        self.assertEqual(worktrees.read_manifest(info['path'])['task_id'], '')
+        _s, task = self.post_task(workdir=info['path'])        # launched INTO it
+        self.live.add(task['tmux_session'])
+
+        status, body = self.call('GET', '/api/worktrees')
+        row = next(r for r in body['worktrees'] if r['slug'] == 'issue-791')
+        self.assertTrue(row['live'])
+        self.assertEqual(row['task_id'], task['task_id'])
+
+        for q in ('', '?force=1'):
+            status, body = self.call(
+                'DELETE', f'/api/worktrees/app/issue-791{q}')
+            self.assertEqual((status, body['code']), (409, 'live'))
+            self.assertEqual(body['owner_task_id'], task['task_id'])
+        self.assertTrue(os.path.isdir(info['path']))
+
+        self.live.clear()
+        status, body = self.call('DELETE', '/api/worktrees/app/issue-791')
+        self.assertEqual(status, 200)
+        self.assertFalse(os.path.exists(info['path']))
 
     def test_auth_and_readonly(self):
         _s, task = self.post_task(isolate=True)
