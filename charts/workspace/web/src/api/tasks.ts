@@ -1,7 +1,13 @@
 import { apiGet, apiPost, apiDelete, authPrefix } from './client';
 import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
 
-export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown' | 'waiting-for-input';
+/**
+ * `terminated` (#792) is NOT a flavour of completed: the pod restarted and
+ * wiped the task's tmux session, so the agent never finished and never
+ * reported. The server only ever writes it when the boot that launched the
+ * task is not the boot that found it dead.
+ */
+export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'terminated' | 'unknown' | 'waiting-for-input';
 export type TaskKind = 'claude' | 'terminal' | string;
 
 export interface MemoryInjection {

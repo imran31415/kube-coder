@@ -66,7 +66,9 @@ export const taskCounts = computed(() => {
   for (const t of tasks.value) {
     if (t.status === 'running' || t.status === 'waiting-for-input') counts.running++;
     else if (t.status === 'completed') counts.completed++;
-    else if (t.status === 'error' || t.status === 'killed') counts.error++;
+    // A restart-wiped task (#792) counts with the failures, never with the
+    // completions — the whole point of the status is that it is not a result.
+    else if (t.status === 'error' || t.status === 'killed' || t.status === 'terminated') counts.error++;
   }
   return counts;
 });

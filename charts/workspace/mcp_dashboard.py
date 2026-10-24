@@ -1068,7 +1068,13 @@ TOOLS: Dict[str, Any] = {
         'you to run, build, test, or start something as a background task. For '
         'a task that builds or runs a web app, leave preview on (the default): '
         'a live preview auto-surfaces in this chat the moment its dev server '
-        'comes up — no need to call show_app_preview yourself.',
+        'comes up — no need to call show_app_preview yourself. For any task '
+        'that writes code, put "commit and push your branch as soon as it '
+        'compiles, before validating" in the prompt: this pod can restart and '
+        'a restart loses uncommitted work and the task\'s final report, while '
+        'a pushed branch survives (#792). A task that comes back '
+        '`terminated` was wiped by such a restart — its work is unfinished, '
+        'so never read it as success.',
         _t_create_task,
         properties={
             'prompt': {'type': 'string',
@@ -1136,7 +1142,8 @@ TOOLS: Dict[str, Any] = {
         'unlike Bash run_in_background, Monitor, or a background Agent '
         'subagent it survives the turn boundary). Kinds: '
         "'task' — target is a task_id (from create_task); fires when the task "
-        "completes, errors, is killed, or goes waiting-for-input. 'command' — "
+        "completes, errors, is killed or terminated, or goes "
+        "waiting-for-input. 'command' — "
         "target is a shell command; fires when it exits 0. 'file' — target is "
         'an absolute path; fires when it appears, is removed, or its mtime '
         "changes. 'port' — target is the related task_id; fires when a NEW "

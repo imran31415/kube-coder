@@ -1262,7 +1262,7 @@ def remove(path, *, wt_root=None, force=False, is_owner_live=None,
 
 # ── sweep ─────────────────────────────────────────────────────────────────
 
-TERMINAL_STATUSES = frozenset({'completed', 'killed', 'error'})
+TERMINAL_STATUSES = frozenset({'completed', 'killed', 'error', 'terminated'})
 
 
 def _owners(m):

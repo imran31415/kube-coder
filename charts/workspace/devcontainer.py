@@ -1014,26 +1014,50 @@ def drop_record(workdir: str) -> bool:
     return False
 
 
+def _read_boot_marker() -> str:
+    try:
+        with open(BOOT_MARKER, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
 def boot_id() -> str:
-    """Identity of the current pod boot, used to re-run postStart once per start.
+    """Identity of the current pod boot, shared by every process in the pod.
 
     Read-or-create a random token under /tmp. /tmp is container-local and wiped
     on restart, so it IS a per-boot identity by construction. Deliberately not
     /proc/sys/kernel/random/boot_id — that is the NODE's boot id: it survives a
     pod restart on the same node, which would silently make postStart never
     run again.
+
+    The create publishes the token by linking a fully-written temp file into
+    place, so concurrent callers converge on ONE token for the boot instead of
+    each minting its own. That matters because there are now two readers with
+    different failure modes: postStart re-runs once per start (a split token
+    would run it twice — harmless), and task status reconciliation calls a dead
+    task `terminated` rather than `completed` when the boot that last saw it
+    alive is not this one (#792) — where a split token is a restart reported
+    that never happened.
     """
-    try:
-        with open(BOOT_MARKER, 'r', encoding='utf-8') as f:
-            token = f.read().strip()
-        if token:
-            return token
-    except OSError:
-        pass
+    token = _read_boot_marker()
+    if token:
+        return token
     token = secrets.token_hex(8)
+    tmp = f'{BOOT_MARKER}.{os.getpid()}.tmp'
     try:
-        with open(BOOT_MARKER, 'w', encoding='utf-8') as f:
+        with open(tmp, 'w', encoding='utf-8') as f:
             f.write(token)
+        try:
+            # EEXIST ⇒ another process published first; its token wins.
+            os.link(tmp, BOOT_MARKER)
+        except FileExistsError:
+            token = _read_boot_marker() or token
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     except OSError:
         # Unwritable /tmp: return a per-call token so postStart is treated as
         # pending rather than silently "done".
