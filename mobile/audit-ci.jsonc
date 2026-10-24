@@ -26,8 +26,8 @@
   "allowlist": [
     // owner: security@kube-coder | review: 2026-10-02 | dev-only (vitest test UI)
     "GHSA-5xrq-8626-4rwp", // vitest  <=3.2.5  UI server arbitrary file read/exec — needs vitest v4
-    // owner: security@kube-coder | review: 2026-10-02 | dev-only (vite via vitest)
-    "GHSA-fx2h-pf6j-xcff", // vite    <=6.4.2  server.fs.deny bypass (Windows) — cleared by vitest v4
+    // (GHSA-fx2h-pf6j-xcff pruned 2026-10-24: the blanket vite override to
+    // 6.4.4 — added for GHSA-587h-7wmj-h5pm — is past its <=6.4.2 range.)
     // owner: security@kube-coder | review: 2026-10-02 | build-time only, NO FIX PUBLISHED
     //
     // node-forge <=1.4.0 accepts extra nested DigestAlgorithm elements when
@@ -64,7 +64,22 @@
     //
     // Re-check when braces publishes a patched line, or when Metro moves off
     // micromatch.
-    "GHSA-vfj7-8cjw-p6xm"  // braces <=3.0.3  stack exhaustion via nested patterns — no patch exists
+    "GHSA-vfj7-8cjw-p6xm", // braces <=3.0.3  stack exhaustion via nested patterns — no patch exists
+    // owner: security@kube-coder | review: 2026-10-24 | build-time only, fix is a major @expo/cli can't take
+    //
+    // zod <4.6.6 can exhaust memory validating oversized constrained
+    // collections. The only patched line is 4.6.6+; @expo/cli pins zod ^3
+    // (3.25.76 here), so no in-range bump clears it and an npm override to
+    // zod 4 would break the Expo CLI's own schemas.
+    //
+    // Reachable only through `expo` > `@expo/cli`, which runs on the
+    // developer/EAS build machine parsing this repo's own config — it is not
+    // in the Metro bundle shipped to a device, and no attacker-supplied input
+    // reaches its validators. A DoS against our own build is a failed build.
+    //
+    // Re-check when @expo/cli moves to zod 4 (Expo SDK 58 is expected to),
+    // or if zod backports the fix to a 3.x release.
+    "GHSA-mrhx-c7xc-m3w5"  // zod <4.6.6  memory exhaustion on oversized constrained collections — fix only in 4.x
   ],
   "report-type": "summary"
 }
