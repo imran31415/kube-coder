@@ -9,11 +9,12 @@
 | Path | Survives restart? | Notes |
 | --- | --- | --- |
 | `/home/dev/**` | ✅ | PVC, default 50Gi. All real work belongs here. |
-| `/home/dev/.credentials/**` | ✅ | SSH keys, git config, gh tokens (symlinked to `~/.ssh`, `~/.gitconfig`, `~/.config/gh`). |
+| `/home/dev/.credentials/**` | ✅ | SSH keys, git config, gh tokens (symlinked to `/home/ubuntu/.ssh`, `/home/ubuntu/.gitconfig`, `/home/ubuntu/.config/gh` — those exact paths, not `~`). |
 | `/home/dev/.claude-tasks/**` | ✅ | Task state — meta.json, output.log, transcripts. |
 | `/home/dev/.claude-memory/memory.db` | ✅ | Persistent memory SQLite. |
-| `/home/dev/.local/bin/*` | ✅ | Tools you install yourself. Already on `PATH` in every shell. |
-| `~/.local/bin`, `~/.bashrc`, … | ❌ | `$HOME` is `/home/ubuntu` — ephemeral. Use `/home/dev/...` absolute paths instead. |
+| `/home/dev/.local/bin/*` | ✅ | Tools you install yourself. On `PATH` in **login** shells (terminal, SSH, agent tasks); scripts and `bash -c` read no rc file, so call tools there by absolute path. |
+| `/home/ubuntu/**` (`.local/bin`, `.bashrc`, …) | ❌ | Ephemeral, rebuilt from skel each restart. Use `/home/dev/...` absolute paths instead. |
+| `~`, `$HOME` | ⚠️ | **Not a fixed path.** `/home/ubuntu` for terminals and SSH, `/home/dev` for the CLIs the dashboard spawns (agent tasks, hooks). Never put `$HOME` in an `rm -rf` — it may already be the persistent volume (issue #793). |
 | `/tmp/**` | ❌ | Ephemeral, lost on restart. |
 | `apt-get install ...` packages | ❌ | Re-installed on next restart unless persisted. |
 
