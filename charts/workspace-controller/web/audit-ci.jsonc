@@ -11,7 +11,7 @@
   "high": true,
   "allowlist": [
     "GHSA-5xrq-8626-4rwp", // vitest     <3.2.6    UI server RCE
-    "GHSA-fx2h-pf6j-xcff", // vite       <6.4.3    server.fs.deny bypass (Windows)
+    // (GHSA-fx2h-pf6j-xcff pruned 2026-10-24: blanket vite resolution to 6.4.4, added for GHSA-587h-7wmj-h5pm, is past its <6.4.3 range.)
     // owner: security@kube-coder | review: 2026-10-03 | build-time only, NO FIX PUBLISHED
     //
     // braces <=3.0.3 exhausts the stack on a deeply nested pattern.

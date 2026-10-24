@@ -50,7 +50,8 @@
     "@xmldom/xmldom": "^0.9.12",
     "@expo/plist": {
       "@xmldom/xmldom": "^0.8.15"
-    }
+    },
+    "vite": "6.4.4"
   },
   "scripts": {
     "start": "expo start",
