@@ -245,6 +245,20 @@ class IsolatedCreateTests(_IsolatedBase):
         self.assertIn('Settings', out['error'])
         self.assertEqual(self.task_dirs(), [first['task_id']])
 
+    def test_cap_counts_a_worktree_a_build_was_launched_into(self):
+        repo = worktrees.resolve_repo(self.repo, home_root=self.home)
+        info = worktrees.ensure(repo, 'issue-791', wt_root=WM.root(),
+                                listening=set())          # like worktree.sh
+        task = self.create(workdir=info['path'])          # launched INTO it
+        self.live.add(self.session_of(task))
+        with mock.patch.dict(os.environ, {'KC_MAX_WORKTREES': '1',
+                                          'KC_WORKTREE_GRACE_S': '0'}):
+            out = self.create(isolate=True)
+        self.assertEqual((out['status'], out['code']), ('rejected', 'worktree_cap'))
+        self.assertEqual(out['live_count'], 1)
+        self.assertIn('1 owned by a running task and not removable', out['error'])
+        self.assertTrue(os.path.isdir(info['path']))      # reclaim left it alone
+
     def test_cap_reclaims_a_dead_pristine_worktree(self):
         with mock.patch.dict(os.environ, {'KC_MAX_WORKTREES': '1',
                                           'KC_WORKTREE_GRACE_S': '0'}):
@@ -414,6 +428,12 @@ class WorktreeRouteTests(_IsolatedBase):
         with mock.patch.dict(os.environ, {'KC_MAX_WORKTREES': '1'}):
             status, body = self.post_task(isolate=True)
         self.assertEqual((status, body['code']), (429, 'worktree_cap'))
+        # #791: the one worktree in the way is running, so pruning cannot
+        # free it — the refusal says so instead of sending the operator to
+        # Settings for nothing.
+        self.assertEqual(body['live_count'], 1)
+        self.assertIn('(1/1; 1 owned by a running task and not removable)',
+                      body['error'])
 
     def test_status_diff_and_remove(self):
         _s, task = self.post_task(isolate=True)

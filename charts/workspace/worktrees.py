@@ -716,7 +716,7 @@ def _cwd_for(path, subdir):
 
 def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
            task_id='', created_by='server', max_worktrees=None,
-           is_owner_live=None, allow_owner='', reclaim=None,
+           is_owner_live=None, allow_owner='', reclaim=None, occupied_by=None,
            reserved=RESERVED_PORTS, rng=None, listening=None, timeout=None):
     """Create — or reuse — the worktree `slug` for `repo`. Returns a dict:
 
@@ -735,7 +735,9 @@ def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
 
     `created` / `branch_created` describe what THIS call made; `rollback()`
     undoes exactly that and nothing more. `reclaim(pristine_only=True)` is
-    called (inside the lock) when the cap is reached, before refusing.
+    called (inside the lock) when the cap is reached, before refusing, and
+    `occupied_by` (see `occupancy()`) lets the refusal say how much of the
+    cap is held by live tasks and so cannot be cleaned up (#791).
     """
     wt_root = wt_root or default_root()
     if not valid_slug(slug):
@@ -795,19 +797,23 @@ def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
                     f'workspace manages; move it aside first', path=real_path)
 
         if max_worktrees:
-            count = len(list_all(wt_root))
-            if count >= max_worktrees and reclaim is not None:
+            rows = list_all(wt_root)
+            if len(rows) >= max_worktrees and reclaim is not None:
                 try:
                     reclaim()
                 except WorktreeError:
                     pass
-                count = len(list_all(wt_root))
-            if count >= max_worktrees:
+                rows = list_all(wt_root)
+            if len(rows) >= max_worktrees:
+                count = len(rows)
+                held = held_by_live(rows, is_owner_live=is_owner_live,
+                                    occupied_by=occupied_by)
                 raise WorktreeError(
                     'worktree_cap',
-                    f'worktree limit reached ({count}/{max_worktrees}). Remove '
-                    f'finished worktrees in Settings → Worktrees, or raise '
-                    f'KC_MAX_WORKTREES.', count=count, max=max_worktrees)
+                    f'worktree limit reached ({count}/{max_worktrees}'
+                    f'{_held_phrase(held)}). Remove finished worktrees in '
+                    f'Settings → Worktrees, or raise KC_MAX_WORKTREES.',
+                    count=count, max=max_worktrees, live_count=held)
 
         port = _pick_port(wt_root, reserved=reserved, rng=rng, listening=listening)
 
@@ -1127,6 +1133,29 @@ def occupancy(sessions, meta_of):
                 return tid
         return ''
     return occupied_by
+
+
+def held_by_live(rows, *, is_owner_live=None, occupied_by=None):
+    """How many of `rows` (from `list_all`) a live task holds — its owner
+    runs, or some task is working in it. These are exactly the worktrees
+    removal refuses, so a cap refusal that tells you to go and prune should
+    say how many of them pruning cannot touch (#791)."""
+    held = 0
+    for m in rows:
+        owner = m.get('task_id') or ''
+        if owner and is_owner_live is not None and is_owner_live(owner):
+            held += 1
+        elif occupied_by is not None and occupied_by(m['path']):
+            held += 1
+    return held
+
+
+def _held_phrase(held):
+    """The '; N owned by running tasks' tail of a cap refusal, or ''."""
+    if not held:
+        return ''
+    return (f'; {held} owned by a running task and not removable' if held == 1
+            else f'; {held} owned by running tasks and not removable')
 
 
 def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner='',
@@ -1556,6 +1585,7 @@ def main(argv=None):
     try:
         if args.cmd == 'ensure':
             repo = resolve_repo(args.repo, home_root=home, wt_root=wt_root)
+            occupied = default_occupancy()
             slug = slugify(args.slug or args.task_id or
                            f'{time.strftime("%H%M%S")}-{os.getpid()}')
             if not slug:
@@ -1566,8 +1596,10 @@ def main(argv=None):
                 max_worktrees=_int_env('KC_MAX_WORKTREES', 20, lo=1),
                 is_owner_live=default_is_owner_live,
                 allow_owner=os.environ.get('KC_TASK_ID', ''),
+                occupied_by=occupied,
                 reclaim=reclaimer(wt_root, is_owner_live=default_is_owner_live,
-                                  owner_meta=default_owner_meta))
+                                  owner_meta=default_owner_meta,
+                                  occupied_by=occupied))
             if args.emit_shell:
                 print(f'worktree ready:\n  path    {info["path"]}\n'
                       f'  branch  {info["branch"]}\n  port    {info["port"]}   '

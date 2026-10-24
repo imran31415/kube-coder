@@ -4887,17 +4887,19 @@ class WorktreeManager:
         root = cls.root()
         sessions = cls.live_sessions()
         live = cls.liveness(sessions)
+        occupied = cls.occupancy(sessions)
         try:
             info = worktrees.ensure(
                 plan['repo'], plan['slug'] or f't-{task_id}', wt_root=root,
                 base_ref=plan['base_ref'], base_sha=plan['base_sha'],
                 task_id=task_id, created_by='server',
                 max_worktrees=cls.max_worktrees(), is_owner_live=live,
+                occupied_by=occupied,
                 reclaim=worktrees.reclaimer(
                     root, is_owner_live=live,
                     owner_meta=ClaudeTaskManager.read_meta,
                     grace_s=cls.grace_s(), gc_days=cls.gc_days(),
-                    occupied_by=cls.occupancy(sessions)))
+                    occupied_by=occupied))
         except worktrees.WorktreeError as e:
             return None, cls.refusal(e)
         return info, None

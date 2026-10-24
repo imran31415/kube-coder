@@ -129,7 +129,14 @@ kept it, and has a *Clean up now* button.
 
 A workspace holds at most **20** worktrees by default. At the limit, a new
 isolated Build is refused with a message pointing at Settings → Worktrees —
-after the cleanup has first taken anything it safely can.
+after the cleanup has first taken anything it safely can. The message counts
+the ones pruning cannot help with, so you know before you start whether there
+is anything to free:
+
+```
+worktree limit reached (20/20; 7 owned by running tasks and not removable).
+Remove finished worktrees in Settings → Worktrees, or raise KC_MAX_WORKTREES.
+```
 
 > :::scenario
 > **Two Builds, one repo.** You start "fix the login bug" and "add dark mode"

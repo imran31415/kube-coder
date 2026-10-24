@@ -390,12 +390,42 @@ class EnsureTests(gf.GitTestCase):
         with self.assertRaises(WorktreeError) as cm:
             self.ensure('t-c3', max_worktrees=2)
         self.assertEqual(cm.exception.code, 'worktree_cap')
-        self.assertEqual(cm.exception.detail, {'count': 2, 'max': 2})
-        self.assertIn('Settings', cm.exception.message)
+        self.assertEqual(cm.exception.detail,
+                         {'count': 2, 'max': 2, 'live_count': 0})
+        self.assertEqual(cm.exception.message,
+                         'worktree limit reached (2/2). Remove finished '
+                         'worktrees in Settings → Worktrees, or raise '
+                         'KC_MAX_WORKTREES.')
         self.assertFalse(os.path.exists(os.path.join(self.wt_root, 'app', 't-c3')))
         self.assertNotIn('kc/t-c3', self.branches())
         # Reusing an existing one is not "another" worktree.
         self.assertTrue(self.ensure('t-c1', max_worktrees=2)['reused'])
+
+    def test_cap_refusal_counts_what_cannot_be_pruned(self):
+        # #791: "remove finished worktrees" is useless advice when most of
+        # them are running. The refusal says how many it cannot touch.
+        self.ensure('t-own', task_id='owner-1', max_worktrees=3)
+        self.ensure('t-in', max_worktrees=3)            # nobody in the manifest
+        self.ensure('t-free', max_worktrees=3)
+        occupied = wt.occupancy(
+            {'claude-t9'},
+            {'t9': {'workdir': os.path.join(self.wt_root, 'app', 't-in')}}.get)
+        with self.assertRaises(WorktreeError) as cm:
+            self.ensure('t-more', max_worktrees=3,
+                        is_owner_live=lambda t: t == 'owner-1',
+                        occupied_by=occupied)
+        self.assertEqual(cm.exception.detail,
+                         {'count': 3, 'max': 3, 'live_count': 2})
+        self.assertEqual(cm.exception.message,
+                         'worktree limit reached (3/3; 2 owned by running '
+                         'tasks and not removable). Remove finished worktrees '
+                         'in Settings → Worktrees, or raise KC_MAX_WORKTREES.')
+        # One live holder reads as one, in the singular.
+        with self.assertRaises(WorktreeError) as cm:
+            self.ensure('t-more', max_worktrees=3,
+                        is_owner_live=lambda t: t == 'owner-1')
+        self.assertIn('; 1 owned by a running task and not removable',
+                      cm.exception.message)
 
     def test_cap_reclaims_before_refusing(self):
         self.ensure('t-c1', max_worktrees=1)

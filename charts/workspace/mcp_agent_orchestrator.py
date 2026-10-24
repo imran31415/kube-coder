@@ -529,6 +529,7 @@ def _isolate(workdir: str, task_id: str, base_ref: str):
                       'workspace; spawn without isolate')
     home = os.environ.get('KC_WORKSPACE_HOME') or '/home/dev'
     root = worktrees.default_root()
+    occupied = worktrees.default_occupancy()
     try:
         repo = worktrees.resolve_repo(workdir, home_root=home, wt_root=root)
         info = worktrees.ensure(
@@ -536,6 +537,7 @@ def _isolate(workdir: str, task_id: str, base_ref: str):
             task_id=task_id, created_by='orchestrator',
             max_worktrees=_int_env('KC_MAX_WORKTREES', 20),
             is_owner_live=worktrees.default_is_owner_live,
+            occupied_by=occupied,
             reclaim=worktrees.reclaimer(
                 root, is_owner_live=worktrees.default_is_owner_live,
                 owner_meta=worktrees.default_owner_meta,
@@ -543,7 +545,7 @@ def _isolate(workdir: str, task_id: str, base_ref: str):
                 gc_days=_int_env('KC_WORKTREE_GC_DAYS', 7),
                 # Making room must never take a worktree a live task is
                 # working in, owner recorded or not (#791).
-                occupied_by=worktrees.default_occupancy()))
+                occupied_by=occupied))
     except worktrees.WorktreeError as e:
         return None, f'spawn refused: {e.message}'
     return info, None
