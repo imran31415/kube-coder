@@ -16,11 +16,12 @@ This is a Kubernetes-based development workspace running in an isolated containe
 
 - **`/home/dev`** — persistent volume (default 50Gi). Survives pod restarts. All project work belongs here.
 - **`/tmp`** — ephemeral. Lost on restart. Do not store anything important here.
-- **`~/.ssh`** — symlinked to `/home/dev/.credentials/.ssh` (persistent)
-- **`~/.gitconfig`** — symlinked to `/home/dev/.credentials/.config/git` (persistent)
-- **`~/.config/gh`** — symlinked to `/home/dev/.credentials/.config/gh` (persistent)
-- **Per-tool logins persist too** — `~/.expo`, `~/.docker`, `~/.aws`, `~/.config/gcloud`, `~/.config/.wrangler`, `~/.npmrc`, and `~/.git-credentials` are symlinked into `/home/dev/.credentials/`, so `eas login`, `npm login`, `docker login`, `aws configure`, and `gcloud auth` survive pod restarts (no re-login every session). For non-GitHub HTTPS git, opt in per host with `git config --global credential.https://<host>.helper store` (keeps the App-token helper for github.com untouched); creds save to the now-persistent `~/.git-credentials`. **github.com is not one of those hosts** — in App mode it is always brokered by the self-refreshing credential helper, and the token-refresh daemon owns `credential.https://github.com.helper` and strips any `github.com` line from `~/.git-credentials`. A stored `ghs_…` there would outlive its 1-hour validity and 401 every later push (issue #454).
-- **Cloudflare/wrangler** — `wrangler login` cannot work here: its OAuth callback listens on `localhost:8976` *inside the pod*, but your browser is on your laptop, so the redirect never arrives. Use an API token instead: `export CLOUDFLARE_API_TOKEN=...` (its config dir `~/.config/.wrangler` is persisted regardless).
+- **`/home/ubuntu/.ssh`** — symlinked to `/home/dev/.credentials/.ssh` (persistent)
+- **`/home/ubuntu/.gitconfig`** — symlinked to `/home/dev/.credentials/.config/git` (persistent)
+- **`/home/ubuntu/.config/gh`** — symlinked to `/home/dev/.credentials/.config/gh` (persistent)
+- **These symlinks live in `/home/ubuntu`, not in `~`** — spell them out. `$HOME` is `/home/dev` in some contexts (see *Key Constraints*), and `/home/dev/.ssh` / `/home/dev/.gitconfig` are **separate real files**, not the persistent credentials. `~/.ssh` therefore means a different key set depending on who started your shell; `/home/ubuntu/.ssh` always means the persistent one.
+- **Per-tool logins persist too** — `/home/ubuntu/.expo`, `.docker`, `.aws`, `.config/gcloud`, `.config/.wrangler`, `.npmrc`, and `.git-credentials` are symlinked into `/home/dev/.credentials/`, so `eas login`, `npm login`, `docker login`, `aws configure`, and `gcloud auth` survive pod restarts (no re-login every session). For non-GitHub HTTPS git, opt in per host with `git config --global credential.https://<host>.helper store` (keeps the App-token helper for github.com untouched); creds save to the now-persistent `/home/ubuntu/.git-credentials`. **github.com is not one of those hosts** — in App mode it is always brokered by the self-refreshing credential helper, and the token-refresh daemon owns `credential.https://github.com.helper` and strips any `github.com` line from `/home/ubuntu/.git-credentials`. A stored `ghs_…` there would outlive its 1-hour validity and 401 every later push (issue #454).
+- **Cloudflare/wrangler** — `wrangler login` cannot work here: its OAuth callback listens on `localhost:8976` *inside the pod*, but your browser is on your laptop, so the redirect never arrives. Use an API token instead: `export CLOUDFLARE_API_TOKEN=...` (its config dir `/home/ubuntu/.config/.wrangler` is persisted regardless).
 
 ## Runtimes & Languages
 
@@ -127,8 +128,9 @@ HTTP API on port 6080 for remotely running Claude Code tasks in persistent tmux 
 
 ### Get your API token
 
-From inside the pod (absolute path — `~` is the ephemeral `/home/ubuntu`,
-which has no `.claude-tasks`):
+From inside the pod (absolute path — `~` is not reliably either home here,
+and neither `/home/ubuntu` nor `$HOME` is guaranteed to hold `.claude-tasks`;
+see *Key Constraints*):
 ```bash
 cat /home/dev/.claude-tasks/.api-token
 ```
@@ -200,8 +202,10 @@ the branch from there.
 
 - **Resource limits** — typically 2-3 CPU cores, 3-5Gi RAM. Check usage with `curl -H "Authorization: Bearer $(cat /home/dev/.claude-tasks/.api-token)" localhost:6080/metrics`.
 - **Ephemeral /tmp** — anything outside `/home/dev` is lost on pod restart.
-- **Package persistence** — `sudo apt-get install` works but packages are lost on restart. For persistent tools, install to `/home/dev/.local/bin` (absolute path, NOT `~/.local/bin`) — it is already on `PATH` in every shell; no `.bashrc` edit needed.
-- **Two home directories** — `$HOME` is `/home/ubuntu`, which is **ephemeral** (rebuilt from skel on every pod restart); the persistent volume is `/home/dev`. So `~`/`$HOME` paths (dotfiles, `~/.local/bin`, rc-file edits) do not survive restarts — use absolute `/home/dev/...` paths for anything that should persist. The boot script re-seeds `/home/ubuntu`'s rc files and credential symlinks each start. To verify PATH/rc behavior as a real terminal sees it, use a clean login shell: `env -i HOME=/home/ubuntu TERM=xterm bash -lc 'command -v mytool'` — checking from an inherited environment can pass while the user's terminal still fails.
+- **Package persistence** — `sudo apt-get install` works but packages are lost on restart. For persistent tools, install to `/home/dev/.local/bin` (absolute path, NOT `~/.local/bin`). **Login** shells get it on `PATH` from rc blocks the boot script seeds — terminal tabs, SSH, code-server, and the `bash -l` an agent task runs in; no `.bashrc` edit needed. **Non-login shells do not read any rc file**, so `bash -c`, `sh -c`, a `#!/bin/bash` script, and anything the dashboard server spawns directly only inherit whatever `PATH` their parent had. In a script, or when handing a tool to another process, use the absolute path (`/home/dev/.local/bin/mytool`) or pass it explicitly (`MYTOOL=/home/dev/.local/bin/mytool`) rather than trusting a bare name to resolve.
+- **`$HOME` varies by context — never build a destructive command out of it.** There are two homes: `/home/ubuntu` is **ephemeral** (rebuilt from skel on every pod restart) and `/home/dev` is the persistent volume. Which one `$HOME` points at depends on who started your process: `/home/ubuntu` for PID 1, terminal tabs and SSH; `/home/dev` for the CLIs the dashboard server spawns — agent tasks, hooks, the hypervisor — which are forced there so they find their config on the PVC. tmux also hands its server's environment to every session created later, so a terminal tab can inherit either. **Check with `echo $HOME`; don't assume.**
+- **Write every path in full** — `/home/dev/...` for anything that must persist, `/home/ubuntu/...` when you really do mean the ephemeral copy. This is not style: `rm -rf "$HOME/.local/share/foo"` followed by `ln -s /home/dev/.local/share/foo "$HOME/..."` — the obvious way to "link the ephemeral home at the persistent copy" — **deletes the data it was meant to link** whenever `$HOME` is already `/home/dev`, and leaves a symlink pointing at itself (issue #793). Dotfiles under `/home/ubuntu` also do not survive a restart; the boot script re-seeds its rc files and credential symlinks each start.
+- **Probing another context's shell** — set `HOME` explicitly for the probe instead of inheriting it, and check both: `env -i HOME=/home/ubuntu TERM=xterm bash -lc 'command -v mytool'` and the same with `HOME=/home/dev`. Checking from your own inherited environment can pass while a terminal tab or a plain `bash -c` still fails.
 - **Network** — full internet access available. Outbound connections work normally.
 
 ## Tips
@@ -209,7 +213,7 @@ the branch from there.
 - Use `tmux` for long-running processes to avoid losing work if a terminal session drops.
 - **Copying text from the web terminal:** the terminal runs tmux with `mouse on`, so a plain click-drag is captured by tmux (it selects into tmux's own buffer, not your clipboard). Hold **Shift** while dragging to select — that bypasses mouse reporting and gives the browser a native selection, which **⌘/Ctrl+C** then copies to your OS clipboard.
 - The VS Code server runs on port 8080 (no auth — protected by ingress-level authentication).
-- SSH keys persist in `~/.ssh`. Generate with: `ssh-keygen -t ed25519`
+- SSH keys persist in `/home/ubuntu/.ssh` (symlinked to the PVC — `~/.ssh` is a *different*, non-persistent directory when `$HOME` is `/home/dev`). Generate with: `ssh-keygen -t ed25519 -f /home/ubuntu/.ssh/id_ed25519`
 - To check what's running: `curl localhost:6080/health`
 
 ## kube-coder Source (this workspace's blueprint)
@@ -258,11 +262,11 @@ the workspace's **GitHub auth mode**:
   (refreshed hourly) drives git + `gh`; commits are attributed to the
   bot account. Nothing to set up.
 - **Personal** — your own `gh auth login` / git identity wins. Switch in
-  **Settings → GitHub & SSH** (or `echo personal > ~/.credentials/.github-auth-mode`),
+  **Settings → GitHub & SSH** (or `echo personal > /home/dev/.credentials/.github-auth-mode`),
   then run `gh auth login` once. The choice persists on the PVC and
   survives the ~hourly token refresh and pod restarts, so the App token
   no longer clobbers your personal login. Switch back anytime by
-  selecting **App** (or `echo app > ~/.credentials/.github-auth-mode`).
+  selecting **App** (or `echo app > /home/dev/.credentials/.github-auth-mode`).
 
 Long-lived shells opened before a switch keep their old `GH_TOKEN`; open
 a fresh terminal (or restart the pod) for the change to fully take hold.
@@ -380,7 +384,8 @@ so orchestration can't fork-bomb the pod or run away on API spend.
 - `ante` — Ante CLI (pre-installed; defaults to OpenRouter when its key is set)
 - `claude` — Claude Code (requires Anthropic API key or OAuth)
 - `codex` — Codex (OpenAI, pre-installed). ChatGPT OAuth — run `codex login`
-  ONCE in a terminal to sign in (creds persist on the PVC under `~/.codex`);
+  ONCE in a terminal to sign in (creds persist on the PVC under
+  `/home/dev/.codex`);
   after that it works as a Hypervisor driver, a Build-tab REPL, and a
   `spawn_agent(assistant="codex")` sub-agent, same as Claude. No API key.
 - `librefang` — LibreFang agent OS (pre-installed; talks to its registry

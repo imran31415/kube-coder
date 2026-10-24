@@ -1,28 +1,44 @@
-suite: ephemeral-home rc bootstrap (#334)
+suite: ephemeral-home rc bootstrap (#334, #793)
 # Interactive shells run with HOME=/home/ubuntu, which is rebuilt from skel
 # on every pod restart. Without re-seeding its rc files at boot, nothing puts
-# the persistent /home/dev/.local/bin on PATH, and the GitHub App env hook
-# would land in /home/dev rc files that no shell ever reads.
+# the persistent /home/dev/.local/bin on PATH.
+#
+# But $HOME is NOT /home/ubuntu everywhere (#793): server.py forces
+# HOME=/home/dev on the CLIs it spawns, and tmux hands its server's env to
+# every later session — so a login shell may read /home/dev/.profile instead.
+# bootstrap_rc therefore has to seed BOTH homes, or half the shells in the pod
+# silently get no PATH entry, no $BROWSER and no KC_AGENT_DISPLAY.
 templates:
   - templates/workspace-entrypoint-configmap.yaml
   - templates/ssh-server-configmap.yaml
 values:
   - test-values.yaml
 tests:
-  - it: seeds both /home/ubuntu rc files via bootstrap_rc in start.sh
+  - it: seeds both rc files in both homes via bootstrap_rc in start.sh
     template: templates/workspace-entrypoint-configmap.yaml
     asserts:
       - matchRegex:
           path: data["start.sh"]
           pattern: 'bootstrap_rc\(\)'
+      # #793: both homes, not just the ephemeral one — an agent task's
+      # `bash -l` can run with HOME=/home/dev and read /home/dev/.profile.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'for HOME_DIR in /home/ubuntu /home/dev; do'
       - matchRegex:
           path: data["start.sh"]
           pattern: 'for rc in "\$HOME_DIR/\.profile" "\$HOME_DIR/\.bashrc"'
       # idempotency: a marker grep guards the append, so repeated boots
-      # don't stack duplicate blocks.
+      # don't stack duplicate blocks. Load-bearing for /home/dev, whose rc
+      # files live on the PVC and are never rebuilt from skel.
       - matchRegex:
           path: data["start.sh"]
           pattern: 'grep -qF "\$marker" "\$rc"'
+      # the block bodies must not reference $HOME/~, which resolves
+      # differently per home — that inversion caused a destructive rm -rf.
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: 'export PATH="\$HOME/\.local/bin'
 
   - it: puts /home/dev/.local/bin on PATH without duplicating the entry
     template: templates/workspace-entrypoint-configmap.yaml

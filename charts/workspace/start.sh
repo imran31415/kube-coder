@@ -85,14 +85,27 @@ persist_cred .config/.wrangler dir   # wrangler / Cloudflare Workers auth
 
 # Interactive shells (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
 # which is rebuilt from skel on every pod restart — so rc-file edits and
-# PATH entries made there don't survive, and rc-file edits made under
-# /home/dev are never read (issue #334). Re-assert env hooks into the
-# ephemeral rc files on each boot, the same contract as the credential
+# PATH entries made there don't survive (issue #334). Re-assert env hooks
+# into the rc files on each boot, the same contract as the credential
 # symlinks above. Absolute paths only: $HOME/~ must not appear inside a
 # block, because it resolves differently across shells and boot contexts.
+#
+# Seed BOTH homes, because which one a login shell reads is not ours to
+# predict (issue #793). $HOME is /home/ubuntu for PID 1 and for sshd, but
+# server.py forces HOME=/home/dev on the CLIs it spawns so they find their
+# config on the PVC — and tmux bakes the environment of whoever started its
+# server into every later session. So an agent task's `bash -l` (and any
+# terminal tab served by that same tmux server) can read /home/dev/.profile
+# instead, where none of these blocks used to exist: no /home/dev/.local/bin
+# on PATH, no $BROWSER, no KC_AGENT_DISPLAY. Writing both is idempotent (the
+# marker grep guards the append) and costs one extra pair of touch+grep.
+# One asymmetry to remember when editing a block: /home/ubuntu is rebuilt
+# from skel every boot, so it always gets the current text, while the PVC's
+# /home/dev copy is written once and kept. Changing a block's body therefore
+# needs a new marker, or the old text lives on in /home/dev's rc files.
 bootstrap_rc() {                      # $1 = grep marker, $2 = block to append
   local marker="$1" block="$2"
-  for HOME_DIR in /home/ubuntu; do
+  for HOME_DIR in /home/ubuntu /home/dev; do
     [ -d "$HOME_DIR" ] || continue
     for rc in "$HOME_DIR/.profile" "$HOME_DIR/.bashrc"; do
       touch "$rc"
@@ -408,13 +421,14 @@ if [ -n "$GITHUB_APP_ID" ]; then
   #                          → non-interactive bash: `bash -c …`, hooks,
   #                            the gh/git credential helper — the path that
   #                            actually breaks when this is missing
-  #   2. /home/ubuntu/.bashrc  → interactive non-login bash
-  #   3. /home/ubuntu/.profile → login shells
-  # (2)/(3) go through bootstrap_rc because interactive shells run with
-  # HOME=/home/ubuntu — the previous /home/dev/.bashrc + .profile writes
-  # were files no shell ever read (issue #334). All three read
-  # /home/dev/.profile.d-github-env, which the refresh daemon rewrites in
-  # place, so new shells pick up rotated tokens without restart. The hook
+  #   2. <home>/.bashrc  → interactive non-login bash
+  #   3. <home>/.profile → login shells
+  # (2)/(3) go through bootstrap_rc, which seeds both /home/ubuntu and
+  # /home/dev because $HOME differs by context: /home/ubuntu for terminals
+  # and sshd, /home/dev for the CLIs server.py spawns (issues #334, #793).
+  # All three read /home/dev/.profile.d-github-env, which the refresh daemon
+  # rewrites in place, so new shells pick up rotated tokens without a
+  # restart — one absolute path, read from either home. The hook
   # self-guards on auth mode, so sourcing it in "personal" mode is a no-op.
   bootstrap_rc '/home/dev/.profile.d-github-env' \
     '# github-app token (rewritten in place by the refresh daemon)
