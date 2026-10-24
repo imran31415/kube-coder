@@ -3303,10 +3303,23 @@ class ClaudeTaskManager:
         # so the auto-pasted initial prompt below isn't swallowed by either
         # (see _ensure_claude_trust / _api_key_to_reject, #375). Only
         # relevant for the Claude CLI.
+        # The seed is verified by read-back, and its verdict is NOT discarded
+        # (#800): a seed that didn't stick means this launch will meet the
+        # dialog, which is worth a loud line in the server log and a mark on
+        # the task — the post-launch watchdog in send_prompt() answers it.
         if assistant == 'claude':
-            ClaudeTaskManager._ensure_claude_trust(
+            trusted = ClaudeTaskManager._ensure_claude_trust(
                 workdir,
                 reject_api_key=ClaudeTaskManager._api_key_to_reject())
+            if not trusted:
+                print(f'[ClaudeTaskManager] WARNING: folder-trust for {workdir} '
+                      'is NOT recorded in Claude\'s config after retries — a '
+                      'concurrent CLI is likely rewriting it; relying on the '
+                      'post-launch trust-dialog watchdog (#800)',
+                      file=sys.stderr)
+                meta['trust_seed_failed'] = True
+                with open(meta_path, 'w') as f:
+                    json.dump(meta, f, indent=2)
 
         cli_cmd = ClaudeTaskManager.assistant_command(
             assistant, auto_approve=auto_approve, model=model, effort=effort,
@@ -3391,19 +3404,32 @@ class ClaudeTaskManager:
             # Claude we insist on a real composer-ready signal (issue #288)
             # rather than mere screen stability, which its staggered startup
             # notices trip falsely.
+            saw_dialog = False
             try:
-                ClaudeTaskManager._wait_for_pane_ready(
-                    session_name, expect_composer=(assistant == 'claude'))
-                delivered = ClaudeTaskManager._deliver_prompt(
-                    session_name, prompt_file, f'prompt-{task_id}')
+                delivered, saw_dialog = ClaudeTaskManager._deliver_launch_prompt(
+                    session_name, prompt_file, f'prompt-{task_id}',
+                    expect_composer=(assistant == 'claude'))
             except Exception as e:
                 print(f"[ClaudeTaskManager] Failed to send prompt: {e}")
                 delivered = False
+            if saw_dialog:
+                print(f'[ClaudeTaskManager] {task_id}: answered Claude\'s '
+                      f'folder-trust dialog in {workdir}; prompt '
+                      f'{"delivered" if delivered else "STILL UNDELIVERED"} (#800)',
+                      file=sys.stderr)
             # Surface delivery so the dashboard can flag an idle task whose
-            # initial prompt never landed (composer stayed empty).
+            # initial prompt never landed (composer stayed empty) — and say
+            # WHY when the trust dialog is what ate it, since `waiting-for-
+            # input` is also the state of a task that finished (#800).
+            def record(m):
+                m['prompt_delivered'] = delivered
+                if saw_dialog:
+                    m['trust_dialog_answered'] = True
+                if saw_dialog and not delivered:
+                    m['stalled_at_trust_dialog'] = True
+
             try:
-                ClaudeTaskManager._atomic_update_meta(
-                    task_dir, lambda m: m.__setitem__('prompt_delivered', delivered))
+                ClaudeTaskManager._atomic_update_meta(task_dir, record)
             except Exception as e:
                 print(f"[ClaudeTaskManager] prompt_delivered update failed: {e}",
                       file=sys.stderr)
@@ -3563,6 +3589,15 @@ class ClaudeTaskManager:
                     'memory_injected': meta.get('memory_injected', []),
                     'memory_injection_disabled':
                         bool(meta.get('memory_injection_disabled')),
+                    # "Launched but never actually started" (#800). An
+                    # orchestrator polling twenty Builds can only tell a wedged
+                    # one from a finished one if these are on the LIST, not
+                    # just the detail endpoint: both report waiting-for-input.
+                    # None (not False) while the delivery thread is still in
+                    # flight, so "unknown yet" stays distinct from "failed".
+                    'prompt_delivered': meta.get('prompt_delivered'),
+                    'stalled_at_trust_dialog':
+                        bool(meta.get('stalled_at_trust_dialog')),
                     # Token spend for this Build (#574) — zero-but-marked when
                     # the assistant isn't instrumented.
                     'usage': ClaudeTaskManager.usage_view(meta),
@@ -3919,7 +3954,7 @@ class ClaudeTaskManager:
         return env_key
 
     @staticmethod
-    def _ensure_claude_trust(workdir, config_path=None, reject_api_key=None):
+    def _write_claude_trust(workdir, config_path=None, reject_api_key=None):
         """Pre-accept Claude Code's folder-trust + onboarding for `workdir`.
 
         A freshly launched interactive `claude` shows "Do you trust the files
@@ -3941,7 +3976,11 @@ class ClaudeTaskManager:
         do zero writes and don't race a live Claude rewriting the same file.
         Best-effort — never raises, never clobbers an unreadable/invalid config.
 
-        Returns True if the file was written, False otherwise.
+        Returns True if the file was written, False otherwise — which is NOT
+        the same question as "is `workdir` trusted now?": False covers both
+        "already seeded, nothing to do" and "the write failed". Callers want
+        the latter question, so they go through `_ensure_claude_trust`, which
+        reads the file back (#800).
         """
         path = config_path or ClaudeTaskManager.CLAUDE_CONFIG_PATH
         lock_path = path + '.kc.lock'
@@ -4008,6 +4047,67 @@ class ClaudeTaskManager:
             return False
 
     @staticmethod
+    def _trust_accepted(workdir, config_path=None):
+        """True when Claude's config records `workdir` as a trusted folder.
+
+        The read half of the seed. Unreadable, invalid or non-dict configs
+        answer False — if we cannot see the entry we must assume the CLI
+        cannot either.
+        """
+        path = config_path or ClaudeTaskManager.CLAUDE_CONFIG_PATH
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(cfg, dict):
+            return False
+        projects = cfg.get('projects')
+        if not isinstance(projects, dict):
+            return False
+        proj = projects.get(workdir)
+        return isinstance(proj, dict) and proj.get('hasTrustDialogAccepted') is True
+
+    #: Seed → read-back rounds before we give up on the shared config (#800).
+    TRUST_SEED_TRIES = 3
+    #: Pause between them, long enough for a concurrent CLI's own wholesale
+    #: rewrite to land so our re-seed is the later writer.
+    TRUST_SEED_RETRY_DELAY = 0.3
+
+    @staticmethod
+    def _ensure_claude_trust(workdir, config_path=None, reject_api_key=None,
+                             tries=None, delay=None):
+        """Seed folder-trust for `workdir` and CONFIRM the seed survived.
+
+        `~/.claude.json` is a single mutable file that EVERY running Claude
+        CLI rewrites wholesale, and those rewrites take no part in our flock.
+        A CLI that loaded the config before our seed and wrote it back after
+        silently drops `projects[workdir]` — last-writer-wins. On a workspace
+        with 8–10 concurrent Builds that is not rare: three of them wedged on
+        the trust dialog for 12 hours with their workdir absent from the
+        config entirely (#800).
+
+        So we don't trust the write: we read the file back, and re-seed up to
+        `tries` times while the entry is missing. Returns True when `workdir`
+        is trusted at the end, False when it is not — in which case the launch
+        is expected to hit the dialog and `_clear_trust_dialog` answers it.
+        Best-effort, never raises.
+        """
+        tries = ClaudeTaskManager.TRUST_SEED_TRIES if tries is None else tries
+        delay = ClaudeTaskManager.TRUST_SEED_RETRY_DELAY if delay is None else delay
+        for attempt in range(max(1, tries)):
+            ClaudeTaskManager._write_claude_trust(
+                workdir, config_path=config_path, reject_api_key=reject_api_key)
+            if ClaudeTaskManager._trust_accepted(workdir, config_path=config_path):
+                return True
+            if attempt + 1 < max(1, tries):
+                print(f'[ClaudeTaskManager] trust seed for {workdir} did not '
+                      f'stick (attempt {attempt + 1}) — re-seeding',
+                      file=sys.stderr)
+                time.sleep(delay)
+        return False
+
+    @staticmethod
     def _dismiss_auto_mode_setup(cfg):
         """Answer "Don't show again" to the auto-mode setup nudge in `cfg`.
 
@@ -4055,6 +4155,69 @@ class ClaudeTaskManager:
         if 'for shortcuts' not in pane:
             return False
         return '> ' in pane or '❯' in pane
+
+    # Claude Code's folder-trust dialog as it RENDERS, lowercased (#800):
+    #
+    #     Quick safety check: Is this a project you created or one you trust?
+    #     ❯ 1. Yes, I trust this folder
+    #       2. No, exit
+    #
+    # Matched on the prose, not the box drawing or the option numbering, and on
+    # several independent needles — the question and the affirmative option are
+    # worded differently across CLI versions ("Do you trust the files in this
+    # folder?" in older ones), so a wording change to one line still leaves the
+    # others. Every needle is specific enough that no ordinary agent output
+    # trips it.
+    TRUST_DIALOG_MARKERS = (
+        'a project you created or one you trust',
+        'yes, i trust this folder',
+        'do you trust the files in this folder',
+    )
+
+    @staticmethod
+    def _pane_shows_trust_dialog(pane):
+        """True when the pane is parked on Claude's folder-trust dialog.
+
+        This is the robust half of the #800 fix: it reads the SCREEN, so it is
+        immune to whatever a concurrent CLI did to the shared config.
+        """
+        if not pane:
+            return False
+        low = strip_ansi(pane).lower()
+        return any(m in low for m in ClaudeTaskManager.TRUST_DIALOG_MARKERS)
+
+    #: Answer attempts before we declare the dialog un-clearable (#800).
+    TRUST_DIALOG_ANSWER_TRIES = 3
+
+    @staticmethod
+    def _clear_trust_dialog(session_name, tries=None, settle=0.6):
+        """Answer "Yes, I trust this folder" if the session is on the dialog.
+
+        The folder is one the workspace itself just created for this task, so
+        the trust question has a known-safe answer — and the alternative is the
+        Build sitting on the modal forever while reporting the same
+        `waiting-for-input` as a task that finished (#800). Sends `1` + Enter,
+        exactly the manual recovery, and re-reads the pane to confirm.
+
+        Returns `(seen, cleared)`: whether a dialog was on screen at all, and
+        whether the screen is free of it now. No dialog ⇒ `(False, True)`, so
+        the common path costs one capture and sends no keys.
+        """
+        tries = (ClaudeTaskManager.TRUST_DIALOG_ANSWER_TRIES
+                 if tries is None else tries)
+        seen = False
+        for _ in range(max(1, tries)):
+            pane = ClaudeTaskManager._capture_pane(session_name)
+            if not ClaudeTaskManager._pane_shows_trust_dialog(pane):
+                return seen, True
+            seen = True
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, '1', 'Enter'],
+                capture_output=True, text=True,
+            )
+            time.sleep(settle)
+        still = ClaudeTaskManager._capture_pane(session_name)
+        return seen, not ClaudeTaskManager._pane_shows_trust_dialog(still)
 
     @staticmethod
     def _screen_advanced(before, after):
@@ -4142,6 +4305,65 @@ class ClaudeTaskManager:
             ClaudeTaskManager._delete_buffer(buf_name)
             return ClaudeTaskManager._screen_advanced(pasted, after2)
         return False
+
+    #: Clear-the-dialog-and-deliver-again rounds at launch (#800).
+    LAUNCH_PROMPT_ROUNDS = 2
+
+    @staticmethod
+    def _deliver_launch_prompt(session_name, prompt_file, buf_name,
+                               expect_composer=True, rounds=None):
+        """Deliver a freshly launched task's initial prompt, dialog and all.
+
+        The seed in `_ensure_claude_trust` can be clobbered between the seed
+        and the CLI reading it, so this is the post-launch half of #800 and it
+        does not depend on the config at all:
+
+          1. wait for the composer,
+          2. answer the folder-trust dialog if it is in the way,
+          3. paste + submit the prompt,
+          4. if the dialog is STILL on screen, it ate the paste — go round
+             again rather than leaving the prompt unsent.
+
+        Step 4 is the part the old one-shot paste lacked: the dialog swallowed
+        the text and the following Enter dismissed it, which is precisely how a
+        Build ended up idle with `prompt_delivered: False` and an empty
+        worktree. Re-pasting is safe here because a prompt that landed in the
+        dialog never reached the composer.
+
+        Returns `(delivered, saw_dialog)`.
+        """
+        rounds = ClaudeTaskManager.LAUNCH_PROMPT_ROUNDS if rounds is None else rounds
+        saw_dialog = False
+        delivered = False
+        for _ in range(max(1, rounds)):
+            ClaudeTaskManager._wait_for_pane_ready(
+                session_name, expect_composer=expect_composer)
+            seen = False
+            if expect_composer:
+                seen, cleared = ClaudeTaskManager._clear_trust_dialog(session_name)
+                saw_dialog = saw_dialog or seen
+                if seen and cleared:
+                    # The composer was behind the dialog; it has to paint
+                    # before a paste can land in it.
+                    ClaudeTaskManager._wait_for_pane_ready(
+                        session_name, expect_composer=True)
+            delivered = ClaudeTaskManager._deliver_prompt(
+                session_name, prompt_file, buf_name)
+            if not expect_composer:
+                break
+            still_up = ClaudeTaskManager._pane_shows_trust_dialog(
+                ClaudeTaskManager._capture_pane(session_name))
+            if delivered and not still_up:
+                break
+            if not still_up and not seen:
+                # Nothing trust-related in the way — `_deliver_prompt` already
+                # retried its own paste, so another round just repeats it.
+                break
+            # A dialog was (or still is) in front of the composer, so whatever
+            # `_deliver_prompt` thought it saw was the dialog reacting.
+            saw_dialog = True
+            delivered = False
+        return delivered, saw_dialog
 
     @staticmethod
     def _delete_buffer(buf_name):
@@ -4622,6 +4844,44 @@ class ClaudeTaskManager:
         return (updated or meta).get('usage')
 
     @staticmethod
+    def _note_trust_stall(meta, task_dir, screen):
+        """Record — or retract — `stalled_at_trust_dialog` for a live task.
+
+        `waiting-for-input` is also the normal state of a task that finished
+        its turn and went idle, so a Build wedged on Claude's folder-trust
+        modal looks exactly like one that ran to completion. That ambiguity
+        cost an orchestrator 12 hours of throughput across three Builds
+        (#800); this makes the two states tell apart in the task record, for
+        the dashboard and for anything polling the API.
+
+        Writes only when the flag actually flips, so a steady screen — the
+        overwhelmingly common case, on every poll of every task — costs
+        nothing beyond the capture the reconciler already took.
+        """
+        stalled = ClaudeTaskManager._pane_shows_trust_dialog(screen)
+        if stalled == bool(meta.get('stalled_at_trust_dialog')):
+            return
+
+        def mutate(m):
+            if stalled:
+                m['stalled_at_trust_dialog'] = True
+            else:
+                m.pop('stalled_at_trust_dialog', None)
+
+        try:
+            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        except Exception as e:
+            print(f'[ClaudeTaskManager] trust-stall flag update failed: {e}',
+                  file=sys.stderr)
+            return
+        if updated is None:
+            return
+        if stalled:
+            meta['stalled_at_trust_dialog'] = True
+        else:
+            meta.pop('stalled_at_trust_dialog', None)
+
+    @staticmethod
     def _reconcile_status(meta, task_dir):
         """If task.json says running but tmux session is gone, update status.
         Also check for waiting-for-input patterns in running tasks.
@@ -4744,6 +5004,10 @@ class ClaudeTaskManager:
         if capture_cmd.returncode != 0:
             return
         screen = strip_ansi(capture_cmd.stdout or '')
+        # Before anything else: is this screen the folder-trust dialog? A Build
+        # parked on it is otherwise indistinguishable from one that finished
+        # and went idle — both read `waiting-for-input` (#800).
+        ClaudeTaskManager._note_trust_stall(meta, task_dir, screen)
         digest = hashlib.sha1(screen.encode('utf-8', 'replace')).hexdigest()
         now = time.time()
 

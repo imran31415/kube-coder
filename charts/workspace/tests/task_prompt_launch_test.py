@@ -1,8 +1,9 @@
 """Unit tests for the task-launch prompt-delivery fixes (issue #94 blocker).
 
-Covers ClaudeTaskManager._ensure_claude_trust (pre-accepting Claude's
-folder-trust dialog so the auto-pasted initial prompt isn't swallowed) and
-the pane-readiness helpers that replace the old blind fixed delay.
+Covers ClaudeTaskManager._write_claude_trust (pre-accepting Claude's
+folder-trust dialog so the auto-pasted initial prompt isn't swallowed),
+_ensure_claude_trust's read-back-and-retry around it (issue #800) and the
+pane-readiness helpers that replace the old blind fixed delay.
 
 Run with:    python3 -m unittest tests.task_prompt_launch_test
 (from charts/workspace/)
@@ -22,7 +23,7 @@ import server  # noqa: E402
 CTM = server.ClaudeTaskManager
 
 
-class EnsureClaudeTrustTests(unittest.TestCase):
+class WriteClaudeTrustTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.cfg = os.path.join(self.tmp, '.claude.json')
@@ -32,16 +33,16 @@ class EnsureClaudeTrustTests(unittest.TestCase):
             return json.load(f)
 
     def test_seeds_fresh_config(self):
-        wrote = CTM._ensure_claude_trust('/home/dev', config_path=self.cfg)
+        wrote = CTM._write_claude_trust('/home/dev', config_path=self.cfg)
         self.assertTrue(wrote)
         cfg = self._read()
         self.assertIs(cfg['hasCompletedOnboarding'], True)
         self.assertIs(cfg['projects']['/home/dev']['hasTrustDialogAccepted'], True)
 
     def test_idempotent_no_rewrite(self):
-        self.assertTrue(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         # Second call: everything already present → no write.
-        self.assertFalse(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
 
     def test_preserves_unrelated_keys(self):
         with open(self.cfg, 'w') as f:
@@ -52,7 +53,7 @@ class EnsureClaudeTrustTests(unittest.TestCase):
                 'projects': {'/home/dev/other': {'hasTrustDialogAccepted': True,
                                                  'projectOnboardingSeenCount': 3}},
             }, f)
-        wrote = CTM._ensure_claude_trust('/home/dev/new', config_path=self.cfg)
+        wrote = CTM._write_claude_trust('/home/dev/new', config_path=self.cfg)
         self.assertTrue(wrote)
         cfg = self._read()
         # Untouched existing keys.
@@ -65,18 +66,18 @@ class EnsureClaudeTrustTests(unittest.TestCase):
     def test_only_onboarding_missing_triggers_write(self):
         with open(self.cfg, 'w') as f:
             json.dump({'projects': {'/w': {'hasTrustDialogAccepted': True}}}, f)
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertIs(self._read()['hasCompletedOnboarding'], True)
 
     def test_missing_file_is_created(self):
         self.assertFalse(os.path.exists(self.cfg))
-        self.assertTrue(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         self.assertTrue(os.path.exists(self.cfg))
 
     def test_invalid_json_not_clobbered(self):
         with open(self.cfg, 'w') as f:
             f.write('{not valid json')
-        self.assertFalse(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         # Original content left intact.
         with open(self.cfg) as f:
             self.assertEqual(f.read(), '{not valid json')
@@ -84,13 +85,13 @@ class EnsureClaudeTrustTests(unittest.TestCase):
     def test_non_dict_config_not_clobbered(self):
         with open(self.cfg, 'w') as f:
             json.dump(['a', 'list'], f)
-        self.assertFalse(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         self.assertEqual(self._read(), ['a', 'list'])
 
     def test_projects_not_dict_is_replaced(self):
         with open(self.cfg, 'w') as f:
             json.dump({'hasCompletedOnboarding': True, 'projects': 'oops'}, f)
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertIs(self._read()['projects']['/w']['hasTrustDialogAccepted'], True)
 
 
@@ -115,11 +116,11 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
     def _seed_trust(self, workdir='/w'):
         # Get the trust/onboarding flags in place so later writes are
         # attributable to the key-rejection seeding alone.
-        self.assertTrue(CTM._ensure_claude_trust(workdir, config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust(workdir, config_path=self.cfg))
 
     def test_missing_file_seeds_rejected(self):
         self.assertFalse(os.path.exists(self.cfg))
-        wrote = CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        wrote = CTM._write_claude_trust('/w', config_path=self.cfg,
                                          reject_api_key=self.KEY)
         self.assertTrue(wrote)
         resp = self._read()['customApiKeyResponses']
@@ -127,9 +128,9 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         self.assertEqual(resp['approved'], [])
 
     def test_idempotent_no_rewrite(self):
-        CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        CTM._write_claude_trust('/w', config_path=self.cfg,
                                  reject_api_key=self.KEY)
-        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                   reject_api_key=self.KEY))
         self.assertEqual(self._read()['customApiKeyResponses']['rejected'],
                          [self.TAIL])
@@ -141,7 +142,7 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         cfg['customApiKeyResponses'] = {'approved': [self.TAIL], 'rejected': []}
         with open(self.cfg, 'w') as f:
             json.dump(cfg, f)
-        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                   reject_api_key=self.KEY))
         resp = self._read()['customApiKeyResponses']
         self.assertEqual(resp['approved'], [self.TAIL])
@@ -155,7 +156,7 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
                                         'extra': 'kept'}
         with open(self.cfg, 'w') as f:
             json.dump(cfg, f)
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                  reject_api_key=self.KEY))
         resp = self._read()['customApiKeyResponses']
         self.assertEqual(resp['approved'], ['otherKeyTail000000AA'])
@@ -163,7 +164,7 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         self.assertEqual(resp['extra'], 'kept')
 
     def test_no_key_leaves_responses_absent(self):
-        CTM._ensure_claude_trust('/w', config_path=self.cfg)
+        CTM._write_claude_trust('/w', config_path=self.cfg)
         self.assertNotIn('customApiKeyResponses', self._read())
 
 
@@ -211,31 +212,31 @@ class AutoModeSetupDismissTests(unittest.TestCase):
             f.write(json.dumps(cfg))
 
     def test_missing_file_seeds_dismissed(self):
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertEqual(self._read()['autoModeEnvSetup'], {'dismissed': True})
 
     def test_cli_counters_preserved(self):
         self._seed_others(autoModeEnvSetup={'denials': 7, 'dismissedAt': 123})
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertEqual(self._read()['autoModeEnvSetup'],
                          {'denials': 7, 'dismissedAt': 123, 'dismissed': True})
 
     def test_already_dismissed_is_a_no_op(self):
         self._seed_others(autoModeEnvSetup={'dismissed': True, 'denials': 9})
-        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertEqual(self._read()['autoModeEnvSetup'],
                          {'dismissed': True, 'denials': 9})
 
     def test_only_this_answer_missing_triggers_write(self):
         self._seed_others()
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertIs(self._read()['autoModeEnvSetup']['dismissed'], True)
 
     def test_malformed_value_is_replaced(self):
         for bad in (None, 'x', [], 3):
             with self.subTest(bad=bad):
                 self._seed_others(autoModeEnvSetup=bad)
-                self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+                self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
                 self.assertEqual(self._read()['autoModeEnvSetup'], {'dismissed': True})
 
     def test_helper_reports_change_only_once(self):
@@ -247,14 +248,14 @@ class AutoModeSetupDismissTests(unittest.TestCase):
     def test_falsy_dismissed_is_set_true(self):
         # The CLI only ever writes `true` here, so `false` is not a user answer.
         self._seed_others(autoModeEnvSetup={'dismissed': False})
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertIs(self._read()['autoModeEnvSetup']['dismissed'], True)
 
     def test_new_workdir_after_dismissal_keeps_it_global(self):
         # The answer lives once at the top level; a second workdir only adds
         # its own trust entry and never a per-project copy of the answer.
-        CTM._ensure_claude_trust('/a', config_path=self.cfg)
-        self.assertTrue(CTM._ensure_claude_trust('/b', config_path=self.cfg))
+        CTM._write_claude_trust('/a', config_path=self.cfg)
+        self.assertTrue(CTM._write_claude_trust('/b', config_path=self.cfg))
         cfg = self._read()
         self.assertEqual(cfg['projects'], {'/a': {'hasTrustDialogAccepted': True},
                                            '/b': {'hasTrustDialogAccepted': True}})
@@ -267,7 +268,7 @@ class AutoModeSetupDismissTests(unittest.TestCase):
             customApiKeyResponses={'approved': ['t' * 20], 'rejected': []},
             numStartups=42,
         )
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         cfg = self._read()
         self.assertEqual(cfg['oauthAccount'], {'userID': 'abc'})
         self.assertEqual(cfg['mcpServers'], {'memory': {'type': 'stdio'}})
@@ -277,12 +278,12 @@ class AutoModeSetupDismissTests(unittest.TestCase):
 
     def test_lands_with_api_key_answer_in_one_write(self):
         key = 'synthetic-test-key-' + 'y' * 40 + 'AbCdEfGhIjKlMnOpQrSt'
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                  reject_api_key=key))
         cfg = self._read()
         self.assertEqual(cfg['customApiKeyResponses']['rejected'], [key[-20:]])
         self.assertIs(cfg['autoModeEnvSetup']['dismissed'], True)
-        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                   reject_api_key=key))
 
 
