@@ -19,7 +19,7 @@
     "d3-force": "^3.0.0",
     "d3-scale": "^4.0.2",
     "d3-selection": "^3.0.0",
-    "dompurify": "^3.4.3",
+    "dompurify": "^3.4.17",
     "marked": "^18.0.3",
     "preact": "10.24.3"
   },
@@ -34,16 +34,17 @@
     "@types/d3-selection": "^3.0.11",
     "@types/node": "22.10.1",
     "@vitest/coverage-v8": "^2.1.4",
-    "happy-dom": "20.8.9",
+    "happy-dom": "^21.0.4",
     "playwright": "^1.60.0",
     "playwright-core": "1.50.0",
     "typescript": "5.6.3",
-    "vite": "6.4.3",
+    "vite": "6.4.4",
     "vitest": "2.1.9"
   },
   "_comment_esbuild": "Pin one esbuild: vite 6 needs 0.25.x but vitest 2.1.9 (bundled vite 5) pulls 0.21.5, and yarn hoisting mixes them -> 'Host version 0.21.5 does not match binary 0.25.12'. Remove once vitest is on v3.",
   "_comment_brace_expansion": "GHSA-mh99-v99m-4gvg (uncatchable OOM) affects every brace-expansion <=5.0.7 with no backported fix, so all instances must reach 5.0.8. That requires minimatch >=10 (older majors expect the pre-5.x default-function export). Only test-exclude/glob (vitest coverage) consume minimatch here; both verified working on 10.2.5. Remove both pins once dependents require brace-expansion ^5.0.8 on their own.",
   "_comment_tinypool": "Vitest 2 requests tinypool 1.x, but both prototype-pollution RCE fixes require 2.1.2. Keep this pin until Vitest requires a patched version; verify the full test suite when changing it.",
+  "_comment_vite": "GHSA-587h-7wmj-h5pm (launch-editor existence-check bypass, Windows command injection) affects every vite <=6.4.3 with fixes only on >=6.4.4, so the nested copies under vitest (vite-node, @vitest/mocker) must reach 6.4.4 too. Vitest 2.1.9 nominally wants vite ^5; the full suite is verified green on 6.4.4. Remove once vitest requires a patched vite itself.",
   "resolutions": {
     "tinypool": "2.1.2",
     "source-map-js": "^1.2.2",
@@ -51,7 +52,8 @@
     "minimatch": "^10.2.5",
     "brace-expansion": "^5.0.12",
     "nanoid": "^3.3.18",
-    "browserslist": "^4.28.8"
+    "browserslist": "^4.28.8",
+    "vite": "6.4.4"
   },
   "engines": {
     "node": ">=20"
