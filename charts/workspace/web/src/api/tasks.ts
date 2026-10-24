@@ -238,6 +238,7 @@ export interface TaskWorktreeView {
   repo_exists: boolean;
   branch_exists: boolean;
   owner_task_id: string;
+  /** Some live task is working in the folder — its owner, or another (#791). */
   live: boolean;
   status: WorktreeStatus | null;
   status_error: string;
