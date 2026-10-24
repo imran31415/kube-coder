@@ -348,13 +348,12 @@ class PersistCredSourceTestCase(unittest.TestCase):
 
     def test_credential_links_do_not_go_through_a_bare_tilde(self):
         """`~` resolves to a different home per context, so a credential
-        symlink written through it can land on the PVC (#793/#795). The only
-        remaining one is gh's, whose separate breakage is tracked in #797."""
+        symlink written through it can land on the PVC (#793/#795). The last
+        one — gh's — was replaced by link_cred_dir's spelled-out calls (#797),
+        so there are now none at all."""
         tilde_links = [line for line in self.start_sh.splitlines()
                        if line.startswith('ln -s') and '~' in line]
-        self.assertEqual(
-            ['ln -sf /home/dev/.credentials/.config/gh ~/.config/gh'],
-            tilde_links)
+        self.assertEqual([], tilde_links)
 
 
 if __name__ == '__main__':
