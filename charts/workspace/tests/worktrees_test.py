@@ -600,6 +600,35 @@ class RemoveTests(gf.GitTestCase):
             self.assertEqual(cm.exception.code, 'live')
         self.assertTrue(os.path.isdir(self.info['path']))
 
+    def test_live_tenant_refuses_even_with_force(self):
+        # #791: nobody owns this worktree's manifest — a task was launched
+        # INTO it. Seconds in it is clean, unpushed and branchless, which on
+        # disk is exactly what a finished, merged worktree looks like.
+        manual = wt.ensure(self.repo, 't-manual', wt_root=self.wt_root,
+                           listening=set())
+        self.assertEqual(wt.read_manifest(manual['path'])['task_id'], '')
+        sub = os.path.join(manual['path'], 'pkg')
+        os.makedirs(sub)
+        metas = {'t9': {'workdir': sub}}          # working in a SUBDIR of it
+        occupied = wt.occupancy({'kube-coder-t9'}, metas.get)
+        for force in (False, True):
+            with self.assertRaises(WorktreeError) as cm:
+                wt.remove(manual['path'], wt_root=self.wt_root, force=force,
+                          occupied_by=occupied)
+            self.assertEqual(cm.exception.code, 'live')
+            self.assertEqual(cm.exception.detail, {'owner_task_id': 't9'})
+        self.assertTrue(os.path.isdir(manual['path']))
+        # The task that IS the tenant may still clean up after itself.
+        wt.remove(manual['path'], wt_root=self.wt_root, force=True,
+                  occupied_by=occupied, allow_owner='t9')
+        self.assertFalse(os.path.exists(manual['path']))
+
+    def test_dead_tenant_does_not_block(self):
+        metas = {'t9': {'workdir': self.info['path']}}
+        out = wt.remove(self.info['path'], wt_root=self.wt_root,
+                        occupied_by=wt.occupancy(set(), metas.get))
+        self.assertTrue(out['removed'])
+
     def test_repo_missing(self):
         shutil.rmtree(self.repo_path)
         with self.assertRaises(WorktreeError) as cm:
@@ -640,6 +669,45 @@ class RemoveTests(gf.GitTestCase):
         out = wt.remove(info['path'], wt_root=self.wt_root)
         self.assertTrue(out['removed'])
         self.assertFalse(os.path.exists(info['path']))
+
+
+class OccupancyTests(unittest.TestCase):
+    """Which live task is working where (#791) — no git, no tmux."""
+
+    def test_session_task_id(self):
+        self.assertEqual(wt.session_task_id('kube-coder-1792-ab'), '1792-ab')
+        self.assertEqual(wt.session_task_id('claude-t9'), 't9')
+        for other in ('sticksweb', 'ttyd', 'kube-coder-', 'claude-a/b', ''):
+            self.assertEqual(wt.session_task_id(other), '', other)
+
+    def test_occupied_by_covers_workdir_worktree_and_subdirs(self):
+        metas = {
+            'build': {'workdir': '/home/dev/.worktrees/app/t-1/pkg',
+                      'worktree': {'path': '/home/dev/.worktrees/app/t-1'}},
+            'sub': {'workdir': '/home/dev/.worktrees/app/t-2'},
+            'plain': {'workdir': '/home/dev/app'},
+        }
+        occupied = wt.occupancy(
+            {'kube-coder-build', 'claude-sub', 'kube-coder-plain',
+             'kube-coder-gone', 'sticksweb'}, metas.get)
+        self.assertEqual(occupied('/home/dev/.worktrees/app/t-1'), 'build')
+        self.assertEqual(occupied('/home/dev/.worktrees/app/t-2'), 'sub')
+        self.assertEqual(occupied('/home/dev/.worktrees/app/t-3'), '')
+        self.assertEqual(occupied('/home/dev/app'), 'plain')
+        # It answers "is anyone working anywhere under this path", so an
+        # ancestor reports the task below it — and a task in the PARENT of a
+        # worktree (the main checkout, /home/dev) never blocks that worktree.
+        self.assertIn(occupied('/home/dev/.worktrees'), ('build', 'sub'))
+        self.assertEqual(
+            wt.occupancy({'claude-x'}, {'x': {'workdir': '/home/dev'}}.get)(
+                '/home/dev/.worktrees/app/t-1'), '')
+
+    def test_dead_and_unreadable_tasks_occupy_nothing(self):
+        self.assertEqual(wt.live_task_dirs(set(), lambda t: {'workdir': '/x'}), {})
+        self.assertEqual(
+            wt.live_task_dirs({'kube-coder-t1', 'kube-coder-t2'},
+                              lambda t: None if t == 't1' else {'workdir': ''}),
+            {})
 
 
 @gf.requires_git
@@ -730,6 +798,16 @@ class SweepTests(gf.GitTestCase):
         rep = self.sweep(now=time.time() + 30 * 86400)
         self.assertEqual([r['slug'] for r in rep['removed']], ['t-man'])
         self.assertFalse(os.path.exists(info['path']))
+
+    def test_an_occupied_worktree_is_kept_however_old(self):
+        # The sweep's own version of #791: old, pristine, nobody's in the
+        # manifest — and a live task working in it.
+        info = self.make('t-occ')
+        rep = self.sweep(now=time.time() + 30 * 86400,
+                         occupied_by=wt.occupancy(
+                             {'claude-t9'}, {'t9': {'workdir': info['path']}}.get))
+        self.assertEqual(self.reasons(rep), {'t-occ': 'live'})
+        self.assertTrue(os.path.isdir(info['path']))
 
     def test_dry_run_changes_nothing(self):
         info = self.make('t-dry', owner='o1')

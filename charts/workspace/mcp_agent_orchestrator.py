@@ -540,7 +540,10 @@ def _isolate(workdir: str, task_id: str, base_ref: str):
                 root, is_owner_live=worktrees.default_is_owner_live,
                 owner_meta=worktrees.default_owner_meta,
                 grace_s=_int_env('KC_WORKTREE_GRACE_S', 600),
-                gc_days=_int_env('KC_WORKTREE_GC_DAYS', 7)))
+                gc_days=_int_env('KC_WORKTREE_GC_DAYS', 7),
+                # Making room must never take a worktree a live task is
+                # working in, owner recorded or not (#791).
+                occupied_by=worktrees.default_occupancy()))
     except worktrees.WorktreeError as e:
         return None, f'spawn refused: {e.message}'
     return info, None

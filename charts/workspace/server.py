@@ -4797,21 +4797,38 @@ class WorktreeManager:
         return set((r.stdout or '').split())
 
     @classmethod
-    def liveness(cls):
-        """`is_live(task_id)` for the span of one operation."""
-        sessions = None
+    def liveness(cls, sessions=None):
+        """`is_live(task_id)` for the span of one operation. Pass `sessions`
+        to share one `tmux list-sessions` with `occupancy()`."""
+        known = sessions
 
         def is_live(task_id):
-            nonlocal sessions
+            nonlocal known
             if not task_id:
                 return False
-            if sessions is None:
-                sessions = cls.live_sessions()
+            if known is None:
+                known = cls.live_sessions()
             meta = ClaudeTaskManager.read_meta(task_id) or {}
             names = {meta.get('tmux_session') or f'kube-coder-{task_id}',
                      f'claude-{task_id}'}
-            return bool(names & sessions)
+            return bool(names & known)
         return is_live
+
+    @classmethod
+    def occupancy(cls, sessions=None):
+        """`occupied_by(path) -> task_id` — which live task is working in a
+        worktree, whether or not the manifest says it owns it (#791).
+
+        A worktree a Build was launched into with `workdir=` (the `kc-issue`
+        script mode, a hand-made one from the shell skill) carries no owner in
+        its manifest, so seconds after launch it is clean, has nothing to push
+        and has no remote branch — indistinguishable from finished work by
+        anything on disk. Only task liveness tells the two apart, so every
+        removal path asks this before it deletes a folder.
+        """
+        return worktrees.occupancy(
+            cls.live_sessions() if sessions is None else sessions,
+            ClaudeTaskManager.read_meta)
 
     # ── creating ───────────────────────────────────────────────────────────
 
@@ -4868,7 +4885,8 @@ class WorktreeManager:
         `(None, refusal)`. At the cap, dead pristine worktrees are reclaimed
         before anything is refused."""
         root = cls.root()
-        live = cls.liveness()
+        sessions = cls.live_sessions()
+        live = cls.liveness(sessions)
         try:
             info = worktrees.ensure(
                 plan['repo'], plan['slug'] or f't-{task_id}', wt_root=root,
@@ -4878,7 +4896,8 @@ class WorktreeManager:
                 reclaim=worktrees.reclaimer(
                     root, is_owner_live=live,
                     owner_meta=ClaudeTaskManager.read_meta,
-                    grace_s=cls.grace_s(), gc_days=cls.gc_days()))
+                    grace_s=cls.grace_s(), gc_days=cls.gc_days(),
+                    occupied_by=cls.occupancy(sessions)))
         except worktrees.WorktreeError as e:
             return None, cls.refusal(e)
         return info, None
@@ -4948,7 +4967,7 @@ class WorktreeManager:
                     wt_root=root, is_owner_live=cls.liveness(),
                     owner_meta=ClaudeTaskManager.read_meta,
                     gc_days=cls.gc_days(), grace_s=cls.grace_s(),
-                    pristine_only=True)
+                    occupied_by=cls.occupancy(), pristine_only=True)
             except worktrees.WorktreeError:
                 pass
             existing, free = census()
@@ -5120,10 +5139,14 @@ class WorktreeManager:
         path, root, branch = wt['path'], wt.get('repo_root') or '', wt.get('branch') or ''
         exists = os.path.isdir(path)
         repo_exists = bool(root) and os.path.isdir(root)
-        live = cls.liveness()
+        sessions = cls.live_sessions()
+        live = cls.liveness(sessions)
         manifest = worktrees.read_manifest(path) if exists else None
         owner = (manifest or {}).get('task_id') or task_id
-        owner_live = live(owner)
+        # Either the owner runs, or some other live task is working in the
+        # folder (#791) — both make removal refuse, so both say so here.
+        owner_live = live(owner) or bool(
+            exists and cls.occupancy(sessions)(path))
         st, st_err = None, ''
         if exists:
             try:
@@ -5209,7 +5232,8 @@ class WorktreeManager:
                     'branch': manifest.get('branch'), 'branch_kept': True}, 200
         try:
             out = worktrees.remove(path, wt_root=cls.root(), force=force,
-                                   is_owner_live=cls.liveness())
+                                   is_owner_live=cls.liveness(),
+                                   occupied_by=cls.occupancy())
         except worktrees.WorktreeError as e:
             status = {'live': 409, 'dirty': 409, 'repo_missing': 409,
                       'not_worktree': 404, 'lock_timeout': 503}.get(e.code, 500)
@@ -5240,12 +5264,21 @@ class WorktreeManager:
             return {'worktrees': [], 'count': 0, 'max': cls.max_worktrees(),
                     'root': cls.root(), 'available': False,
                     'sweep': WorktreeSweeper.status()}
-        live = cls.liveness()
+        sessions = cls.live_sessions()
+        live = cls.liveness(sessions)
+        occupied_by = cls.occupancy(sessions)
         reasons = {k.get('path'): k.get('reason')
                    for k in (WorktreeSweeper.last_report() or {}).get('kept', [])}
         rows = []
         for m in worktrees.list_all(cls.root()):
             owner = m.get('task_id') or ''
+            # A worktree a Build was launched INTO never claims the manifest
+            # (#791). Attribute the row to the task actually working there, so
+            # "made by hand" never hides a running agent and Remove is
+            # disabled before it can 409.
+            tenant = occupied_by(m['path'])
+            if not owner and tenant:
+                owner = tenant
             meta = ClaudeTaskManager.read_meta(owner) if owner else None
             owned = (meta or {}).get('worktree') or {}
             stat = owned.get('stat') if owned.get('path') == m['path'] else None
@@ -5257,7 +5290,7 @@ class WorktreeManager:
                 'owner_name': ((meta or {}).get('name')
                                or ((meta or {}).get('prompt') or '')[:80]),
                 'owner_status': (meta or {}).get('status') or '',
-                'live': live(owner) if owner else False,
+                'live': bool(tenant) or (live(owner) if owner else False),
                 'created_by': m.get('created_by') or '',
                 'created_at': m.get('created_at'), 'stat': stat,
                 'keep_reason': reasons.get(m['path'], ''),
@@ -5291,6 +5324,7 @@ class WorktreeManager:
             wt_root=cls.root(), is_owner_live=cls.liveness(),
             owner_meta=ClaudeTaskManager.read_meta, gc_days=cls.gc_days(),
             grace_s=cls.grace_s(), dry_run=dry_run,
+            occupied_by=cls.occupancy(),
             delete_pristine_branches=not keep_branches)
         if not dry_run:
             for r in report['removed']:

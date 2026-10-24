@@ -1074,7 +1074,63 @@ def unique_unpushed(root, branch):
         return 0
 
 
-def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner=''):
+#: tmux session prefixes a task runs under: Builds as `kube-coder-<id>`,
+#: orchestrator sub-agents as `claude-<id>`.
+SESSION_PREFIXES = ('kube-coder-', 'claude-')
+
+
+def session_task_id(name):
+    """The task id a tmux session belongs to, or '' for a session that is not
+    a task (the user's own shell, ttyd, the hypervisor)."""
+    for prefix in SESSION_PREFIXES:
+        if name.startswith(prefix):
+            tid = name[len(prefix):]
+            return tid if re.fullmatch(r'[A-Za-z0-9_-]+', tid) else ''
+    return ''
+
+
+def live_task_dirs(sessions, meta_of):
+    """`{real directory: task_id}` — where every live task is working.
+
+    The piece a worktree's manifest cannot answer (#791). A task launched with
+    `workdir=<an existing worktree>` — the `kc-issue` script mode, a hand-made
+    worktree from the shell skill, a send-back into a folder someone else
+    created — never writes itself into that manifest, so `task_id` stays empty
+    and the worktree reads as nobody's. It is still being worked in.
+    """
+    out = {}
+    for name in sessions:
+        tid = session_task_id(name)
+        if not tid:
+            continue
+        meta = meta_of(tid) or {}
+        for d in (meta.get('workdir') or '',
+                  (meta.get('worktree') or {}).get('path') or ''):
+            if isinstance(d, str) and d:
+                out.setdefault(_real(d), tid)
+    return out
+
+
+def occupancy(sessions, meta_of):
+    """An `occupied_by(path) -> task_id` callable for `remove`/`sweep`.
+
+    Answers the question the filesystem cannot: "hasn't produced anything
+    yet" and "finished, merged and safe to delete" are the same clean, pushed,
+    branchless worktree — only a live task tells them apart (#791).
+    """
+    dirs = live_task_dirs(sessions, meta_of)
+
+    def occupied_by(path):
+        real = _real(path)
+        for d, tid in dirs.items():
+            if _inside(d, real):       # the task may sit in a SUBDIR of it
+                return tid
+        return ''
+    return occupied_by
+
+
+def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner='',
+                   occupied_by=None):
     real = _real(path)
     if not _inside(real, wt_root) or real == _real(wt_root) or os.path.islink(path):
         raise WorktreeError('not_worktree', f'{path} is not a managed worktree')
@@ -1089,6 +1145,12 @@ def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner=''):
         raise WorktreeError('live',
                             f'Build {owner} is still running in this worktree; '
                             f'stop it first', owner_task_id=owner)
+    tenant = occupied_by(real) if occupied_by is not None else ''
+    if tenant and tenant != allow_owner:
+        raise WorktreeError('live',
+                            f'task {tenant} is working in this worktree '
+                            f'(launched into it, so the manifest does not '
+                            f'name it); stop it first', owner_task_id=tenant)
     root = manifest.get('source_root') or ''
     branch = manifest.get('branch') or ''
     repo_ok = bool(root) and os.path.isdir(root) and _git(
@@ -1150,16 +1212,23 @@ def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner=''):
 
 
 def remove(path, *, wt_root=None, force=False, is_owner_live=None,
-           allow_owner='', timeout=None):
-    """Remove worktree `path`. Refuses while its owner runs (even with
-    `force` — pulling the directory out from under a live agent is not a
-    cleanup), and refuses a dirty tree unless `force`. Never deletes the
-    branch: the commits on it are the reason the worktree existed."""
+           allow_owner='', occupied_by=None, timeout=None):
+    """Remove worktree `path`. Refuses while its owner runs or while any live
+    task works in it (even with `force` — pulling the directory out from under
+    a live agent is not a cleanup), and refuses a dirty tree unless `force`.
+    Never deletes the branch: the commits on it are the reason the worktree
+    existed.
+
+    `occupied_by` is how the caller supplies task liveness (`occupancy()`);
+    without it only the manifest's owner is protected, which a task launched
+    with `workdir=<worktree>` never is (#791).
+    """
     wt_root = wt_root or default_root()
     with locked(wt_root, timeout):
         return _remove_locked(wt_root, path, force=force,
                               is_owner_live=is_owner_live,
-                              allow_owner=allow_owner)
+                              allow_owner=allow_owner,
+                              occupied_by=occupied_by)
 
 
 # ── sweep ─────────────────────────────────────────────────────────────────
@@ -1177,7 +1246,7 @@ def _owners(m):
 
 def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
                   dry_run=False, pristine_only=False,
-                  delete_pristine_branches=True):
+                  delete_pristine_branches=True, occupied_by=None):
     removed, kept = [], []
     roots = set()
 
@@ -1192,6 +1261,11 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
             keep(m, 'recent')
             continue
         if owner and is_owner_live(owner):
+            keep(m, 'live')
+            continue
+        # An unowned manifest is not an unused worktree: a task launched with
+        # `workdir=<worktree>` works in one it does not own (#791).
+        if occupied_by is not None and occupied_by(m['path']):
             keep(m, 'live')
             continue
         finished = m.get('created_at') or 0
@@ -1227,7 +1301,8 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
             if not dry_run:
                 try:
                     _remove_locked(wt_root, m['path'], force=False,
-                                   is_owner_live=is_owner_live)
+                                   is_owner_live=is_owner_live,
+                                   occupied_by=occupied_by)
                 except WorktreeError as e:
                     keep(m, e.code)
                     continue
@@ -1269,7 +1344,7 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
 
 def sweep(*, wt_root=None, is_owner_live, owner_meta, now=None, gc_days=7,
           grace_s=600, dry_run=False, pristine_only=False,
-          delete_pristine_branches=True, timeout=None):
+          delete_pristine_branches=True, occupied_by=None, timeout=None):
     """Remove worktrees nobody needs. Never removes one that is live, recent,
     dirty, or holds a commit no remote has.
 
@@ -1281,7 +1356,8 @@ def sweep(*, wt_root=None, is_owner_live, owner_meta, now=None, gc_days=7,
     - everything else is kept, with a reason Settings can show.
 
     Worktrees with no owner (made by hand with the shell skill) are only
-    removed when pristine AND older than `gc_days`.
+    removed when pristine AND older than `gc_days` — and never while a live
+    task is working in one (`occupied_by`, #791).
     """
     wt_root = wt_root or default_root()
     with locked(wt_root, timeout):
@@ -1289,17 +1365,19 @@ def sweep(*, wt_root=None, is_owner_live, owner_meta, now=None, gc_days=7,
             wt_root, is_owner_live=is_owner_live, owner_meta=owner_meta,
             now=time.time() if now is None else now, gc_days=gc_days,
             grace_s=grace_s, dry_run=dry_run, pristine_only=pristine_only,
-            delete_pristine_branches=delete_pristine_branches)
+            delete_pristine_branches=delete_pristine_branches,
+            occupied_by=occupied_by)
 
 
-def reclaimer(wt_root, *, is_owner_live, owner_meta, grace_s=600, gc_days=7):
+def reclaimer(wt_root, *, is_owner_live, owner_meta, grace_s=600, gc_days=7,
+              occupied_by=None):
     """A zero-argument callable for `ensure(reclaim=...)`: a pristine-only
     sweep that runs INSIDE the lock `ensure` already holds."""
     def _reclaim():
         return _sweep_locked(wt_root, is_owner_live=is_owner_live,
                              owner_meta=owner_meta, now=time.time(),
                              gc_days=gc_days, grace_s=grace_s,
-                             pristine_only=True)
+                             pristine_only=True, occupied_by=occupied_by)
     return _reclaim
 
 
@@ -1378,6 +1456,26 @@ def default_owner_meta(task_id):
     if not task_id or not re.match(r'^[A-Za-z0-9_-]+$', task_id):
         return None
     return _read_json(os.path.join(_tasks_dir(), task_id, 'task.json'))
+
+
+def live_sessions():
+    """Every tmux session name, in ONE call — the occupancy map asks about
+    all of them at once."""
+    try:
+        proc = _RUN(['tmux', 'list-sessions', '-F', '#{session_name}'],
+                    capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    return set((proc.stdout or '').split())
+
+
+def default_occupancy():
+    """`occupancy()` over this workspace's tasks — what the CLI and the shell
+    skill pass to `remove`/`sweep` so they refuse a worktree someone is
+    working in (#791)."""
+    return occupancy(live_sessions(), default_owner_meta)
 
 
 def default_is_owner_live(task_id):
@@ -1501,6 +1599,7 @@ def main(argv=None):
                 target = m['path']
             out = remove(target, wt_root=wt_root, force=args.force,
                          is_owner_live=default_is_owner_live,
+                         occupied_by=default_occupancy(),
                          allow_owner=os.environ.get('KC_TASK_ID', ''))
             if as_json:
                 _emit(out, True)
@@ -1527,6 +1626,7 @@ def main(argv=None):
             _emit(sweep(wt_root=wt_root, is_owner_live=default_is_owner_live,
                         owner_meta=default_owner_meta, gc_days=args.gc_days,
                         grace_s=_int_env('KC_WORKTREE_GRACE_S', 600, lo=0),
+                        occupied_by=default_occupancy(),
                         dry_run=args.dry_run), True)
         else:
             p.print_help(sys.stderr)
