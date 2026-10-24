@@ -40,15 +40,57 @@ mkdir -p /home/dev/.local/bin /home/dev/.local/share/code-server/extensions
 # through `~` therefore lands wherever that lottery fell — and `ln -sf`
 # through a `~` that already resolves to a link would write *inside* the
 # credential store instead of replacing the link.
-mkdir -p /home/ubuntu/.config /home/ubuntu/.config/git /home/ubuntu/.config/gh
+mkdir -p /home/ubuntu/.config /home/ubuntu/.config/git
 mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh
 chmod 700 /home/dev/.credentials/.ssh
 touch /home/dev/.credentials/.config/git/config
-# .ssh and .gitconfig are linked by persist_cred below, which covers BOTH
-# homes and migrates safely (#795). This one stays here because `gh`'s link
-# is broken in a different way — `ln -sf` nests it inside the directory the
-# mkdir above just created — and is fixed separately in #797.
-ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
+# Link a config DIRECTORY onto the PVC (issue #797).
+#
+# `ln -sf <target> <link>` cannot do this on its own: when ln's final
+# argument already resolves to a directory it treats it as a destination
+# *directory* and drops the link inside it — exit 0, no diagnostic. That is
+# what happened to ~/.config/gh, which the line above used to pre-create
+# with `mkdir -p`: every boot wrote the useless ~/.config/gh/gh and left the
+# real, ephemeral directory in place, so `gh auth login` had to be redone
+# after every pod restart even though the docs promised it was persisted.
+#
+# `-n` alone is not the fix. It un-dereferences a *symlink* to a directory
+# (so re-runs replace the link instead of following it into the target —
+# without it, a second run writes a self-referential link INSIDE
+# /home/dev/.credentials/.config/gh), but onto a REAL directory ln still
+# nests. The pre-existing directory has to be got out of the way first, and
+# an established workspace may have a live login in it — so copy it onto the
+# PVC no-clobber (a login already on the PVC always wins) and park the
+# original beside itself rather than deleting it. /home/ubuntu is ephemeral,
+# so the parked copy costs nothing and is gone next boot.
+#
+# Kept separate from persist_cred (below) even after #795 made that helper
+# non-destructive too: this directory needs the extra drop-the-nested-link
+# step for workspaces that booted with the old bug, which persist_cred's
+# generic migrate does not know about. Folding them together is fine once no
+# live workspace predates this fix.
+link_cred_dir() {                     # $1 = link path, $2 = PVC target
+  local link="$1" target="$2" parked
+  mkdir -p "$target"
+  mkdir -p "$(dirname "$link")"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    # Drop the nested link this bug used to create, so it is not copied
+    # into the target as a link pointing at its own parent.
+    [ -L "$link/$(basename "$target")" ] && rm -f "$link/$(basename "$target")"
+    cp -an "$link/." "$target/" 2>/dev/null || true
+    parked="$link.pre-797.$(date +%s)"
+    if mv "$link" "$parked" 2>/dev/null; then
+      log_stage "migrated real $link onto the PVC (original parked at $parked)"
+    else
+      log_stage "WARNING: could not move $link aside; $target link not created"
+      return 1
+    fi
+  fi
+  ln -sfn "$target" "$link"
+  chown -h ubuntu:ubuntu "$link" 2>/dev/null || true
+}
+link_cred_dir /home/ubuntu/.config/gh /home/dev/.credentials/.config/gh
+link_cred_dir /home/dev/.config/gh    /home/dev/.credentials/.config/gh
 
 # Persist per-tool API logins across pod restarts (issue #243) and keep BOTH
 # homes reading the SAME store (issue #795).
