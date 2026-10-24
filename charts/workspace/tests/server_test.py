@@ -207,6 +207,44 @@ class CompletionHookTests(unittest.TestCase):
 
     @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
     @mock.patch('server.subprocess.run')
+    def test_reconcile_after_a_pod_restart_reports_terminated(self, mock_run,
+                                                              mock_urlopen):
+        """The end-to-end shape of #792, which cost hours of agent work.
+
+        A Build is launched, the pod restarts (so every tmux session is gone
+        AND this is a different boot), and the next read must NOT call that a
+        clean finish — the agent never reported, and its worktree may hold
+        uncommitted work. The webhook has to carry the same verdict, since an
+        orchestrator driving many Builds learns about them that way.
+        """
+        mock_run.side_effect = _fake_tmux_alive
+        task = server.ClaudeTaskManager.create_task(
+            'do thing',
+            response_url='http://example.test/hook',
+        )
+        meta_path = os.path.join(self.tmpdir, task['task_id'], 'task.json')
+        with open(meta_path) as f:
+            self.assertTrue(json.load(f).get('boot_id'),
+                            'a Build must record the boot that launched it')
+
+        cm = mock.MagicMock()
+        cm.__enter__.return_value = mock.Mock(status=200)
+        mock_urlopen.return_value = cm
+        mock_run.side_effect = _fake_tmux_dead
+
+        with mock.patch.object(server.ClaudeTaskManager, '_boot_id',
+                               'a-later-boot'):
+            task_after = server.ClaudeTaskManager.get_task(task['task_id'])
+        self.assertEqual(task_after['status'], 'terminated')
+        self.assertEqual(task_after['termination_reason'], 'pod_restart')
+
+        self.assertTrue(self._wait_hook_fired(mock_urlopen))
+        payload = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(payload['status'], 'terminated')
+        self.assertEqual(payload['termination_reason'], 'pod_restart')
+
+    @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
+    @mock.patch('server.subprocess.run')
     def test_hook_idempotent_under_concurrent_reconcile(self, mock_run, mock_urlopen):
         """Repeated reconciles (which happen on every list/get/stream call)
         must not re-fire the hook. hook_fired_at on the meta is the marker."""

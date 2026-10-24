@@ -40,11 +40,39 @@ try:
 except ImportError:  # pragma: no cover - ships beside this file
     worktrees = None
 
+# Pod-boot identity (#792) — the same read-or-create /tmp marker the dashboard
+# server stamps into task.json, so a sub-agent killed by a pod restart is
+# reported `terminated` instead of `completed`. A sibling module like the two
+# above; guarded identically so an older image still spawns agents.
+try:
+    import devcontainer
+except ImportError:  # pragma: no cover - ships beside this file
+    devcontainer = None
+
 # ───────────────────────────────────────────────────────────────────────────
 # Constants
 # ───────────────────────────────────────────────────────────────────────────
 TASKS_DIR = '/home/dev/.claude-tasks'
 _LOG = sys.stderr
+
+
+_BOOT_ID: Optional[str] = None
+
+
+def _boot_id() -> str:
+    """Identity of this pod boot, '' when it cannot be determined.
+
+    Cached: every tool call in this process must agree, or the same task would
+    read as wiped on one call and finished on the next.
+    """
+    global _BOOT_ID
+    if _BOOT_ID is None:
+        try:
+            _BOOT_ID = (devcontainer.boot_id() or '') if devcontainer else ''
+        except Exception as e:   # pragma: no cover - defensive
+            _log(f'boot_id unavailable: {e}')
+            _BOOT_ID = ''
+    return _BOOT_ID
 
 
 def _int_env(name: str, default: int) -> int:
@@ -141,7 +169,7 @@ def _write_meta(task_dir: str, meta: Dict[str, Any]) -> bool:
 
 
 def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
-    """Update status from running→completed if tmux session is gone."""
+    """Settle a dead session's status: completed | error | terminated."""
     if meta.get('status') not in ('running', 'waiting-for-input'):
         return
     session = meta.get('tmux_session', '')
@@ -156,9 +184,23 @@ def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
         # spawn wrapper persisted so a crash (non-zero) is reported as
         # 'error' instead of being indistinguishable from a clean finish.
         exit_code = _read_exit_code(task_dir)
+        boot, task_boot = _boot_id(), meta.get('boot_id') or ''
         if exit_code is not None and exit_code != 0:
             meta['status'] = 'error'
             meta['error'] = f'agent exited with code {exit_code}'
+        elif exit_code is None and boot and task_boot and task_boot != boot:
+            # No exit code AND the boot that launched it is gone: the pod
+            # restarted and took the tmux session with it, so this agent never
+            # ran to the end and never reported (#792). Its own status because
+            # the recovery differs — a `completed` agent's work is done, a
+            # `terminated` one's is unfinished and possibly uncommitted, and an
+            # orchestrator has to be able to tell. The exit-code check comes
+            # first deliberately: a wrapper that got far enough to write one
+            # DID finish, restart or no restart.
+            meta['status'] = 'terminated'
+            meta['error'] = 'terminated by a pod restart before it finished'
+            meta['terminated_at'] = time.time()
+            meta['termination_reason'] = 'pod_restart'
         else:
             meta['status'] = 'completed'
         if exit_code is not None:
@@ -166,6 +208,13 @@ def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
         meta['finished_at'] = time.time()
         meta.pop('waiting_for_input', None)
         meta.pop('last_input_prompt', None)
+        _write_meta(task_dir, meta)
+        return
+    # Alive, but born in an earlier boot (an older image never stamped one):
+    # adopt it so the NEXT restart is still detectable. One write per boot.
+    boot = _boot_id()
+    if boot and (meta.get('boot_id') or '') != boot:
+        meta['boot_id'] = boot
         _write_meta(task_dir, meta)
 
 
@@ -412,6 +461,9 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         'workdir': workdir,
         'status': 'running',
         'created_at': time.time(),
+        # The boot that launched this sub-agent (#792) — what tells a session
+        # that ended from one the pod restart wiped.
+        'boot_id': _boot_id(),
         'tmux_session': session_name,
         'assistant': assistant,
         'mode': mode,
@@ -575,6 +627,9 @@ def _tool_get_agent_status(args: Dict[str, Any]) -> Dict[str, Any]:
             'exit_code': meta.get('exit_code'),
             'created_at': meta.get('created_at'),
             'finished_at': meta.get('finished_at'),
+            # Set only on 'terminated' (#792), so a recovering orchestrator
+            # does not have to infer the cause from the status alone.
+            'termination_reason': meta.get('termination_reason'),
             'prompt': (meta.get('prompt', '') or '')[:200],
         })}],
     }
@@ -713,6 +768,8 @@ def _tool_wait_for_agents(args: Dict[str, Any]) -> Dict[str, Any]:
         entry = {'task_id': tid, 'status': status}
         if status not in ('running', 'waiting-for-input'):
             entry['exit_code'] = meta.get('exit_code')
+            if status == 'terminated':
+                entry['termination_reason'] = meta.get('termination_reason')
             entry['output'] = _read_output(task_dir, tail=tail)
         return entry
 
@@ -768,7 +825,12 @@ TOOLS: Dict[str, Any] = {
                            'get_agent_status / wait_for_agent to monitor. '
                            'Defaults to headless mode: the agent runs the '
                            'prompt to completion and exits, so wait_for_agent '
-                           'returns its result. Capped by depth and concurrency.',
+                           'returns its result. Capped by depth and '
+                           'concurrency. Tell every sub-agent that writes code '
+                           'to commit and push the moment it compiles, before '
+                           'validating: this pod can restart, and a restart '
+                           "loses uncommitted work and the agent's report "
+                           'while a pushed branch survives (#792).',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -803,7 +865,13 @@ TOOLS: Dict[str, Any] = {
         'handler': _tool_get_agent_status,
         'schema': {
             'name': 'get_agent_status',
-            'description': 'Get the current status of a spawned agent task.',
+            'description': 'Get the current status of a spawned agent task: '
+                           'running, waiting-for-input, completed, error, '
+                           'killed, or terminated — the last meaning a pod '
+                           'restart wiped its session before it finished, so '
+                           'its work is unfinished and its report never came. '
+                           'Never treat terminated as success: re-run it, or '
+                           'pick up whatever it pushed.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {

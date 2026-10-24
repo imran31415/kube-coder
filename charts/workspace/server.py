@@ -427,7 +427,8 @@ HYPERVISOR_PREAMBLE = (
     "have been stopped' notification means exactly that (not a user action). "
     "To wait on something across turns, arm a runner-owned watcher with the "
     "dashboard `watch` tool: kind 'task' with a task_id (fires when the task "
-    "completes, errors, is killed, or goes waiting-for-input), kind 'command' "
+    "completes, errors, is killed or terminated, or goes waiting-for-input), "
+    "kind 'command' "
     "with a shell predicate (fires when it exits 0), or kind 'file' with a "
     "path (fires when it appears/changes). The workspace runner polls it after "
     "your turn ends and posts the outcome into this chat as a new message — "
@@ -1398,7 +1399,7 @@ class PrometheusMetricsCollector:
 
     ── CARDINALITY ───────────────────────────────────────────────────────────
     Every label here is drawn from a fixed, small vocabulary: scope (2), token
-    class (4), coverage (3), task status (6), hook outcome (2), section (4).
+    class (4), coverage (3), task status (7), hook outcome (2), section (4).
     The one label with values from data rather than code is `model`, and it is
     capped at MAX_MODELS with the tail folded into `model="other"`. Nothing is
     ever labelled by task id, thread id, session id, workdir, project or URL:
@@ -1421,7 +1422,8 @@ class PrometheusMetricsCollector:
 
     #: Terminal + live statuses ClaudeTaskManager writes. Anything else is
     #: folded into `unknown` so a stray value can't mint a new series.
-    TASK_STATUSES = ('running', 'waiting-for-input', 'completed', 'error', 'killed')
+    TASK_STATUSES = ('running', 'waiting-for-input', 'completed', 'error',
+                     'killed', 'terminated')
     UNKNOWN_STATUS = 'unknown'
 
     #: Where agent spend happened. Summing over this gives the workspace total;
@@ -2162,6 +2164,36 @@ class ClaudeTaskManager:
     # launched interactive task doesn't block on the trust dialog (see
     # _ensure_claude_trust). Tests redirect it (_resolve_claude_config_path).
     CLAUDE_CONFIG_PATH = _resolve_claude_config_path()
+
+    #: Cached pod-boot identity (#792). See boot_id() below.
+    _boot_id = None
+
+    @staticmethod
+    def boot_id():
+        """Identity of the pod boot this process belongs to, '' if unknowable.
+
+        Stamped into task.json at birth and back-stamped onto any live task
+        that predates this process, which is what lets a dead tmux session be
+        told apart from a WIPED one: a session can vanish because the agent's
+        CLI exited (`completed`), or because the pod restarted and took every
+        session with it (`terminated`). Nothing in the task dir distinguishes
+        those after the fact — the pod that watched the agent work is gone —
+        so the task has to carry the boot that last saw it alive.
+
+        '' means we could not determine a boot identity. Callers must then
+        fall back to the old behaviour rather than guess: a FALSE `terminated`
+        would make an orchestrator re-run work that actually finished, which
+        is the mirror image of the bug this fixes.
+        """
+        if ClaudeTaskManager._boot_id is None:
+            boot = ''
+            if _DEVCONTAINER_AVAILABLE:
+                try:
+                    boot = devcontainer.boot_id() or ''
+                except Exception as e:   # pragma: no cover - defensive
+                    print(f'[tasks] boot_id unavailable: {e}', file=sys.stderr)
+            ClaudeTaskManager._boot_id = boot
+        return ClaudeTaskManager._boot_id
 
     @staticmethod
     def ensure_tasks_dir():
@@ -3179,6 +3211,11 @@ class ClaudeTaskManager:
             'project_id': project_id or '',
             'status': 'running',
             'created_at': time.time(),
+            # The pod boot that launched this task (#792). A tmux session that
+            # vanishes while this is still the current boot means the agent's
+            # CLI exited; one that vanishes after a restart means the session
+            # was wiped, and the task is `terminated`, not `completed`.
+            'boot_id': ClaudeTaskManager.boot_id(),
             'tmux_session': session_name,
             'assistant': assistant,
             # Effective model / reasoning effort for this build (#483, #362).
@@ -3442,6 +3479,7 @@ class ClaudeTaskManager:
             'workdir': workdir,
             'status': 'running',
             'created_at': time.time(),
+            'boot_id': ClaudeTaskManager.boot_id(),   # see Build meta above (#792)
             'tmux_session': session_name,
         }
 
@@ -4250,6 +4288,10 @@ class ClaudeTaskManager:
             'source': meta.get('source'),
             'created_at': meta.get('created_at'),
             'finished_at': meta.get('finished_at') or meta.get('killed_at'),
+            # Only set on `terminated` (#792). A receiver that cares just about
+            # done-ness can keep reading `status`; one that auto-recovers needs
+            # to know the run was wiped rather than finished.
+            'termination_reason': meta.get('termination_reason'),
             'output': tail_output,
         }
         body = json.dumps(payload).encode('utf-8')
@@ -4582,7 +4624,11 @@ class ClaudeTaskManager:
     @staticmethod
     def _reconcile_status(meta, task_dir):
         """If task.json says running but tmux session is gone, update status.
-        Also check for waiting-for-input patterns in running tasks."""
+        Also check for waiting-for-input patterns in running tasks.
+
+        A gone session resolves to `completed` or, when the pod restarted out
+        from under the task, `terminated` (#792) — see boot_id().
+        """
         current_status = meta.get('status', 'unknown')
         # Token accounting (#574) — best-effort, never blocking. Throttled while
         # the Build is live; runs once unthrottled after it goes terminal so the
@@ -4602,18 +4648,36 @@ class ClaudeTaskManager:
             capture_output=True, text=True,
         )
         
-        # If tmux session is gone, mark as completed
+        # If tmux session is gone, the task is over — but HOW it ended is only
+        # knowable from the boot stamp (#792). Same boot ⇒ this process watched
+        # the session go away, so the CLI exited: `completed`. Different boot ⇒
+        # the pod restarted and took every tmux session with it, so no result
+        # was ever emitted and nothing here saw the agent finish: `terminated`.
+        # An unknown boot on either side resolves to `completed`, the old
+        # behaviour — a false `terminated` would have an orchestrator redo work
+        # that had actually been done.
         if check.returncode != 0:
             finished_at = time.time()
             fire_hook = False
+            boot = ClaudeTaskManager.boot_id()
+            task_boot = meta.get('boot_id') or ''
+            wiped = bool(boot) and bool(task_boot) and task_boot != boot
+            new_status = 'terminated' if wiped else 'completed'
 
             def mutate(m):
                 nonlocal fire_hook
                 # Re-check inside the lock; another reconcile may have run already.
                 if m.get('status') not in ('running', 'waiting-for-input'):
                     return False
-                m['status'] = 'completed'
+                m['status'] = new_status
                 m['finished_at'] = finished_at
+                if wiped:
+                    # Why it ended, for an orchestrator deciding whether to
+                    # recover. Separate from `finished_at` because a terminated
+                    # task did not finish — this is when we NOTICED, which is
+                    # boot time, not the moment the work stopped.
+                    m['terminated_at'] = finished_at
+                    m['termination_reason'] = 'pod_restart'
                 # Clear waiting state fields
                 m.pop('waiting_for_input', None)
                 m.pop('last_input_prompt', None)
@@ -4629,6 +4693,9 @@ class ClaudeTaskManager:
             if updated is not None:
                 meta['status'] = updated.get('status', meta.get('status'))
                 meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
+                if wiped:
+                    meta['terminated_at'] = updated.get('terminated_at')
+                    meta['termination_reason'] = updated.get('termination_reason')
                 meta.pop('waiting_for_input', None)
                 meta.pop('last_input_prompt', None)
                 # The CLI is gone: settle the token figure now (#574) rather than
@@ -4639,7 +4706,7 @@ class ClaudeTaskManager:
                     ClaudeTaskManager._fire_completion_hook(updated)
                 EventBroker.publish('task.status', {
                     'task_id': meta.get('task_id'),
-                    'status': 'completed',
+                    'status': meta.get('status') or new_status,
                     'finished_at': meta.get('finished_at'),
                 })
                 # Feed (#469): one coalesced activity item per task terminal.
@@ -4650,7 +4717,19 @@ class ClaudeTaskManager:
                     WorktreeManager.snapshot_async(meta.get('task_id'))
             return
         
-        # Session is alive — derive waiting-for-input from render *quiescence*
+        # Session is alive. Adopt it into this boot if it predates us (#792):
+        # task.json may have been written by an older image that never stamped
+        # a boot, or by a process whose /tmp marker was unreadable. Stamping it
+        # now means the NEXT restart is still detectable. Guarded, so this is
+        # one write per task per boot rather than one per poll.
+        boot = ClaudeTaskManager.boot_id()
+        if boot and (meta.get('boot_id') or '') != boot:
+            def adopt(m):
+                m['boot_id'] = boot
+            if ClaudeTaskManager._atomic_update_meta(task_dir, adopt) is not None:
+                meta['boot_id'] = boot
+
+        # Derive waiting-for-input from render *quiescence*
         # rather than scraping prompt text (which never worked across the
         # full-screen TUIs Claude/Ante/OpenCode render). While an agent works
         # it streams output / animates a spinner+timer, so the captured screen
@@ -6521,8 +6600,11 @@ class FeedManager:
         if not tid:
             return None
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
-        verb = {'completed': 'finished', 'error': 'failed', 'killed': 'was stopped'}.get(
-            status, status)
+        verb = {'completed': 'finished', 'error': 'failed',
+                'killed': 'was stopped',
+                # #792: the pod restarted under it. Named for what the user
+                # has to do about it, which is not 'read the result'.
+                'terminated': 'was wiped by a restart'}.get(status, status)
         # FIRST, when there is one: `push_notify` sends the first ref as the
         # notification's target, and both clients resolve a `board:` ref to the
         # item's approval card.
@@ -7873,9 +7955,11 @@ class BoardRunsManager:
     # imported, because the hypervisor package is optional and a run must not
     # stop working when it is absent.
     TERMINAL_TASK_STATUSES = frozenset(
-        {'completed', 'error', 'killed', 'waiting-for-input'})
+        {'completed', 'error', 'killed', 'terminated', 'waiting-for-input'})
     # Items whose Build ended cleanly are recorded as processed; these did not.
-    FAILED_TASK_STATUSES = frozenset({'error', 'killed'})
+    # `terminated` (#792) belongs here: a Build the pod restart wiped never
+    # reached its work, so the item must not be marked processed.
+    FAILED_TASK_STATUSES = frozenset({'error', 'killed', 'terminated'})
     MAX_RUNS_KEPT = 200
 
     _lock = threading.Lock()
@@ -13360,7 +13444,7 @@ def _mc_task_card(meta, task_dir, now):
         state = 'running'
     elif status == 'waiting-for-input':
         state = 'waiting'
-    elif status in ('completed', 'error', 'killed'):
+    elif status in ('completed', 'error', 'killed', 'terminated'):
         if not finished_at or (now - finished_at) > MC_RECENT_SECONDS:
             return None
         state = 'done'
@@ -13423,6 +13507,8 @@ def _mc_task_card(meta, task_dir, now):
             card['outcome'] = {'ok': True, 'detail': 'completed'}
         elif status == 'killed':
             card['outcome'] = {'ok': False, 'detail': 'killed'}
+        elif status == 'terminated':
+            card['outcome'] = {'ok': False, 'detail': 'terminated by restart'}
         else:
             exit_code = meta.get('exit_code')
             detail = ('error' if exit_code in (None, '')
@@ -13594,7 +13680,8 @@ def _mc_primary_arg(tool_input):
 # Raw task status → board state, matching _mc_task_card's mapping so the
 # drawer's lineage chips read the same as the queue's.
 _MC_STATUS_STATE = {'running': 'running', 'waiting-for-input': 'waiting',
-                    'completed': 'done', 'error': 'done', 'killed': 'done'}
+                    'completed': 'done', 'error': 'done', 'killed': 'done',
+                    'terminated': 'done'}
 
 
 def _mc_entry(at, kind, text, detail='', link=None, status='ok'):

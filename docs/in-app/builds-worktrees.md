@@ -75,6 +75,29 @@ A worktree separates files, the branch and the port. It does not separate:
 - **CPU and memory** — parallel Builds still share the workspace's limits.
   On a small workspace, run fewer at once.
 
+## Surviving a pod restart
+
+A workspace pod restarts from time to time — resource pressure, node
+recycling, maintenance — and a restart kills every Build's tmux session. The
+worktree and its commits are on the persistent disk and survive; a Build's
+**uncommitted** edits survive only as files nobody has recorded, and the Build
+itself never gets to report what it did.
+
+So when you start a long Build — especially when you fan several out — tell it
+to **commit and push as soon as its change compiles**, before it validates or
+writes up anything:
+
+```
+Commit and push your branch as soon as your change compiles — before you
+validate, gather evidence or open a PR. Push early, push often.
+```
+
+A Build the restart caught mid-run reads **`terminated`**, not `completed`
+(#792), which is the signal that its work is unfinished: open its Changes tab,
+commit whatever is there as a labelled unvalidated checkpoint, and start a
+short follow-up Build on that branch to rebase, validate and finish. Cleanup
+never touches a worktree with uncommitted changes, so there is no rush.
+
 ## Reviewing and getting the work out
 
 Open the Build and choose the **Changes** tab. It shows:
