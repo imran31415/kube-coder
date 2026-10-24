@@ -368,7 +368,9 @@ export interface MissionQueue {
 // ── Controller (admin plane) ────────────────────────────────────────────────
 // Mirrors the workspace-controller's /api/workspaces and /api/capacity/summary.
 
-export type WorkspaceState = 'running' | 'stopped' | 'transitioning' | 'degraded';
+/** `sleeping`: its keeper scaled it to 0 because nobody was using it, and a
+ *  visit wakes it. `stopped`: an admin scaled it to 0, and it stays off (#728). */
+export type WorkspaceState = 'running' | 'sleeping' | 'stopped' | 'transitioning' | 'degraded';
 
 /** One workspace in the controller's list (mirrors controller.py list_workspaces). */
 export interface ControllerWorkspace {
@@ -379,6 +381,10 @@ export interface ControllerWorkspace {
   state: WorkspaceState;
   desiredReplicas: number;
   readyReplicas: number;
+  /** True from a controller that tells sleeping from stopped (#728 step 5).
+   *  Absent from an older one, whose "stopped" means every 0-replica
+   *  workspace — so the app believes a "stopped" only alongside this. */
+  sleepAware?: boolean;
   url: string | null;
   /** Short human status, e.g. "1/1 ready" or "CrashLoopBackOff". */
   detail: string;

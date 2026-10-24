@@ -62,6 +62,17 @@ type Server struct {
 	// memory. Nil is unbounded.
 	forwards chan struct{}
 
+	// SleepEnabled is keeper.sleep.enabled: serve() starts the idle loop
+	// (#728 step 5).
+	SleepEnabled bool
+	// IdleMinutes is keeper.sleep.idleMinutes, the keeper's own threshold. It is
+	// sent to the workspace as ?idle_minutes= so the two charts' values can
+	// never drift apart.
+	IdleMinutes int
+	// idle is the idle loop's own bookkeeping (idle.go); only that goroutine
+	// touches it.
+	idle idleLoopState
+
 	clientOnce sync.Once
 	httpClient *http.Client
 
@@ -339,7 +350,7 @@ func (s *Server) cachedState(ctx context.Context) (string, error) {
 // The proxy needs this for one row of its decision table: a forward that failed
 // to connect to a workspace the cache called awake usually means the pod went
 // away between the two, and re-deciding from the same stale answer would just
-// fail the same way.
+// fail the same way. The idle loop needs it for the same reason, twice.
 func (s *Server) freshState(ctx context.Context) (string, error) {
 	d, err := s.Kube.Get(ctx)
 	if err != nil {
@@ -350,6 +361,40 @@ func (s *Server) freshState(ctx context.Context) (string, error) {
 	s.cached, s.cachedAt = state, time.Now()
 	s.mu.Unlock()
 	return state, nil
+}
+
+// sleepNow is the other half of wakeNow: the keeper's one write that takes a
+// workspace away (#728 step 5). It holds wakeMu across the re-check and the
+// write, so a wake and a sleep can never interleave — a visit that arrives
+// while the idle poll was being answered either lands first and the re-check
+// sees it, or waits here and then wakes what was just put to sleep.
+//
+// The re-check exists because the poll took real time. In that window a
+// webhook may have been queued, an admin may have pressed Stop or Start, or a
+// person may have opened the dashboard. Sleep reads the Deployment once more
+// and carries that read's resourceVersion as its precondition, so a write that
+// lands after this check still loses to it with ErrConflict.
+func (s *Server) sleepNow(ctx context.Context, why string) (slept bool, err error) {
+	s.wakeMu.Lock()
+	defer s.wakeMu.Unlock()
+	if s.Queue.Len() > 0 {
+		return false, nil
+	}
+	state, err := s.freshState(ctx)
+	if err != nil {
+		return false, err
+	}
+	if state != StateAwake {
+		return false, nil
+	}
+	if _, err := Sleep(ctx, s.Kube); err != nil {
+		return false, err
+	}
+	log.Printf("idle: %s/%s scaled 1 -> 0 %s", s.Kube.Namespace, s.Kube.Name, why)
+	s.mu.Lock()
+	s.cached, s.cachedAt = StateAsleep, time.Now()
+	s.mu.Unlock()
+	return true, nil
 }
 
 func (s *Server) response(state string) statusResponse {

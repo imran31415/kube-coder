@@ -7,10 +7,23 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
 ## What it does
 
 - **List + status** — shows every `ws-*` Deployment with live state
-  (running / stopped / transitioning / degraded) and pod health.
+  (running / sleeping / stopped / transitioning / degraded) and pod health.
+  **Sleeping** is a workspace its always-on keeper scaled to 0 because nobody
+  was using it; a visit wakes it. **Stopped** is one an admin scaled to 0; it
+  stays off until someone starts it.
+  The two are told apart by who owns the Deployment's `spec.replicas` — the
+  keeper alone means sleeping — the same rule the keeper itself uses
+  (`docs/always-on-keeper.md`, #728).
 - **Start / stop** — scales the workspace Deployment to `1` / `0`. This is a pure
   Kubernetes API operation (`kubectl scale`) — there is no Helm at runtime — so it
-  preserves the workspace's PVC and is fully reversible.
+  preserves the workspace's PVC and is fully reversible. Stop on a *sleeping*
+  workspace is the one exception: it is already at `0`, and a scale that changes
+  nothing records nothing, so the keeper would wake it on the next visit.
+  That Stop is a server-side apply of `replicas: 0` under the field manager
+  `kube-coder-controller` instead. It records the controller as a second owner
+  of the field — 0 -> 0 is no conflict, so the keeper keeps its share — and a
+  field the keeper does not own alone is one it treats as stopped. The next
+  Start, a `kubectl scale` again, clears both.
 - **Usage metrics** — an expandable mini dashboard per row plus a detail page
   (`#/w/<user>`) with a 1h/6h/24h/7d selector showing CPU, memory, disk, network,
   uptime, and a rough cost estimate, sourced from the in-cluster Prometheus.

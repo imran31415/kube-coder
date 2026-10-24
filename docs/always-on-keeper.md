@@ -3,18 +3,20 @@
 Design note for **issue #728** ("always-on keeper — tiny Go/Rust server for
 webhooks + crons so idle workspaces can sleep").
 
-**Status: built through step 4a, all off by default.** Implemented: the
+**Status: built through step 5, all off by default.** Implemented: the
 workspace-side idle contract, `GET /api/keeper/idle` (§4.1, step 1); the chart's
 `keeper:` values block with the `replicas` ownership change (§2.2, step 2); the
 keeper itself — a page that also wakes a workspace it put to sleep, when a
-logged-in user visits (§4.3, step 3); and the two things the workspace tells the
-keeper, plus the phone's way in (§4.4, step 4a). Nothing puts a workspace to
-sleep on its own yet: until step 5's idle loop, that is an operator's
-`keeper sleep`. The webhook and cron proxy with its queue (step 4b) and the idle
-loop (step 5) are written down here rather than built.
+logged-in user visits (§4.3, step 3); the two things the workspace tells the
+keeper, plus the phone's way in (§4.4, step 4a); the webhook and cron front door
+with its queue (§4.5, step 4b); and the idle loop that puts an unused workspace
+to sleep, with the controller and the phone telling "sleeping" from "stopped"
+(§4.6, step 5). With `keeper.sleep.enabled` the whole cycle runs on its own.
 
-This page is not in `docs/_manifest.json` (the in-app docs nav): there is no
-user-facing behaviour to document yet. It belongs there when sleep ships.
+This page is not in `docs/_manifest.json` (the in-app docs nav), and step 5
+does not put it there: sleep is an operator setting, off by default, and this
+is a design review rather than a guide. A short in-app page belongs there when
+sleep defaults to on (§3.4).
 
 ---
 
@@ -90,7 +92,7 @@ Q3 decides for the event queue can hold this too.
 record. With sleep on, the chart does not declare `replicas` (§2.2), so the
 Deployment's `managedFields` say who owns that field, and the keeper writes it
 by server-side apply under its own field manager. "Asleep" is "at 0, and the
-keeper is the field's only owner"; an admin's Stop takes the field over. It
+keeper is the field's only owner"; an admin's Stop adds another owner. It
 survives Helm 3 and Helm 4 upgrades and keeper restarts, and needs no storage.
 §4.3 has the rule, the measurements, and its one gap.
 
@@ -218,13 +220,28 @@ stops declaring `replicas` when sleep is on.
 
 ### 4.1 `GET /api/keeper/idle` — implemented
 
-Bearer-authenticated, read-only, no side effects. The keeper polls it; the
-workspace answers with observations and a verdict, and the keeper keeps the
-policy (`keeper.sleep.idleMinutes`) and the scaling.
+Authenticated, read-only, no side effects. The keeper polls it; the workspace
+answers with observations and a verdict, and the keeper keeps the policy
+(`keeper.sleep.idleMinutes`) and the scaling.
+
+Two credentials open it. **The keeper's**, from step 5: the shared control
+secret it already holds for its control port, in its own header,
+`X-Keeper-Secret` — since step 4a the keeper holds only a hash of the API token,
+which cannot authenticate anything. **Anyone else's**: whatever
+`check_claude_auth` accepts, so a person with the API token can ask the same
+question. The secret is accepted on this one route only, and never as a bearer:
+`check_claude_auth` gates the whole API, and teaching it the keeper's secret
+would turn "may ask whether you are busy" into "may create tasks". An unset or
+empty secret refuses everything. (In `basic` auth mode `check_claude_auth`
+returns true before it reads any header — server.py trusts the ingress's basic
+auth there — so on a basic-mode workspace the poll needs no credential at all.
+That is pinned by a test, and it means a basic-mode run says nothing about the
+secret; test that in `oauth2` mode.)
 
 ```
 GET /api/keeper/idle?idle_minutes=30
-Authorization: Bearer <the workspace's Claude Task API token>
+X-Keeper-Secret: <the shared control secret>                    (the keeper)
+Authorization: Bearer <the workspace's Claude Task API token>   (anyone else)
 
 {
   "idle": false,
@@ -291,23 +308,20 @@ Implementation: `charts/workspace/keeper_idle.py`, wired at
    while a user is typing.
 
 Loopback is excluded from the dashboard signal for the same family of reasons:
-the kubelet probes, the MCP servers and every in-pod `curl localhost:6080`
-would otherwise pin the workspace awake for ever.
+the MCP servers and every in-pod `curl localhost:6080` would otherwise pin the
+workspace awake for ever. (The kubelet's probes are not loopback — they come
+from the node's address — but each is one short request every ten seconds, so
+at worst one poll reads busy. That resets step 5's two-answers count and puts
+the sleep back a minute; it was seen once on the cluster, as `busy: 1 dashboard
+client` from the node's Calico tunnel address.)
 
-### 4.2 Still to build
+### 4.2 What is left
 
-Steps 4a and 4b are built; see 4.4 and 4.5. What is left is **step 5, the idle
-loop** — the thing that actually puts a workspace to sleep. Until it lands,
-sleep is an operator typing:
-
-```bash
-kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
-```
-
-Everything else about a sleeping workspace now works: a visit wakes it, the app
-wakes it, and a webhook or a schedule that fires while it is away is kept and
-replayed. Step 5 also closes 4.3's `0 -> 0` gap, by teaching the controller to
-show "asleep" as distinct from "stopped".
+Nothing in the staging plan: all six steps are built (4.3 to 4.6). What is left
+is the cluster half of step 5's verification, listed in 4.6 under "What has been
+verified, and what has not", and one decision deliberately not taken — whether a
+forgotten browser tab should be allowed to keep a workspace awake (4.6, "Why
+didn't it sleep?").
 
 Two findings from building 4a shaped 4b, both measured in the tree rather than
 assumed, and both are why 4b looks the way it does:
@@ -393,6 +407,8 @@ decision is re-made). Measured on Kubernetes 1.35.1:
 | `helm upgrade` while asleep, pod template changed — Helm 3.21.4 and 4.2.3 | unchanged (the chart omits `replicas`) |
 | admin `kubectl scale` 1 -> 0 or 0 -> 1 (the controller's Stop/Start) | keeper loses it |
 | admin `kubectl scale` 0 -> 0 | unchanged (see the gap below) |
+| the controller's Stop on a sleeping workspace (step 5): *apply* of `replicas: 0` under `kube-coder-controller`, 0 -> 0 | **shared** — `kube-coder-keeper` (Apply, scale) and `kube-coder-controller` (Apply), so stopped |
+| the next Start, `kubectl scale` 0 -> 1 | `kubectl` (Update, scale) only — both earlier owners gone |
 
 Neither a keeper-side copy of the `resourceVersion` nor of the `generation`
 could carry this: status writes move the first seconds after every scale, and a
@@ -405,7 +421,8 @@ can change replicas but not the pod template, so a compromised keeper can stop
 or start its workspace but not run code in it. A NetworkPolicy admits only the
 ingress-nginx namespace, on 8080/8081.
 
-**Putting it to sleep** is by hand until step 5:
+**Putting it to sleep by hand.** Step 5's idle loop does it on its own (4.6);
+an operator can still:
 
 ```
 kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep    # -> asleep
@@ -418,11 +435,15 @@ into "asleep" would let the next visit undo the Stop), and running at all
 unless `keeper.sleep.enabled`, because otherwise the chart still sets
 `replicas` and the next upgrade wakes it.
 
-**Known gap.** A Stop on a workspace that is *already asleep* is 0 -> 0, which
-changes nothing, so the keeper still owns the field and the next visit wakes
-it. The controller cannot do this — it offers Stop only on a running
-workspace — so only a hand-typed `kubectl scale --replicas=0` can. Step 5's
-controller sleeping-vs-stopped view is the place to close it.
+**The `0 -> 0` gap — closed from the controller in step 5.** A Stop on a
+workspace that is *already asleep* is 0 -> 0, and an update that changes nothing
+records nothing, so a hand-typed `kubectl scale --replicas=0` leaves the keeper
+the owner and the next visit wakes it. That is still true by hand. From the
+controller it no longer is: once the console shows a sleeping workspace with a
+Stop button, that Stop is a server-side apply, which records its manager as an
+owner of the field whether or not the value changes. The keeper keeps its share
+— 0 -> 0 is no conflict — but it is no longer the *only* owner, and that is
+stopped (4.6).
 
 #### Running it
 
@@ -812,6 +833,330 @@ a real HTTPS host), and the idle RSS with a buffered body in flight. The
 cron and page-watch half *is* reachable on local minikube, since it goes through
 an in-cluster Service rather than an ingress; the public-webhook half is not.
 
+### 4.6 Sleep — implemented (step 5)
+
+With `keeper.sleep.enabled`, an idle workspace now goes to sleep by itself, and
+the three people who look at it see why. Until this step the queue, the replay,
+the wake cap, the away page and the phone's banner were all machinery around a
+door nobody ever closed; sleep was an operator typing `keeper sleep`.
+
+```
+keeper-<user>                                    ws-<user> (Service, :6080)
+  every 60 s:
+   queue empty?  ── no ──> not this round
+   state awake?  ── no ──> not this round
+   GET /api/keeper/idle?idle_minutes=N ────────>  keeper_idle.py: tasks,
+      X-Keeper-Secret: <shared secret>            Board runs, terminals,
+                       <─────────────────────     code-server, dashboard
+   idle, nothing busy, quiet >= N minutes?
+      no  ──> not this round (and start counting again)
+      yes ──> second time running?  no ──> wait one more round
+                                    yes ──> take the wake lock
+                                             re-check: queue empty, awake
+                                             Sleep(): apply replicas 0 on /scale
+                                             log "scaled 1 -> 0 after … quiet"
+```
+
+**The split of work.** The workspace observes; the keeper decides. Only the
+workspace can see its own tasks, runs and sockets, and `keeper_idle.py` already
+resolves every doubt to "busy" (4.1). The keeper holds the threshold and the
+one write. So the countdown is not a timer in the keeper — it is the
+workspace's `quiet_since` — and a keeper that restarts halfway through one asks
+again and gets the same answer, with nothing to persist.
+
+**Every condition, in the order checked** (cheapest first, so the common "no"
+costs no I/O):
+
+1. the 4b queue is empty — `Len()` counts waiting *and* in-flight entries, and
+   the one forward that has no entry only happens when the queue is already
+   full, so empty also means no delivery is under way;
+2. the Deployment reads `awake` (fresh, never the one-second cache);
+3. the workspace answers `idle: true`, with no busy signal, and with
+   `idle_for_s` at least the keeper's own threshold — the keeper checks the
+   number rather than trusting a verdict made against a shorter one;
+4. that has happened **twice in a row**. Three of the five signals are counts of
+   open sockets at one instant, with no timestamp, so a single sample can miss a
+   tab that is open but between requests. Any other answer, an error included,
+   starts the count again;
+5. then, under the same lock wakes take, the queue and the state are read once
+   more, and `Sleep()` writes with the `resourceVersion` of its own read — so a
+   visit, a webhook or an admin's Stop that lands while the workspace was being
+   asked always wins.
+
+| Decision | Owned by |
+|---|---|
+| when to ask | `IdleLoop` (`keeper/idle.go`) — a ticker, stopped by the same SIGTERM context as the 4b drain loop |
+| whether to sleep this round | `sleepOnce` |
+| what the workspace said | `askIdle` → `idleVerdict.sleepable` |
+| the write, and keeping it apart from wakes | `Server.sleepNow` (`keeper/server.go`), beside `wakeNow` and under the same `wakeMu` |
+| asleep or stopped | `Classify` (`keeper/state.go`), unchanged since step 3 |
+
+**When something goes wrong it stays awake.** Every failure means "not this
+round", and the reason is logged when it changes (and again hourly while it
+does not), so a busy workspace does not write a line a minute:
+
+| What happened | What the keeper does | Log line |
+|---|---|---|
+| the Deployment cannot be read | nothing | `idle: cannot read <ns>/<name>, not sleeping this round: …` |
+| the poll is refused (401/403) | nothing, ever, until fixed | `idle: … refused the keeper's credentials (401); the workspace will never be put to sleep until this is fixed — is keeper.controlSecret the same Secret on both pods?` |
+| the workspace has no idle endpoint (404) | nothing | `idle: … has no /api/keeper/idle (404); this workspace image is older than the keeper's sleep support` |
+| no answer in 10 s, or no connection | nothing | `idle: … did not answer within 10s …` / `cannot reach …` |
+| an answer that is not a verdict | nothing | `idle: … answered something that is not an idle verdict …` |
+| busy, or not quiet for long enough | nothing | `idle: <ns>/<name> is not idle (busy: 1 live task of 12); not sleeping` |
+| someone else wrote in between (409) | nothing; decides again next round | — |
+| an admin stopped it in between | nothing | `idle: <ns>/<name> is stopped by an admin; not sleeping it` |
+| it sleeps | scales to 0 | `idle: <ns>/<name> scaled 1 -> 0 after 47m12s quiet (threshold 30m0s, signals all clear)` |
+
+The secret is never written to the log.
+
+**Sleeping and stopped, in three places.** The rule is step 3's — at 0 replicas,
+the keeper as the *only* owner of `spec.replicas` means asleep, anything else
+means stopped — and step 5 teaches it to the two other places that show a
+workspace:
+
+- **The controller** reads who owns `spec.replicas` only for workspaces already
+  at 0, and caches it per `resourceVersion`, so a steady fleet costs no extra
+  calls. It never asks for `managedFields` on the fleet listing itself: that
+  roughly doubles a payload that has OOM'd the controller before. The console
+  gets a fourth state, **Sleeping**, with its own filter chip and "asleep" on
+  the row; the detail page says asleep rather than stopped. A read
+  that fails shows "stopped" — today's answer, which promises nothing — rather
+  than "sleeping", which would promise that a visit wakes it.
+- **Stop on a sleeping workspace** is the one write that changes. It is already
+  at 0, so `kubectl scale --replicas=0` would record nothing. Instead it is
+  `kubectl apply --server-side --field-manager=kube-coder-controller
+  --force-conflicts` of `{spec: {replicas: 0}}` on the Deployment. The value
+  does not change, so there is no conflict: the controller becomes a *second*
+  owner of `spec.replicas` and the keeper keeps its share. A field the keeper
+  does not own alone is one it calls stopped, so no visit wakes it.
+  `--force-conflicts` only matters if a visit woke the workspace between the
+  console's read and the Stop; then the controller takes the field and the
+  workspace goes to 0. The next Start is a `kubectl scale` again, an update,
+  and clears both owners. Every other Start and Stop is still `kubectl scale`,
+  so the controller owns `replicas` only from that one Stop to the next Start,
+  never as a standing owner that a later Helm 4 upgrade would conflict with.
+- **The phone** shows *Sleeping* on its Controller screen, and its banner learns
+  *stopped* — from the controller, or from the keeper refusing a wake (409). A
+  stopped workspace gets no Wake button: a phone with a controller connection is
+  offered **Start**, one without is told to ask an admin. An older controller
+  calls every workspace at 0 "stopped", so the phone believes "stopped" only
+  on a row marked `sleepAware: true`, which every row from a step-5 controller
+  is.
+
+**There is no "asleep since".** #728 §5 asked for `asleep_since` in the
+keeper's status, and the plan was to read it from the `time` on the keeper's
+`managedFields` entry. On a real cluster that entry has no `time`: the keeper
+writes through the scale subresource, and the API server builds that entry
+from the Deployment's own entries, copying times only from ones that already
+had them. A record of the keeper's own would be a second source of truth
+(§2.1), so the status JSON stays `{"state": "asleep"}` and nothing shows how
+long a workspace has been asleep. The away page says "It goes to sleep after
+30 minutes with nobody using it." when the reason for a wake is a plain visit.
+
+#### Running it
+
+```yaml
+keeper:
+  enabled: true
+  image: ghcr.io/imran31415/kube-coder/keeper:<version>@sha256:<digest>
+  sleep:
+    enabled: true
+    idleMinutes: 30
+```
+
+Keep `idleMinutes` comfortably longer than the most frequent schedule. A
+workspace that sleeps between every run of a 5-minute cron needs a wake for each
+run, and `maxWakesPerHour` caps those: past the cap the runs queue and fire
+late. The keeper's first lines say the loop is on:
+
+```
+keeper <version>: looking after ws-alice/ws-alice; page :8080, wake :8081, app and webhooks :8082, control :8083; sleeps after 30 idle minutes
+idle: ws-alice/ws-alice sleeps after 30m0s with nobody using it; asking http://ws-alice.ws-alice.svc.cluster.local:6080 every 1m0s
+```
+
+**Why didn't it sleep?** Ask the workspace the keeper's question yourself; the
+answer names every signal and what it saw:
+
+```bash
+kubectl -n <ns> exec deploy/ws-<user> -c ide -- sh -c \
+  'curl -s -H "X-Keeper-Secret: $KEEPER_CONTROL_SECRET" "localhost:6080/api/keeper/idle?idle_minutes=30"' \
+  | python3 -m json.tool
+```
+
+| What you see | Why | What to do |
+|---|---|---|
+| `busy_signals: ["dashboard"]` with nobody using it | an open browser tab somewhere — a laptop closed with the dashboard open keeps its connection until TCP gives up, which can be hours | close the tab. This is deliberate: an open tab is the "session" #728 says must never be slept under |
+| `busy_signals: ["terminals"]` or `["code_server"]` | an open terminal or editor tab, or an SSH session | the same |
+| `busy_signals: ["tasks"]` | a Build is running, **or waiting for an answer** — a Build parked on a question is a person's turn, not idle. A **finished** Build reads the same: Claude stays open in its terminal after it answers | answer it, or delete the Build once it is done |
+| `idle: false`, nothing busy, `reason: "quiet for 300s, needs 1800s"` | not quiet for long enough yet | wait |
+| `watching_since` a few minutes ago | the workspace restarted, and it cannot vouch for quiet from before it started | a workspace that restarts more often than `idleMinutes` never sleeps — find out why it restarts |
+| the keeper logs `refused the keeper's credentials` | the two pods hold different secrets (a pinned `keeper.controlSecret.value` on one release, a generated one on the other) | make both read the same Secret, then restart both pods |
+| the keeper logs nothing about `idle:` at all | `keeper.sleep.enabled` is off | turn it on |
+| the queue holds requests (`proxy: N request(s) waiting`) | a webhook or cron is waiting to be replayed | it sleeps once they are delivered |
+
+**Why did it sleep?** The keeper's log has one line per sleep, with how long it
+had been quiet and the threshold it used: `idle: <ns>/<name> scaled 1 -> 0
+after 47m12s quiet (threshold 30m0s, signals all clear)`. Sleep is as forceful as
+Stop — anything still running is killed — which is why every doubt counts as
+busy and why it takes two answers.
+
+**What 5 does not change**, measured by rendering the whole chart from both
+branches: with `keeper.enabled=false`, and with the keeper on but
+`keeper.sleep.enabled=false`, the output is byte-identical to step 4b in both
+`basic` and `oauth2` mode. With sleep on it differs by exactly two things: the
+`KEEPER_IDLE_MINUTES` env var and the away page's one sentence.
+
+#### What has been verified, and what has not
+
+Stated as plainly as §4.5 does.
+
+**Verified locally**, on this step rebased onto `main` (v1.72.1), in a clean
+Linux checkout (WSL, Go 1.27.3 as CI pins it, Python 3.14): every job in
+`ci.yml` except the image build and the security scan. 141 Go tests, 19 of them
+new in `idle_test.go`, with `gofmt`, `vet`, `-race` and `govulncheck` clean; 299
+`helm unittest` cases across 30 suites for the workspace chart and 76 across 8
+for the controller, and `helm lint` and `helm template` clean in every mode CI
+renders; 4,373 workspace Python tests, 8 of them new for the poll's credential,
+and 132 controller tests, 13 of them new for sleeping versus stopped; 1,181
+dashboard, 40 console and 273 phone tests, with both SPA builds and the phone's
+`tsc` clean and `expo-doctor` 21 of 21; and the shell tests, 22 of 22. The whole
+chart rendered with `keeper.enabled=false`, and again with the keeper on but
+sleep off, was diffed against `main`'s in basic and oauth2 mode, with the
+control secret pinned because `helm template` generates a new one each time:
+byte-identical all four times.
+
+**Shown capable of failing.** Thirty-six deliberate breaks were applied to the
+source, one at a time, each reverted byte-for-byte afterwards, and each turned
+its named test red:
+
+- the decision — sleeping on `idle: false`, trusting the workspace's threshold
+  over the keeper's, ignoring `keeper.sleep.enabled`, sleeping with the queue
+  non-empty or the workspace not awake, sleeping on one idle answer, and keeping
+  the count across a non-idle one;
+- the poll — reading a failed, refused or malformed answer as idle, sending the
+  secret as a bearer, logging it, and logging every round instead of every
+  change;
+- the write — dropping either re-check under the lock, re-checking from the
+  one-second cache, sleeping without the wake lock, dropping the
+  `resourceVersion` precondition, and calling shared ownership asleep;
+- the workspace — accepting the secret inside `check_claude_auth`, accepting it
+  as a bearer on the idle route, and letting an empty secret match an empty
+  header;
+- the controller — a Stop without `--force-conflicts`, an apply on every Start
+  and Stop, managed fields on the fleet listing, an unreadable owner or shared
+  ownership shown as sleeping, re-reading ownership on every poll, counting
+  sleeping as running, asking the old Stop question, and not marking its rows
+  `sleepAware`;
+- the phone — ignoring the controller's `stopped`, believing an older
+  controller's, offering a wake with no controller, missing the keeper's 409,
+  and letting the away answer turn stopped back into asleep.
+
+One of those found a gap in the code rather than the test: "sleep only with
+`keeper.sleep.enabled`" lived only in `serve()`, where no test could reach it,
+so the check now sits in `sleepOnce` too and the decision table pins it. One
+break was not attempted: comparing the secret with `==` instead of
+`compare_digest` agrees with it on every input and differs only in timing —
+step 4b found exactly that for `hmac.Equal` — so a green suite would prove
+nothing, and it is left to review.
+
+**Verified on a real cluster.** minikube with Kubernetes 1.35.1 on Docker
+Desktop, Calico enforcing NetworkPolicy, ingress-nginx, Helm 3.21.4 and 4.2.3,
+`idleMinutes: 1`. The controller ran on the PC as its own ServiceAccount, so
+every Start and Stop went through the RBAC the chart grants. Every leg ran
+twice: first on a slim test image with this branch's code and the same pinned
+ttyd 1.7.7 and code-server 4.137.0, then on `devlaptop/Dockerfile` itself, built
+from this branch (8.78 GB, Ubuntu 24.04, Python 3.12.3, with the noVNC desktop
+the slim image lacks). The numbers below are the real image's.
+
+- **Nothing pins an idle workspace awake.** With nothing open, every signal
+  went quiet by itself and the keeper slept it after 2m23s of quiet. Nothing —
+  ingress-nginx's keep-alive and the image's desktop stack included — held a
+  connection open.
+- **Each session keeps it awake, then lets go.** An open terminal, code-server
+  or dashboard tab, in a real browser, kept its signal busy for four minutes;
+  each cleared within 1 s of the tab closing, and the workspace slept 109–120 s
+  later. `start.sh` never restarted code-server — on the slim image, which has
+  no `netstat`, its port check restarted it every 30 s.
+- **The countdown is the workspace's.** A keeper killed mid-countdown was
+  replaced, and the new one slept it once, after two of its own polls. A
+  restarted workspace did not sleep within 60 s of being ready.
+- **Upgrades.** `helm upgrade` while asleep, Helm 3.21.4 then 4.2.3: still
+  asleep, no pod, the keeper still the owner, and a visit still woke it.
+- **The poll's credential, in `oauth2` mode** behind a real oauth2-proxy and
+  GitHub OAuth App: 29 of 29. The secret opens `/api/keeper/idle` and nothing
+  else — `/api/claude/tasks` (GET and POST), `/api/files/list`, `/api/feed` and
+  `/metrics` refuse it as a header and as a bearer. A wrong, empty or
+  one-character-short secret is refused, the real API token still works, and
+  the keeper's own poll put the workspace to sleep. With the two pods holding
+  different secrets, 8 of 8: it stayed awake for four minutes, logged the
+  refusal once — with the "same Secret on both pods?" sentence, without the
+  secret — and slept once both pods agreed.
+- **Sleeping and stopped, from the controller:** 30 of 30. The keeper's
+  status is `{"state":"asleep"}` and the console row is Sleeping. Stop leaves
+  `spec.replicas` shared (the table in 4.3), the keeper says stopped, a visit
+  is answered "stopped" and starts nothing, `keeper sleep` refuses it, and
+  nothing scales it for two idle rounds. Start leaves `kubectl` the only owner;
+  the keeper sleeps it again by itself and owns the field alone; and Stop on an
+  awake workspace is still a plain `kubectl scale`.
+- **A Build and a Board run keep it awake, with a real agent.** Claude Code
+  2.1.233 on a real Claude Pro login, signed in through the dashboard's own
+  Connect Claude flow. A Build running a five-minute shell command kept `tasks`
+  busy throughout, and the keeper, up for 511 s of it, never slept it. A Board
+  run in `propose` mode worked two issues of a real GitHub repo, one at a time,
+  and kept `board_runs` and `tasks` busy for the 19.5 minutes it was live: no
+  sleep, both issues done, both of the agents' comments staged for review and
+  none posted — the issues' comment counts did not change.
+- **A finished Build holds it awake until it is deleted.** Claude stays open in
+  the Build's terminal after it answers, so the Build reads `waiting-for-input`,
+  which counts as live. The workspace stayed awake for seven minutes after the
+  Build answered and six after the Board run ended; deleting the Builds let it
+  sleep 128 s and 169 s later. Every Build runs the interactive CLI, the ones a
+  webhook or cron starts included (`assistant_command`), so this holds for them
+  too — that part is read from the code, not measured.
+- **The fail-safe, unprompted.** On a node short of CPU, the workspace twice
+  took longer than 10 s to answer and the API server once timed out the
+  keeper's read. Each time the keeper logged it — `did not answer within 10s`,
+  `cannot read …` — and stayed awake.
+- **Cost.** The keeper used 9 MiB with the loop running. The workspace used
+  599 MiB with nothing open and about 1.1 GiB with two Claude agents open, and a
+  visit had it Ready 38 s after waking it. One workspace Deployment is 14,072
+  bytes as listed and 37,569 with managed fields — 2.7 times — which is why the
+  fleet listing never asks for them.
+
+How the agent legs were driven, because two things outside step 5 got in the
+way. On a 2-CPU node, Calico, the API server and the workspace held it at 199%
+and Claude took minutes to start, so the node was raised to 6 CPUs and the
+workspace given the chart's default 2 cores. And on the 2-CPU node every
+Build's prompt was pasted into Claude's input but never submitted — all four
+recorded `prompt_delivered: false`: `_deliver_prompt` gives the paste 0.4 s to
+appear, a cold Claude took longer, and after three pastes it gave up without
+pressing Enter. The first Board run lost both issues to it — the run counts a
+quiet screen as finished, and marked them failed without any work. At 6 CPUs
+the server recorded both Board Builds as delivered, yet the prompt was still in
+Claude's input 25 s after launch. In the runs above, Enter was pressed once per
+Build through the dashboard's own key API, as someone watching would, and each
+press is in the run's log.
+
+**What the cluster changed.** Two things, both found by measuring. There is no
+`asleep_since` (above): the keeper's entry has no time to read. And the Stop on
+a sleeping workspace *shares* `spec.replicas` rather than taking it — the code
+was already right, because `Classify` calls shared ownership stopped, but its
+comments and this section said "takes", and the first run's check for the
+controller as the only owner failed. The first legs ran on a build that still
+carried `asleep_since`; the run on the real image used the final keeper for
+every leg.
+
+**Not verified:**
+
+- a queued webhook holding it awake (the queue guard) — unit tests only;
+- the races: a visit at the instant of the sleep write, many visits during a
+  sleep, and a Stop landing just after a visit woke it — the one case
+  `--force-conflicts` is there for;
+- the NetworkPolicy probes: the keeper reaching `ws-<user>:6080` and nothing
+  else, and another user's keeper denied;
+- turning sleep off while asleep (4.3's Helm 4 conflict), not repeated here;
+- the fleet listing at size, and the phone at 390 px.
+
 ---
 
 ## 5. Staging plan
@@ -826,7 +1171,7 @@ the two PRs that carry real risk come after the cheap ones.
 | 3 | **The keeper itself** — replaces `holding-<user>`, a logged-in visit wakes a workspace it put to sleep, `keeper sleep`, RBAC, Deployment, image, CI job, release image (§4.3). No queue, no proxying, no idle loop. `keeper.enabled=false` renders byte-identical to before. | 2 (done) |
 | 4a | **Trigger-ID and token-hash push** from `server.py`; the phone's `status`/`wake` on its own bearer ingress, and the `workspace_sleeping` JSON on the error path (§4.4). The app's Wake button starts working. No proxying, no queue. `keeper.enabled=false` still renders byte-identical. | 3 (done) |
 | 4b | **The webhook and cron front door** — pass-through while awake; queue, wake and replay while asleep; the per-provider queue TTL; the wake limit; CronJob re-apply on URL change (§4.5). Wakes now work for webhooks and crons too. | 4a (done) |
-| 5 | **Sleep** — the idle loop, `sleep.enabled=false` by default, controller sleeping-vs-stopped (which also closes §4.3's 0 -> 0 gap). The sleep record of §2.1 is the `managedFields` ownership step 3 already uses. The rate limiter moved to 4b, where the first unattended caller arrives. | 4b |
+| 5 | **Sleep** — the idle loop, `sleep.enabled=false` by default, controller sleeping-vs-stopped (which also closes §4.3's 0 -> 0 gap from the controller), the phone's stopped banner (§4.6). The sleep record of §2.1 is the `managedFields` ownership step 3 already uses. The rate limiter moved to 4b, where the first unattended caller arrives. | 4b (done) |
 | 6 | **Mobile** — `workspaceState`, `WakeBanner`, the sleeping-503 JSON in `client.ts`, approval-queue flush, push-tap deferral, demo mode. Independent of 5's default. | done (#778); its keeper path went live with step 4a |
 
 PR 6 is the whole second half of #728 and is a workstream in its own right: 13

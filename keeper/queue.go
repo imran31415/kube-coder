@@ -588,8 +588,12 @@ func (q *Queue) ExpireOlderThan(now time.Time) int {
 
 // Len is how many requests are waiting or in flight. Counted in memory, since
 // this process is the only writer, so the drain loop can ask constantly without
-// touching the disk.
+// touching the disk. A nil queue — a keeper with no state volume — holds
+// nothing, which is what the idle loop needs to hear.
 func (q *Queue) Len() int {
+	if q == nil {
+		return 0
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.count

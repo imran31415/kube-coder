@@ -76,18 +76,19 @@ class EndpointTestCase(unittest.TestCase):
         cls.httpd.server_close()
         server.AUTH_MODE = cls._auth_mode_save
 
-    def request(self, path, method='GET', body=None):
+    def request(self, path, method='GET', body=None, headers=None):
         """Return `(status, body)` whether or not the response was an error."""
         req = urllib.request.Request(
-            f'http://127.0.0.1:{self.port}{path}', data=body, method=method)
+            f'http://127.0.0.1:{self.port}{path}', data=body, method=method,
+            headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
 
-    def get(self, path):
-        return self.request(path)
+    def get(self, path, headers=None):
+        return self.request(path, headers=headers)
 
     def post(self, path, body=b''):
         return self.request(path, method='POST', body=body)

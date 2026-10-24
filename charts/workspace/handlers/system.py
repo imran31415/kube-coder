@@ -26,13 +26,43 @@ exists instead of an `import server`.
 
 import html
 import json
+import os
 import re
+import secrets
 import sys
 import time
 
 import handlers
 import keeper_idle
 from handlers.routing import RouteTable
+
+#: The header the keeper proves itself with on GET /api/keeper/idle (#728
+#: step 5). Its own name, never `Authorization: Bearer`, so the keeper's shared
+#: secret can never be mistaken for — or accepted as — a workspace API token.
+KEEPER_SECRET_HEADER = 'X-Keeper-Secret'
+
+
+def _keeper_secret_ok(headers):
+    """True when `headers` carry the keeper's shared secret (#728 step 5).
+
+    Since step 4a the keeper holds only the SHA-256 of the workspace's API
+    token, which cannot authenticate anything, so it proves itself on the idle
+    poll with the secret it already shares with this pod for its control
+    port (`KEEPER_CONTROL_SECRET`, from Secret `keeper-<user>-control`).
+
+    Accepted on that one route only, and deliberately NOT inside
+    `check_claude_auth`: that helper gates the whole API, so teaching it this
+    secret would turn "may ask whether you are busy" into "may create tasks".
+    An unset or empty secret refuses everything — a missing Secret must close
+    this door, never open it. Compared as bytes, so a header that is not ASCII
+    is a mismatch rather than a TypeError from `compare_digest`.
+    """
+    expected = (os.environ.get('KEEPER_CONTROL_SECRET') or '').strip()
+    provided = (headers.get(KEEPER_SECRET_HEADER) or '').strip()
+    if not expected or not provided:
+        return False
+    return secrets.compare_digest(provided.encode('utf-8'),
+                                  expected.encode('utf-8'))
 
 
 class SystemRoutes:
@@ -206,11 +236,14 @@ class SystemRoutes:
 
         Strictly auth-gated (allow_none_mode=False): it reports whether a human
         is currently at the keyboard, and answering that unauthenticated on a
-        public demo would be an activity side-channel. It is also a WAKE
-        DECISION input, so the keeper authenticates with the Claude Task API
-        token like any other bearer caller.
+        public demo would be an activity side-channel. It is also the SLEEP
+        decision's input. Two credentials open it: the keeper's shared secret
+        in `X-Keeper-Secret` (step 5 — see `_keeper_secret_ok`), and anything
+        `check_claude_auth` accepts, so a person holding the API token can
+        still ask the same question the keeper does.
         """
-        if not self.check_claude_auth(allow_none_mode=False):
+        if not (_keeper_secret_ok(self.headers)
+                or self.check_claude_auth(allow_none_mode=False)):
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         srv = handlers.server

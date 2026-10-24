@@ -48,9 +48,12 @@ export function reportAwake(): void {
 
 /** A request found the workspace away. A wake already in flight keeps its
  *  label: failures are expected until the pod is Ready. "Asleep" is more
- *  specific than "unreachable", so an unexplained failure never downgrades it. */
+ *  specific than "unreachable", so an unexplained failure never downgrades it.
+ *  "Stopped" is more specific still and comes only from a source that knows
+ *  (the controller, or the keeper refusing a wake). The keeper's away answer
+ *  is the same for asleep and stopped, so it cannot contradict it. */
 export function reportDown(code: DownCode): void {
-  if (state.reach === 'waking') return;
+  if (state.reach === 'waking' || state.reach === 'stopped') return;
   if (code === SLEEPING) set('asleep');
   else if (state.reach === 'awake') set('unreachable');
 }

@@ -22,6 +22,9 @@ vi.mock('./api/workspaces', async (orig) => ({
     stopped.push(user);
     return Promise.resolve({ ok: true as const, user, desiredReplicas: 0 });
   },
+  // No metrics in tests: the detail page then falls back to the controller's
+  // own state, which is the path that has to tell sleeping from stopped.
+  getWorkspaceMetrics: () => Promise.reject(new Error('no metrics in tests')),
 }));
 vi.mock('./api/provision', async (orig) => ({
   ...(await orig<typeof import('./api/provision')>()),
@@ -49,11 +52,11 @@ const ws = (user: string, state: WorkspaceState, over: Partial<Workspace> = {}):
   namespace: `ws-${user}`,
   isolated: true,
   state,
-  desiredReplicas: state === 'stopped' ? 0 : 1,
+  desiredReplicas: state === 'stopped' || state === 'sleeping' ? 0 : 1,
   readyReplicas: state === 'running' ? 1 : 0,
   url: null,
   pods: [],
-  detail: state === 'stopped' ? 'scaled to 0' : '1/1 ready',
+  detail: state === 'stopped' ? 'scaled to 0' : state === 'sleeping' ? 'asleep' : '1/1 ready',
   image: null,
   imageTag: null,
   version: 'v1.5.0',
@@ -182,3 +185,108 @@ describe('WorkspaceList state filter (#547)', () => {
     expect(screen.queryByRole('button', { name: /Show all/ })).not.toBeInTheDocument();
   });
 });
+
+describe('Sleeping workspaces (#728 step 5)', () => {
+  const asked: string[] = [];
+  let answer = true;
+  const realConfirm = window.confirm;
+
+  beforeEach(() => {
+    location.hash = '#/';
+    route.value = '/';
+    rows = [
+      ws('alice', 'running'),
+      ws('gus', 'sleeping'),
+      ws('bob', 'stopped'),
+    ];
+    workspaces.value = rows;
+    loaded.value = true;
+    error.value = null;
+    started.length = 0;
+    stopped.length = 0;
+    asked.length = 0;
+    answer = true;
+    window.confirm = (message?: string) => {
+      asked.push(message ?? '');
+      return answer;
+    };
+    return () => {
+      window.confirm = realConfirm;
+    };
+  });
+
+  it('gets a chip of its own, counted as neither running nor stopped', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+
+    expect(chip('Running (1)')).toHaveAttribute('aria-pressed', 'true');
+    expect(chip('Sleeping (1)')).toHaveAttribute('aria-pressed', 'false');
+    expect(chip('Stopped (1)')).toBeInTheDocument();
+    expect(chip('All (3)')).toBeInTheDocument();
+    // Resting costs nothing, so the default "what is running" view leaves it out.
+    expect(screen.queryByText('gus')).not.toBeInTheDocument();
+  });
+
+  it('says it is asleep, and offers Stop rather than Start', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+    fireEvent.click(chip('Sleeping (1)'));
+
+    const row = rowFor('gus');
+    expect(within(row).getByText('sleeping')).toHaveClass('pill', 'pill-sleeping');
+    expect(within(row).getByText(/ws-gus · asleep/)).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: 'Stop' })).toHaveAttribute(
+      'title',
+      'Stop workspace — a visit will no longer wake it',
+    );
+    expect(within(row).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument();
+  });
+
+  it('Stop says what it changes for a sleeping workspace, then stops it', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+    fireEvent.click(chip('Sleeping (1)'));
+
+    fireEvent.click(within(rowFor('gus')).getByRole('button', { name: 'Stop' }));
+
+    await waitFor(() => expect(stopped).toEqual(['gus']));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('It is asleep now, so a visit would wake it.');
+    expect(asked[0]).toContain('stays off until someone starts it here');
+    expect(asked[0]).not.toContain('compute freed'); // there is no pod to free
+  });
+
+  it('declining the question stops nothing', async () => {
+    answer = false;
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+    fireEvent.click(chip('Sleeping (1)'));
+
+    fireEvent.click(within(rowFor('gus')).getByRole('button', { name: 'Stop' }));
+
+    expect(asked).toHaveLength(1);
+    expect(stopped).toEqual([]);
+  });
+
+  it('a running workspace keeps the old question', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+
+    fireEvent.click(within(rowFor('alice')).getByRole('button', { name: 'Stop' }));
+
+    await waitFor(() => expect(stopped).toEqual(['alice']));
+    expect(asked[0]).toContain('compute freed');
+  });
+
+  it('the detail page says asleep, not stopped and not running', async () => {
+    location.hash = '#/w/gus';
+    route.value = '/w/gus';
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/ws-gus · asleep/)).toBeInTheDocument());
+    expect(screen.queryByText(/· stopped/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/· running/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+  });
+});
+

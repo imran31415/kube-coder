@@ -50,6 +50,11 @@ type Deployment struct {
 }
 
 // ManagedField is one managedFields entry: who last wrote which fields.
+//
+// Not when: an entry's `time` cannot say when the keeper put a workspace to
+// sleep. The keeper writes through the scale subresource, and the API server
+// builds that entry from the Deployment's own entries, so it carries no time
+// of its own — measured on a real cluster for #728 step 5.
 type ManagedField struct {
 	Manager     string          `json:"manager"`
 	Operation   string          `json:"operation"`

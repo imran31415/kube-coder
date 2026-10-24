@@ -12,6 +12,7 @@ import {
   NO_WAKE_PATH,
   SLEEPING,
   UNREACHABLE,
+  bannerAction,
   classifyDown,
   isDownError,
   matchWorkspace,
@@ -109,6 +110,43 @@ describe('reachFromController', () => {
     expect(reachFromController(ws({ desiredReplicas: 1, readyReplicas: 0 }))).toBe('waking');
     expect(reachFromController(ws({}))).toBe('awake');
   });
+
+  // #728 step 5: the controller tells sleeping from stopped.
+  it('a workspace an admin stopped is stopped, not asleep', () => {
+    const stopped = ws({ state: 'stopped', desiredReplicas: 0, readyReplicas: 0, sleepAware: true });
+    expect(reachFromController(stopped)).toBe('stopped');
+  });
+
+  it('a workspace its keeper put to sleep is still asleep', () => {
+    const sleeping = ws({ state: 'sleeping', desiredReplicas: 0, readyReplicas: 0, sleepAware: true });
+    expect(reachFromController(sleeping)).toBe('asleep');
+  });
+
+  it("does not believe an older controller's stopped, which it says of every workspace at 0", () => {
+    // No sleepAware at all: a controller from before step 5. Calling this
+    // stopped would take the Wake button off a workspace a tap might wake.
+    const old = ws({ state: 'stopped', desiredReplicas: 0, readyReplicas: 0 });
+    expect('sleepAware' in old).toBe(false);
+    expect(reachFromController(old)).toBe('asleep');
+  });
+});
+
+describe('bannerAction', () => {
+  it('offers a wake while it is asleep or cannot be reached', () => {
+    expect(bannerAction('asleep', false)).toBe('wake');
+    expect(bannerAction('unreachable', false)).toBe('wake');
+    expect(bannerAction('asleep', true)).toBe('wake');
+  });
+
+  it("offers the controller's Start for a stopped workspace, and nothing without one", () => {
+    expect(bannerAction('stopped', true)).toBe('start');
+    expect(bannerAction('stopped', false)).toBeNull();
+  });
+
+  it('offers nothing while it is waking or awake', () => {
+    expect(bannerAction('waking', true)).toBeNull();
+    expect(bannerAction('awake', true)).toBeNull();
+  });
 });
 
 describe('wakeWorkspace', () => {
@@ -141,6 +179,31 @@ describe('wakeWorkspace', () => {
     const d = deps({ controller: { list: async () => [], start: vi.fn(async () => {}) } });
     expect((await wakeWorkspace(d)).ok).toBe(false);
     expect(d.controller?.start).not.toHaveBeenCalled();
+  });
+
+  it("marks the keeper's refusal for a stopped workspace, so the banner stops offering a wake", async () => {
+    const refusal = Object.assign(
+      new Error('Your workspace is stopped, not asleep. Start it from the dashboard or your controller.'),
+      { status: 409 },
+    );
+    const d = deps({
+      viaKeeper: async () => {
+        throw refusal;
+      },
+    });
+    expect(await wakeWorkspace(d)).toEqual({ ok: false, message: refusal.message, stopped: true });
+    // Refused by the keeper is final for this tap: nothing goes to the controller.
+    expect(d.controller?.start).not.toHaveBeenCalled();
+  });
+
+  it('any other refusal is just a message', async () => {
+    const forbidden = Object.assign(new Error("This app isn't allowed to wake this workspace."), { status: 403 });
+    const d = deps({
+      viaKeeper: async () => {
+        throw forbidden;
+      },
+    });
+    expect(await wakeWorkspace(d)).toEqual({ ok: false, message: forbidden.message });
   });
 
   it('turns a failure into a message instead of throwing', async () => {

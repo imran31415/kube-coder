@@ -1,6 +1,11 @@
 import { apiGet, apiPost } from './client';
 
-export type WorkspaceState = 'running' | 'stopped' | 'transitioning' | 'degraded';
+/**
+ * `sleeping` is a workspace its always-on keeper scaled to 0 because nobody was
+ * using it; a visit wakes it. `stopped` is one an admin scaled to 0; it stays
+ * off until someone starts it (#728).
+ */
+export type WorkspaceState = 'running' | 'sleeping' | 'stopped' | 'transitioning' | 'degraded';
 
 export interface PodSummary {
   name: string;

@@ -181,7 +181,13 @@ keeper:
   maxWakesPerHour: 10
   sleep:
     # Let the keeper scale this workspace to 0 when idle. Requires
-    # keeper.enabled. Until step 5's idle loop lands, sleep is by hand:
+    # keeper.enabled. The keeper asks the workspace every minute whether
+    # anything is going on — a task, a Board run, a terminal, an editor tab, a
+    # dashboard tab — and after two quiet answers in a row, once nothing has
+    # happened for idleMinutes, it scales the workspace to 0. A visit, the
+    # app's Wake button, a webhook or a schedule wakes it again. Sleep is as
+    # forceful as the controller's Stop: anything still running is killed,
+    # which is why every doubt counts as busy. By hand, any time:
     #   kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
     # Turning it on removes `replicas` from the workspace
     # Deployment so `helm upgrade` / GitOps reconciles stop waking a sleeping
@@ -194,7 +200,13 @@ keeper:
     # sets replicas to 1.
     enabled: false
     # Minutes every activity signal must stay quiet before the workspace counts
-    # as idle. Exported as KC_KEEPER_IDLE_MINUTES (keeper_idle.py).
+    # as idle. Exported as KC_KEEPER_IDLE_MINUTES (keeper_idle.py) and, with
+    # sleep on, as KEEPER_IDLE_MINUTES to the keeper.
+    #
+    # Keep it comfortably longer than your most frequent schedule. A workspace
+    # that sleeps between every run of a 5-minute cron needs a wake for each
+    # run, and maxWakesPerHour above caps those: past the cap the runs queue
+    # and fire late rather than on time.
     idleMinutes: 30
 
 # OAuth2 (GitHub) settings — only used when ingress.auth.type=oauth2.

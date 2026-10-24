@@ -175,14 +175,16 @@ def _kubectl_json(args, _attempts=2, namespace=None):
     raise last
 
 
-def _kubectl_run(args, namespace=None):
+def _kubectl_run(args, namespace=None, input=None):
     """Run a mutating kubectl command; raise KubectlError on failure.
 
     `namespace=None` targets the controller's own namespace; per-workspace
-    mutations (scale/patch) pass the workspace's resolved namespace (#103)."""
+    mutations (scale/patch) pass the workspace's resolved namespace (#103).
+    `input` is fed to stdin, for an `apply -f -`."""
     cmd = ['kubectl', *args, '-n', namespace or NAMESPACE]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT,
+                              input=input)
     except FileNotFoundError:
         raise KubectlError('kubectl not found on PATH')
     except subprocess.TimeoutExpired:
@@ -194,16 +196,32 @@ def _kubectl_run(args, namespace=None):
 
 # --- Workspace listing -------------------------------------------------------
 
-def _classify(desired, ready, obs_gen, gen, conditions=None):
+#: The always-on keeper's field manager (keeper/kube.go `FieldManager`). A
+#: workspace at 0 replicas whose spec.replicas this manager alone owns was put
+#: to sleep by its keeper and wakes on a visit; anything else at 0 is stopped
+#: and stays stopped (#728, docs/always-on-keeper.md §4.3). The keeper decides
+#: by the same rule (keeper/state.go `keeperOwnsReplicas`), so the console and
+#: the keeper cannot disagree about which is which.
+KEEPER_FIELD_MANAGER = 'kube-coder-keeper'
+#: The controller's own field manager, for the one write that has to be
+#: recorded as the controller's: Stop on a sleeping workspace.
+FIELD_MANAGER = 'kube-coder-controller'
+
+
+def _classify(desired, ready, obs_gen, gen, conditions=None, sleeping=False):
     """Map a Deployment's replica/generation/condition facts to a UI state.
 
     Pods-free by design: coarse state (running/stopped/transitioning/degraded)
     comes from `.status` alone, so the fleet listing needs no per-pod query. A
     wedged rollout — image pull failing or the container crash-looping past the
     progress deadline — surfaces as a `Progressing=ProgressDeadlineExceeded`
-    Deployment condition, which is our 'degraded' signal without reading pods."""
+    Deployment condition, which is our 'degraded' signal without reading pods.
+
+    `sleeping` says the keeper owns spec.replicas (see _replicas_owners): the
+    one fact `.status` cannot carry, and the difference between "costs nothing
+    and comes back on a visit" and "off until somebody starts it"."""
     if desired == 0:
-        return 'stopped'
+        return 'sleeping' if sleeping else 'stopped'
     if obs_gen < gen:
         return 'transitioning'        # spec edited; controller hasn't caught up
     if ready >= desired:
@@ -263,6 +281,62 @@ def _collect(resource):
     return items
 
 
+def _desired(dep):
+    """spec.replicas, with the API server's default of 1 for an absent field."""
+    return dep.get('spec', {}).get('replicas', 1)
+
+
+def _replicas_owners(managed_fields):
+    """Every field manager whose fieldsV1 in a Deployment's managedFields
+    includes spec.replicas. Pure, so the parsing is pinned by tests against the
+    shape the API server returns.
+
+    Not when: the keeper writes through the scale subresource, and the API
+    server gives such an entry no time of its own (measured, #728 step 5), so
+    there is no "asleep since" to read here."""
+    owners = []
+    for entry in managed_fields or []:
+        fields = entry.get('fieldsV1') if isinstance(entry, dict) else None
+        spec = fields.get('f:spec') if isinstance(fields, dict) else None
+        if isinstance(spec, dict) and 'f:replicas' in spec:
+            owners.append(entry.get('manager', ''))
+    return owners
+
+
+# Who owns spec.replicas only changes with a write to the Deployment, and every
+# write moves its resourceVersion. So a workspace at 0 has its ownership read
+# once per change rather than once per console poll — which matters because
+# kubectl leaves managedFields out of the fleet listing, and asking for them
+# there would roughly double a payload that has OOM'd this pod before.
+_owners_cache = {}          # (namespace, name) -> (resourceVersion, owners)
+_owners_lock = threading.Lock()
+
+
+def _owners_for(dep):
+    """`_replicas_owners` for one Deployment at 0 replicas, or None when it
+    cannot be read — which shows as 'stopped', today's answer, rather than as
+    a 'sleeping' that would promise a visit wakes it."""
+    meta = dep.get('metadata', {})
+    key = (meta.get('namespace') or NAMESPACE, meta.get('name', ''))
+    rv = meta.get('resourceVersion')
+    with _owners_lock:
+        hit = _owners_cache.get(key)
+    if hit is not None and rv and hit[0] == rv:
+        return hit[1]
+    try:
+        full = _kubectl_json(['get', 'deployment', key[1], '--show-managed-fields'],
+                             namespace=key[0])
+    except KubectlError as exc:
+        print(f'[controller] cannot read who stopped {key[0]}/{key[1]}, so it shows '
+              f'as stopped: {exc} {exc.stderr}'.rstrip(), file=sys.stderr)
+        return None
+    full_meta = full.get('metadata', {})
+    result = _replicas_owners(full_meta.get('managedFields'))
+    with _owners_lock:
+        _owners_cache[key] = (full_meta.get('resourceVersion') or rv, result)
+    return result
+
+
 def _workspace_url(user):
     """The workspace's public URL, derived from WORKSPACE_DOMAIN — no ingress
     read. New workspaces are always served at <user>.<domain> (wildcard DNS),
@@ -270,7 +344,7 @@ def _workspace_url(user):
     return f'https://{user}.{WORKSPACE_DOMAIN}/' if WORKSPACE_DOMAIN else None
 
 
-def _ws_item(dep):
+def _ws_item(dep, owners=None):
     """Build one workspace listing entry from its Deployment ALONE — no per-pod
     or per-ingress query. State comes from `.status`; the URL is derived from
     WORKSPACE_DOMAIN. Shared by list_workspaces() and find_workspace() so the
@@ -279,18 +353,26 @@ def _ws_item(dep):
     The old version joined all-namespace pod + ingress reads here, which made
     the listing ~46 kubectl calls and stacked enough all-namespace pod JSON in
     memory to OOM the pod under the console's 5s poll. The Deployment's own
-    status carries everything the list view renders."""
+    status carries everything the list view renders — except, at 0 replicas,
+    whether the keeper or an admin put it there. The caller reads that
+    (`_owners_for`) and passes it in as `owners`."""
     name = dep.get('metadata', {}).get('name', '')
     m = _NAME_RE.match(name)
     user = m.group(1) if m else name
-    spec = dep.get('spec', {})
     status = dep.get('status', {})
-    desired = spec.get('replicas', 1)
+    desired = _desired(dep)
     ready = status.get('readyReplicas', 0) or 0
     gen = dep.get('metadata', {}).get('generation', 0) or 0
     obs_gen = status.get('observedGeneration', 0) or 0
-    state = _classify(desired, ready, obs_gen, gen, status.get('conditions', []))
-    detail = 'stopped' if desired == 0 else f'{ready}/{desired} ready'
+    sleeping = desired == 0 and owners == [KEEPER_FIELD_MANAGER]
+    state = _classify(desired, ready, obs_gen, gen, status.get('conditions', []),
+                      sleeping=sleeping)
+    if sleeping:
+        detail = 'asleep'
+    elif desired == 0:
+        detail = 'stopped'
+    else:
+        detail = f'{ready}/{desired} ready'
     image = _workspace_image(dep)
     image_tag, version = version_from_image(image)
     ws_ns = dep.get('metadata', {}).get('namespace', NAMESPACE)
@@ -307,6 +389,10 @@ def _ws_item(dep):
         'state': state,
         'desiredReplicas': desired,
         'readyReplicas': ready,
+        # This controller tells sleeping from stopped (#728 step 5). An older
+        # one calls every workspace at 0 stopped, so the app believes a
+        # 'stopped' only when this is present.
+        'sleepAware': True,
         'url': _workspace_url(user),
         # Kept for response-shape compatibility. The list view renders state +
         # detail (not pods); pod-level detail belongs to a single-workspace view
@@ -322,13 +408,29 @@ def _ws_item(dep):
 def list_workspaces():
     """The fleet listing — ONE lightweight read per workspace namespace
     (deployments), no pods, no ingress. State/URL are derived (see _ws_item),
-    so this stays cheap and low-memory regardless of fleet size."""
-    out = []
-    for dep in _collect('deployments'):
-        name = dep.get('metadata', {}).get('name', '')
-        if not _NAME_RE.match(name):
-            continue
-        out.append(_ws_item(dep))
+    so this stays cheap and low-memory regardless of fleet size.
+
+    The one addition is for workspaces at 0 replicas: who put them there
+    (sleeping or stopped, #728 step 5). Read only for those, concurrently, and
+    cached per resourceVersion, so a steady fleet costs no extra calls."""
+    deps = [d for d in _collect('deployments')
+            if _NAME_RE.match(d.get('metadata', {}).get('name', ''))]
+    at_zero = [d for d in deps if _desired(d) == 0]
+    owners = {}
+    if len(at_zero) == 1:
+        owners[id(at_zero[0])] = _owners_for(at_zero[0])
+    elif at_zero:
+        workers = min(COLLECT_CONCURRENCY, len(at_zero))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            for dep, result in zip(at_zero, pool.map(_owners_for, at_zero)):
+                owners[id(dep)] = result
+    # Forget workspaces that are no longer at 0, or no longer exist.
+    keep = {(d.get('metadata', {}).get('namespace') or NAMESPACE,
+             d.get('metadata', {}).get('name', '')) for d in at_zero}
+    with _owners_lock:
+        for key in [k for k in _owners_cache if k not in keep]:
+            del _owners_cache[key]
+    out = [_ws_item(d, owners.get(id(d))) for d in deps]
     out.sort(key=lambda w: w['user'])
     return {'namespace': NAMESPACE, 'workspaces': out}
 
@@ -390,7 +492,7 @@ def find_workspace(user):
         dep = next((d for d in deps
                     if d.get('metadata', {}).get('name') == name), None)
         if dep is not None:
-            return _ws_item(dep)
+            return _ws_item(dep, _owners_for(dep) if _desired(dep) == 0 else None)
     raise LookupError(name)
 
 
@@ -399,10 +501,49 @@ def scale_workspace(user, replicas):
     # touching it — never scale something the listing wouldn't show.
     ws = find_workspace(user)
     name = ws['deployment']
-    _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'],
-                 namespace=ws['namespace'])
+    if replicas == 0 and ws['state'] == 'sleeping':
+        _stop_sleeping(name, ws['namespace'])
+    else:
+        _kubectl_run(['scale', f'deployment/{name}', f'--replicas={replicas}'],
+                     namespace=ws['namespace'])
     invalidate_workspaces_cache()   # reflect start/stop on the next console poll
     return name
+
+
+def _stop_sleeping(name, namespace):
+    """Stop a workspace its keeper put to sleep (#728 step 5).
+
+    A sleeping workspace is already at 0, so `kubectl scale --replicas=0` would
+    change nothing — and an update that changes nothing records nothing. The
+    keeper would stay the sole owner of spec.replicas, still call it asleep,
+    and wake it on the next visit: a Stop that silently did not stop.
+
+    A server-side apply records its fields whether or not the value changes, so
+    after this the controller owns spec.replicas too. 0 -> 0 is no conflict, so
+    it shares the field with the keeper rather than taking it (measured on a
+    real cluster) — and a field the keeper shares is not one it owns alone, so
+    it treats the workspace as stopped (keeper/state.go). `--force-conflicts`
+    matters only if a visit woke the workspace between the read and this write:
+    then the values differ, and the admin's Stop wins. The apply carries
+    spec.replicas and nothing else, so it claims no other field.
+    `--validate=false` because the body is a fragment — the API server still
+    validates the merged object.
+
+    FIELD_MANAGER must stay this apply's alone: an apply under the same name
+    that left spec.replicas out would release the controller's share, leave the
+    keeper the only owner again, and turn a Stop back into a sleep a visit
+    undoes.
+
+    Only this case takes the apply. Every other Start and Stop stays `kubectl
+    scale`, as before, and the next Start — an update — clears the controller's
+    share, so it never stays a standing owner of replicas that a later Helm 4
+    upgrade would conflict with."""
+    body = json.dumps({'apiVersion': 'apps/v1', 'kind': 'Deployment',
+                       'metadata': {'name': name, 'namespace': namespace},
+                       'spec': {'replicas': 0}})
+    _kubectl_run(['apply', '--server-side', f'--field-manager={FIELD_MANAGER}',
+                  '--force-conflicts', '--validate=false', '-f', '-'],
+                 namespace=namespace, input=body)
 
 
 # --- Resource limits ---------------------------------------------------------
