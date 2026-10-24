@@ -51,11 +51,13 @@ So a `bash -l` can read **either** `/home/dev/.profile` or
   block text), while the PVC's `/home/dev` copy is written once and kept.
   **Changing a block's body needs a new marker string**, or the stale text
   lives on in `/home/dev`'s rc files.
-- `/home/dev/.ssh` and `/home/dev/.gitconfig` exist as **separate real files**,
-  not the persistent credentials — `~/.ssh` means different keys depending on
-  the context. Never write `~` or `$HOME` in docs, examples or scripts here;
-  spell the home out. A `rm -rf "$HOME/..."` meant to clear the ephemeral copy
-  will delete PVC data when `$HOME` is `/home/dev`.
+- Since #795, `persist_cred` links `.ssh`, `.gitconfig` and the per-tool
+  credential paths in **both homes** at the one store under
+  `/home/dev/.credentials/`, so `~/.ssh` resolves to the same keys regardless
+  of context (anything it displaces is kept at a `.pre795.<epoch>` backup, not
+  deleted). Still never write `~` or `$HOME` in docs, examples or scripts
+  here; spell the home out. A `rm -rf "$HOME/..."` meant to clear an ephemeral
+  copy will delete PVC data when `$HOME` is `/home/dev`.
 
 The established pattern to persist something is: keep the real data under
 `/home/dev/...` (secrets go in `/home/dev/.credentials/`), and symlink the
