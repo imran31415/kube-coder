@@ -51,6 +51,24 @@ afterEach(() => {
 });
 
 describe('TaskList', () => {
+  it('marks a Build parked on the folder-trust dialog (#800)', () => {
+    // Same status as a task that finished its turn — the pill is the only
+    // thing that tells the two apart at a glance.
+    tasks.value = [{
+      ...sample[0], task_id: 'wedged-1', name: 'wedged',
+      status: 'waiting-for-input', prompt_delivered: false,
+      stalled_at_trust_dialog: true,
+    }];
+    render(<TaskList />);
+    expect(screen.getByText('trust dialog')).toBeInTheDocument();
+  });
+
+  it('leaves an ordinary waiting task unmarked', () => {
+    tasks.value = [{ ...sample[0], status: 'waiting-for-input', prompt_delivered: true }];
+    render(<TaskList />);
+    expect(screen.queryByText('trust dialog')).toBeNull();
+  });
+
   it('renders one row per task with status pills', () => {
     render(<TaskList />);
     expect(screen.getByText('aa')).toBeInTheDocument();

@@ -96,4 +96,15 @@ describe('coerceTaskSummary', () => {
     expect(coerceTaskSummary({ worktree: { branch: 5, stat: 'nope' } }).worktree)
       .toEqual({ branch: null, port: null, path: null, removed: false, stat: null });
   });
+
+  it('keeps prompt delivery tri-state and the trust-dialog stall (#800)', () => {
+    // Not reported yet is NOT the same as "the prompt was lost".
+    expect(coerceTaskSummary({ task_id: 't1' }).prompt_delivered).toBeNull();
+    expect(coerceTaskSummary({ prompt_delivered: false }).prompt_delivered).toBe(false);
+    expect(coerceTaskSummary({ prompt_delivered: true }).prompt_delivered).toBe(true);
+    expect(coerceTaskSummary({ prompt_delivered: 'yes' }).prompt_delivered).toBeNull();
+    expect(coerceTaskSummary({ task_id: 't1' }).stalled_at_trust_dialog).toBe(false);
+    expect(coerceTaskSummary({ stalled_at_trust_dialog: true }).stalled_at_trust_dialog)
+      .toBe(true);
+  });
 });

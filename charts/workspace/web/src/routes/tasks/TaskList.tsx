@@ -179,6 +179,15 @@ export function TaskList() {
                     {isStaleWaiting(t) && (
                       <Pill tone="danger" mono>stale</Pill>
                     )}
+                    {t.stalled_at_trust_dialog && (
+                      <Pill
+                        tone="danger"
+                        mono
+                        title="Parked on Claude Code's folder-trust dialog — it never received its prompt. Open the task and answer the dialog, then re-send the prompt."
+                      >
+                        trust dialog
+                      </Pill>
+                    )}
                     {t.parent_task_id && (
                       <Pill tone="neutral" mono>sub-agent</Pill>
                     )}

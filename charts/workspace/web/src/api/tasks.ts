@@ -35,6 +35,15 @@ export interface TaskSummary {
   last_input_prompt?: string;
   /** Unix seconds the rendered screen last changed (drives idle/stale UI). */
   last_activity_at?: number | null;
+  /**
+   * Did the launch prompt actually reach the composer? `null` while the
+   * delivery thread is still in flight. False with zero progress is the
+   * "launched but never started" tell (#800) — on the LIST, because
+   * `waiting-for-input` is also the status of a task that finished.
+   */
+  prompt_delivered?: boolean | null;
+  /** Parked on Claude Code's folder-trust dialog rather than idle (#800). */
+  stalled_at_trust_dialog?: boolean;
   /** Present only for a Build launched in an isolated worktree (#701). */
   worktree?: WorktreeBrief;
 }
