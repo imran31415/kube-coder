@@ -33,16 +33,37 @@ There are **two** home directories:
 - **`/home/ubuntu`** — **ephemeral**. Wiped on every pod restart.
 
 `start.sh` and the interactive terminals (ttyd, code-server, SSH) run with
-**`HOME=/home/ubuntu`**. That's why `/home/ubuntu/.ssh` is a symlink but
-`/home/dev/.ssh` doesn't exist. **Anything a tool writes under `$HOME` is lost
-on restart unless it's redirected onto `/home/dev`.**
+**`HOME=/home/ubuntu`**. That's why `/home/ubuntu/.ssh` is a symlink onto the
+PVC. **Anything a tool writes under `$HOME` is lost on restart unless it's
+redirected onto `/home/dev`.**
+
+**But `$HOME` is not `/home/ubuntu` everywhere (issue #793).** `server.py`
+forces `HOME=/home/dev` on the CLIs it spawns — agent tasks, hooks, the
+hypervisor — so they find their config on the PVC, and tmux copies the
+environment of whoever started its server into every session created later.
+So a `bash -l` can read **either** `/home/dev/.profile` or
+`/home/ubuntu/.profile`. Consequences when you touch boot wiring:
+
+- Seed env blocks into **both** homes — `bootstrap_rc` loops over
+  `/home/ubuntu /home/dev` for exactly this reason. One home only means the
+  block silently does nothing for half the shells in the pod.
+- `/home/ubuntu` is rebuilt from skel each boot (so it always gets the current
+  block text), while the PVC's `/home/dev` copy is written once and kept.
+  **Changing a block's body needs a new marker string**, or the stale text
+  lives on in `/home/dev`'s rc files.
+- `/home/dev/.ssh` and `/home/dev/.gitconfig` exist as **separate real files**,
+  not the persistent credentials — `~/.ssh` means different keys depending on
+  the context. Never write `~` or `$HOME` in docs, examples or scripts here;
+  spell the home out. A `rm -rf "$HOME/..."` meant to clear the ephemeral copy
+  will delete PVC data when `$HOME` is `/home/dev`.
 
 The established pattern to persist something is: keep the real data under
 `/home/dev/...` (secrets go in `/home/dev/.credentials/`), and symlink the
-ephemeral `$HOME` path to it. See the `persist_cred` helper and the
-`for HOME_DIR in /home/ubuntu` loops in `start.sh`, and the mirrored block in
-`ssh-server-configmap.yaml` (the sidecar has its **own** ephemeral
-`/home/ubuntu`, so it needs the symlinks independently).
+ephemeral `/home/ubuntu` path to it. See the `persist_cred` helper and the
+`for HOME_DIR in /home/ubuntu /home/dev` loop in `start.sh`, and the mirrored
+block in `ssh-server-configmap.yaml` (the sidecar has its **own** ephemeral
+`/home/ubuntu` and is always `HOME=/home/ubuntu` under sshd, so it needs the
+symlinks independently).
 
 When persisting a new credential/config: migrate any pre-existing login onto the
 PVC once with `cp -an` (archive + **no-clobber**, so a real PVC login is never
@@ -81,7 +102,7 @@ persistent-memory subsystem, not these files.
 bash -n charts/workspace/start.sh
 
 # 2. Render through Helm (catches tpl + YAML indent errors, proves it ships).
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="/home/dev/.local/bin:$PATH"   # absolute: $HOME varies here
 helm template test-ws charts/workspace/ -f charts/workspace/tests/test-values.yaml >/tmp/r.yaml
 grep -n "<a string from your change>" /tmp/r.yaml    # confirm it rendered
 # sidecar is gated — render it with ssh on:

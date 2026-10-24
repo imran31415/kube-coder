@@ -137,6 +137,10 @@ fresh terminal. If a command reports success and the binary seems missing,
 that's why: look in `/home/dev/.nvm`, `/home/dev/.local/bin`, and add it to
 your shell rc.
 
+Agent tasks are on the `HOME=/home/dev` side of that split, like lifecycle
+commands — so never reason about a path from `$HOME` or `~`; write the home
+out in full (issue #793).
+
 ## JSONC
 
 `devcontainer.json` is JSON **with comments and trailing commas** — both legal,
