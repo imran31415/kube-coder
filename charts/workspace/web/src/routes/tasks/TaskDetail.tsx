@@ -252,7 +252,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
     }
   }
 
-  // For finished tasks (completed/killed/error/unknown) the tmux session is
+  // For finished tasks (completed/killed/error/terminated/unknown) the tmux session is
   // gone — hide the interactive tabs so the user doesn't try to attach.
   const visibleTabs: DetailTab[] = isLive
     ? ['terminal', 'preview', 'message', 'info']
@@ -276,6 +276,11 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
       tone: 'danger',
       title: 'Errored',
       body: 'This task exited with an error. Check the Subagents tab and output history for context.',
+    },
+    terminated: {
+      tone: 'danger',
+      title: 'Wiped by a pod restart',
+      body: 'The workspace pod restarted while this task was running, which killed its tmux session before it finished — so this is NOT a result. Anything it committed and pushed survives on its branch; uncommitted work in its worktree may still be there under Changes. Re-run it, or start a short follow-up task to finish the work off.',
     },
     unknown: {
       tone: 'neutral',

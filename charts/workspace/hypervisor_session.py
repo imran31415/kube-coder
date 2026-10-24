@@ -2851,7 +2851,7 @@ WATCH_COMMAND_TIMEOUT = 10.0
 # finishing the work, so quiescence → waiting-for-input IS their "done / needs
 # you" signal; only headless tasks ever reach completed.
 WATCH_TASK_FIRE_STATUSES = frozenset(
-    {'completed', 'error', 'killed', 'waiting-for-input'})
+    {'completed', 'error', 'killed', 'terminated', 'waiting-for-input'})
 _WATCH_ACTIVE_STATES = ('armed', 'fired', 'timeout')
 
 

@@ -37,6 +37,7 @@ const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' 
   completed: 'success',
   killed: 'warn',
   error: 'danger',
+  terminated: 'danger',
   unknown: 'neutral',
   'waiting-for-input': 'warn',
 };
@@ -46,6 +47,7 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   completed: 'done',
   killed: 'killed',
   error: 'error',
+  terminated: 'wiped',
   unknown: 'unknown',
   'waiting-for-input': 'waiting',
 };
@@ -119,7 +121,7 @@ export function TaskList() {
             aria-selected={userChoice === 'all'}
             class={`tl-seg-item ${userChoice === 'all' ? 'tl-seg-item-active' : ''}`}
             onClick={() => (taskStatusFilter.value = 'all')}
-            title="Show running + past (completed, killed, errored)"
+            title="Show running + past (completed, killed, errored, wiped by a restart)"
           >
             All <span class="tl-seg-count">{counts.all}</span>
           </button>

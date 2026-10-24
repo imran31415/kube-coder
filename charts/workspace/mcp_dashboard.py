@@ -1136,7 +1136,8 @@ TOOLS: Dict[str, Any] = {
         'unlike Bash run_in_background, Monitor, or a background Agent '
         'subagent it survives the turn boundary). Kinds: '
         "'task' — target is a task_id (from create_task); fires when the task "
-        "completes, errors, is killed, or goes waiting-for-input. 'command' — "
+        "completes, errors, is killed or terminated, or goes "
+        "waiting-for-input. 'command' — "
         "target is a shell command; fires when it exits 0. 'file' — target is "
         'an absolute path; fires when it appears, is removed, or its mtime '
         "changes. 'port' — target is the related task_id; fires when a NEW "
