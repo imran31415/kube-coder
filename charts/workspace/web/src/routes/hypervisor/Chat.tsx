@@ -32,6 +32,7 @@ import {
   type Block,
 } from './transcript';
 import { turnWindow, TURN_WINDOW, TURN_WINDOW_STEP } from './transcriptWindow';
+import { isFollowing, isAtBottom } from './scrollPin';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
 import { PROVIDER_KEYS_PATH } from '../../util/assistantReady';
@@ -799,12 +800,13 @@ export function Chat({
 
   useEffect(() => () => cancelAnimationFrame(pinRafRef.current), []);
 
-  // Track pin state: pinned when within ~80px of the bottom. Scrolling up
-  // unpins (so polls stop yanking down); scrolling back to the bottom re-pins.
+  // Track pin state: pinned while the reader is still following the bottom —
+  // scrollPin.ts owns that threshold. Scrolling up unpins (so polls stop
+  // yanking down); scrolling back to the bottom re-pins.
   function onTranscriptScroll() {
     const el = scrollRef.current;
     if (!el) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
+    if (isFollowing(el)) {
       pinnedRef.current = true;
       return;
     }
@@ -1001,7 +1003,19 @@ export function Chat({
     const el = scrollRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
-      if (pinnedRef.current) writeBottom();
+      if (!pinnedRef.current) return;
+      // `pinnedRef` stays true across the whole 80px "still following" fuzz
+      // zone onTranscriptScroll uses — right for deciding whether a *new*
+      // message should pull the reader along, but wrong here: any incidental
+      // reflow elsewhere in the transcript (a lazily-mounted embed/image
+      // entering view as the reader scrolls past it, a thumbnail finishing
+      // load) also fires this observer, and correcting on that loose signal
+      // forced readers back to the literal bottom before they could scroll
+      // more than ~80px away — so scrolling up never progressed (#790). Only
+      // correct a reader who is still glued to the exact bottom, measured
+      // fresh here rather than from the flag.
+      if (!isAtBottom(el)) return;
+      writeBottom();
     });
     ro.observe(el); // the viewport (composer resize shrinks/grows it)
     const flow = el.firstElementChild;
