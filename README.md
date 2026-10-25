@@ -202,7 +202,7 @@ Every workspace exposes the same set of surfaces, all behind a single GitHub OAu
 | **VS Code** | `code-server` rooted at `/home/dev` | `/oauth/vscode/?folder=/home/dev` |
 | **In-pod browser** | Chrome on a virtual X display, viewed via noVNC | `/oauth/vnc-direct/vnc.html` |
 | **Metrics + health** | Live CPU / Mem / Disk + service health | `/oauth/metrics`, `/oauth/health` |
-| **Assistants** | Claude Code, Codex, Gemini, Ante, OpenCode, LibreFang | per-session |
+| **Assistants** | Claude Code, Codex, Gemini, Ante, OpenCode (LibreFang opt-in) | per-session |
 
 ### The dashboard
 
@@ -276,7 +276,7 @@ Assistant, model and **reasoning effort** (`low → max`, translated to each CLI
 | **Ante** | Antigma's terminal agent; defaults to **DeepSeek v3.2 via OpenRouter** | `assistant.openrouter.apiKey` (CLI pre-installed) |
 | **OpenCode → OpenRouter** | any OpenRouter model | `assistant.openrouter.apiKey` + `model` |
 | **OpenCode → DeepSeek** | DeepSeek native API | `assistant.deepseek.apiKey` |
-| **LibreFang** | open-source agent OS; reuses set provider keys | `assistant.librefang.agent` |
+| **LibreFang** | open-source agent OS; reuses set provider keys. **Opt-in** — off unless enabled | `assistant.librefang.enabled: true` (then `assistant.librefang.agent`) |
 
 ### A "Claude-like" agent without an Anthropic key — Ante + DeepSeek
 
@@ -451,7 +451,7 @@ Makefile                   # all common commands (`make help`)
 | Codex CLI | 0.144.3 |
 | OpenCode CLI | 1.17.4 |
 | Ante CLI | stable channel |
-| LibreFang | 2026.x beta |
+| LibreFang (opt-in) | 2026.x beta |
 | ttyd | 1.7.7 |
 | tmux, yarn, gh, jq, ripgrep, fzf | latest from Ubuntu |
 

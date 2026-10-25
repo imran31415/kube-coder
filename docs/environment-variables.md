@@ -56,9 +56,14 @@ This document describes all environment variables used by kube-coder components.
 | `KC_GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model the `gemini` CLI runs against (e.g. `gemini-2.5-flash`). |
 
 #### LibreFang Integration
+LibreFang is **opt-in and off by default** (#754). Set
+`assistant.librefang.enabled: true` to turn it on; nothing below is emitted
+otherwise, boot does no LibreFang setup, and no assistant picker lists it.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KC_LIBREFANG_AGENT` | `coder` | LibreFang agent name tasks talk to (`librefang chat <agent>` / `librefang message <agent>`). LibreFang has no key of its own — it reuses whatever provider key is in the environment (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). |
+| `KC_LIBREFANG_ENABLED` | unset (off) | `true` enables LibreFang: boot seeds `/home/dev/.librefang` from the image, normalizes its `config.toml` and pre-warms its kernel daemon, and the dashboard/orchestrator offer `librefang` as an assistant (still only when the CLI resolves). Rendered from `assistant.librefang.enabled`. |
+| `KC_LIBREFANG_AGENT` | `coder` | LibreFang agent name tasks talk to (`librefang chat <agent>` / `librefang message <agent>`). Only emitted when `KC_LIBREFANG_ENABLED` is on. LibreFang has no key of its own — it reuses whatever provider key is in the environment (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). |
 
 #### Fallback/Generic AI Backend
 | Variable | Default | Description |

@@ -373,9 +373,14 @@ def _wait_pane_ready(session_name: str, min_delay: float = 1.5,
 # that disagreed with what _assistant_command can actually launch is precisely
 # the drift the catalog removes — an id accepted by the schema but with no
 # command behind it, or a launchable runtime no agent can ask for.
+# Opt-in runtimes the workspace didn't enable (LibreFang, #754) are left out
+# entirely: a disabled runtime must be ABSENT from the options, not offered and
+# then refused. Read at import, which is per MCP-server launch — the same
+# lifetime as the env the flag arrives in.
 _ASSISTANTS_LIST = [
     {'id': rid, 'label': entry['label']}
     for rid, entry in runtimes.RUNTIMES.items()
+    if runtimes.is_enabled(rid)
 ]
 
 
@@ -390,6 +395,16 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     # Only set on workspaces that opted in; vanilla leaves it unset and keeps the
     # historical 'ante' fallback (a keyless, always-available CLI).
     assistant = args.get('assistant') or os.environ.get('KC_DEFAULT_ASSISTANT') or 'ante'
+    # Opt-in runtimes (#754): the tool's enum already omits one this workspace
+    # didn't enable, but an MCP client may send any string — and for LibreFang
+    # the flag also gates the boot-time setup, so launching it anyway would
+    # spawn a session whose CLI has no config and no daemon. Refuse with the
+    # reason instead, and say what this workspace does offer.
+    if not runtimes.is_enabled(assistant):
+        return {'isError': True, 'content': [{'type': 'text', 'text':
+            f'spawn refused: the {assistant!r} assistant is not enabled in '
+            'this workspace. Available: '
+            + ', '.join(a['id'] for a in _ASSISTANTS_LIST) + '.'}]}
     # Default the sub-agent's working directory to the SPAWNING agent's cwd.
     # This MCP server is a stdio subprocess of the parent CLI, so os.getcwd()
     # is the directory the parent was launched in (its project) — a far better
@@ -844,10 +859,11 @@ TOOLS: Dict[str, Any] = {
                         'type': 'string',
                         'description': 'Which agent to spawn. Omit to use the '
                                        'workspace default assistant.',
-                        'enum': ['ante', 'claude', 'codex', 'antigravity',
-                                 'librefang', 'opencode-openrouter',
-                                 'opencode-deepseek', 'deepseek-harness',
-                                 'opencode-zen', 'kc-harness'],
+                        # Derived, not re-listed: the hand-written copy of
+                        # this id set could disagree with what the workspace
+                        # actually offers, which is exactly what an opt-in
+                        # runtime (#754) made possible.
+                        'enum': [a['id'] for a in _ASSISTANTS_LIST],
                     },
                     'mode': {
                         'type': 'string',

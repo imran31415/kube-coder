@@ -934,113 +934,121 @@ for HOME_DIR in /home/ubuntu; do
   ln -sfn "$GEMINI_TARGET" "$LINK" 2>/dev/null || true
 done
 
-# Persist LibreFang's home across pod restarts — same pattern as ~/.ante
-# above. LibreFang keeps everything (config.toml, agents, sessions, the
-# registry cache, and the binary at bin/librefang) under ~/.librefang, so
-# one PVC symlink covers data + binary. /usr/local/bin/librefang is a
-# build-time symlink to the PVC path; we seed/refresh it from the image's
-# copy (/opt/librefang/librefang) below so a LIBREFANG_VERSION bump
-# propagates on rebuild.
-LIBREFANG_TARGET=/home/dev/.librefang
-mkdir -p "$LIBREFANG_TARGET/bin"
-if [ -L "$LIBREFANG_TARGET" ]; then
-  LFD=$(readlink "$LIBREFANG_TARGET")
-  if [ "$LFD" = "$LIBREFANG_TARGET" ] || [ "$LFD" = ".librefang" ]; then
-    rm -f "$LIBREFANG_TARGET"; mkdir -p "$LIBREFANG_TARGET/bin"
+# LibreFang (#754): opt-in, and off unless the chart says otherwise. All of
+# the setup below — seeding the binary onto the PVC, symlinking ~/.librefang,
+# `init --quick`, rewriting config.toml, pre-warming the kernel daemon — used
+# to run in every workspace for an agent most users never selected. The
+# server and the orchestrator gate their assistant lists on the same env var,
+# so a workspace that skips this block does not offer LibreFang either.
+if [ "${KC_LIBREFANG_ENABLED:-false}" = "true" ]; then
+  # Persist LibreFang's home across pod restarts — same pattern as ~/.ante
+  # above. LibreFang keeps everything (config.toml, agents, sessions, the
+  # registry cache, and the binary at bin/librefang) under ~/.librefang, so
+  # one PVC symlink covers data + binary. /usr/local/bin/librefang is a
+  # build-time symlink to the PVC path; we seed/refresh it from the image's
+  # copy (/opt/librefang/librefang) below so a LIBREFANG_VERSION bump
+  # propagates on rebuild.
+  LIBREFANG_TARGET=/home/dev/.librefang
+  mkdir -p "$LIBREFANG_TARGET/bin"
+  if [ -L "$LIBREFANG_TARGET" ]; then
+    LFD=$(readlink "$LIBREFANG_TARGET")
+    if [ "$LFD" = "$LIBREFANG_TARGET" ] || [ "$LFD" = ".librefang" ]; then
+      rm -f "$LIBREFANG_TARGET"; mkdir -p "$LIBREFANG_TARGET/bin"
+    fi
   fi
-fi
-for HOME_DIR in /home/ubuntu; do
-  [ -d "$HOME_DIR" ] || continue
-  LINK="$HOME_DIR/.librefang"
-  [ "$LINK" = "$LIBREFANG_TARGET" ] && continue
-  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$LIBREFANG_TARGET" ]; then
-    continue
+  for HOME_DIR in /home/ubuntu; do
+    [ -d "$HOME_DIR" ] || continue
+    LINK="$HOME_DIR/.librefang"
+    [ "$LINK" = "$LIBREFANG_TARGET" ] && continue
+    if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$LIBREFANG_TARGET" ]; then
+      continue
+    fi
+    # Merge any existing ~/.librefang into the PVC (cp -an keeps the PVC copy
+    # canonical), then replace with a symlink.
+    if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+      cp -an "$LINK"/. "$LIBREFANG_TARGET"/ 2>/dev/null || true
+      rm -rf "$LINK"
+    elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+      rm -f "$LINK"
+    fi
+    ln -sfn "$LIBREFANG_TARGET" "$LINK" 2>/dev/null || true
+  done
+  if [ -f /opt/librefang/librefang ]; then
+    if [ ! -e "$LIBREFANG_TARGET/bin/librefang" ] || ! cmp -s /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang"; then
+      install -m 0755 /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null \
+        || cp -p /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null || true
+    fi
   fi
-  # Merge any existing ~/.librefang into the PVC (cp -an keeps the PVC copy
-  # canonical), then replace with a symlink.
-  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
-    cp -an "$LINK"/. "$LIBREFANG_TARGET"/ 2>/dev/null || true
-    rm -rf "$LINK"
-  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
-    rm -f "$LINK"
+  # One-time non-interactive init so the first `librefang chat` inside a task
+  # tmux doesn't block on the interactive setup wizard. Idempotent: skipped
+  # once config.toml exists. Provider keys are read from the environment at
+  # chat time (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so the --quick
+  # defaults are enough here.
+  if [ -x "$LIBREFANG_TARGET/bin/librefang" ] && [ ! -f "$LIBREFANG_TARGET/config.toml" ]; then
+    HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" init --quick >/dev/null 2>&1 || true
   fi
-  ln -sfn "$LIBREFANG_TARGET" "$LINK" 2>/dev/null || true
-done
-if [ -f /opt/librefang/librefang ]; then
-  if [ ! -e "$LIBREFANG_TARGET/bin/librefang" ] || ! cmp -s /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang"; then
-    install -m 0755 /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null \
-      || cp -p /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null || true
-  fi
-fi
-# One-time non-interactive init so the first `librefang chat` inside a task
-# tmux doesn't block on the interactive setup wizard. Idempotent: skipped
-# once config.toml exists. Provider keys are read from the environment at
-# chat time (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so the --quick
-# defaults are enough here.
-if [ -x "$LIBREFANG_TARGET/bin/librefang" ] && [ ! -f "$LIBREFANG_TARGET/config.toml" ]; then
-  HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" init --quick >/dev/null 2>&1 || true
-fi
-# Normalize the LibreFang config so the dashboard's `librefang chat` sessions
-# actually work. Runs every boot (idempotent) so it also corrects configs that
-# were already persisted on the PVC, not just freshly-init'd ones.
-#
-#   1. Auth gate. `init --quick` seeds default dashboard credentials
-#      (dashboard_user/pass = "librefang"), which auto-enable bearer auth on the
-#      daemon's API. But `librefang chat` presents no token, so the chat
-#      WebSocket is rejected and the REPL shows "No active connection". The
-#      daemon binds 127.0.0.1 only (network_enabled = false) behind
-#      oauth2-proxy, so this in-pod auth adds no security — blank the triggers.
-#
-#   2. Provider. `init --quick` picks the provider from whichever key it finds
-#      first, so a workspace that also has ANTHROPIC_API_KEY lands on Anthropic
-#      even when its funded/working key is OpenRouter (the same key Ante and the
-#      OpenCode assistant use). When OPENROUTER_API_KEY is present, pin
-#      [default_model] to OpenRouter. Model is overridable via KC_LIBREFANG_MODEL.
-LF_CFG="$LIBREFANG_TARGET/config.toml"
-if [ -f "$LF_CFG" ]; then
-  sed -i -E 's/^(api_key|dashboard_user|dashboard_pass|dashboard_pass_hash)[[:space:]]*=.*/\1 = ""/' "$LF_CFG" || true
-  if [ -n "$OPENROUTER_API_KEY" ]; then
-    LF_MODEL="openrouter/${KC_LIBREFANG_MODEL:-deepseek/deepseek-v3.2}"
-    awk -v model="$LF_MODEL" '
-      /^\[default_model\]/{inblk=1}
-      /^\[/ && $0 !~ /^\[default_model\]/{inblk=0}
-      inblk && /^provider[[:space:]]*=/{print "provider = \"openrouter\""; next}
-      inblk && /^model[[:space:]]*=/{print "model = \"" model "\""; next}
-      inblk && /^api_key_env[[:space:]]*=/{print "api_key_env = \"OPENROUTER_API_KEY\""; next}
-      {print}
-    ' "$LF_CFG" > "$LF_CFG.kc" && mv "$LF_CFG.kc" "$LF_CFG" || rm -f "$LF_CFG.kc"
+  # Normalize the LibreFang config so the dashboard's `librefang chat` sessions
+  # actually work. Runs every boot (idempotent) so it also corrects configs that
+  # were already persisted on the PVC, not just freshly-init'd ones.
+  #
+  #   1. Auth gate. `init --quick` seeds default dashboard credentials
+  #      (dashboard_user/pass = "librefang"), which auto-enable bearer auth on the
+  #      daemon's API. But `librefang chat` presents no token, so the chat
+  #      WebSocket is rejected and the REPL shows "No active connection". The
+  #      daemon binds 127.0.0.1 only (network_enabled = false) behind
+  #      oauth2-proxy, so this in-pod auth adds no security — blank the triggers.
+  #
+  #   2. Provider. `init --quick` picks the provider from whichever key it finds
+  #      first, so a workspace that also has ANTHROPIC_API_KEY lands on Anthropic
+  #      even when its funded/working key is OpenRouter (the same key Ante and the
+  #      OpenCode assistant use). When OPENROUTER_API_KEY is present, pin
+  #      [default_model] to OpenRouter. Model is overridable via KC_LIBREFANG_MODEL.
+  LF_CFG="$LIBREFANG_TARGET/config.toml"
+  if [ -f "$LF_CFG" ]; then
+    sed -i -E 's/^(api_key|dashboard_user|dashboard_pass|dashboard_pass_hash)[[:space:]]*=.*/\1 = ""/' "$LF_CFG" || true
+    if [ -n "$OPENROUTER_API_KEY" ]; then
+      LF_MODEL="openrouter/${KC_LIBREFANG_MODEL:-deepseek/deepseek-v3.2}"
+      awk -v model="$LF_MODEL" '
+        /^\[default_model\]/{inblk=1}
+        /^\[/ && $0 !~ /^\[default_model\]/{inblk=0}
+        inblk && /^provider[[:space:]]*=/{print "provider = \"openrouter\""; next}
+        inblk && /^model[[:space:]]*=/{print "model = \"" model "\""; next}
+        inblk && /^api_key_env[[:space:]]*=/{print "api_key_env = \"OPENROUTER_API_KEY\""; next}
+        {print}
+      ' "$LF_CFG" > "$LF_CFG.kc" && mv "$LF_CFG.kc" "$LF_CFG" || rm -f "$LF_CFG.kc"
 
-    # The agent the dashboard launches (KC_LIBREFANG_AGENT, default "coder")
-    # ships a template that breaks against OpenRouter in two ways:
-    #   - model = "default" (inherit [default_model]). LibreFang's *streaming*
-    #     chat path — the one the dashboard REPL uses — sends that literal
-    #     "default" to the provider instead of resolving it, so OpenRouter 400s
-    #     ("default is not a valid model ID") and the REPL shows no reply. The
-    #     non-streaming /message path resolves it, which is why headless works
-    #     but interactive chat doesn't.
-    #   - api_key_env hardcoded to GEMINI_API_KEY / GROQ_API_KEY (unset here),
-    #     which surfaces as "LLM provider authentication failed".
-    # Pin just this agent's model + key env to explicit values. Scoped to the
-    # dashboard agent only — we don't touch the user's other agents (hands,
-    # multi-agent setups), whose providers may differ.
-    LF_AGENT="${KC_LIBREFANG_AGENT:-coder}"
-    for _af in "$LIBREFANG_TARGET"/workspaces/agents/"$LF_AGENT"/agent.toml \
-               "$LIBREFANG_TARGET"/registry/agents/"$LF_AGENT"/agent.toml; do
-      [ -f "$_af" ] || continue
-      sed -i -E "s#^provider = \"default\"#provider = \"openrouter\"#; \
-                 s#^model = \"(default|openrouter/.*)\"#model = \"$LF_MODEL\"#; \
-                 s#^api_key_env = \".*\"#api_key_env = \"OPENROUTER_API_KEY\"#" "$_af" 2>/dev/null || true
-    done
+      # The agent the dashboard launches (KC_LIBREFANG_AGENT, default "coder")
+      # ships a template that breaks against OpenRouter in two ways:
+      #   - model = "default" (inherit [default_model]). LibreFang's *streaming*
+      #     chat path — the one the dashboard REPL uses — sends that literal
+      #     "default" to the provider instead of resolving it, so OpenRouter 400s
+      #     ("default is not a valid model ID") and the REPL shows no reply. The
+      #     non-streaming /message path resolves it, which is why headless works
+      #     but interactive chat doesn't.
+      #   - api_key_env hardcoded to GEMINI_API_KEY / GROQ_API_KEY (unset here),
+      #     which surfaces as "LLM provider authentication failed".
+      # Pin just this agent's model + key env to explicit values. Scoped to the
+      # dashboard agent only — we don't touch the user's other agents (hands,
+      # multi-agent setups), whose providers may differ.
+      LF_AGENT="${KC_LIBREFANG_AGENT:-coder}"
+      for _af in "$LIBREFANG_TARGET"/workspaces/agents/"$LF_AGENT"/agent.toml \
+                 "$LIBREFANG_TARGET"/registry/agents/"$LF_AGENT"/agent.toml; do
+        [ -f "$_af" ] || continue
+        sed -i -E "s#^provider = \"default\"#provider = \"openrouter\"#; \
+                   s#^model = \"(default|openrouter/.*)\"#model = \"$LF_MODEL\"#; \
+                   s#^api_key_env = \".*\"#api_key_env = \"OPENROUTER_API_KEY\"#" "$_af" 2>/dev/null || true
+      done
+    fi
   fi
-fi
-# Pre-warm the daemon at boot. Otherwise it only starts lazily when the first
-# `librefang chat` opens, and a cold start (daemon launch + model-catalog sync
-# of ~57 files) can outlast the per-chat bootstrap's 10s poll window — so the
-# first message after opening a fresh session appears to get no reply until it
-# warms up. Backgrounded + idempotent (no-op if already running).
-if [ -x "$LIBREFANG_TARGET/bin/librefang" ]; then
-  HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" status -q >/dev/null 2>&1 \
-    || HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" start >/dev/null 2>&1 &
+  # Pre-warm the daemon at boot. Otherwise it only starts lazily when the first
+  # `librefang chat` opens, and a cold start (daemon launch + model-catalog sync
+  # of ~57 files) can outlast the per-chat bootstrap's 10s poll window — so the
+  # first message after opening a fresh session appears to get no reply until it
+  # warms up. Backgrounded + idempotent (no-op if already running).
+  if [ -x "$LIBREFANG_TARGET/bin/librefang" ]; then
+    HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" status -q >/dev/null 2>&1 \
+      || HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" start >/dev/null 2>&1 &
+  fi
 fi
 
 # ── Workspace Python backend: seed from the image (issue #430) ─────────────

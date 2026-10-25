@@ -1,0 +1,104 @@
+suite: LibreFang is opt-in and off by default (#754)
+# LibreFang used to be installed and run for every user: boot seeded its home
+# onto the PVC, ran `init --quick`, rewrote config.toml and pre-warmed its
+# kernel daemon, all for an agent most users never selected. One value —
+# assistant.librefang.enabled -> KC_LIBREFANG_ENABLED — now gates the boot
+# setup and (in the server/orchestrator) the assistant listings together.
+# New workspaces render without the flag; an existing LibreFang user sets
+# enabled: true and keeps everything, because the CLI stays in the image.
+templates:
+  - templates/deployment.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  # deployment.yaml checksums the configmaps it mounts, so they have to render
+  # alongside it.
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: emits no LibreFang env at the chart defaults
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_ENABLED
+          any: true
+      # The agent name rides along with the flag: without the flag nothing
+      # reads it, and emitting it would suggest the assistant is configured.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_AGENT
+          any: true
+
+  - it: wires the flag and the agent name once the operator opts in
+    template: templates/deployment.yaml
+    set:
+      assistant.librefang.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_AGENT
+            value: "coder"
+
+  - it: carries a custom agent name through
+    template: templates/deployment.yaml
+    set:
+      assistant.librefang.enabled: true
+      assistant.librefang.agent: my-agent
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_AGENT
+            value: "my-agent"
+
+  - it: keeps an explicit false off
+    # `dig`, not sprig's `default`: `default` treats boolean false as empty and
+    # would fall through to the enabled branch.
+    template: templates/deployment.yaml
+    set:
+      assistant.librefang.enabled: false
+      assistant.librefang.agent: my-agent
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_ENABLED
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_LIBREFANG_AGENT
+          any: true
+
+  - it: gates every bit of LibreFang boot setup behind the flag
+    template: templates/workspace-entrypoint-configmap.yaml
+    asserts:
+      # One guard, defaulting to off, so a workspace rendered by an older
+      # chart (no env var at all) also skips the setup.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'if \[ "\$\{KC_LIBREFANG_ENABLED:-false\}" = "true" \]; then'
+      # The guard opens BEFORE the PVC seeding and closes AFTER the daemon
+      # pre-warm — the two ends of the block that used to run unconditionally.
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'if \[ "\$\{KC_LIBREFANG_ENABLED:-false\}" = "true" \]; then\n(.|\n)*  LIBREFANG_TARGET=/home/dev/\.librefang'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: '  if \[ -x "\$LIBREFANG_TARGET/bin/librefang" \]; then\n    HOME=/home/dev "\$LIBREFANG_TARGET/bin/librefang" status -q(.|\n)*\n  fi\nfi'
+      # Nothing outside the guard may touch LibreFang: every mention of it in
+      # start.sh is indented inside the block (or is the guard itself).
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: '(?m)^(librefang|LIBREFANG_TARGET=|HOME=/home/dev "\$LIBREFANG_TARGET)'
