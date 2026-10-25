@@ -177,7 +177,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.233
+ARG CLAUDE_CODE_VERSION=2.1.310
 RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -186,7 +186,7 @@ RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.18
+ARG OPENCODE_VERSION=1.19.4
 RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
@@ -196,7 +196,7 @@ RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.147.0
+ARG CODEX_VERSION=0.164.0
 RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 
 # DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
