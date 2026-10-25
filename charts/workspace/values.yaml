@@ -773,13 +773,24 @@ assistant:
   # login persists on the PVC. Only an optional model override lives here.
   antigravity:
     model: ""                             # KC_ANTIGRAVITY_MODEL (blank = agy's default)
-  # LibreFang (https://librefang.ai) — open-source agent OS. The CLI is
-  # pre-installed in the image (like Ante) and reuses whatever provider keys
-  # are configured elsewhere (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so
-  # there is no key to set here. `agent` picks which LibreFang agent tasks
-  # talk to; the registry-bundled "coder" is the right default for a coding
-  # workspace.
+  # LibreFang (https://librefang.ai) — open-source agent OS. OPT-IN, and OFF
+  # by default (#754). The CLI is pre-installed in the image (like Ante) and
+  # reuses whatever provider keys are configured elsewhere
+  # (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so there is no key to set here.
+  #
+  # `enabled` is the whole feature's switch, because installing it was never
+  # passive: boot seeded ~/.librefang from the image, rewrote its config.toml
+  # and pre-warmed its kernel daemon in EVERY workspace, and the dashboard
+  # listed it as an assistant — all for an agent most users never asked for.
+  # With `enabled: false` none of that runs and no picker offers it; the
+  # binary stays in the image, so flipping this to true (and restarting) is
+  # all an existing LibreFang user has to do to keep it.
+  #
+  # `agent` picks which LibreFang agent tasks talk to; the registry-bundled
+  # "coder" is the right default for a coding workspace. It is only emitted
+  # when `enabled` is true.
   librefang:
+    enabled: false                        # KC_LIBREFANG_ENABLED
     agent: "coder"                        # KC_LIBREFANG_AGENT
   # OpenCode → any OpenAI-compatible endpoint
   # (e.g. a private proxy running on your own Digital Ocean droplet)

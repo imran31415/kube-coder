@@ -2306,7 +2306,7 @@ class ClaudeTaskManager:
     #   1. Claude Code   — always available (anthropic-hosted)
     #   2. Ante CLI      — always available (pre-installed in the image)
     #   3. Antigravity   — `agy` CLI; listed when its binary is present (OAuth login)
-    #   4. LibreFang     — agent-OS CLI; listed when its binary is present
+    #   4. LibreFang     — agent-OS CLI; opt-in (#754), then binary-gated
     #   5. OpenRouter    — OpenCode CLI proxied through OpenRouter
     #   6. DeepSeek      — OpenCode CLI against DeepSeek's native API
     #   7. Opensource GPU — kc-harness against the configured Ollama endpoint
@@ -2412,11 +2412,16 @@ class ClaudeTaskManager:
                 'deepseek-harness', 'DEEPSEEK_API_KEY',
                 model=os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL),
             ))
-        # LibreFang — listed only when its CLI is actually resolvable (older
-        # images predate it, and /usr/local/bin/librefang is a symlink to a
-        # PVC path that start.sh seeds), so the dropdown never advertises a
-        # dead option.
-        if shutil.which('librefang'):
+        # LibreFang — OPT-IN (#754), and then listed only when its CLI is
+        # actually resolvable (older images predate it, and
+        # /usr/local/bin/librefang is a symlink to a PVC path start.sh seeds),
+        # so the dropdown never advertises a dead option. The chart value
+        # (assistant.librefang.enabled → KC_LIBREFANG_ENABLED) is the same one
+        # that makes start.sh seed its home and start its kernel daemon: a
+        # workspace that didn't opt in has neither, so the honest answer is
+        # that the assistant isn't here — not a not-ready entry (#702) waiting
+        # on a key it would still not be able to use.
+        if runtimes.is_enabled('librefang') and shutil.which('librefang'):
             out.append(dict(ClaudeTaskManager.ASSISTANTS['librefang']))
         if keys.get('OPENROUTER_API_KEY'):
             out.append(dict(

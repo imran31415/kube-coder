@@ -407,8 +407,12 @@ so orchestration can't fork-bomb the pod or run away on API spend.
   `/home/dev/.codex`);
   after that it works as a Hypervisor driver, a Build-tab REPL, and a
   `spawn_agent(assistant="codex")` sub-agent, same as Claude. No API key.
-- `librefang` — LibreFang agent OS (pre-installed; talks to its registry
-  `coder` agent and reuses whatever provider key is in the environment)
+- `librefang` — LibreFang agent OS. **Opt-in**: the CLI is in the image, but
+  the workspace only sets it up and offers it when the chart sets
+  `assistant.librefang.enabled: true`. Where it is off, it is absent from the
+  list above and `spawn_agent` refuses it; where it is on, it talks to its
+  registry `coder` agent and reuses whatever provider key is in the
+  environment.
 - `opencode-openrouter` — OpenCode via OpenRouter
 - `opencode-deepseek` — OpenCode via DeepSeek
 - `kc-harness` — Opensource GPU (requires a running Ollama endpoint)

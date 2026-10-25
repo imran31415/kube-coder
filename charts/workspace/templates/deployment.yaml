@@ -207,9 +207,19 @@ spec:
         - name: KC_ANTIGRAVITY_MODEL
           value: {{ .Values.assistant.antigravity.model | quote }}
         {{- end }}
+        {{- /* LibreFang is opt-in and off by default (#754). One flag gates
+               the whole feature: start.sh skips seeding ~/.librefang,
+               normalizing its config and pre-warming its kernel daemon, and
+               the server/orchestrator leave it out of every assistant list.
+               `dig`-not-`default` because sprig's `default` treats boolean
+               false as empty, which would silently re-enable it. */}}
+        {{- if dig "enabled" false ((.Values.assistant).librefang | default dict) }}
+        - name: KC_LIBREFANG_ENABLED
+          value: "true"
         {{- if (.Values.assistant.librefang).agent }}
         - name: KC_LIBREFANG_AGENT
           value: {{ .Values.assistant.librefang.agent | quote }}
+        {{- end }}
         {{- end }}
         {{- if .Values.assistant.fallback.baseUrl }}
         - name: KC_FALLBACK_BASE_URL

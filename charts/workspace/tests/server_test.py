@@ -304,7 +304,7 @@ class AssistantSelectionTests(unittest.TestCase):
             'KC_ANTIGRAVITY_MODEL',
             'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
             'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
-            'KC_LIBREFANG_AGENT',
+            'KC_LIBREFANG_AGENT', 'KC_LIBREFANG_ENABLED',
         ) if k in os.environ}
         # available_assistants()/resolve_assistant() read the module-level
         # WORKSPACE_DEFAULT_ASSISTANT (fixed at import from KC_DEFAULT_ASSISTANT).
@@ -323,7 +323,7 @@ class AssistantSelectionTests(unittest.TestCase):
                   'KC_ANTIGRAVITY_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
                   'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
-                  'KC_LIBREFANG_AGENT'):
+                  'KC_LIBREFANG_AGENT', 'KC_LIBREFANG_ENABLED'):
             os.environ.pop(k, None)
         os.environ.update(self._saved_env)
         server.WORKSPACE_DEFAULT_ASSISTANT = self._saved_default
@@ -335,27 +335,45 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertIn('ante', [a['id'] for a in avail])
         self.assertTrue(avail[0]['default'])
 
-    def test_librefang_listed_only_when_binary_present(self):
-        # Availability is gated on the CLI actually resolving — older images
-        # predate the binary and the dropdown must not offer a dead option.
-        with mock.patch('server.shutil.which', return_value=None):
-            ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
-            self.assertNotIn('librefang', ids)
+    def test_librefang_not_listed_until_the_workspace_opts_in(self):
+        # LibreFang is opt-in (#754): the binary ships in the image, so binary
+        # presence alone can no longer be the signal — the chart flag is.
         with mock.patch('server.shutil.which',
                         return_value='/usr/local/bin/librefang'):
-            match = [a for a in server.ClaudeTaskManager.available_assistants()
-                     if a['id'] == 'librefang']
-            self.assertEqual(len(match), 1)
-            self.assertEqual(match[0]['label'], 'LibreFang')
+            ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+            self.assertNotIn('librefang', ids)
 
-    def test_resolve_librefang_requires_binary(self):
+    def test_librefang_listed_only_when_opted_in_and_binary_present(self):
+        # With the flag on, availability is still gated on the CLI actually
+        # resolving — older images predate the binary and the dropdown must
+        # not offer a dead option.
+        with mock.patch.dict(os.environ, {'KC_LIBREFANG_ENABLED': 'true'}):
+            with mock.patch('server.shutil.which', return_value=None):
+                ids = [a['id'] for a
+                       in server.ClaudeTaskManager.available_assistants()]
+                self.assertNotIn('librefang', ids)
+            with mock.patch('server.shutil.which',
+                            return_value='/usr/local/bin/librefang'):
+                match = [a for a in server.ClaudeTaskManager.available_assistants()
+                         if a['id'] == 'librefang']
+                self.assertEqual(len(match), 1)
+                self.assertEqual(match[0]['label'], 'LibreFang')
+
+    def test_resolve_librefang_requires_the_flag_and_the_binary(self):
         with mock.patch('server.shutil.which', return_value=None):
             self.assertEqual(
                 server.ClaudeTaskManager.resolve_assistant('librefang'), 'claude')
+        # Binary but no flag: a Build, cron or webhook naming librefang on a
+        # workspace that never opted in falls back instead of launching a CLI
+        # whose boot-time setup never ran.
         with mock.patch('server.shutil.which',
                         return_value='/usr/local/bin/librefang'):
             self.assertEqual(
-                server.ClaudeTaskManager.resolve_assistant('librefang'), 'librefang')
+                server.ClaudeTaskManager.resolve_assistant('librefang'), 'claude')
+            with mock.patch.dict(os.environ, {'KC_LIBREFANG_ENABLED': 'true'}):
+                self.assertEqual(
+                    server.ClaudeTaskManager.resolve_assistant('librefang'),
+                    'librefang')
 
     def test_command_librefang_chats_with_coder(self):
         cmd = server.ClaudeTaskManager.assistant_command('librefang')
