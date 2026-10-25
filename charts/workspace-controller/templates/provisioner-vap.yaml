@@ -9,17 +9,21 @@
 # ValidatingAdmissionPolicy — constrain Jobs that run as the workspace-provisioner
 # ServiceAccount (security review July 2026, finding 4).
 #
-# The internet-facing controller can `create jobs` in this namespace and the Job
-# it creates selects the provisioner SA, which holds a broad cluster-wide
-# ClusterRole. A principal that can create a workload and choose another SA in
-# the same namespace inherits that SA's identity — so controller compromise
-# would otherwise bridge to full provisioner privileges via an arbitrary Job
-# manifest. This policy pins the shape of any Job that runs as the provisioner
-# SA to exactly what the legitimate provisioner Job looks like
-# (controller.py build_job_manifest), so a tampered manifest cannot run an
-# attacker-controlled workload under that identity — including, since #422, the
-# rule that the container may supply no command/args at all, because the program
-# it runs is baked into the signed image rather than injected by the caller.
+# Originally this policy carried the whole load: the internet-facing controller
+# could `create jobs` in the provisioner SA's own namespace, and a principal that
+# can create a workload and choose another SA in the same namespace inherits
+# that SA's identity, so a tampered manifest would have run as the cluster-
+# privileged provisioner. #421 removed that bridge structurally — the SA moved
+# to the broker's namespace, where the controller holds no workload verbs at all.
+#
+# The policy stays, as the belt to that architecture's braces. It pins the shape
+# of any Job that runs as the provisioner SA to exactly what the legitimate Job
+# looks like (broker.py build_job_manifest), which now defends against a
+# compromise of the BROKER rather than of the controller, and against an
+# operator (or a future refactor) accidentally reintroducing a second creator of
+# provisioner-SA Jobs. Since #422 that includes the rule that the container may
+# supply no command/args at all, because the program it runs is baked into the
+# signed image rather than injected by the caller.
 #
 # Requires Kubernetes >= 1.30 (admissionregistration.k8s.io/v1 GA). Guarded
 # behind provision.admissionPolicy.enabled for clusters that cannot serve it.
@@ -103,8 +107,8 @@ spec:
   # controller compromise from "run any program at provisioner privilege" to
   # "choose the inputs of one fixed, signed program", and it is the precondition
   # for the #421 broker to stamp Jobs from a genuinely immutable template.
-  # NB upgrade order: this rejects Jobs from a pre-#422 controller, which still
-  # set `command`. Chart and controller ship together, so roll them together.
+  # NB upgrade order: this rejects Jobs from a pre-#422 creator, which still set
+  # `command`. Chart, controller and broker ship together — roll them together.
   - expression: >-
       variables.containers.all(c, !has(c.command) && !has(c.args))
     message: "provisioner Job container must not override the image entrypoint — no command/args (the provisioning script is baked into the provisioner image)"
@@ -130,10 +134,12 @@ metadata:
 spec:
   policyName: workspace-provisioner-job-guard
   validationActions: ["Deny"]
-  # Scope enforcement to the control-plane namespace where the provisioner Job
-  # actually runs (the only place the provisioner SA exists).
+  # Scope enforcement to the BROKER namespace, where the provisioner Job runs
+  # and the provisioner SA exists since #421 — not the control-plane namespace
+  # it used to run in. Getting this wrong fails open (the policy would simply
+  # never match), so keep it in lockstep with provision.broker.namespace.
   matchResources:
     namespaceSelector:
       matchLabels:
-        kubernetes.io/metadata.name: {{ .Values.namespace }}
+        kubernetes.io/metadata.name: {{ .Values.provision.broker.namespace }}
 {{- end }}
