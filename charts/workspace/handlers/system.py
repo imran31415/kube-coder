@@ -254,6 +254,9 @@ class SystemRoutes:
                        else None),
             is_live=(srv.boards.runs.is_live if srv._BOARDS_AVAILABLE
                      else None),
+            # Which `waiting-for-input` Builds are finished rather than
+            # parked on somebody's question (#804) — see `probe_tasks`.
+            is_unattended=srv.ClaudeTaskManager._is_unattended_source,
             idle_minutes=keeper_idle.parse_idle_minutes(
                 (query.get('idle_minutes') or [None])[0]),
             # Don't count the caller as a user of the thing it is asking

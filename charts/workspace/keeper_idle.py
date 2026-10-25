@@ -24,10 +24,14 @@ mid-command and an unsaved editor buffer, so every ambiguity resolves to
 
 The signals, and why each one is the right source:
 
-  tasks        `ClaudeTaskManager.list_tasks()` — Builds and sub-agents. Live
-               statuses are exactly `running` / `waiting-for-input`; a Build
-               parked on a question is NOT idle, it is waiting for the human
-               who is about to come back to it.
+  tasks        `ClaudeTaskManager.list_tasks()` — Builds and sub-agents. A
+               `running` row is always live. A `waiting-for-input` row is live
+               only when somebody could actually be answering it: an ATTENDED
+               Build (the Build tab, source null / `manual`) parked on a
+               question is a human's turn, so it blocks sleep. An UNATTENDED
+               one (`webhook:`, `cron:`, `board:`, `desktop:`,
+               `hypervisor-tool`) does not — see `probe_tasks` for why that
+               state is indistinguishable from "finished" there (#804).
   board_runs   `BoardRunsManager.list_runs()` filtered by `boards.runs.is_live`
                — the run's own liveness predicate, which already knows that
                `status == 'running'` outlives the work (#712).
@@ -72,9 +76,15 @@ SSH_PORT = int(os.environ.get('KC_SSH_PORT', '22'))
 DEFAULT_IDLE_MINUTES = int(os.environ.get('KC_KEEPER_IDLE_MINUTES', '30'))
 
 #: A task in either of these is still somebody's work in progress. Same pair
-#: `_reconcile_status` treats as not-yet-finished (server.py) — including
-#: `waiting-for-input`, which is a human's turn, not an idle process.
+#: `_reconcile_status` treats as not-yet-finished (server.py). `running` is
+#: unambiguous; `waiting-for-input` is qualified by the source — see
+#: `WAITING_STATUS` and `probe_tasks`.
 LIVE_TASK_STATUSES = frozenset({'running', 'waiting-for-input'})
+
+#: The ambiguous one. It means "this task's screen has not moved for
+#: IDLE_WAITING_SECONDS", which is both "parked on a question" and "finished,
+#: with its interactive CLI still sitting at the prompt".
+WAITING_STATUS = 'waiting-for-input'
 
 #: /proc/net/tcp state column for ESTABLISHED.
 _TCP_ESTABLISHED = '01'
@@ -184,25 +194,71 @@ def probe_connections(ports, *, exclude_loopback=False, exclude_peers=(),
 
 # --- task and board-run probes ----------------------------------------------
 
-def probe_tasks(list_tasks):
+def probe_tasks(list_tasks, is_unattended=None):
     """Live Builds, plus the newest activity timestamp across ALL of them.
 
     Finished tasks still pin `quiet_since`: a Build that completed 30 seconds
     ago means the user was here 30 seconds ago, and they are very likely about
     to read its output.
+
+    `waiting-for-input` is not the signal it looks like (#804). Builds run the
+    *interactive* CLI, and nothing closes that session when the work is done —
+    the agent answers, its screen goes still, and `_reconcile_status` calls it
+    `waiting-for-input` 90s later. The row only becomes `completed` once its
+    tmux session is gone, which for a Build means somebody deleted it. So
+    "waiting" is the terminal state of every finished Build as much as it is
+    the state of one parked on a question, and counting it live meant a single
+    cron or webhook Build kept the workspace awake for ever — defeating the
+    wake-on-webhook flow #728 exists for (#762 saw rows stuck like that for
+    23.8 hours).
+
+    `is_unattended` is the discriminator, injected the way `is_live` is for
+    board runs: `ClaudeTaskManager._is_unattended_source`. For an unattended
+    source (`webhook:`, `cron:`, `board:`, `desktop:`, `hypervisor-tool`)
+    there is no human in front of that terminal to answer anything, so a
+    waiting row there is finished work and reads as quiet — the same call
+    `BoardRunsManager` already makes ("an interactive Build keeps its REPL
+    alive after finishing the work, so quiescence IS its done signal"). For
+    anything else — the Build tab's own Builds, source null / `manual`, and
+    any source this server does not recognise — waiting still blocks sleep,
+    because sleeping is scale-to-0 and would kill a session a person was
+    about to type into.
+
+    Fail safe in both directions: no predicate at all, an unreadable `source`,
+    or a predicate that raises all leave the row counted as live.
     """
     try:
         rows = list(list_tasks() or ())
     except Exception as exc:                                    # noqa: BLE001
         return unknown(f'task listing failed: {exc.__class__.__name__}')
-    live = [r for r in rows
-            if isinstance(r, dict) and r.get('status') in LIVE_TASK_STATUSES]
+    live = []
+    finished_unattended = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = row.get('status')
+        if status not in LIVE_TASK_STATUSES:
+            continue
+        if status == WAITING_STATUS and is_unattended is not None:
+            try:
+                quiet = bool(is_unattended(row.get('source')))
+            except Exception:                                   # noqa: BLE001
+                return unknown('task source check failed')
+            if quiet:
+                finished_unattended += 1
+                continue
+        live.append(row)
     stamps = [_newest(r, 'last_activity_at', 'finished_at', 'created_at')
               for r in rows if isinstance(r, dict)]
     stamps = [s for s in stamps if s is not None]
     plural = '' if len(live) == 1 else 's'
+    detail = f'{len(live)} live task{plural} of {len(rows)}'
+    if finished_unattended:
+        # Say what was discounted, so "why didn't it sleep?" — and its
+        # opposite, "why DID it?" — stay answerable from the endpoint alone.
+        detail += f' ({finished_unattended} finished unattended)'
     return signal(bool(live), since=max(stamps) if stamps else None,
-                  detail=f'{len(live)} live task{plural} of {len(rows)}')
+                  detail=detail)
 
 
 def probe_board_runs(list_runs, is_live):
@@ -252,17 +308,21 @@ def _newest(row, *keys):
 
 # --- assembling the answer ---------------------------------------------------
 
-def snapshot(*, list_tasks, list_runs, is_live, exclude_peers=(),
-             proc_files=None):
+def snapshot(*, list_tasks, list_runs, is_live, is_unattended=None,
+             exclude_peers=(), proc_files=None):
     """Every signal, read once. Order is the order the reason quotes them in.
 
     `exclude_peers` should carry the address of whoever is asking — see
     `established`. It applies to the dashboard signal only: a caller reaching
     ttyd or code-server is a human session by definition, whereas a caller
     reaching the API might be the keeper itself.
+
+    `is_unattended` is the task-source predicate `probe_tasks` needs; omitting
+    it keeps every `waiting-for-input` row live, which is the conservative
+    reading.
     """
     return {
-        'tasks': probe_tasks(list_tasks),
+        'tasks': probe_tasks(list_tasks, is_unattended),
         'board_runs': probe_board_runs(list_runs, is_live),
         'terminals': probe_connections(
             (TTYD_PORT, SSH_PORT), label='terminal session',
@@ -324,12 +384,13 @@ def decide(signals, *, idle_minutes=None, now=None, watching_since=None):
     }
 
 
-def report(*, list_tasks, list_runs, is_live, idle_minutes=None, now=None,
-           exclude_peers=(), proc_files=None):
+def report(*, list_tasks, list_runs, is_live, is_unattended=None,
+           idle_minutes=None, now=None, exclude_peers=(), proc_files=None):
     """`snapshot` + `decide` — what the endpoint serialises."""
     return decide(
         snapshot(list_tasks=list_tasks, list_runs=list_runs, is_live=is_live,
-                 exclude_peers=exclude_peers, proc_files=proc_files),
+                 is_unattended=is_unattended, exclude_peers=exclude_peers,
+                 proc_files=proc_files),
         idle_minutes=idle_minutes, now=now)
 
 
