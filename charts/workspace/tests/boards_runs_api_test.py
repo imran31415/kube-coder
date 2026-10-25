@@ -70,6 +70,9 @@ class FakeTasks:
     def __init__(self):
         self.created = []
         self.status = {}
+        # task.json as the reap reads it — a build whose initial prompt never
+        # reached the agent is settled differently (#805).
+        self.meta = {}
         self.reject_after = None
         self._n = 0
 
@@ -85,6 +88,9 @@ class FakeTasks:
 
     def task_status(self, task_id):
         return self.status.get(task_id)
+
+    def read_meta(self, task_id):
+        return self.meta.get(task_id)
 
     def finish_all(self, status='completed'):
         for task_id in self.status:
@@ -145,7 +151,7 @@ class _Base(unittest.TestCase):
         BCM.set('JIRA_API_TOKEN', 'secret-token')
 
         self.tasks = FakeTasks()
-        for name in ('create_task', 'task_status'):
+        for name in ('create_task', 'task_status', 'read_meta'):
             p = mock.patch.object(CTM, name, getattr(self.tasks, name))
             p.start()
             self.addCleanup(p.stop)
@@ -540,6 +546,37 @@ class ReapTests(_Base):
         self.assertIsNone(
             RM._processed('acme-jira').seen('1', row['content_hash']))
         self.assertEqual(RM._leases('acme-jira').all(), {})
+
+    def test_a_build_whose_prompt_never_LANDED_says_so(self):
+        """`prompt_delivered: false` means the agent was never asked (#805).
+
+        It settles as failed either way — but "ended without reporting a
+        disposition" reads as an agent that worked and stayed silent, which
+        sent a reviewer looking at a transcript that has nothing in it. The
+        delivery failure is the finding, and it still feeds
+        `stop_on.consecutive_failures` so a run whose Builds are all failing
+        to receive their prompt halts instead of burning the board."""
+        run_id = self._started(1, concurrency=1)
+        self.tasks.meta['task-1'] = {'prompt_delivered': False}
+        self.tasks.finish_all('waiting-for-input')   # no disposition
+        RM._reap(run_id)
+        state = RM.get(run_id)
+        row = state['items']['1']
+        self.assertEqual(runs.counts(state)['failed'], 1)
+        self.assertEqual(row['disposition'], 'failed')
+        self.assertIn('never reached the agent', row['error'])
+        self.assertEqual(state['consecutive_failures'], 1)
+        # Nothing durable written, so a re-run picks the item up again.
+        self.assertIsNone(
+            RM._processed('acme-jira').seen('1', row['content_hash']))
+
+    def test_a_delivered_prompt_keeps_the_generic_no_disposition_reason(self):
+        run_id = self._started(1, concurrency=1)
+        self.tasks.meta['task-1'] = {'prompt_delivered': True}
+        self.tasks.finish_all('completed')
+        RM._reap(run_id)
+        row = RM.get(run_id)['items']['1']
+        self.assertIn('without reporting a disposition', row['error'])
 
     def test_a_reported_disposition_other_than_completed_is_kept(self):
         """`needs_review` is a normal outcome, not a failure — it must survive

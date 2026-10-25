@@ -188,6 +188,15 @@ export function TaskList() {
                         trust dialog
                       </Pill>
                     )}
+                    {t.prompt_delivered === false && !t.stalled_at_trust_dialog && (
+                      <Pill
+                        tone="danger"
+                        mono
+                        title="Its prompt was never submitted — it is sitting unsent in the input box. Open the task and press Enter, or re-send the prompt."
+                      >
+                        prompt unsent
+                      </Pill>
+                    )}
                     {t.parent_task_id && (
                       <Pill tone="neutral" mono>sub-agent</Pill>
                     )}

@@ -63,6 +63,36 @@ describe('TaskList', () => {
     expect(screen.getByText('trust dialog')).toBeInTheDocument();
   });
 
+  it('marks a Build whose prompt was never submitted (#805)', () => {
+    // Same status, same quiet screen as a Build that finished its turn — and
+    // the prompt is sitting unsent in its input box.
+    tasks.value = [{
+      ...sample[0], task_id: 'unsent-1', name: 'unsent',
+      status: 'waiting-for-input', prompt_delivered: false,
+    }];
+    render(<TaskList />);
+    expect(screen.getByText('prompt unsent')).toBeInTheDocument();
+  });
+
+  it('shows only the trust-dialog pill when that is what ate the prompt', () => {
+    // Both are true at once there; two danger pills saying the same thing is
+    // noise, and the dialog one is the actionable half.
+    tasks.value = [{
+      ...sample[0], task_id: 'wedged-2', status: 'waiting-for-input',
+      prompt_delivered: false, stalled_at_trust_dialog: true,
+    }];
+    render(<TaskList />);
+    expect(screen.getByText('trust dialog')).toBeInTheDocument();
+    expect(screen.queryByText('prompt unsent')).toBeNull();
+  });
+
+  it('leaves a Build whose delivery is still in flight unmarked', () => {
+    // null, not false: the delivery thread has not reported yet.
+    tasks.value = [{ ...sample[0], status: 'running', prompt_delivered: null }];
+    render(<TaskList />);
+    expect(screen.queryByText('prompt unsent')).toBeNull();
+  });
+
   it('leaves an ordinary waiting task unmarked', () => {
     tasks.value = [{ ...sample[0], status: 'waiting-for-input', prompt_delivered: true }];
     render(<TaskList />);
