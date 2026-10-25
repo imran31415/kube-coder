@@ -276,13 +276,13 @@ Implementation: `charts/workspace/keeper_idle.py`, wired at
 
 | Signal | Source | Note |
 |---|---|---|
-| `tasks` | `ClaudeTaskManager.list_tasks()` | Live is `running` or `waiting-for-input` — the same pair `_reconcile_status` treats as unfinished (`server.py:4504`). A Build parked on a question is **not** idle; it is a human's turn. |
+| `tasks` | `ClaudeTaskManager.list_tasks()` | `running` is live, whatever started it. `waiting-for-input` depends on who is watching: an **attended** Build (the Build tab — source null / `manual`, and any source the server does not recognise) is a human's turn and blocks sleep; an **unattended** one (`webhook:`, `cron:`, `board:`, `desktop:`, `hypervisor-tool`) does not, because there that status is also how a *finished* Build rests — see below (#804). |
 | `board_runs` | `BoardRunsManager.list_runs()` filtered by `boards.runs.is_live` | Reuses the run-liveness predicate from #712 (`boards/runs.py:368`), which already knows `status == "running"` outlives the work. |
 | `terminals` | ESTABLISHED connections to ttyd (7681) and the SSH port | The ssh-server sidecar shares the pod netns, so one `/proc/net/tcp` read sees both. |
 | `code_server` | ESTABLISHED connections to 8080 | An open VS Code tab holds a websocket; that is its heartbeat. |
 | `dashboard` | ESTABLISHED connections to 6080 from a **non-loopback** peer, minus the caller | See below. |
 
-**Three rules that are the whole point of the module, and are pinned by tests:**
+**Four rules that are the whole point of the module, and are pinned by tests:**
 
 1. **Every ambiguity resolves to "busy".** A signal whose source cannot be read
    reports `known: false` *and* `busy: true`. A broken probe must never read as
@@ -295,7 +295,39 @@ Implementation: `charts/workspace/keeper_idle.py`, wired at
    workspace that restarts every 20 minutes can never satisfy a 30-minute
    threshold. That is the correct behaviour, not a bug — but it means "sleep
    never happens" should be diagnosed by reading `watching_since` first.)
-3. **The poll does not count as activity.** The keeper is a different pod, so
+3. **`waiting-for-input` is read differently for a Build nobody is
+   watching.** Builds run the *interactive* CLI, and nothing closes that
+   session when the work is done: the agent answers, its screen stops moving,
+   and 90s later `_reconcile_status` calls the task `waiting-for-input`. It
+   becomes `completed` only once the tmux session is gone, which for a Build
+   means somebody deleted it. So that status is the resting state of a
+   **finished** Build as much as of one parked on a question, and counting it
+   live meant a single cron or webhook Build kept the workspace awake for ever
+   (#804; #762 saw rows stuck like that for 23.8 hours). The source decides:
+   for `webhook:`, `cron:`, `board:`, `desktop:` and `hypervisor-tool` there is
+   no human in front of that terminal to answer anything, so a waiting row is
+   finished work and reads as quiet — the same call `BoardRunsManager` already
+   makes ("an interactive Build keeps its REPL alive after finishing the work,
+   so quiescence IS its done signal"). Everything else stays live, rule 1
+   style: the Build tab's Builds, source null / `manual`, a source this server
+   does not recognise, an unreadable one. The row's `last_activity_at` still
+   feeds `quiet_since` either way, so the workspace waits the full
+   `idleMinutes` from the Build's last screen change, and the signal's detail
+   names what it discounted — `1 live task of 4 (2 finished unattended)` — so
+   both "why didn't it sleep?" and "why did it?" stay answerable from the
+   endpoint.
+
+   **The trade-off, stated:** sleep is scale-to-0, so it kills the pod and
+   every tmux session in it; on the next wake those tasks read `terminated`
+   (#798). For a finished Build that costs nothing — the work is done, and its
+   transcript and branch are on the PVC. The case it does cost is an
+   unattended Build that genuinely stopped to ask something: its session goes
+   when the workspace sleeps, and a follow-up message has to start a new one.
+   That is accepted deliberately, because nobody is watching that terminal to
+   answer it anyway, and the alternative is a workspace that never sleeps.
+   Widening this to Build-tab Builds as well is a separate product decision
+   (option B in #804), not taken here.
+4. **The poll does not count as activity.** The keeper is a different pod, so
    its request arrives non-loopback and would otherwise register as a dashboard
    client — every 60s, for ever, on the strength of asking "may I put you to
    sleep?". The endpoint excludes the peer it is answering.
@@ -987,7 +1019,7 @@ kubectl -n <ns> exec deploy/ws-<user> -c ide -- sh -c \
 |---|---|---|
 | `busy_signals: ["dashboard"]` with nobody using it | an open browser tab somewhere — a laptop closed with the dashboard open keeps its connection until TCP gives up, which can be hours | close the tab. This is deliberate: an open tab is the "session" #728 says must never be slept under |
 | `busy_signals: ["terminals"]` or `["code_server"]` | an open terminal or editor tab, or an SSH session | the same |
-| `busy_signals: ["tasks"]` | a Build is running, **or waiting for an answer** — a Build parked on a question is a person's turn, not idle. A **finished** Build reads the same: Claude stays open in its terminal after it answers | answer it, or delete the Build once it is done |
+| `busy_signals: ["tasks"]` | a Build is `running`, or an **attended** Build (the Build tab) is waiting for an answer — that is a person's turn, not idle. Claude stays open in a Build's terminal after it answers, so a finished Build-tab Build reads the same | answer it, or delete the Build once it is done. A finished `webhook:`/`cron:`/`board:`/`desktop:` Build no longer needs deleting: it is discounted, and the detail counts it (`… (2 finished unattended)`) (#804) |
 | `idle: false`, nothing busy, `reason: "quiet for 300s, needs 1800s"` | not quiet for long enough yet | wait |
 | `watching_since` a few minutes ago | the workspace restarted, and it cannot vouch for quiet from before it started | a workspace that restarts more often than `idleMinutes` never sleeps — find out why it restarts |
 | the keeper logs `refused the keeper's credentials` | the two pods hold different secrets (a pinned `keeper.controlSecret.value` on one release, a generated one on the other) | make both read the same Secret, then restart both pods |
@@ -1106,13 +1138,20 @@ the slim image lacks). The numbers below are the real image's.
   and kept `board_runs` and `tasks` busy for the 19.5 minutes it was live: no
   sleep, both issues done, both of the agents' comments staged for review and
   none posted — the issues' comment counts did not change.
-- **A finished Build holds it awake until it is deleted.** Claude stays open in
-  the Build's terminal after it answers, so the Build reads `waiting-for-input`,
-  which counts as live. The workspace stayed awake for seven minutes after the
-  Build answered and six after the Board run ended; deleting the Builds let it
+- **A finished Build held it awake until it was deleted — fixed for the
+  unattended ones (#804).** Claude stays open in the Build's terminal after it
+  answers, so the Build reads `waiting-for-input`. On the measured run that
+  counted as live: the workspace stayed awake for seven minutes after the Build
+  answered and six after the Board run ended, and deleting the Builds let it
   sleep 128 s and 169 s later. Every Build runs the interactive CLI, the ones a
-  webhook or cron starts included (`assistant_command`), so this holds for them
-  too — that part is read from the code, not measured.
+  webhook or cron starts included (`assistant_command`), so a finished cron
+  Build never let a workspace sleep at all — which is the flow #728 exists for.
+  `probe_tasks` now discounts a waiting Build whose source is unattended (rule
+  3 above), so a cron or webhook Build that finishes lets the workspace sleep
+  `idleMinutes` after its last screen change with nobody deleting it, while a
+  Build-tab Build left open still keeps it awake. Pinned by unit tests over
+  `task.json` fixtures; the cluster half of it is in the un-verified list
+  below.
 - **The fail-safe, unprompted.** On a node short of CPU, the workspace twice
   took longer than 10 s to answer and the API server once timed out the
   keeper's read. Each time the keeper logged it — `did not answer within 10s`,
@@ -1148,6 +1187,10 @@ every leg.
 
 **Not verified:**
 
+- the #804 fix on a cluster: a finished `cron:`/`webhook:` Build letting the
+  workspace sleep `idleMinutes` after its last screen change with nobody
+  deleting it, and a Build-tab Build still holding it awake — unit tests over
+  `task.json` fixtures only;
 - a queued webhook holding it awake (the queue guard) — unit tests only;
 - the races: a visit at the instant of the sleep write, many visits during a
   sleep, and a Stop landing just after a visit woke it — the one case

@@ -18,6 +18,7 @@ Run with:
 
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -165,6 +166,8 @@ class TaskProbeTests(unittest.TestCase):
 
     def test_a_build_waiting_for_input_is_busy(self):
         # Not idle — that is a human's turn, and they are coming back to it.
+        # No predicate injected at all, which is the conservative reading:
+        # every waiting row stays live.
         sig = keeper_idle.probe_tasks(
             lambda: [{'status': 'waiting-for-input', 'created_at': 100.0}])
         self.assertTrue(sig['busy'])
@@ -203,6 +206,169 @@ class TaskProbeTests(unittest.TestCase):
             lambda: [{'status': 'completed', 'created_at': None,
                       'finished_at': 'yesterday', 'last_activity_at': True}])
         self.assertIsNone(sig['since'])
+
+
+class FinishedUnattendedBuildTests(unittest.TestCase):
+    """A finished unattended Build must not hold the workspace awake (#804).
+
+    Builds run the interactive CLI and nothing closes the session when the work
+    is done, so `waiting-for-input` is ALSO the resting state of every finished
+    Build — which made one cron Build enough to keep a workspace awake for
+    ever. The discriminator is the task's source, and the predicate is the real
+    `ClaudeTaskManager._is_unattended_source` rather than a copy of its prefix
+    list, so a change to that list shows up here.
+
+    Each case states which way the ambiguity falls, and
+    `test_every_case_here_flips_under_the_old_rule` proves these assertions are
+    about the new rule and not about something that was already true.
+    """
+
+    predicate = staticmethod(server.ClaudeTaskManager._is_unattended_source)
+
+    def probe(self, rows, predicate=None):
+        return keeper_idle.probe_tasks(
+            lambda: rows, self.predicate if predicate is None else predicate)
+
+    def waiting(self, source, **extra):
+        row = {'status': 'waiting-for-input', 'source': source,
+               'last_activity_at': 100.0}
+        row.update(extra)
+        return row
+
+    # --- quiet: nobody is in front of that terminal --------------------------
+
+    def test_each_unattended_source_waiting_is_quiet(self):
+        for source in ('webhook:gh-123', 'cron:nightly', 'desktop:mac-1',
+                       'board:run-7', 'hypervisor-tool'):
+            with self.subTest(source=source):
+                sig = self.probe([self.waiting(source)])
+                self.assertTrue(sig['known'])
+                self.assertFalse(sig['busy'])
+                self.assertEqual(sig['detail'],
+                                 '0 live tasks of 1 (1 finished unattended)')
+
+    def test_a_discounted_build_still_pins_quiet_since(self):
+        # Quiet, but not quiet SINCE LONGER AGO than its last screen change:
+        # the workspace still waits the full `idleMinutes` from there.
+        sig = self.probe([self.waiting('cron:nightly', last_activity_at=500.0)])
+        self.assertFalse(sig['busy'])
+        self.assertEqual(sig['since'], 500.0)
+
+    def test_the_detail_says_what_was_discounted(self):
+        # "Why DID it sleep?" has to be answerable from the endpoint alone.
+        sig = self.probe([{'status': 'running', 'source': 'cron:a',
+                           'last_activity_at': 10.0},
+                          self.waiting('webhook:b'),
+                          self.waiting('board:c'),
+                          {'status': 'completed', 'finished_at': 5.0}])
+        self.assertTrue(sig['busy'])
+        self.assertEqual(sig['detail'],
+                         '1 live task of 4 (2 finished unattended)')
+
+    # --- busy: a person's turn, or an unreadable source ----------------------
+
+    def test_an_attended_build_waiting_is_still_busy(self):
+        # The Build tab. A human is looking at that terminal, and sleep is
+        # scale-to-0 — it would kill the session they are about to type into.
+        for source in (None, '', 'manual'):
+            with self.subTest(source=source):
+                sig = self.probe([self.waiting(source)])
+                self.assertTrue(sig['busy'])
+                self.assertEqual(sig['detail'], '1 live task of 1')
+
+    def test_an_unrecognised_source_waiting_is_busy(self):
+        # Fail safe: only sources this server KNOWS nobody is watching are
+        # discounted. Anything else — including page-watch:, which passes
+        # auto_approve=False explicitly — keeps the workspace up.
+        for source in ('page-watch:p1', 'some-new-caller', 'webhook',
+                       'cronjob:nightly'):
+            with self.subTest(source=source):
+                self.assertTrue(self.probe([self.waiting(source)])['busy'])
+
+    def test_a_missing_source_key_is_busy(self):
+        sig = self.probe([{'status': 'waiting-for-input',
+                           'last_activity_at': 100.0}])
+        self.assertTrue(sig['busy'])
+
+    def test_a_running_unattended_build_is_busy(self):
+        # Only the ambiguous status is reinterpreted. `running` is work in
+        # progress whatever started it.
+        for source in ('cron:nightly', 'webhook:gh-123', 'board:run-7'):
+            with self.subTest(source=source):
+                sig = self.probe([{'status': 'running', 'source': source,
+                                   'last_activity_at': 100.0}])
+                self.assertTrue(sig['busy'])
+                self.assertEqual(sig['detail'], '1 live task of 1')
+
+    def test_a_raising_predicate_is_unknown_and_blocks(self):
+        def boom(_source):
+            raise KeyError('source')
+        sig = self.probe([self.waiting('cron:nightly')], predicate=boom)
+        self.assertFalse(sig['known'])
+        self.assertTrue(sig['busy'])
+
+    # --- the inversion -------------------------------------------------------
+
+    def test_every_case_here_flips_under_the_old_rule(self):
+        # The old rule — `status in {running, waiting-for-input}` with no
+        # regard for the source — is `probe_tasks` with no predicate. Putting
+        # it back has to make the quiet cases busy again, or the tests above
+        # are not testing this fix.
+        for source in ('webhook:gh-123', 'cron:nightly', 'desktop:mac-1',
+                       'board:run-7', 'hypervisor-tool'):
+            with self.subTest(source=source):
+                rows = [self.waiting(source)]
+                self.assertFalse(self.probe(rows)['busy'], 'new rule')
+                self.assertTrue(keeper_idle.probe_tasks(lambda: rows)['busy'],
+                                'old rule')
+
+
+class UnattendedBuildFromDiskTests(unittest.TestCase):
+    """The same rule over real `task.json` rows, through `list_tasks` (#804).
+
+    The unit tests above hand `probe_tasks` dicts, so they cannot catch the
+    wiring mistake that would actually break this in a pod: `list_tasks`
+    not putting the source on the row under the key the predicate is given.
+    These fixtures carry no `tmux_session`, which is what keeps
+    `_reconcile_status` from deciding they are over.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self._save = server.ClaudeTaskManager.TASKS_DIR
+        server.ClaudeTaskManager.TASKS_DIR = self.dir
+        self.addCleanup(setattr, server.ClaudeTaskManager, 'TASKS_DIR',
+                        self._save)
+
+    def write_task(self, task_id, **meta):
+        task_dir = os.path.join(self.dir, task_id)
+        os.makedirs(task_dir, exist_ok=True)
+        meta.setdefault('task_id', task_id)
+        meta.setdefault('created_at', 100.0)
+        with open(os.path.join(task_dir, 'task.json'), 'w') as fh:
+            json.dump(meta, fh)
+
+    def report(self):
+        return keeper_idle.report(
+            list_tasks=server.ClaudeTaskManager.list_tasks,
+            list_runs=None, is_live=None,
+            is_unattended=server.ClaudeTaskManager._is_unattended_source,
+            idle_minutes=0, now=1000.0,
+            proc_files=(os.path.join(self.dir, 'no-such-proc'),))
+
+    def test_a_finished_cron_build_lets_the_workspace_sleep(self):
+        self.write_task('t-cron', status='waiting-for-input',
+                        source='cron:nightly', last_activity_at=200.0)
+        out = self.report()
+        self.assertNotIn('tasks', out['busy_signals'])
+        self.assertEqual(out['signals']['tasks']['detail'],
+                         '0 live tasks of 1 (1 finished unattended)')
+
+    def test_a_build_tab_build_still_blocks(self):
+        self.write_task('t-manual', status='waiting-for-input',
+                        source='manual', last_activity_at=200.0)
+        self.assertIn('tasks', self.report()['busy_signals'])
 
 
 class BoardRunProbeTests(unittest.TestCase):
@@ -508,6 +674,28 @@ class KeeperEndpointBodyTests(EndpointTestCase):
         _, body = self.get('/api/keeper/idle?idle_minutes=forever')
         self.assertEqual(json.loads(body)['idle_threshold_s'],
                          keeper_idle.DEFAULT_IDLE_MINUTES * 60)
+
+    def test_the_task_source_predicate_is_the_real_one(self):
+        # The endpoint must hand `probe_tasks` the manager's own definition of
+        # unattended (#804), not leave it None — which would quietly restore
+        # the old "every waiting Build is live" rule in the pod while every
+        # unit test above still passed.
+        seen = {}
+        real = keeper_idle.report
+
+        def spy(**kwargs):
+            seen.update(kwargs)
+            return real(**kwargs)
+
+        keeper_idle.report = spy
+        try:
+            self.assertEqual(self.get('/api/keeper/idle')[0], 200)
+        finally:
+            keeper_idle.report = real
+        predicate = seen.get('is_unattended')
+        self.assertTrue(callable(predicate))
+        self.assertTrue(predicate('cron:nightly'))
+        self.assertFalse(predicate('manual'))
 
     def test_the_caller_is_not_counted_as_a_dashboard_client(self):
         # The endpoint passes the requesting peer to `exclude_peers`. Asserted
