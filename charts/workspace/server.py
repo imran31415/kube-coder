@@ -4545,8 +4545,9 @@ class ClaudeTaskManager:
                 # The box is still empty at the deadline, so this paste really
                 # was dropped rather than late — paste it again (#288).
                 print(f'[ClaudeTaskManager] {session_name}: pasted prompt never '
-                      f'appeared in the input box; re-pasting '
-                      f'({attempt + 1}/{attempts}) (#805)', file=sys.stderr)
+                      f'appeared in the input box after '
+                      f'{attempt + 1}/{attempts} attempt(s) (#805)',
+                      file=sys.stderr)
                 reason = 'the paste never appeared in the input box'
                 continue
             if not submit:
