@@ -18,16 +18,11 @@ import { getConfig } from '../store/config';
 import type { ControllerCapacity, ControllerWorkspace } from '../api/types';
 import { colors, font, radius, shadow, space } from '../theme';
 import { usePolling } from '../util/usePolling';
-
-const WS_STATE: Record<string, { color: string; label: string }> = {
-  running: { color: colors.success, label: 'Running' },
-  stopped: { color: colors.textFaint, label: 'Stopped' },
-  transitioning: { color: colors.warning, label: 'Working' },
-  degraded: { color: colors.danger, label: 'Degraded' },
-};
+import { stateLabel, stopQuestion } from '../util/workspaceStateLabel';
 
 function StatePill({ state }: { state: string }) {
-  const s = WS_STATE[state] ?? { color: colors.textMuted, label: state };
+  const { tone, label } = stateLabel(state);
+  const s = { color: colors[tone], label };
   return (
     <View style={[styles.pill, { backgroundColor: s.color + '1f', borderColor: s.color + '4d' }]}>
       <View style={[styles.dot, { backgroundColor: s.color }]} />
@@ -121,7 +116,7 @@ export default function ControllerScreen() {
       }
     };
     if (stopping) {
-      Alert.alert('Stop workspace?', `Scale ${ws.user} to zero. Its data is preserved and it can be started again.`, [
+      Alert.alert('Stop workspace?', stopQuestion(ws), [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Stop', style: 'destructive', onPress: () => void run() },
       ]);

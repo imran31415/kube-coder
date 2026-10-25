@@ -183,8 +183,12 @@ data:
             cron: 'A scheduled task is due, so it is starting to run it.',
             app: 'You asked for it from the mobile app.'
           };
+          {{- /* With the idle loop on (step 5) a plain wake can say why it went
+          to sleep, from the same value the keeper sleeps on, so the two cannot
+          disagree. One line on purpose: sleep off renders step 4b's byte for
+          byte. Present tense, because an operator can also sleep it by hand. */}}
           function waking(reason) {
-            say('Waking up your workspace…', WHY[reason] || 'It was asleep while nobody was using it.',
+            say('Waking up your workspace…', WHY[reason] || {{ if .Values.keeper.sleep.enabled }}{{ $m := int64 .Values.keeper.sleep.idleMinutes }}'It goes to sleep after {{ $m }} minute{{ if ne $m 1 }}s{{ end }} with nobody using it.'{{ else }}'It was asleep while nobody was using it.'{{ end }},
               'This usually takes about a minute — the page refreshes automatically when it\'s ready.', true);
           }
           function show(s) {

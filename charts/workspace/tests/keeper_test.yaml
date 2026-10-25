@@ -1,4 +1,4 @@
-suite: always-on keeper (#728 steps 3 and 4)
+suite: always-on keeper (#728 steps 3 to 5)
 templates:
   - templates/keeper-deployment.yaml
   - templates/keeper-rbac.yaml
@@ -739,3 +739,82 @@ tests:
       - matchRegex:
           path: data["holding.html"]
           pattern: 'waking\(s\.reason\)'
+
+  # ── Step 5: the idle loop ─────────────────────────────────────────────────
+  - it: tells the keeper its idle threshold when sleep is on
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 45
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_SLEEP_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_IDLE_MINUTES
+            value: "45"
+
+  # Without sleep there is no idle loop to configure, and the render stays
+  # step 4b's byte for byte.
+  - it: renders no idle threshold when sleep is off
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KEEPER_IDLE_MINUTES
+
+  # The int64 rule from step 4b: Helm reads YAML numbers as float64, and a
+  # large one would otherwise reach the keeper in scientific notation.
+  - it: renders a long threshold as a plain number
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 10080000
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_IDLE_MINUTES
+            value: "10080000"
+
+  - it: tells a visitor how long it sleeps after, when sleep is on
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 30
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "WHY.reason. .. 'It goes to sleep after 30 minutes with nobody using it.'"
+      - notMatchRegex:
+          path: data["holding.html"]
+          pattern: "It was asleep while nobody was using it"
+
+  - it: says one minute, not one minutes
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 1
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after 1 minute with nobody using it"
+
+  - it: keeps step 4b's sentence when sleep is off
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "WHY.reason. .. 'It was asleep while nobody was using it.'"
+      - notMatchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after"

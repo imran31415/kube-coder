@@ -29,6 +29,18 @@ describe('workspaceState', () => {
     expect(getWorkspaceState().reach).toBe('asleep');
   });
 
+  it("keeps \"stopped\" through the keeper's away answer, which says the same for asleep", () => {
+    // Otherwise the next failed request would turn it back into "asleep" and
+    // put up a Wake button the keeper is bound to refuse.
+    setReach('stopped');
+    reportDown(SLEEPING);
+    reportDown(UNREACHABLE);
+    expect(getWorkspaceState().reach).toBe('stopped');
+    // ...and an admin's Start is noticed like any other recovery.
+    reportAwake();
+    expect(getWorkspaceState().reach).toBe('awake');
+  });
+
   it('a wake in flight ignores the failures it expects', () => {
     setReach('waking');
     reportDown(UNREACHABLE);

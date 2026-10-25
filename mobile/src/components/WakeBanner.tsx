@@ -19,6 +19,7 @@ import { useWorkspaceState } from '../store/useWorkspaceState';
 import { reportAwake, setReach } from '../store/workspaceState';
 import { colors, font, space } from '../theme';
 import {
+  bannerAction,
   matchWorkspace,
   pollDelay,
   reachFromController,
@@ -74,12 +75,13 @@ function usePollUntilAwake(away: boolean): void {
   }, [away]);
 }
 
-/** "Can't reach" is a guess; the controller, when connected, knows whether the
- *  Deployment is scaled to 0 (asleep) or starting. */
+/** "Can't reach" is a guess, and so is "asleep" from the keeper's away answer,
+ *  which is the same for a workspace an admin stopped. The controller, when
+ *  connected, knows which: asleep, stopped (#728 step 5), or starting. */
 function useControllerLabel(reach: Reach): void {
   const cfg = useConfig();
   useEffect(() => {
-    if (reach !== 'unreachable' || !hasController(cfg)) return;
+    if ((reach !== 'unreachable' && reach !== 'asleep') || !hasController(cfg)) return;
     let cancelled = false;
     listControllerWorkspaces()
       .then((list) => {
@@ -106,7 +108,8 @@ export function WakeBanner() {
   const insets = useSafeAreaInsets();
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
-  const { controllerHost, controllerToken } = useConfig();
+  const cfg = useConfig();
+  const { controllerHost, controllerToken } = cfg;
   const away = reach !== 'awake';
 
   usePollUntilAwake(away);
@@ -127,6 +130,9 @@ export function WakeBanner() {
 
   if (!away) return null;
 
+  const withController = hasController(cfg);
+  const action = bannerAction(reach, withController);
+
   const onWake = async () => {
     const before = reach;
     setError(null);
@@ -134,10 +140,16 @@ export function WakeBanner() {
     const c = getConfig();
     const result = await wakeWorkspace({
       host: c.host,
-      viaKeeper: wakeViaKeeper,
+      // A stopped workspace is not the keeper's to wake, so its Start goes
+      // straight to the controller rather than asking the keeper to refuse.
+      viaKeeper: before === 'stopped' ? async () => false : wakeViaKeeper,
       controller: hasController(c) ? { list: listControllerWorkspaces, start: startWorkspace } : null,
     });
-    if (!result.ok) {
+    if (!result.ok && result.stopped) {
+      // The keeper says an admin stopped it: say that, and stop offering a
+      // wake that can only be refused again.
+      setReach('stopped');
+    } else if (!result.ok) {
       setReach(before);
       setError(result.message);
     }
@@ -148,7 +160,9 @@ export function WakeBanner() {
     ? `Starting your workspace… ${elapsed(now - since)}`
     : reach === 'asleep'
       ? 'Your workspace is asleep'
-      : "Can't reach your workspace";
+      : reach === 'stopped'
+        ? 'Your workspace is stopped'
+        : "Can't reach your workspace";
   const detail =
     error ??
     (waking
@@ -157,7 +171,11 @@ export function WakeBanner() {
         : 'Your data will refresh when it is back.'
       : reach === 'unreachable'
         ? 'It may be asleep or restarting.'
-        : 'Wake it up to load fresh data.');
+        : reach === 'stopped'
+          ? withController
+            ? 'An admin stopped it. You can start it again here.'
+            : 'An admin stopped it. Ask them to start it.'
+          : 'Wake it up to load fresh data.');
 
   return (
     <View
@@ -169,16 +187,18 @@ export function WakeBanner() {
         <ActivityIndicator size="small" color={colors.textMuted} />
       ) : (
         <Ionicons
-          name={reach === 'asleep' ? 'moon-outline' : 'cloud-offline-outline'}
+          name={reach === 'asleep' ? 'moon-outline' : reach === 'stopped' ? 'power-outline' : 'cloud-offline-outline'}
           size={20}
-          color={colors.warning}
+          color={reach === 'stopped' ? colors.textMuted : colors.warning}
         />
       )}
       <View style={styles.text}>
         <Text style={styles.title}>{title}</Text>
         <Text style={[styles.detail, error ? styles.error : null]}>{detail}</Text>
       </View>
-      {waking ? null : <Button title="Wake up" onPress={onWake} style={styles.button} />}
+      {action ? (
+        <Button title={action === 'start' ? 'Start' : 'Wake up'} onPress={onWake} style={styles.button} />
+      ) : null}
     </View>
   );
 }

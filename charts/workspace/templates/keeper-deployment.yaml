@@ -72,6 +72,14 @@ spec:
         # next helm upgrade would undo a sleep; `keeper sleep` refuses.
         - name: KEEPER_SLEEP_ENABLED
           value: {{ .Values.keeper.sleep.enabled | quote }}
+        {{- if .Values.keeper.sleep.enabled }}
+        # Step 5: how long the workspace must be quiet before the keeper puts
+        # it to sleep. The keeper states it on every poll (?idle_minutes=), so
+        # this and the workspace's KC_KEEPER_IDLE_MINUTES cannot disagree; the
+        # workspace Deployment refuses anything below 1 at render time.
+        - name: KEEPER_IDLE_MINUTES
+          value: {{ .Values.keeper.sleep.idleMinutes | int64 | quote }}
+        {{- end }}
         {{- if eq .Values.ingress.auth.type "oauth2" }}
         # Who woke it, for the log. keeper-ingress.yaml sets this header from
         # oauth2-proxy's answer; basic mode has no such header, so it is unset.

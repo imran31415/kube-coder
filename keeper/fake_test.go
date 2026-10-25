@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -19,13 +20,14 @@ import (
 type fakeAPI struct {
 	t *testing.T
 
-	mu       sync.Mutex
-	replicas *int32
-	ready    int32
-	rv       int
-	owners   []string // managers owning f:spec.f:replicas
-	gets     int
-	scales   []scaleCall
+	mu        sync.Mutex
+	replicas  *int32
+	ready     int32
+	rv        int
+	owners    []string // managers owning f:spec.f:replicas
+	gets      int
+	scales    []scaleCall
+	conflicts int // scale writes refused with 409
 	// beforeScale, if set, runs (locked) before a scale is applied — a
 	// competing writer landing between the keeper's read and its write.
 	beforeScale func(f *fakeAPI)
@@ -61,6 +63,25 @@ func (f *fakeAPI) adminScale(n int32) {
 		return
 	}
 	f.replicas, f.owners = &n, nil
+	f.rv++
+}
+
+// controllerApply is the controller's Stop on a sleeping workspace (#728 step
+// 5): a forced server-side apply of replicas under its own field manager.
+// Unlike adminScale it records ownership even when the value does not change,
+// which is the whole reason the controller uses it for a 0 -> 0 Stop. And, as
+// measured on a real cluster, a same-value apply SHARES the field rather than
+// taking it — there is no conflict to force — so the keeper stays an owner
+// next to the controller. A different value is a conflict, and the force takes
+// the field outright.
+func (f *fakeAPI) controllerApply(n int32) {
+	const manager = "kube-coder-controller"
+	switch {
+	case f.replicas == nil || *f.replicas != n:
+		f.replicas, f.owners = &n, []string{manager}
+	case !slices.Contains(f.owners, manager):
+		f.owners = append(f.owners, manager)
+	}
 	f.rv++
 }
 
@@ -111,6 +132,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			hook(f)
 		}
 		if s.Metadata.ResourceVersion != "" && s.Metadata.ResourceVersion != strconv.Itoa(f.rv) {
+			f.conflicts++
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"kind":"Status","reason":"Conflict","code":409}`))
 			return

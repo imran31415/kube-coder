@@ -22,6 +22,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -387,6 +388,90 @@ class KeeperEndpointNoneModeTests(EndpointTestCase):
         self.assertEqual(status, 401)
         # Contrast: /metrics does short-circuit in none mode.
         self.assertEqual(self.get('/metrics')[0], 200)
+
+
+class KeeperEndpointBasicModeTests(EndpointTestCase):
+    """AUTH_MODE=basic answers with no credential at all — pinned, not endorsed.
+
+    `check_claude_auth` returns True for basic mode before it looks at any
+    header (server.py trusts the ingress's basic auth there). The keeper does
+    not come through the ingress, so on a basic-mode workspace its poll needs
+    no secret. That is today's behaviour; this test exists so that changing it
+    is a decision somebody makes, and so nobody reads a green basic-mode e2e
+    run as proof that the keeper's secret works (#728 step 5).
+    """
+
+    auth_mode = 'basic'
+
+    def test_basic_mode_needs_no_credential(self):
+        self.assertEqual(self.get('/api/keeper/idle')[0], 200)
+
+
+SECRET = 'synthetic-keeper-secret-for-tests-0123456789'
+
+
+class KeeperSecretTests(EndpointTestCase):
+    """The keeper's shared secret opens the idle poll, and nothing else (#728 step 5).
+
+    oauth2 mode, so `check_claude_auth` refuses everything these requests
+    carry and the only way in is `X-Keeper-Secret`.
+    """
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {'KEEPER_CONTROL_SECRET': SECRET})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def idle(self, headers):
+        return self.get('/api/keeper/idle', headers=headers)[0]
+
+    def test_the_right_secret_is_200(self):
+        self.assertEqual(self.idle({'X-Keeper-Secret': SECRET}), 200)
+
+    def test_the_header_name_is_case_insensitive(self):
+        self.assertEqual(self.idle({'x-keeper-secret': SECRET}), 200)
+
+    def test_surrounding_whitespace_is_ignored(self):
+        self.assertEqual(self.idle({'X-Keeper-Secret': f'  {SECRET} '}), 200)
+
+    def test_anything_else_is_401(self):
+        for name, value in [
+                ('wrong', 'not-the-secret'),
+                ('empty', ''),
+                ('blank', '   '),
+                ('a prefix of it', SECRET[:-1]),
+                ('it plus one', SECRET + 'x'),
+                ('not ascii', SECRET[:-1] + chr(0xe9))]:
+            with self.subTest(name):
+                headers = {'X-Keeper-Secret': value.encode('utf-8').decode('latin-1')}
+                self.assertEqual(self.idle(headers), 401)
+
+    def test_no_secret_configured_refuses_even_a_matching_empty_header(self):
+        # A pod whose Secret is missing must close this door, not open it:
+        # an empty expected value never matches, whatever is sent.
+        for configured in ('', '   '):
+            with self.subTest(configured=configured), \
+                    mock.patch.dict(os.environ, {'KEEPER_CONTROL_SECRET': configured}):
+                self.assertEqual(self.idle({'X-Keeper-Secret': configured}), 401)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('KEEPER_CONTROL_SECRET', None)
+            self.assertEqual(self.idle({'X-Keeper-Secret': SECRET}), 401)
+
+    def test_the_secret_is_not_a_bearer_token_here(self):
+        # The keeper never sends it as a bearer; accepting it as one would make
+        # it interchangeable with the API token.
+        self.assertEqual(self.idle({'Authorization': f'Bearer {SECRET}'}), 401)
+
+    def test_the_secret_opens_no_other_route(self):
+        # The privilege-escalation check: the keeper's secret answers "are you
+        # busy?" and must not become a way to read tasks or start one. Each
+        # route below is gated by check_claude_auth and 401s without auth.
+        for path in ('/api/claude/tasks', '/api/files/list', '/api/feed', '/metrics'):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path)[0], 401, 'precondition: gated')
+                for headers in ({'X-Keeper-Secret': SECRET},
+                                {'Authorization': f'Bearer {SECRET}'}):
+                    self.assertEqual(self.get(path, headers=headers)[0], 401)
 
 
 class KeeperEndpointBodyTests(EndpointTestCase):

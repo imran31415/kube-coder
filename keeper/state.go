@@ -9,8 +9,14 @@ package main
 //
 //   - the keeper scales by server-side apply under FieldManager
 //     ("kube-coder-keeper"), which records it as the field's owner;
-//   - the controller's Stop is `kubectl scale --replicas=0`, an update that
-//     changes the value, so the keeper stops being the owner;
+//   - the controller's Start and Stop are `kubectl scale`, an update that
+//     changes the value, so the keeper stops being the owner — and so does a
+//     hand-typed `kubectl scale`;
+//   - the controller's Stop on a workspace that is already asleep is the one
+//     exception (#728 step 5): a server-side apply of replicas 0 under its own
+//     field manager. 0 -> 0 changes no value, so the apply does not take the
+//     field from the keeper, it shares it — and a field the keeper shares is
+//     not one the keeper owns alone;
 //   - with keeper.sleep.enabled the chart omits `replicas` (step 2), so a
 //     `helm upgrade` — Helm 3's patch or Helm 4's apply — leaves the field
 //     and its owner alone.
@@ -23,10 +29,13 @@ package main
 // both would turn every sleeping workspace into "stopped" — silently, and in
 // the direction that never wakes it.
 //
-// The one gap: a Stop on a workspace that is already asleep is 0 -> 0, which
-// changes nothing, so the keeper still owns the field and the next visit wakes
-// it. The controller only offers Stop on a running workspace, so only a hand
-// typed `kubectl scale --replicas=0` can hit this (docs/always-on-keeper.md).
+// A Stop on a workspace that is already asleep is 0 -> 0. An update that
+// changes nothing records nothing, so a hand-typed `kubectl scale --replicas=0`
+// leaves the keeper the owner and the next visit wakes it. An apply records its
+// fields whether or not the value changes, which is why the controller's Stop
+// on a sleeping workspace is one: the controller becomes a second owner, so
+// from the controller, Stop on a sleeping workspace really stops it
+// (docs/always-on-keeper.md). A later Start is an update again and clears both.
 
 import (
 	"context"
@@ -118,10 +127,11 @@ func Wake(ctx context.Context, k *Kube) (state string, woke bool, err error) {
 	return "", false, ErrConflict
 }
 
-// Sleep scales the workspace to 0 under the keeper's field manager. Step 5's
-// idle loop will call this once GET /api/keeper/idle says the workspace is
-// idle; until then it is the operator's `kubectl exec … /keeper sleep`, which
-// is exactly as forceful as the controller's Stop: running agents are killed.
+// Sleep scales the workspace to 0 under the keeper's field manager. The idle
+// loop calls it (through Server.sleepNow, which holds the wake lock) once GET
+// /api/keeper/idle has said idle twice in a row; an operator can still run it
+// by hand with `kubectl exec … /keeper sleep`. Either way it is exactly as
+// forceful as the controller's Stop: running agents are killed.
 func Sleep(ctx context.Context, k *Kube) (string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		d, err := k.Get(ctx)

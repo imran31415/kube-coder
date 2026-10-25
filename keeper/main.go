@@ -1,10 +1,11 @@
 // Command keeper is the always-on half of a kube-coder workspace (#728).
 //
-// Steps 3 and 4 of docs/always-on-keeper.md §5: it stands in for the holding
-// page while the workspace is away, and wakes an asleep workspace (0 -> 1) for
-// a logged-in visit (step 3) or for the phone app (step 4). It never wakes a
-// workspace an admin stopped. The idle loop that puts the workspace to sleep is
-// step 5; for now an operator does it by hand:
+// Steps 3 to 5 of docs/always-on-keeper.md §5: it stands in for the holding
+// page while the workspace is away, wakes an asleep workspace (0 -> 1) for a
+// logged-in visit (step 3), the phone app (step 4a) or a webhook or schedule
+// (step 4b), and with keeper.sleep.enabled puts it to sleep (1 -> 0) once it
+// has been idle for keeper.sleep.idleMinutes (step 5). It never wakes a
+// workspace an admin stopped. An operator can also sleep it by hand:
 //
 //	kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
 //
@@ -113,6 +114,8 @@ func serve() error {
 		UserHeader:        os.Getenv("KEEPER_USER_HEADER"),
 		ControlSecretFile: os.Getenv("KEEPER_CONTROL_SECRET_FILE"),
 		WorkspaceURL:      os.Getenv("KEEPER_WORKSPACE_URL"),
+		SleepEnabled:      os.Getenv("KEEPER_SLEEP_ENABLED") == "true",
+		IdleMinutes:       idleMinutesFromEnv(),
 		cacheFor:          time.Second,
 	}
 	servers := []*http.Server{
@@ -120,8 +123,10 @@ func serve() error {
 		newHTTPServer(":8081", s.WakeHandler()),
 	}
 	listening := "page :8080, wake :8081"
-	ctx, stopDrain := context.WithCancel(context.Background())
-	defer stopDrain()
+	// One context for the background loops, cancelled on SIGTERM before the
+	// listeners shut down, so neither a replay nor a sleep starts mid-exit.
+	ctx, stopLoops := context.WithCancel(context.Background())
+	defer stopLoops()
 
 	// Step 4's listeners run only once the chart has given the keeper somewhere
 	// to keep what the workspace pushes. Without that the keeper is exactly
@@ -160,6 +165,12 @@ func serve() error {
 	} else {
 		log.Printf("step 4 is off (KEEPER_STATE_DIR unset): webhooks, crons and the app cannot wake this workspace; a logged-in visit still can")
 	}
+	// The idle loop (step 5). Read once, here: turning sleep off changes the
+	// Deployment's env, which restarts this pod anyway.
+	if s.SleepEnabled {
+		go s.IdleLoop(ctx)
+		listening += fmt.Sprintf("; sleeps after %d idle minutes", s.IdleMinutes)
+	}
 	log.Printf("keeper %s: looking after %s/%s; %s", version, k.Namespace, k.Name, listening)
 	go startupCheck(k)
 
@@ -173,7 +184,7 @@ func serve() error {
 	case err = <-errc: // a listener died: exit so the kubelet restarts the pod
 	case <-stop:
 	}
-	stopDrain()
+	stopLoops()
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, srv := range servers {
@@ -183,6 +194,18 @@ func serve() error {
 		err = nil
 	}
 	return err
+}
+
+// idleMinutesFromEnv is keeper.sleep.idleMinutes. The chart refuses anything
+// below 1 at render time; a keeper run some other way that is given 0 must not
+// read it as "sleep the moment it is quiet", so that falls back to the default.
+func idleMinutesFromEnv() int {
+	n := envInt("KEEPER_IDLE_MINUTES", 30)
+	if n < 1 {
+		log.Printf("KEEPER_IDLE_MINUTES=%d would sleep a workspace the moment it went quiet; using 30", n)
+		return 30
+	}
+	return n
 }
 
 // startupCheck reads the workspace once and says what it found, so a broken

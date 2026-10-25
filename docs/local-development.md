@@ -205,6 +205,13 @@ make local-down DELETE=1     # also delete the minikube profile entirely
   `WORKSPACE_INTERNAL_URL`, an in-cluster Service, with no ingress involved. So
   "a schedule that fires while the workspace is asleep still runs its task" is
   checkable locally; "a GitHub delivery that arrives while it is asleep" is not.
+
+  **Sleep** (#728 step 5) runs here too, since the keeper polls the workspace's
+  Service directly, but in `basic` mode it proves nothing about the poll's
+  credential: `check_claude_auth` returns true for basic mode before it reads
+  any header, so the keeper's poll succeeds with no secret at all. A local run
+  shows the idle loop deciding and scaling; the `X-Keeper-Secret` check needs
+  `oauth2` mode.
 - **Resources.** Defaults are laptop-sized; heavy builds/tests inside the
   workspace may want a bigger `minikube start --memory`.
 - **Apple Silicon: the in-workspace browser/Desktop is degraded.** The image

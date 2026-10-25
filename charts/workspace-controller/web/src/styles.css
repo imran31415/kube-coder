@@ -377,6 +377,14 @@ body {
   color: var(--muted);
 }
 
+/* Asleep because nobody was using it; a visit wakes it (#728). Purple, the one
+   hue on this palette not already meaning something on the row: blue is
+   "update", teal "isolated", and a resting workspace is not a warning. */
+.pill-sleeping {
+  background: rgba(163, 113, 247, 0.16);
+  color: #bc8cff;
+}
+
 .pill-transitioning {
   background: rgba(210, 153, 34, 0.16);
   color: #e3b341;
