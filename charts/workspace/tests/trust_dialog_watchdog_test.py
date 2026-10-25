@@ -76,6 +76,27 @@ INNOCENT_OUTPUT = (
     "  ? for shortcuts\n"
 )
 
+# Claude Code 2.1.310 reordered the dialog: the selector STARTS on "No, exit"
+# and the `1.`/`2.` numbering is gone, so the historical `1` + Enter answer
+# confirms the WRONG option and exits the CLI. Captured verbatim from a live
+# 2.1.310 session (issue #810's compatibility check).
+TRUST_DIALOG_NO_FIRST = (
+    " Quick safety check: Is this a project you created or one you trust?"
+    " (Like your own code, a well-known open source project, or work from"
+    " your team). If not, take a moment to review what's in this folder"
+    " first.\n"
+    " Claude Code'll be able to read, edit, and execute files here.\n"
+    " Security guide\n"
+    " ❯ No, exit\n"
+    "   Yes, I trust this folder\n"
+    " Enter to confirm · Esc to cancel\n"
+)
+
+# The same dialog one Down-arrow later: selector on the affirmative option.
+TRUST_DIALOG_NO_FIRST_YES_SELECTED = TRUST_DIALOG_NO_FIRST.replace(
+    " ❯ No, exit\n   Yes, I trust this folder\n",
+    "   No, exit\n ❯ Yes, I trust this folder\n")
+
 
 class PaneShowsTrustDialogTests(unittest.TestCase):
     def test_current_dialog(self):
@@ -98,6 +119,50 @@ class PaneShowsTrustDialogTests(unittest.TestCase):
     def test_none_and_empty(self):
         self.assertFalse(CTM._pane_shows_trust_dialog(None))
         self.assertFalse(CTM._pane_shows_trust_dialog(''))
+
+    def test_no_first_dialog_is_detected(self):
+        self.assertTrue(CTM._pane_shows_trust_dialog(TRUST_DIALOG_NO_FIRST))
+
+
+class TrustDialogAnswerKeysTests(unittest.TestCase):
+    """The answer must be read off the pane, not assumed (#810): 2.1.310 put
+    "No, exit" first and dropped the numbering, so the historical `1` + Enter
+    confirms the wrong option and exits the CLI it was meant to rescue."""
+
+    def test_yes_first_numbered_dialog_gets_plain_enter(self):
+        # 2.1.233 shape: selector already on the affirmative option.
+        self.assertEqual(('Enter',),
+                         CTM._trust_dialog_answer_keys(TRUST_DIALOG))
+
+    def test_no_first_dialog_gets_an_arrow_not_enter(self):
+        # A bare Enter here would confirm "No, exit" and kill the task.
+        self.assertEqual(('Down',),
+                         CTM._trust_dialog_answer_keys(TRUST_DIALOG_NO_FIRST))
+
+    def test_after_the_arrow_enter_confirms(self):
+        self.assertEqual(
+            ('Enter',),
+            CTM._trust_dialog_answer_keys(TRUST_DIALOG_NO_FIRST_YES_SELECTED))
+
+    def test_legacy_numbered_dialog_still_enters_on_selected_yes(self):
+        # "Yes, proceed" wording, selector on it: Enter confirms it directly.
+        self.assertEqual(('Enter',),
+                         CTM._trust_dialog_answer_keys(TRUST_DIALOG_LEGACY))
+
+    def test_selectorless_prompt_falls_back_to_the_historical_answer(self):
+        pane = ("  Do you trust the files in this folder?\n"
+                "  1. Yes, proceed\n  2. No, exit\n")
+        self.assertEqual(('1', 'Enter'),
+                         CTM._trust_dialog_answer_keys(pane))
+
+    def test_ansi_and_box_drawing_do_not_hide_the_selector(self):
+        pane = ("│ \x1b[36m❯ No, exit\x1b[0m        │\n"
+                "│   Yes, I trust this folder │\n")
+        self.assertEqual(('Down',), CTM._trust_dialog_answer_keys(pane))
+
+    def test_yes_above_selector_moves_up(self):
+        pane = ("   Yes, I trust this folder\n ❯ No, exit\n")
+        self.assertEqual(('Up',), CTM._trust_dialog_answer_keys(pane))
 
 
 class TrustAcceptedTests(unittest.TestCase):
@@ -249,10 +314,25 @@ class ClearTrustDialogTests(unittest.TestCase):
                                return_value=mock.Mock(returncode=0)) as run, \
              mock.patch.object(server.time, 'sleep'):
             self.assertEqual(CTM._clear_trust_dialog('sess'), (True, True))
-        # Exactly the manual recovery that unwedged the three Builds.
+        # Selector already on the affirmative option -> a single Enter (the
+        # historical `1` + Enter would also have worked on this layout, but
+        # Enter is the one answer that is correct on every selector layout).
         self.assertEqual(run.call_args_list[-1].args[0],
-                         ['tmux', 'send-keys', '-t', 'sess', '1', 'Enter'])
+                         ['tmux', 'send-keys', '-t', 'sess', 'Enter'])
         self.assertEqual(len(run.call_args_list), 1)
+
+    def test_answers_the_no_first_dialog_without_exiting(self):
+        # 2.1.310 layout (#810): arrow to "Yes, I trust this folder" first,
+        # Enter only once the selector is on it — never Enter on "No, exit".
+        panes = iter([TRUST_DIALOG_NO_FIRST, TRUST_DIALOG_NO_FIRST_YES_SELECTED,
+                      COMPOSER_READY])
+        with mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(panes)), \
+             mock.patch.object(server.subprocess, 'run',
+                               return_value=mock.Mock(returncode=0)) as run, \
+             mock.patch.object(server.time, 'sleep'):
+            self.assertEqual(CTM._clear_trust_dialog('sess'), (True, True))
+        sent = [c.args[0][4:] for c in run.call_args_list]
+        self.assertEqual(sent, [['Down'], ['Enter']])
 
     def test_retries_a_dialog_that_does_not_take_the_first_answer(self):
         panes = iter([TRUST_DIALOG, TRUST_DIALOG, COMPOSER_READY])

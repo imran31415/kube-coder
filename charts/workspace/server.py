@@ -4187,7 +4187,50 @@ class ClaudeTaskManager:
         return any(m in low for m in ClaudeTaskManager.TRUST_DIALOG_MARKERS)
 
     #: Answer attempts before we declare the dialog un-clearable (#800).
-    TRUST_DIALOG_ANSWER_TRIES = 3
+    #: Four, not three: on a dialog whose selector starts on "No, exit"
+    #: (Claude Code >= 2.1.310) the answer is two keystrokes across two
+    #: attempts (arrow, then Enter), and a mid-redraw capture may spend one.
+    TRUST_DIALOG_ANSWER_TRIES = 4
+
+    #: The affirmative option's wording across CLI generations. Current CLIs
+    #: say "Yes, I trust this folder"; older ones said "Yes, proceed".
+    TRUST_DIALOG_YES_NEEDLES = ('yes, i trust this folder', 'yes, proceed')
+
+    @staticmethod
+    def _trust_dialog_answer_keys(pane):
+        """The next tmux keystroke(s) that move the trust dialog toward "Yes".
+
+        Claude Code 2.1.310 reordered the dialog: the selector now STARTS on
+        "No, exit", and the options lost their `1.`/`2.` numbering — so the
+        historical `1` + Enter answer types an ignored character and then
+        confirms the WRONG option, exiting the CLI and killing the task it was
+        meant to rescue. Read the pane instead of assuming a layout:
+
+          * selector already on the affirmative option  ->  ('Enter',)
+          * selector on some other option               ->  one arrow toward
+            the affirmative line (the next attempt re-reads and confirms)
+          * no selector at all (oldest numbered prompt) ->  ('1', 'Enter'),
+            the historical answer, still correct there
+
+        Only option lines (the affirmative wording or "No, exit") are
+        considered when locating the selector, so a `❯` composer prompt
+        elsewhere on screen can never be mistaken for it.
+        """
+        yes_i = sel_i = None
+        for i, raw in enumerate((pane or '').splitlines()):
+            line = strip_ansi(raw).strip().lower()
+            is_yes = any(n in line for n in
+                         ClaudeTaskManager.TRUST_DIALOG_YES_NEEDLES)
+            if is_yes and yes_i is None:
+                yes_i = i
+            if (is_yes or 'no, exit' in line) and sel_i is None \
+                    and line.lstrip('│| ').startswith('❯'):
+                sel_i = i
+        if yes_i is None or sel_i is None:
+            return ('1', 'Enter')
+        if sel_i == yes_i:
+            return ('Enter',)
+        return ('Down',) if yes_i > sel_i else ('Up',)
 
     @staticmethod
     def _clear_trust_dialog(session_name, tries=None, settle=0.6):
@@ -4196,8 +4239,11 @@ class ClaudeTaskManager:
         The folder is one the workspace itself just created for this task, so
         the trust question has a known-safe answer — and the alternative is the
         Build sitting on the modal forever while reporting the same
-        `waiting-for-input` as a task that finished (#800). Sends `1` + Enter,
-        exactly the manual recovery, and re-reads the pane to confirm.
+        `waiting-for-input` as a task that finished (#800). Each attempt sends
+        whatever keystroke the CURRENT pane calls for (see
+        _trust_dialog_answer_keys — the dialog's layout changed across CLI
+        versions, and a layout-blind answer can confirm "No, exit"), then
+        re-reads the pane to confirm.
 
         Returns `(seen, cleared)`: whether a dialog was on screen at all, and
         whether the screen is free of it now. No dialog ⇒ `(False, True)`, so
@@ -4211,8 +4257,9 @@ class ClaudeTaskManager:
             if not ClaudeTaskManager._pane_shows_trust_dialog(pane):
                 return seen, True
             seen = True
+            keys = ClaudeTaskManager._trust_dialog_answer_keys(pane)
             subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, '1', 'Enter'],
+                ['tmux', 'send-keys', '-t', session_name, *keys],
                 capture_output=True, text=True,
             )
             time.sleep(settle)
