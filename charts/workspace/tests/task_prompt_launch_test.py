@@ -473,63 +473,386 @@ class WaitForPaneReadyTests(unittest.TestCase):
                                          interval=0, expect_composer=True))
 
 
-class DeliverPromptTests(unittest.TestCase):
-    """The core issue #288 fix: verify the paste landed and re-PASTE (not just
-    re-Enter) when it didn't."""
+# ── Scripted-pane fixtures for the delivery path (issue #805) ───────────────
+# Claude Code 2.1.x shapes, as `tmux capture-pane -p` hands them over.
 
-    def _ok(self, *a, **k):
+#: The folder-trust modal, drawn over (and covering) the composer (#800).
+TRUST_DIALOG_SCREEN = (
+    "╭──────────────────────────────────────────────────────────╮\n"
+    "│ Quick safety check: Is this a project you created or one  │\n"
+    "│ you trust?                                                │\n"
+    "│                                                           │\n"
+    "│ ❯ 1. Yes, I trust this folder                             │\n"
+    "│   2. No, exit                                             │\n"
+    "╰──────────────────────────────────────────────────────────╯\n"
+    "  ? for shortcuts\n"
+)
+
+
+def composer_screen(box_lines, transcript=()):
+    """Render a Claude Code screen: transcript, then the input box, then the
+    shortcuts footer. `box_lines` is what sits INSIDE the box."""
+    out = list(transcript)
+    out.append('╭──────────────────────────────────────────────────────────╮')
+    out.extend(f'│ {line:<56} │' for line in box_lines)
+    out.append('╰──────────────────────────────────────────────────────────╯')
+    out.append('  ? for shortcuts')
+    return '\n'.join(out) + '\n'
+
+
+class FakeSession:
+    """A scripted tmux session, driven by a virtual clock.
+
+    Models the one thing the 0.4s check got wrong: a paste becomes VISIBLE in
+    the composer `paste_delay` virtual seconds after `paste-buffer` returns,
+    not immediately. Patch `subprocess.run` at it and the real delivery code
+    runs end to end — `_capture_pane` included.
+
+    - `drops`      — this many pastes vanish entirely (the #288 failure).
+    - `swallow`    — this many Enters are absorbed (bracketed-paste eats one).
+    - `preloaded`  — copies already sitting in the box (a pre-fix stacked box).
+    - `placeholder`— render pastes as `[Pasted text #N +14 lines]`, which is
+                     what Claude shows for a long or multi-line prompt.
+    - `unclearable`— C-u / Escape do nothing (the box refuses to empty).
+    - `dialog`     — start parked on the folder-trust modal.
+    """
+
+    PROMPT = 'implement the thing and open a PR'
+
+    def __init__(self, paste_delay=0.0, drops=0, swallow=0, preloaded=0,
+                 placeholder=False, unclearable=False, dialog=False):
+        self.clock = 0.0
+        self.paste_delay = paste_delay
+        self.drops = drops
+        self.swallow = swallow
+        self.placeholder = placeholder
+        self.unclearable = unclearable
+        self.dialog = dialog
+        self.visible = preloaded
+        self.pending = []
+        self.submitted = []
+        self.pastes = 0
+        self.enters = 0
+        self.keys = []
+
+    # -- virtual clock --------------------------------------------------
+    def sleep(self, secs):
+        # A zero sleep still has to advance time or a bounded poll loop would
+        # never reach its deadline.
+        self.clock += float(secs) if secs else 0.01
+
+    def time(self):
+        return self.clock
+
+    def _tick(self):
+        due = [t for t in self.pending if t <= self.clock]
+        self.pending = [t for t in self.pending if t > self.clock]
+        self.visible += len(due)
+
+    # -- the pane -------------------------------------------------------
+    def render(self):
+        self._tick()
+        if self.dialog:
+            return TRUST_DIALOG_SCREEN
+        # Every submitted copy stays on screen in the transcript above the
+        # box. A whole-pane search would read that as "still unsent".
+        transcript = []
+        for _ in self.submitted:
+            transcript.append(f'> {self.PROMPT}')
+            transcript.append('● Working on it…')
+        if not self.visible:
+            return composer_screen(['>'], transcript)
+        if self.placeholder:
+            body = [f'[Pasted text #{i + 1} +14 lines]'
+                    for i in range(self.visible)]
+        else:
+            body = [self.PROMPT] * self.visible
+        body[0] = '> ' + body[0]
+        return composer_screen(body, transcript)
+
+    # -- tmux -----------------------------------------------------------
+    def run(self, cmd, **kwargs):
+        self._tick()
+        argv = list(cmd)
+        verb = argv[1] if len(argv) > 1 else ''
+        if verb == 'capture-pane':
+            return mock.Mock(returncode=0, stdout=self.render(), stderr='')
+        if verb == 'paste-buffer':
+            self.pastes += 1
+            if self.drops > 0:
+                self.drops -= 1
+            else:
+                self.pending.append(self.clock + self.paste_delay)
+        elif verb == 'send-keys':
+            keys = argv[4:]
+            self.keys.append(tuple(keys))
+            for key in keys:
+                self._key(key)
         return mock.Mock(returncode=0, stdout='', stderr='')
 
-    def test_delivers_on_first_try(self):
-        captures = iter(['empty-composer', 'text-pasted', 'assistant-working'])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf'))
-        # Exactly one paste-buffer (no retry needed).
-        pastes = [c for c in run.call_args_list if 'paste-buffer' in c.args[0]]
-        self.assertEqual(len(pastes), 1)
+    def _key(self, key):
+        if key == 'Enter':
+            self.enters += 1
+            if self.dialog:
+                self.dialog = False
+                return
+            if self.swallow > 0:
+                self.swallow -= 1
+                return
+            self._tick()
+            if self.visible:
+                # Enter sends the WHOLE box as one message, however many
+                # copies of the prompt are in it.
+                self.submitted.append(self.visible)
+                self.visible = 0
+        elif key in ('C-u', 'Escape') and not self.unclearable:
+            # Keys reach the TUI in order, so a clear also discards a paste
+            # that was still queued behind it.
+            self.visible = 0
+            self.pending = []
 
-    def test_retries_paste_when_dropped(self):
-        # Attempt 1: composer unchanged after paste (dropped). Attempt 2 lands.
-        captures = iter([
-            'empty', 'empty',                 # attempt 1: before, pasted (dropped)
-            'empty', 'text-pasted', 'working'  # attempt 2: before, pasted, after
-        ])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf', retries=3))
-        pastes = [c for c in run.call_args_list if 'paste-buffer' in c.args[0]]
-        self.assertEqual(len(pastes), 2)  # re-PASTE, not just re-Enter
 
-    def test_returns_false_when_all_pastes_dropped(self):
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok), \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: 'empty'), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertFalse(CTM._deliver_prompt('sess', '/f', 'buf', retries=2))
+class ComposerTextTests(unittest.TestCase):
+    """Reading the input box REGION, not the whole screen (#805)."""
 
-    def test_nudges_enter_when_submit_not_registered(self):
-        # Paste lands, but first Enter is absorbed (screen unchanged); the
-        # nudge submits it.
-        captures = iter(['empty', 'text-pasted', 'text-pasted', 'working'])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf'))
-        enters = [c for c in run.call_args_list
-                  if 'send-keys' in c.args[0] and 'Enter' in c.args[0]]
-        self.assertEqual(len(enters), 2)  # initial + one nudge
+    def test_empty_box_is_empty_string_not_none(self):
+        self.assertEqual(CTM._pane_composer_text(composer_screen(['>'])), '')
+
+    def test_box_contents_are_returned_without_chrome(self):
+        pane = composer_screen(['> do the thing'])
+        self.assertEqual(CTM._pane_composer_text(pane), 'do the thing')
+
+    def test_transcript_above_the_box_is_not_box_content(self):
+        pane = composer_screen(['>'], transcript=['> do the thing', '● Working'])
+        self.assertEqual(CTM._pane_composer_text(pane), '')
+
+    def test_bare_affordance_without_a_box(self):
+        self.assertEqual(CTM._pane_composer_text('❯ typed text\n? for shortcuts'),
+                         'typed text')
+
+    def test_no_input_box_at_all_is_unknown(self):
+        self.assertIsNone(CTM._pane_composer_text(STARTUP_QUIET))
+        self.assertIsNone(CTM._pane_composer_text(None))
+        self.assertIsNone(CTM._pane_composer_text(''))
+
+    def test_wrapped_paste_still_matches(self):
+        needle = CTM._match_text('open a PR when the tests pass')
+        pane = composer_screen(['> open a PR when the', 'tests pass'])
+        self.assertEqual(CTM._paste_copies(pane, needle), 1)
+
+    def test_counts_stacked_copies(self):
+        needle = CTM._match_text('do the thing')
+        pane = composer_screen(['> do the thing', 'do the thing', 'do the thing'])
+        self.assertEqual(CTM._paste_copies(pane, needle), 3)
+
+    def test_counts_paste_placeholders(self):
+        # The real triple-paste evidence from #805: Claude shows a placeholder
+        # for a long prompt, so the prompt's words are nowhere on screen.
+        pane = composer_screen(['> [Pasted text #1 +14 lines]'
+                                '[Pasted text #2 +7 lines]'])
+        self.assertEqual(CTM._paste_copies(pane, 'nowhere-in-this-pane'), 2)
+
+    def test_submitted_box_reads_as_zero_copies(self):
+        needle = CTM._match_text('do the thing')
+        pane = composer_screen(['>'], transcript=['> do the thing'])
+        self.assertEqual(CTM._paste_copies(pane, needle), 0)
+
+    def test_unreadable_box_is_minus_one(self):
+        self.assertEqual(CTM._paste_copies(None, 'x'), -1)
+        self.assertEqual(CTM._paste_copies(STARTUP_QUIET, 'x'), -1)
+
+    def test_hint_text_without_a_needle_is_unknown_not_empty(self):
+        # Claude draws greyed suggestion text in an empty box; without a
+        # fingerprint that is not evidence either way.
+        pane = composer_screen(['> Try "fix the typecheck errors"'])
+        self.assertEqual(CTM._paste_copies(pane, None), -1)
+        self.assertEqual(CTM._paste_copies(composer_screen(['>']), None), 0)
+
+
+class PasteNeedleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, 'prompt.txt')
+
+    def _write(self, text):
+        with open(self.path, 'w') as f:
+            f.write(text)
+        return self.path
+
+    def test_tail_is_the_fingerprint(self):
+        needle = CTM._paste_needle(self._write('a' * 10 + 'TAILEND'),
+                                   chars=7)
+        self.assertEqual(needle, 'tailend')
+
+    def test_whitespace_is_dropped_so_wrapping_cannot_break_it(self):
+        self.assertEqual(CTM._paste_needle(self._write('Do\n The  Thing\n')),
+                         'dothething')
+
+    def test_unreadable_or_trivial_file_has_no_fingerprint(self):
+        self.assertIsNone(CTM._paste_needle(os.path.join(self.tmp.name, 'nope')))
+        self.assertIsNone(CTM._paste_needle(self._write('\n \n')))
+
+
+class ClearComposerTests(unittest.TestCase):
+    def _drive(self, sess):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._clear_composer('sess', CTM._match_text(sess.PROMPT))
+
+    def test_empty_box_costs_no_keys(self):
+        sess = FakeSession()
+        self.assertTrue(self._drive(sess))
+        self.assertEqual(sess.keys, [])
+
+    def test_stacked_box_is_emptied(self):
+        sess = FakeSession(preloaded=3)
+        self.assertTrue(self._drive(sess))
+        self.assertEqual(sess.visible, 0)
+        self.assertEqual(sess.keys[0], ('C-u',))
+
+    def test_box_that_refuses_to_empty_reports_false(self):
+        sess = FakeSession(preloaded=1, unclearable=True)
+        self.assertFalse(self._drive(sess))
+        self.assertEqual(len(sess.keys), len(CTM.COMPOSER_CLEAR_KEYS))
+
+
+class DeliverPromptTests(unittest.TestCase):
+    """Delivery against a scripted pane.
+
+    #288 (a DROPPED paste must be pasted again) and #805 (a LATE paste must
+    not be) pull in opposite directions, so each case here pins which one the
+    screen is actually showing.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.prompt_file = os.path.join(self.tmp.name, 'prompt.txt')
+        with open(self.prompt_file, 'w') as f:
+            f.write(FakeSession.PROMPT)
+
+    def _deliver(self, sess, **kw):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._deliver_prompt('sess', self.prompt_file, 'buf', **kw)
+
+    def _launch(self, sess, **kw):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._deliver_launch_prompt('sess', self.prompt_file, 'buf', **kw)
+
+    def test_fast_start_pastes_once_and_submits(self):
+        sess = FakeSession(paste_delay=0.0)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_slow_start_paste_is_late_not_lost(self):
+        # The #805 case: the paste shows up 8s after `paste-buffer` returns,
+        # long past the old 0.4s check. One paste, one copy, one Enter.
+        sess = FakeSession(paste_delay=8.0)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.enters, 1)
+
+    def test_slow_start_with_a_paste_placeholder(self):
+        # A long prompt renders as `[Pasted text #1 +14 lines]`, so delivery
+        # cannot look for the prompt's own words.
+        sess = FakeSession(paste_delay=12.0, placeholder=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_dropped_paste_is_pasted_again(self):
+        # #288 must not regress: the box is still empty at the deadline, so
+        # this paste really was lost.
+        sess = FakeSession(drops=1)
+        self.assertTrue(self._deliver(sess, retries=3))
+        self.assertEqual(sess.pastes, 2)
+        self.assertEqual(sess.submitted, [1])  # exactly one copy sent
+
+    def test_paste_that_never_appears_fails_without_submitting(self):
+        sess = FakeSession(drops=99)
+        self.assertFalse(self._deliver(sess, retries=3))
+        self.assertEqual(sess.pastes, 3)
+        self.assertEqual(sess.submitted, [])
+        self.assertEqual(sess.enters, 0)
+        # Bounded patience: the appear budget is spent once across attempts,
+        # not once per attempt, so delivery stays inside the Board run's
+        # quiet-settle window.
+        self.assertLess(sess.clock, CTM.PASTE_APPEAR_TIMEOUT + 20)
+
+    def test_swallowed_enter_gets_one_nudge(self):
+        sess = FakeSession(paste_delay=1.0, swallow=1)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.enters, 2)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.pastes, 1)
+
+    def test_unsubmittable_box_is_reported_not_re_pasted(self):
+        # Enter never registers. The prompt IS in the box; pasting again would
+        # only stack a second copy of a prompt a human can still send.
+        sess = FakeSession(swallow=99)
+        self.assertFalse(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.visible, 1)
+        self.assertEqual(sess.submitted, [])
+
+    def test_recovers_a_box_that_already_holds_copies(self):
+        # The pre-fix wreckage: three copies queued in the box. Delivery must
+        # empty it first and send exactly one.
+        sess = FakeSession(preloaded=3)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.submitted, [1])
+        self.assertIn(('C-u',), sess.keys)
+
+    def test_refuses_to_paste_onto_a_box_it_cannot_empty(self):
+        sess = FakeSession(preloaded=1, unclearable=True)
+        self.assertFalse(self._deliver(sess))
+        self.assertEqual(sess.pastes, 0)
+        self.assertEqual(sess.submitted, [])
 
     def test_paste_without_submit_skips_enter(self):
-        captures = iter(['empty', 'text-pasted'])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf', submit=False))
-        enters = [c for c in run.call_args_list
-                  if 'send-keys' in c.args[0] and 'Enter' in c.args[0]]
-        self.assertEqual(len(enters), 0)
+        sess = FakeSession(paste_delay=2.0)
+        self.assertTrue(self._deliver(sess, submit=False))
+        self.assertEqual(sess.enters, 0)
+        self.assertEqual(sess.visible, 1)
+
+    def test_trust_dialog_is_handed_back_rather_than_waited_out(self):
+        # No composer is coming while the modal is up, so delivery must not
+        # spend its whole appear budget on it (#800).
+        sess = FakeSession(dialog=True)
+        self.assertFalse(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertLess(sess.clock, CTM.PASTE_APPEAR_TIMEOUT)
+
+    def test_dialog_then_slow_start_delivers_once(self):
+        # Both failures at once: the trust modal is up AND the paste that
+        # follows it is late. One answered dialog, one paste, one submit.
+        sess = FakeSession(paste_delay=6.0, dialog=True)
+        delivered, saw_dialog = self._launch(sess)
+        self.assertTrue(delivered)
+        self.assertTrue(saw_dialog)
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_unobservable_session_is_not_pasted_into_twice(self):
+        # Captures that keep failing cannot prove anything; re-pasting into a
+        # session we cannot see is how text gets duplicated.
+        def dead(cmd, **kw):
+            return mock.Mock(returncode=1, stdout='', stderr='no server')
+
+        with mock.patch.object(server.subprocess, 'run', side_effect=dead) as run, \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=iter(range(500))):
+            self.assertTrue(CTM._deliver_prompt('sess', self.prompt_file, 'buf'))
+        pastes = [c for c in run.call_args_list if 'paste-buffer' in c.args[0]]
+        self.assertEqual(len(pastes), 1)
 
 
 class CapturePaneTests(unittest.TestCase):

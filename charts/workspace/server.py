@@ -4233,28 +4233,287 @@ class ClaudeTaskManager:
             return True
         return after != before
 
+    # Claude Code swaps a long or multi-line paste for a placeholder in the
+    # input box — `[Pasted text #1 +14 lines]` — so the prompt's own words are
+    # NOT on screen. The `#N` counter is also what makes a STACKED paste
+    # visible: two placeholders in one box means two copies of the prompt
+    # waiting to be sent as one message (#805). Matched against
+    # whitespace-free text (see `_match_text`) because the placeholder wraps
+    # inside the box like any other content.
+    PASTE_PLACEHOLDER_RE = re.compile(r'\[pastedtext#\d+')
+
+    #: Characters of the prompt used as its on-screen fingerprint. The TAIL,
+    #: not the head: a prompt longer than the box scrolls, and the end is what
+    #: stays visible.
+    PASTE_NEEDLE_CHARS = 48
+
+    @staticmethod
+    def _match_text(text):
+        """Whitespace-free, lowercased text, for substring matching on a pane.
+
+        The composer wraps a pasted prompt across lines and pads each one, so
+        the prompt is never on screen verbatim. Dropping ALL whitespace makes a
+        wrapped line indistinguishable from an unwrapped one, which is what
+        lets delivery look for the prompt ITSELF rather than for "the screen
+        changed since we pasted" (#805).
+        """
+        if text is None:
+            return None
+        return re.sub(r'\s+', '', strip_ansi(text)).lower()
+
+    @staticmethod
+    def _paste_needle(prompt_file, chars=None):
+        """Fingerprint of the prompt we are about to paste, or None.
+
+        None means "no fingerprint available" (unreadable or near-empty file),
+        and every caller then falls back to the older screen-changed signal
+        rather than guessing.
+        """
+        chars = ClaudeTaskManager.PASTE_NEEDLE_CHARS if chars is None else chars
+        try:
+            with open(prompt_file, encoding='utf-8', errors='replace') as f:
+                text = f.read()
+        except OSError:
+            return None
+        norm = ClaudeTaskManager._match_text(text) or ''
+        if len(norm) < 2:
+            return None
+        return norm[-chars:]
+
+    @staticmethod
+    def _strip_composer_affordance(line):
+        """One input-box line without its borders or its `> ` prompt marker."""
+        s = _normalize_prompt_line(line)
+        return s[1:].strip() if s[:1] in ('>', '❯') else s
+
+    @staticmethod
+    def _pane_composer_text(pane):
+        """The text sitting in the TUI's input box right now, or None.
+
+        Reads the composer REGION, not the whole screen, and that distinction
+        is the heart of the #805 fix: a submitted prompt is still on screen in
+        the transcript above, so a whole-pane search can never tell "submitted"
+        from "still sitting unsent in the box". The box is the bottom-most
+        complete one on screen (Claude draws the shortcuts footer below it);
+        CLIs that draw a bare `> ` line instead fall back to that line.
+
+        Returns '' for an input box that is readable and holds nothing —
+        distinct from None, which means "no input box found on this screen" and
+        leaves the caller on its older screen-changed heuristic.
+        """
+        if not pane:
+            return None
+        lines = strip_ansi(pane).splitlines()
+        bottom = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith('╰'):
+                bottom = i
+        if bottom is not None:
+            for top in range(bottom - 1, -1, -1):
+                if lines[top].strip().startswith('╭'):
+                    return '\n'.join(
+                        ClaudeTaskManager._strip_composer_affordance(l)
+                        for l in lines[top + 1:bottom]).strip()
+        for line in reversed(lines):
+            if _normalize_prompt_line(line)[:1] in ('>', '❯'):
+                return ClaudeTaskManager._strip_composer_affordance(line)
+        return None
+
+    @staticmethod
+    def _paste_copies(pane, needle):
+        """How many copies of the pasted prompt the input box is holding.
+
+        `0` — the box is readable and does not hold it: empty before a paste,
+        emptied by the Enter that sent it. `>= 1` — it does, and more than one
+        is a stacked paste. `-1` — unreadable (capture failed, or a UI whose
+        box we cannot find), so the caller must fall back to `_screen_advanced`
+        rather than act on a number it does not have.
+        """
+        text = ClaudeTaskManager._pane_composer_text(pane)
+        if text is None:
+            return -1
+        norm = ClaudeTaskManager._match_text(text) or ''
+        placeholders = len(ClaudeTaskManager.PASTE_PLACEHOLDER_RE.findall(norm))
+        if placeholders:
+            return placeholders
+        if not needle:
+            # No fingerprint: an empty box still proves the prompt is not in
+            # it, but anything else on screen (Claude's own greyed hint text,
+            # for one) is not evidence either way.
+            return 0 if not norm else -1
+        return norm.count(needle)
+
+    #: Key sequences tried, in order, to empty an input box that still holds a
+    #: previous attempt's paste. `C-u` kills the line; Escape is Claude Code's
+    #: own "clear the composer" and gets a multi-line paste placeholder that a
+    #: single kill-line leaves behind. Before a submit both are no-ops on an
+    #: already-empty box, so the cheap path costs one capture and no keys.
+    COMPOSER_CLEAR_KEYS = (('C-u',), ('C-u', 'C-u'), ('Escape', 'C-u'))
+
+    @staticmethod
+    def _clear_composer(session_name, needle, settle=0.4):
+        """Empty the input box so a re-paste cannot stack a second copy (#805).
+
+        Returns True once the box is known not to hold the prompt (or cannot be
+        read, which is unverifiable either way); False when copies are still
+        there after every clear attempt — the caller must NOT paste again then,
+        because that is exactly how a box ends up holding the prompt three
+        times.
+        """
+        for keys in ClaudeTaskManager.COMPOSER_CLEAR_KEYS:
+            if ClaudeTaskManager._paste_copies(
+                    ClaudeTaskManager._capture_pane(session_name), needle) <= 0:
+                return True
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, *keys],
+                capture_output=True, text=True,
+            )
+            time.sleep(settle)
+        return ClaudeTaskManager._paste_copies(
+            ClaudeTaskManager._capture_pane(session_name), needle) <= 0
+
+    # How long a pasted prompt may take to SHOW UP in the input box before we
+    # call it dropped. The old check was 0.4s, which is a race rather than a
+    # test: a cold Claude Code start (every #728 wake, or a busy node) ingests
+    # the paste long after that, and reading "not yet" as "lost" pasted the
+    # prompt two more times and then gave up without ever pressing Enter — the
+    # Build sat at `prompt_delivered: false` with three copies in its box
+    # (#805). Still bounded, because a paste that genuinely never arrives has
+    # to be pasted again (#288).
+    PASTE_APPEAR_TIMEOUT = float(os.environ.get('KC_PASTE_APPEAR_TIMEOUT', '45'))
+
+    #: How often to look for it. Also the settle before the FIRST look, so the
+    #: bracketed paste is ingested before anything judges the screen.
+    PASTE_POLL_INTERVAL = 0.4
+
+    #: Floor for a re-paste's own wait once the first attempt has spent the
+    #: whole appear budget. Without it a retry would look once and declare
+    #: failure; with it, total delivery stays well inside the Board run's
+    #: quiet-settle window instead of multiplying the ceiling by `retries`.
+    PASTE_RETRY_FLOOR = 4.0
+
+    @staticmethod
+    def _wait_for_paste(session_name, needle, before, timeout=None,
+                        interval=None):
+        """Wait for a pasted prompt to appear in the input box.
+
+        Returns `(landed, pane)`. `landed` is True as soon as the box holds the
+        prompt — the positive signal the 0.4s screen-diff never had. An
+        unreadable box falls back to `_screen_advanced`, and a session whose
+        captures keep failing is treated as landed: it cannot be observed, and
+        pasting again into a session we cannot see is how text gets duplicated.
+        Gives up at once on the folder-trust dialog — nothing is going to
+        appear in a composer that is covered by a modal, so waiting out the
+        ceiling only delays the caller that can answer it (#800).
+        """
+        timeout = (ClaudeTaskManager.PASTE_APPEAR_TIMEOUT
+                   if timeout is None else timeout)
+        interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
+                    if interval is None else interval)
+        deadline = time.time() + max(0.0, timeout)
+        pane = None
+        misses = 0
+        while True:
+            time.sleep(interval)
+            pane = ClaudeTaskManager._capture_pane(session_name)
+            if pane is None:
+                misses += 1
+                if misses >= ClaudeTaskManager.PANE_GONE_STRIKES:
+                    return True, None
+            else:
+                misses = 0
+                copies = ClaudeTaskManager._paste_copies(pane, needle)
+                if copies > 0:
+                    return True, pane
+                if ClaudeTaskManager._pane_shows_trust_dialog(pane):
+                    return False, pane
+                if copies < 0 and ClaudeTaskManager._screen_advanced(before, pane):
+                    return True, pane
+            if time.time() >= deadline:
+                return False, pane
+
+    #: Enter presses per delivery: the first, plus nudges for the one the
+    #: bracketed paste absorbs. An extra Enter on an emptied box is a no-op, so
+    #: this only bounds how long we insist.
+    SUBMIT_ENTER_TRIES = 3
+
+    #: How long one Enter gets to empty the box before the next nudge.
+    SUBMIT_CONFIRM_TIMEOUT = 2.5
+
+    @staticmethod
+    def _submit_and_confirm(session_name, needle, pasted, tries=None,
+                            timeout=None, interval=None):
+        """Press Enter until the input box empties — the proof of a submit.
+
+        The box emptying is the only observable that distinguishes "sent" from
+        "sitting there typed but unsent", which is the state a Build used to be
+        left in. Bounded nudges cover the Enter that gets absorbed into the
+        bracketed paste (#288).
+        """
+        tries = ClaudeTaskManager.SUBMIT_ENTER_TRIES if tries is None else tries
+        timeout = (ClaudeTaskManager.SUBMIT_CONFIRM_TIMEOUT
+                   if timeout is None else timeout)
+        interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
+                    if interval is None else interval)
+        for _ in range(max(1, tries)):
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                capture_output=True, text=True,
+            )
+            deadline = time.time() + max(0.0, timeout)
+            while True:
+                time.sleep(interval)
+                pane = ClaudeTaskManager._capture_pane(session_name)
+                copies = ClaudeTaskManager._paste_copies(pane, needle)
+                if copies == 0:
+                    return True
+                if copies < 0 and ClaudeTaskManager._screen_advanced(pasted, pane):
+                    return True
+                if time.time() >= deadline:
+                    break
+        return False
+
     @staticmethod
     def _deliver_prompt(session_name, prompt_file, buf_name, submit=True,
-                        retries=3):
+                        retries=3, appear_timeout=None):
         """Paste a prompt file into a live tmux TUI and verify delivery.
 
         Shared path for the initial prompt (create_task) and follow-ups
-        (send_followup). Loads `prompt_file` into a tmux buffer, pastes it
-        into the session's composer, and — when `submit` — presses Enter.
+        (send_followup). Loads `prompt_file` into a tmux buffer, pastes it into
+        the session's input box, and — when `submit` — presses Enter until the
+        box empties.
 
-        Claude/OpenCode wrap pasted text in bracketed-paste escapes; a paste
-        into a still-initializing TUI is silently *dropped*, and re-sending
-        Enter cannot recover a dropped paste (the composer is empty). So we
-        verify the paste landed by comparing pane captures; if it didn't, we
-        retry the whole load+paste — safe precisely because a dropped paste
-        left the composer empty, so there's nothing to duplicate. Once the
-        paste lands we send Enter and, if the submit doesn't register (Enter
-        absorbed into the bracketed paste), nudge Enter once more.
+        Claude/OpenCode wrap pasted text in bracketed-paste escapes. A paste
+        into a still-initializing TUI can be silently *dropped*, and re-sending
+        Enter cannot recover that (the box is empty), so a dropped paste has to
+        be pasted again (#288). But a paste into a SLOW TUI is only late, not
+        lost: it is queued and shows up seconds later. Telling those apart is
+        what this does — it waits, up to `appear_timeout`, for the prompt
+        itself to appear in the box, and only re-pastes if it never does. Every
+        re-paste empties the box first, so a late arrival can never leave two
+        copies stacked in it (#805).
 
         Returns True once the prompt is delivered (and submitted, when
-        `submit`), else False after exhausting `retries`.
+        `submit`), else False — and a False is loud, because the honest state
+        is a Build that visibly never received its prompt rather than one
+        quietly holding it unsent.
         """
-        for _ in range(max(1, retries)):
+        needle = ClaudeTaskManager._paste_needle(prompt_file)
+        attempts = max(1, retries)
+        budget = (ClaudeTaskManager.PASTE_APPEAR_TIMEOUT
+                  if appear_timeout is None else appear_timeout)
+        spend_by = time.time() + max(0.0, budget)
+        reason = 'no attempt ran'
+        for attempt in range(attempts):
+            # Never paste on top of a copy of this prompt. On the first attempt
+            # that can only be a previous delivery round's leftovers (the
+            # launch path retries around the trust dialog); on a retry it is
+            # our own paste, which may have landed late after all.
+            if attempt or ClaudeTaskManager._paste_copies(
+                    ClaudeTaskManager._capture_pane(session_name), needle) > 0:
+                if not ClaudeTaskManager._clear_composer(session_name, needle):
+                    reason = 'the input box could not be emptied for a re-paste'
+                    break
             try:
                 subprocess.run(
                     ['tmux', 'load-buffer', '-b', buf_name, prompt_file],
@@ -4265,45 +4524,46 @@ class ClaudeTaskManager:
                     ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
                     capture_output=True, text=True, check=True,
                 )
-                # Settle so the bracketed paste is fully ingested before we
-                # look (and before Enter — otherwise Enter is absorbed into
-                # the paste and the prompt never submits).
-                time.sleep(0.4)
-                pasted = ClaudeTaskManager._capture_pane(session_name)
             except subprocess.CalledProcessError as e:
                 print(f'[ClaudeTaskManager] paste failed: {e}', file=sys.stderr)
                 ClaudeTaskManager._delete_buffer(buf_name)
+                reason = f'tmux refused the paste: {e}'
                 continue
-
-            if not ClaudeTaskManager._screen_advanced(before, pasted):
-                # Paste was dropped (composer unchanged) — retry the whole
-                # load+paste. The empty composer means no risk of duplication.
-                ClaudeTaskManager._delete_buffer(buf_name)
-                continue
-
-            if not submit:
-                ClaudeTaskManager._delete_buffer(buf_name)
-                return True
-
-            subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                capture_output=True, text=True,
-            )
-            time.sleep(0.8)
-            after = ClaudeTaskManager._capture_pane(session_name)
-            if ClaudeTaskManager._screen_advanced(pasted, after):
-                ClaudeTaskManager._delete_buffer(buf_name)
-                return True
-            # Enter likely absorbed into the paste — nudge once more. An
-            # extra Enter on an empty input is a harmless no-op.
-            subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                capture_output=True, text=True,
-            )
-            time.sleep(0.6)
-            after2 = ClaudeTaskManager._capture_pane(session_name)
+            landed, pasted = ClaudeTaskManager._wait_for_paste(
+                session_name, needle, before,
+                timeout=max(ClaudeTaskManager.PASTE_RETRY_FLOOR,
+                            spend_by - time.time()))
             ClaudeTaskManager._delete_buffer(buf_name)
-            return ClaudeTaskManager._screen_advanced(pasted, after2)
+            if not landed:
+                if ClaudeTaskManager._pane_shows_trust_dialog(pasted):
+                    # The modal has the keyboard, so the prompt never reached
+                    # the composer. Re-pasting would just feed the dialog
+                    # again; the launch path answers it and comes back (#800).
+                    reason = ('the folder-trust dialog is covering the input '
+                              'box')
+                    break
+                # The box is still empty at the deadline, so this paste really
+                # was dropped rather than late — paste it again (#288).
+                print(f'[ClaudeTaskManager] {session_name}: pasted prompt never '
+                      f'appeared in the input box after '
+                      f'{attempt + 1}/{attempts} attempt(s) (#805)',
+                      file=sys.stderr)
+                reason = 'the paste never appeared in the input box'
+                continue
+            if not submit:
+                return True
+            if ClaudeTaskManager._submit_and_confirm(
+                    session_name, needle, pasted):
+                return True
+            # The prompt IS in the box and Enter did not clear it. Say so and
+            # stop: another paste would only add a second copy of a prompt that
+            # is already sitting there, and the box is now the one thing a
+            # human (or the /key endpoint) can submit by hand.
+            reason = ('the prompt is in the input box but Enter never '
+                      'submitted it')
+            break
+        print(f'[ClaudeTaskManager] {session_name}: PROMPT NOT DELIVERED — '
+              f'{reason} (#805)', file=sys.stderr)
         return False
 
     #: Clear-the-dialog-and-deliver-again rounds at launch (#800).
@@ -9006,6 +9266,21 @@ class BoardRunsManager:
                 # `stop_on.consecutive_failures`, so a systemically broken
                 # runtime halts the run loudly rather than quietly retiring a
                 # whole board.
+                meta = ClaudeTaskManager.read_meta(row['task_id']) or {}
+                if meta.get('prompt_delivered') is False:
+                    # A special case of the same thing, worth naming: the
+                    # prompt never reached the agent's input box, so the build
+                    # was never actually asked to do anything (#805). "Ended
+                    # without reporting" reads as an agent that worked and
+                    # stayed silent; this one never started. Either way it
+                    # feeds `stop_on.consecutive_failures`, so a run whose
+                    # deliveries are failing halts loudly instead of retiring
+                    # a whole board unworked.
+                    cls._settle(run_id, row, leases, processed, 'failed',
+                                'the prompt never reached the agent — it was '
+                                'left unsent in the build\'s input box, so '
+                                'nothing was worked on this item')
+                    continue
                 cls._settle(run_id, row, leases, processed, 'failed',
                             f'the build ended as {status} without reporting a '
                             f'disposition — nothing was recorded for this item')
