@@ -795,7 +795,7 @@ Status reconciliation happens automatically: when any API call queries a task wh
 | `running` | The tmux session is alive and the pane is changing. |
 | `waiting-for-input` | Alive but quiescent — finished a turn, or sitting at a prompt. |
 | `completed` | The CLI exited. This is the only "the work is done" status. |
-| `error` | The CLI exited non-zero (sub-agent tasks, which record an exit code). |
+| `error` | The CLI exited non-zero (sub-agent tasks, which record an exit code), **or** the prompt never reached the agent and the [undelivered-prompt reaper](#undelivered-prompts-prompt-reaper) gave up on it (`error` carries the reason, `prompt_undelivered_reaped_at` is set). |
 | `killed` | `DELETE /tasks/{id}` — somebody stopped it on purpose. |
 | `terminated` | **The pod restarted and wiped the tmux session before the task finished** (#792). Also sets `terminated_at` and `termination_reason: "pod_restart"`, and the completion hook carries both. |
 
@@ -810,6 +810,35 @@ The inference is conservative in one direction on purpose: when the boot is
 unknowable (an older task.json with no stamp, an unreadable `/tmp`), the status
 falls back to `completed`. A false `terminated` would make an orchestrator redo
 work that was actually finished.
+
+### Undelivered prompts (prompt reaper)
+
+A task whose first prompt never reached the agent (`prompt_delivered: false`)
+sits at `waiting-for-input` forever: it cannot finish, so it can never free its
+slot, and enough of them make every `POST /tasks` a `429` (#813). The server
+runs a background reaper that, for each task that is **idle at
+`waiting-for-input` with `prompt_delivered: false`**:
+
+1. re-delivers the prompt, up to `KC_PROMPT_REAP_RETRIES` times, spaced
+   `KC_PROMPT_REAP_RETRY_GAP_S` apart (a successful re-delivery sets
+   `prompt_delivered: true` and `prompt_redelivered_at`);
+2. after the last attempt fails, sets `status: "error"`, kills the tmux session
+   (freeing the slot), and fires the `response_url` hook once.
+
+It decides only from `task.json`, never from what is on the screen — an empty
+composer shows greyed suggestion text that looks like typed content. A task
+with no `prompt_delivered` field (delivery still in flight, or created by an
+older server) is never touched, nor is one that delivered its prompt and then
+finished its work, nor one that has accepted a `POST /tasks/{id}/message`
+follow-up (someone is driving it).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KC_PROMPT_REAPER` | `1` | `0` / `false` / `off` / `no` disables the reaper. |
+| `KC_PROMPT_REAPER_INTERVAL_S` | `30` | Seconds between passes (min 5). |
+| `KC_PROMPT_REAP_GRACE_S` | `120` | Idle time before the reaper acts. |
+| `KC_PROMPT_REAP_RETRIES` | `3` | Re-delivery attempts before failing the task. |
+| `KC_PROMPT_REAP_RETRY_GAP_S` | `60` | Minimum seconds between attempts. |
 
 ### Surviving pod restarts
 
