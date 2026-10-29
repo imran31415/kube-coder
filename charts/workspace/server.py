@@ -4484,10 +4484,21 @@ class ClaudeTaskManager:
             if time.time() >= deadline:
                 return False, pane
 
-    #: Enter presses per delivery: the first, plus nudges for the one the
-    #: bracketed paste absorbs. An extra Enter on an emptied box is a no-op, so
-    #: this only bounds how long we insist.
+    #: Submit attempts per delivery: a bare Enter, plus nudges for the one the
+    #: bracketed paste absorbs. A nudge on an emptied box is a no-op, so this
+    #: only bounds how long we insist.
     SUBMIT_ENTER_TRIES = 3
+
+    #: Pause between the Escape and the Enter of a nudge. Claude Code v2.1.310
+    #: stopped submitting on a bare Enter right after a bracketed paste (the
+    #: text just sits in the box, and a re-Enter changes nothing); Escape, a
+    #: beat, then Enter does submit it with its full content (#813). Older
+    #: CLIs simply see a harmless Escape.
+    SUBMIT_ESCAPE_SETTLE = 0.5
+
+    #: `_submit_and_confirm` result: the nudge's Escape emptied the box rather
+    #: than sending it, so the prompt is gone and has to be pasted again.
+    SUBMIT_CLEARED = 'cleared'
 
     #: How long one Enter gets to empty the box before the next nudge.
     SUBMIT_CONFIRM_TIMEOUT = 2.5
@@ -4500,14 +4511,33 @@ class ClaudeTaskManager:
         The box emptying is the only observable that distinguishes "sent" from
         "sitting there typed but unsent", which is the state a Build used to be
         left in. Bounded nudges cover the Enter that gets absorbed into the
-        bracketed paste (#288).
+        bracketed paste (#288). The first attempt is a bare Enter; every nudge
+        after it is Escape + pause + Enter, because on Claude Code v2.1.310 a
+        bare Enter after a paste never submits and repeating it never helps
+        (#813).
+
+        Returns True (sent), False (never registered), or `SUBMIT_CLEARED`.
         """
         tries = ClaudeTaskManager.SUBMIT_ENTER_TRIES if tries is None else tries
         timeout = (ClaudeTaskManager.SUBMIT_CONFIRM_TIMEOUT
                    if timeout is None else timeout)
         interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
                     if interval is None else interval)
-        for _ in range(max(1, tries)):
+        for attempt in range(max(1, tries)):
+            if attempt:
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', session_name, 'Escape'],
+                    capture_output=True, text=True,
+                )
+                time.sleep(ClaudeTaskManager.SUBMIT_ESCAPE_SETTLE)
+                # Some CLIs treat Escape as "clear the composer". An emptied
+                # box here was NOT sent -- reading it as a submit would report
+                # a delivery that never happened -- so hand it back to be
+                # pasted again.
+                if ClaudeTaskManager._paste_copies(
+                        ClaudeTaskManager._capture_pane(session_name),
+                        needle) == 0:
+                    return ClaudeTaskManager.SUBMIT_CLEARED
             subprocess.run(
                 ['tmux', 'send-keys', '-t', session_name, 'Enter'],
                 capture_output=True, text=True,
@@ -4604,9 +4634,13 @@ class ClaudeTaskManager:
                 continue
             if not submit:
                 return True
-            if ClaudeTaskManager._submit_and_confirm(
-                    session_name, needle, pasted):
+            sent = ClaudeTaskManager._submit_and_confirm(
+                session_name, needle, pasted)
+            if sent is True:
                 return True
+            if sent == ClaudeTaskManager.SUBMIT_CLEARED:
+                reason = 'Escape emptied the input box before it was sent'
+                continue
             # The prompt IS in the box and Enter did not clear it. Say so and
             # stop: another paste would only add a second copy of a prompt that
             # is already sitting there, and the box is now the one thing a
