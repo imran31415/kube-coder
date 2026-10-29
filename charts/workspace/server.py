@@ -3656,6 +3656,218 @@ class ClaudeTaskManager:
                       file=sys.stderr)
         return reconciled
 
+    # ── Undelivered-prompt reaper (#813) ─────────────────────────────────
+    # A Build whose first prompt never reached the agent idles at
+    # `waiting-for-input` forever: it cannot finish, so it cannot self-kill,
+    # and enough of them pin every slot under KC_MAX_TASKS until each new POST
+    # is a 429. The reaper re-delivers the prompt a bounded number of times and
+    # then fails the Build so its slot comes back.
+    #
+    # The decision rests ONLY on what this server recorded in task.json --
+    # `prompt_delivered` (the delivery path's own verdict) and `status` (its
+    # own quiescence derivation). Never on captured screen text: an empty
+    # composer shows greyed ghost-suggestion text that reads as static content,
+    # and a screen-scraping nudger was fooled by exactly that.
+
+    @staticmethod
+    def _env_number(name, default, cast=float, minimum=0):
+        try:
+            return max(minimum, cast(os.environ.get(name, default)))
+        except (TypeError, ValueError):
+            return cast(default)
+
+    #: Master switch. On by default; `KC_PROMPT_REAPER=0` turns the reaper off.
+    PROMPT_REAPER_ENABLED = (os.environ.get('KC_PROMPT_REAPER', '1').strip().lower()
+                             not in ('0', 'false', 'no', 'off', ''))
+
+    #: Seconds a Build must sit idle with its prompt undelivered before the
+    #: reaper touches it, so a delivery still working through a slow start is
+    #: never raced.
+    PROMPT_REAP_GRACE = _env_number.__func__('KC_PROMPT_REAP_GRACE_S', 120)
+
+    #: Re-delivery attempts before the Build is failed.
+    PROMPT_REAP_RETRIES = _env_number.__func__('KC_PROMPT_REAP_RETRIES', 3, int)
+
+    #: Minimum seconds between two re-delivery attempts at one Build.
+    PROMPT_REAP_RETRY_GAP = _env_number.__func__('KC_PROMPT_REAP_RETRY_GAP_S', 60)
+
+    _redelivering = set()
+    _redelivering_lock = threading.Lock()
+
+    @staticmethod
+    def _reap_candidate(meta, now):
+        """True when task.json says this Build is idle with an undelivered
+        prompt. `prompt_delivered` must be literally False: absent means
+        delivery is still in flight (or the Build predates the field), and
+        True means the prompt landed."""
+        if meta.get('status') != 'waiting-for-input':
+            return False
+        if meta.get('prompt_delivered') is not False:
+            return False
+        # A follow-up the server pasted AND submitted means someone is driving
+        # this session: re-pasting the original prompt on top of that work, or
+        # killing the session under it, would be the reaper's own damage.
+        if meta.get('followups'):
+            return False
+        idle_since = meta.get('last_activity_at') or 0
+        return now - idle_since >= ClaudeTaskManager.PROMPT_REAP_GRACE
+
+    @staticmethod
+    def _redeliver_prompt(task_id, task_dir, meta):
+        """Run one re-delivery attempt and record the verdict. Blocking; the
+        reaper calls it from a daemon thread."""
+        session_name = meta.get('tmux_session') or f'kube-coder-{task_id}'
+        try:
+            delivered, saw_dialog = ClaudeTaskManager._deliver_launch_prompt(
+                session_name, os.path.join(task_dir, 'prompt.txt'),
+                f'prompt-{task_id}',
+                expect_composer=(meta.get('assistant') == 'claude'))
+        except Exception as e:
+            print(f'[prompt-reaper] {task_id}: redelivery raised: {e}',
+                  file=sys.stderr)
+            delivered, saw_dialog = False, False
+        finally:
+            with ClaudeTaskManager._redelivering_lock:
+                ClaudeTaskManager._redelivering.discard(task_id)
+
+        def record(m):
+            if m.get('status') not in ('running', 'waiting-for-input'):
+                return False
+            if delivered:
+                m['prompt_delivered'] = True
+                m['prompt_redelivered_at'] = time.time()
+            if saw_dialog:
+                m['trust_dialog_answered'] = True
+
+        try:
+            ClaudeTaskManager._atomic_update_meta(task_dir, record)
+        except Exception as e:
+            print(f'[prompt-reaper] {task_id}: could not record redelivery: {e}',
+                  file=sys.stderr)
+        print(f'[prompt-reaper] {task_id}: redelivery '
+              f'{"succeeded" if delivered else "failed"} (#813)',
+              file=sys.stderr)
+        return delivered
+
+    @staticmethod
+    def _fail_undelivered(task_id, task_dir, meta, attempts):
+        """Mark an unrecoverable Build `error` and free its tmux slot."""
+        failed_at = time.time()
+        fire_hook = False
+        reason = (f'the initial prompt was never delivered to the agent after '
+                  f'{attempts} re-delivery attempt(s)')
+
+        def mutate(m):
+            nonlocal fire_hook
+            # Re-check inside the lock: the Build may have recovered or been
+            # killed while the reaper was deciding.
+            if m.get('status') != 'waiting-for-input' or \
+                    m.get('prompt_delivered') is not False:
+                return False
+            m['status'] = 'error'
+            m['error'] = reason
+            m['finished_at'] = failed_at
+            m['prompt_undelivered_reaped_at'] = failed_at
+            m.pop('waiting_for_input', None)
+            m.pop('last_input_prompt', None)
+            if m.get('response_url') and not m.get('hook_fired_at'):
+                m['hook_fired_at'] = failed_at
+                fire_hook = True
+
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        if updated is None or updated.get('status') != 'error' or \
+                updated.get('prompt_undelivered_reaped_at') != failed_at:
+            return False
+        # Status first, kill second: the reconciler skips a terminal task, so
+        # it cannot race the session's disappearance into `completed`.
+        subprocess.run(
+            ['tmux', 'kill-session', '-t',
+             meta.get('tmux_session') or f'kube-coder-{task_id}'],
+            capture_output=True, text=True,
+        )
+        if fire_hook:
+            ClaudeTaskManager._fire_completion_hook(updated)
+        EventBroker.publish('task.status', {
+            'task_id': task_id, 'status': 'error', 'finished_at': failed_at,
+        })
+        FeedManager.emit_task_terminal(updated, 'error')
+        if updated.get('worktree'):
+            WorktreeManager.snapshot_async(task_id)
+        print(f'[prompt-reaper] {task_id}: failed -- {reason} (#813)',
+              file=sys.stderr)
+        return True
+
+    @staticmethod
+    def reap_undelivered(now=None):
+        """One reaper pass. Returns `{'retried': n, 'errored': n}`.
+
+        Each idle Build with `prompt_delivered is False` gets up to
+        PROMPT_REAP_RETRIES re-deliveries, PROMPT_REAP_RETRY_GAP apart; the
+        pass after the last one fails it and kills its session. Attempts are
+        counted in task.json BEFORE they run, so a crash mid-delivery still
+        spends the attempt and the loop cannot go on forever.
+        """
+        ClaudeTaskManager.ensure_tasks_dir()
+        now = time.time() if now is None else now
+        out = {'retried': 0, 'errored': 0}
+        try:
+            entries = sorted(os.listdir(ClaudeTaskManager.TASKS_DIR), reverse=True)
+        except OSError:
+            return out
+        for entry in entries:
+            task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, entry)
+            try:
+                with open(os.path.join(task_dir, 'task.json')) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or \
+                    not ClaudeTaskManager._reap_candidate(meta, now):
+                continue
+            task_id = meta.get('task_id') or entry
+            with ClaudeTaskManager._redelivering_lock:
+                if task_id in ClaudeTaskManager._redelivering:
+                    continue
+            session_name = meta.get('tmux_session') or f'kube-coder-{task_id}'
+            alive = subprocess.run(['tmux', 'has-session', '-t', session_name],
+                                   capture_output=True, text=True)
+            if alive.returncode != 0:
+                continue  # the reconciler settles a gone session
+            attempts = int(meta.get('prompt_redelivery_attempts') or 0)
+            if attempts >= ClaudeTaskManager.PROMPT_REAP_RETRIES:
+                if ClaudeTaskManager._fail_undelivered(
+                        task_id, task_dir, meta, attempts):
+                    out['errored'] += 1
+                continue
+            last = float(meta.get('prompt_redelivery_at') or 0)
+            if now - last < ClaudeTaskManager.PROMPT_REAP_RETRY_GAP:
+                continue
+
+            def spend(m, _now=now):
+                if m.get('status') != 'waiting-for-input' or \
+                        m.get('prompt_delivered') is not False:
+                    return False
+                m['prompt_redelivery_attempts'] = \
+                    int(m.get('prompt_redelivery_attempts') or 0) + 1
+                m['prompt_redelivery_at'] = _now
+
+            updated = ClaudeTaskManager._atomic_update_meta(task_dir, spend)
+            if updated is None or \
+                    updated.get('prompt_redelivery_at') != now:
+                continue
+            with ClaudeTaskManager._redelivering_lock:
+                ClaudeTaskManager._redelivering.add(task_id)
+            print(f'[prompt-reaper] {task_id}: idle with an undelivered prompt; '
+                  f'redelivery {updated["prompt_redelivery_attempts"]}/'
+                  f'{ClaudeTaskManager.PROMPT_REAP_RETRIES} (#813)',
+                  file=sys.stderr)
+            threading.Thread(
+                target=ClaudeTaskManager._redeliver_prompt,
+                args=(task_id, task_dir, updated), daemon=True,
+            ).start()
+            out['retried'] += 1
+        return out
+
     @staticmethod
     def task_status(task_id):
         """Just the reconciled status string, or None if the task is gone.
@@ -4484,10 +4696,21 @@ class ClaudeTaskManager:
             if time.time() >= deadline:
                 return False, pane
 
-    #: Enter presses per delivery: the first, plus nudges for the one the
-    #: bracketed paste absorbs. An extra Enter on an emptied box is a no-op, so
-    #: this only bounds how long we insist.
+    #: Submit attempts per delivery: a bare Enter, plus nudges for the one the
+    #: bracketed paste absorbs. A nudge on an emptied box is a no-op, so this
+    #: only bounds how long we insist.
     SUBMIT_ENTER_TRIES = 3
+
+    #: Pause between the Escape and the Enter of a nudge. Claude Code v2.1.310
+    #: stopped submitting on a bare Enter right after a bracketed paste (the
+    #: text just sits in the box, and a re-Enter changes nothing); Escape, a
+    #: beat, then Enter does submit it with its full content (#813). Older
+    #: CLIs simply see a harmless Escape.
+    SUBMIT_ESCAPE_SETTLE = 0.5
+
+    #: `_submit_and_confirm` result: the nudge's Escape emptied the box rather
+    #: than sending it, so the prompt is gone and has to be pasted again.
+    SUBMIT_CLEARED = 'cleared'
 
     #: How long one Enter gets to empty the box before the next nudge.
     SUBMIT_CONFIRM_TIMEOUT = 2.5
@@ -4500,14 +4723,33 @@ class ClaudeTaskManager:
         The box emptying is the only observable that distinguishes "sent" from
         "sitting there typed but unsent", which is the state a Build used to be
         left in. Bounded nudges cover the Enter that gets absorbed into the
-        bracketed paste (#288).
+        bracketed paste (#288). The first attempt is a bare Enter; every nudge
+        after it is Escape + pause + Enter, because on Claude Code v2.1.310 a
+        bare Enter after a paste never submits and repeating it never helps
+        (#813).
+
+        Returns True (sent), False (never registered), or `SUBMIT_CLEARED`.
         """
         tries = ClaudeTaskManager.SUBMIT_ENTER_TRIES if tries is None else tries
         timeout = (ClaudeTaskManager.SUBMIT_CONFIRM_TIMEOUT
                    if timeout is None else timeout)
         interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
                     if interval is None else interval)
-        for _ in range(max(1, tries)):
+        for attempt in range(max(1, tries)):
+            if attempt:
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', session_name, 'Escape'],
+                    capture_output=True, text=True,
+                )
+                time.sleep(ClaudeTaskManager.SUBMIT_ESCAPE_SETTLE)
+                # Some CLIs treat Escape as "clear the composer". An emptied
+                # box here was NOT sent -- reading it as a submit would report
+                # a delivery that never happened -- so hand it back to be
+                # pasted again.
+                if ClaudeTaskManager._paste_copies(
+                        ClaudeTaskManager._capture_pane(session_name),
+                        needle) == 0:
+                    return ClaudeTaskManager.SUBMIT_CLEARED
             subprocess.run(
                 ['tmux', 'send-keys', '-t', session_name, 'Enter'],
                 capture_output=True, text=True,
@@ -4604,9 +4846,13 @@ class ClaudeTaskManager:
                 continue
             if not submit:
                 return True
-            if ClaudeTaskManager._submit_and_confirm(
-                    session_name, needle, pasted):
+            sent = ClaudeTaskManager._submit_and_confirm(
+                session_name, needle, pasted)
+            if sent is True:
                 return True
+            if sent == ClaudeTaskManager.SUBMIT_CLEARED:
+                reason = 'Escape emptied the input box before it was sent'
+                continue
             # The prompt IS in the box and Enter did not clear it. Say so and
             # stop: another paste would only add a second copy of a prompt that
             # is already sitting there, and the box is now the one thing a
@@ -16015,6 +16261,47 @@ class TaskReconciler:
         }
 
 
+class PromptReaper:
+    """Background loop over `ClaudeTaskManager.reap_undelivered` (#813), on
+    TaskReconciler's pattern. All the judgement lives in the manager; this only
+    runs it on an interval. Started only when KC_PROMPT_REAPER is on."""
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _start_lock = threading.Lock()
+    _last_run_at = 0.0
+    _last_result = None
+
+    @classmethod
+    def start(cls, *, interval_seconds=30):
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            while not cls._stop_event.is_set():
+                try:
+                    cls._last_result = ClaudeTaskManager.reap_undelivered()
+                    cls._last_run_at = time.time()
+                except Exception as e:
+                    print(f'[prompt-reaper] pass failed: {e}', file=sys.stderr)
+                cls._stop_event.wait(interval_seconds)
+
+        t = threading.Thread(target=_loop, name='prompt-reaper', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def status(cls):
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'last_run_at': cls._last_run_at or None,
+            'last_result': cls._last_result,
+        }
+
+
 class WorktreeSweeper:
     """Background cleanup of isolated worktrees (#701), on TaskReconciler's
     pattern. Every pass is `WorktreeManager.sweep()` — which never removes a
@@ -16314,6 +16601,18 @@ if __name__ == "__main__":
         print(f'[tasks] background reconciler started ({_reconcile_interval}s)')
     except Exception as e:
         print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
+
+    # Undelivered-prompt reaper (#813): re-delivers, then fails, Builds that
+    # sit idle with a prompt the delivery path never landed, so they cannot
+    # pile up to KC_MAX_TASKS. KC_PROMPT_REAPER=0 turns it off.
+    if ClaudeTaskManager.PROMPT_REAPER_ENABLED:
+        _reaper_interval = ClaudeTaskManager._env_number(
+            'KC_PROMPT_REAPER_INTERVAL_S', 30, minimum=5)
+        try:
+            PromptReaper.start(interval_seconds=_reaper_interval)
+            print(f'[tasks] prompt reaper started ({_reaper_interval}s)')
+        except Exception as e:
+            print(f'[tasks] prompt reaper start failed: {e}', file=sys.stderr)
 
     # Isolated-worktree cleanup (#701). Removes only what holds nothing: a
     # worktree whose Build finished without changing anything, or one whose

@@ -515,13 +515,19 @@ class FakeSession:
                      what Claude shows for a long or multi-line prompt.
     - `unclearable`— C-u / Escape do nothing (the box refuses to empty).
     - `dialog`     — start parked on the folder-trust modal.
+    - `needs_escape` — Claude Code v2.1.310 (#813): after a paste, a bare Enter
+                     does nothing, however often it is pressed; only an Enter
+                     that follows an Escape submits. Escape leaves the text.
     """
 
     PROMPT = 'implement the thing and open a PR'
 
     def __init__(self, paste_delay=0.0, drops=0, swallow=0, preloaded=0,
-                 placeholder=False, unclearable=False, dialog=False):
+                 placeholder=False, unclearable=False, dialog=False,
+                 needs_escape=False):
         self.clock = 0.0
+        self.needs_escape = needs_escape
+        self.armed = False
         self.paste_delay = paste_delay
         self.drops = drops
         self.swallow = swallow
@@ -599,12 +605,17 @@ class FakeSession:
             if self.swallow > 0:
                 self.swallow -= 1
                 return
+            if self.needs_escape and not self.armed:
+                return
+            self.armed = False
             self._tick()
             if self.visible:
                 # Enter sends the WHOLE box as one message, however many
                 # copies of the prompt are in it.
                 self.submitted.append(self.visible)
                 self.visible = 0
+        elif key == 'Escape' and self.needs_escape:
+            self.armed = True
         elif key in ('C-u', 'Escape') and not self.unclearable:
             # Keys reach the TUI in order, so a clear also discards a paste
             # that was still queued behind it.
@@ -788,16 +799,40 @@ class DeliverPromptTests(unittest.TestCase):
         self.assertLess(sess.clock, CTM.PASTE_APPEAR_TIMEOUT + 20)
 
     def test_swallowed_enter_gets_one_nudge(self):
-        sess = FakeSession(paste_delay=1.0, swallow=1)
+        sess = FakeSession(paste_delay=1.0, swallow=1, unclearable=True)
         self.assertTrue(self._deliver(sess))
         self.assertEqual(sess.enters, 2)
         self.assertEqual(sess.submitted, [1])
         self.assertEqual(sess.pastes, 1)
 
+    def test_enter_that_needs_an_escape_first_still_submits(self):
+        # #813: on Claude Code v2.1.310 a bare Enter after a paste is inert.
+        # The nudge must be Escape, a pause, Enter -- and still one paste.
+        sess = FakeSession(paste_delay=1.0, needs_escape=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.keys[-2:], [('Escape',), ('Enter',)])
+
+    def test_escape_that_clears_the_box_is_not_a_submit(self):
+        # An older CLI where Escape empties the composer: the nudge must not
+        # mistake the emptied box for a sent prompt. It pastes again, and
+        # exactly one copy is ultimately sent.
+        sess = FakeSession(paste_delay=1.0, swallow=1)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 2)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_first_attempt_is_a_bare_enter(self):
+        # A CLI that still submits on Enter never sees an Escape.
+        sess = FakeSession(paste_delay=1.0)
+        self.assertTrue(self._deliver(sess))
+        self.assertNotIn(('Escape',), sess.keys)
+
     def test_unsubmittable_box_is_reported_not_re_pasted(self):
         # Enter never registers. The prompt IS in the box; pasting again would
         # only stack a second copy of a prompt a human can still send.
-        sess = FakeSession(swallow=99)
+        sess = FakeSession(swallow=99, unclearable=True)
         self.assertFalse(self._deliver(sess))
         self.assertEqual(sess.pastes, 1)
         self.assertEqual(sess.visible, 1)
