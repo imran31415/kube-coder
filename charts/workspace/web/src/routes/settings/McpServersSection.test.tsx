@@ -24,12 +24,30 @@ import { McpServersSection } from './McpServersSection';
 function entry(over: Partial<McpServerEntry>): McpServerEntry {
   return {
     name: 'github',
+    type: 'stdio',
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-github'],
     env: { GITHUB_TOKEN: '…cd12' },
+    url: '',
+    headers: {},
+    providers: ['ante', 'claude', 'codex', 'opencode'],
     enabled: true,
     ...over,
   };
+}
+
+function remoteEntry(over: Partial<McpServerEntry> = {}): McpServerEntry {
+  return entry({
+    name: 'canva',
+    type: 'http',
+    command: '',
+    args: [],
+    env: {},
+    url: 'https://mcp.canva.com/mcp',
+    headers: { Authorization: '…9876' },
+    providers: ['claude'],
+    ...over,
+  });
 }
 
 describe('McpServersSection', () => {
@@ -60,6 +78,7 @@ describe('McpServersSection', () => {
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toEqual({
       name: 'github',
+      type: 'stdio',
       command: 'npx',
       args: ['-y', 'pkg'],
       env: { TOKEN: 'abc' },
@@ -93,5 +112,62 @@ describe('McpServersSection', () => {
     expect(deleted).toHaveLength(0);
     fireEvent.click(screen.getByText('Remove server'));
     await waitFor(() => expect(deleted).toContain('github'));
+  });
+
+  it('adds a remote HTTP server by URL, parsing header lines (#815)', async () => {
+    render(<McpServersSection />);
+    fireEvent.click(screen.getByText('Remote HTTP'));
+    expect(screen.queryByPlaceholderText(/Command/)).not.toBeInTheDocument();
+    fireEvent.input(screen.getByPlaceholderText(/Name/), { target: { value: 'canva' } });
+    const add = screen.getByText('Add MCP server').closest('button')!;
+    expect(add).toBeDisabled(); // no URL yet
+    fireEvent.input(screen.getByPlaceholderText(/URL/), {
+      target: { value: 'https://mcp.canva.com/mcp' },
+    });
+    fireEvent.input(screen.getByPlaceholderText(/Headers/), {
+      target: { value: 'Authorization: Bearer abc' },
+    });
+    fireEvent.click(add);
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({
+      name: 'canva',
+      type: 'http',
+      url: 'https://mcp.canva.com/mcp',
+      headers: { Authorization: 'Bearer abc' },
+    });
+  });
+
+  it('rejects malformed header lines without calling the API', async () => {
+    render(<McpServersSection />);
+    fireEvent.click(screen.getByText('Remote SSE'));
+    fireEvent.input(screen.getByPlaceholderText(/Name/), { target: { value: 'x' } });
+    fireEvent.input(screen.getByPlaceholderText(/URL/), { target: { value: 'https://x.example/sse' } });
+    fireEvent.input(screen.getByPlaceholderText(/Headers/), { target: { value: 'noheader' } });
+    fireEvent.click(screen.getByText('Add MCP server'));
+    await waitFor(() => expect(saved).toHaveLength(0));
+  });
+
+  it('lists a remote server by URL and marks it Claude-only', async () => {
+    servers = [remoteEntry()];
+    render(<McpServersSection />);
+    expect(await screen.findByText('canva')).toBeInTheDocument();
+    expect(screen.getByText(/https:\/\/mcp\.canva\.com\/mcp/)).toBeInTheDocument();
+    expect(screen.getByText(/headers: Authorization/)).toBeInTheDocument();
+    expect(screen.getByText(/http · Claude only/)).toBeInTheDocument();
+    expect(screen.queryByText('…9876')).not.toBeInTheDocument();
+  });
+
+  it('toggles a remote server, keeping its type and round-tripping blank headers', async () => {
+    servers = [remoteEntry()];
+    render(<McpServersSection />);
+    fireEvent.click(await screen.findByText('Disable'));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({
+      name: 'canva',
+      type: 'http',
+      url: 'https://mcp.canva.com/mcp',
+      headers: { Authorization: '' },
+      enabled: false,
+    });
   });
 });

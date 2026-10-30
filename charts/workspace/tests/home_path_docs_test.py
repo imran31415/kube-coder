@@ -11,6 +11,10 @@ cosmetic bug — agents act on it. Two claims had drifted out of true:
     later. Following the doc's advice — rm -rf "$HOME/<path>" and symlink
     it at /home/dev/<path> — deleted ~1GB of freshly extracted data from
     the PVC and left a self-referential symlink.
+    (#815 refined this: only hooks and the Hypervisor are forced. Builds
+    and sub-agents are tmux sessions and inherit the tmux server's HOME,
+    normally /home/ubuntu, so "agent tasks are forced to /home/dev" was
+    wrong too, and it hid that each home loads its own .claude.json.)
   * "/home/dev/.local/bin is already on PATH in every shell" — it comes
     from an rc block, so only *login* shells get it. Scripts, `bash -c`
     and anything server.py execs directly read no rc file.
@@ -40,6 +44,9 @@ STALE_CLAIMS = (
     '`$HOME` is `/home/ubuntu`, which is **ephemeral**',
     'it is already on `PATH` in every shell',
     'Already on `PATH` in every shell',
+    # #815: Builds are NOT forced to /home/dev; they inherit tmux's HOME.
+    'agent tasks, hooks, the hypervisor — which are forced there',
+    '`/home/dev` for the CLIs the dashboard spawns (agent tasks, hooks)',
 )
 
 
@@ -62,6 +69,18 @@ class ClaudeMdHomeFactsTestCase(unittest.TestCase):
         self.assertIn('`$HOME` varies by context', self.text)
         self.assertIn('/home/ubuntu', self.text)
         self.assertIn('/home/dev', self.text)
+
+    def test_says_agent_tasks_inherit_tmux_home(self):
+        """#815: a task's HOME comes from tmux, not from the server."""
+        self.assertIn('**Agent tasks are not forced:**', self.text)
+        self.assertIn('tmux show-environment -g HOME', self.text)
+
+    def test_says_mcp_servers_differ_by_home(self):
+        """#815: `claude mcp add` in one home was invisible to a task in the
+        other, and lost on restart. The doc points at the registry."""
+        self.assertIn('Each home has its own `.claude.json`', self.text)
+        self.assertIn('Settings → MCP servers', self.text)
+        self.assertIn('written into both homes', self.text)
 
     def test_warns_against_destructive_use_of_home(self):
         """The specific shape that cost a user ~1GB."""

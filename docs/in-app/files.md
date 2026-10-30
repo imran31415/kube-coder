@@ -14,7 +14,7 @@
 | `/home/dev/.claude-memory/memory.db` | ✅ | Persistent memory SQLite. |
 | `/home/dev/.local/bin/*` | ✅ | Tools you install yourself. On `PATH` in **login** shells (terminal, SSH, agent tasks); scripts and `bash -c` read no rc file, so call tools there by absolute path. |
 | `/home/ubuntu/**` (`.local/bin`, `.bashrc`, …) | ❌ | Ephemeral, rebuilt from skel each restart. Use `/home/dev/...` absolute paths instead. |
-| `~`, `$HOME` | ⚠️ | **Not a fixed path.** `/home/ubuntu` for terminals and SSH, `/home/dev` for the CLIs the dashboard spawns (agent tasks, hooks). Never put `$HOME` in an `rm -rf` — it may already be the persistent volume (issue #793). |
+| `~`, `$HOME` | ⚠️ | **Not a fixed path.** `/home/ubuntu` for SSH and normally for terminals and agent tasks (both inherit tmux's global environment, so either is possible), `/home/dev` for the hooks and Hypervisor CLIs the dashboard spawns. Never put `$HOME` in an `rm -rf` — it may already be the persistent volume (issue #793). |
 | `/tmp/**` | ❌ | Ephemeral, lost on restart. |
 | `apt-get install ...` packages | ❌ | Re-installed on next restart unless persisted. |
 
