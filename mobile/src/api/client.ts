@@ -1296,9 +1296,14 @@ export async function deleteProviderKey(provider: ProviderVar): Promise<void> {
 
 export interface McpServerEntry {
   name: string;
+  // Remote servers (#815). Optional: a workspace older than that omits them,
+  // and every entry it lists is stdio.
+  type?: 'stdio' | 'http' | 'sse';
   command: string;
   args: string[];
   env: Record<string, string>; // redacted hints like "…cc18"
+  url?: string;
+  headers?: Record<string, string>; // redacted like env
   enabled: boolean;
 }
 
@@ -1310,6 +1315,9 @@ export interface McpServerInput {
   command: string;
   args: string[];
   env: Record<string, string>; // real values on input; blank = keep stored
+  type?: 'stdio' | 'http' | 'sse'; // omitted = keep the stored transport
+  url?: string;
+  headers?: Record<string, string>; // blank = keep stored, like env
   enabled?: boolean;
 }
 

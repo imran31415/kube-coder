@@ -3,7 +3,9 @@
  *  enable/disable or remove one (confirmAction), and opens a small modal sheet
  *  to add a new server (name / command / args / KEY=VALUE env lines). Entries
  *  are stored on the workspace disk and fanned out to every assistant's own
- *  config — new sessions pick them up. Mirrors ProviderKeysCard. */
+ *  config — new sessions pick them up. Mirrors ProviderKeysCard. Remote
+ *  (http/sse, #815) entries are listed and toggled here but added from the
+ *  web dashboard. */
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
@@ -27,6 +29,10 @@ import {
 import { colors, font, radius, space } from '../theme';
 import { confirmAction } from '../util/confirm';
 import { Button, Card, Label } from './ui';
+
+function isRemote(s: McpServerEntry): boolean {
+  return s.type === 'http' || s.type === 'sse';
+}
 
 // Parse "KEY=VALUE" lines into an env object; returns an error for bad lines.
 function parseEnvLines(text: string): { env: Record<string, string>; error: string | null } {
@@ -69,11 +75,13 @@ export function McpServersCard({ readOnly }: { readOnly?: boolean }) {
   async function toggle(s: McpServerEntry) {
     setBusy(s.name);
     try {
-      // Blank env values round-trip the stored secrets unchanged.
-      const env: Record<string, string> = {};
-      for (const k of Object.keys(s.env)) env[k] = '';
+      // Blank env/header values round-trip the stored secrets unchanged.
+      const blank = (o: Record<string, string> = {}) =>
+        Object.fromEntries(Object.keys(o).map((k) => [k, '']));
       applySync(await saveMcpServer({
-        name: s.name, command: s.command, args: s.args, env, enabled: !s.enabled,
+        name: s.name, type: s.type, command: s.command, args: s.args, env: blank(s.env),
+        ...(isRemote(s) ? { url: s.url, headers: blank(s.headers) } : {}),
+        enabled: !s.enabled,
       }));
       await refresh();
     } catch {
@@ -119,7 +127,9 @@ export function McpServersCard({ readOnly }: { readOnly?: boolean }) {
               {s.enabled ? 'enabled' : 'disabled'}
             </Text>
             <Text style={styles.srvCmd} numberOfLines={1}>
-              {s.command} {s.args.join(' ')}
+              {isRemote(s)
+                ? `${s.type} · Claude only · ${s.url ?? ''}`
+                : `${s.command} ${s.args.join(' ')}`}
               {Object.keys(s.env).length ? ` · env: ${Object.keys(s.env).join(', ')}` : ''}
             </Text>
           </View>
