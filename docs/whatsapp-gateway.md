@@ -87,8 +87,8 @@ Once Twilio is connected:
    **6-digit pairing code** (valid ~10 minutes) and, for a dialable sender, an
    **Open in WhatsApp** shortcut.
 2. **Text the code** to your WhatsApp sender number from your phone. You'll get a
-   `✅ Linked!` reply — your number is now bound (stored **hashed**, never in the
-   clear).
+   `✅ Linked!` reply — your number is now bound (keyed by its **hash** and
+   never stored in the clear; §6 explains the sealed copy Board reviews use).
 3. **Just chat.** Text the workspace normally; the agent drives your workspace and
    replies land back in WhatsApp.
 
@@ -145,7 +145,129 @@ still completes and the result is in the runner log.
 
 Twilio has no such registry, so it keeps the built-in behavior.
 
-## 6. Turning it off
+## 6. Board reviews on WhatsApp
+
+When a Board item is waiting on a staged approval, the workspace sends it to
+every paired number as well as to the app's push (#709). Push is still the main
+channel; WhatsApp is for when the app isn't open.
+
+**What arrives:**
+
+| The proposal | The message |
+|---|---|
+| **One** comment of at most 700 characters | The **full text**, with **Approve** · **Reject** · **Open in app** |
+| A longer comment, several writes, a status change, anything else | A one-line summary and a link to the review. No Approve button: nobody approves customer-visible text they can't read in full. |
+
+A Zendesk-style `public` flag is spelled out ("public reply (the customer will
+see it)" vs "internal note").
+
+**What a tap does.** Each button carries the card's id, the ticket's content
+hash and a signature made with a key only this workspace holds. A tap counts
+only if the signature checks out, the card was sent to the number tapping, and
+that number is still paired with a valid token. It then runs the same approval
+as the app's Approve button:
+
+- The ticket changed in the tracker, or the proposal was edited or replaced
+  after the message went out: *"This ticket changed. Open the app to review."*
+  Nothing is written.
+- A second tap, or WhatsApp delivering the same tap twice: the reply is posted
+  once; the second tap just says it was already approved.
+- An unpaired number, or a payload that has been tampered with: nothing
+  happens.
+
+**Open in app** links to `https://<workspace host>/board?board=<id>&review=<item>`,
+the same review a push opens. It is an https link because WhatsApp does not make
+an app-scheme link tappable.
+
+**Your number.** To start a conversation the workspace has to know your number,
+so pairing now keeps it **sealed** in the link record (encrypted, with the key in
+a separate `0600` file). It is still never stored in the clear and never shown
+in any list. A number paired before this change is picked up the next time it
+messages the workspace.
+
+### Inside vs outside the 24-hour window
+
+| | Inside the window | Outside the window |
+|---|---|---|
+| **Meta** | Interactive message with the three buttons | Your approved `board_review` / `board_review_link` template. If it isn't registered, nothing is sent. |
+| **Twilio with a Content template** | The Content template | The Content template |
+| **Twilio sandbox** | Numbered text: reply **1** to approve, **2** to reject, **3** for the link | Nothing (the sandbox can't send templates) |
+
+On the sandbox a bare `1`/`2`/`3` counts only while the review card is still the
+**last** message the workspace sent you. If the agent has sent anything since,
+the digit goes to the agent as an ordinary chat message.
+
+### Setting up the templates (one-time, done by the owner)
+
+Templates have to be approved by Meta, which can take from minutes to a day, so
+do this before you rely on it. The gateway uses two logical names; you record
+the name (or SID) the provider gave you, the same way as the other templates in
+§5.
+
+**`board_review`** is the short card. Category **Utility**, any language.
+
+```
+{{1}} needs your review.
+
+Proposed {{2}}:
+{{3}}
+```
+
+Three **quick-reply** buttons, in this order: `Approve`, `Reject`, `Open in app`.
+Example values for the review form: `SUP-46` / `comment` /
+`Hi Dana, the refund was issued on the 3rd.`
+
+**`board_review_link`** is for everything else. No buttons.
+
+```
+{{1}} needs your review: {{2}}. Open it here: {{3}}
+```
+
+`{{1}}` is the ticket key, `{{2}}` a summary such as "2 proposed writes
+(comment, set_status)", and `{{3}}` the review link.
+
+WhatsApp doesn't allow a line break inside a template value, so outside the
+window the proposed text arrives on one line. Every word is kept; only the line
+breaks are lost.
+
+**Meta.** Create both templates in WhatsApp Manager. Once they're approved,
+record each one on the workspace. Each quick-reply button's payload is set per
+message, so the template needs no example payload.
+
+```bash
+mkdir -p /home/dev/.claude-triggers/gateway/templates
+cat > /home/dev/.claude-triggers/gateway/templates/board_review.json <<'JSON'
+{"name": "board_review", "provider_name": "kc_board_review",
+ "language": "en_US", "status": "approved"}
+JSON
+cat > /home/dev/.claude-triggers/gateway/templates/board_review_link.json <<'JSON'
+{"name": "board_review_link", "provider_name": "kc_board_review_link",
+ "language": "en_US", "status": "approved"}
+JSON
+```
+
+`provider_name` is the template name exactly as you created it in Meta, and
+`language` is its language code.
+
+**Twilio.** In **Content Template Builder**, create `board_review` as a
+**Quick reply** template with the body above and three buttons whose **ids**
+are variables: `Approve` → `{{4}}`, `Reject` → `{{5}}`, `Open in app` → `{{6}}`.
+Create `board_review_link` as a **Text** template. Submit both for WhatsApp
+approval, then record each with its **Content SID** (`HX…`) as `provider_name`:
+
+```bash
+cat > /home/dev/.claude-triggers/gateway/templates/board_review.json <<'JSON'
+{"name": "board_review", "provider_name": "HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+ "language": "en", "status": "approved"}
+JSON
+```
+
+A Twilio record without an `HX…` SID is ignored. Without one, Twilio behaves
+like the sandbox: numbered text inside the window, nothing outside it.
+
+Nothing needs restarting: the gateway reads these files each time it sends.
+
+## 7. Turning it off
 
 Set `gateway.enabled: false` and redeploy: the external routes go inert and the
 webhook ingress disappears. To revoke without disabling the subsystem, use

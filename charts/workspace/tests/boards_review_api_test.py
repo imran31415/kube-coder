@@ -20,6 +20,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -39,9 +40,12 @@ except ImportError:  # pragma: no cover - platform shim
     _shim._kube_coder_shim = True
     sys.modules['fcntl'] = _shim
 
+import gateway  # noqa: E402
+import gateway_review  # noqa: E402
 import safe_http  # noqa: E402
 import server  # noqa: E402
 from tests import board_fixtures as fx  # noqa: E402
+from tests import gateway_whatsapp_test as gwt  # noqa: E402
 
 BM = server.BoardsManager
 BCM = server.BoardCredentialsManager
@@ -1187,6 +1191,123 @@ class DecisionLedgerTests(_Base):
                 {'approval_id': APPROVAL, 'reason': 'tone'})
         self.assertEqual(status, 200, body)
         self.assertEqual(VM.get('acme-jira', '46')['state'], 'rejected')
+
+
+class WhatsAppReviewTests(_Base):
+    """#709 Part 4 end to end: a staged reply goes out as a WhatsApp card, and
+    a tap decides it through the SAME BoardReviewManager.approve / decide the
+    staged routes call — so the ticket-changed, card-echo and replay guards
+    are the app's own, not a copy.
+
+    The gateway is real but on a temp dir; the WhatsApp adapter is a fake
+    that records instead of sending."""
+
+    PHONE = gwt.PHONE
+
+    def setUp(self):
+        super().setUp()
+        gwdir = tempfile.mkdtemp(prefix='kc-review-wa-')
+        self.addCleanup(shutil.rmtree, gwdir, True)
+        registry = gateway.IdentityRegistry(gwdir)
+        self.gw = gateway.ConversationGateway(registry=registry,
+                                              client_factory=lambda b: None)
+        self.adapter = gwt.FakeWhatsApp('meta')
+        self.notifier = gateway_review.ReviewNotifier(
+            self.gw, adapter_getter=lambda: self.adapter, record_getter=VM.get,
+            decider=server._gateway_review_decide, spawn=lambda fn: fn())
+        self.gw.review_handler = self.notifier.handle_inbound
+        registry.bind(self.PHONE, 'whatsapp', workspace='w',
+                      workspace_host='ws.example.com', token='tok')
+        self.gw._last_inbound[self.PHONE] = time.time()
+        self._msg = 0
+
+    def _card(self, body='Hi Dana — the refund was issued.'):
+        """Stage `body`, report needs_review, and hand the Feed item it
+        produced to the notifier, exactly as FeedManager.emit would."""
+        cfg = self._board()
+        self._propose_run(cfg)
+        self._stage_a_comment(cfg, body=body)
+        self._listing()
+        self._req('POST', '/api/boards/acme-jira/items/46/disposition',
+                  {'disposition': 'needs_review', 'reason': 'wants a call back'})
+        self.assertTrue(self.notifier.on_feed_item(self.feed[-1]))
+        return cfg, self.adapter.last()
+
+    def _tap(self, card, verb):
+        self._msg += 1
+        payload = next(b['id'] for b in card.buttons
+                       if b['id'].startswith(f'kcr1.{verb}.'))
+        return self.gw.handle_inbound(self.adapter, gateway.RawRequest(form={
+            'from': self.PHONE, 'payload': payload, 'id': f'wamid.{self._msg}'}))
+
+    def _posts(self):
+        return sum(1 for c in self.calls if c['method'] == 'POST')
+
+    def test_a_short_staged_reply_arrives_with_three_buttons(self):
+        _cfg, card = self._card()
+        self.assertIn('Hi Dana — the refund was issued.', card.text)
+        self.assertEqual([b['title'] for b in card.buttons],
+                         ['Approve', 'Reject', 'Open in app'])
+
+    def test_approve_posts_the_reply_EXACTLY_ONCE_even_tapped_twice(self):
+        _cfg, card = self._card()
+        self._serve(J({'issues': [issue()]}),      # re-fetch for staleness
+                    J({'comments': []}),           # idempotency probe
+                    J({'id': '9'}, status=201))    # the comment
+        self.assertEqual(self._tap(card, 'a').action, 'review_approve')
+        self.assertEqual(self._posts(), 1)
+        self.assertIn('Approved', self.adapter.last().text)
+        after = VM.get('acme-jira', '46')
+        self.assertEqual(after['state'], 'approved')
+        self.assertTrue(after['decided_by'].startswith('whatsapp:'))
+
+        self._serve(J({'issues': [issue()]}))      # the replay re-fetches only
+        self._tap(card, 'a')
+        self.assertEqual(self._posts(), 1)
+        self.assertIn('already approved', self.adapter.last().text)
+
+    def test_a_ticket_changed_in_the_tracker_is_refused_clearly(self):
+        _cfg, card = self._card()
+        self._serve(J({'issues': [issue(summary='Refund not received — RESOLVED')]}))
+        self._tap(card, 'a')
+        self.assertIn('This ticket changed. Open the app to review.',
+                      self.adapter.last().text)
+        self.assertEqual(VM.get('acme-jira', '46')['state'], 'pending')
+        self.assertEqual(self._posts(), 0)
+
+    def test_a_proposal_EDITED_in_the_app_after_the_card_went_out_is_refused(self):
+        """The ticket is unchanged, so content_hash alone would pass; the
+        digest is what stops the phone approving text it never showed."""
+        cfg, card = self._card()
+        VM.edit(cfg, '46', 'a1', {'body': 'A different reply entirely.'})
+        self._serve(J({'issues': [issue()]}))
+        self._tap(card, 'a')
+        self.assertIn('This ticket changed', self.adapter.last().text)
+        self.assertEqual(self._posts(), 0)
+        self.assertEqual(VM.get('acme-jira', '46')['state'], 'pending')
+
+    def test_reject_writes_nothing_and_a_later_approve_is_refused(self):
+        _cfg, card = self._card()
+        self._tap(card, 'r')
+        self.assertEqual(VM.get('acme-jira', '46')['state'], 'rejected')
+        self.assertIn('Rejected', self.adapter.last().text)
+        self._serve(J({'issues': [issue()]}))
+        self._tap(card, 'a')
+        self.assertIn('already rejected', self.adapter.last().text)
+        self.assertEqual(self._posts(), 0)
+
+    def test_a_long_proposal_only_offers_open_in_app(self):
+        _cfg, card = self._card(body='word ' * 200)
+        self.assertEqual(card.buttons, [])
+        self.assertIn('https://ws.example.com/board?board=acme-jira&review=46',
+                      card.text)
+
+    def test_a_readonly_workspace_decides_nothing_from_whatsapp(self):
+        _cfg, card = self._card()
+        with mock.patch.object(server, 'READONLY_MODE', True):
+            self._tap(card, 'a')
+        self.assertEqual(VM.get('acme-jira', '46')['state'], 'pending')
+        self.assertIn('read-only', self.adapter.last().text)
 
 
 class ReviewAuthTests(_Base):
