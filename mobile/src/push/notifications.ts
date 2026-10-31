@@ -5,8 +5,14 @@
  *
  * Lifecycle:
  *  - `initPush()` is called once from App boot: it installs the foreground
- *    display handler, attaches the tap→navigate listener, and attempts to
- *    register this device (a no-op until the app is connected).
+ *    display handler, attaches the tap→navigate listener, routes the tap that
+ *    launched the app (if any), and attempts to register this device (a no-op
+ *    until the app is connected).
+ *  - A cold-start tap (#709) and a warm tap take the same path:
+ *    `handleNotificationResponse()`. It routes each response once — whichever
+ *    of the launch read and the listener sees it first wins — and a tap that
+ *    arrives before the navigator is mounted is parked until App's
+ *    `onReady` calls `replayParkedNotificationTap()`.
  *  - `registerForPush()` is also called on onboarding success, so a freshly
  *    connected device registers without waiting for the next cold start.
  *  - `setPushNotificationsEnabled()` is the Settings switch (#685): off drops
@@ -36,6 +42,11 @@ import { isDownError } from '../util/workspaceReach';
 let handlerConfigured = false;
 let responseSub: Notifications.EventSubscription | null = null;
 let lastRegistered = '';
+/** The tap that arrived before the navigator was mounted, waiting for
+ *  `replayParkedNotificationTap()`. Latest wins: only one screen can open. */
+let parkedTap: { data: PushData | undefined } | null = null;
+/** Responses already routed this launch — see `responseKey()`. */
+const handledResponses = new Set<string>();
 
 /** Show high-signal pushes while the app is foregrounded (they'd otherwise be
  *  suppressed by the OS on iOS). */
@@ -199,7 +210,26 @@ export function handleNotificationTap(data: PushData | undefined): void {
   // this alert only once its row has been read (#685).
   const feedId = (data?.feedId || '').trim();
   if (feedId) markTappedRead(feedId);
-  if (!navigationRef.isReady()) return;
+  if (!navigationRef.isReady()) {
+    // A cold start (#709): the app is still on its boot screen, so there is no
+    // navigator to send this to yet. Hold it for App's onReady.
+    parkedTap = { data };
+    return;
+  }
+  routeTap(data);
+}
+
+/** Route the tap parked by `handleNotificationTap`, once the navigator is
+ *  mounted. App passes this to NavigationContainer's `onReady`. A no-op when
+ *  nothing is parked, so calling it twice cannot navigate twice. */
+export function replayParkedNotificationTap(): void {
+  if (!parkedTap || !navigationRef.isReady()) return;
+  const { data } = parkedTap;
+  parkedTap = null;
+  routeTap(data);
+}
+
+function routeTap(data: PushData | undefined): void {
   const target = pushTargetFromData(data);
   switch (target.kind) {
     case 'task':
@@ -242,14 +272,62 @@ export function handleNotificationTap(data: PushData | undefined): void {
   }
 }
 
+/** What makes two sightings of a response the same tap.
+ *
+ *  The identifier alone is not enough: push_notify sets `collapseId` to the
+ *  Feed row id, and on iOS that BECOMES the request identifier, so every
+ *  re-send of one alert shares it. Keyed on the identifier alone, a tap on a
+ *  repeat later in the same launch would be swallowed. The delivery date tells
+ *  those apart, and is the same whether the listener or the launch read
+ *  reports the response. */
+function responseKey(resp: Notifications.NotificationResponse): string {
+  const n = resp.notification;
+  return `${n?.request?.identifier ?? ''}@${n?.date ?? ''}`;
+}
+
+/** Route one notification response — from the tap listener or from the launch
+ *  read in `initPush` — exactly once.
+ *
+ *  Both can see the same response: on a cold start the listener may also be
+ *  told about the tap that launched the app, in either order relative to the
+ *  read, and a re-run of App's boot effect reads it again. Without the dedupe
+ *  each would navigate, and mark the row read, a second time. */
+export function handleNotificationResponse(
+  resp: Notifications.NotificationResponse | null | undefined,
+): void {
+  if (!resp?.notification) return;
+  const key = responseKey(resp);
+  if (handledResponses.has(key)) return;
+  handledResponses.add(key);
+  // The dedupe lives in memory, so a JS reload in the same native process (an
+  // update, a dev reload) would read this response again and re-route to it.
+  // Clearing the native copy stops that. Best-effort: absent on web.
+  try {
+    Notifications.clearLastNotificationResponse();
+  } catch {
+    // nothing to clear here
+  }
+  handleNotificationTap(resp.notification.request?.content?.data as PushData | undefined);
+}
+
+/** The tap that launched the app from fully closed, if any (#709). The
+ *  listener alone misses it: it is attached after the tap happened. Uses the
+ *  synchronous `getLastNotificationResponse` — the `…Async` form is
+ *  deprecated in this SDK. */
+export function routeLaunchNotification(): void {
+  try {
+    handleNotificationResponse(Notifications.getLastNotificationResponse());
+  } catch {
+    // unavailable (web) — no launch tap to route
+  }
+}
+
 /** Attach the tap→navigate listener. Returns a detach function. */
 export function attachNotificationResponseListener(): () => void {
   responseSub?.remove();
-  responseSub = Notifications.addNotificationResponseReceivedListener((resp) => {
-    handleNotificationTap(
-      resp.notification.request.content.data as PushData | undefined,
-    );
-  });
+  responseSub = Notifications.addNotificationResponseReceivedListener(
+    handleNotificationResponse,
+  );
   return () => {
     responseSub?.remove();
     responseSub = null;
@@ -266,6 +344,7 @@ export function initPush(): () => void {
   try {
     configureNotificationHandler();
     const detach = attachNotificationResponseListener();
+    routeLaunchNotification();
     void registerForPush();
     return detach;
   } catch {

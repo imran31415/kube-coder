@@ -48,7 +48,11 @@ import type {
 } from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
-import { initPush, registerForPush } from './src/push/notifications';
+import {
+  initPush,
+  registerForPush,
+  replayParkedNotificationTap,
+} from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
 import { colors, font } from './src/theme';
 
@@ -204,9 +208,9 @@ function Gate() {
 
 export default function App() {
   useEffect(() => {
-    // Install the notification display handler + tap→navigate listener, then
-    // register once the saved connection is hydrated (registerForPush no-ops
-    // until host+token are present).
+    // Install the notification display handler + tap→navigate listener, route
+    // the tap that launched the app, then register once the saved connection
+    // is hydrated (registerForPush no-ops until host+token are present).
     const detach = initPush();
     hydrate().then(() => {
       void registerForPush();
@@ -215,7 +219,13 @@ export default function App() {
   }, []);
   return (
     <SafeAreaProvider>
-      <NavigationContainer theme={navTheme} ref={navigationRef}>
+      {/* A cold-start tap lands while Gate still shows the boot screen, with
+          no navigator to route to; onReady is when it can be replayed. */}
+      <NavigationContainer
+        theme={navTheme}
+        ref={navigationRef}
+        onReady={replayParkedNotificationTap}
+      >
         <StatusBar style="light" />
         <Gate />
       </NavigationContainer>
