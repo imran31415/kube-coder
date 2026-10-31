@@ -171,6 +171,9 @@ class _Base(unittest.TestCase):
         p = mock.patch.object(RM, '_spawn_driver', classmethod(lambda cls, r: None))
         p.start()
         self.addCleanup(p.stop)
+        # A settled item posts its result to the Feed (#709); every test gets
+        # an empty one of its own.
+        fx.isolate_feed(self)
 
     # ── helpers ────────────────────────────────────────────────────────────
 
@@ -869,6 +872,7 @@ class RunAuthTests(_Base):
         for method, path, body in (
             ('GET', '/api/boards/acme-jira/runs', None),
             ('GET', '/api/boards/acme-jira/runs/run-1-aaaa', None),
+            ('GET', '/api/boards/acme-jira/recent', None),
             ('POST', '/api/boards/acme-jira/runs', {}),
             ('POST', '/api/boards/acme-jira/runs/run-1-aaaa/stop', None),
         ):
@@ -892,6 +896,234 @@ class RunReadonlyTests(_Base):
         self._board()
         status, _b = self._req('GET', '/api/boards/acme-jira/runs')
         self.assertEqual(status, 200)
+        status, _b = self._req('GET', '/api/boards/acme-jira/recent')
+        self.assertEqual(status, 200)
+
+
+FM = server.FeedManager
+RVM = server.BoardReviewManager
+
+
+class FinishFeedTests(_Base):
+    """The Feed item a finished board item posts (#709 Part 3).
+
+    The phone's Done tab reads its result line and unread dot from it, so it
+    has to be emitted once per result, non-waiting, under the item's own key.
+    """
+
+    def _run_one(self, disposition='completed', status='completed'):
+        cfg = self._board()
+        self._listing(1)
+        run, _e = self._create_run(cfg, concurrency=1, select={'limit': 1})
+        RM._dispatch(run['id'])
+        if disposition:
+            RM.note_disposition(run['id'], '1', disposition)
+        self.tasks.finish_all(status)
+        RM._reap(run['id'])
+        return run['id']
+
+    def _feed(self):
+        return FM.list(limit=500)
+
+    def test_a_completed_item_posts_ONE_non_waiting_feed_item(self):
+        self._run_one()
+        items = self._feed()
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertFalse(item['waiting'])
+        self.assertFalse(item['read'])
+        self.assertEqual(item['title'], 'Completed on SUP-1')
+        self.assertEqual(item['source'], 'board:acme-jira')
+        # A target the app can open: both clients resolve a board ref.
+        self.assertEqual(item['links'][0]['ref'], 'board:acme-jira:1')
+
+    def test_a_failed_build_says_why(self):
+        self._run_one(disposition=None, status='error')
+        (item,) = self._feed()
+        self.assertEqual(item['title'], 'SUP-1: Failed: the build ended as error')
+        self.assertFalse(item['waiting'])
+
+    def test_a_needs_review_item_is_NOT_announced_as_done(self):
+        # Its build ended, but the item is waiting on a human: the Done tab
+        # and its dot are for results, and this one has none yet.
+        self._run_one(disposition='needs_review')
+        self.assertEqual(self._feed(), [])
+
+    def test_a_repeat_is_idempotent_and_keeps_a_cleared_dot_cleared(self):
+        run_id = self._run_one()
+        (item,) = self._feed()
+        FM.mark_read(item['id'])
+        # A second reap pass, and a direct re-announce: the same result.
+        RM._reap(run_id)
+        row = RM.get(run_id)['items']['1']
+        RVM.notify_done('acme-jira', '1', row=row)
+        # ONE line in the append-only log — not a coalesced second write.
+        self.assertEqual(len(FM._read_raw()), 1)
+        (again,) = self._feed()
+        self.assertEqual(again['id'], item['id'])
+        self.assertTrue(again['read'])
+
+    def test_each_item_gets_its_own_key(self):
+        cfg = self._board()
+        self._listing(2)
+        run, _e = self._create_run(cfg, concurrency=2, select={'limit': 2})
+        RM._dispatch(run['id'])
+        for item_id in ('1', '2'):
+            RM.note_disposition(run['id'], item_id, 'completed')
+        self.tasks.finish_all('completed')
+        RM._reap(run['id'])
+        titles = sorted(i['title'] for i in self._feed())
+        self.assertEqual(titles, ['Completed on SUP-1', 'Completed on SUP-2'])
+
+    def _reported(self, disposition='needs_review'):
+        """An item the agent reported as needing a human, with its build
+        still alive — the review record exists and the waiting row is up."""
+        cfg = self._board()
+        self._listing(1, times=2)
+        run, _e = self._create_run(cfg, concurrency=1, select={'limit': 1})
+        RM._dispatch(run['id'])
+        listing, err = BM.fetch(cfg)
+        self.assertIsNone(err, err)
+        item = listing['items'][0]
+        _rec, err = RVM.report(cfg, item, disposition, reason='two accounts',
+                               run_id=run['id'], task_id='task-1')
+        self.assertIsNone(err, err)
+        return cfg, run['id']
+
+    def test_a_decision_turns_the_WAITING_row_into_the_result_in_place(self):
+        cfg, _run_id = self._reported()
+        (waiting,) = self._feed()
+        self.assertTrue(waiting['waiting'])
+        FM.mark_read(waiting['id'])          # tapped the push
+
+        out, err = RVM.decide(cfg, '1', state='rejected',
+                              approval_id='appr-0001-reject')
+        self.assertIsNone(err, err)
+        (done,) = self._feed()
+        # Same row, so the waiting badge drops by one…
+        self.assertEqual(done['id'], waiting['id'])
+        self.assertFalse(done['waiting'])
+        self.assertEqual(done['title'], 'SUP-1: Rejected, nothing was written')
+        # …and a NEW result is unread, even though the waiting row was read.
+        self.assertFalse(done['read'])
+
+    def test_a_replayed_decision_does_not_announce_twice(self):
+        cfg, _run_id = self._reported()
+        RVM.decide(cfg, '1', state='rejected', approval_id='appr-0002-reject')
+        before = len(FM._read_raw())
+        out, err = RVM.decide(cfg, '1', state='rejected',
+                              approval_id='appr-0002-reject')
+        self.assertIsNone(err, err)
+        self.assertTrue(out['replayed'])
+        self.assertEqual(len(FM._read_raw()), before)
+
+    def test_settling_after_the_decision_keeps_one_row(self):
+        cfg, run_id = self._reported()
+        RVM.decide(cfg, '1', state='rejected', approval_id='appr-0003-reject')
+        self.tasks.finish_all('completed')
+        RM._reap(run_id)
+        items = self._feed()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['title'], 'SUP-1: Rejected, nothing was written')
+
+
+class RecentEndpointTests(_Base):
+    """GET /api/boards/<id>/recent — the phone's Working and Done rows."""
+
+    def _write_run(self, epoch, rows, *, board_id='acme-jira', origin='manual'):
+        run_id = f'run-{epoch}-abcd'
+        run = runs.new_run(run_id, board_id, origin=origin, now=epoch)
+        for n, (item_id, state, disposition, error) in enumerate(rows):
+            row = runs.new_run_item(
+                {'id': item_id, 'key': f'SUP-{item_id}',
+                 'title': f'Ticket {item_id}', 'url': f'https://x/{item_id}'},
+                content_hash='h', now=epoch + n)
+            row.update(state=state, disposition=disposition, error=error,
+                       task_id=f'task-{item_id}')
+            run['items'][item_id] = row
+        RM._run_record(run_id).write(run)
+        return run_id
+
+    def test_the_shape_and_the_dot(self):
+        self._board()
+        run_id = self._write_run(1000, [
+            ('1', 'done', 'completed', ''),
+            ('2', 'working', None, ''),
+            ('3', 'failed', 'failed', 'GitHub returned 403'),
+            ('4', 'pending', None, ''),        # queued — on no tab
+            ('5', 'skipped', None, ''),        # stopped first — on no tab
+        ])
+        for item_id in ('1', '3'):
+            RVM.notify_done('acme-jira', item_id,
+                            row=RM.get(run_id)['items'][item_id])
+
+        status, body = self._req('GET', '/api/boards/acme-jira/recent')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['runs'], 1)
+        rows = {r['item_id']: r for r in body['rows']}
+        self.assertEqual(sorted(rows), ['1', '2', '3'])
+        self.assertEqual(rows['1']['result'], 'Completed on SUP-1')
+        self.assertEqual(rows['3']['result'], 'Failed: GitHub returned 403')
+        self.assertTrue(rows['1']['unread'])
+        self.assertTrue(rows['1']['feed_id'])
+        # Working rows carry no result and no dot.
+        self.assertEqual(rows['2']['result'], '')
+        self.assertIsNone(rows['2']['feed_id'])
+        self.assertFalse(rows['2']['unread'])
+        for key in ('board_id', 'item_key', 'item_title', 'item_url', 'run_id',
+                    'run_origin', 'task_id', 'state', 'disposition',
+                    'review_state', 'reason', 'error', 'updated_at'):
+            self.assertIn(key, rows['1'], key)
+
+        # Opening the row marks the FEED item read — the existing read API —
+        # and the dot is gone on the next read of this endpoint.
+        status, _b = self._req('POST', f'/api/feed/{rows["1"]["feed_id"]}/read')
+        self.assertEqual(status, 200)
+        _s, body = self._req('GET', '/api/boards/acme-jira/recent')
+        rows = {r['item_id']: r for r in body['rows']}
+        self.assertFalse(rows['1']['unread'])
+        self.assertTrue(rows['3']['unread'])
+
+    def test_the_newest_run_wins_for_an_item_worked_twice(self):
+        self._board()
+        self._write_run(1000, [('1', 'done', 'completed', '')])
+        self._write_run(2000, [('1', 'working', None, '')], origin='send_back')
+        _s, body = self._req('GET', '/api/boards/acme-jira/recent')
+        (row,) = body['rows']
+        self.assertEqual(row['state'], 'working')
+        self.assertEqual(row['run_origin'], 'send_back')
+
+    def test_runs_limits_how_far_back_it_reads(self):
+        self._board()
+        self._write_run(1000, [('1', 'done', 'completed', '')])
+        self._write_run(2000, [('2', 'done', 'completed', '')])
+        self._write_run(3000, [('3', 'working', None, '')])
+        _s, body = self._req('GET', '/api/boards/acme-jira/recent?runs=2')
+        self.assertEqual(body['runs'], 2)
+        self.assertEqual(sorted(r['item_id'] for r in body['rows']), ['2', '3'])
+        _s, body = self._req('GET', '/api/boards/acme-jira/recent')
+        self.assertEqual(body['runs'], 3)
+
+    def test_a_bad_runs_value_is_400(self):
+        self._board()
+        for raw in ('0', '51', 'abc', '-1'):
+            with self.subTest(runs=raw):
+                status, body = self._req(
+                    'GET', f'/api/boards/acme-jira/recent?runs={raw}')
+                self.assertEqual(status, 400)
+                self.assertIn('runs must be', body['error'])
+
+    def test_another_boards_runs_are_not_included(self):
+        self._board()
+        self._board('other-board')
+        self._write_run(1000, [('1', 'done', 'completed', '')],
+                        board_id='other-board')
+        _s, body = self._req('GET', '/api/boards/acme-jira/recent')
+        self.assertEqual(body, {'rows': [], 'runs': 0})
+
+    def test_an_unknown_board_is_404(self):
+        status, _b = self._req('GET', '/api/boards/nope/recent')
+        self.assertEqual(status, 404)
 
 
 if __name__ == '__main__':

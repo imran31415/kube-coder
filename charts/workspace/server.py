@@ -120,6 +120,7 @@ handlers.bind(sys.modules[__name__])
 try:
     import boards.engine
     import boards.limits
+    import boards.outcome
     import boards.review
     import boards.runs
     import boards.schema
@@ -7636,6 +7637,30 @@ class FeedManager:
         return FeedManager._set_flag(item_id, 'read')
 
     @staticmethod
+    def mark_unread(item_id):
+        return FeedManager._clear_flag(item_id, 'read')
+
+    @staticmethod
+    def by_dedupe_key(keys):
+        """`{dedupe_key: {id, title, waiting, read}}` for the live
+        (undismissed) items carrying one of `keys` — one pass over the log, for
+        a caller that has to join many rows to their Feed items (#709)."""
+        wanted = set(keys or ())
+        if not wanted:
+            return {}
+        state = FeedManager._load_state()
+        out = {}
+        for it in FeedManager._collapse(FeedManager._read_raw()):
+            key = it.get('dedupe_key')
+            if key not in wanted or key in out \
+                    or it.get('id') in state['dismissed']:
+                continue
+            out[key] = {'id': it['id'], 'title': it.get('title') or '',
+                        'waiting': bool(it.get('waiting')),
+                        'read': it['id'] in state['read']}
+        return out
+
+    @staticmethod
     def dismiss(item_id):
         return FeedManager._set_flag(item_id, 'dismissed')
 
@@ -8884,6 +8909,33 @@ class BoardRunsManager:
             out.append(boards.runs.summary(run))
         return out
 
+    #: The read endpoint's default and ceiling on how many runs it reads back.
+    RECENT_RUNS_DEFAULT = 10
+    RECENT_RUNS_MAX = 50
+
+    @classmethod
+    def recent_items(cls, board_id, *, runs=RECENT_RUNS_DEFAULT):
+        """The phone's Working and Done rows for one board (#709 Part 3).
+
+        One call instead of the list plus a detail fetch per run, with each
+        row's review state and Feed read flag already joined in. LOCAL reads
+        only — run records, staged records and the Feed log on the PVC — so
+        the phone may poll it with the review queue at no cost to anybody's
+        rate limit.
+        """
+        full = []
+        for summary in cls.list_runs(board_id)[:max(1, int(runs))]:
+            run = cls.get(summary.get('id') or '')
+            if run:
+                full.append(run)
+        records = {r['item_id']: r
+                   for r in BoardReviewManager.list_records(board_id)}
+        keys = {boards.outcome.feed_key(board_id, item_id)
+                for run in full for item_id in (run.get('items') or {})}
+        rows = boards.outcome.recent_rows(
+            full, records, FeedManager.by_dedupe_key(keys))
+        return {'rows': rows, 'runs': len(full)}
+
     # ── creating a run ─────────────────────────────────────────────────────
 
     @classmethod
@@ -9605,11 +9657,19 @@ class BoardRunsManager:
             # builds that ended rather than of items that were worked.
             processed.record(item_id, row.get('content_hash', ''),
                              run_id=run_id, disposition=disposition)
-        cls._set_item(run_id, item_id, state=state, error=error,
-                      disposition=disposition or 'failed',
-                      bump_failures=(state == 'failed'),
-                      clear_failures=(state == 'done'))
+        run = cls._set_item(run_id, item_id, state=state, error=error,
+                            disposition=disposition or 'failed',
+                            bump_failures=(state == 'failed'),
+                            clear_failures=(state == 'done'))
         leases.release(item_id, run_id)
+        if run:
+            # The phone's Done tab (#709): its result line and unread dot ride
+            # on a Feed item. Only once the lease is released — the row is
+            # final by then, so a reader cannot see "done" before the board
+            # would let another run take the item.
+            BoardReviewManager.notify_done(
+                run.get('board_id') or '', item_id,
+                row=(run.get('items') or {}).get(item_id))
 
     @classmethod
     def run_holding(cls, board_id, item_id):
@@ -10034,6 +10094,65 @@ class BoardReviewManager:
         except Exception as e:      # a feed failure must not lose the report
             print(f'[board-review] feed emit failed: {e}', file=sys.stderr)
 
+    @classmethod
+    def notify_done(cls, board_id, item_id, *, row=None):
+        """Post the item's result to the Feed when it is done (#709 Part 3).
+
+        Called from both ends of an item's life — the run settling it, and a
+        human deciding its review — because either can be the one that makes
+        it done, and `boards.outcome.is_done` decides which. The item is NOT
+        done while its review is open, so this never covers a card that still
+        needs a decision.
+
+        Non-waiting, and under the item's own `dedupe_key`: the SAME key the
+        "needs your review" row uses, so that row turns into the result in
+        place and the waiting badge drops. Emitted once: a repeat with the same
+        result (a retried reap, a replayed approval) changes nothing, and in
+        particular does not resurrect an unread dot the user already cleared.
+        A NEW result is news, so it is marked unread even if the waiting row it
+        replaces had been read.
+
+        Never raises — a Feed failure must not undo the fact it reports.
+        """
+        try:
+            item_id = str(item_id)
+            if not board_id or not BoardsManager.valid_id(board_id):
+                return None
+            record = cls.get(board_id, item_id) or {}
+            if row is None and record.get('run_id'):
+                run = BoardRunsManager.get(record['run_id']) or {}
+                row = (run.get('items') or {}).get(item_id)
+            # A decision always announces, even over a row still `working`: a
+            # send-back to a live agent leaves its build running, and the
+            # waiting row must stop counting toward the badge all the same.
+            if record.get('state') not in boards.outcome.DECIDED_STATES \
+                    and not boards.outcome.is_done(row, record):
+                return None
+            key = (record.get('item_key') or (row or {}).get('key')
+                   or item_id)
+            line = boards.outcome.result_line(row, record, key=key)
+            title = line if key in line else f'{key}: {line}'
+            dedupe = boards.outcome.feed_key(board_id, item_id)
+            prior = FeedManager.by_dedupe_key([dedupe]).get(dedupe)
+            if prior and not prior['waiting'] and prior['title'] == title:
+                return None
+            item = FeedManager.emit(
+                'activity', title,
+                body_md=(record.get('item_title')
+                         or (row or {}).get('title') or '')[:200],
+                source=f'board:{board_id}',
+                waiting=False,
+                dedupe_key=dedupe,
+                links=[{'ref': f'board:{board_id}:{item_id}',
+                        'label': record.get('item_title') or 'Open item'}],
+            )
+            if item and prior:
+                FeedManager.mark_unread(item['id'])
+            return item
+        except Exception as e:                  # pragma: no cover - defensive
+            print(f'[board-review] done notice failed: {e}', file=sys.stderr)
+            return None
+
     # ── approving ──────────────────────────────────────────────────────────
 
     @classmethod
@@ -10145,6 +10264,7 @@ class BoardReviewManager:
         stored_rec, _ = book.update(item_id, store)
         cls._log_decision(cfg['id'], stored_rec,
                           state='approved' if ok else 'partial', ok=ok)
+        cls.notify_done(cfg['id'], item_id)
         EventBroker.publish('boards.review', {
             'op': 'approve', 'board_id': cfg['id'], 'item': str(item_id),
             'ok': ok})
@@ -10212,6 +10332,7 @@ class BoardReviewManager:
             return None, boards.review.ReviewError('conflict',
                                                    'the decision was not applied')
         cls._log_decision(cfg['id'], record, state=state, ok=True)
+        cls.notify_done(cfg['id'], item_id)
         EventBroker.publish('boards.review', {
             'op': state, 'board_id': cfg['id'], 'item': str(item_id)})
         out = {'replayed': False,
