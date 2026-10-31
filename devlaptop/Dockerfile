@@ -223,16 +223,32 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 #     acp` boots that bundle out of the dsh installation. Installing dsh-acp at
 #     top level would add a second, unused copy.
 #
-# VERSION PIN — read before bumping. Every published version is a prerelease and
-# the npm `latest` dist-tag LAGS: 0.1.1-rc.2 (`latest` as of writing) does not
-# depend on dsh-acp-app at all and has no `acp` profile, so pinning "latest"
-# would silently ship a build with no ACP server. 0.1.2-rc.1 (`next`) is the
-# first version that carries it. The renovate marker is here so the pin is
-# tracked, but `config:recommended` ignores unstable versions — bumps are
-# manual until upstream cuts a stable 0.1.x, and any bump MUST be re-checked
-# against `dsh --profile acp` actually answering an ACP `initialize`.
+# VERSION PIN — read before bumping. Every published version is a prerelease,
+# and a dist-tag is no guarantee of an ACP server: 0.1.1-rc.2 was once `latest`
+# and has no `acp` profile at all (0.1.2-rc.1 was the first that did). Pin an
+# exact version, never a tag.
+#
+# 0.2.1-rc.5 (`latest` and `next` on 2026-10-31, #810) was verified under
+# /opt/node22, driven by the real acp_bridge.py, with 0.1.2-rc.1 run the same
+# way as a baseline; the two behaved identically on every method the bridge
+# uses: `initialize` (protocolVersion 1, authMethods [], close/list/resume
+# session capabilities), session/new with the curated MCP set, the `model`
+# (grouped, JSON-encoded values) and `reasoning_effort` (off/low/high/max)
+# config options, session/set_config_option, a real tool-using session/prompt
+# (permission request auto-approved, `end_turn`), session/close, and
+# session/resume, including resuming a 0.1.2-rc.1 session from a ~/.dsh that
+# 0.1.2-rc.1 initialized (the PVC upgrade path). One difference to know: the
+# `model` list is fetched from api.deepseek.com/models, so WITHOUT a
+# DEEPSEEK_API_KEY only the deepseek-v4-flash default is offered; with a key
+# both runtimes.DSH_MODELS (v4-flash, v4-pro) are.
+#
+# Renovate tracks the marker below, but while the current version is unstable
+# it only proposes newer prereleases of the SAME x.y.z (0.2.1-rc.N) or a stable
+# release. Upstream starts a new x.y.z prerelease line every week or two, so
+# expect to bump by hand. Any bump MUST repeat the check above, at minimum
+# `dsh --profile acp` answering an ACP `initialize` and opening a session.
 # renovate: datasource=npm depName=@deepseek-ai/dsh
-ARG DSH_VERSION=0.1.2-rc.1
+ARG DSH_VERSION=0.2.1-rc.5
 COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
