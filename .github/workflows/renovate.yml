@@ -6,12 +6,21 @@
 # Config lives in ../../renovate.json.
 #
 # This is the self-hosted flavour (no Mend GitHub App install required). It
-# needs a token with `contents:write` + `pull-requests:write` on this repo,
-# stored as the RENOVATE_TOKEN secret:
-#   - Fine-grained PAT (recommended): Contents RW, Pull requests RW, Workflows RW.
+# needs a token with `contents:write` + `pull-requests:write` + `issues:write`
+# on this repo, stored as the RENOVATE_TOKEN secret:
+#   - Fine-grained PAT (recommended): Contents RW, Pull requests RW, Issues RW
+#     (the Dependency Dashboard issue), Workflows RW.
 #   - or a classic PAT with `repo` + `workflow` scope.
 # A PAT (not the default GITHUB_TOKEN) is used so Renovate's PRs can trigger the
 # CI workflow — PRs opened by GITHUB_TOKEN do not fire other workflows.
+#
+# A PAT EXPIRES. The one set on 2026-07-19 expired on 2026-08-18 and every run
+# from 2026-08-24 died at `github.com token 401 unauthorized` for ten weeks
+# (#810): `secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN` only falls back when
+# the secret is UNSET, never when it is set but dead. The `token` step below
+# checks the PAT first, warns two weeks before it expires, and when GitHub
+# rejects it runs Renovate on GITHUB_TOKEN anyway, then fails the run so the
+# red X stays until someone rotates the secret.
 name: renovate
 
 on:
@@ -38,11 +47,13 @@ concurrency:
   cancel-in-progress: false
 
 # Elevated so the built-in GITHUB_TOKEN fallback (below) can create Renovate's
-# branches + PRs when no RENOVATE_TOKEN secret is set. A PAT carries its own
-# scopes and ignores these; they only matter for the zero-setup fallback path.
+# branches, PRs and Dependency Dashboard issue when RENOVATE_TOKEN is unset or
+# rejected. A PAT carries its own scopes and ignores these; they only matter on
+# the fallback path.
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   renovate:
@@ -50,6 +61,45 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check RENOVATE_TOKEN
+        id: token
+        env:
+          PAT: ${{ secrets.RENOVATE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$PAT" ]; then
+            echo "::notice::No RENOVATE_TOKEN secret; running on GITHUB_TOKEN (Renovate's PRs will not trigger CI). See docs/SUPPLY_CHAIN.md."
+            echo "use_pat=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          code=$(curl -sS -o /dev/null -D headers.txt -w '%{http_code}' \
+            -H "Authorization: Bearer $PAT" "https://api.github.com/repos/$REPO" || true)
+          case "$code" in
+            200)
+              echo "use_pat=true" >> "$GITHUB_OUTPUT"
+              exp=$(grep -i '^github-authentication-token-expiration:' headers.txt | cut -d: -f2- | tr -d '\r' | sed 's/^ *//')
+              if [ -n "$exp" ] && exp_s=$(date -d "$exp" +%s 2>/dev/null); then
+                days=$(( (exp_s - $(date +%s)) / 86400 ))
+                echo "RENOVATE_TOKEN expires $exp ($days days)"
+                if [ "$days" -lt 14 ]; then
+                  echo "::warning::RENOVATE_TOKEN expires $exp ($days days). Rotate it now: docs/SUPPLY_CHAIN.md#setup"
+                fi
+              fi
+              ;;
+            401|403|404)
+              # Set but unusable: expired, revoked, or no longer granted this repo.
+              echo "::error::RENOVATE_TOKEN is rejected by GitHub (HTTP $code on $REPO) - expired, revoked or missing repo access. This run falls back to GITHUB_TOKEN (its PRs do not trigger CI and it cannot touch .github/workflows) and is marked failed until the secret is rotated: docs/SUPPLY_CHAIN.md#setup"
+              echo "use_pat=false" >> "$GITHUB_OUTPUT"
+              echo "degraded=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              # A network blip or a GitHub 5xx says nothing about the token.
+              echo "::warning::Could not check RENOVATE_TOKEN (HTTP ${code:-none}); using it anyway"
+              echo "use_pat=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+          rm -f headers.txt
 
       - name: Renovate
         uses: renovatebot/github-action@e09d604f8f803bb527bd8321ed5be06c460b8682 # v46.2.2
@@ -59,7 +109,7 @@ jobs:
           # RENOVATE_TOKEN secret (PAT) — recommended — so Renovate's PRs trigger
           # CI (PRs opened by GITHUB_TOKEN do not fire other workflows) and to
           # raise the github.com datasource rate limit. See docs/SUPPLY_CHAIN.md.
-          token: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.token.outputs.use_pat == 'true' && secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_ONBOARDING: "false"
@@ -67,5 +117,11 @@ jobs:
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
           RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
           # Token for release/tag datasource lookups (avoids anonymous API rate
-          # limits). Falls back to GITHUB_TOKEN when no PAT is configured.
-          GITHUB_COM_TOKEN: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
+          # limits). Falls back to GITHUB_TOKEN when the PAT is unset or rejected.
+          GITHUB_COM_TOKEN: ${{ steps.token.outputs.use_pat == 'true' && secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Fail while RENOVATE_TOKEN is broken
+        if: ${{ !cancelled() && steps.token.outputs.degraded == 'true' }}
+        run: |
+          echo "::error::Renovate ran on the GITHUB_TOKEN fallback because RENOVATE_TOKEN is rejected. Rotate the PAT (Contents, Pull requests, Issues, Workflows: read and write) and re-run: gh secret set RENOVATE_TOKEN --repo ${{ github.repository }}"
+          exit 1
