@@ -33,7 +33,7 @@
     "@types/d3-scale": "^4.0.9",
     "@types/d3-selection": "^3.0.11",
     "@types/node": "22.10.1",
-    "@vitest/coverage-v8": "^2.1.4",
+    "@vitest/coverage-v8": "4.1.11",
     "happy-dom": "^21.0.4",
     "playwright": "^1.60.0",
     "playwright-core": "1.50.0",

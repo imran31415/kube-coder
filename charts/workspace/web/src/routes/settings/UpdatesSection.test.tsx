@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact';
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import type { WorkspaceVersion, UpdateResult } from '../../api/update';
 
 let version: () => Promise<WorkspaceVersion>;
@@ -32,10 +32,14 @@ describe('UpdatesSection', () => {
     updates.length = 0;
     restarts.length = 0;
     rolled = true;
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    // happy-dom has no window.confirm to spy on, so stub the global outright.
+    vi.stubGlobal('confirm', vi.fn(() => true));
     // The restart overlay polls /health via fetch — stub it so the effect's
     // timers have something to call (they don't fire within these fast tests).
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false } as Response)));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('renders nothing when self-serve is unavailable', async () => {
@@ -96,7 +100,7 @@ describe('UpdatesSection', () => {
   });
 
   it('does not restart when the confirm dialog is declined', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    vi.stubGlobal('confirm', vi.fn(() => false));
     version = () =>
       Promise.resolve({ available: true, version: 'v1.4.0', updateAvailable: false });
     render(<UpdatesSection />);
