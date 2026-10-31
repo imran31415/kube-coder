@@ -10,7 +10,7 @@
   // patches all of them.)
   "high": true,
   "allowlist": [
-    "GHSA-5xrq-8626-4rwp", // vitest     <3.2.6    UI server RCE
+    // (GHSA-5xrq-8626-4rwp pruned 2026-10-31: vitest is now 4.1.12, past its <3.2.6 range — the vitest 4 upgrade that replaced Renovate's #825.)
     // (GHSA-fx2h-pf6j-xcff pruned 2026-10-24: blanket vite resolution to 6.4.4, added for GHSA-587h-7wmj-h5pm, is past its <6.4.3 range.)
     // owner: security@kube-coder | review: 2026-10-03 | build-time only, NO FIX PUBLISHED
     //

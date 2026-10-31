@@ -24,8 +24,8 @@
   // its dependency is bumped past the patched version.
   "high": true,
   "allowlist": [
-    // owner: security@kube-coder | review: 2026-10-02 | dev-only (vitest test UI)
-    "GHSA-5xrq-8626-4rwp", // vitest  <=3.2.5  UI server arbitrary file read/exec — needs vitest v4
+    // (GHSA-5xrq-8626-4rwp pruned 2026-10-31: vitest is now 4.1.12, outside its
+    // <=3.2.5 range — the vitest 4 upgrade that replaced Renovate's #825.)
     // (GHSA-fx2h-pf6j-xcff pruned 2026-10-24: the blanket vite override to
     // 6.4.4 — added for GHSA-587h-7wmj-h5pm — is past its <=6.4.2 range.)
     // (GHSA-86w9-cpqp-85rv pruned 2026-10-31: node-forge is now 1.4.2, outside its

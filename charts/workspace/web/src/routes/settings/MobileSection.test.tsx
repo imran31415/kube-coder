@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact';
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import type { ApiTokenResponse } from '../../api/mobile';
 
 let getToken: () => Promise<ApiTokenResponse>;
@@ -22,7 +22,8 @@ describe('MobileSection', () => {
     getToken = () => Promise.resolve({ token: 'tok-SECRET-1234' });
     regenerated.length = 0;
     copied.length = 0;
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    // happy-dom has no window.confirm to spy on, so stub the global outright.
+    vi.stubGlobal('confirm', vi.fn(() => true));
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
@@ -32,6 +33,9 @@ describe('MobileSection', () => {
         },
       },
     });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('shows the workspace host and keeps the token masked until revealed', async () => {
