@@ -1,6 +1,6 @@
 """Tests for the boards route table that replaced the elif branches (#100).
 
-The Board Processor: 28 routes across four verbs — the largest domain in the
+The Board Processor: 29 routes across four verbs — the largest domain in the
 series, the only one that puts anything in `do_PUT`'s table, and the one whose
 source comments carried the most ordering claims. Every branch was already
 contiguous on every verb, so this suite's job is less about a hoist than about
@@ -55,6 +55,7 @@ class BoardRouteOrderTests(DomainRouteTests, unittest.TestCase):
                 ('/api/boards/b1/review', 'handle_board_review_list'),
                 ('/api/boards/b1/metrics', 'handle_board_metrics'),
                 ('/api/boards/b1/standing', 'handle_board_standing'),
+                ('/api/boards/b1/recent', 'handle_board_recent'),
                 ('/api/boards/b1/strategies', 'handle_board_strategies_list'),
                 ('/api/boards/b1/runs', 'handle_board_runs_list'),
                 ('/api/boards/b1/runs/run-abc', 'handle_board_run_get')):
@@ -251,7 +252,8 @@ class BoardEndpointBehaviourTests(DomainEndpointTests, EndpointTestCase):
                      '/api/boards/templates', '/api/boards/templates/t1',
                      '/api/boards/b1', '/api/boards/b1/items',
                      '/api/boards/b1/review', '/api/boards/b1/metrics',
-                     '/api/boards/b1/standing', '/api/boards/b1/strategies',
+                     '/api/boards/b1/standing', '/api/boards/b1/recent',
+                     '/api/boards/b1/strategies',
                      '/api/boards/b1/runs', '/api/boards/b1/runs/run-a1'):
             self.assertEqual(self.get(path)[0], 401, path)
 

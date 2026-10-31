@@ -1,6 +1,6 @@
 """Board Processor: connectors, runs, review and strategies (#100, #588/#589).
 
-The largest domain in the series — 28 routes across four verbs and 32 handler
+The largest domain in the series — 29 routes across four verbs and 33 handler
 methods — and the first to put anything in `do_PUT`'s table.
 
 Unlike tasks and hypervisor, every one of its branches was already contiguous
@@ -648,6 +648,30 @@ class BoardRoutes:
             return
         self.send_json(handlers.server.BoardsManager.standing(self._board_id) or {})
 
+    def handle_board_recent(self):
+        """The phone's Working and Done tabs in one read (#709 Part 3).
+
+        `?runs=N` (1-50, default 10) bounds how many of the board's newest
+        runs are read. Local state only, like `standing`, so it is polled
+        alongside the review queue.
+        """
+        if not self._board_guard():
+            return
+        if self._board_or_404(self._board_id) is None:
+            return
+        mgr = handlers.server.BoardRunsManager
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        raw = (qs.get('runs') or [''])[0]
+        try:
+            runs = int(raw) if raw else mgr.RECENT_RUNS_DEFAULT
+        except ValueError:
+            runs = 0
+        if not 1 <= runs <= mgr.RECENT_RUNS_MAX:
+            self.send_json({'error': f'runs must be 1-{mgr.RECENT_RUNS_MAX}'},
+                           400)
+            return
+        self.send_json(mgr.recent_items(self._board_id, runs=runs))
+
     # ── runs (#588 Phase 4) ────────────────────────────────────────────────
 
     def handle_board_runs_list(self):
@@ -779,6 +803,8 @@ ROUTES.add('GET', re.compile(_BOARDS + r'/review$'),
            'handle_board_review_list', sets='_board_id')
 ROUTES.add('GET', re.compile(_BOARDS + r'/standing$'),
            'handle_board_standing', sets='_board_id')
+ROUTES.add('GET', re.compile(_BOARDS + r'/recent$'),
+           'handle_board_recent', sets='_board_id')
 ROUTES.add('GET', re.compile(_BOARDS + r'/runs$'),
            'handle_board_runs_list', sets='_board_id')
 ROUTES.add('GET', re.compile(_BOARDS + rf'/runs/{_RUN}$'),

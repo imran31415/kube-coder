@@ -148,6 +148,9 @@ class _Base(unittest.TestCase):
         p = mock.patch.object(RM, '_spawn_driver', classmethod(lambda cls, r: None))
         p.start()
         self.addCleanup(p.stop)
+        # A decision now posts the item's result (#709), which READS the Feed
+        # before writing it; give that read an empty Feed of its own.
+        fx.isolate_feed(self)
         # FeedManager writes to a real path; the review manager must not depend
         # on it succeeding, and these tests must not scribble on the dev box.
         p = mock.patch.object(server.FeedManager, 'emit',

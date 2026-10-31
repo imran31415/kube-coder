@@ -365,3 +365,31 @@ def workspace_token_patch():
             fh.write('test-api-token')
     return _mock.patch.object(server.ClaudeTaskManager, 'TOKEN_FILE',
                               _os.path.join(_TOKEN_DIR, '.api-token'))
+
+
+def isolate_feed(testcase):
+    """Point `FeedManager` at a fresh temp dir for one test (#709).
+
+    A board item that settles or is decided now posts its result to the Feed,
+    so any suite that reaps runs or decides reviews writes Feed items. The
+    Makefile's KC_FEED_DIR already keeps that off the live Feed; this makes
+    each test start from an EMPTY feed too, and holds even when a test is run
+    by hand without the Makefile. Returns the directory.
+    """
+    import server
+
+    feed_dir = _tempfile.mkdtemp(prefix='kc-fx-feed-')
+    testcase.addCleanup(_shutil.rmtree, feed_dir, True)
+    fm = server.FeedManager
+    for name, value in (('FEED_DIR', feed_dir),
+                        ('ITEMS_PATH', feed_dir + '/items.jsonl'),
+                        ('STATE_PATH', feed_dir + '/state.json')):
+        p = _mock.patch.object(fm, name, value)
+        p.start()
+        testcase.addCleanup(p.stop)
+    # Push would otherwise try the real device registry for waiting rows.
+    p = _mock.patch.object(server.push_notify, 'dispatch',
+                           lambda *a, **k: False)
+    p.start()
+    testcase.addCleanup(p.stop)
+    return feed_dir
