@@ -57,12 +57,18 @@
 }
 
 .ss-list {
+  /* Row offsets are measured from the list when the keyboard scrolls the
+     highlight into view (keepRowVisible in SearchSelect.tsx). */
+  position: relative;
   margin: 0;
   padding: 4px;
   /* Scrolls vertically, which a list does well — the horizontal rails this
      replaces did not, because a row cannot be scanned. */
   max-height: 260px;
   overflow-y: auto;
+  /* A flick past the end must not carry on into the page: a page scroll
+     closes the popover, which would feel like the list slamming shut (#814). */
+  overscroll-behavior: contain;
   list-style: none;
 }
 

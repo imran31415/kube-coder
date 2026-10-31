@@ -1,5 +1,5 @@
 import type { ComponentChildren } from 'preact';
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Icon } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
 import { EmptyState } from '../../components/primitives/EmptyState';
@@ -31,7 +31,14 @@ import {
   type ActivityBlock,
   type Block,
 } from './transcript';
-import { turnWindow, TURN_WINDOW, TURN_WINDOW_STEP } from './transcriptWindow';
+import {
+  turnWindow,
+  shouldRevealEarlier,
+  scrollTopAfterReveal,
+  TURN_WINDOW,
+  TURN_WINDOW_STEP,
+  type RevealAnchor,
+} from './transcriptWindow';
 import { isFollowing, isAtBottom } from './scrollPin';
 import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
@@ -377,13 +384,23 @@ function ChoiceBlock({
 function LazyBlock({ minHeight, children }: { minHeight: number; children: ComponentChildren }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [show, setShow] = useState(() => typeof IntersectionObserver === 'undefined');
+  // The block's real height, captured the moment before it unmounts. The
+  // `minHeight` guess is only right for a block never seen yet: an embed is
+  // taller than its iframe (header bar), and media/files vary, so swapping the
+  // guess for the real thing — and back — moved everything below by tens to
+  // hundreds of px while the reader scrolled past (a visible jolt wherever the
+  // browser does not compensate for content changing above the viewport) (#814).
+  const measuredRef = useRef(0);
   useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') return;
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        for (const e of entries) setShow(e.isIntersecting);
+        for (const e of entries) {
+          if (!e.isIntersecting && el.offsetHeight > 0) measuredRef.current = el.offsetHeight;
+          setShow(e.isIntersecting);
+        }
       },
       // Mount a screenful early / keep mounted a screenful past the fold so a
       // scrolled-back embed is already there and a slow reload isn't visible.
@@ -393,7 +410,7 @@ function LazyBlock({ minHeight, children }: { minHeight: number; children: Compo
     return () => io.disconnect();
   }, []);
   return (
-    <div ref={ref} class="hv-lazyblock" style={show ? undefined : { minHeight: `${minHeight}px` }}>
+    <div ref={ref} class="hv-lazyblock" style={show ? undefined : { minHeight: `${measuredRef.current || minHeight}px` }}>
       {show ? children : null}
     </div>
   );
@@ -775,6 +792,10 @@ export function Chat({
   // reflow fires are not mistaken for the reader leaving the bottom (#644).
   const swapEchoRef = useRef(false);
   const swapRafRef = useRef(0);
+  // The scroller's geometry just before older turns were prepended, so the
+  // layout effect after revealEarlier can put the reader back on the message
+  // they were looking at (#814). Non-null only while a reveal is in flight.
+  const revealAnchorRef = useRef<RevealAnchor | null>(null);
 
   /** One scroll write: park the viewport on the newest message. */
   function writeBottom() {
@@ -806,6 +827,10 @@ export function Chat({
   function onTranscriptScroll() {
     const el = scrollRef.current;
     if (!el) return;
+    // Reading back through history: pull the next page of older turns in before
+    // the reader hits the wall, rather than stopping dead at the top of the
+    // window until they find the "Show earlier" button (#814).
+    if (shouldRevealEarlier(hiddenTurns, el.scrollTop)) revealEarlier();
     if (isFollowing(el)) {
       pinnedRef.current = true;
       return;
@@ -837,6 +862,7 @@ export function Chat({
   // tail so switching threads never inherits a huge revealed range (#525).
   useEffect(() => {
     pinnedRef.current = true;
+    revealAnchorRef.current = null; // a reveal in flight belongs to the old thread
     setVisibleTurns(TURN_WINDOW);
   }, [active]);
 
@@ -882,12 +908,40 @@ export function Chat({
 
   useEffect(() => () => cancelAnimationFrame(swapRafRef.current), []);
 
+  /** Grow the window by one page of older turns. The "Show earlier" button and
+   *  the near-top auto-load share this one path, so both keep the reader's
+   *  place the same way (#814). */
   function revealEarlier() {
     // Revealing older turns must not yank the view to the bottom — unpin so the
     // auto-scroll effect leaves the reader where they are.
     pinnedRef.current = false;
+    // One reveal at a time: a second request before the first has laid out would
+    // capture a stale height and over-correct.
+    if (revealAnchorRef.current) return;
+    const el = scrollRef.current;
+    if (el) revealAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
     setVisibleTurns((v) => v + TURN_WINDOW_STEP);
   }
+
+  // Older turns are inserted *above* the viewport. Browsers only compensate for
+  // that when scrollTop > 0 (scroll anchoring is suspended at the very top, and
+  // Safari has none at all), so the message being read was shoved a whole
+  // window's height down the page and the reader landed at the oldest edge of
+  // the new block with no context (#814). Shift scrollTop by exactly what was
+  // added. Runs before paint, so the reader never sees the intermediate frame.
+  useLayoutEffect(() => {
+    const anchor = revealAnchorRef.current;
+    // Clear first, unconditionally: a stale anchor would make revealEarlier
+    // skip every later request, leaving both the auto-load and the button dead.
+    revealAnchorRef.current = null;
+    const el = scrollRef.current;
+    if (!anchor || !el) return;
+    const top = scrollTopAfterReveal(anchor, el.scrollHeight);
+    if (top === null) return;
+    el.scrollTop = top;
+    // Our own write fires a scroll event; don't read it as the reader moving.
+    programmaticTopRef.current = el.scrollTop;
+  }, [visibleTurns]);
 
   /** The actual dispatch — only called once every attachment has settled, so
    *  nothing still uploading can be silently left behind (#755). */

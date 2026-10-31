@@ -16,6 +16,17 @@ export const TURN_WINDOW = 30;
 /** How many more turns each "Show earlier messages" tap reveals. */
 export const TURN_WINDOW_STEP = 30;
 
+/** How close (px) to the top of the transcript the reader gets before the next
+ *  page of older turns is pulled in — about a screen and a half of runway, so
+ *  scrolling back through history never reaches a wall (#814). */
+export const REVEAL_NEAR_TOP_PX = 600;
+
+/** The scroller's geometry captured just before older turns are prepended. */
+export interface RevealAnchor {
+  height: number;
+  top: number;
+}
+
 export interface TurnWindow {
   /** Index of the first rendered turn — turns before it are hidden. */
   start: number;
@@ -33,4 +44,23 @@ export function turnWindow(total: number, visible: number): TurnWindow {
   const shown = Math.min(Math.max(0, total), Math.max(TURN_WINDOW, visible));
   const start = Math.max(0, total - shown);
   return { start, hidden: start };
+}
+
+/** Whether the reader is close enough to the top that the next page of older
+ *  turns should load on its own, before they reach the wall (#814). */
+export function shouldRevealEarlier(hidden: number, scrollTop: number): boolean {
+  return hidden > 0 && scrollTop < REVEAL_NEAR_TOP_PX;
+}
+
+/**
+ * Where scrollTop must land after older turns were prepended so the message the
+ * reader was looking at stays under their eye (#814): shifted by exactly the
+ * height that was added above. Browsers only do this themselves when scrollTop
+ * > 0 (scroll anchoring is suspended at the very top, and Safari has none).
+ * `null` when nothing was added — never move the reader on a measurement that
+ * says the content did not grow (a source swap can shrink it in the same frame).
+ */
+export function scrollTopAfterReveal(before: RevealAnchor, newHeight: number): number | null {
+  const added = newHeight - before.height;
+  return added > 0 ? before.top + added : null;
 }
