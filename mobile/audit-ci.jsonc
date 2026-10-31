@@ -28,24 +28,8 @@
     "GHSA-5xrq-8626-4rwp", // vitest  <=3.2.5  UI server arbitrary file read/exec — needs vitest v4
     // (GHSA-fx2h-pf6j-xcff pruned 2026-10-24: the blanket vite override to
     // 6.4.4 — added for GHSA-587h-7wmj-h5pm — is past its <=6.4.2 range.)
-    // owner: security@kube-coder | review: 2026-10-02 | build-time only, NO FIX PUBLISHED
-    //
-    // node-forge <=1.4.0 accepts extra nested DigestAlgorithm elements when
-    // verifying RSA PKCS#1 v1.5 signatures. first_patched_version is null —
-    // there is no release to bump to, so this cannot be resolved by a version
-    // change. The advisory itself is not new (published 2026-09-03); it began
-    // failing this job on 2026-10-01 when its affected range was widened to
-    // include 1.4.0, which is why it appeared across all branches at once.
-    //
-    // Reachable only through the Expo CLI toolchain — `expo` > `@expo/cli` and
-    // `@expo/code-signing-certificates` — which runs on the developer/EAS build
-    // machine. It is not imported by app code, so Metro does not bundle it onto
-    // a device, and nothing in the app verifies attacker-supplied RSA
-    // signatures with it at runtime.
-    //
-    // Re-check when Expo ships a release that moves off node-forge, or when
-    // node-forge publishes a patched line.
-    "GHSA-86w9-cpqp-85rv", // node-forge <=1.4.0  RSA PKCS#1 v1.5 signature forgery — no patch exists
+    // (GHSA-86w9-cpqp-85rv pruned 2026-10-31: node-forge is now 1.4.2, outside its
+    // <=1.4.0 range — the bump that cleared the five 2026-10-30 node-forge highs.)
     // owner: security@kube-coder | review: 2026-10-03 | build-time only, NO FIX PUBLISHED
     //
     // braces <=3.0.3 exhausts the stack on a deeply nested pattern.
