@@ -18,6 +18,58 @@
 
 ---
 
+## Quick start
+
+kube-coder runs two ways — pick the one that fits:
+
+| | **Local (minikube)** | **Cloud / multi-tenant** |
+|---|---|---|
+| Best for | trying it out, dev, offline | real deployments, teams |
+| Needs | Docker + minikube | a cluster, registry, DNS, GitHub OAuth |
+| Auth | http basic (`admin`/`admin`) | GitHub OAuth2 (or basic) |
+| TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
+| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md) |
+
+> **📖 Follow-along walkthroughs:**
+> - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
+> - [Deploying on Kubernetes (multi-tenant, OAuth + TLS)](docs/deploy-on-kubernetes.md) — cluster → per-user workspace
+
+### Option A — Local (minikube)
+
+Run the whole stack on a local single-node cluster — no cloud account, registry, DNS, or TLS.
+
+**Prerequisites:** Docker, minikube, kubectl, helm (`brew install minikube kubectl helm` on macOS).
+
+```bash
+make local          # start minikube, build the image, deploy, and print access info
+```
+
+**Then reach the dashboard:**
+
+```bash
+echo '127.0.0.1  kube-coder.local' | sudo tee -a /etc/hosts   # one time
+make local-forward                                            # keep running in a terminal
+# open http://kube-coder.local:8080/   →   basic auth: admin / admin
+```
+
+`make local` wraps steps that each run on their own (`local-up`, `local-build`, `local-secret`, `local-deploy`, `local-info`, `local-down`). Everything targets the minikube context explicitly, so it never touches a remote cluster. Full guide: [docs/local-development.md](docs/local-development.md).
+
+### Option B — Cloud / multi-tenant
+
+**Prerequisites:** Kubernetes 1.19+, Helm 3.0+, an nginx-ingress controller, **wildcard DNS** (`*.<your-domain>` → the ingress IP), a GitHub OAuth App for the controller console, a private GitHub repo as the GitOps config store, and a `regcred` image-pull secret.
+
+```bash
+DOMAIN=<your-domain> make doctor  # preflight: check ALL of the above at once (read-only)
+make deploy-base                  # base infra: nginx-ingress, oauth2-proxy, cert-manager
+make ship-controller-config       # the admin console (workspace-controller)
+```
+
+Run `make doctor` **first**. It's a read-only preflight that verifies every prerequisite above — kubectl/helm versions, the ingress controller and its external IP, cert-manager plus a ClusterIssuer, that `*.<your-domain>` actually resolves **to your ingress IP** (the failure that otherwise only surfaces as a dead workspace later), the `regcred` secret, and GitOps-repo reachability — reporting all failures at once with a fix for each. Pass `DOMAIN=<your-domain>` to include the wildcard-DNS check (skipped otherwise).
+
+Next: finish the one-time console setup and onboard your first user — see [Running a fleet](#running-a-fleet).
+
+---
+
 ## The idea
 
 Give every developer — or every AI agent — a real computer in the cloud, and make spinning one up a two-minute, self-service action.
@@ -306,55 +358,9 @@ Full walkthrough: [`mobile/README.md`](mobile/README.md).
 
 ---
 
-## Quick start
+## Running a fleet
 
-kube-coder runs two ways — pick the one that fits:
-
-| | **Local (minikube)** | **Cloud / multi-tenant** |
-|---|---|---|
-| Best for | trying it out, dev, offline | real deployments, teams |
-| Needs | Docker + minikube | a cluster, registry, DNS, GitHub OAuth |
-| Auth | http basic (`admin`/`admin`) | GitHub OAuth2 (or basic) |
-| TLS | none (plain HTTP, localhost) | cert-manager + Let's Encrypt |
-| Guide | [Option A](#option-a--local-minikube) + [docs/local-development.md](docs/local-development.md) | [Option B](#option-b--cloud--multi-tenant) + [docs/NEW_USER_PROVISIONING.md](docs/NEW_USER_PROVISIONING.md) |
-
-> **📖 Follow-along walkthroughs:**
-> - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
-> - [Deploying on Kubernetes (multi-tenant, OAuth + TLS)](docs/deploy-on-kubernetes.md) — cluster → per-user workspace
-
-### Option A — Local (minikube)
-
-Run the whole stack on a local single-node cluster — no cloud account, registry, DNS, or TLS.
-
-**Prerequisites:** Docker, minikube, kubectl, helm (`brew install minikube kubectl helm` on macOS).
-
-```bash
-make local          # start minikube, build the image, deploy, and print access info
-```
-
-**Then reach the dashboard:**
-
-```bash
-echo '127.0.0.1  kube-coder.local' | sudo tee -a /etc/hosts   # one time
-make local-forward                                            # keep running in a terminal
-# open http://kube-coder.local:8080/   →   basic auth: admin / admin
-```
-
-`make local` wraps steps that each run on their own (`local-up`, `local-build`, `local-secret`, `local-deploy`, `local-info`, `local-down`). Everything targets the minikube context explicitly, so it never touches a remote cluster. Full guide: [docs/local-development.md](docs/local-development.md).
-
-### Option B — Cloud / multi-tenant
-
-**Prerequisites:** Kubernetes 1.19+, Helm 3.0+, an nginx-ingress controller, **wildcard DNS** (`*.<your-domain>` → the ingress IP), a GitHub OAuth App for the controller console, a private GitHub repo as the GitOps config store, and a `regcred` image-pull secret.
-
-```bash
-DOMAIN=<your-domain> make doctor  # preflight: check ALL of the above at once (read-only)
-make deploy-base                  # base infra: nginx-ingress, oauth2-proxy, cert-manager
-make ship-controller-config       # the admin console (workspace-controller)
-```
-
-Run `make doctor` **first**. It's a read-only preflight that verifies every prerequisite above — kubectl/helm versions, the ingress controller and its external IP, cert-manager plus a ClusterIssuer, that `*.<your-domain>` actually resolves **to your ingress IP** (the failure that otherwise only surfaces as a dead workspace later), the `regcred` secret, and GitOps-repo reachability — reporting all failures at once with a fix for each. Pass `DOMAIN=<your-domain>` to include the wildcard-DNS check (skipped otherwise).
-
-Two things make self-service onboarding work; you set them once:
+Once [Option B](#option-b--cloud--multi-tenant) is deployed, two things make self-service onboarding work; you set them once:
 
 - **Wildcard DNS** — point `*.<your-domain>` at your ingress IP. Every workspace lives at `<github-login>.<your-domain>`, so a new user's host resolves the moment they're created, and **cert-manager + Let's Encrypt** issues its TLS cert on first request.
 - **The console's GitHub OAuth App + admin allowlist** — gates the dashboard at `controller.<your-domain>`; only allowlisted logins may administer workspaces. One-time config: [docs/PROVISIONING.md](docs/PROVISIONING.md).
