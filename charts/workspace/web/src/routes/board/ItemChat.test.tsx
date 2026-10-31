@@ -97,6 +97,10 @@ afterEach(() => {
   cleanup();
   _resetBoardsForTest();
   router.navigate.mockReset();
+  // restoreAllMocks only restores vi.spyOn spies (vitest 3+); it no longer
+  // clears these hoisted vi.fn()s, so reset them or calls leak across tests.
+  hv.listThreads.mockReset();
+  hv.createThread.mockReset();
   vi.restoreAllMocks();
 });
 
