@@ -884,6 +884,9 @@ function DoneRow({
   onViewTask: (taskId: string) => void;
 }) {
   const failed = row.state === 'failed' || row.result.startsWith('Failed');
+  // Green only for something that landed: a rejection or a send-back wrote
+  // nothing, and colouring it like success would say otherwise.
+  const declined = row.review_state === 'rejected' || row.review_state === 'sent_back';
   const detail = row.error || row.reason;
   return (
     <Card
@@ -906,7 +909,10 @@ function DoneRow({
         </View>
         <Text style={styles.rowTitle} numberOfLines={2}>{row.item_title}</Text>
         <Text
-          style={[styles.result, failed ? styles.resultFailed : styles.resultOk]}
+          style={[
+            styles.result,
+            failed ? styles.resultFailed : declined ? styles.resultMuted : styles.resultOk,
+          ]}
           numberOfLines={1}
         >
           {row.result}
@@ -1182,6 +1188,7 @@ const styles = StyleSheet.create({
   result: { fontSize: font.size.sm, marginTop: space.xs },
   resultOk: { color: colors.success },
   resultFailed: { color: colors.danger },
+  resultMuted: { color: colors.textMuted },
   doneDetail: { marginTop: space.xs },
   cardBusy: { opacity: 0.6 },
   // Where a deep link landed. An arrival cue, cleared after a few seconds —

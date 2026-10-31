@@ -1,5 +1,5 @@
 /**
- * Board-on-mobile check (#692).
+ * Board-on-mobile check (#692), and its three tabs (#709 Part 3).
  *
  * The maintainer's report was that Board "only works on web" and needs to be
  * "bigger/easier to see". Investigation found the screen itself renders — what
@@ -180,6 +180,110 @@ async function fontSizeOf(page, text) {
     }
     report.check(found, 'The item named by the ref is on screen');
     await shot(page, 'b05-board-focused.png');
+  }
+  await page.close();
+}
+
+// ── 6. Three tabs — Needs you · Working · Done (#709 Part 3) ───────────────
+{
+  const page = await freshPage(browser, port);
+  await openDrawerAndGo(page, 'Board');
+  await sleep(800);
+
+  /** The tab whose label starts with `name`, as a screen reader hears it. */
+  const tabLabel = async (name) => {
+    const loc = page.getByRole('tab', { name: new RegExp(`^${name}`) });
+    const i = await visibleNth(loc);
+    return i < 0 ? null : loc.nth(i).getAttribute('aria-label');
+  };
+  const showTab = async (name) => {
+    await clickVisible(page.getByRole('tab', { name: new RegExp(`^${name}`) }), `${name} tab`);
+    await sleep(500);
+  };
+  const seen = async (text) =>
+    (await visibleNth(page.getByText(text, { exact: false }))) >= 0;
+
+  // Every tab announces its count. Needs you counts from the FEED — the demo
+  // feed holds two waiting rows for this board.
+  report.check(
+    (await tabLabel('Needs you')) === 'Needs you, 2 waiting',
+    'Needs you tab announces its count from the Feed',
+    String(await tabLabel('Needs you')),
+  );
+  report.check(/^Working, \d+ items?$/.test((await tabLabel('Working')) ?? ''),
+    'Working tab announces its count', String(await tabLabel('Working')));
+  report.check(/^Done, \d+ items?, \d+ unread$/.test((await tabLabel('Done')) ?? ''),
+    'Done tab announces its count and unread', String(await tabLabel('Done')));
+  for (const name of ['Needs you', 'Working', 'Done']) {
+    await assertTouchTarget(page, new RegExp(`^${name},`));
+  }
+  report.check(await seen('Refund not received'), 'Needs you opens on the review queue');
+  await shot(page, 'b06-tab-needs-you.png');
+
+  // ── Working: claimed and working rows only ──
+  await showTab('Working');
+  report.check(await seen('Duplicate charge on invoice 4471'), 'Working shows a working item');
+  report.check(await seen('CSV export times out'), 'Working shows a claimed item');
+  report.check(!(await seen('Refund not received')), 'Working does not repeat a review card');
+  report.check(!(await seen('Update the billing address')), 'Working does not show a finished item');
+  await assertTouchTarget(page, /^SUP-818,/);
+  await shot(page, 'b07-tab-working.png');
+
+  // ── Done: one result line and an unread dot, cleared on open ──
+  await showTab('Done');
+  report.check(await seen('Reply posted on SUP-807'), 'Done shows a result line');
+  report.check(await seen('Failed: Jira returned 403'), 'Done shows a failure line');
+  report.check(!(await seen('Duplicate charge on invoice 4471')), 'Done does not show a working item');
+  const dot = page.locator('[id="board-done-807"] [data-testid="unread-dot"]');
+  report.check((await dot.count()) === 1, 'A finished item shows an unread dot');
+  const unreadBefore = await tabLabel('Done');
+  await assertTouchTarget(page, /^Unread\. SUP-807,/);
+  await shot(page, 'b08-tab-done.png');
+  await clickVisible(page.getByLabel(/^Unread\. SUP-807,/), 'the SUP-807 row');
+  await sleep(500);
+  report.check((await dot.count()) === 0, 'Opening the row clears its dot');
+  report.check(await seen('Open ticket'), 'An opened row shows its detail');
+  report.check((await tabLabel('Done')) !== unreadBefore, 'The Done tab unread count drops',
+    `${unreadBefore} → ${await tabLabel('Done')}`);
+  // Still cleared after the next poll: the dot is the Feed's read flag.
+  await clickVisible(page.getByRole('tab', { name: /^Working/ }), 'Working tab');
+  await sleep(300);
+  await showTab('Done');
+  report.check((await dot.count()) === 0, 'The cleared dot stays cleared');
+  await shot(page, 'b09-done-opened.png');
+
+  // ── Approve and reject still work under the tabs ──
+  await showTab('Needs you');
+  await clickVisible(page.getByLabel('Approve'), 'approve SUP-812');
+  await sleep(1500);
+  report.check(!(await seen('Refund not received')), 'An approved card leaves Needs you');
+  report.check((await tabLabel('Needs you')) === 'Needs you, 1 waiting',
+    'The Needs-you count drops after approving', String(await tabLabel('Needs you')));
+  await clickVisible(page.getByLabel('Reject'), 'reject SUP-815');
+  await sleep(1500);
+  report.check(await seen('Nothing to review'), 'Needs you has an empty state');
+  await showTab('Done');
+  report.check(await seen('Written to SUP-812: comment, set status'),
+    'The approved item lands on Done with its result');
+  report.check(await seen('Rejected, nothing was written'),
+    'The rejected item lands on Done with its result');
+  report.check(
+    (await page.locator('[id="board-done-812"] [data-testid="unread-dot"]').count()) === 1,
+    'A freshly decided item is unread');
+  await shot(page, 'b10-after-decisions.png');
+
+  // ── Empty states, and the rule: the phone never starts a run ──
+  await clickVisible(page.getByLabel('Show kube-coder issues'), 'second board');
+  await sleep(1200);
+  await showTab('Working');
+  report.check(await seen('Nothing being worked'), 'Working has an empty state');
+  for (const name of ['Needs you', 'Working', 'Done']) {
+    await showTab(name);
+    report.check(
+      (await page.getByText(/start (a )?run/i).count()) === 0 &&
+        (await page.getByLabel(/start (a )?run/i).count()) === 0,
+      `No start-run control on ${name}`,
+    );
   }
   await page.close();
 }

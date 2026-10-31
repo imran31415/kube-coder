@@ -1470,9 +1470,12 @@ export function mockMarkFeedRead(id: string): void {
 /** The demo build's only board deep link is fd_5. It points at the SECOND
  *  board and at an item id that contains a colon — a GitHub GraphQL global
  *  id — so following it exercises the board switch and the ref split, not the
- *  trivial case where the target is already on screen (#692). */
+ *  trivial case where the target is already on screen (#692). Kept at its
+ *  old place in the Feed, where check-board looks for it. */
+const MOCK_FD5 = { itemId: 'I_kwDOA:4102', id: 'fd_5', ts: NOW - 2700 };
+
 function mockReviewFeedId(itemId: string): string {
-  return itemId === 'I_kwDOA:4102' ? 'fd_5' : `fd_rv_${itemId}`;
+  return itemId === MOCK_FD5.itemId ? MOCK_FD5.id : `fd_rv_${itemId}`;
 }
 
 /** The server's `boards/outcome.result_line` for a decided review. */
@@ -1489,12 +1492,18 @@ function mockResultLine(item: BoardReviewItem): string {
   return `Completed on ${item.item_key}`;
 }
 
+/** One Feed row per staged review: the waiting row while it is open, its
+ *  result once decided. The run rows' results are left out of the demo Feed —
+ *  the Done tab reads their dots from `/recent`, and five more cards would
+ *  push the Feed's own demo content off the screenshots. */
 function mockBoardFeedRows(): FeedItem[] {
-  const fromReview = mockBoardReview.map((item): FeedItem => {
+  return mockBoardReview.map((item): FeedItem => {
     const line = item.open ? '' : mockResultLine(item);
     return {
       id: mockReviewFeedId(item.item_id),
-      ts: item.updated_at,
+      ts: !item.open
+        ? item.updated_at
+        : item.item_id === MOCK_FD5.itemId ? MOCK_FD5.ts : item.created_at,
       kind: 'activity',
       title: item.open
         ? `${item.item_key} needs your review`
@@ -1507,21 +1516,6 @@ function mockBoardFeedRows(): FeedItem[] {
       read: false,
     };
   });
-  const fromRuns = mockRecentRuns
-    .filter((r) => r.feed_id)
-    .map((r): FeedItem => ({
-      id: r.feed_id!,
-      ts: r.updated_at,
-      kind: 'activity',
-      title: r.result.includes(r.item_key) ? r.result : `${r.item_key}: ${r.result}`,
-      body_md: r.item_title,
-      source: `board:${r.board_id}`,
-      project_id: 'kube-coder',
-      links: [{ label: r.item_title, ref: `board:${r.board_id}:${r.item_id}` }],
-      waiting: false,
-      read: !r.unread,
-    }));
-  return [...fromReview, ...fromRuns];
 }
 
 /** Run rows with no staged review: two being worked, three finished — a
