@@ -38,7 +38,7 @@
     "playwright": "^1.58.2",
     "serve-handler": "^6.1.7",
     "typescript": "~6.0.3",
-    "vitest": "^2.1.9"
+    "vitest": "^4.0.0"
   },
   "_comment_tinypool": "Vitest 2 requests tinypool 1.x, but both prototype-pollution RCE fixes require 2.1.2. Keep this pin until Vitest requires a patched version; verify the full test suite when changing it.",
   "overrides": {
