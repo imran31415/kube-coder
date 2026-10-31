@@ -267,12 +267,14 @@ function TriggerRow({ t }: { t: Trigger }) {
       {t.kind === 'webhook' && (t.match || t.item_id_from) && (
         <p class="trig-row-meta muted mono">{describeMatch(t.match, t.item_id_from)}</p>
       )}
-      {(t.workdir || t.timezone) && (
-        <div class="trig-row-meta muted mono">
-          {t.workdir && <span>{t.workdir}</span>}
-          {t.timezone && <span> · {t.timezone}</span>}
-        </div>
-      )}
+      {/* A Board run has no working directory of its own: the board's
+          agents decide where they work. */}
+      {(() => {
+        const parts = [t.action === 'board_run' ? '' : t.workdir, t.timezone].filter(Boolean);
+        return parts.length > 0 && (
+          <div class="trig-row-meta muted mono">{parts.join(' · ')}</div>
+        );
+      })()}
       {showTest && <WebhookTestForm t={t} onDone={() => setShowTest(false)} />}
       {showRuns && <TriggerRuns t={t} />}
     </article>
