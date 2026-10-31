@@ -7538,6 +7538,27 @@ class FeedManager:
         )
 
     @staticmethod
+    def emit_trigger_failed(trigger_kind, trigger_id, reason):
+        """A trigger's Board run did not start (#709 part 2) → a WAITING item.
+
+        Waiting because nobody was watching when it fired: a schedule that has
+        failed every night for a week is otherwise visible only to someone who
+        opens its ledger. Coalesced per trigger, so a burst of refused
+        deliveries is one row that updates rather than a stack. No `board:`
+        link — the waiting badge counts those as approvals to decide.
+        """
+        reason = (reason or 'unknown error').strip()
+        return FeedManager.emit(
+            'activity',
+            f"{trigger_id} Board run didn't start: {reason}",
+            body_md=(f'The {trigger_kind} trigger `{trigger_id}` fired, but its '
+                     f'Board run did not start:\n\n> {reason}'),
+            source='system:trigger',
+            waiting=True,
+            dedupe_key=f'trigger:{trigger_kind}:{trigger_id}:board_run_failed',
+        )
+
+    @staticmethod
     def _project_for_workdir(workdir):
         """Best-effort project id owning this workdir (reuses the registry's
         resolver, so worktrees attribute to their main repo). '' when
@@ -7776,7 +7797,8 @@ class TriggerRunsManager:
     @classmethod
     def record(cls, kind, trigger_id, outcome, *, task_id=None, reason=None,
                error=None, source_ip=None, forwarded_for=None,
-               signature_verified=None, provider=None, manual=False, ts=None):
+               signature_verified=None, provider=None, manual=False, ts=None,
+               run_id=None, board_id=None):
         """Append one entry. Returns whether it was written.
 
         Never raises. Every call site is a fire that has already been decided,
@@ -7799,6 +7821,11 @@ class TriggerRunsManager:
             entry['reason'] = str(reason)[:64]
         if task_id:
             entry['task_id'] = str(task_id)[:128]
+        # A Board-run trigger (#709 part 2) starts a run, not a task.
+        if run_id:
+            entry['run_id'] = str(run_id)[:128]
+        if board_id:
+            entry['board_id'] = str(board_id)[:64]
         if error:
             # `error` is for a message this code did not author — what the task
             # manager or the fetch said — plus the two branches carrying a
@@ -7869,6 +7896,226 @@ class TriggerRunsManager:
             return bool(log.delete())
         except OSError:
             return False
+
+
+class TriggerBoardRuns:
+    """A cron or webhook whose `action` is `board_run` (#709 part 2).
+
+    A trigger has a *when* (a schedule, an inbound POST) and a *what*. The
+    original *what* is "start a Build with this prompt", and a config with no
+    `action` field still means exactly that. `board_run` is the second one:
+    start a run on a saved board, with the board's own selection rules.
+
+    Three rules this class exists to keep in one place, so the cron and the
+    webhook path cannot drift apart:
+
+    - **Always propose mode.** Nobody is watching when a schedule or a public
+      URL starts work, so every write a trigger-started run makes is staged
+      for a human. A saved `mode` other than propose is refused at save time,
+      and `start` forces propose regardless, so a hand-edited config cannot
+      opt out either.
+    - **The origin is ours, not the config's.** `origin` is the trigger KIND,
+      passed to `BoardRunsManager.create` as a server-side argument — the same
+      contract send-back uses. Nothing in a saved trigger names it.
+    - **A run that does not start is never silent.** The caller gets an error,
+      and the Feed gets a *waiting* item, because a nightly cron that has been
+      failing for a week is otherwise only visible to someone who goes looking.
+    """
+
+    ACTIONS = ('build', 'board_run')
+    _BOARD_RUN_KEYS = ('board_id', 'select', 'concurrency', 'mode')
+    _MATCH_KEYS = ('event', 'payload')
+    # A dot-path into a webhook payload: `issue.id`, `label.name`. Segments are
+    # dict keys only — no list indexes, no expressions (#709: "keep it simple").
+    _DOT_PATH_RE = re.compile(
+        r'^[A-Za-z0-9_-]{1,64}(?:\.[A-Za-z0-9_-]{1,64}){0,15}$')
+    _EVENT_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+    MAX_MATCH_PATHS = 16
+    MAX_MATCH_VALUE = 256
+
+    @staticmethod
+    def action_of(cfg):
+        """`board_run` only when the config says so exactly. Everything else —
+        no field, which is every trigger written before this existed — is a
+        Build."""
+        return 'board_run' if (cfg or {}).get('action') == 'board_run' else 'build'
+
+    @staticmethod
+    def validate_action(data):
+        """`(action, error)`."""
+        action = data.get('action') or 'build'
+        if action not in TriggerBoardRuns.ACTIONS:
+            return None, f'action must be one of {", ".join(TriggerBoardRuns.ACTIONS)}'
+        return action, None
+
+    @staticmethod
+    def validate_board_run(raw):
+        """`(board_run, error)` for a trigger's `board_run` block.
+
+        Validated when the trigger is SAVED: a typo'd select key is an error on
+        the form, not a nightly run that quietly works the whole board.
+        """
+        if not isinstance(raw, dict):
+            return None, 'board_run must be an object with a board_id'
+        unknown = sorted(k for k in raw if k not in TriggerBoardRuns._BOARD_RUN_KEYS)
+        if unknown:
+            return None, (f'board_run: unknown field(s) {", ".join(unknown)} '
+                          f'(allowed: board_id, select, concurrency)')
+        mode = raw.get('mode')
+        if mode not in (None, '', 'propose'):
+            return None, ('board_run.mode: a run a trigger starts is always '
+                          'propose mode — every write waits for your approval')
+        if not _BOARDS_AVAILABLE:
+            return None, 'Boards are not available on this workspace'
+        board_id = raw.get('board_id')
+        if not isinstance(board_id, str) or not board_id:
+            return None, 'board_run.board_id is required'
+        if not BoardsManager.valid_id(board_id) or BoardsManager.get(board_id) is None:
+            return None, f'board_run.board_id: no board named {board_id!r}'
+        select, errors = boards.runs.validate_select(raw.get('select'))
+        if errors:
+            return None, '; '.join(errors[:8])
+        if select.get('ignore_processed'):
+            # The processed log is what stops a nightly run re-commenting on
+            # every ticket it already answered. Only send-back may bypass it.
+            return None, 'select.ignore_processed is not allowed on a trigger'
+        concurrency = raw.get('concurrency', 1)
+        board_max = boards.runs.BOARD_MAX_CONCURRENCY
+        if (isinstance(concurrency, bool) or not isinstance(concurrency, int)
+                or not 1 <= concurrency <= board_max):
+            return None, f'board_run.concurrency must be an integer from 1 to {board_max}'
+        return {'board_id': board_id, 'select': select,
+                'concurrency': concurrency}, None
+
+    @staticmethod
+    def validate_match(raw):
+        """`(match, error)` for a webhook's optional `match` filter. `match` is
+        None when absent or empty."""
+        if raw in (None, {}):
+            return None, None
+        if not isinstance(raw, dict):
+            return None, 'match must be an object'
+        unknown = sorted(k for k in raw if k not in TriggerBoardRuns._MATCH_KEYS)
+        if unknown:
+            return None, f'match: unknown field(s) {", ".join(unknown)} (allowed: event, payload)'
+        out = {}
+        event = raw.get('event')
+        if event not in (None, ''):
+            if not isinstance(event, str) or not TriggerBoardRuns._EVENT_RE.match(event):
+                return None, 'match.event must be an event name such as "issues"'
+            out['event'] = event
+        payload = raw.get('payload')
+        if payload not in (None, {}):
+            if not isinstance(payload, dict):
+                return None, 'match.payload must be an object of "dot.path": "value"'
+            if len(payload) > TriggerBoardRuns.MAX_MATCH_PATHS:
+                return None, f'match.payload: at most {TriggerBoardRuns.MAX_MATCH_PATHS} paths'
+            for path, want in payload.items():
+                if not TriggerBoardRuns._DOT_PATH_RE.match(path):
+                    return None, f'match.payload: {path!r} is not a dot-path like "label.name"'
+                # Exact STRING match, on purpose: no numbers-vs-strings
+                # coercion rules to learn, and no expressions.
+                if not isinstance(want, str) or len(want) > TriggerBoardRuns.MAX_MATCH_VALUE:
+                    return None, f'match.payload[{path!r}] must be a string'
+            out['payload'] = dict(payload)
+        return (out or None), None
+
+    @staticmethod
+    def validate_item_id_from(raw):
+        """`(path, error)` for a webhook's optional `item_id_from`."""
+        if raw in (None, ''):
+            return None, None
+        if not isinstance(raw, str) or not TriggerBoardRuns._DOT_PATH_RE.match(raw):
+            return None, 'item_id_from must be a dot-path like "issue.id"'
+        return raw, None
+
+    @staticmethod
+    def resolve(payload, path):
+        """The scalar at `path` as a string, or None when any segment is
+        missing or the leaf is not a scalar. Unlike `WebhookManager._lookup`,
+        missing is None rather than '' — "the delivery has no issue" must not
+        look like an issue whose id is the empty string."""
+        cur = payload
+        for part in path.split('.'):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return None
+        if isinstance(cur, bool):
+            return 'true' if cur else 'false'
+        if isinstance(cur, (str, int, float)):
+            return str(cur)
+        return None
+
+    @staticmethod
+    def skip_reason(cfg, payload, event):
+        """'' when this delivery should fire, else the ledger slug for why not.
+
+        GitHub's `ping` (sent once when a webhook is created) is skipped for any
+        webhook that filters or starts a Board run. A plain Build webhook with
+        no `match` keeps firing on it, exactly as before.
+        """
+        match = cfg.get('match') or {}
+        board_run = TriggerBoardRuns.action_of(cfg) == 'board_run'
+        if (match or board_run) and event == 'ping':
+            return 'ping'
+        if match.get('event') and event != match['event']:
+            return 'event_mismatch'
+        payload = payload if isinstance(payload, dict) else {}
+        for path, want in (match.get('payload') or {}).items():
+            if TriggerBoardRuns.resolve(payload, path) != want:
+                return 'payload_mismatch'
+        if board_run and cfg.get('item_id_from'):
+            if not TriggerBoardRuns.resolve(payload, cfg['item_id_from']):
+                return 'no_item_id'
+        return ''
+
+    @staticmethod
+    def http_status(error):
+        """The status a refused start answers with. A run already in flight
+        conflicts with the board's state; a full pod is a retry-later; anything
+        else (a missing board, an expired credential) is upstream of the
+        caller, and must not read as their bad request."""
+        if error.startswith('a run is already in flight'):
+            return 409
+        if error.startswith('cannot start: the workspace is at its task limit'):
+            return 429
+        return 502
+
+    @staticmethod
+    def start(kind, trigger_cfg, *, item_id=None):
+        """Start the trigger's run. Returns `(run, error)`, and on error posts a
+        waiting Feed item before returning it."""
+        trigger_id = trigger_cfg.get('id') or ''
+        spec = trigger_cfg.get('board_run')
+        spec = spec if isinstance(spec, dict) else {}
+        board_id = spec.get('board_id') or ''
+        run, err = None, None
+        board = (BoardsManager.get(board_id)
+                 if _BOARDS_AVAILABLE and isinstance(board_id, str) else None)
+        if not _BOARDS_AVAILABLE:
+            err = 'Boards are not available on this workspace'
+        elif board is None:
+            err = f'board {board_id!r} no longer exists'
+        else:
+            select = dict(spec.get('select') or {})
+            # A hand-edited config is not save-validated, so this is enforced
+            # again here rather than trusted.
+            select.pop('ignore_processed', None)
+            if item_id is not None:
+                select['item_ids'] = [str(item_id)]
+            data = {'select': select,
+                    'concurrency': spec.get('concurrency', 1),
+                    # Forced, whatever the config says (see the class docstring).
+                    'mode': 'propose'}
+            try:
+                run, err = BoardRunsManager.create(
+                    board, data, origin=kind, trigger={'id': trigger_id})
+            except Exception as e:      # a trigger must answer, not 500
+                run, err = None, f'internal error: {e}'
+        if err:
+            FeedManager.emit_trigger_failed(kind, trigger_id, err)
+        return run, err
 
 
 def _push_triggers_to_keeper():
@@ -7996,9 +8243,27 @@ class WebhookManager:
         webhook_id = existing_id or data.get('id', '')
         if not WebhookManager.valid_id(webhook_id):
             return None, 'invalid id (1-64 chars, [a-zA-Z0-9_-])'
+        # What a delivery does (#709 part 2): start a Build (the default, and
+        # every config written before this) or start a Board run.
+        action, err = TriggerBoardRuns.validate_action(data)
+        if err:
+            return None, err
+        board_run = None
+        if action == 'board_run':
+            board_run, err = TriggerBoardRuns.validate_board_run(data.get('board_run'))
+            if err:
+                return None, err
         prompt_template = (data.get('prompt_template') or '').strip()
-        if not prompt_template:
+        if action == 'build' and not prompt_template:
             return None, 'prompt_template is required'
+        match, err = TriggerBoardRuns.validate_match(data.get('match'))
+        if err:
+            return None, err
+        item_id_from, err = TriggerBoardRuns.validate_item_id_from(data.get('item_id_from'))
+        if err:
+            return None, err
+        if item_id_from and action != 'board_run':
+            return None, 'item_id_from only applies to a Board run webhook'
 
         mode = data.get('interpolate_mode', 'attach')
         if mode not in ('attach', 'interpolate'):
@@ -8027,6 +8292,7 @@ class WebhookManager:
         }[provider]
         cfg = {
             'id': webhook_id,
+            'action': action,
             'prompt_template': prompt_template,
             'workdir': data.get('workdir') or '/home/dev',
             'interpolate_mode': mode,
@@ -8035,6 +8301,12 @@ class WebhookManager:
             'signature_algo': algo,
             'created_at': time.time(),
         }
+        if board_run:
+            cfg['board_run'] = board_run
+        if match:
+            cfg['match'] = match
+        if item_id_from:
+            cfg['item_id_from'] = item_id_from
         # Optional secret-bearing fields. Auto-mint hmac_secret on create if
         # caller didn't provide one — never want to silently land an open webhook.
         if data.get('hmac_secret'):
@@ -8054,6 +8326,14 @@ class WebhookManager:
             # If caller didn't pass hmac_secret on update, keep the prior one.
             if 'hmac_secret' not in cfg and prior.get('hmac_secret'):
                 cfg['hmac_secret'] = prior['hmac_secret']
+
+        # A Board-run webhook is never open (#709 part 2). verify_signature
+        # already refuses it unsigned even under KC_ALLOW_UNSIGNED_WEBHOOKS;
+        # refusing the save as well means the form says so, instead of every
+        # delivery 404ing for a reason nobody can see.
+        if action == 'board_run' and not cfg.get('hmac_secret'):
+            return None, ('a Board run webhook needs an HMAC secret — every '
+                          'delivery must be signed')
 
         path = WebhookManager._config_path(webhook_id)
         tmp = path + '.tmp'
@@ -8109,7 +8389,11 @@ class WebhookManager:
         """
         secret = cfg.get('hmac_secret')
         if not secret:
-            if WebhookManager._allow_unsigned():
+            # A webhook that starts a Board run is never open, escape hatch or
+            # not (#709 part 2): a public URL that dispatches agents against a
+            # customer's tracker must prove who is calling.
+            if (WebhookManager._allow_unsigned()
+                    and TriggerBoardRuns.action_of(cfg) != 'board_run'):
                 return True
             print(
                 f"[webhook] rejecting unsigned POST to webhook "
@@ -8888,7 +9172,7 @@ class BoardRunsManager:
 
     @classmethod
     def create(cls, cfg, data, *, origin='manual', resume=None,
-               allow_concurrent=False):
+               allow_concurrent=False, trigger=None):
         """Select items and start working them. Returns `(run, error)`.
 
         The item listing happens HERE, synchronously, rather than in the driver
@@ -8899,6 +9183,10 @@ class BoardRunsManager:
         `origin` / `resume` are set only by the send-back round trip (#588
         Phase 6) and are NOT readable from `data`: a caller who could name them
         could attach an arbitrary note — and a resume prompt — to any run.
+        `trigger` (`{'id': ...}`) is the same kind of argument for a run a
+        cron or webhook started (#709 part 2): `TriggerBoardRuns.start` passes
+        it with `origin='cron'|'webhook'`, so the Runs tab can name the
+        trigger, and nothing reachable from a run route can set it.
         """
         board_id = cfg['id']
         # One live run per board (#712). Leases are per BOARD, so a second run
@@ -9013,7 +9301,8 @@ class BoardRunsManager:
         run = boards.runs.new_run(
             run_id, board_id, mode=mode, select=select, concurrency=effective,
             requested_concurrency=requested, clamp_reason=clamp_reason,
-            stop_on=stop_on, origin=origin, workdir=repo['workdir'],
+            stop_on=stop_on, origin=origin, trigger=trigger,
+            workdir=repo['workdir'],
             isolate=repo['isolate'], base_ref=repo['base_ref'],
             warnings=boards.runs.shared_tree_warning(
                 repo['workdir'], repo['isolate'], effective))
@@ -11450,8 +11739,18 @@ class CronManager:
         if not CronManager._TIMEZONE_RE.match(timezone):
             return None, 'invalid timezone (IANA name like UTC or America/Los_Angeles)'
 
+        # What a fire does (#709 part 2): a Build (the default) or a Board run.
+        action, err = TriggerBoardRuns.validate_action(data)
+        if err:
+            return None, err
+        board_run = None
+        if action == 'board_run':
+            board_run, err = TriggerBoardRuns.validate_board_run(data.get('board_run'))
+            if err:
+                return None, err
+
         prompt_template = (data.get('prompt_template') or '').strip()
-        if not prompt_template:
+        if action == 'build' and not prompt_template:
             return None, 'prompt_template is required'
 
         mode = data.get('interpolate_mode', 'attach')
@@ -11468,6 +11767,7 @@ class CronManager:
 
         cfg = {
             'id': cron_id,
+            'action': action,
             'schedule': schedule,
             'prompt_template': prompt_template,
             'workdir': data.get('workdir') or '/home/dev',
@@ -11477,6 +11777,8 @@ class CronManager:
             'suspended': bool(data.get('suspended', False)),
             'created_at': time.time(),
         }
+        if board_run:
+            cfg['board_run'] = board_run
         if data.get('response_url'):
             cfg['response_url'] = data['response_url']
         if data.get('response_secret'):

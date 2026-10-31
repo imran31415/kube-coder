@@ -192,7 +192,11 @@ class TriggerRoutes:
             self.send_json({'error': 'invalid JSON payload'}, 400)
             return
 
+        # The event is an explicit argument, read here from the delivery's own
+        # header — `_fire_webhook` also serves the Test button, whose headers
+        # are the dashboard's request, not GitHub's (#709 part 2).
         self._fire_webhook(cfg, payload, status=202,
+                           event=self.headers.get('X-GitHub-Event', '') or '',
                            signature_verified=self._signature_checked(cfg))
 
     def handle_webhook_test(self):
@@ -211,13 +215,41 @@ class TriggerRoutes:
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         payload = data.get('payload', {}) if isinstance(data, dict) else {}
+        # The event the Test button simulates comes from its body, so a
+        # webhook with `match.event` can be exercised from the dashboard.
+        event = data.get('event') if isinstance(data, dict) else ''
         # manual=True, and no signature_verified at all: this path authenticates
         # with the dashboard's own bearer/OAuth session and never looks at an
         # HMAC, so a tick or a cross in that column would both be wrong.
-        self._fire_webhook(cfg, payload, status=202, manual=True)
+        self._fire_webhook(cfg, payload, status=202,
+                           event=event if isinstance(event, str) else '',
+                           manual=True)
 
-    def _fire_webhook(self, cfg, payload, status=202, *,
+    def _fire_webhook(self, cfg, payload, status=202, *, event='',
                       signature_verified=None, manual=False):
+        def _ledger(outcome, reason=None, **kw):
+            handlers.server.TriggerRunsManager.record(
+                'webhook', cfg['id'], outcome, reason=reason,
+                source_ip=self._peer_ip(), forwarded_for=self._forwarded_for(),
+                signature_verified=signature_verified,
+                provider=cfg.get('provider') or 'generic',
+                manual=manual, **kw)
+
+        # `match`, GitHub's ping, and a delivery with no item to work (#709
+        # part 2): a 200 that starts nothing, so the sender does not retry.
+        tbr = handlers.server.TriggerBoardRuns
+        skip = tbr.skip_reason(cfg, payload, event)
+        if skip:
+            _ledger('skipped', skip)
+            self.send_json({'skipped': True, 'reason': skip,
+                            'webhook_id': cfg['id']}, 200)
+            return
+        if tbr.action_of(cfg) == 'board_run':
+            item_id = (tbr.resolve(payload, cfg['item_id_from'])
+                       if cfg.get('item_id_from') else None)
+            self._start_trigger_board_run('webhook', cfg, _ledger, item_id=item_id)
+            return
+
         prompt = handlers.server.WebhookManager.render_prompt(cfg, payload)
         source = f"webhook:{cfg['id']}"
         # Unattended, so skip-permissions (#296, #769), but only for a caller
@@ -233,14 +265,6 @@ class TriggerRoutes:
             auto_approve=handlers.server.ClaudeTaskManager.resolve_auto_approve(
                 source, None if sender_proven else False),
         )
-
-        def _ledger(outcome, reason=None, **kw):
-            handlers.server.TriggerRunsManager.record(
-                'webhook', cfg['id'], outcome, reason=reason,
-                source_ip=self._peer_ip(), forwarded_for=self._forwarded_for(),
-                signature_verified=signature_verified,
-                provider=cfg.get('provider') or 'generic',
-                manual=manual, **kw)
 
         if task.get('status') == 'rejected':
             _ledger('rejected', 'at_capacity', error=task.get('error'))
@@ -273,6 +297,43 @@ class TriggerRoutes:
             'webhook_id': cfg['id'],
             'status': task['status'],
         }, status)
+
+    def _start_trigger_board_run(self, kind, cfg, ledger, *, item_id=None):
+        """The `action: board_run` half of a cron or webhook fire (#709 part 2).
+
+        Answers the caller and writes the ledger. `TriggerBoardRuns.start`
+        has already posted the waiting Feed item when the run did not start.
+        """
+        tbr = handlers.server.TriggerBoardRuns
+        run, err = tbr.start(kind, cfg, item_id=item_id)
+        board_id = (cfg.get('board_run') or {}).get('board_id') or ''
+        id_key = f'{kind}_id'
+        if err:
+            status = tbr.http_status(err)
+            outcome, reason = {
+                409: ('rejected', 'run_in_flight'),
+                429: ('rejected', 'at_capacity'),
+            }.get(status, ('error', 'run_failed'))
+            ledger(outcome, reason, board_id=board_id, error=err)
+            self.send_json({'error': err, id_key: cfg['id'],
+                            'board_id': board_id}, status)
+            return
+        ledger('spawned', run_id=run['id'], board_id=board_id)
+        handlers.server.EventBroker.publish('trigger.fired', {
+            'trigger_type': kind,
+            'trigger_id': cfg['id'],
+            'run_id': run['id'],
+            'board_id': board_id,
+        })
+        handlers.server.FeedManager.emit_trigger(kind, cfg['id'], '')
+        self.send_json({
+            'run_id': run['id'],
+            'board_id': board_id,
+            id_key: cfg['id'],
+            'status': run.get('status'),
+            'mode': run.get('mode'),
+            'items': len(run.get('items') or {}),
+        }, 202)
 
     # --- Run-ledger helpers (#91) ----------------------------------------
 
@@ -461,6 +522,13 @@ class TriggerRoutes:
         if cfg.get('suspended'):
             _ledger('rejected', 'suspended', signature_verified=True)
             self.send_json({'error': 'cron is suspended'}, 409)
+            return
+        if handlers.server.TriggerBoardRuns.action_of(cfg) == 'board_run':
+            # Every outcome here passed the fire_token check above.
+            self._start_trigger_board_run(
+                'cron', cfg,
+                lambda outcome, reason=None, **kw: _ledger(
+                    outcome, reason, signature_verified=True, **kw))
             return
         prompt = handlers.server.CronManager.render_prompt(cfg)
         source = f"cron:{cfg['id']}"
