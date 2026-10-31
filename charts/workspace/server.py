@@ -271,6 +271,14 @@ except Exception as _gw_import_err:  # broken install shouldn't crash the server
     _GATEWAY_AVAILABLE = False
     print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
 
+# Board review cards over WhatsApp (#709 Part 4). Its own guard: it also needs
+# the boards package, and losing it must not take the chat gateway down.
+try:
+    import gateway_review
+except Exception as _gwr_import_err:  # pragma: no cover - broken install
+    gateway_review = None  # type: ignore
+    print(f'[gateway] review cards unavailable: {_gwr_import_err}', file=sys.stderr)
+
 # Multi-harness skills subsystem (issue #187) — same colocated-package
 # convention as `memory`. Read-only surface over SKILL.md-style files
 # discovered from every supported agent harness (Claude Code, OpenCode,
@@ -762,6 +770,7 @@ _GATEWAY = None            # type: ignore
 _GATEWAY_ADAPTER = None    # type: ignore
 _GATEWAY_PREVIEW = None     # type: ignore  # Walkie-Talkie preview orchestrator
 _GATEWAY_LOOPBACK = None    # type: ignore  # in-app loopback ChannelAdapter
+_GATEWAY_REVIEW = None      # type: ignore  # Board review cards (#709)
 _GATEWAY_LOCK = threading.Lock()
 
 
@@ -782,7 +791,8 @@ def get_gateway():
     the turn-complete observer exactly once on first construction, and wires the
     Walkie-Talkie preview (its window probe + loopback adapter) into the SAME
     core so the in-app preview behaves identically to real WhatsApp."""
-    global _GATEWAY, _GATEWAY_ADAPTER, _GATEWAY_PREVIEW, _GATEWAY_LOOPBACK
+    global _GATEWAY, _GATEWAY_ADAPTER, _GATEWAY_PREVIEW, _GATEWAY_LOOPBACK, \
+        _GATEWAY_REVIEW
     if not (_GATEWAY_AVAILABLE and _HYPERVISOR_AVAILABLE):
         return None
     with _GATEWAY_LOCK:
@@ -800,8 +810,55 @@ def get_gateway():
             _GATEWAY_LOOPBACK = LoopbackAdapter(
                 preview.transcript, publish=EventBroker.publish,
                 identity=INTERNAL_IDENTITY)
+            if gateway_review is not None and _BOARDS_AVAILABLE:
+                _GATEWAY_REVIEW = gateway_review.ReviewNotifier(
+                    gw, adapter_getter=lambda: _GATEWAY_ADAPTER,
+                    record_getter=BoardReviewManager.get,
+                    decider=_gateway_review_decide)
+                gw.review_handler = _GATEWAY_REVIEW.handle_inbound
             print('[gateway] conversation gateway ready (whatsapp + loopback preview)')
         return _GATEWAY
+
+
+def _gateway_review_decide(decision, board_id, item_id, *, content_hash,
+                           proposal_digest, approval_id, actor):
+    """A WhatsApp review tap (#709), through the SAME BoardReviewManager calls
+    as `POST /api/boards/<id>/staged/<item>/approve|reject` — so the ticket
+    staleness, card echo and replay guards are the app's own. Returns
+    `(result, ReviewError|None)` like they do."""
+    if READONLY_MODE:
+        return None, boards.review.ReviewError(
+            'readonly', 'this workspace is read-only')
+    cfg = BoardsManager.get(board_id)
+    if cfg is None:
+        return None, boards.review.ReviewError(
+            'not_found', 'this board no longer exists')
+    if decision == 'approve':
+        return BoardReviewManager.approve(
+            cfg, item_id, content_hash=content_hash, approval_id=approval_id,
+            actor=actor, proposal_digest=proposal_digest)
+    return BoardReviewManager.decide(
+        cfg, item_id, state='rejected', approval_id=approval_id,
+        reason='rejected from WhatsApp', actor=actor,
+        proposal_digest=proposal_digest)
+
+
+def _gateway_review_notify(item):
+    """Send a Board review Feed item to the paired WhatsApp number (#709),
+    beside the push. The filter is pure and runs first, so every other emit
+    costs nothing and never builds the gateway; delivery itself runs on a
+    daemon thread. Never raises — the Feed row and the push already happened."""
+    if not GATEWAY_ENABLED or gateway_review is None:
+        return False
+    try:
+        if gateway_review.review_ref(item) is None:
+            return False
+        get_gateway()
+        notifier = _GATEWAY_REVIEW
+        return bool(notifier is not None and notifier.on_feed_item(item))
+    except Exception as e:
+        print(f'[gateway-review] notify failed: {e}', file=sys.stderr)
+        return False
 
 
 def _build_gateway_adapter():
@@ -7421,6 +7478,11 @@ class FeedManager:
             sent = push_notify.dispatch(item, seen=seen)
         except Exception:
             sent = False
+        # WhatsApp (#709 Part 4): a Board review also goes to the paired
+        # number, with Approve / Reject when the write is short enough to read
+        # in full. Push stays the main channel; this is self-gating, off-thread
+        # and never raises, so it cannot break the emit or the push above.
+        _gateway_review_notify(item)
         if sent and seen:
             # The phone was just told again, so the row is news again: mark it
             # unread. Otherwise it would stay read forever and every later
@@ -10155,8 +10217,13 @@ class BoardReviewManager:
     # ── approving ──────────────────────────────────────────────────────────
 
     @classmethod
-    def approve(cls, cfg, item_id, *, content_hash, approval_id, actor=''):
+    def approve(cls, cfg, item_id, *, content_hash, approval_id, actor='',
+                proposal_digest=None):
         """Fire the staged writes. Returns `(result, ReviewError|None)`.
+
+        `proposal_digest` is for a card the reviewer cannot refresh (WhatsApp,
+        #709): it is checked in the same lock as the other guards, so an edit
+        landing between the message and the tap is refused, not written.
 
         Three phases so no outbound call happens under the record lock:
 
@@ -10206,6 +10273,11 @@ class BoardReviewManager:
                 return False
             if verdict == 'replay':
                 outcome['replay'] = stored
+                return False
+            try:
+                boards.review.check_proposal(rec, proposal_digest)
+            except boards.review.ReviewError as e:
+                outcome['error'] = e
                 return False
             boards.review.consume(
                 rec, approval_id, state='approved', decided_by=actor,
@@ -10270,7 +10342,8 @@ class BoardReviewManager:
         return {'replayed': False, 'result': final}, None
 
     @classmethod
-    def decide(cls, cfg, item_id, *, state, approval_id, reason='', actor=''):
+    def decide(cls, cfg, item_id, *, state, approval_id, reason='', actor='',
+               proposal_digest=None):
         """`reject` / `send_back` — a decision that writes NOTHING to the board.
 
         No staleness check: refusing to act on a ticket stays correct however
@@ -10314,6 +10387,13 @@ class BoardReviewManager:
                 outcome['error'] = boards.review.ReviewError(
                     'already_decided',
                     f'this item was already {rec.get("state")}')
+                return False
+            # A reject from a card that showed an older proposal must not
+            # discard the newer one nobody has read (#709).
+            try:
+                boards.review.check_proposal(rec, proposal_digest)
+            except boards.review.ReviewError as e:
+                outcome['error'] = e
                 return False
             for staged in rec.get('actions') or []:
                 if staged.get('state') == 'pending':
