@@ -893,6 +893,37 @@ export interface BoardReviewItem {
   updated_at: number;
 }
 
+/**
+ * One row of the phone's Working or Done tab (#709 Part 3) — an item's newest
+ * run row with its review state and Feed read flag joined in, from
+ * `GET /api/boards/<id>/recent`. Which tab it is on is decided client-side by
+ * `util/boardTabs.classifyBoardRow`.
+ */
+export interface BoardRecentRow {
+  board_id: string;
+  item_id: string;
+  item_key: string;
+  item_title: string;
+  item_url: string;
+  run_id: string;
+  /** What started the run: `manual`, `send_back`, and trigger origins later. */
+  run_origin: string;
+  /** The Build that worked the item, when one was started. */
+  task_id: string;
+  /** The run item's state; the server only returns the shown ones. */
+  state: 'claimed' | 'working' | 'done' | 'failed' | 'pending' | 'skipped';
+  disposition: string | null;
+  review_state: BoardReviewItem['state'] | null;
+  reason: string;
+  error: string;
+  /** One line of result — set on finished rows only. */
+  result: string;
+  updated_at: number;
+  /** The Feed item carrying this row's unread flag; null until it is done. */
+  feed_id: string | null;
+  unread: boolean;
+}
+
 export interface BoardReviewGroup {
   disposition: string;
   count: number;

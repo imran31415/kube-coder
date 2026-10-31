@@ -39,6 +39,7 @@ import type {
   WebhookRecord,
   BoardStanding,
   BoardSummary,
+  BoardRecentRow,
   BoardReviewItem,
   TaskWorktreeView,
   WorktreeDiff,
@@ -992,7 +993,7 @@ export function mockThreads(): HypervisorThread[] {
 }
 
 export function mockFeed(): FeedItem[] {
-  return [
+  const items: FeedItem[] = [
     {
       id: 'fd_1', ts: NOW - 200, kind: 'briefing', title: 'Morning briefing — the release is the bottleneck',
       body_md: 'Two PRs are green and waiting on review; the feed backend is the critical path.',
@@ -1011,22 +1012,19 @@ export function mockFeed(): FeedItem[] {
       links: [{ label: 'Open task', ref: 'task:d4e5f6' }], waiting: true, read: true,
     },
     {
-      // The demo build's only board deep link. It points at the SECOND board
-      // and at an item id that contains a colon — a GitHub GraphQL global id —
-      // so following it exercises the board switch and the ref split, not the
-      // trivial case where the target is already on screen (#692).
-      id: 'fd_5', ts: NOW - 2700, kind: 'activity', title: 'kube-coder#4102 needs your review',
-      body_md: 'reproduced on 1.60.2; the patch is a one-line guard',
-      source: 'board:kube-coder-gh', project_id: 'kube-coder',
-      links: [{ label: 'Board runs OOM a 4GiB workspace', ref: 'board:kube-coder-gh:I_kwDOA:4102' }],
-      waiting: true, read: false,
-    },
-    {
       id: 'fd_4', ts: NOW - 90000, kind: 'decision', title: 'SSE over websockets — matches the rest of the stack',
       body_md: '', source: 'system:memory', project_id: 'kube-coder',
       links: [{ label: 'View decision', ref: 'memory:project.kube-coder.decisions/sse' }], waiting: false, read: true,
     },
+    // Board rows are DERIVED, the way the server keeps one row per item under
+    // its own key (#709): waiting while the review is open, the result once it
+    // is decided. So approving in the demo drops the Needs-you badge and puts
+    // an unread result on the Done tab, as the real workspace does.
+    ...mockBoardFeedRows(),
   ];
+  return items
+    .map((it) => (mockReadIds.has(it.id) ? { ...it, read: true } : it))
+    .sort((a, b) => b.ts - a.ts);
 }
 
 // ---- Triggers (#250) -------------------------------------------------------
@@ -1460,6 +1458,171 @@ export function mockBoardStanding(boardId: string): BoardStanding {
   };
 }
 
+// ---- Board phone tabs (#709 Part 3) ----------------------------------------
+
+/** Feed ids the demo has marked read — `markFeedRead` writes here. */
+const mockReadIds = new Set<string>();
+
+export function mockMarkFeedRead(id: string): void {
+  mockReadIds.add(id);
+}
+
+/** The demo build's only board deep link is fd_5. It points at the SECOND
+ *  board and at an item id that contains a colon — a GitHub GraphQL global
+ *  id — so following it exercises the board switch and the ref split, not the
+ *  trivial case where the target is already on screen (#692). */
+function mockReviewFeedId(itemId: string): string {
+  return itemId === 'I_kwDOA:4102' ? 'fd_5' : `fd_rv_${itemId}`;
+}
+
+/** The server's `boards/outcome.result_line` for a decided review. */
+function mockResultLine(item: BoardReviewItem): string {
+  if (item.state === 'rejected') return 'Rejected, nothing was written';
+  if (item.state === 'sent_back') return 'Sent back to the agent';
+  const written = item.actions.filter((a) => a.state === 'done').map((a) => a.action);
+  if (written.length && written.every((a) => a.includes('comment'))) {
+    return `Reply posted on ${item.item_key}`;
+  }
+  if (written.length) {
+    return `Written to ${item.item_key}: ${written.map((a) => a.replace(/_/g, ' ')).join(', ')}`;
+  }
+  return `Completed on ${item.item_key}`;
+}
+
+function mockBoardFeedRows(): FeedItem[] {
+  const fromReview = mockBoardReview.map((item): FeedItem => {
+    const line = item.open ? '' : mockResultLine(item);
+    return {
+      id: mockReviewFeedId(item.item_id),
+      ts: item.updated_at,
+      kind: 'activity',
+      title: item.open
+        ? `${item.item_key} needs your review`
+        : line.includes(item.item_key) ? line : `${item.item_key}: ${line}`,
+      body_md: item.open ? item.reason : item.item_title,
+      source: `board:${item.board_id}`,
+      project_id: 'kube-coder',
+      links: [{ label: item.item_title, ref: `board:${item.board_id}:${item.item_id}` }],
+      waiting: item.open,
+      read: false,
+    };
+  });
+  const fromRuns = mockRecentRuns
+    .filter((r) => r.feed_id)
+    .map((r): FeedItem => ({
+      id: r.feed_id!,
+      ts: r.updated_at,
+      kind: 'activity',
+      title: r.result.includes(r.item_key) ? r.result : `${r.item_key}: ${r.result}`,
+      body_md: r.item_title,
+      source: `board:${r.board_id}`,
+      project_id: 'kube-coder',
+      links: [{ label: r.item_title, ref: `board:${r.board_id}:${r.item_id}` }],
+      waiting: false,
+      read: !r.unread,
+    }));
+  return [...fromReview, ...fromRuns];
+}
+
+/** Run rows with no staged review: two being worked, three finished — a
+ *  reply that landed, a failure, and one already read. */
+const mockRecentRuns: BoardRecentRow[] = [
+  {
+    board_id: 'acme-jira', item_id: '818', item_key: 'SUP-818',
+    item_title: 'Duplicate charge on invoice 4471',
+    item_url: 'https://acme.atlassian.net/browse/SUP-818',
+    run_id: 'run-1756000000-ab12', run_origin: 'manual', task_id: 'b7c8d9',
+    state: 'working', disposition: null, review_state: null,
+    reason: '', error: '', result: '', updated_at: NOW - 240,
+    feed_id: null, unread: false,
+  },
+  {
+    board_id: 'acme-jira', item_id: '819', item_key: 'SUP-819',
+    item_title: 'CSV export times out for large accounts',
+    item_url: 'https://acme.atlassian.net/browse/SUP-819',
+    run_id: 'run-1756000000-ab12', run_origin: 'manual', task_id: '',
+    state: 'claimed', disposition: null, review_state: null,
+    reason: '', error: '', result: '', updated_at: NOW - 30,
+    feed_id: null, unread: false,
+  },
+  {
+    board_id: 'acme-jira', item_id: '807', item_key: 'SUP-807',
+    item_title: 'Update the billing address on file',
+    item_url: 'https://acme.atlassian.net/browse/SUP-807',
+    run_id: 'run-1756000000-ab12', run_origin: 'manual', task_id: 'c1d2e3',
+    state: 'done', disposition: 'completed', review_state: 'approved',
+    reason: 'address changed in Stripe and confirmed with the customer', error: '',
+    result: 'Reply posted on SUP-807', updated_at: NOW - 1500,
+    feed_id: 'fd_done_807', unread: true,
+  },
+  {
+    board_id: 'acme-jira', item_id: '809', item_key: 'SUP-809',
+    item_title: 'Webhook retries flood the audit log',
+    item_url: 'https://acme.atlassian.net/browse/SUP-809',
+    run_id: 'run-1756000000-ab12', run_origin: 'manual', task_id: 'd4e5f7',
+    state: 'failed', disposition: 'failed', review_state: null,
+    reason: '', error: 'Jira returned 403 — the token lacks the comment scope',
+    result: 'Failed: Jira returned 403 — the token lacks the comment scope',
+    updated_at: NOW - 2400, feed_id: 'fd_done_809', unread: true,
+  },
+  {
+    board_id: 'acme-jira', item_id: '801', item_key: 'SUP-801',
+    item_title: 'Customer asks for a refund on an annual plan',
+    item_url: 'https://acme.atlassian.net/browse/SUP-801',
+    run_id: 'run-1755990000-cd34', run_origin: 'manual', task_id: 'e5f6a7',
+    state: 'done', disposition: 'needs_review', review_state: 'rejected',
+    reason: 'policy allows a pro-rated refund', error: '',
+    result: 'Rejected, nothing was written', updated_at: NOW - 86400,
+    feed_id: 'fd_done_801', unread: false,
+  },
+  {
+    board_id: 'kube-coder-gh', item_id: 'I_kwDOA:4097', item_key: '#4097',
+    item_title: 'Docs: the Board page is missing from the nav',
+    item_url: 'https://github.com/imran31415/kube-coder/issues/4097',
+    run_id: 'run-1755980000-ef56', run_origin: 'manual', task_id: 'f6a7b8',
+    state: 'done', disposition: 'completed', review_state: 'approved',
+    reason: 'added the nav entry and a test', error: '',
+    result: 'Reply posted on #4097', updated_at: NOW - 7200,
+    feed_id: 'fd_done_4097', unread: true,
+  },
+];
+
+/**
+ * `GET /api/boards/<id>/recent` for the demo build: the static run rows plus
+ * one row per staged review, carrying its CURRENT state — so a card approved
+ * on the Needs-you tab turns up on Done with an unread result line.
+ */
+export function mockBoardRecent(boardId: string): BoardRecentRow[] {
+  const fromReview = mockBoardReview
+    .filter((i) => i.board_id === boardId)
+    .map((item): BoardRecentRow => {
+      const feedId = mockReviewFeedId(item.item_id);
+      return {
+        board_id: item.board_id,
+        item_id: item.item_id,
+        item_key: item.item_key,
+        item_title: item.item_title,
+        item_url: item.item_url,
+        run_id: item.run_id ?? '',
+        run_origin: 'manual',
+        task_id: item.task_id ?? '',
+        state: 'done',
+        disposition: item.disposition,
+        review_state: item.state,
+        reason: item.reason,
+        error: '',
+        result: item.open ? '' : mockResultLine(item),
+        updated_at: item.updated_at,
+        feed_id: item.open ? null : feedId,
+        unread: !item.open && !mockReadIds.has(feedId),
+      };
+    });
+  const fromRuns = mockRecentRuns
+    .filter((r) => r.board_id === boardId)
+    .map((r) => (r.feed_id && mockReadIds.has(r.feed_id) ? { ...r, unread: false } : r));
+  return [...fromReview, ...fromRuns];
+}
+
 /** Mock write: mutate in place so the screen actually changes. */
 export function mockDecideBoardItem(itemId: string, state: BoardReviewItem['state']): void {
   const item = mockBoardReview.find((i) => i.item_id === itemId);
@@ -1467,6 +1630,9 @@ export function mockDecideBoardItem(itemId: string, state: BoardReviewItem['stat
   item.state = state;
   item.open = false;
   item.decided_by = 'dashboard:you@example.com';
+  // A decision is the newest thing to happen to the item, and its result row
+  // sorts to the top of Done the way the server's updated_at would put it.
+  item.updated_at = NOW;
   for (const action of item.pending_actions) {
     action.state = state === 'approved' ? 'done' : 'discarded';
   }

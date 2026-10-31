@@ -44,8 +44,10 @@ import {
   mockDocsPage,
   mockBoards,
   mockBoardReview,
+  mockBoardRecent,
   mockBoardStanding,
   mockDecideBoardItem,
+  mockMarkFeedRead,
   mockWorktreeDiff,
   mockWorktreeView,
   mockScans,
@@ -96,6 +98,7 @@ import type {
   DocsPage,
   BoardSummary,
   BoardReviewGroup,
+  BoardRecentRow,
   BoardReviewItem,
   BoardStanding,
   WebhookRecord,
@@ -1528,7 +1531,10 @@ export async function feedUnreadCount(): Promise<number> {
 }
 
 export async function markFeedRead(id: string): Promise<void> {
-  if (getConfig().mock) return;
+  if (getConfig().mock) {
+    mockMarkFeedRead(id);
+    return;
+  }
   await request(`/api/feed/${encodeURIComponent(id)}/read`, { method: 'POST' });
 }
 
@@ -1816,6 +1822,22 @@ export async function getBoardReview(
     { query: openOnly ? { open: '1' } : undefined },
   );
   return d.groups ?? [];
+}
+
+/**
+ * The phone's Working and Done rows for one board (#709 Part 3): the newest
+ * runs' items with their review state and Feed read flag joined in, in ONE
+ * local read rather than the run list plus a detail fetch per run.
+ */
+export async function getBoardRecent(boardId: string): Promise<BoardRecentRow[]> {
+  if (getConfig().mock) {
+    await delay(110);
+    return mockBoardRecent(boardId);
+  }
+  const d = await request<{ rows?: BoardRecentRow[] }>(
+    `/api/boards/${encodeURIComponent(boardId)}/recent`,
+  );
+  return d.rows ?? [];
 }
 
 /**

@@ -15,6 +15,14 @@
  *    (util/approvalQueue) and carries an approval_id the server consumes once,
  *    so airplane-mode-then-reconnect posts exactly one comment.
  *
+ * Three tabs (#709 Part 3) — **Needs you · Working · Done** — so the phone
+ * also answers "what is still being worked, and what finished while I was
+ * away". Needs you is the review queue above, unchanged. Working and Done come
+ * from one local read (`/recent`); a Done row carries one result line and an
+ * unread dot, which is the Feed's own read flag — opening the row marks that
+ * Feed item read. There is still no "start a run" control: runs start from
+ * the dashboard or a trigger, and the phone decides.
+ *
  * Polling uses the shared focus-aware `usePolling`, not a raw setInterval:
  * tab screens stay mounted, and a backgrounded tab must not keep hitting the
  * workspace.
@@ -37,10 +45,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import {
+  getBoardRecent,
   getBoardReview,
   getBoardStanding,
   listBoards,
+  listFeed,
   decideBoardItem,
+  markFeedRead,
 } from '../api/client';
 import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StaleNote } from '../components/ui';
 import { useOnAwake, useWorkspaceState } from '../store/useWorkspaceState';
@@ -59,7 +70,18 @@ import {
   type Decision,
   type QueuedApproval,
 } from '../util/approvalQueue';
+import {
+  BOARD_TABS,
+  clearDot,
+  decisionRequest,
+  markRowRead,
+  needsYouCount,
+  splitRecent,
+  tabA11yLabel,
+  type BoardTab,
+} from '../util/boardTabs';
 import type {
+  BoardRecentRow,
   BoardReviewGroup,
   BoardReviewItem,
   BoardStanding,
@@ -108,6 +130,26 @@ async function standingOrNull(boardId: string): Promise<BoardStanding | null> {
   }
 }
 
+/** Working and Done, or null. A workspace older than `/recent` answers 404,
+ *  and that must cost the phone its two new tabs, not its review queue. */
+async function recentOrNull(boardId: string): Promise<BoardRecentRow[] | null> {
+  try {
+    return await getBoardRecent(boardId);
+  } catch {
+    return null;
+  }
+}
+
+/** The Needs-you count, from the Feed — or null when the Feed could not be
+ *  read, which shows no count rather than a wrong one. */
+async function waitingOrNull(boardId: string): Promise<number | null> {
+  try {
+    return needsYouCount(await listFeed(), boardId);
+  } catch {
+    return null;
+  }
+}
+
 /** Cross-tab navigation, as Mission Control types it. */
 type Nav = { navigate: (tab: string, opts?: object) => void };
 
@@ -120,7 +162,21 @@ export default function BoardScreen() {
       screen: 'TaskDetail', params: { id: taskId, tab: 'changes' }, initial: false,
     });
   }, [nav]);
+  // The Build working an item, opened on its live transcript.
+  const viewTask = useCallback((taskId: string) => {
+    nav.navigate('Tasks', {
+      screen: 'TaskDetail', params: { id: taskId }, initial: false,
+    });
+  }, [nav]);
   const [boards, setBoards] = useState<BoardSummary[] | null>(null);
+  const [tab, setTab] = useState<BoardTab>('needs_you');
+  // Working and Done rows (#709). Null until read, and stays null on a
+  // workspace that predates the endpoint.
+  const [recent, setRecent] = useState<BoardRecentRow[] | null>(null);
+  // The Needs-you count, read off the Feed like the drawer's badge.
+  const [waiting, setWaiting] = useState<number | null>(null);
+  // The Done row opened to show its detail.
+  const [opened, setOpened] = useState<string | null>(null);
   const [boardId, setBoardId] = useState<string | null>(null);
   const [groups, setGroups] = useState<BoardReviewGroup[] | null>(null);
   // Which board `groups` actually belongs to. While a switch is in flight the
@@ -150,24 +206,14 @@ export default function BoardScreen() {
   /** Send one queued decision. Returns the status so the queue can decide
    *  whether it is worth retrying. */
   const send = useCallback(async (entry: QueuedApproval) => {
+    // Send-back's text is a NOTE — an instruction to the agent, which the
+    // server requires. Reject's is a reason and stays optional. Same stored
+    // field, different meaning, so the wire name differs (decisionRequest).
     const res = await decideBoardItem(
       entry.board_id,
       entry.item_id,
       entry.decision,
-      {
-        approval_id: entry.approval_id,
-        ...(entry.decision === 'approve'
-          ? { content_hash: entry.content_hash }
-          : {}),
-        // Send-back's text is a NOTE — an instruction to the agent, which the
-        // server requires. Reject's is a reason and stays optional. Same
-        // stored field, different meaning, so the wire name differs.
-        ...(entry.reason
-          ? entry.decision === 'send-back'
-            ? { note: entry.reason }
-            : { reason: entry.reason }
-          : {}),
-      },
+      decisionRequest(entry),
     );
     // Away is not a failure of this decision — the WakeBanner says it once.
     if (res.error && !isDownError(res)) setNotice(res.error);
@@ -197,7 +243,15 @@ export default function BoardScreen() {
       // and a phone talking to a workspace that predates it must still get its
       // review queue rather than an error screen.
       setStanding(active ? await standingOrNull(active) : null);
-      setGroups(active ? await getBoardReview(active) : []);
+      const review = active ? await getBoardReview(active) : [];
+      // Both in their own try, like standing: the newest reads, and a phone
+      // on an older workspace keeps its review queue whatever they answer.
+      const [rows, count] = active
+        ? await Promise.all([recentOrNull(active), waitingOrNull(active)])
+        : [[], 0];
+      setGroups(review);
+      setRecent(rows);
+      setWaiting(count);
       setGroupsBoard(active);
       setSyncedAt(Date.now());
       setError(null);
@@ -285,6 +339,8 @@ export default function BoardScreen() {
     [groups],
   );
 
+  const split = useMemo(() => splitRecent(recent ?? []), [recent]);
+
   // A board review push, or a board chip in the Feed, names ONE item on ONE
   // board. Both park that request in the focus store rather than passing a
   // route param, because this is a tab screen that stays mounted: a param set
@@ -306,6 +362,8 @@ export default function BoardScreen() {
     if (boardId !== focus.boardId) {
       setBoardId(focus.boardId);
       setGroups(null);
+      setRecent(null);
+      setWaiting(null);
       // The old board's banner must not sit over the new board's queue.
       setStanding(null);
       // A deep link is a visit like any other: coming back later should open
@@ -320,6 +378,20 @@ export default function BoardScreen() {
       (r) => r.type === 'item' && r.item.item_id === focus.itemId,
     );
     if (index < 0) {
+      // Not awaiting a decision any more — but a Done row's Feed item links
+      // here too (#709), and so does a review someone already decided. If
+      // the item is on Working or Done, land there instead.
+      const other = recent?.find((r) => r.item_id === focus.itemId);
+      const where = other
+        ? split.done.includes(other) ? 'done' : split.working.includes(other) ? 'working' : null
+        : null;
+      if (other && where) {
+        setTab(where);
+        setHighlight(focus.itemId);
+        if (where === 'done') setOpened(focus.itemId);
+        clearBoardFocus(focus.seq);
+        return;
+      }
       // Decided by someone else, dismissed, or never in this queue. One
       // sentence beats a screen waiting on a card that is not coming.
       setFocusNote('That item is no longer awaiting a decision.');
@@ -329,10 +401,16 @@ export default function BoardScreen() {
 
     // Highlight FIRST. Rows are variable-height with no getItemLayout, so the
     // scroll can miss; the mark is what actually lands the user on the card.
+    // The card is on Needs you. Switch first and come back: the queue's list
+    // is not mounted under another tab, so there is nothing yet to scroll.
+    if (tab !== 'needs_you') {
+      setTab('needs_you');
+      return;
+    }
     setHighlight(focus.itemId);
     listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.1 });
     clearBoardFocus(focus.seq);
-  }, [focus, boards, boardId, rows, groupsBoard]);
+  }, [focus, boards, boardId, rows, groupsBoard, recent, split, tab]);
 
   // The mark is an arrival cue, not a state. Left up, it would still be there
   // after five minutes of scrolling, claiming to mean something.
@@ -353,6 +431,26 @@ export default function BoardScreen() {
     : 0;
   const current = boards?.find((b) => b.id === boardId) ?? null;
   const noBoards = boards !== null && boards.length === 0;
+  const unreadDone = split.done.filter((r) => r.unread).length;
+  const counts: Record<BoardTab, number | null> = {
+    needs_you: waiting,
+    working: recent ? split.working.length : null,
+    done: recent ? split.done.length : null,
+  };
+  // What the open tab has on it, for the stale note and the empty states.
+  const shown = tab === 'needs_you' ? rows : recent ? split[tab] : null;
+
+  /** Open a Done row: show its detail, and clear its dot through the Feed's
+   *  read API. The dot goes at once; a failed mark brings it back on the next
+   *  poll, which is the truth. */
+  const openDone = useCallback((row: BoardRecentRow) => {
+    setOpened((prev) => (prev === row.item_id ? null : row.item_id));
+    if (row.unread && row.feed_id) {
+      const feedId = row.feed_id;
+      setRecent((prev) => (prev ? markRowRead(prev, feedId) : prev));
+    }
+    void clearDot(row, markFeedRead);
+  }, []);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -382,6 +480,8 @@ export default function BoardScreen() {
               onPress={() => {
                 setBoardId(b.id);
                 setGroups(null);
+                setRecent(null);
+                setWaiting(null);
                 setStanding(null);
                 void rememberBoard(AsyncStorage, b.id);
               }}
@@ -409,7 +509,11 @@ export default function BoardScreen() {
           one grey sentence and no way to tell a busy board from a broken one. */}
       {standing && <StandingBanner standing={standing} />}
 
-      {away ? !!rows?.length && <StaleNote at={syncedAt} /> : error && <ErrorBanner message={error} />}
+      {!noBoards && boards && (
+        <TabBar tab={tab} counts={counts} unreadDone={unreadDone} onSelect={setTab} />
+      )}
+
+      {away ? !!shown?.length && <StaleNote at={syncedAt} /> : error && <ErrorBanner message={error} />}
       {notice && <ErrorBanner message={notice} />}
       {focusNote && (
         <Text style={styles.focusNote} role="status">
@@ -422,6 +526,19 @@ export default function BoardScreen() {
           icon="clipboard-outline"
           title="No boards connected"
           subtitle="A board is an external tracker — Jira, GitHub, Linear, Zendesk. Connect one from the dashboard's Board page, then its items come here for review."
+        />
+      ) : tab !== 'needs_you' ? (
+        <RecentList
+          tab={tab}
+          rows={recent ? split[tab] : null}
+          away={away}
+          live={!!standing?.live}
+          highlight={highlight}
+          opened={opened}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          onOpenDone={openDone}
+          onViewTask={viewTask}
         />
       ) : rows === null ? (
         <Loading />
@@ -580,6 +697,249 @@ function StandingBanner({ standing }: { standing: BoardStanding }) {
       </View>
       <Text style={styles.standingDetail}>{standing.detail}</Text>
     </View>
+  );
+}
+
+/**
+ * Needs you · Working · Done (#709). Each tab announces its count, because a
+ * bare number beside a word reads as nothing at all to a screen reader. Needs
+ * you counts from the Feed, so it can be null (Feed unreadable): no count is
+ * better than a wrong one.
+ */
+function TabBar({
+  tab,
+  counts,
+  unreadDone,
+  onSelect,
+}: {
+  tab: BoardTab;
+  counts: Record<BoardTab, number | null>;
+  unreadDone: number;
+  onSelect: (tab: BoardTab) => void;
+}) {
+  return (
+    <View style={styles.tabs} accessibilityRole="tablist">
+      {BOARD_TABS.map((t) => {
+        const selected = tab === t.key;
+        const count = counts[t.key];
+        const unread = t.key === 'done' ? unreadDone : 0;
+        return (
+          <Pressable
+            key={t.key}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            accessibilityLabel={tabA11yLabel(t.key, count, unread)}
+            onPress={() => onSelect(t.key)}
+            style={[styles.tab, selected && styles.tabActive]}
+          >
+            <Text style={[styles.tabText, selected && styles.tabTextActive]}>
+              {t.label}
+            </Text>
+            {count !== null && (
+              <Text
+                style={[
+                  styles.tabCount,
+                  t.key === 'needs_you' && count > 0 && styles.tabCountHot,
+                ]}
+              >
+                {count}
+              </Text>
+            )}
+            {unread > 0 && <View style={styles.tabDot} />}
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+const EMPTY: Record<'working' | 'done', { title: string; idle: string; live?: string }> = {
+  working: {
+    title: 'Nothing being worked',
+    idle: 'Runs start from the dashboard or a trigger. Items an agent is working on show here.',
+    live: 'A run is starting on this board. Items show here as agents pick them up.',
+  },
+  done: {
+    title: 'Nothing finished yet',
+    idle: 'Finished items show here with their result, newest first.',
+  },
+};
+
+/** The Working or Done list, with the same loading, empty and away states as
+ *  the review queue. */
+function RecentList({
+  tab,
+  rows,
+  away,
+  live,
+  highlight,
+  opened,
+  refreshing,
+  onRefresh,
+  onOpenDone,
+  onViewTask,
+}: {
+  tab: 'working' | 'done';
+  rows: BoardRecentRow[] | null;
+  away: boolean;
+  live: boolean;
+  highlight: string | null;
+  opened: string | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onOpenDone: (row: BoardRecentRow) => void;
+  onViewTask: (taskId: string) => void;
+}) {
+  if (rows === null && !away) return <Loading />;
+  if (!rows?.length) {
+    return away ? (
+      <EmptyState
+        icon="moon-outline"
+        title="Workspace not available"
+        subtitle={`Wake it from the bar below to load what is ${tab === 'done' ? 'done' : 'being worked'}.`}
+      />
+    ) : (
+      <EmptyState
+        title={EMPTY[tab].title}
+        subtitle={(live && EMPTY[tab].live) || EMPTY[tab].idle}
+      />
+    );
+  }
+  return (
+    <FlatList
+      data={rows}
+      keyExtractor={(r) => `${r.run_id}:${r.item_id}`}
+      style={away && styles.stale}
+      contentContainerStyle={styles.list}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      renderItem={({ item: row }) =>
+        tab === 'working' ? (
+          <WorkingRow row={row} focused={highlight === row.item_id} onViewTask={onViewTask} />
+        ) : (
+          <DoneRow
+            row={row}
+            focused={highlight === row.item_id}
+            open={opened === row.item_id}
+            onOpen={onOpenDone}
+            onViewTask={onViewTask}
+          />
+        )
+      }
+    />
+  );
+}
+
+/** An item an agent holds right now. The whole row opens its Build. */
+function WorkingRow({
+  row,
+  focused,
+  onViewTask,
+}: {
+  row: BoardRecentRow;
+  focused: boolean;
+  onViewTask: (taskId: string) => void;
+}) {
+  const status =
+    row.state === 'claimed' ? 'Picked up, starting a build' : 'An agent is working on it';
+  return (
+    <Card
+      nativeID={`board-working-${row.item_id}`}
+      style={StyleSheet.flatten([focused ? styles.cardFocused : null])}
+    >
+      <Pressable
+        style={styles.rowHit}
+        disabled={!row.task_id}
+        accessibilityRole="button"
+        accessibilityLabel={`${row.item_key}, ${row.item_title}. ${status}${row.task_id ? '. Open build' : ''}`}
+        onPress={() => row.task_id && onViewTask(row.task_id)}
+      >
+        <View style={styles.cardHead}>
+          <Text style={styles.itemKey}>{row.item_key}</Text>
+          <Text style={styles.itemAge}>{relativeTime(row.updated_at)}</Text>
+        </View>
+        <Text style={styles.rowTitle} numberOfLines={2}>{row.item_title}</Text>
+        <View style={styles.rowFoot}>
+          <View style={[styles.standingDot, { backgroundColor: colors.accent }]} />
+          <Text style={styles.rowStatus} numberOfLines={1}>{status}</Text>
+          {!!row.task_id && <Text style={styles.link}>Build ›</Text>}
+        </View>
+      </Pressable>
+    </Card>
+  );
+}
+
+/** A finished item: one line of result and an unread dot. Opening it shows
+ *  the detail and clears the dot — the Feed's own read flag. */
+function DoneRow({
+  row,
+  focused,
+  open,
+  onOpen,
+  onViewTask,
+}: {
+  row: BoardRecentRow;
+  focused: boolean;
+  open: boolean;
+  onOpen: (row: BoardRecentRow) => void;
+  onViewTask: (taskId: string) => void;
+}) {
+  const failed = row.state === 'failed' || row.result.startsWith('Failed');
+  const detail = row.error || row.reason;
+  return (
+    <Card
+      nativeID={`board-done-${row.item_id}`}
+      style={StyleSheet.flatten([focused ? styles.cardFocused : null])}
+    >
+      <Pressable
+        style={styles.rowHit}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${row.unread ? 'Unread. ' : ''}${row.item_key}, ${row.item_title}. ${row.result}`}
+        onPress={() => onOpen(row)}
+      >
+        <View style={styles.cardHead}>
+          <View style={styles.doneKey}>
+            {row.unread && <View style={styles.unreadDot} testID="unread-dot" />}
+            <Text style={styles.itemKey}>{row.item_key}</Text>
+          </View>
+          <Text style={styles.itemAge}>{relativeTime(row.updated_at)}</Text>
+        </View>
+        <Text style={styles.rowTitle} numberOfLines={2}>{row.item_title}</Text>
+        <Text
+          style={[styles.result, failed ? styles.resultFailed : styles.resultOk]}
+          numberOfLines={1}
+        >
+          {row.result}
+        </Text>
+      </Pressable>
+      {open && (
+        <View style={styles.doneDetail}>
+          {!!detail && <Text style={styles.reason}>{detail}</Text>}
+          <View style={styles.actions}>
+            {!!row.item_url && (
+              <Pressable
+                style={styles.btn}
+                accessibilityRole="link"
+                accessibilityLabel="Open ticket"
+                onPress={() => void Linking.openURL(row.item_url)}
+              >
+                <Text style={styles.btnText}>Open ticket ↗</Text>
+              </Pressable>
+            )}
+            {!!row.task_id && (
+              <Pressable
+                style={styles.btn}
+                accessibilityRole="button"
+                accessibilityLabel="Open build"
+                onPress={() => onViewTask(row.task_id)}
+              >
+                <Text style={styles.btnText}>Open build</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+      )}
+    </Card>
   );
 }
 
@@ -787,6 +1147,42 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingBottom: space.sm,
   },
+  tabs: {
+    flexDirection: 'row',
+    marginHorizontal: space.md,
+    marginBottom: space.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+  },
+  // Three equal segments, each a full 44pt target.
+  tab: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.xs,
+    paddingHorizontal: space.xs,
+  },
+  tabActive: { backgroundColor: colors.surface2 },
+  tabText: { color: colors.textMuted, fontSize: font.size.sm },
+  tabTextActive: { color: colors.text, fontWeight: '600' },
+  tabCount: { color: colors.textMuted, fontSize: font.size.xs },
+  tabCountHot: { color: colors.warning, fontWeight: '700' },
+  tabDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.accent },
+  // The whole summary of a Working or Done row is the tap target.
+  rowHit: { minHeight: 44 },
+  rowTitle: { color: colors.text, fontSize: font.size.md, marginTop: 2 },
+  rowFoot: { flexDirection: 'row', alignItems: 'center', gap: space.xs, marginTop: space.xs },
+  rowStatus: { flex: 1, color: colors.textMuted, fontSize: font.size.sm },
+  doneKey: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.accent },
+  result: { fontSize: font.size.sm, marginTop: space.xs },
+  resultOk: { color: colors.success },
+  resultFailed: { color: colors.danger },
+  doneDetail: { marginTop: space.xs },
   cardBusy: { opacity: 0.6 },
   // Where a deep link landed. An arrival cue, cleared after a few seconds —
   // see the timer in the screen above.
