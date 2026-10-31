@@ -250,14 +250,18 @@ export default function BoardScreen() {
         ? await Promise.all([recentOrNull(active), waitingOrNull(active)])
         : [[], 0];
       setGroups(review);
-      setRecent(rows);
-      setWaiting(count);
+      // A failed read keeps what was on screen (dimmed while away), and a
+      // first one that fails is an empty tab — never a spinner that waits on
+      // an endpoint an older workspace does not have.
+      setRecent((prev) => rows ?? prev ?? []);
+      setWaiting((prev) => count ?? prev);
       setGroupsBoard(active);
       setSyncedAt(Date.now());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
       setGroups((prev) => prev ?? []);
+      setRecent((prev) => prev ?? []);
     }
   }, [boardId, boards, send]);
 

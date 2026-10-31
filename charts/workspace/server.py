@@ -9664,9 +9664,8 @@ class BoardRunsManager:
         leases.release(item_id, run_id)
         if run:
             # The phone's Done tab (#709): its result line and unread dot ride
-            # on a Feed item. Only once the lease is released — the row is
-            # final by then, so a reader cannot see "done" before the board
-            # would let another run take the item.
+            # on a Feed item. Posted after the release, so the Feed never says
+            # "done" about an item a run still holds.
             BoardReviewManager.notify_done(
                 run.get('board_id') or '', item_id,
                 row=(run.get('items') or {}).get(item_id))
