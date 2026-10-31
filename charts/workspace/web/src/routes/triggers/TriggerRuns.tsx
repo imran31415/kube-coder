@@ -38,6 +38,13 @@ const REASON_TEXT: Record<string, string> = {
   baseline: 'first check - recorded a baseline',
   busy: 'a check was already running',
   changed: 'page changed',
+  // #709 part 2: Board-run triggers and webhook filters.
+  ping: 'GitHub ping - starts nothing',
+  event_mismatch: 'event did not match',
+  payload_mismatch: 'payload did not match',
+  no_item_id: 'payload had no item id',
+  run_in_flight: 'a run was already in flight on the board',
+  run_failed: 'the Board run could not start',
 };
 
 /** Compact local time — "Sep 20, 16:28". Deliberately not the full
@@ -173,6 +180,19 @@ export function TriggerRuns({ t }: { t: Trigger }) {
                           }}
                         >
                           {run.task_id}
+                        </a>
+                      ) : run.run_id && run.board_id ? (
+                        <a
+                          class="mono trig-runs-task"
+                          title={run.run_id}
+                          href={routeHref(`/board?board=${encodeURIComponent(run.board_id)}`)}
+                          onClick={(e) => {
+                            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                            e.preventDefault();
+                            navigate(`/board?board=${encodeURIComponent(run.board_id as string)}`);
+                          }}
+                        >
+                          {`run on ${run.board_id}`}
                         </a>
                       ) : (
                         <span class="muted">-</span>

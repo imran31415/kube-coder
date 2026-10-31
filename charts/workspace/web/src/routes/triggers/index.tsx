@@ -13,7 +13,17 @@ import {
 } from '../../store/triggers';
 import { drawerOpen, type DrawerKey } from '../../store/ui';
 import { useIsMobile } from '../../hooks/useMediaQuery';
-import { createCron, createWebhook, createPageWatch, type Trigger, type TriggerKind } from '../../api/triggers';
+import {
+  createCron,
+  createWebhook,
+  createPageWatch,
+  type Trigger,
+  type TriggerAction,
+  type TriggerBoardRun,
+  type TriggerKind,
+  type WebhookMatch,
+} from '../../api/triggers';
+import { listBoards, type Board } from '../../api/boards';
 import { Button } from '../../components/primitives/Button';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { Input } from '../../components/primitives/Input';
@@ -161,6 +171,10 @@ function TriggerRow({ t }: { t: Trigger }) {
   // per-trigger fetch, and opening the Triggers tab must not turn into one
   // request per row (#91).
   const [showRuns, setShowRuns] = useState(false);
+  // A webhook that filters deliveries can only be tested with an event and a
+  // payload that match, so its Fire button opens a small form instead (#709).
+  const [showTest, setShowTest] = useState(false);
+  const needsTestForm = t.kind === 'webhook' && (!!t.match || t.action === 'board_run');
   const meta = KIND_META[t.kind] ?? KIND_META.webhook;
   const tone = t.suspended ? 'warn' : meta.tone;
   const label = t.suspended ? `${meta.label} · paused` : meta.label;
@@ -187,7 +201,8 @@ function TriggerRow({ t }: { t: Trigger }) {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => fire(t)}
+              onClick={() => (needsTestForm ? setShowTest((v) => !v) : fire(t))}
+              aria-expanded={needsTestForm ? showTest : undefined}
               disabled={t.kind === 'page-watch' && t.suspended}
               title={
                 t.kind === 'page-watch' && t.suspended
@@ -195,7 +210,8 @@ function TriggerRow({ t }: { t: Trigger }) {
                   : undefined
               }
             >
-              <Icon name="play" size={12} /> {t.kind === 'page-watch' ? 'Check now' : 'Fire now'}
+              <Icon name="play" size={12} />{' '}
+              {t.kind === 'page-watch' ? 'Check now' : needsTestForm ? 'Test' : 'Fire now'}
             </Button>
             {meta.pausable && (
               <Button size="sm" variant="ghost" onClick={() => toggleSuspend(t)}>
@@ -243,15 +259,132 @@ function TriggerRow({ t }: { t: Trigger }) {
           {t.last_error && <span class="trig-row-err muted">{t.last_error}</span>}
         </div>
       )}
-      <p class="trig-row-prompt muted">{t.prompt}</p>
+      {t.action === 'board_run' && t.board_run ? (
+        <p class="trig-row-prompt muted">{describeBoardRun(t.board_run)}</p>
+      ) : (
+        <p class="trig-row-prompt muted">{t.prompt}</p>
+      )}
+      {t.kind === 'webhook' && (t.match || t.item_id_from) && (
+        <p class="trig-row-meta muted mono">{describeMatch(t.match, t.item_id_from)}</p>
+      )}
       {(t.workdir || t.timezone) && (
         <div class="trig-row-meta muted mono">
           {t.workdir && <span>{t.workdir}</span>}
           {t.timezone && <span> · {t.timezone}</span>}
         </div>
       )}
+      {showTest && <WebhookTestForm t={t} onDone={() => setShowTest(false)} />}
       {showRuns && <TriggerRuns t={t} />}
     </article>
+  );
+}
+
+/** "Board run on acme-issues · tags ai · up to 5 · 2 at once · propose". */
+export function describeBoardRun(br: TriggerBoardRun): string {
+  const parts = [`Board run on ${br.board_id}`];
+  const tags = br.select?.tags ?? [];
+  if (tags.length) parts.push(`tags ${tags.join(', ')}`);
+  if (br.select?.limit) parts.push(`up to ${br.select.limit}`);
+  if ((br.concurrency ?? 1) > 1) parts.push(`${br.concurrency} at once`);
+  parts.push('every write waits for your approval');
+  return parts.join(' · ');
+}
+
+export function describeMatch(match?: WebhookMatch, itemIdFrom?: string): string {
+  const parts: string[] = [];
+  if (match?.event) parts.push(`event ${match.event}`);
+  for (const [path, want] of Object.entries(match?.payload ?? {})) parts.push(`${path} = ${want}`);
+  if (itemIdFrom) parts.push(`item from ${itemIdFrom}`);
+  return parts.join(' · ');
+}
+
+/** `label.name = ai` lines → `{ "label.name": "ai" }`. Blank lines are
+ *  ignored; a line without `=` is an error rather than a filter that quietly
+ *  matches nothing. */
+export function parseMatchPayload(text: string): { payload: Record<string, string>; error: string } {
+  const payload: Record<string, string> = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const at = line.indexOf('=');
+    if (at <= 0) return { payload, error: `"${line}" is not path = value` };
+    payload[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  return { payload, error: '' };
+}
+
+/** A payload that satisfies the webhook's own filter: the starting point for
+ *  a Test, so the form does not open on a delivery it would skip. */
+export function samplePayload(t: Pick<Trigger, 'match' | 'item_id_from'>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const put = (path: string, value: unknown) => {
+    const keys = path.split('.');
+    let cur = out as Record<string, unknown>;
+    keys.slice(0, -1).forEach((k) => {
+      if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
+      cur = cur[k] as Record<string, unknown>;
+    });
+    cur[keys[keys.length - 1]] = value;
+  };
+  for (const [path, want] of Object.entries(t.match?.payload ?? {})) put(path, want);
+  if (t.item_id_from) put(t.item_id_from, 'REPLACE-with-an-item-id');
+  return out;
+}
+
+function WebhookTestForm({ t, onDone }: { t: Trigger; onDone: () => void }) {
+  const [event, setEvent] = useState(t.match?.event ?? '');
+  const [body, setBody] = useState(() => JSON.stringify(samplePayload(t), null, 2));
+  const [busy, setBusy] = useState(false);
+  let parsed: unknown = null;
+  let parseError = '';
+  try {
+    parsed = JSON.parse(body || '{}');
+  } catch {
+    parseError = 'Not valid JSON';
+  }
+  return (
+    <form
+      class="tf trig-test"
+      aria-label={`Test ${t.id}`}
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (parseError) return;
+        setBusy(true);
+        try {
+          await fire(t, { event: event.trim(), payload: parsed });
+          onDone();
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <label class="tf-field">
+        <span class="tf-label">Event</span>
+        <Input
+          fullWidth
+          value={event}
+          placeholder="issues"
+          onInput={(e) => setEvent((e.target as HTMLInputElement).value)}
+        />
+        <span class="tf-hint muted">Stands in for the X-GitHub-Event header a real delivery sends.</span>
+      </label>
+      <label class="tf-field">
+        <span class="tf-label">Payload</span>
+        <textarea
+          class="tf-textarea mono"
+          rows={6}
+          value={body}
+          onInput={(e) => setBody((e.target as HTMLTextAreaElement).value)}
+        />
+        {parseError && <span class="tf-error">{parseError}</span>}
+      </label>
+      <div class="tf-actions">
+        <Button variant="ghost" type="button" onClick={onDone}>Cancel</Button>
+        <Button variant="primary" type="submit" disabled={!!parseError || busy}>
+          <Icon name="play" size={12} /> Send test
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -266,6 +399,31 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
   const [selector, setSelector] = useState('');
   const [includeContent, setIncludeContent] = useState(false);
   const [busy, setBusy] = useState(false);
+  // What happens on fire (#709 part 2). Page watches only start Builds.
+  const [action, setAction] = useState<TriggerAction>('build');
+  const [boardList, setBoardList] = useState<Board[] | null>(null);
+  const [boardsFailed, setBoardsFailed] = useState('');
+  const [boardId, setBoardId] = useState('');
+  const [tags, setTags] = useState('');
+  const [limit, setLimit] = useState('5');
+  const [concurrency, setConcurrency] = useState('1');
+  const [matchEvent, setMatchEvent] = useState('');
+  const [matchPayload, setMatchPayload] = useState('');
+  const [itemIdFrom, setItemIdFrom] = useState('');
+  // A new webhook's secret is shown once, here, rather than in a toast that
+  // truncates it — a Board-run webhook is useless until GitHub has it.
+  const [created, setCreated] = useState<{ url: string; secret: string } | null>(null);
+
+  const boardRun = action === 'board_run' && kind !== 'page-watch';
+  useEffect(() => {
+    if (!boardRun || boardList) return;
+    listBoards()
+      .then((r) => {
+        setBoardList(r.boards);
+        setBoardId((cur) => cur || r.boards[0]?.id || '');
+      })
+      .catch((err) => setBoardsFailed(err instanceof Error ? err.message : 'Could not list boards'));
+  }, [boardRun, boardList]);
 
   const idOk = /^[a-z0-9-]+$/.test(id);
   const scheduleOk = schedule.trim().split(/\s+/).length === 5 || /^@\w+$/.test(schedule.trim());
@@ -278,7 +436,24 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
     kind === 'webhook' ? true
       : kind === 'cron' ? scheduleOk
         : scheduleOk && urlOk;
-  const valid = idOk && prompt.trim().length > 0 && kindValid;
+  const limitN = Number(limit);
+  const concurrencyN = Number(concurrency);
+  const limitOk = Number.isInteger(limitN) && limitN >= 1 && limitN <= 500;
+  const concurrencyOk = Number.isInteger(concurrencyN) && concurrencyN >= 1 && concurrencyN <= 8;
+  const match = parseMatchPayload(matchPayload);
+  const boardRunValid = !!boardId && limitOk && concurrencyOk;
+  const webhookValid = kind !== 'webhook' || !match.error;
+  const valid =
+    idOk && kindValid && webhookValid && (boardRun ? boardRunValid : prompt.trim().length > 0);
+
+  function boardRunBody(): TriggerBoardRun {
+    const tagList = tags.split(',').map((x) => x.trim()).filter(Boolean);
+    return {
+      board_id: boardId,
+      select: { ...(tagList.length ? { tags: tagList } : {}), limit: limitN },
+      concurrency: concurrencyN,
+    };
+  }
 
   async function onSubmit(e: Event) {
     e.preventDefault();
@@ -286,7 +461,11 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
     setBusy(true);
     try {
       if (kind === 'cron') {
-        await createCron({ id, schedule, prompt_template: prompt, workdir, timezone });
+        await createCron(
+          boardRun
+            ? { id, schedule, timezone, action: 'board_run', board_run: boardRunBody() }
+            : { id, schedule, prompt_template: prompt, workdir, timezone },
+        );
         pushToast('Cron created', { kind: 'success' });
       } else if (kind === 'page-watch') {
         const w = await createPageWatch({
@@ -303,13 +482,24 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
           pushToast('Page watch created. The first check records a baseline.', { kind: 'success' });
         }
       } else {
-        const w = await createWebhook({ id, prompt_template: prompt, workdir });
-        const secret = (w as { secret?: string }).secret;
-        if (secret) {
-          pushToast(`Webhook created. Secret: ${secret.slice(0, 12)}…`, { kind: 'success', ttl: 10000 });
-        } else {
-          pushToast('Webhook created', { kind: 'success' });
+        const filter: WebhookMatch = {
+          ...(matchEvent.trim() ? { event: matchEvent.trim() } : {}),
+          ...(Object.keys(match.payload).length ? { payload: match.payload } : {}),
+        };
+        const w = await createWebhook({
+          id,
+          ...(boardRun
+            ? { action: 'board_run' as const, board_run: boardRunBody(),
+                ...(itemIdFrom.trim() ? { item_id_from: itemIdFrom.trim() } : {}) }
+            : { prompt_template: prompt, workdir }),
+          ...(Object.keys(filter).length ? { match: filter } : {}),
+        });
+        await refreshTriggers();
+        if (w.hmac_secret_once) {
+          setCreated({ url: w.receive_url ?? `/api/webhooks/${id}`, secret: w.hmac_secret_once });
+          return;
         }
+        pushToast('Webhook created', { kind: 'success' });
       }
       await refreshTriggers();
       onClose();
@@ -318,6 +508,31 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (created) {
+    return (
+      <div class="tf" role="status">
+        <p>
+          Webhook <span class="mono">{id}</span> created. Copy the secret now: it is not
+          shown again.
+        </p>
+        <label class="tf-field">
+          <span class="tf-label">Payload URL</span>
+          <Input fullWidth readOnly value={created.url} onFocus={(e) => (e.target as HTMLInputElement).select()} />
+        </label>
+        <label class="tf-field">
+          <span class="tf-label">Secret</span>
+          <Input fullWidth readOnly class="mono" value={created.secret} onFocus={(e) => (e.target as HTMLInputElement).select()} />
+          <span class="tf-hint muted">
+            In GitHub: Settings → Webhooks → Add webhook, content type application/json.
+          </span>
+        </label>
+        <div class="tf-actions">
+          <Button variant="primary" type="button" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -361,17 +576,148 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
         {id && !idOk && <span class="tf-error">Lowercase letters, digits, and hyphens only.</span>}
       </label>
 
-      <label class="tf-field">
-        <span class="tf-label">Prompt template</span>
-        <textarea
-          class="tf-textarea"
-          rows={5}
-          required
-          placeholder="What should Claude do when this trigger fires?"
-          value={prompt}
-          onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
-        />
-      </label>
+      {kind !== 'page-watch' && (
+        <div class="tf-kind-row">
+          <span class="tf-label">What should happen?</span>
+          <div class="seg" role="group" aria-label="What should happen?">
+            {([['build', 'Start a Build'], ['board_run', 'Start a Board run']] as [TriggerAction, string][]).map(
+              ([a, label]) => (
+                <button
+                  key={a}
+                  type="button"
+                  class={`seg-item ${action === a ? 'seg-item-active' : ''}`}
+                  aria-pressed={action === a}
+                  onClick={() => setAction(a)}
+                >
+                  {label}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+
+      {boardRun ? (
+        <>
+          <label class="tf-field">
+            <span class="tf-label">Board</span>
+            {boardList && boardList.length > 0 ? (
+              <select
+                class="tf-select"
+                value={boardId}
+                onChange={(e) => setBoardId((e.target as HTMLSelectElement).value)}
+              >
+                {boardList.map((b) => (
+                  <option key={b.id} value={b.id}>{b.display_name || b.id}</option>
+                ))}
+              </select>
+            ) : (
+              <span class="tf-hint muted">
+                {boardsFailed || (boardList ? 'No boards yet. Connect one on the Board page first.' : 'Loading boards…')}
+              </span>
+            )}
+          </label>
+          <div class="tf-row tf-row-3">
+            <label class="tf-field">
+              <span class="tf-label">Tags <span class="muted">(optional)</span></span>
+              <Input
+                fullWidth
+                value={tags}
+                placeholder="ai, triage"
+                onInput={(e) => setTags((e.target as HTMLInputElement).value)}
+              />
+            </label>
+            <label class="tf-field">
+              <span class="tf-label">Limit</span>
+              <Input
+                fullWidth
+                type="number"
+                min={1}
+                max={500}
+                value={limit}
+                onInput={(e) => setLimit((e.target as HTMLInputElement).value)}
+              />
+              {!limitOk && <span class="tf-error">1 to 500</span>}
+            </label>
+            <label class="tf-field">
+              <span class="tf-label">At once</span>
+              <Input
+                fullWidth
+                type="number"
+                min={1}
+                max={8}
+                value={concurrency}
+                onInput={(e) => setConcurrency((e.target as HTMLInputElement).value)}
+              />
+              {!concurrencyOk && <span class="tf-error">1 to 8</span>}
+            </label>
+          </div>
+          <p class="tf-fixed">
+            <Pill tone="neutral">propose</Pill> Every write waits for your approval.
+          </p>
+        </>
+      ) : (
+        <label class="tf-field">
+          <span class="tf-label">Prompt template</span>
+          <textarea
+            class="tf-textarea"
+            rows={5}
+            required
+            placeholder="What should Claude do when this trigger fires?"
+            value={prompt}
+            onInput={(e) => setPrompt((e.target as HTMLTextAreaElement).value)}
+          />
+        </label>
+      )}
+
+      {kind === 'webhook' && (
+        <>
+          <div class="tf-row">
+            <label class="tf-field">
+              <span class="tf-label">Only for event <span class="muted">(optional)</span></span>
+              <Input
+                fullWidth
+                value={matchEvent}
+                placeholder="issues"
+                onInput={(e) => setMatchEvent((e.target as HTMLInputElement).value)}
+              />
+            </label>
+            {boardRun && (
+              <label class="tf-field">
+                <span class="tf-label">Item id from <span class="muted">(optional)</span></span>
+                <Input
+                  fullWidth
+                  value={itemIdFrom}
+                  placeholder="issue.id"
+                  onInput={(e) => setItemIdFrom((e.target as HTMLInputElement).value)}
+                />
+              </label>
+            )}
+          </div>
+          <label class="tf-field">
+            <span class="tf-label">Only when the payload has <span class="muted">(optional)</span></span>
+            <textarea
+              class="tf-textarea mono"
+              rows={3}
+              placeholder={'action = labeled\nlabel.name = ai'}
+              value={matchPayload}
+              onInput={(e) => setMatchPayload((e.target as HTMLTextAreaElement).value)}
+            />
+            {match.error && <span class="tf-error">{match.error}</span>}
+            <span class="tf-hint muted">
+              One <span class="mono">dot.path = value</span> per line, exact match. Other deliveries,
+              and GitHub's ping, start nothing.
+            </span>
+          </label>
+          {boardRun && (
+            <p class="tf-hint muted">
+              GitHub does not redeliver a delivery refused because the workspace was busy. Pair
+              this webhook with a nightly cron on the same board and tags: the cron skips anything
+              already done.
+            </p>
+          )}
+        </>
+      )}
 
       {kind === 'page-watch' && (
         <>
@@ -451,14 +797,16 @@ function TriggerForm({ onClose }: { onClose: () => void }) {
         </div>
       )}
 
-      <label class="tf-field">
-        <span class="tf-label">Working directory</span>
-        <Input
-          fullWidth
-          value={workdir}
-          onInput={(e) => setWorkdir((e.target as HTMLInputElement).value)}
-        />
-      </label>
+      {!boardRun && (
+        <label class="tf-field">
+          <span class="tf-label">Working directory</span>
+          <Input
+            fullWidth
+            value={workdir}
+            onInput={(e) => setWorkdir((e.target as HTMLInputElement).value)}
+          />
+        </label>
+      )}
 
       <div class="tf-actions">
         <Button variant="ghost" type="button" onClick={onClose}>Cancel</Button>

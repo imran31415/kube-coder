@@ -8395,10 +8395,13 @@ class WebhookManager:
             if (WebhookManager._allow_unsigned()
                     and TriggerBoardRuns.action_of(cfg) != 'board_run'):
                 return True
+            hint = ('a Board run webhook is never open'
+                    if TriggerBoardRuns.action_of(cfg) == 'board_run'
+                    else 'set one, or KC_ALLOW_UNSIGNED_WEBHOOKS=1 to allow')
             print(
                 f"[webhook] rejecting unsigned POST to webhook "
                 f"'{cfg.get('id', '?')}' — no hmac_secret configured "
-                f"(set one, or KC_ALLOW_UNSIGNED_WEBHOOKS=1 to allow)",
+                f"({hint})",
                 file=sys.stderr,
             )
             return False

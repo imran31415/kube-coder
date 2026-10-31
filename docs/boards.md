@@ -453,6 +453,53 @@ The run's item table on `/board` goes from each row to what happens next
   clock built on it measures "since this row last changed", not time spent on
   the ticket.
 
+### Runs a trigger starts (#709)
+
+A cron or webhook can start a run instead of a Build. Pick **Start a Board
+run** on the Triggers page, or save the config with `action: board_run`:
+
+```jsonc
+{
+  "id": "gh-ai", "provider": "github", "action": "board_run",
+  "board_run": { "board_id": "my-repo-issues",
+                 "select": { "tags": ["ai"], "limit": 5 }, "concurrency": 2 },
+  // webhooks only:
+  "match": { "event": "issues",
+             "payload": { "action": "labeled", "label.name": "ai" } },
+  "item_id_from": "issue.id"
+}
+```
+
+- A config with no `action` is a Build, exactly as before. `prompt_template` is
+  required only for a Build.
+- `select` is checked with `boards.runs.validate_select`, and `board_id` must
+  name a saved board, when the trigger is **saved**. A typo is then a form
+  error, not a run that works the whole board. `select.ignore_processed` is
+  refused on a trigger.
+- **Always propose mode.** A saved `mode` other than `propose` is refused, and
+  the fire path forces `propose` even for a hand-edited config.
+- The run's `origin` is `cron` or `webhook`, and `trigger` names the trigger.
+  Both are server-side arguments, as for send-back. The Runs tab shows
+  *started by gh-ai*.
+- `match` compares exact strings at dot-paths (dict keys only, no list
+  indexes and no expressions). `event` is compared with `X-GitHub-Event`. A
+  delivery that doesn't match, and GitHub's `ping`, answer `200 {"skipped":
+  true}` and start nothing. A plain Build webhook with no `match` still fires
+  on `ping`, as before.
+- `item_id_from` sets `select.item_ids = [<value>]`, so the run works only
+  that issue. The GitHub template keys items by the issue's `id`, stringified,
+  so `issue.id` matches. A delivery without that field is skipped, never run
+  unfiltered.
+- A board-run webhook **must be signed**: saving one without an HMAC secret is
+  refused, and `KC_ALLOW_UNSIGNED_WEBHOOKS` does not apply to it.
+- A run that doesn't start (a deleted board, an expired credential, a full
+  pod, a run already in flight) answers `502`, `429` or `409` and posts a
+  **waiting** Feed item, *"gh-ai Board run didn't start: …"*. That item
+  coalesces per trigger.
+- GitHub does not redeliver a delivery that was refused for capacity. Pair a
+  webhook with a **nightly cron on the same filter**: the processed log makes
+  the cron skip whatever the webhook already handled.
+
 ### Runs that change code (#701)
 
 A lease stops two agents working the same **ticket**; it says nothing about two

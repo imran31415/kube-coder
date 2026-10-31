@@ -228,6 +228,42 @@ class CreateTests(_Base):
         self.assertIn('KC_MAX_TASKS', run['clamp_reason'])
         self.assertEqual(run['status'], 'running')
 
+    def test_a_trigger_started_run_records_its_origin_and_trigger(self):
+        """#709 part 2. `new_run` coerces an origin missing from ORIGINS to
+        `manual` without an error, so a cron run would silently read
+        "started manually" if `cron`/`webhook` ever fell out of the tuple."""
+        cfg = self._board()
+        for origin in ('cron', 'webhook'):
+            self._listing(1)
+            run, err = RM.create(cfg, {}, origin=origin,
+                                 trigger={'id': f'nightly-{origin}'})
+            self.assertIsNone(err, err)
+            self.assertEqual(run['origin'], origin)
+            self.assertEqual(run['trigger'],
+                             {'type': origin, 'id': f'nightly-{origin}'})
+            summary = next(r for r in RM.list_runs(cfg['id'])
+                           if r['id'] == run['id'])
+            self.assertEqual(summary['origin'], origin)
+            self.assertEqual(summary['trigger']['id'], f'nightly-{origin}')
+            RM._finish(run['id'], 'done')
+
+    def test_a_trigger_is_only_recorded_for_a_trigger_origin(self):
+        cfg = self._board()
+        self._listing(1)
+        run, err = RM.create(cfg, {}, trigger={'id': 'spoofed'})
+        self.assertIsNone(err, err)
+        self.assertEqual(run['origin'], 'manual')
+        self.assertIsNone(run['trigger'])
+
+    def test_the_run_route_cannot_name_an_origin_or_trigger(self):
+        cfg = self._board()
+        self._listing(1)
+        status, run = self._req('POST', f'/api/boards/{cfg["id"]}/runs', {
+            'origin': 'cron', 'trigger': {'id': 'nightly'}})
+        self.assertEqual(status, 201, run)
+        self.assertEqual(run['origin'], 'manual')
+        self.assertIsNone(run['trigger'])
+
     def test_a_full_pod_refuses_the_run_rather_than_creating_an_empty_one(self):
         """`create_task` returns `rejected` without creating anything, so a run
         that ignored capacity would show a column of items nobody worked."""

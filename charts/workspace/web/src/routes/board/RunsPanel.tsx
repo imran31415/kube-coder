@@ -25,6 +25,7 @@ import {
 } from '../../store/boards';
 import {
   clampLabel,
+  startedByLabel,
   truncationLabel,
   runItemStateLabel,
   runItemOrder,
@@ -464,6 +465,14 @@ function RunLine({ run }: { run: BoardRunSummary }) {
         {run.status}
       </span>
       <span class="board-run-mode">{run.mode}</span>
+      {startedByLabel(run) && (
+        <span
+          class="board-run-origin"
+          title={`Started by the ${run.trigger?.type} trigger ${run.trigger?.id}`}
+        >
+          {startedByLabel(run)}
+        </span>
+      )}
       <span class="board-run-progress mono">
         {settled}/{run.total}
       </span>
