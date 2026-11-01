@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import {
   hasLiveRun,
+  boardHandoffEnabled,
   selectedBoard,
   selectedBoardId,
   selectedBoardRuns,
@@ -60,6 +61,10 @@ export function RunsPanel() {
   // deliberately turned them down.
   const { mode, limit, concurrency, strategy, workdir, isolate } = runFormFor(boardId);
   const [starting, setStarting] = useState(false);
+  const handoffEnabled = boardHandoffEnabled.value;
+  useEffect(() => {
+    if (handoffEnabled && boardId && mode !== 'propose') setRunForm(boardId, { mode: 'propose' });
+  }, [handoffEnabled, boardId, mode]);
   const [previewing, setPreviewing] = useState(false);
   // Git folders a run can point its agents at (#701). A repository is
   // optional: without one the run is tracker-only, exactly as before.
@@ -182,7 +187,7 @@ export function RunsPanel() {
               }
             >
               <option value="propose">Propose — stage every write</option>
-              <option value="autonomous">Autonomous — write directly</option>
+              {!handoffEnabled && <option value="autonomous">Autonomous — write directly</option>}
             </select>
           </label>
           <label class="board-run-field">
@@ -259,7 +264,7 @@ export function RunsPanel() {
                 : undefined)
             }
           >
-            {starting ? 'Starting…' : blockedByRun ? 'Run in progress' : 'Start run'}
+            {starting ? 'Starting…' : blockedByRun ? 'Run in progress' : boardHandoffEnabled.value ? 'Approve & run' : 'Start run'}
           </button>
           {/* One vendor listing, so it is a deliberate click rather than a
               reaction to every keystroke — a preview per keypress would spend
@@ -326,6 +331,8 @@ export function RunsPanel() {
 
             {open?.id === run.id && (
               <div class="board-run-detail">
+                {run.origin_thread_id && <a href={routeHref(`/hypervisor/${encodeURIComponent(run.origin_thread_id)}`)}
+                  onClick={event => { event.preventDefault(); navigate(`/hypervisor/${encodeURIComponent(run.origin_thread_id!)}`); }}>Back to chat</a>}
                 {clampLabel(run) && (
                   <p class="board-run-clamp">{clampLabel(run)}</p>
                 )}

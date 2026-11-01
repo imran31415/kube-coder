@@ -94,6 +94,8 @@ import strix_connection
 import handlers
 from handlers import apps as app_routes
 from handlers import boards as board_routes
+from handlers import board_handoff as board_handoff_routes
+import approval_auth
 from handlers import devcontainer as devcontainer_routes
 from handlers import desktop as desktop_routes
 from handlers import docs as docs_routes
@@ -619,6 +621,18 @@ _BOARD_PREAMBLE_DISPOSITION = (
 
 # INTERACTIVE board chat: a human is reading this thread, so the confirmation
 # is a real conversation and waiting for it is correct.
+BOARD_HANDOFF_PREAMBLE = (
+    "\nBoard runs require a separate human approval card, including onboarding and first-win flows. "
+    "Use list_boards and stored project metadata to choose targets; ask the user when ambiguous. "
+    "Use request_board_run to prepare the bounded Propose-mode request. Do not fetch Board items, "
+    "probe connectors, launch builds, call run APIs or edit tickets before the card is approved. "
+    "A typed yes or confirm=true is not approval. After preparing, explain the card and END THE TURN. "
+    "The dashboard tracks progress; do not poll in shell or keep the agent running to await approval. "
+    "Use request_board_stop for a stop request. Tracker writes require separate human review.\n"
+)
+HYPERVISOR_PREAMBLE += BOARD_HANDOFF_PREAMBLE
+CTO_PREAMBLE += BOARD_HANDOFF_PREAMBLE
+
 BOARD_PREAMBLE = (
     _BOARD_PREAMBLE_HEAD +
     "Every write is staged for human approval "
@@ -3056,7 +3070,7 @@ class ClaudeTaskManager:
                     project_id=None, model=None, effort=None,
                     board_id=None, board_item_id=None, resume_session_id='',
                     isolate=False, base_ref=None, worktree_slug=None,
-                    base_sha=None):
+                    base_sha=None, board_run_context=None):
         """Launch a Build. Returns its meta, or a refusal dict whose `status`
         is `rejected` / `invalid` / `conflict` / `lock_timeout` / `error`.
 
@@ -3085,13 +3099,13 @@ class ClaudeTaskManager:
                       project_id, model, effort, board_id, board_item_id,
                       resume_session_id)
         if wt_plan is None:
-            return ClaudeTaskManager._spawn_task(*spawn_args)
+            return ClaudeTaskManager._spawn_task(*spawn_args, board_run_context=board_run_context)
 
         wt, refusal = WorktreeManager.acquire(wt_plan, task_id)
         if refusal:
             return refusal
         try:
-            meta = ClaudeTaskManager._spawn_task(*spawn_args, worktree=wt)
+            meta = ClaudeTaskManager._spawn_task(*spawn_args, worktree=wt, board_run_context=board_run_context)
         except BaseException:
             WorktreeManager.rollback(wt)
             raise
@@ -3113,7 +3127,7 @@ class ClaudeTaskManager:
                     response_secret, source, disable_memory_injection, assistant,
                     parent_task_id, system_preamble, auto_approve, project_id,
                     model, effort, board_id, board_item_id, resume_session_id,
-                    worktree=None):
+                    worktree=None, board_run_context=None):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         os.makedirs(task_dir, mode=0o700)
 
@@ -3368,6 +3382,9 @@ class ClaudeTaskManager:
         # server-side at request time and never travels on an agent's env.
         if board_id:
             provider_env += ['-e', f'KC_BOARD_ID={board_id}']
+            if board_run_context:
+                context = approval_auth.issue_worker_context(board_run_context, board_id, str(board_item_id))
+                provider_env += ['-e', f'KC_BOARD_WORKER_CONTEXT={context}']
             if board_item_id:
                 provider_env += ['-e', f'KC_BOARD_ITEM_ID={board_item_id}']
         # Isolation (#701): where the worktree is, its branch, and the port
@@ -9227,7 +9244,35 @@ class BoardRunsManager:
 
     @classmethod
     def create(cls, cfg, data, *, origin='manual', resume=None,
-               allow_concurrent=False, trigger=None):
+               allow_concurrent=False, trigger=None, reserved_run_id=None,
+               origin_request_id=None, origin_thread_id=None):
+        # Reserve under a short file lock; never hold it during vendor IO.
+        reservation = boards.store.JsonRecord(os.path.join(
+            BoardsManager.boards_dir(), '.run-start-reservations'))
+        owner = secrets.token_hex(16)
+        board_id = cfg['id']
+        def reserve(current):
+            if current.get(board_id):
+                return False
+            current[board_id] = owner
+        _, claimed = reservation.update(reserve)
+        if not claimed:
+            return None, boards.runs.RunStartError('a run is already in flight or starting on this board', 'board_busy', 409, True)
+        try:
+            return cls._create(cfg, data, origin=origin, resume=resume, trigger=trigger,
+                allow_concurrent=allow_concurrent, reserved_run_id=reserved_run_id,
+                origin_request_id=origin_request_id, origin_thread_id=origin_thread_id)
+        finally:
+            def release(current):
+                if current.get(board_id) != owner:
+                    return False
+                del current[board_id]
+            reservation.update(release)
+
+    @classmethod
+    def _create(cls, cfg, data, *, origin='manual', resume=None,
+                allow_concurrent=False, trigger=None, reserved_run_id=None,
+                origin_request_id=None, origin_thread_id=None):
         """Select items and start working them. Returns `(run, error)`.
 
         The item listing happens HERE, synchronously, rather than in the driver
@@ -9261,36 +9306,36 @@ class BoardRunsManager:
                       if boards.runs.is_live(r)), None)
                 if not allow_concurrent else None)
         if live:
-            return None, (f'a run is already in flight on this board '
+            return None, boards.runs.RunStartError(f'a run is already in flight on this board '
                           f'({live.get("id")}). Stop it, or wait for it to '
                           f'finish — a second run can only skip the items '
-                          f'this one holds.')
+                          f'this one holds.', 'board_busy', 409, True)
 
         select, errors = boards.runs.validate_select(data.get('select'))
         if errors:
-            return None, '; '.join(errors[:8])
+            return None, boards.runs.RunStartError('; '.join(errors[:8]), 'invalid_selection')
 
         mode = (data.get('mode') or boards.runs.DEFAULT_MODE)
         if mode not in boards.runs.MODES:
-            return None, f'mode must be one of {", ".join(boards.runs.MODES)}'
+            return None, boards.runs.RunStartError(f'mode must be one of {", ".join(boards.runs.MODES)}', 'invalid_mode')
 
         stop_on = data.get('stop_on') or {}
         if not isinstance(stop_on, dict):
-            return None, 'stop_on must be an object'
+            return None, boards.runs.RunStartError('stop_on must be an object', 'invalid_options')
         cf = stop_on.get('consecutive_failures')
         if cf is not None and (not isinstance(cf, int) or cf < 1):
-            return None, 'stop_on.consecutive_failures must be a positive integer'
+            return None, boards.runs.RunStartError('stop_on.consecutive_failures must be a positive integer', 'invalid_options')
 
         # Where the agents work (#701). Checked before anything is fetched: a
         # run that could never isolate should say so, not list the board first.
         repo, errors = boards.runs.validate_repo_config(data)
         if errors:
-            return None, '; '.join(errors)
+            return None, boards.runs.RunStartError('; '.join(errors), 'invalid_repository')
         if repo['workdir']:
             workdir, err = WorktreeManager.check_run_workdir(
                 repo['workdir'], isolate=repo['isolate'], base_ref=repo['base_ref'])
             if err:
-                return None, err
+                return None, boards.runs.RunStartError(err, 'repository_unavailable')
             repo['workdir'] = workdir
 
         requested = data.get('concurrency', 1)
@@ -9302,7 +9347,7 @@ class BoardRunsManager:
                 'KC_BOARD_MAX_CONCURRENCY',
                 boards.runs.BOARD_MAX_CONCURRENCY)))
         if effective == 0:
-            return None, clamp_reason
+            return None, boards.runs.RunStartError(clamp_reason, 'worker_capacity', 409, True)
 
         # Every agent this run dispatches talks to the board through the
         # dashboard MCP, which authenticates with the token on disk. When that
@@ -9313,24 +9358,24 @@ class BoardRunsManager:
         # even the listing fetch, replaces all of that.
         token_ok, token_why = ClaudeTaskManager.token_health()
         if not token_ok:
-            return None, (
+            return None, boards.runs.RunStartError(
                 f'the dashboard MCP cannot authenticate ({token_why}), so no '
                 f'agent would be able to read or update this board. This is a '
                 f'workspace configuration problem, not a problem with the '
-                f'board or its credentials. No agents were dispatched.')
+                f'board or its credentials. No agents were dispatched.', 'workspace_auth_unavailable', 503)
 
         result, err = BoardsManager.fetch(cfg)
         if err:
-            return None, err
+            return None, boards.runs.RunStartError(err, 'board_fetch_failed', 502, True)
         # A hard listing failure — 401, a bad JQL, an items_path that no longer
         # resolves — comes back as `error` alongside zero items, NOT as a
         # transport error. test-fetch renders that as a diagnostic and is right
         # to; a run must refuse. "Run finished: 0 items" after a credential
         # expired is precisely the silent hole this phase exists to close.
         if result.get('error'):
-            return None, (f'the board could not be listed '
+            return None, boards.runs.RunStartError(f'the board could not be listed '
                           f'({result.get("truncation_reason") or "unknown"}): '
-                          f'{result["error"]}')
+                          f'{result["error"]}', 'board_listing_failed', 502)
 
         processed = cls._processed(board_id)
 
@@ -9350,9 +9395,9 @@ class BoardRunsManager:
             chosen, wt_skipped, wt_clamp_reason = \
                 WorktreeManager.clamp_run_items(board_id, repo['workdir'], chosen)
             if not chosen:
-                return None, wt_clamp_reason
+                return None, boards.runs.RunStartError(wt_clamp_reason, 'worktree_capacity', 409, True)
 
-        run_id = boards.runs.make_run_id(time.time(), secrets.token_hex(4))
+        run_id = reserved_run_id or boards.runs.make_run_id(time.time(), secrets.token_hex(4))
         run = boards.runs.new_run(
             run_id, board_id, mode=mode, select=select, concurrency=effective,
             requested_concurrency=requested, clamp_reason=clamp_reason,
@@ -9361,6 +9406,9 @@ class BoardRunsManager:
             isolate=repo['isolate'], base_ref=repo['base_ref'],
             warnings=boards.runs.shared_tree_warning(
                 repo['workdir'], repo['isolate'], effective))
+        run['origin_request_id'] = origin_request_id
+        run['origin_thread_id'] = origin_thread_id
+        run['approved_config_digest'] = boards.handoff.digest(cfg)
         run['worktree_clamp_reason'] = wt_clamp_reason
         run['worktree_skipped'] = wt_skipped
         # An INCOMPLETE listing is carried on the run, not swallowed. "We worked
@@ -9558,6 +9606,10 @@ class BoardRunsManager:
             cls._finish(run_id, 'interrupted',
                         f'board {board_id!r} was deleted while the run was live')
             return
+        if (approval_auth.enabled() and run.get('approved_config_digest') and
+                boards.handoff.digest(cfg) != run['approved_config_digest']):
+            cls._finish(run_id, 'interrupted', 'Board settings changed. Review a new request before continuing.')
+            return
         leases = cls._leases(board_id)
 
         live = sum(1 for r in run['items'].values()
@@ -9676,6 +9728,7 @@ class BoardRunsManager:
                 # A board worker is an unattended source like webhook: or
                 # cron:, so it takes the same answer they do.
                 auto_approve=ClaudeTaskManager.resolve_auto_approve(source),
+                board_run_context=run['id'],
                 **placement)
         except Exception as e:
             return '', f'could not start the build: {e}'
@@ -10031,6 +10084,10 @@ class BoardRunsManager:
             cls._started = True
         try:
             reclaimed = cls.sweep_orphans()
+            # No startup workers exist yet; release only the previous process's
+            # short-lived start reservations after reconciling persisted runs.
+            boards.store.JsonRecord(os.path.join(
+                BoardsManager.boards_dir(), '.run-start-reservations')).write({})
             if reclaimed:
                 print(f'[board-run] marked {len(reclaimed)} interrupted run(s) '
                       f'from a previous process')
@@ -15319,6 +15376,7 @@ def _xvfb_running(display):
 
 
 class BrowserHandler(app_routes.AppRoutes,
+                     board_handoff_routes.BoardHandoffRoutes,
                      board_routes.BoardRoutes,
                      devcontainer_routes.DevcontainerRoutes,
                      desktop_routes.DesktopRoutes,
@@ -15444,6 +15502,8 @@ class BrowserHandler(app_routes.AppRoutes,
         # with the gateway ones rather than contiguous, so the module docstring
         # states why collapsing them is behaviour-preserving and the test
         # asserts it.
+        if board_handoff_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
+            return
         if hypervisor_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
             return
         # --- Conversation Gateway (#306/#328/#329) ---
@@ -16673,6 +16733,8 @@ class BrowserHandler(app_routes.AppRoutes,
                 return
             # Hypervisor chat threads: create, transcribe, and the eight
             # per-thread actions that used to sit in the regex block below.
+            elif board_handoff_routes.ROUTES.dispatch(self, 'POST', path, self.path):
+                return
             elif hypervisor_routes.ROUTES.dispatch(self, 'POST', path, self.path):
                 return
             # Conversation Gateway: the inbound WhatsApp webhook
@@ -17179,6 +17241,7 @@ if __name__ == "__main__":
 
         try:
             hv_watchers.set_task_status_provider(_hv_watch_task_status)
+            hv_watchers.set_board_run_provider(BoardRunsManager.get)
             hv_watchers.set_ports_provider(_hv_watch_listening_ports)
             hv_watchers.start()
             print('[hypervisor] cross-turn watcher loop started')
@@ -17234,6 +17297,8 @@ if __name__ == "__main__":
     if _BOARDS_AVAILABLE:
         try:
             BoardRunsManager.start()
+            if approval_auth.enabled():
+                board_handoff_routes.manager().recover()
         except Exception as e:
             print(f'[board-run] boot sweep failed: {e}', file=sys.stderr)
 

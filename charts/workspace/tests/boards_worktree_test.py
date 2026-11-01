@@ -277,6 +277,12 @@ class _Base(gf.GitTestCase):
 
 class IsolatedRunTests(_Base):
 
+    def test_board_worker_context_reaches_the_real_launcher(self):
+        with mock.patch.object(CTM, '_spawn_task', wraps=CTM._spawn_task) as spawn:
+            run = self._isolated_run('46')
+        self.assertEqual(spawn.call_args.kwargs['board_run_context'], run['id'])
+        self.assertTrue(self._row(run)['task_id'], self._row(run).get('error'))
+
     def test_a_tracker_only_run_launches_exactly_as_before(self):
         run, err = self._run()
         self.assertIsNone(err, err)

@@ -1,0 +1,23 @@
+.hv-board-cards { display: grid; gap: 12px; width: min(100%, 760px); margin: 12px auto; }
+.hv-board-card { padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); overflow-wrap: anywhere; }
+.hv-board-heading { display: flex; align-items: center; gap: 9px; }
+.hv-board-heading h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.hv-board-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--text-muted); }
+.hv-board-dot--pending, .hv-board-dot--starting { background: #b7791f; }
+.hv-board-dot--started { background: #23865b; }
+.hv-board-target { display: flex; gap: 8px 16px; flex-wrap: wrap; }
+.hv-board-card p { margin: 10px 0; font-size: 13px; line-height: 1.55; }
+.hv-board-target span, .hv-board-scope, .hv-board-card small { color: var(--text-muted); }
+.hv-board-card details { margin-top: 12px; font-size: 12px; }
+.hv-board-card summary { cursor: pointer; padding: 6px 0; }
+.hv-board-card dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; }
+.hv-board-card dd { margin: 0; min-width: 0; }
+.hv-board-actions, .hv-board-adjust { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.hv-board-card button, .hv-board-actions a, .hv-board-error button { min-height: 40px; padding: 8px 12px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 13px; }
+.hv-board-card .hv-board-primary { background: var(--text); color: var(--surface); }
+.hv-board-card button:disabled { cursor: wait; opacity: .55; }
+.hv-board-adjust label { display: grid; gap: 5px; font-size: 12px; }
+.hv-board-adjust input { width: 110px; min-height: 38px; padding: 6px; color: inherit; background: transparent; border: 1px solid var(--border); border-radius: 6px; }
+.hv-board-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border-left: 3px solid #b45309; font-size: 13px; }
+.hv-board-card :focus-visible { outline: 2px solid var(--accent, #568bdf); outline-offset: 3px; }
+@media (max-width: 520px) { .hv-board-card { padding: 14px; } .hv-board-actions button { min-height: 44px; } }

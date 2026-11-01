@@ -32,8 +32,9 @@ import (
 
 // Server holds the keeper's HTTP handlers.
 type Server struct {
-	Kube     *Kube
-	PageFile string // the holding page, a ConfigMap mount (not subPath, so updates arrive)
+	BoardApprovals *BoardApprovals
+	Kube           *Kube
+	PageFile       string // the holding page, a ConfigMap mount (not subPath, so updates arrive)
 	// UserHeader names the request header that carries the signed-in user, for
 	// the wake log line. Set only where the ingress overwrites it from its auth
 	// response (oauth2 mode); empty in basic mode, where a client could send it.

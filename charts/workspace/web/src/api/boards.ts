@@ -144,6 +144,9 @@ export interface BoardRunItem {
 }
 
 export interface BoardRunSummary {
+  origin?: 'manual' | 'send_back' | 'chat';
+  origin_request_id?: string | null;
+  origin_thread_id?: string | null;
   id: string;
   board_id: string;
   mode: 'propose' | 'autonomous';
@@ -398,7 +401,7 @@ export interface StartRunBody {
 }
 
 export const listBoards = () =>
-  apiGet<{ boards: Board[] }>('/api/boards');
+  apiGet<{ boards: Board[]; handoff_enabled?: boolean }>('/api/boards');
 
 export const getBoard = (id: string) =>
   apiGet<Board>(`/api/boards/${encodeURIComponent(id)}`);

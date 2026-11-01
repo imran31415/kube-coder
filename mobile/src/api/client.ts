@@ -1100,6 +1100,11 @@ export async function getThreadDetail(id: string, since = 0): Promise<Hypervisor
   });
 }
 
+export async function listBoardRequests(id: string): Promise<{ requests: import('./types').BoardHandoffRequest[] }> {
+  if (getConfig().mock) return { requests: [] };
+  return request(`/api/hypervisor/threads/${encodeURIComponent(id)}/board-requests`);
+}
+
 export async function sendThreadMessage(id: string, message: string): Promise<void> {
   await request(`/api/hypervisor/threads/${encodeURIComponent(id)}/messages`, {
     method: 'POST',
