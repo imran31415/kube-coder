@@ -36,13 +36,18 @@ Storage mirrors WebhookManager's file-store pattern, on the PVC:
     /home/dev/.claude-triggers/gateway/pending/<code>.json
     /home/dev/.claude-triggers/gateway/templates/<name>.json
 The channel identity (phone number) is HASHED at rest; the stored token is
-redacted from every list view.
+redacted from every list view. So the workspace can START a conversation (a
+Board review, #709) the record also keeps the address SEALED (`notify_sealed`,
+see IdentityRegistry.seal_address) under a key in a separate file — never in
+the clear, never in a list view.
 """
 
 from __future__ import annotations
 
+import base64
 import collections
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -121,6 +126,10 @@ class InboundMessage:
     media: List[MediaItem] = field(default_factory=list)
     provider_msg_id: str = ''       # Twilio MessageSid / Meta wamid — for dedupe
     button_reply: str = ''          # the option text when the user tapped a choice
+    # The tapped button's opaque id/payload (Twilio ButtonPayload, Meta
+    # button_reply.id / button.payload). Only signed review buttons set one we
+    # read (gateway_review.py); everything else keeps routing on button_reply.
+    button_payload: str = ''
 
 
 @dataclass
@@ -129,6 +138,11 @@ class OutboundMessage:
     text: str = ''
     media: List[MediaItem] = field(default_factory=list)
     quick_replies: List[str] = field(default_factory=list)  # → buttons/list
+    # Explicit reply buttons, {id, title}, for when the tap must carry more
+    # than its position (signed review payloads, #709). A provider that can't
+    # render ids falls back to numbering `quick_replies`, which must then hold
+    # the same titles in the same order.
+    buttons: List[Dict[str, str]] = field(default_factory=list)
     template: Optional[str] = None  # logical template name for out-of-window
     template_args: Dict[str, Any] = field(default_factory=dict)
     seq: int = 0                    # per-conversation monotonic outbound sequence
@@ -225,6 +239,9 @@ class IdentityRegistry:
             'id': h, 'channel': channel, 'identity_hash': h,
             'bindings': [], 'created_at': _now(),
         }
+        # The address, sealed, so the workspace can open a conversation (a
+        # Board review, #709) — a hash can't be dialled. Never in public_view.
+        rec['notify_sealed'] = self.seal_address(channel_identity)
         binding = {
             'workspace': workspace,
             'workspace_host': workspace_host,
@@ -258,6 +275,101 @@ class IdentityRegistry:
                 b['default_thread_id'] = thread_id
         rec['updated_at'] = _now()
         self._atomic_write(self._identity_path(rec['identity_hash']), rec)
+
+    # ── the sealed reply address (#709) ──────────────────────────────────────
+    def _address_key(self) -> bytes:
+        """32 random bytes in `<base>/.address-key` (0600), minted on first
+        use. Outside identities/, so that directory alone holds no numbers."""
+        path = os.path.join(self.base, '.address-key')
+        try:
+            with open(path) as f:
+                value = f.read().strip()
+            if re.match(r'^[0-9a-f]{64}$', value):
+                return bytes.fromhex(value)
+        except OSError:
+            pass
+        os.makedirs(self.base, mode=0o700, exist_ok=True)
+        value = secrets.token_hex(32)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write(value)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return bytes.fromhex(value)
+
+    @staticmethod
+    def _keystream(key: bytes, nonce: bytes, n: int) -> bytes:
+        out = b''
+        counter = 0
+        while len(out) < n:
+            out += hmac.new(key, nonce + counter.to_bytes(4, 'big'),
+                            hashlib.sha256).digest()
+            counter += 1
+        return out[:n]
+
+    def seal_address(self, channel_identity: str) -> str:
+        """Encrypt-then-MAC with stdlib only: an HMAC-SHA256 keystream (a PRF
+        in counter mode) XORed over the address, and an HMAC tag over nonce +
+        ciphertext. base64(nonce16 | ciphertext | tag16)."""
+        key = self._address_key()
+        nonce = secrets.token_bytes(16)
+        plain = (channel_identity or '').encode('utf-8')
+        ct = bytes(a ^ b for a, b in zip(plain, self._keystream(key, nonce, len(plain))))
+        tag = hmac.new(key, b'tag' + nonce + ct, hashlib.sha256).digest()[:16]
+        return base64.b64encode(nonce + ct + tag).decode('ascii')
+
+    def open_address(self, rec: Dict[str, Any]) -> Optional[str]:
+        """The record's address, or None when it has none, the tag fails, or
+        it doesn't hash back to the record's own identity."""
+        try:
+            blob = base64.b64decode(rec.get('notify_sealed') or '', validate=True)
+        except (ValueError, TypeError):
+            return None
+        if len(blob) < 33:
+            return None
+        key = self._address_key()
+        nonce, ct, tag = blob[:16], blob[16:-16], blob[-16:]
+        want = hmac.new(key, b'tag' + nonce + ct, hashlib.sha256).digest()[:16]
+        if not hmac.compare_digest(tag, want):
+            return None
+        addr = bytes(a ^ b for a, b in zip(ct, self._keystream(key, nonce, len(ct))))
+        try:
+            text = addr.decode('utf-8')
+        except UnicodeDecodeError:
+            return None
+        return text if hash_identity(text) == rec.get('identity_hash') else None
+
+    def remember_address(self, channel_identity: str) -> None:
+        """Backfill the sealed address on a link made before it was stored,
+        from the signature-verified inbound that just proved it."""
+        rec = self.lookup(channel_identity)
+        if not rec or self.open_address(rec) == channel_identity:
+            return
+        rec['notify_sealed'] = self.seal_address(channel_identity)
+        self._atomic_write(self._identity_path(rec['identity_hash']), rec)
+
+    def notify_targets(self, channel: str) -> List[Dict[str, Any]]:
+        """Every linked record on `channel` whose address opens, each with it
+        as `notify_to` — on the returned copy only, never written back."""
+        out: List[Dict[str, Any]] = []
+        try:
+            names = sorted(os.listdir(self.identities_dir))
+        except OSError:
+            return out
+        for name in names:
+            if not name.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(self.identities_dir, name)) as f:
+                    rec = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if rec.get('channel') != channel or not rec.get('bindings'):
+                continue
+            addr = self.open_address(rec)
+            if addr:
+                out.append(dict(rec, notify_to=addr))
+        return out
 
     @staticmethod
     def select_binding(rec: Dict[str, Any],
@@ -436,6 +548,25 @@ class TemplateRegistry:
             'language': 'en',
             'status': 'approved',
             'body': "This number isn't linked to a workspace.",
+        },
+        # Board review cards (#709) sent outside the 24-h window. Meta needs
+        # them registered on the user's own app (ENFORCING_PROVIDERS); Twilio
+        # needs a Content template, so its `provider_name` must be the HX…
+        # Content SID — see gateway_review.select_review_template.
+        'board_review': {
+            'name': 'board_review',
+            'provider_name': 'kc_board_review',
+            'language': 'en',
+            'status': 'approved',
+            'body': '{{1}} needs your review.\n\nProposed {{2}}:\n{{3}}',
+            'buttons': ['Approve', 'Reject', 'Open in app'],
+        },
+        'board_review_link': {
+            'name': 'board_review_link',
+            'provider_name': 'kc_board_review_link',
+            'language': 'en',
+            'status': 'approved',
+            'body': '{{1}} needs your review: {{2}}. Open it here: {{3}}',
         },
     }
 
@@ -715,6 +846,11 @@ class OutboundSequencer:
             self._seq[conversation] += 1
             return self._seq[conversation]
 
+    def current(self, conversation: str) -> int:
+        """The last seq handed out for this conversation (0 since start)."""
+        with self._lock:
+            return self._seq.get(conversation, 0)
+
     def dedupe(self, conversation: str, key: str) -> bool:
         """True if this (conversation, key) is fresh (record it); False if a dup."""
         with self._lock:
@@ -806,7 +942,8 @@ class ConversationGateway:
                  rate_limiter: Optional[RateLimiter] = None,
                  window_seconds: float = 24 * 3600,
                  window_probe: Optional[Callable[[str], Optional[bool]]] = None,
-                 send_ack: bool = True):
+                 send_ack: bool = True,
+                 review_handler: Optional[Callable[..., Optional['InboundResult']]] = None):
         self.registry = registry or IdentityRegistry()
         self.client_factory = client_factory
         self.token_verifier = token_verifier or (lambda _t: True)
@@ -820,6 +957,10 @@ class ConversationGateway:
         # path locally without a real 24-h gap (issue #306 follow-up).
         self.window_probe = window_probe
         self.send_ack = send_ack
+        # (adapter, identity, rec, inbound) -> InboundResult | None. A Board
+        # review tap (#709) is answered here and never reaches the agent; None
+        # means "not a review tap", and routing carries on as before.
+        self.review_handler = review_handler
         self.sequencer = OutboundSequencer()
         # Idempotency for inbound (provider msg id), mirroring _ReplayCache.
         self._replay_lock = threading.Lock()
@@ -914,6 +1055,10 @@ class ConversationGateway:
             return InboundResult(status=200, action='not_linked')
 
         self._last_inbound[identity] = _now()
+        try:
+            self.registry.remember_address(identity)
+        except OSError as e:
+            print(f'[gateway] could not store the reply address: {e}', flush=True)
 
         cmd = parse_command(text)
         binding = IdentityRegistry.select_binding(rec, cmd.workspace)
@@ -927,6 +1072,18 @@ class ConversationGateway:
         if not self.token_verifier(binding.get('token', '')):
             self._send(adapter, identity, self.EXPIRED_TEXT)
             return InboundResult(status=200, action='rejected', detail='token invalid')
+
+        # ── A Board review tap (#709). After the token check, so a revoked link
+        # can't decide anything; before keywords, so a payload is never chat.
+        if self.review_handler is not None:
+            try:
+                handled = self.review_handler(adapter, identity, rec, inbound)
+            except Exception as e:
+                print(f'[gateway] review tap raised: {e}', flush=True)
+                handled = InboundResult(status=200, action='error',
+                                        detail='review tap failed')
+            if handled is not None:
+                return handled
 
         # ── Pure keyword commands (no message body needed).
         if cmd.command == 'unlink':
@@ -1124,13 +1281,16 @@ class ConversationGateway:
 
     def _send(self, adapter: ChannelAdapter, identity: str, text: str,
               quick_replies: Optional[List[str]] = None,
-              thread_id: str = '') -> DeliveryResult:
-        msg = OutboundMessage(
-            channel_identity=identity, text=text,
-            quick_replies=quick_replies or [],
-            seq=self.sequencer.next(identity),
-            thread_id=thread_id,
-        )
+              thread_id: str = '',
+              msg: Optional[OutboundMessage] = None) -> DeliveryResult:
+        """Send `text`, or a prebuilt `msg` (its seq is stamped here)."""
+        if msg is None:
+            msg = OutboundMessage(
+                channel_identity=identity, text=text,
+                quick_replies=quick_replies or [],
+                thread_id=thread_id,
+            )
+        msg.seq = self.sequencer.next(identity)
         try:
             result = adapter.outbound(msg)
         except Exception as e:

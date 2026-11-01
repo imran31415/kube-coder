@@ -710,6 +710,14 @@ marks the row unread again. Every push also has a one-hour `ttl`, so a phone
 that was offline gets no stale backlog. The ledger is `sent.json` next to the
 tokens.
 
+With the messaging gateway on and a WhatsApp number paired, a review row also
+goes to **WhatsApp** (#709). A single short comment arrives in full with
+**Approve / Reject / Open in app**, and a tap runs the same `approve` / `decide`
+as the staged routes, so the ticket-changed, card and replay guards all apply.
+A longer proposal, or more than one write, gets a summary and a link only.
+Setup and the templates it needs are in
+[whatsapp-gateway.md §6](whatsapp-gateway.md#6-board-reviews-on-whatsapp).
+
 ### Three tabs on the phone (#709 Part 3)
 
 The phone's Board screen answers three questions, one tab each:
