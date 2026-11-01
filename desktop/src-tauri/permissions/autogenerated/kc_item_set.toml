@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kc-item-set"
+description = "Enables the kc_item_set command without any pre-configured scope."
+commands.allow = ["kc_item_set"]
+
+[[permission]]
+identifier = "deny-kc-item-set"
+description = "Denies the kc_item_set command without any pre-configured scope."
+commands.deny = ["kc_item_set"]

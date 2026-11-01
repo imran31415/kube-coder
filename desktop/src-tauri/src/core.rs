@@ -385,7 +385,11 @@ impl Core {
             };
             tokio::select! {
                 _ = self.clone().session(conn) => {}
-                r = conn_rx.changed() => if r.is_err() { return },
+                r = conn_rx.changed() => {
+                    if r.is_err() {
+                        return;
+                    }
+                }
             }
         }
     }
@@ -454,13 +458,10 @@ impl Core {
                     self.set_status(|s| s.mode = Mode::Polling);
                     // The fallback poll: the Feed, so alerts and the badge
                     // keep working while the stream cannot.
-                    if let Err(down) = self.refresh_feed(&conn, &mut ledger, &ledger_path).await {
-                        if down == Down::Asleep {
-                            keeper = None;
-                        }
-                    }
+                    let _ = self.refresh_feed(&conn, &mut ledger, &ledger_path).await;
                     self.wait(backoff, &mut attended_rx, true).await;
                     backoff = (backoff * 2).min(BACKOFF_MAX);
+                    // Ask the keeper again: the failure may have been sleep.
                     keeper = None;
                 }
             }
@@ -546,16 +547,18 @@ impl Core {
         safety.reset();
         let mut ready = false;
         loop {
-            let feed_sleep = async {
-                match feed_due {
+            let due = feed_due;
+            let feed_sleep = async move {
+                match due {
                     Some(t) => tokio::time::sleep_until(t).await,
                     None => std::future::pending().await,
                 }
             };
-            let release = async {
-                match (has_keeper, self.attention_left()) {
-                    (true, Some(left)) => tokio::time::sleep(left).await,
-                    _ => std::future::pending().await,
+            let left = if has_keeper { self.attention_left() } else { None };
+            let release = async move {
+                match left {
+                    Some(left) => tokio::time::sleep(left).await,
+                    None => std::future::pending().await,
                 }
             };
             tokio::select! {

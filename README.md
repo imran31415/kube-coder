@@ -356,6 +356,16 @@ make mobile-screenshots   # regenerate App Store / Play Store screenshots
 
 Full walkthrough: [`mobile/README.md`](mobile/README.md).
 
+## Desktop app (macOS, Windows & Linux)
+
+A low-footprint **Tauri 2** client ([`desktop/`](desktop/)) that sits in the dock or tray all day: it shows what needs you, raises **native notifications** for waiting Feed items (Board reviews, Builds waiting for input, threads), badges the dock with the Needs-you count and opens `kubecoder://` links straight into a review or a Build. Its UI is the mobile app's web build with a wide sidebar layout, so phone and desktop share one client; the Rust core holds the workspace's live event stream, keeps the API token in the OS keychain and lets a sleeping workspace stay asleep. Like the phone app, it runs nothing locally.
+
+```bash
+cd desktop && npm ci && npx tauri build
+```
+
+Architecture, security model, per-OS builds and the memory measurement: [`desktop/README.md`](desktop/README.md).
+
 ---
 
 ## Running a fleet
