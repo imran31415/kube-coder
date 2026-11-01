@@ -4,7 +4,13 @@ import { getWorkspaceState, subscribeWorkspaceState, type WorkspaceState } from 
 /** Subscribe a component to the workspace's reachability (#728). */
 export function useWorkspaceState(): WorkspaceState {
   const [s, setS] = useState<WorkspaceState>(getWorkspaceState());
-  useEffect(() => subscribeWorkspaceState(setS), []);
+  useEffect(() => {
+    const off = subscribeWorkspaceState(setS);
+    // A change between render and subscribe would otherwise be missed (see
+    // useConfig).
+    setS(getWorkspaceState());
+    return off;
+  }, []);
   return s;
 }
 

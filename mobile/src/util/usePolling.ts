@@ -62,6 +62,10 @@ export function usePolling(
 /** Whether the desktop core's event stream is up right now. */
 function useLive(): boolean {
   const [v, set] = useState(isLiveConnected());
-  useEffect(() => subscribeLive(set), []);
+  useEffect(() => {
+    const off = subscribeLive(set);
+    set(isLiveConnected()); // a change between render and subscribe (see useConfig)
+    return off;
+  }, []);
   return v;
 }

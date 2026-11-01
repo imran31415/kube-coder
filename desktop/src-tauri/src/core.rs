@@ -218,7 +218,7 @@ impl Core {
             // Never the token itself: see secrets.rs.
             return Ok(lock(&self.token).as_ref().filter(|t| !t.is_empty()).map(|t| secrets::mask(t.expose())));
         }
-        Ok(secrets::get(key)?.map(|t| t.expose().to_string()))
+        Ok(None) // the controller token: not on desktop
     }
 
     pub fn secret_set(&self, key: &str, value: &str) -> Result<(), String> {
@@ -231,14 +231,15 @@ impl Core {
         if value.is_empty() {
             return self.secret_delete(key);
         }
+        if key != secrets::TOKEN_KEY {
+            return Err("The desktop app has no controller connection.".into());
+        }
         let token = Token::new(value);
         let stored = secrets::set(key, &token);
-        if key == secrets::TOKEN_KEY {
-            // Usable for this session even if the keychain refused it; the
-            // error still reaches the caller.
-            *lock(&self.token) = Some(token);
-            self.refresh_conn();
-        }
+        // Usable for this session even if the keychain refused it; the error
+        // still reaches the caller.
+        *lock(&self.token) = Some(token);
+        self.refresh_conn();
         stored
     }
 
@@ -246,10 +247,11 @@ impl Core {
         if !secrets::is_allowed_key(key) {
             return Err("unknown secret".into());
         }
-        if key == secrets::TOKEN_KEY {
-            *lock(&self.token) = None;
-            self.refresh_conn();
+        if key != secrets::TOKEN_KEY {
+            return Ok(());
         }
+        *lock(&self.token) = None;
+        self.refresh_conn();
         secrets::delete(key)
     }
 

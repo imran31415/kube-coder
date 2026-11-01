@@ -14,8 +14,9 @@ use std::fmt;
 const SERVICE: &str = "kube-coder-desktop";
 /// The workspace Bearer token (`TOKEN_KEY` in mobile/src/store/config.ts).
 pub const TOKEN_KEY: &str = "kc.devToken";
-/// The optional controller token (`CTRL_TOKEN_KEY`). Stored so the Settings
-/// screen round-trips, though the desktop core never sends it anywhere.
+/// The optional controller token (`CTRL_TOKEN_KEY`). The desktop app has no
+/// controller connection (mobile/src/store/config.ts `hasController`), so it
+/// is accepted and answered without ever touching the keychain.
 pub const CTRL_TOKEN_KEY: &str = "kc.controllerToken";
 
 const MASK_PREFIX: &str = "\u{2022}\u{2022}\u{2022}\u{2022}";
@@ -70,27 +71,48 @@ pub fn is_mask(value: &str) -> bool {
     value.starts_with(MASK_PREFIX)
 }
 
+/// A keychain that does not answer must not hang the app: on Linux the store
+/// is a D-Bus service that can be missing, locked behind a prompt or wedged.
+const KEYCHAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn entry(key: &str) -> keyring::Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, key)
 }
 
+/// Run one keychain operation on its own thread, and give up after
+/// `KEYCHAIN_TIMEOUT`. The thread is left to finish (or not) on its own.
+fn bounded<T: Send + 'static>(op: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("kc-keychain".into())
+        .spawn(move || {
+            let _ = tx.send(op());
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv_timeout(KEYCHAIN_TIMEOUT)
+        .unwrap_or_else(|_| Err("The system keychain did not answer.".into()))
+}
+
 pub fn get(key: &str) -> Result<Option<Token>, String> {
-    match entry(key).and_then(|e| e.get_password()) {
+    let key = key.to_string();
+    bounded(move || match entry(&key).and_then(|e| e.get_password()) {
         Ok(v) => Ok(Some(Token::new(v))),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(describe(e)),
-    }
+    })
 }
 
 pub fn set(key: &str, value: &Token) -> Result<(), String> {
-    entry(key).and_then(|e| e.set_password(value.expose())).map_err(describe)
+    let (key, value) = (key.to_string(), value.clone());
+    bounded(move || entry(&key).and_then(|e| e.set_password(value.expose())).map_err(describe))
 }
 
 pub fn delete(key: &str) -> Result<(), String> {
-    match entry(key).and_then(|e| e.delete_credential()) {
+    let key = key.to_string();
+    bounded(move || match entry(&key).and_then(|e| e.delete_credential()) {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(describe(e)),
-    }
+    })
 }
 
 /// The error without anything that could echo a secret back.

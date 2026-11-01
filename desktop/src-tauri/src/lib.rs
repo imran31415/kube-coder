@@ -27,7 +27,11 @@ type CoreState<'a> = State<'a, Arc<Core>>;
 /// Every command is for the bundled UI only. Capabilities already scope them
 /// to the `main` window; this is the same rule again, in code, so a remote
 /// page in an embed window can never reach them by any route.
-fn main_only(webview: &Webview) -> Result<(), String> {
+fn main_only(webview: &Webview, cmd: &str) -> Result<(), String> {
+    if std::env::var_os("KC_DESKTOP_TRACE").is_some() {
+        // Which command, from which window — never its arguments.
+        eprintln!("[kc] {cmd} from {}", webview.label());
+    }
     if webview.label() == MAIN {
         Ok(())
     } else {
@@ -37,19 +41,19 @@ fn main_only(webview: &Webview) -> Result<(), String> {
 
 #[tauri::command]
 fn kc_item_get(webview: Webview, core: CoreState, key: String) -> Result<Option<String>, String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_item_get")?;
     Ok(core.item_get(&key))
 }
 
 #[tauri::command]
 fn kc_item_set(webview: Webview, core: CoreState, key: String, value: String) -> Result<(), String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_item_set")?;
     core.item_set(&key, &value)
 }
 
 #[tauri::command]
 fn kc_item_remove(webview: Webview, core: CoreState, key: String) -> Result<(), String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_item_remove")?;
     core.item_remove(&key)
 }
 
@@ -57,44 +61,44 @@ fn kc_item_remove(webview: Webview, core: CoreState, key: String) -> Result<(), 
 // an access prompt), so they run off the main thread.
 #[tauri::command(async)]
 fn kc_secret_get(webview: Webview, core: CoreState, key: String) -> Result<Option<String>, String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_secret_get")?;
     core.secret_get(&key)
 }
 
 #[tauri::command(async)]
 fn kc_secret_set(webview: Webview, core: CoreState, key: String, value: String) -> Result<(), String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_secret_set")?;
     core.secret_set(&key, &value)
 }
 
 #[tauri::command(async)]
 fn kc_secret_delete(webview: Webview, core: CoreState, key: String) -> Result<(), String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_secret_delete")?;
     core.secret_delete(&key)
 }
 
 #[tauri::command]
 async fn kc_request(webview: Webview, core: CoreState<'_>, req: http::WsRequest) -> Result<http::WsResponse, String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_request")?;
     core.request(req).await
 }
 
 #[tauri::command]
 fn kc_live_status(webview: Webview, core: CoreState) -> Result<LiveStatus, String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_live_status")?;
     Ok(core.status())
 }
 
 #[tauri::command]
 fn kc_live_kick(webview: Webview, core: CoreState) -> Result<(), String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_live_kick")?;
     core.kick();
     Ok(())
 }
 
 #[tauri::command]
 fn kc_take_targets(webview: Webview, core: CoreState) -> Result<Vec<Target>, String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_take_targets")?;
     Ok(core.take_targets())
 }
 
@@ -105,7 +109,7 @@ async fn kc_open_embed(
     next: String,
     title: String,
 ) -> Result<(), String> {
-    main_only(&webview)?;
+    main_only(&webview, "kc_open_embed")?;
     embed::open(webview.app_handle(), &core, &next, &title).await
 }
 
