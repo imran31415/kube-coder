@@ -68,7 +68,14 @@ DEFAULT_MODE = 'propose'
 # mode enforcement. Working a sent-back item OUTSIDE a run would make
 # `staging_run_for` return None and let the agent write straight to the board,
 # at exactly the moment a human said "not like that".
-ORIGINS = ('manual', 'send_back')
+#
+# `cron` and `webhook` are trigger-started runs (#709 part 2). Like send_back,
+# the origin is a server-side argument, never read from a request body or a
+# saved trigger config — and an unknown origin is coerced to `manual` below,
+# so a caller passing one that is missing here gets a wrong label, not an
+# error. Hence the test that pins both.
+ORIGINS = ('manual', 'send_back', 'cron', 'webhook')
+TRIGGER_ORIGINS = ('cron', 'webhook')
 
 # Ceiling on a single run regardless of pod capacity. Board work is dominated by
 # outbound vendor calls, and a vendor's rate limit is account-wide: past a
@@ -245,8 +252,9 @@ def shared_tree_warning(workdir, isolate, concurrency):
 def new_run(run_id, board_id, *, mode=DEFAULT_MODE, select=None, concurrency=1,
             requested_concurrency=None, clamp_reason='', stop_on=None,
             origin='manual', workdir='', isolate=False, base_ref='',
-            warnings=None, now=None):
+            warnings=None, trigger=None, now=None):
     now = time.time() if now is None else now
+    origin = origin if origin in ORIGINS else 'manual'
     return {
         'id': run_id,
         'board_id': board_id,
@@ -255,7 +263,10 @@ def new_run(run_id, board_id, *, mode=DEFAULT_MODE, select=None, concurrency=1,
         # reviewer returns an item with a question (#588 Phase 6) — it needs to
         # be distinguishable in the Runs list, because a stream of one-item runs
         # is otherwise indistinguishable from someone clicking Start repeatedly.
-        'origin': origin if origin in ORIGINS else 'manual',
+        'origin': origin,
+        # Which trigger started it, for `cron`/`webhook` runs only: the Runs
+        # tab says "started by nightly-ai" rather than just "by a cron".
+        'trigger': _trigger_ref(origin, trigger),
         'select': dict(select or {}),
         'concurrency': int(concurrency),
         'requested_concurrency': int(
@@ -282,6 +293,15 @@ def new_run(run_id, board_id, *, mode=DEFAULT_MODE, select=None, concurrency=1,
         'consecutive_failures': 0,
         'items': {},
     }
+
+
+def _trigger_ref(origin, trigger):
+    """`{'type', 'id'}` for a trigger-started run, else None. The type is the
+    origin itself, so the two can never disagree."""
+    if origin not in TRIGGER_ORIGINS or not isinstance(trigger, dict):
+        return None
+    trigger_id = str(trigger.get('id') or '')[:64]
+    return {'type': origin, 'id': trigger_id} if trigger_id else None
 
 
 def new_run_item(item, *, content_hash, resume=None, now=None):
@@ -343,6 +363,7 @@ def summary(run):
         'board_id': run.get('board_id'),
         'mode': run.get('mode'),
         'origin': run.get('origin', 'manual'),
+        'trigger': run.get('trigger'),
         'status': run.get('status'),
         'concurrency': run.get('concurrency'),
         'requested_concurrency': run.get('requested_concurrency'),

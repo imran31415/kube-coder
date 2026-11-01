@@ -680,6 +680,14 @@
   border-radius: var(--radius-pill);
   padding: 0 var(--size-2);
 }
+/* A run a cron or webhook started (#709 part 2). */
+.board-run-origin {
+  font-size: var(--text-2xs);
+  color: var(--text-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--size-2);
+}
 .board-run-item-branch {
   display: block;
   font-size: var(--text-2xs);

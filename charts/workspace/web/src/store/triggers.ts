@@ -29,7 +29,7 @@ export const filteredTriggers = computed(() => {
   const needle = triggerFilter.value.trim().toLowerCase();
   if (!needle) return triggers.value;
   return triggers.value.filter((t) =>
-    `${t.kind} ${t.id} ${t.prompt} ${t.schedule ?? ''} ${t.workdir ?? ''} ${t.url ?? ''} ${t.selector ?? ''}`
+    `${t.kind} ${t.id} ${t.prompt} ${t.schedule ?? ''} ${t.workdir ?? ''} ${t.url ?? ''} ${t.selector ?? ''} ${t.board_run?.board_id ?? ''}`
       .toLowerCase()
       .includes(needle),
   );
@@ -47,7 +47,18 @@ export async function refreshTriggers(): Promise<void> {
   }
 }
 
-export async function fire(t: Trigger): Promise<void> {
+/** Plain English for why a webhook delivery started nothing (#709). */
+const SKIP_TEXT: Record<string, string> = {
+  ping: 'a ping starts nothing',
+  event_mismatch: 'the event does not match this webhook',
+  payload_mismatch: 'the payload does not match this webhook',
+  no_item_id: 'the payload has no item id',
+};
+
+export async function fire(
+  t: Trigger,
+  test: { event?: string; payload?: unknown } = {},
+): Promise<void> {
   try {
     if (t.kind === 'cron') {
       await fireCron(t.id);
@@ -70,8 +81,14 @@ export async function fire(t: Trigger): Promise<void> {
         kind: res.outcome === 'error' ? 'danger' : res.outcome === 'changed' ? 'success' : 'info',
       });
     } else {
-      await testWebhook(t.id);
-      pushToast(`Fired ${t.id}`, { kind: 'success' });
+      const res = await testWebhook(t.id, test);
+      if (res.skipped) {
+        pushToast(`Skipped: ${SKIP_TEXT[res.reason ?? ''] ?? res.reason ?? 'no match'}`, { kind: 'info' });
+      } else if (res.run_id) {
+        pushToast(`Board run started on ${res.board_id}`, { kind: 'success' });
+      } else {
+        pushToast(`Fired ${t.id}`, { kind: 'success' });
+      }
     }
     await refreshTriggers();
   } catch (err) {
