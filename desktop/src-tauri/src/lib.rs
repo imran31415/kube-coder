@@ -19,7 +19,7 @@ mod unload;
 
 use crate::core::{accept_deep_link, show_main, Core, LiveStatus, Target, MAIN};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State, Webview, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Manager, State, Webview, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 
@@ -140,9 +140,6 @@ pub fn run() {
             app.manage(core.clone());
 
             tray::install(&handle)?;
-            if let Some(w) = app.get_webview_window(MAIN) {
-                tune_webview(&w);
-            }
 
             // A notification click ("tap") opens what it was about.
             let for_notes = core.clone();
@@ -238,37 +235,6 @@ fn unload_when_hidden(app: &AppHandle) {
             eprintln!("[kc] could not drop the hidden window: {e}");
         }
     });
-}
-
-/// WebKit settings that hold memory a single-page app never uses
-/// (desktop/README.md, "Measuring memory"). WebKitGTK only: WKWebView and
-/// WebView2 have no documented equivalents (macOS keeps its back/forward
-/// cache settings private; WebView2's memory target only applies while the
-/// webview is hidden, and Windows destroys a closed window anyway).
-///
-/// - The page cache (back/forward cache) keeps whole pages alive to make Back
-///   instant. The UI is one page that never navigates, so it only holds a
-///   copy of nothing — but it is on by default.
-/// - The `DocumentViewer` cache model turns off WebKit's in-memory resource
-///   cache. Every resource here is a local file from the app bundle, so the
-///   cache buys nothing over reading it again.
-pub(crate) fn tune_webview(window: &WebviewWindow) {
-    if std::env::var_os("KC_DESKTOP_WEBKIT_DEFAULTS").is_some() {
-        return; // for measuring the difference (desktop/README.md)
-    }
-    #[cfg(target_os = "linux")]
-    let _ = window.with_webview(|wv| {
-        use webkit2gtk::{CacheModel, SettingsExt, WebContextExt, WebViewExt};
-        let view = wv.inner();
-        if let Some(settings) = WebViewExt::settings(&view) {
-            settings.set_enable_page_cache(false);
-        }
-        if let Some(ctx) = view.context() {
-            ctx.set_cache_model(CacheModel::DocumentViewer);
-        }
-    });
-    #[cfg(not(target_os = "linux"))]
-    let _ = window;
 }
 
 /// Whether closing the window destroys it rather than hiding it.

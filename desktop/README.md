@@ -220,9 +220,8 @@ Flags for `scripts/build-ui.mjs` (read by `tauri build` and `tauri dev` too):
 At run time, `KC_DESKTOP_TRACE=1` logs each command the UI calls (its name and
 window, never its arguments), `KC_DESKTOP_RELEASE_AFTER_MIN` and
 `KC_PUSH_MIN_INTERVAL` tune the sleep policy and the alert throttle,
-`KC_DESKTOP_UNLOAD_AFTER_MIN` sets when macOS drops a hidden window's webview,
-and `KC_DESKTOP_WEBKIT_DEFAULTS=1` skips the WebKitGTK cache settings (to
-measure what they save).
+and `KC_DESKTOP_UNLOAD_AFTER_MIN` sets when macOS drops a hidden window's
+webview.
 
 ### macOS
 
@@ -277,10 +276,15 @@ cd mobile && npx vitest run            # wide layout, storage backends, deep lin
 
 ## Measuring memory
 
-The #833 budget is **< 120 MB total RSS idle**, counting every process the app
-owns: the app itself plus the webview's helper processes (WebKitWebProcess and
-WebKitNetworkProcess on Linux, the WebContent/Networking XPC services on macOS,
-the msedgewebview2 tree on Windows).
+The #833 budget (revised 2026-11-01), counting every process the app owns —
+the app itself plus the webview's helper processes (WebKitWebProcess and
+WebKitNetworkProcess on Linux, the WebContent/GPU/Networking XPC services on
+macOS, the msedgewebview2 tree on Windows):
+
+- **Window closed** (webview dropped): **< 120 MB total**, while the app
+  still notifies and badges.
+- **Window open:** well below a browser tab of the same UI, by physical
+  footprint (on Linux, private dirty memory is the closest equivalent).
 
 ### Linux
 
@@ -317,19 +321,43 @@ desktop/scripts/measure-macos.sh
 
 ### Linux, measured in a kube-coder pod (Xvfb, no GPU), 2026-11-01
 
-Same method, same pod, same session, before (`main` at a350d1e) and after
-this change:
+Same method, same pod, same session. Before is `main` at a350d1e; each
+window-open build was measured twice, and the two runs of one build differ by
+up to ~10 MB, so differences smaller than that are noise.
 
 | State | Build | RSS sum | PSS | USS | private dirty |
 |---|---|---:|---:|---:|---:|
-| Window open, idle 10 min | before | 423.7 MB | 278.6 MB | 190.9 MB | — |
-| Window open, idle 10 min | after | 412.4 MB | 265.3 MB | 175.4 MB | 116.2 MB |
-| Tray only (window closed), idle 10 min | before | 211.2 MB | 156.1 MB | 122.1 MB | — |
-| Tray only (window closed), idle 10 min | after | 207.5 MB | 152.3 MB | 118.0 MB | 48.5 MB |
+| Window open, idle 10 min | before (2 runs) | 423.7 / 424.7 MB | 278.6 / 278.6 MB | 190.9 / 189.9 MB | — / 127.2 MB |
+| Window open, idle 10 min | after (2 runs) | 412.4 / 422.2 MB | 265.3 / 276.0 MB | 175.4 / 186.4 MB | 116.2 / 123.0 MB |
+| Window closed (tray), idle 10 min | before | 211.2 MB | 156.1 MB | 122.1 MB | — |
+| Window closed (tray), idle 10 min | after | 207.5 MB | 152.3 MB | 118.0 MB | 48.5 MB |
+| Firefox 152, same UI in one tab, idle 10 min | — | 1300.0 MB | 690.7 MB | 578.5 MB | 514.5 MB |
 
-PSS depends on what else maps the same libraries at the time, so compare rows
-measured together; #835's Phase 1 numbers (437.5 MB RSS window open, 209.7 MB
-tray only) were taken on another day.
+Against the budget:
+
+- **Window closed: over on RSS (207.5 MB) and PSS (152.3 MB); under on USS
+  (118.0 MB) and private dirty (48.5 MB).** The app keeps notifying and
+  badging in this state (checked with `scripts/fake-notifyd.py`: a new waiting
+  row raised a notification with no web process running, and its click rebuilt
+  the window on the item). PSS and USS move with whatever else maps the same
+  libraries: the same tray-only app measured while another WebKitGTK app ran
+  read PSS 91 MB and USS 51 MB, with private dirty unchanged (48.2 MB).
+- **Window open: well below the browser tab** — private dirty ~120 MB against
+  515 MB for Firefox with one tab, RSS ~417 MB against 1300 MB. Against the
+  *extra* cost of one more tab in a Firefox that is already running, it is
+  about even: that tab's content process alone holds 76 MB of private dirty
+  memory, this app's web process 65–72 MB.
+
+What is left in the window-closed state:
+
+- **The network process** (WebKitNetworkProcess): 60.5 MB RSS, 35.6 MB PSS,
+  18.5 MB private. It outlives the webview, though every request goes through
+  the core. Ending it would bring PSS under 120 MB (to ~117).
+- **Pages the app process keeps mapped:** 157 MB RSS but only ~31 MB of it
+  private. Mesa's `libLLVM` (43.5 MB; the software rasterizer of this
+  GPU-less display, loaded even with WebKit's compositing off), WebKitGTK and
+  JavaScriptCore (37.5 MB), and a 15.6 MB X11 shared-memory segment that stays
+  attached after the window is destroyed. The Rust core's own heap is ~16 MB.
 
 Where the window-open memory goes (the after build, per process):
 
@@ -337,23 +365,28 @@ Where the window-open memory goes (the after build, per process):
   memory; the rest of its ~200 MB RSS is WebKitGTK, JavaScriptCore and Mesa
   library pages. The JavaScript heap is a small part of it: the same UI in
   Chromium holds ~8 MB of JS heap after visiting the Feed and Board (9.6 MB
-  before this split). Splitting the bundle saved ~11 MB here; most of the rest
-  is WebKit itself.
+  before this split). Splitting the bundle saved ~7 MB on average, about the
+  size of the run-to-run spread; the rest is WebKit itself.
 - **The app process** maps WebKitGTK's UI-process half, GTK and, on a display
   with no GPU, Mesa's software rasterizer (`libLLVM`, ~42 MB resident in each
   process that draws). Its own heap (the Rust core, GTK) is ~20 MB.
 - **The network process** (WebKitNetworkProcess) stays for as long as the app
   runs, ~20 MB of it private, though every request goes through the core.
 
-So with the window open the Linux number stays well over 120 MB. Closing it
-(Linux, Windows) or leaving it hidden for 10 minutes (macOS) drops the web
-process, which is where the app spends most of its idle life.
+A window-open total under 120 MB is not a goal any more (the web engine alone
+is over it); closing the window (Linux, Windows) or leaving it hidden for 10
+minutes (macOS) drops the web process, and that is the state an always-open
+app spends most of its idle life in.
 
 **Windows is not measured** — this pod cannot run it. WebView2 has its own
 process model; measure it with Task Manager over the app and its
 `msedgewebview2` children.
 
-Further levers, not taken here: WebKitGTK's memory-pressure settings must be
-given when the web context is created, which wry does without exposing them;
-and the network process would need a WebKit API to stop it while no page is
-open.
+Tried and dropped: WebKitGTK's page cache off and the `DocumentViewer`
+cache model. An A/B run without them (416.2 MB RSS, 120.4 MB private dirty)
+fell inside the spread of the runs with them, so they are not set.
+
+Further levers, not taken here: ending the network process once no webview is
+left (the web context that owns it is created and held by wry); detaching the
+X11 shared-memory segment with the window; and WebKitGTK's memory-pressure
+settings, which must be given when the web context is created.

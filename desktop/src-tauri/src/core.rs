@@ -775,7 +775,6 @@ pub fn show_main(app: &AppHandle) {
             let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == MAIN) else { return };
             match tauri::WebviewWindowBuilder::from_config(app, cfg).and_then(|b| b.build()) {
                 Ok(w) => {
-                    crate::tune_webview(&w);
                     if let Some(core) = app.try_state::<Arc<Core>>() {
                         crate::tray::set_needs_you(app, core.status().needs_you);
                     }
