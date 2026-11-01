@@ -35,7 +35,7 @@ import {
   replayParkedNotificationTap,
 } from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
-import { initDesktop } from './src/desktop/desktopApp';
+import { initDesktop, onNavigatorReady, saveDesktopNavState } from './src/desktop/desktopApp';
 import { colors, font } from './src/theme';
 
 // The home screen and Onboarding load with the shell; every other screen
@@ -241,11 +241,13 @@ export default function App() {
   return (
     <SafeAreaProvider>
       {/* A cold-start tap lands while Gate still shows the boot screen, with
-          no navigator to route to; onReady is when it can be replayed. */}
+          no navigator to route to; onReady is when it can be replayed. In the
+          desktop app a rebuilt window first returns to its last screen. */}
       <NavigationContainer
         theme={navTheme}
         ref={navigationRef}
-        onReady={replayParkedNotificationTap}
+        onReady={() => onNavigatorReady(replayParkedNotificationTap)}
+        onStateChange={saveDesktopNavState}
       >
         <StatusBar style="light" />
         <Gate />
