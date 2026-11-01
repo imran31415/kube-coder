@@ -347,6 +347,61 @@ class DispositionRouteTests(_Base):
         self.assertFalse(body['open'])
         self.assertEqual(self.feed, [])
 
+    def test_completed_WITH_a_staged_write_still_asks_for_a_decision(self):
+        """The ordinary propose-mode case (#709): the agent drafts a reply and
+        reports `completed`. Nothing has been posted — the write is waiting for
+        approval — so the item must reach the Feed (and with it push, the badge
+        and WhatsApp) exactly like a `needs_review` one."""
+        cfg = self._board()
+        self._propose_run(cfg)
+        self._stage_a_comment(cfg, body='Hi Dana — the refund was issued.')
+        self._listing()
+        status, body = self._req(
+            'POST', '/api/boards/acme-jira/items/46/disposition',
+            {'disposition': 'completed'})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body['open'])
+        self.assertEqual(len(self.feed), 1)
+        row = self.feed[0]
+        self.assertTrue(row['waiting'])
+        self.assertIn('needs your review', row['title'])
+        self.assertEqual(row['dedupe_key'], 'board:acme-jira:46')
+        self.assertEqual(row['links'][0]['ref'], 'board:acme-jira:46')
+        # No reason was given, so the row says what is waiting instead of
+        # being blank on the lock screen.
+        self.assertIn('Proposed comment', row['body_md'])
+        self.assertIn('Dana', row['body_md'])
+
+    def test_a_given_reason_still_wins_over_the_write_summary(self):
+        cfg = self._board()
+        self._propose_run(cfg)
+        self._stage_a_comment(cfg)
+        self._listing()
+        self._req('POST', '/api/boards/acme-jira/items/46/disposition',
+                  {'disposition': 'completed', 'reason': 'refund confirmed'})
+        self.assertEqual(self.feed[0]['body_md'], 'refund confirmed')
+
+    def test_only_PENDING_writes_count(self):
+        """A write a later run superseded, or one already done, is not waiting
+        on anyone; it must not turn a settled report into a notification."""
+        cfg = self._board()
+        record = {'state': 'pending', 'disposition': 'completed',
+                  'item_id': '46', 'item_key': 'ACME-46',
+                  'actions': [{'id': 'a1', 'action': 'comment',
+                               'state': 'superseded'},
+                              {'id': 'a2', 'action': 'comment',
+                               'state': 'done'}]}
+        VM._notify_if_waiting(cfg, record)
+        self.assertEqual(self.feed, [])
+        record['actions'].append({'id': 'a3', 'action': 'transition',
+                                  'state': 'pending', 'preview': ''})
+        record['actions'].append({'id': 'a4', 'action': 'comment',
+                                  'state': 'pending', 'preview': 'hi'})
+        VM._notify_if_waiting(cfg, record)
+        self.assertEqual(len(self.feed), 1)
+        self.assertEqual(self.feed[0]['body_md'],
+                         '2 proposed writes: comment, transition')
+
 
 class ApproveTests(_Base):
     def _staged(self):
