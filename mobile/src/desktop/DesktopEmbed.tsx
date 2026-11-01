@@ -7,7 +7,7 @@
  * the app in a window of its own with no IPC (desktop/src-tauri/src/embed.rs),
  * and this panel stands in for it.
  */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Button } from '../components/ui';

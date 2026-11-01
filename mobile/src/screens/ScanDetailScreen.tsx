@@ -1,5 +1,5 @@
 /** One security scan (#726) — live progress, then its findings. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import type { RouteProp } from '@react-navigation/native';
 import { useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';

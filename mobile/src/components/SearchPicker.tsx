@@ -11,7 +11,7 @@
  * This is a field showing the current choice, opening a sheet with a search
  * box and a vertical list. Reads like every other picker on the platform.
  */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useMemo, useState } from 'react';
 import {
   FlatList,

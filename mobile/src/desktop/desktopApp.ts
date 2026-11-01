@@ -12,7 +12,7 @@
  *   shows; when the user's tap wakes it, the core is told to reconnect now.
  *   Nothing here ever wakes the workspace.
  */
-import { handleNotificationTap } from '../push/notifications';
+import { handleNotificationTap } from '../push/tapRouter';
 import { emitLiveEvent, setLiveConnected, type LiveEvent } from '../store/liveEvents';
 import { reportDown, subscribeWorkspaceState } from '../store/workspaceState';
 import { SLEEPING } from '../util/workspaceReach';

@@ -3,7 +3,7 @@
  *  (save → probe → roll back on failure) but for the second, controller
  *  connection. The token is revealed from the controller web console's "Mobile
  *  access" card. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,

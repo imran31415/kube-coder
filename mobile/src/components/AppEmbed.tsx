@@ -1,7 +1,7 @@
 /** Embeddable WebView for a workspace app — used full-screen by AppViewScreen
  *  and as the lower pane of the task-detail split view. Owns the session
  *  bootstrap, loading pill, and a retryable error state. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { WebView } from './PlatformWebView';
