@@ -561,7 +561,12 @@ so the count cannot go backwards or show another board's number.
 
 An item needing a human emits a waiting `FeedManager` item, which drives both
 the feed row and the topbar waiting badge. `board:<board_id>:<item_id>` links
-deep-link to the card.
+deep-link to the card. "Needing a human" means either the agent asked for one
+(`needs_review`, `needs_rescoping`, `blocked`) **or** it left a write pending
+approval — so the ordinary propose-mode report, a drafted reply plus
+`completed`, notifies too (#709). With no reason given, the row's body names
+what is waiting (*"Proposed comment: Hi Dana — …"*). Only `pending` writes
+count; superseded or already-done ones do not.
 
 A **board worker's own build** links there too (#712). When its build ends and
 the item still has an open staged record, `FeedManager.emit_task_terminal` puts

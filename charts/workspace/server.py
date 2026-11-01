@@ -10073,17 +10073,38 @@ class BoardReviewManager:
         the waiting badge, so this reuses it rather than inventing a second
         notification path. `dedupe_key` per item means an agent that reports
         twice does not produce two rows.
+
+        Two things put an item in front of a human: the agent ASKED for one
+        (`needs_review` / `needs_rescoping` / `blocked`), or it left a write
+        waiting for approval. The second is the ordinary propose-mode case — an
+        agent that drafts a reply and reports `completed` — and it needs a
+        decision just as much: until someone approves, nothing is posted. Gating
+        on the disposition alone left those items open in the queue with no
+        push, no WhatsApp card and no badge (#709).
         """
         if record.get('state') not in boards.review.OPEN_STATES:
             return
-        if record.get('disposition') not in boards.review.NEEDS_HUMAN:
+        pending = [a for a in (record.get('actions') or [])
+                   if a.get('state') == 'pending']
+        if record.get('disposition') not in boards.review.NEEDS_HUMAN \
+                and not pending:
             return
+        body = (record.get('reason') or '').strip()
+        if not body and pending:
+            if len(pending) == 1:
+                preview = (pending[0].get('preview') or '').strip()
+                body = f'Proposed {pending[0].get("action") or "write"}'
+                body += f': {preview}' if preview else ''
+            else:
+                names = ', '.join(sorted({a.get('action') or 'write'
+                                          for a in pending}))
+                body = f'{len(pending)} proposed writes: {names}'
         try:
             FeedManager.emit(
                 kind='activity',
                 title=f'{record.get("item_key") or record["item_id"]} needs '
                       f'your review',
-                body_md=(record.get('reason') or '')[:400],
+                body_md=body[:400],
                 source=f'board:{cfg["id"]}',
                 waiting=True,
                 dedupe_key=f'board:{cfg["id"]}:{record["item_id"]}',
