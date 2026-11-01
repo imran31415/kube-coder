@@ -46,6 +46,28 @@ the result. The mobile code notices Tauri's injected bridge at runtime
 | Workspace apps / terminal | in-screen WebView | separate window with no IPC |
 | Deep links | push tap | `kubecoder://` + notification click, same router |
 
+### Screens load on first open
+
+The export is split: `mobile/src/screenRegistry.ts` gives every screen but the
+home screen and Onboarding a literal `import()`, which Metro turns into a chunk
+of its own, and the navigator renders it through `React.lazy`
+(`mobile/src/components/LazyScreen.tsx`). The window loads the shell and the
+home screen; a screen's code is read and parsed the first time it is opened,
+including by a deep link or a notification click. On iOS and Android Metro
+keeps those imports inside the one native bundle, so a phone build is
+unchanged.
+
+Expo loads one more chunk up front, `__common`: the modules two or more lazy
+screens share (expo-audio, the image picker, the clipboard, Markdown). Those
+are only defined there, not run, until a screen that uses them opens.
+
+Two other things keep the web build small. The icons are imported from
+`@expo/vector-icons/Ionicons`: the package's barrel import bundled the glyph
+maps of all 15 icon families (~470 KB of JS) and their 19 font files (4 MB).
+And `mobile/src/push/notifications.web.ts` stands in for the
+expo-notifications glue on web, where no Expo push token can be minted (the
+desktop app raises its own notifications from the core).
+
 ### Live updates
 
 `EventSource` cannot send an `Authorization` header, which is why the phone
@@ -105,12 +127,26 @@ for desktop apps) and the tray tooltip.
 ### Closing the window
 
 Closing the window does not quit: the app stays in the tray, and the core
-keeps the stream, the alerts and the badge going. On **Linux and Windows** the
-window is destroyed, and the webview with it (`close_to_tray` in `lib.rs`),
-because the webview is nearly all of the app's memory and the core needs none
-of it to watch the Feed. Opening it again — from the tray, a notification or a
-link — rebuilds it, and the target queue makes sure whatever opened it lands.
-**macOS** hides the window instead: its dock badge is set through a window.
+keeps the stream, the alerts and the badge going. The webview is nearly all of
+the app's memory and the core needs none of it to watch the Feed, so a closed
+window gives it back:
+
+- **Linux and Windows** destroy the window, and the webview with it, at once
+  (`close_to_tray` in `lib.rs`).
+- **macOS** hides the window, because a Mac app that stays in the dock is
+  expected to come back as it was left, and destroys it once it has stayed
+  hidden for `KC_DESKTOP_UNLOAD_AFTER_MIN` minutes (default 10; `0` drops it on
+  close like the other two, `off` keeps it for as long as the app runs). The
+  timing is `unload.rs`. The dock badge belongs to the application, not to a
+  window (`NSApp.dockTile`), so the core keeps setting it with no window at
+  all; a click on the dock icon rebuilds the window.
+
+Opening it again — from the tray, the dock, a notification or a link —
+rebuilds it. The UI comes back on the screen it was on: it saves its
+navigation state in the core's memory-only `kc.session.*` items
+(`mobile/src/desktop/navSession.ts`, `settings.rs`), never on disk, so a fresh
+launch still starts on the home screen. Whatever opened the window (a
+notification, a link) waits in the core's target queue and lands on top.
 Quit is in the tray menu.
 
 ### Deep links and single instance
@@ -182,8 +218,11 @@ Flags for `scripts/build-ui.mjs` (read by `tauri build` and `tauri dev` too):
 | `KC_ALLOW_CLEARTEXT=1` | allow `http://localhost` workspaces; also enables `KC_DESKTOP_HOST` + `KC_DESKTOP_TOKEN` to pre-seed a connection (memory only) for a test run |
 
 At run time, `KC_DESKTOP_TRACE=1` logs each command the UI calls (its name and
-window, never its arguments), and `KC_DESKTOP_RELEASE_AFTER_MIN` and
-`KC_PUSH_MIN_INTERVAL` tune the sleep policy and the alert throttle.
+window, never its arguments), `KC_DESKTOP_RELEASE_AFTER_MIN` and
+`KC_PUSH_MIN_INTERVAL` tune the sleep policy and the alert throttle,
+`KC_DESKTOP_UNLOAD_AFTER_MIN` sets when macOS drops a hidden window's webview,
+and `KC_DESKTOP_WEBKIT_DEFAULTS=1` skips the WebKitGTK cache settings (to
+measure what they save).
 
 ### macOS
 
@@ -243,52 +282,78 @@ owns: the app itself plus the webview's helper processes (WebKitWebProcess and
 WebKitNetworkProcess on Linux, the WebContent/Networking XPC services on macOS,
 the msedgewebview2 tree on Windows).
 
-Method used for the Linux numbers below:
+### Linux
 
 1. Build a release binary that may talk to a loopback workspace:
    `KC_ALLOW_CLEARTEXT=1 npx tauri build --no-bundle`.
 2. Start `scripts/fake-workspace.py`, and run the app against it
    (`KC_DESKTOP_HOST=http://127.0.0.1:6099 KC_DESKTOP_TOKEN=test-token`) on a
    virtual display at the default 1280×820 window: one workspace connected,
-   the event stream held, the Feed and Board screens visited.
-3. Leave it idle for 10 minutes, then sum its process tree with
+   the event stream held, opened with `kubecoder://feed`, then
+   `kubecoder://board/demo/item-1` (the Feed and Board screens visited).
+3. For the tray-only state, close the window 70 s in.
+4. Leave it idle for 10 minutes, then sum its process tree with
    `scripts/measure-rss.sh <pid>`.
 
 RSS counts shared library pages in every process that maps them, so the sum
 over-counts what the app costs the machine. The script also prints PSS
-(shared pages divided among their users) and USS (pages only this app maps);
-private *dirty* memory is the part the kernel cannot simply drop.
+(shared pages divided among their users), USS (pages only this app maps) and
+private *dirty* memory, the part the kernel cannot simply drop.
+
+### macOS
+
+`scripts/measure-macos.sh` sums the app and the WebKit XPC services it is
+responsible for. Those are started by launchd, so their parent pid is 1 and
+`ps` cannot tell them from Safari's; the script asks macOS which app each one
+belongs to, the attribution Activity Monitor uses. It prints RSS (what `ps`
+shows) and the physical footprint (Activity Monitor's Memory column):
+
+```bash
+# connect a workspace, open the Feed and a Board, leave it idle 10 minutes
+desktop/scripts/measure-macos.sh
+# close the window (⌘W), wait 11 minutes so the webview is dropped
+desktop/scripts/measure-macos.sh
+```
 
 ### Linux, measured in a kube-coder pod (Xvfb, no GPU), 2026-11-01
 
-| State | RSS sum | PSS | USS | private dirty |
-|---|---:|---:|---:|---:|
-| Window open, connected, idle 10 min | 437.5 MB | 221.3 MB | 149.2 MB | 142.6 MB |
-| Same, WebKit GL compositing off | 439.8 MB | 220.4 MB | 150.2 MB | — |
-| Window closed (tray only), 3 min | 209.7 MB | 155.2 MB | 122.6 MB | 50.9 MB |
-| Firefox, same UI in one tab, idle 10 min | 1259.6 MB | 646.6 MB | 537.6 MB | — |
+Same method, same pod, same session, before (`main` at a350d1e) and after
+this change:
 
-**The window-open Linux number is over the 120 MB budget.** Where it goes:
+| State | Build | RSS sum | PSS | USS | private dirty |
+|---|---|---:|---:|---:|---:|
+| Window open, idle 10 min | before | 423.7 MB | 278.6 MB | 190.9 MB | — |
+| Window open, idle 10 min | after | 412.4 MB | 265.3 MB | 175.4 MB | 116.2 MB |
+| Tray only (window closed), idle 10 min | before | 211.2 MB | 156.1 MB | 122.1 MB | — |
+| Tray only (window closed), idle 10 min | after | 207.5 MB | 152.3 MB | 118.0 MB | 48.5 MB |
 
-- The web process holds ~86 MB of private dirty memory, mostly the JavaScript
-  heap of the mobile web bundle (5.9 MB of JS, every screen loaded up front).
-- Each WebKit process maps WebKitGTK, JavaScriptCore and GTK, and RSS counts
-  them once per process.
-- This display has no GPU, so Mesa's software rasterizer pulls `libLLVM`
-  (~44 MB resident) into two processes. A machine with a GPU driver that does
-  not use LLVM will not pay this; turning off GL compositing did not avoid it.
+PSS depends on what else maps the same libraries at the time, so compare rows
+measured together; #835's Phase 1 numbers (437.5 MB RSS window open, 209.7 MB
+tray only) were taken on another day.
 
-Closing the window (Linux, Windows) drops the web process and roughly halves
-the footprint; most of what remains in the core's USS is clean library text
-that only it now maps, which the kernel can reclaim.
+Where the window-open memory goes (the after build, per process):
 
-**macOS and Windows are not measured** — this pod cannot run either. WKWebView
-and WebView2 have different process models and allocators, so the Linux number
-does not predict them; measure them on real machines with the same method
-(Activity Monitor's "Memory" for the app plus its WebKit XPC services; Task
-Manager for the app plus its `msedgewebview2` children).
+- **The web process** (WebKitWebProcess) holds ~65 MB of private dirty
+  memory; the rest of its ~200 MB RSS is WebKitGTK, JavaScriptCore and Mesa
+  library pages. The JavaScript heap is a small part of it: the same UI in
+  Chromium holds ~8 MB of JS heap after visiting the Feed and Board (9.6 MB
+  before this split). Splitting the bundle saved ~11 MB here; most of the rest
+  is WebKit itself.
+- **The app process** maps WebKitGTK's UI-process half, GTK and, on a display
+  with no GPU, Mesa's software rasterizer (`libLLVM`, ~42 MB resident in each
+  process that draws). Its own heap (the Rust core, GTK) is ~20 MB.
+- **The network process** (WebKitNetworkProcess) stays for as long as the app
+  runs, ~20 MB of it private, though every request goes through the core.
 
-Ways to bring the window-open number down, in order of likely payoff: split
-the web bundle so screens load on demand; set WebKit's memory-pressure limits
-(`WebKitMemoryPressureSettings`); and drop the webview after the window has
-been hidden for a while on macOS too.
+So with the window open the Linux number stays well over 120 MB. Closing it
+(Linux, Windows) or leaving it hidden for 10 minutes (macOS) drops the web
+process, which is where the app spends most of its idle life.
+
+**Windows is not measured** — this pod cannot run it. WebView2 has its own
+process model; measure it with Task Manager over the app and its
+`msedgewebview2` children.
+
+Further levers, not taken here: WebKitGTK's memory-pressure settings must be
+given when the web context is created, which wry does without exposing them;
+and the network process would need a WebKit API to stop it while no page is
+open.

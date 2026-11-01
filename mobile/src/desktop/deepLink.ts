@@ -4,7 +4,7 @@
  * A link from WhatsApp, a browser or a second launch of the desktop app names
  * the same things a push notification does, so it is turned into the same
  * `data` a push carries (`{ ref }`) and routed by the same code
- * (`handleNotificationTap` in src/push/notifications.ts). Two spellings:
+ * (`handleNotificationTap` in src/push/tapRouter.ts). Two spellings:
  *
  *   kubecoder://board/<boardId>/<itemId>   kubecoder://board:<boardId>:<itemId>
  *   kubecoder://task/<id>                  kubecoder://task:<id>
