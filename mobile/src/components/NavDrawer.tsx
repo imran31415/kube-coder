@@ -1,7 +1,8 @@
 /** Slide-out navigation drawer that replaced the bottom tab bar. Opened by the
  *  ☰ button in every top-level screen header; lists all destinations and jumps
  *  to them. Built on core RN Modal + Animated (no extra native deps) so it
- *  works the same on device and the web export. */
+ *  works the same on device and the web export. The desktop app's wide layout
+ *  (#833) shows the same panel as a permanent sidebar instead (NavSidebar). */
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useRef } from 'react';
@@ -12,7 +13,9 @@ import { hasController } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { splitNavGroups } from '../navGroups';
 import { listFeed } from '../api/client';
+import { onLiveEvent } from '../store/liveEvents';
 import { countBoardsAwaitingReview } from '../util/feed';
+import { SIDEBAR_WIDTH } from '../util/wideLayout';
 import type { NavItemDef } from '../navGroups';
 import { colors, font, gradients, radius, space } from '../theme';
 
@@ -49,7 +52,6 @@ function DrawerItem({ item, active, badge = 0 }: { item: NavItemDef; active: str
 export function NavDrawer() {
   const open = useDrawerOpen();
   const active = useActiveTab();
-  const cfg = useConfig();
   const insets = useSafeAreaInsets();
   // Keep the Modal mounted through the close animation, then unmount.
   const [mounted, setMounted] = React.useState(open);
@@ -90,13 +92,6 @@ export function NavDrawer() {
 
   if (!mounted) return null;
 
-  // Same categorized IA as the web dashboard (#267); a group whose items are
-  // all filtered out (Controller unconfigured) drops entirely. The untitled
-  // tail (Controller + Settings) comes back separately so it can be pinned in
-  // view rather than scrolled off the bottom (#549).
-  const { scrolling, pinned } = splitNavGroups({ controller: hasController(cfg) });
-  const host = (cfg.controllerHost || cfg.host || '').replace(/^https?:\/\//, '');
-
   const translateX = slide.interpolate({ inputRange: [0, 1], outputRange: [-WIDTH, 0] });
   const backdropOpacity = slide.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
@@ -108,68 +103,145 @@ export function NavDrawer() {
         </Animated.View>
 
         <Animated.View style={[styles.panel, { width: WIDTH, transform: [{ translateX }], paddingTop: insets.top + space.lg }]}>
-          <View style={styles.brandRow}>
-            <LinearGradient colors={gradients.brand} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.brandMark}>
-              <Text style={styles.brandGlyph}>{'</>'}</Text>
-            </LinearGradient>
-            <View style={{ flexShrink: 1 }}>
-              <Text style={styles.brandName}>kube-coder</Text>
-              {host ? (
-                <Text style={styles.brandHost} numberOfLines={1}>
-                  {host}
-                </Text>
-              ) : null}
-            </View>
-          </View>
-
-          {/* Scrollable: the destination list outgrew a short phone screen
-              once Triggers + Docs landed (#250), and a plain View silently
-              clipped the tail (Docs / Controller / Settings) off the bottom —
-              on iOS it did worse than clip, drawing rows outside the parent
-              frame where hitTest: never reaches them (#549). The scroll
-              indicator stays on: at 14 entries against a ~580pt viewport,
-              something is always below the fold and needs to say so. */}
-          <ScrollView style={styles.items} contentContainerStyle={styles.itemsInner}>
-            {scrolling.map((g, gi) => (
-              <View key={g.title ?? `group-${gi}`} style={[styles.group, gi > 0 && styles.groupGap]}>
-                {g.title ? (
-                  <Text style={styles.groupTitle}>{g.title}</Text>
-                ) : (
-                  <View style={styles.groupDivider} />
-                )}
-                {g.items.map((it) => (
-                  <DrawerItem
-                    key={it.name}
-                    item={it}
-                    active={active}
-                    badge={it.name === 'Board' ? boardWaiting : 0}
-                  />
-                ))}
-              </View>
-            ))}
-          </ScrollView>
-
-          {/* Pinned tail (#549) — Controller + Settings sit outside the
-              scroller so they are always on screen, whatever the list above
-              grows to. This is the reported bug: Settings was the last of 16
-              entries and never reachable on an iPhone. */}
-          {pinned ? (
-            <View style={styles.pinned}>
-              {pinned.items.map((it) => (
-                <DrawerItem key={it.name} item={it} active={active} />
-              ))}
-            </View>
-          ) : null}
-
-          <Text style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>kube-coder mobile</Text>
+          <NavPanelBody
+            active={active}
+            boardWaiting={boardWaiting}
+            footer="kube-coder mobile"
+            footerPad={insets.bottom + space.md}
+          />
         </Animated.View>
       </View>
     </Modal>
   );
 }
 
+/** The panel's contents: brand, destinations, pinned tail and footer. One
+ *  component for the phone's drawer and the desktop sidebar, so the two can
+ *  never list different destinations. */
+function NavPanelBody({
+  active,
+  boardWaiting,
+  footer,
+  footerPad,
+}: {
+  active: string;
+  boardWaiting: number;
+  footer: string;
+  footerPad: number;
+}) {
+  const cfg = useConfig();
+  // Same categorized IA as the web dashboard (#267); a group whose items are
+  // all filtered out (Controller unconfigured) drops entirely. The untitled
+  // tail (Controller + Settings) comes back separately so it can be pinned in
+  // view rather than scrolled off the bottom (#549).
+  const { scrolling, pinned } = splitNavGroups({ controller: hasController(cfg) });
+  const host = (cfg.controllerHost || cfg.host || '').replace(/^https?:\/\//, '');
+
+  return (
+    <>
+      <View style={styles.brandRow}>
+        <LinearGradient colors={gradients.brand} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.brandMark}>
+          <Text style={styles.brandGlyph}>{'</>'}</Text>
+        </LinearGradient>
+        <View style={{ flexShrink: 1 }}>
+          <Text style={styles.brandName}>kube-coder</Text>
+          {host ? (
+            <Text style={styles.brandHost} numberOfLines={1}>
+              {host}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+
+      {/* Scrollable: the destination list outgrew a short phone screen
+          once Triggers + Docs landed (#250), and a plain View silently
+          clipped the tail (Docs / Controller / Settings) off the bottom —
+          on iOS it did worse than clip, drawing rows outside the parent
+          frame where hitTest: never reaches them (#549). The scroll
+          indicator stays on: at 14 entries against a ~580pt viewport,
+          something is always below the fold and needs to say so. */}
+      <ScrollView style={styles.items} contentContainerStyle={styles.itemsInner}>
+        {scrolling.map((g, gi) => (
+          <View key={g.title ?? `group-${gi}`} style={[styles.group, gi > 0 && styles.groupGap]}>
+            {g.title ? (
+              <Text style={styles.groupTitle}>{g.title}</Text>
+            ) : (
+              <View style={styles.groupDivider} />
+            )}
+            {g.items.map((it) => (
+              <DrawerItem
+                key={it.name}
+                item={it}
+                active={active}
+                badge={it.name === 'Board' ? boardWaiting : 0}
+              />
+            ))}
+          </View>
+        ))}
+      </ScrollView>
+
+      {/* Pinned tail (#549) — Controller + Settings sit outside the
+          scroller so they are always on screen, whatever the list above
+          grows to. This is the reported bug: Settings was the last of 16
+          entries and never reachable on an iPhone. */}
+      {pinned ? (
+        <View style={styles.pinned}>
+          {pinned.items.map((it) => (
+            <DrawerItem key={it.name} item={it} active={active} />
+          ))}
+        </View>
+      ) : null}
+
+      <Text style={[styles.footer, { paddingBottom: footerPad }]}>{footer}</Text>
+    </>
+  );
+}
+
+/** The desktop app's wide layout (#833): the drawer's panel, always shown.
+ *  Its Board badge is counted the way the drawer counts it — from the Feed,
+ *  never from the boards API — on mount, on each navigation and when the
+ *  desktop core reports a Feed event. Never on a timer. */
+export function NavSidebar() {
+  const active = useActiveTab();
+  const [boardWaiting, setBoardWaiting] = React.useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const count = () =>
+      listFeed()
+        .then((items) => {
+          if (!cancelled) setBoardWaiting(countBoardsAwaitingReview(items));
+        })
+        .catch(() => {
+          if (!cancelled) setBoardWaiting(0);
+        });
+    void count();
+    const off = onLiveEvent((e) => {
+      if (e.type.startsWith('feed.')) void count();
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [active]);
+
+  return (
+    <View style={[styles.sidebar, { width: SIDEBAR_WIDTH }]}>
+      <NavPanelBody active={active} boardWaiting={boardWaiting} footer="kube-coder desktop" footerPad={space.md} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  sidebar: {
+    backgroundColor: colors.bgElevated,
+    borderRightWidth: 1,
+    borderRightColor: colors.border,
+    paddingHorizontal: space.md,
+    paddingTop: space.lg,
+    overflow: 'hidden',
+  },
   backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
   panel: {
     position: 'absolute',

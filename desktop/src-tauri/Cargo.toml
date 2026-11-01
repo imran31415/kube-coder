@@ -1,0 +1,43 @@
+[package]
+name = "kube-coder-desktop"
+version = "0.1.0"
+description = "kube-coder desktop client: a thin native shell around the mobile app's web build"
+license = "MIT"
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+# The `_lib` suffix keeps the library and the binary from colliding on
+# Windows (cargo issue #8519), the layout `create-tauri-app` uses.
+name = "kube_coder_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2.8.0"
+tauri-plugin-deep-link = "2.6.3"
+tauri-plugin-single-instance = { version = "2.5.5", features = ["deep-link"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# rustls, not native-tls: one TLS stack on every OS and no OpenSSL to ship.
+# Redirects are switched off per client (see http.rs), so the token can never
+# ride a hop to another origin.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+url = "2.5"
+base64 = "0.22"
+# The OS credential store: Keychain on macOS, Credential Manager on Windows,
+# Secret Service (GNOME Keyring / KWallet) on Linux. Never a plain file.
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+
+[profile.release]
+# Size over speed: this is an always-open shell that mostly waits on a socket.
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

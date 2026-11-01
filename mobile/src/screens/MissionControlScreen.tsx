@@ -233,7 +233,7 @@ export default function MissionControlScreen() {
     }
   }, []);
 
-  usePolling(load, 4000);
+  usePolling(load, 4000, ['task.', 'boards.']);
 
   const onRefresh = async () => {
     setRefreshing(true);

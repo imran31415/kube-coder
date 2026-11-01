@@ -4,6 +4,8 @@
  *  workspace flows (session cookies, websockets) are native-app territory. */
 import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View, ViewStyle } from 'react-native';
+import { isDesktop } from '../desktop/bridge';
+import { DesktopEmbed } from '../desktop/DesktopEmbed';
 
 export interface WebViewProps {
   source?: { uri: string; headers?: Record<string, string> };
@@ -39,6 +41,16 @@ export const WebView = React.forwardRef<{ reload: () => void }, WebViewProps>(
         };
       }
     }, [ref]);
+
+    // The desktop app (#833) never frames workspace content in the bundled UI:
+    // the core opens it in a window of its own, with no IPC.
+    if (isDesktop() && source?.uri) {
+      return (
+        <View style={[styles.wrap, style as ViewStyle]}>
+          <DesktopEmbed uri={source.uri} />
+        </View>
+      );
+    }
 
     return (
       <View style={[styles.wrap, style as ViewStyle]}>

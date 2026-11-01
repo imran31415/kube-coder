@@ -1,0 +1,166 @@
+name: Desktop
+
+# The Tauri desktop client (desktop/, #833). Its own workflow so the main CI
+# never waits on three OS builds. It runs when the desktop app or the mobile
+# app it bundles changes, and builds UNSIGNED installers for every platform:
+# signing, notarization, auto-update and releases are Phase 2 of #833.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - 'mobile/**'
+      - '.github/workflows/desktop.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - 'mobile/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-tests:
+    name: Rust unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Tauri's Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: tests
+
+      # generate_context! embeds the frontend at compile time; the unit tests
+      # never load it, so a placeholder page saves a full mobile export here.
+      - name: Placeholder frontend
+        run: mkdir -p desktop/dist && echo '<!doctype html><title>kube-coder</title>' > desktop/dist/index.html
+
+      - name: cargo test
+        run: cargo test --locked
+        working-directory: desktop/src-tauri
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: rust-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            bundles: deb,appimage
+            args: ''
+            out: desktop/src-tauri/target/release/bundle
+          - name: macos
+            os: macos-latest
+            bundles: dmg
+            # Universal (arm64 + x86_64) in one .dmg.
+            args: --target universal-apple-darwin
+            out: desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          - name: windows
+            os: windows-latest
+            bundles: msi,nsis
+            args: ''
+            out: desktop/src-tauri/target/release/bundle
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            mobile/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install Tauri's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev patchelf
+
+      - name: Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          fi
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ matrix.name }}
+
+      - name: Install mobile deps (the bundled UI)
+        run: npm ci --no-audit --no-fund
+        working-directory: mobile
+
+      - name: Install desktop deps (Tauri CLI)
+        run: npm ci --no-audit --no-fund
+        working-directory: desktop
+
+      # beforeBuildCommand exports the mobile web build into desktop/dist.
+      - name: tauri build (unsigned)
+        run: npx tauri build --ci --bundles ${{ matrix.bundles }} ${{ matrix.args }}
+        working-directory: desktop
+        env:
+          # linuxdeploy is itself an AppImage; runners have no FUSE for it.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+
+      # #833 acceptance: every installer under 20 MB.
+      - name: Installer sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          limit=$((20 * 1024 * 1024))
+          over=0
+          echo "### Desktop installers (${{ matrix.name }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "| file | size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r f; do
+            size=$(wc -c < "$f" | tr -d ' ')
+            echo "| $(basename "$f") | $((size / 1024)) KiB |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(basename "$f"): $size bytes"
+            if [ "$size" -gt "$limit" ]; then over=1; echo "::error::$(basename "$f") is over 20 MB"; fi
+          done < <(find "${{ matrix.out }}" -maxdepth 2 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name '*-setup.exe' \))
+          exit $over
+
+      - name: Upload installers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kube-coder-desktop-${{ matrix.name }}-unsigned
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ matrix.out }}/deb/*.deb
+            ${{ matrix.out }}/appimage/*.AppImage
+            ${{ matrix.out }}/dmg/*.dmg
+            ${{ matrix.out }}/msi/*.msi
+            ${{ matrix.out }}/nsis/*-setup.exe

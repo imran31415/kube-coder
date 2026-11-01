@@ -60,7 +60,7 @@ export default function FeedScreen() {
     }
   }, [filter]);
 
-  usePolling(load, 15000);
+  usePolling(load, 15000, ['feed.']);
   useOnAwake(load);
 
   const onRefresh = async () => {

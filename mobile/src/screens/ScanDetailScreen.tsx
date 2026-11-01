@@ -46,7 +46,7 @@ export default function ScanDetailScreen() {
 
   // A scan rewrites its findings as it confirms them, so this fills in while
   // it runs rather than showing a frozen screen for minutes at a time.
-  usePolling(load, 6000);
+  usePolling(load, 6000, ['scan.']);
 
   // Clear the previous scan the moment the route is re-pointed at a new one.
   // A push tapped while this screen is already mounted updates `params` on
