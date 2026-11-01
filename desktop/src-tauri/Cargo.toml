@@ -34,6 +34,19 @@ base64 = "0.22"
 # Secret Service (GNOME Keyring / KWallet) on Linux. Never a plain file.
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
+# The dock badge, set on the application rather than through a window, so it
+# stays right while the window is gone (unload.rs). The same crates and
+# features tao already builds on macOS: nothing new is compiled.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile"] }
+
+# WebKitGTK's cache settings (lib.rs `tune_webview`). Already in the tree
+# through wry.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0.2"
+
 [profile.release]
 # Size over speed: this is an always-open shell that mostly waits on a socket.
 codegen-units = 1

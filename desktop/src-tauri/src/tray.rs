@@ -6,10 +6,12 @@
 //! dot on the Windows taskbar button (Windows has no numeric badge API for
 //! desktop apps), and the tray tooltip — plus the menu-bar title on macOS.
 
+#[cfg_attr(target_os = "macos", allow(unused_imports))]
 use crate::core::{show_main, MAIN};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg_attr(target_os = "macos", allow(unused_imports))]
 use tauri::{AppHandle, Manager};
 
 const TRAY_ID: &str = "kc-tray";
@@ -52,13 +54,38 @@ pub fn set_needs_you(app: &AppHandle, count: usize) {
         #[cfg(target_os = "macos")]
         let _ = tray.set_title(if count > 0 { Some(count.to_string()) } else { None });
     }
-    let Some(window) = app.get_webview_window(MAIN) else { return };
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let _ = window.set_badge_count(if count > 0 { Some(count as i64) } else { None });
-    #[cfg(windows)]
-    let _ = window.set_overlay_icon(if count > 0 { Some(red_dot()) } else { None });
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    let _ = window;
+    // The macOS dock tile belongs to the application, not to a window, so it
+    // is set directly: the window may have been dropped (unload.rs) and the
+    // badge must still be right.
+    #[cfg(target_os = "macos")]
+    {
+        let badge = (count > 0).then(|| count.to_string());
+        let _ = app.run_on_main_thread(move || set_dock_badge(badge));
+    }
+    // Linux and Windows set theirs through the window; when it is closed they
+    // are set again as it is rebuilt (`show_main`).
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Some(window) = app.get_webview_window(MAIN) else { return };
+        #[cfg(target_os = "linux")]
+        let _ = window.set_badge_count(if count > 0 { Some(count as i64) } else { None });
+        #[cfg(windows)]
+        let _ = window.set_overlay_icon(if count > 0 { Some(red_dot()) } else { None });
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let _ = window;
+    }
+}
+
+/// `NSApp.dockTile.badgeLabel`, which is all tao's `set_badge_count` does,
+/// minus the window. Main thread only, which `run_on_main_thread` gives it.
+#[cfg(target_os = "macos")]
+fn set_dock_badge(label: Option<String>) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSString;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let label = label.map(|l| NSString::from_str(&l));
+    NSApplication::sharedApplication(mtm).dockTile().setBadgeLabel(label.as_deref());
 }
 
 /// A 16×16 red dot for the Windows taskbar overlay, drawn here rather than

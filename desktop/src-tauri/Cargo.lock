@@ -2112,6 +2112,9 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "keyring",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2122,6 +2125,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "url",
+ "webkit2gtk",
 ]
 
 [[package]]
