@@ -52,11 +52,43 @@ export function sortFindings(findings: Finding[]): Finding[] {
  */
 export function outcomeLabel(scan: ScanSummary): string {
   if (scan.status === 'running') return 'Scanning…';
+  if (scan.end_reason === 'user_stopped') return 'Stopped by you — partly checked';
+  if (scan.end_reason === 'budget_reached') return 'Hit its spending limit — partly checked';
   if (scan.status === 'failed') return 'Could not run — nothing was checked';
   if (scan.status === 'interrupted') return 'Interrupted — partly checked';
   if (scan.status === 'stopped') return 'Stopped early — partly checked';
   const n = scan.counts?.total ?? 0;
-  return n ? `${n} to look at` : 'Finished — nothing found';
+  if (n) return `${n} to look at`;
+  // Only an all-clear when the scanner says it got through the app: it can
+  // finish, write its report, and separately record that it ran out of room.
+  return scan.coverage?.complete === false
+    ? 'Finished — but not all checked'
+    : 'Finished — nothing found';
+}
+
+/**
+ * What an empty problems list says. Mirrors the dashboard's helper of the
+ * same name: a problem is listed only once the scanner has proven it, so a
+ * scan that ended early usually lists none, and "no problems were recorded"
+ * there reads as an all-clear for a scan that never got that far.
+ */
+export function emptyFindingsText(scan: {
+  status: string;
+  coverage?: { complete: boolean };
+  report?: unknown;
+}): string {
+  if (scan.status === 'running') {
+    return 'Nothing found yet. A problem shows up here the moment the scanner proves it is real.';
+  }
+  if (scan.status === 'done' && scan.coverage?.complete !== false) {
+    return 'No problems were recorded for this scan.';
+  }
+  // Only when there is a report: a scan that failed at start never writes one.
+  return (
+    'None confirmed before the scan ended. A problem is listed only once the ' +
+    'scanner has proven it, so a scan that ends early often shows none.' +
+    (scan.report ? ' The scanner’s own report is below.' : '')
+  );
 }
 
 /** Money spent, against the cap when there is one. */

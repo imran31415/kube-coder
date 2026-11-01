@@ -14,10 +14,13 @@ Run with:
     cd charts/workspace && python3 -m unittest tests.apps_test
 """
 
+import contextlib
 import http.server
+import io
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -30,6 +33,23 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
+
+_ps_patch = None
+
+
+def setUpModule():
+    """No test here asks this machine's container runtime what is running:
+    a developer's own containers would leak into the expected names. The
+    container suite below drives `_ps_containers` itself."""
+    global _ps_patch
+    _ps_patch = mock.patch.object(server.AppsManager, '_ps_containers',
+                                  classmethod(lambda cls: ''))
+    _ps_patch.start()
+
+
+def tearDownModule():
+    _ps_patch.stop()
+    server.AppsManager._container_names.clear()
 
 
 def _free_port():
@@ -351,6 +371,173 @@ class AppNamingTests(unittest.TestCase):
         self.assertEqual(by_port[3000]['name'], 'juice-shop')
         self.assertFalse(by_port[3000]['pinned'])
         self.assertEqual(by_port[5000]['name'], 'My API')
+
+
+#: `docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'`, in the shapes
+#: the runtime prints: published on v4 and v6, a published range, a port
+#: that is only exposed, a container with nothing published, one that docker
+#: named itself.
+DOCKER_PS = '\t'.join(['juice-shop', 'bkimminich/juice-shop',
+                       '0.0.0.0:3000->3000/tcp, :::3000->3000/tcp']) + '\n' + \
+    '\t'.join(['nostalgic_turing', 'registry.local:5000/acme/orders-api:1.4',
+               '0.0.0.0:8000-8001->8000-8001/tcp']) + '\n' + \
+    '\t'.join(['cache', 'redis:7', '6379/tcp']) + '\n' + \
+    '\t'.join(['quiet_hopper', 'sha256:' + 'ab' * 32, '[::]:9000->9000/tcp']) + '\n'
+
+
+class ContainerNamingTests(unittest.TestCase):
+    """An app published from a container is named after the container.
+
+    Its port is held by the container runtime's proxy, in the runtime's own
+    container, where this server's /proc walk cannot see it — so on the live
+    workspace `docker run -p 3000:3000 bkimminich/juice-shop` read "Port
+    3000" on the Apps list, the scan form and the scan's own page.
+    """
+
+    def setUp(self):
+        server.AppsManager._container_names.clear()
+        server.AppsManager._detected_names.clear()
+        self.addCleanup(server.AppsManager._container_names.clear)
+        self.addCleanup(server.AppsManager._detected_names.clear)
+        self.calls = 0
+
+    def ps(self, output):
+        def fake(cls):
+            self.calls += 1
+            return output
+        return mock.patch.object(server.AppsManager, '_ps_containers',
+                                 classmethod(fake))
+
+    def test_published_ports_map_to_the_containers_that_publish_them(self):
+        ports = server.AppsManager.parse_container_ports(DOCKER_PS)
+        self.assertEqual(ports[3000], 'juice-shop')
+        # Docker's own made-up name says nothing; the image does.
+        self.assertEqual(ports[8000], 'orders-api')
+        self.assertEqual(ports[8001], 'orders-api')
+        # Only exposed, not published: nothing outside can reach it.
+        self.assertNotIn(6379, ports)
+        # Named by an image id: nothing worth showing.
+        self.assertNotIn(9000, ports)
+
+    def test_a_chosen_name_wins_over_the_image(self):
+        self.assertEqual(server.AppsManager.container_label(
+            'my-shop', 'bkimminich/juice-shop:latest'), 'my-shop')
+        self.assertEqual(server.AppsManager.container_label(
+            'eager_lovelace', 'bkimminich/juice-shop:latest@sha256:' + 'c' * 64),
+            'juice-shop')
+        self.assertEqual(server.AppsManager.container_label('', ''), '')
+
+    def test_a_runtime_port_pool_is_not_an_app(self):
+        line = 'pool\tsome/pool\t0.0.0.0:20000-29999->20000-29999/tcp\n'
+        ports = server.AppsManager.parse_container_ports(line)
+        self.assertEqual(list(ports), [20000])
+
+    def test_garbage_lines_are_skipped(self):
+        self.assertEqual(server.AppsManager.parse_container_ports(
+            'not\ta docker line\nWARNING: something\n\n'), {})
+        self.assertEqual(server.AppsManager.parse_container_ports(None), {})
+
+    def test_list_apps_names_a_containerised_app(self):
+        listeners = staticmethod(lambda: [
+            {'port': 3000, 'addr': '0.0.0.0', 'inode': 41},
+            {'port': 5173, 'addr': '0.0.0.0', 'inode': 42},
+        ])
+        proc_names = classmethod(
+            lambda cls, inodes: {i: {42: 'my-vite-app'}.get(i, '') for i in inodes})
+        with tempfile.TemporaryDirectory() as tmp, self.ps(DOCKER_PS), \
+                mock.patch.object(server.AppsManager, 'PINS_PATH',
+                                  os.path.join(tmp, 'apps.json')), \
+                mock.patch.object(server.AppsManager, 'parse_listen_ports',
+                                  listeners), \
+                mock.patch.object(server.AppsManager, 'detected_names',
+                                  proc_names):
+            by_port = {r['port']: r for r in server.AppsManager.list_apps()}
+        self.assertEqual(by_port[3000]['name'], 'juice-shop')
+        # /proc named it, so the runtime was never needed for it.
+        self.assertEqual(by_port[5173]['name'], 'my-vite-app')
+
+    def test_one_lookup_per_new_socket_not_one_per_refresh(self):
+        with self.ps(DOCKER_PS):
+            first = server.AppsManager.container_names({3000: 41, 4000: 43})
+            again = server.AppsManager.container_names({3000: 41, 4000: 43})
+        self.assertEqual(first, {3000: 'juice-shop', 4000: ''})
+        self.assertEqual(again, first)
+        self.assertEqual(self.calls, 1, 'a miss is cached like a hit')
+
+    def test_a_runtime_that_timed_out_is_asked_again(self):
+        """A slow answer is not "no containers": caching it would leave the
+        app unnamed for as long as its socket lives."""
+        with self.ps(None):
+            self.assertEqual(server.AppsManager.container_names({3000: 41}),
+                             {3000: ''})
+        with self.ps(DOCKER_PS):
+            self.assertEqual(server.AppsManager.container_names({3000: 41}),
+                             {3000: 'juice-shop'})
+
+    def test_no_runtime_means_no_names_and_no_error(self):
+        with self.ps(''):
+            self.assertEqual(server.AppsManager.container_names({3000: 41}),
+                             {3000: ''})
+        self.assertEqual(server.AppsManager.container_names({}), {})
+
+
+class ContainerLookupTests(unittest.TestCase):
+    """The real `docker ps` call, with the process itself faked: a runtime
+    that hangs or refuses must not slow pages down or flood the log."""
+
+    def setUp(self):
+        # The module swaps `_ps_containers` out; this suite is about it.
+        _ps_patch.stop()
+        self.addCleanup(_ps_patch.start)
+        for name, value in (('_container_lookup_paused_until', 0.0),
+                            ('_container_lookup_error', '')):
+            setattr(server.AppsManager, name, value)
+            self.addCleanup(setattr, server.AppsManager, name, value)
+        self.runs = 0
+        which = mock.patch.object(server.shutil, 'which',
+                                  lambda name: '/usr/bin/docker')
+        which.start()
+        self.addCleanup(which.stop)
+
+    def run_as(self, outcome):
+        def fake(*a, **kw):
+            self.runs += 1
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+        return mock.patch.object(server.subprocess, 'run', fake)
+
+    def test_a_hung_runtime_is_left_alone_for_a_while(self):
+        hang = subprocess.TimeoutExpired(['docker', 'ps'], 3)
+        err = io.StringIO()
+        with self.run_as(hang), contextlib.redirect_stderr(err):
+            self.assertIsNone(server.AppsManager._ps_containers())
+            self.assertIsNone(server.AppsManager._ps_containers())
+        self.assertEqual(self.runs, 1, 'the second page load did not wait')
+        self.assertIn('[apps] docker ps gave no answer', err.getvalue())
+
+    def test_it_is_asked_again_once_the_pause_is_over(self):
+        ok = subprocess.CompletedProcess([], 0, stdout=DOCKER_PS, stderr='')
+        server.AppsManager._container_lookup_paused_until = time.monotonic() - 1
+        with self.run_as(ok):
+            self.assertEqual(server.AppsManager._ps_containers(), DOCKER_PS)
+
+    def test_a_refusal_is_logged_once_not_on_every_load(self):
+        down = subprocess.CompletedProcess(
+            [], 1, stdout='', stderr='Cannot connect to the Docker daemon')
+        err = io.StringIO()
+        with self.run_as(down), contextlib.redirect_stderr(err):
+            self.assertEqual(server.AppsManager._ps_containers(), '')
+            self.assertEqual(server.AppsManager._ps_containers(), '')
+        self.assertEqual(err.getvalue().count('Cannot connect'), 1)
+
+    def test_recovery_is_logged(self):
+        server.AppsManager._container_lookup_error = 'docker ps failed: x'
+        ok = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+        err = io.StringIO()
+        with self.run_as(ok), contextlib.redirect_stderr(err):
+            server.AppsManager._ps_containers()
+        self.assertIn('answering again', err.getvalue())
 
 
 # --- HTTP endpoint tests (auth bypassed) -------------------------------

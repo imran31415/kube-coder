@@ -37,6 +37,7 @@ import shutil
 import sys
 import threading
 import time
+import traceback
 import uuid
 
 # The one atomic-JSON-document implementation in the tree: flock sidecar plus
@@ -354,6 +355,24 @@ def diff_findings(previous, current):
     return added, changed
 
 
+def parse_report(raw):
+    """The scanner's write-up as `{'text', 'location'}`, or None.
+
+    Passed through unchanged, for the same reason findings are (see the
+    module docstring): it is the scanner's own account of what it did, and
+    rewriting it here would mean asserting things the tool did not. Only the
+    shape is checked, because both fields go on a page.
+    """
+    if not isinstance(raw, dict):
+        return None
+    text = raw.get('text')
+    if not isinstance(text, str) or not text.strip():
+        return None
+    location = raw.get('location')
+    return {'text': text,
+            'location': location if isinstance(location, str) else ''}
+
+
 def parse_usage(raw):
     """Spend and token counters from a backend's run record.
 
@@ -412,6 +431,18 @@ def apply_artifacts(record, artifacts):
     elif not record.get('usage'):
         record['usage'] = parse_usage(None)
 
+    # The write-up and the scanner's own coverage verdict, both written once
+    # at the very end of a run. Kept the moment they appear, and never
+    # blanked by a later read, on the same reasoning as the findings above —
+    # this is the result the scan was run for, and a poll landing after the
+    # scanner has cleaned up must not take it off the page.
+    report = parse_report(artifacts.get('report'))
+    if report:
+        record['report'] = report
+    coverage = artifacts.get('coverage')
+    if isinstance(coverage, dict):
+        record['coverage'] = coverage
+
     # Only a status the backend actually reported may move the record. An
     # empty read is the normal state for the first seconds of every scan —
     # the run record does not exist until the scanner writes it — and must
@@ -421,22 +452,163 @@ def apply_artifacts(record, artifacts):
     if record.get('status') == 'running' and reported:
         mapped = map_backend_status(reported)
         if mapped != 'running':
+            # A scan its user stopped ends `stopped`, whatever the scanner
+            # writes on its way out. It records the signal it was sent as
+            # "interrupted", its word for a crash too, so a Stop press used to
+            # read on the page as "the scanner process ended unexpectedly".
+            # A scan that genuinely completed in that moment still says so.
+            if record.get('stop_requested_at') and mapped != 'done':
+                mapped = 'stopped'
             record['status'] = mapped
             record['ended_at'] = time.time()
     return added, changed
 
 
+def ended_badly(record):
+    """Did this scan end some way other than finishing or its user stopping
+    it? Those are the ends that owe the user a reason."""
+    status = (record or {}).get('status')
+    if status in ('failed', 'interrupted'):
+        return True
+    return status == 'stopped' and not record.get('stop_requested_at')
+
+
+def fallback_reason(record):
+    """Why a scan ended badly, when the backend could not say.
+
+    A spending limit is visible from the record alone, so it is named even
+    for a backend that explains nothing. Otherwise the sentence admits the
+    reason is unknown, rather than leaving a gap the user reads as "no
+    reason" or filling it with a guess.
+    """
+    record = record or {}
+    budget = record.get('budget_usd')
+    spent = (record.get('usage') or {}).get('cost_usd') or 0
+    if budget and spent >= budget:
+        return f'The scan reached its ${budget:.2f} spending limit.'
+    return ('The scanner did not say why. The details are kept in the '
+            'workspace server log.')
+
+
+def _did_work(record):
+    """Did the scan get as far as checking anything before it ended?"""
+    usage = record.get('usage') or {}
+    return bool(record.get('findings') or usage.get('requests'))
+
+
+def covered_everything(record):
+    """Did the scanner say its run was a full account of the app?
+
+    True / False / None, and the None matters: a record from before coverage
+    was read, or a backend that reports none, is UNKNOWN. Unknown must never
+    be rendered as a yes — "nothing found" over a scan whose reach nobody can
+    vouch for is the all-clear this whole module exists to avoid.
+    """
+    coverage = (record or {}).get('coverage')
+    if not isinstance(coverage, dict) or 'complete' not in coverage:
+        return None
+    return bool(coverage.get('complete'))
+
+
+def coverage_caveats(record):
+    """The scanner's own sentences about what it did not get to."""
+    coverage = (record or {}).get('coverage')
+    if not isinstance(coverage, dict):
+        return []
+    caveats = coverage.get('caveats')
+    return [c for c in caveats if isinstance(c, str) and c.strip()] \
+        if isinstance(caveats, list) else []
+
+
+#: How close to the cap counts as "the cap is what ended this". The scanner
+#: stops testing BEFORE the limit and keeps the rest to write its report, so a
+#: scan that ends near the cap was ended by the cap without ever reaching it —
+#: which is why this is a fraction and not an equality.
+BUDGET_SPENT_FRACTION = 0.85
+
+
+def budget_note(record):
+    """One sentence when the spending limit is what cut a scan short, else ''.
+
+    The meter already shows the number; this says what the number MEANT,
+    which is the part the user cannot infer. A scan that stops at $2.76 of
+    $3.00 and reports nothing looks like a clean result and is not one.
+    """
+    record = record or {}
+    if not is_terminal(record.get('status')):
+        return ''
+    budget = record.get('budget_usd')
+    spent = (record.get('usage') or {}).get('cost_usd') or 0
+    if not budget or spent < budget * BUDGET_SPENT_FRACTION:
+        return ''
+    return (f'This scan used ${spent:.2f} of its ${budget:.2f} limit. The '
+            f'scanner stops testing before the limit is reached, keeping the '
+            f'rest to write its report — so a higher limit buys more testing '
+            f'time.')
+
+
+#: Why a terminal scan ended, as one code a page can pick its headline and
+#: next step by — "Try again", "Model settings", "Scan again" — without
+#: pattern-matching the reason's wording. Derived on the way out by
+#: `end_reason_of`, never stored, so a record an older build wrote answers
+#: with a code too.
+END_REASONS = ('completed', 'user_stopped', 'budget_reached',
+               'provider_error', 'scanner_error', 'process_vanished',
+               'workspace_restarted', 'lost_track')
+
+#: The backend's `cause` (see `ScanBackend.explain_end`) → our end reason.
+#: `lost` is ours, written when the poller watching a scan crashed.
+_CAUSE_REASONS = {
+    'budget': 'budget_reached',
+    'provider': 'provider_error',
+    'scanner': 'scanner_error',
+    'lost': 'lost_track',
+}
+
+
+def end_reason_of(record):
+    """The `END_REASONS` code for a terminal scan, or '' while it runs.
+
+    Who ended it comes first, because that is certain: a user's stop, the
+    workspace restarting. Then what the backend said caused it. With neither,
+    a spent budget is still visible from the record alone; a process that
+    died mid-scan is `process_vanished`; anything else that went wrong is
+    `scanner_error`, whose reason sentence admits it is unknown.
+    """
+    record = record or {}
+    status = record.get('status')
+    if not is_terminal(status):
+        return ''
+    if status == 'done':
+        return 'completed'
+    if status == 'stopped' and record.get('stop_requested_at'):
+        return 'user_stopped'
+    if record.get('interrupted_reason') == 'restart':
+        return 'workspace_restarted'
+    cause = _CAUSE_REASONS.get(record.get('end_cause') or '')
+    if cause:
+        return cause
+    budget = record.get('budget_usd')
+    if budget and ((record.get('usage') or {}).get('cost_usd') or 0) >= budget:
+        return 'budget_reached'
+    return 'process_vanished' if status == 'interrupted' else 'scanner_error'
+
+
 # ── what leaves the server ─────────────────────────────────────────────────
 
 #: Keys never included in a list response. `findings` because the list would
-#: otherwise carry every reproduction for every scan on one page, and `handle`
-#: because it is the backend's private bookkeeping.
-_SUMMARY_DROP = ('findings', 'handle', 'dispositions')
+#: otherwise carry every reproduction for every scan on one page, `report`
+#: for the same reason, and `handle` because it is the backend's private
+#: bookkeeping. `coverage` stays: it is two fields, and without it a list row
+#: cannot tell a clean scan from one that never got through the app.
+_SUMMARY_DROP = ('findings', 'report', 'handle', 'dispositions')
 
 
 def summarise(record):
     """One row for the scans list — no findings, no backend internals."""
-    return {k: v for k, v in (record or {}).items() if k not in _SUMMARY_DROP}
+    row = {k: v for k, v in (record or {}).items() if k not in _SUMMARY_DROP}
+    row['end_reason'] = end_reason_of(record)
+    return row
 
 
 def public_view(record):
@@ -450,6 +622,7 @@ def public_view(record):
     view = {k: v for k, v in record.items() if k not in ('handle',)}
     view['findings'] = findings
     view['dispositions'] = record.get('dispositions') or {}
+    view['end_reason'] = end_reason_of(record)
     return view
 
 
@@ -462,6 +635,11 @@ def result_summary(record):
     worse than no answer at all. So the sentence always says what was reached
     and how the scan ended, and a clean result says so only when the scan
     actually completed.
+
+    The reason a scan ended badly is NOT folded in: it is the record's
+    `error`, which every surface shows beside this sentence. Folding it in as
+    well printed it twice on the page, once inside the sentence and once
+    under it.
     """
     record = record or {}
     status = record.get('status')
@@ -474,8 +652,12 @@ def result_summary(record):
     if status == 'running':
         return f'Scanning {where}…'
     if status == 'failed':
-        return (f'The scan of {where} could not run, so nothing was checked. '
-                f'{record.get("error") or ""}'.strip())
+        # The scanner also fails a scan that crashed halfway, after real
+        # work. "Nothing was checked" would undersell what is listed below.
+        if _did_work(record):
+            return (f'The scan of {where} failed partway through, so only '
+                    f'part of the app was checked.')
+        return f'The scan of {where} could not run, so nothing was checked.'
     if status == 'interrupted':
         # Two different paths reach `interrupted`. The boot sweep knows the
         # workspace restarted; the poller only knows the process vanished
@@ -489,14 +671,40 @@ def result_summary(record):
             return (f'The scan of {where} stopped when the workspace '
                     f'restarted. Anything found before that is below; the '
                     f'rest was not checked.')
-        return (f'The scan of {where} stopped before it finished, because '
-                f'the scanner process ended unexpectedly. Anything found '
-                f'before that is below; the rest was not checked.')
+        # With a reason on the record, "unexpectedly" would contradict the
+        # sentence printed right beside it.
+        how = '' if record.get('error') else (
+            ', because the scanner process ended unexpectedly')
+        return (f'The scan of {where} stopped before it finished{how}. '
+                f'Anything found before that is below; the rest was not '
+                f'checked.')
     if status == 'stopped':
+        if record.get('stop_requested_at'):
+            return (f'You stopped the scan of {where} before it finished, so '
+                    f'only part of the app was checked.')
+        if record.get('error'):
+            # Ended by the scanner itself — its spending limit, a provider
+            # refusing requests. The error says which.
+            return (f'The scanner ended the scan of {where} early, so only '
+                    f'part of the app was checked.')
+        # A record from before stops were marked: it cannot say who.
         return (f'The scan of {where} was stopped early, so only part of the '
                 f'app was checked.')
+    # A scan can reach `done` having proven nothing and still not be an
+    # all-clear: the scanner writes its report, marks the run complete, and
+    # separately records that it never got through the app. Saying "finished
+    # and found nothing" over that is the exact sentence this user read as
+    # "my app is clean".
+    complete = covered_everything(record)
     if total:
+        if complete is False:
+            return (f'A {mode} scan of {where} found {total} to look at, and '
+                    f'did not get through the whole app — there may be more.')
         return f'A {mode} scan of {where} found {total} to look at.'
+    if complete is False:
+        return (f'A {mode} scan of {where} finished without proving anything, '
+                f'but the scanner says it did not get through the whole app. '
+                f'This is not an all-clear.')
     return (f'A {mode} scan of {where} finished and found nothing. A deeper '
             f'scan checks more than a {mode} one does.')
 
@@ -634,11 +842,15 @@ class ScansManager:
         backend = cls.backend()
         ready = backend.preflight()
         if not ready.get('ok'):
-            return None, ready.get('detail') or 'Scanning is not available.'
+            detail = ready.get('detail') or 'Scanning is not available.'
+            cls._log(f'start refused for port {spec["port"]} '
+                     f'({ready.get("reason") or "not ready"}): {detail}')
+            return None, detail
 
         try:
             target_url = backend.resolve_target(spec['port'])
         except Exception as e:
+            cls._log(f'start refused for port {spec["port"]}: {e}')
             return None, str(e)
 
         # Only now, once nothing before the spawn can fail without a record:
@@ -676,9 +888,14 @@ class ScansManager:
             record['ended_at'] = time.time()
             record['error'] = redact_secrets(str(e))
             cls._record(scan_id).write(record)
+            cls._log(f'{scan_id} could not start: {record["error"]}')
             return None, record['error']
 
         cls._record(scan_id).write(record)
+        cls._log(f'{scan_id} started on port {spec["port"]} '
+                 f'({spec.get("name") or "unnamed"}): {spec["mode"]} scan, '
+                 f'model {spec["model"]}, budget '
+                 f'{spec.get("budget_usd") or "none"}')
         cls._prune()
         cls._fire('scan.status', {'id': scan_id, 'status': 'running'})
         cls._spawn_poller(scan_id)
@@ -714,47 +931,108 @@ class ScansManager:
                 if cls._record(scan_id).read().get('status') != 'running':
                     return
                 time.sleep(cls.POLL_INTERVAL)
-        except Exception as e:       # pragma: no cover - defensive
-            print(f'[scan] {scan_id} poller stopped: {e}', file=sys.stderr)
+        except Exception:
+            cls._log(f'{scan_id} poller crashed:\n{traceback.format_exc()}')
+            cls._settle_lost(scan_id, backend)
         finally:
             with cls._lock:
                 cls._pollers.pop(scan_id, None)
 
-    @staticmethod
-    def _safe_artifacts(backend, handle):
-        """A backend read that cannot end a scan by raising."""
+    #: What the page says when the poller died under a scan.
+    LOST_TRACK_REASON = ('kube-coder lost track of this scan because of an '
+                         'internal error, so it stopped it rather than let it '
+                         'run unwatched. Scan again; if this repeats, the '
+                         'details are in the workspace server log.')
+
+    @classmethod
+    def _settle_lost(cls, scan_id, backend):
+        """End a scan whose poller crashed, instead of leaving it on
+        "Scanning…" forever while nothing reads its results.
+
+        Stopped rather than resumed: whatever crashed the poller would most
+        likely crash a new one too, and a scan nobody watches still spends.
+        """
+        try:
+            record = cls.get(scan_id) or {}
+            if record.get('status') != 'running':
+                return
+            try:
+                backend.stop(record.get('handle'))
+            except Exception:
+                cls._log(f'{scan_id} stop after poller crash failed:\n'
+                         f'{traceback.format_exc()}')
+
+            def mutate(rec):
+                if rec.get('status') != 'running':
+                    return False
+                rec['status'] = 'failed'
+                rec['ended_at'] = time.time()
+                rec['end_cause'] = 'lost'
+                rec['error'] = cls.LOST_TRACK_REASON
+                return None
+
+            settled, wrote = cls._record(scan_id).update(mutate)
+            if wrote:
+                cls._fire('scan.status', {'id': scan_id, 'status': 'failed'})
+                if not settled.get('quiet'):
+                    cls._announce(settled)
+        except Exception:
+            # Last resort: the boot sweep settles it on the next restart.
+            cls._log(f'{scan_id} could not be settled after its poller '
+                     f'crashed:\n{traceback.format_exc()}')
+
+    @classmethod
+    def _safe_artifacts(cls, backend, handle):
+        """A backend read that cannot end a scan by raising. `None` is the
+        backend's own "could not read this time", so a failure costs one
+        poll of freshness and nothing else."""
         try:
             return backend.artifacts(handle)
         except Exception:
+            cls._log(f'artifacts read failed for {handle}:\n'
+                     f'{traceback.format_exc()}')
             return None
 
     @classmethod
     def _absorb(cls, scan_id, artifacts, *, alive, backend, handle):
         """Fold one read into the record, then emit exactly what changed."""
         added, changed = [], []
+        evidence = ''
 
         def mutate(record):
-            nonlocal added, changed
+            nonlocal added, changed, evidence
             if record.get('status') != 'running':
                 return False
             added, changed = apply_artifacts(record, artifacts)
             if record['status'] == 'running' and not alive:
                 # The process is gone but its record never reached a terminal
-                # state: it died rather than finished. `failed` when it never
-                # produced anything (a bad model or credential exits at once),
-                # `interrupted` when it was working and stopped mid-flight.
-                if not artifacts:
+                # state. If its user asked it to stop, that is what happened.
+                # Otherwise it died rather than finished: `failed` when it
+                # never produced anything (a bad model or credential exits at
+                # once), `interrupted` when it was working and stopped
+                # mid-flight.
+                if record.get('stop_requested_at'):
+                    record['status'] = 'stopped'
+                elif not artifacts:
                     record['status'] = 'failed'
-                    record['error'] = cls._failure_detail(backend, handle)
                 else:
                     record['status'] = 'interrupted'
                     record['interrupted_reason'] = 'vanished'
                 record['ended_at'] = time.time()
+            # In the same write as the status, so the page never shows a
+            # failed scan without its reason, even for one poll.
+            if ended_badly(record) and not record.get('error'):
+                record['error'], evidence, cause = cls._explain(
+                    record, backend, handle)
+                if cause:
+                    record['end_cause'] = cause
             return None
 
         record, wrote = cls._record(scan_id).update(mutate)
         if not wrote:
             return record
+        if evidence:
+            cls._log_end(record, evidence)
 
         for finding in added:
             cls._fire('scan.finding', {'id': scan_id, 'op': 'added',
@@ -767,31 +1045,58 @@ class ScansManager:
         cls._fire('scan.usage', {'id': scan_id, 'usage': record.get('usage'),
                                  'counts': record.get('counts')})
         if is_terminal(record.get('status')):
+            location = (record.get('report') or {}).get('location')
+            if location:
+                cls._log(f'{scan_id} report saved at {location}')
             cls._fire('scan.status', {'id': scan_id,
                                       'status': record['status'],
                                       'counts': record.get('counts')})
-            cls._announce(record)
+            # A scan stopped on the way to being deleted is not announced:
+            # the feed item's "Open scan" link would 404 a moment later.
+            if not record.get('quiet'):
+                cls._announce(record)
         return record
 
     @staticmethod
-    def _failure_detail(backend, handle):
-        """Why a scan died before producing anything, in the user's words.
+    def _explain(record, backend, handle):
+        """`(reason for the user, evidence for the server log, cause)`.
 
-        The scanner's own console output is the only thing that knows, and it
-        is written for a person — a missing credential, an unreachable model.
-        Redacted, because a provider's error can quote the key back.
+        The backend is the only thing that knows its scanner's output, exit
+        status and stated reasons, so it is asked. When it cannot say, the
+        reason says the reason is unknown — never an empty gap, which is what
+        a scan that "failed with no reason" looked like. Both text halves are
+        redacted: a provider's error can quote the key back.
         """
-        tail = ''
         try:
-            tail = backend.tail_log(handle)
-        except Exception:
-            pass
-        tail = redact_secrets(tail).strip()
-        if not tail:
-            return ('The scan stopped before it checked anything, and left no '
-                    'explanation.')
-        lines = [ln for ln in tail.splitlines() if ln.strip()][-6:]
-        return '\n'.join(lines)
+            reason, evidence, cause = backend.explain_end(handle)
+        except Exception:           # a reason is never worth a lost status
+            reason, cause = '', ''
+            evidence = f'explain_end raised:\n{traceback.format_exc()}'
+        reason = redact_secrets(reason).strip() or fallback_reason(record)
+        return (reason, redact_secrets(evidence) or 'no further detail',
+                cause if cause in _CAUSE_REASONS else '')
+
+    @classmethod
+    def _log(cls, message):
+        print(f'[scan] {message}', file=sys.stderr, flush=True)
+
+    @classmethod
+    def _log_end(cls, record, evidence):
+        """One server-log entry for a scan that ended badly, with everything
+        needed to debug it later — the UI carries only the plain reason."""
+        usage = record.get('usage') or {}
+        took = (record.get('ended_at') or time.time()) - (
+            record.get('started_at') or time.time())
+        target = record.get('target') or {}
+        lines = [
+            f'{record.get("id")} ended {record.get("status")} after '
+            f'{int(took)}s on port {target.get("port")}, model '
+            f'{record.get("model")}, spent ${usage.get("cost_usd") or 0:.4f} '
+            f'over {usage.get("requests") or 0} request(s)',
+            f'reason shown: {record.get("error")}',
+        ]
+        lines.extend(evidence.splitlines())
+        cls._log(f'\n[scan]   '.join(lines))
 
     @classmethod
     def _announce(cls, record):
@@ -810,12 +1115,24 @@ class ScansManager:
         needs_attention = bool(total) or record.get('status') == 'failed'
         target = (record.get('target') or {})
         where = target.get('name') or f"port {target.get('port')}"
-        title = (f'Security scan of {where}: {total} to look at'
-                 if total else f'Security scan of {where} finished')
+        if total:
+            title = f'Security scan of {where}: {total} to look at'
+        elif record.get('status') == 'failed':
+            title = f'Security scan of {where} could not finish'
+        else:
+            title = f'Security scan of {where} finished'
+        body = result_summary(record)
+        if record.get('error'):
+            body += f'\n\n{record["error"]}'
+        # The report outlives the page and the notification, so say where it
+        # is kept: the path is the backend's own label, passed through as is.
+        location = (record.get('report') or {}).get('location')
+        if location:
+            body += f"\n\nThe scanner's report is saved at `{location}`."
         try:
             cls._emit_feed(
                 'activity', title,
-                body_md=result_summary(record),
+                body_md=body,
                 source='scan',
                 links=[{'label': 'Open scan', 'ref': f'scan:{record["id"]}'}],
                 waiting=needs_attention,
@@ -841,23 +1158,46 @@ class ScansManager:
             return None
         if is_terminal(record.get('status')):
             return record
-        try:
-            cls.backend().stop(record.get('handle'))
-        except Exception as e:
-            print(f'[scan] {scan_id} stop failed: {e}', file=sys.stderr)
 
-        def mutate(rec):
+        # Marked BEFORE the scanner is signalled. It takes up to its grace
+        # period to exit, and the poller reads the record every few seconds
+        # meanwhile; without the mark, the poller found the process gone (or
+        # the scanner's own "interrupted", which it writes for any signal)
+        # and settled the scan as a crash before this call could say it was
+        # the user's.
+        def request(rec):
             if rec.get('status') != 'running':
                 return False
-            rec['status'] = 'stopped'
-            rec['ended_at'] = time.time()
+            rec['stop_requested_at'] = time.time()
+            if not announce:
+                rec['quiet'] = True
             return None
 
-        record, wrote = cls._record(scan_id).update(mutate)
-        if wrote:
-            cls._fire('scan.status', {'id': scan_id, 'status': 'stopped'})
-            if announce:
-                cls._announce(record)
+        record, wrote = cls._record(scan_id).update(request)
+        if not wrote:
+            return record or None    # it ended on its own meanwhile
+        cls._log(f'{scan_id} stop requested by the user')
+
+        backend = cls.backend()
+        handle = record.get('handle')
+        try:
+            backend.stop(handle)
+        except Exception:
+            cls._log(f'{scan_id} stop failed:\n{traceback.format_exc()}')
+        if backend.is_alive(handle):
+            # Still settled below — the user's stop is not undone — but a
+            # scanner that outlived its kill keeps spending, so it is said
+            # loudly where whoever runs this workspace will look.
+            cls._log(f'{scan_id} is STILL RUNNING after its stop; it may '
+                     f'keep spending until it exits on its own')
+        # One last read, because the scanner saves its spend and findings on
+        # the way out. Settled as ended even if the signal failed: a scan the
+        # user stopped must not sit at `running` forever.
+        artifacts = cls._safe_artifacts(backend, handle)
+        record = cls._absorb(scan_id, artifacts, alive=False, backend=backend,
+                             handle=handle)
+        cls._log(f'{scan_id} stop complete: {(record or {}).get("status")} '
+                 f'({end_reason_of(record)})')
         return record
 
     @classmethod
@@ -939,15 +1279,22 @@ class ScansManager:
             def mutate(rec):
                 if rec.get('status') != 'running':
                     return False
+                rec['ended_at'] = time.time()
+                if rec.get('stop_requested_at'):
+                    # The restart landed mid-stop: the user's request stands.
+                    rec['status'] = 'stopped'
+                    return None
                 rec['status'] = 'interrupted'
                 rec['interrupted_reason'] = 'restart'
-                rec['ended_at'] = time.time()
                 rec['error'] = ('The workspace restarted while this scan was '
                                 'running, so it did not finish.')
                 return None
 
-            _, wrote = cls._record(name).update(mutate)
+            settled, wrote = cls._record(name).update(mutate)
             if wrote:
                 touched.append(name)
-                cls._fire('scan.status', {'id': name, 'status': 'interrupted'})
+                cls._log(f'{name} settled {settled["status"]} at boot: its '
+                         f'process did not survive the server restart')
+                cls._fire('scan.status', {'id': name,
+                                          'status': settled['status']})
         return touched

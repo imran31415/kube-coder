@@ -18,12 +18,15 @@ import {
   cancelScanSignIn,
   signOutScanSubscription,
   isLiveScan,
+  reportSavedText,
+  retryBody,
   type ConnectionView,
   type CreateScanBody,
   type ScanDetail,
   type ScanSummary,
   type ScanTarget,
 } from '../api/scans';
+import { navigate } from './router';
 import { pushToast } from './ui';
 
 /**
@@ -110,8 +113,15 @@ export async function loadScan(id: string, quiet = false): Promise<void> {
   try {
     const detail = await getScan(id);
     if (stale()) return;
+    const before = openScan.value;
     openScan.value = detail;
     openScanError.value = null;
+    // The scanner writes its report once, at the end. When that happens with
+    // the scan on screen, say so and where the file is kept; a scan opened
+    // after the fact shows the same in its report panel.
+    if (before?.id === detail.id && !before.report && detail.report) {
+      pushToast(reportSavedText(detail.report), { kind: 'success', ttl: 8000 });
+    }
   } catch (err) {
     if (stale()) return;
     if (!quiet) openScanError.value = describe(err);
@@ -291,6 +301,31 @@ export async function stop(id: string): Promise<void> {
   } catch (err) {
     pushToast(describe(err), { kind: 'danger', ttl: 6000 });
   }
+}
+
+/**
+ * Start the same scan again and open it.
+ *
+ * Goes through `startScan`, so a refusal — the app has stopped since, the
+ * model is still not connected — arrives as a toast carrying the server's
+ * own sentence, and the page stays where it is.
+ */
+export async function rerun(scan: ScanSummary): Promise<void> {
+  const id = await startScan(retryBody(scan));
+  if (id) navigate(`/security/${id}`);
+}
+
+/** Whether the model settings panel on /security is open. A signal so a
+ *  failed scan's "Model settings" button can open it from another page. */
+export const modelSettingsOpen = signal(false);
+/** One-shot: scroll the panel into view after arriving from that button,
+ *  and only then — not every time someone opens it by hand. */
+export const revealModelSettings = signal(false);
+
+export function openModelSettings(): void {
+  modelSettingsOpen.value = true;
+  revealModelSettings.value = true;
+  navigate('/security');
 }
 
 export async function remove(id: string): Promise<void> {

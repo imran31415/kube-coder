@@ -7,13 +7,14 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getScan, setFindingDisposition, stopScan } from '../api/client';
 import { Button, Card, ErrorBanner, Loading } from '../components/ui';
-import type { Finding, ScanDetail } from '../api/types';
+import type { Finding, ScanDetail, ScanReport } from '../api/types';
 import type { SecurityStackParams } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 import { usePolling } from '../util/usePolling';
 import {
   FINDING_FACTS,
   FINDING_SECTIONS,
+  emptyFindingsText,
   fieldText,
   isLiveScan,
   scanTitle,
@@ -71,6 +72,7 @@ export default function ScanDetailScreen() {
   const live = isLiveScan(scan);
   const findings = sortFindings(scan.findings ?? []);
   const dispositions = scan.dispositions ?? {};
+  const caveats = scan.caveats ?? [];
 
   async function stop() {
     setStopping(true);
@@ -106,6 +108,36 @@ export default function ScanDetailScreen() {
           {/* Never a bare count: a finished scan's sentence says what was
               actually done. While it runs, the badge already says so. */}
           {live ? null : <Text style={styles.summary}>{scan.summary}</Text>}
+          {/* Inline, not an ErrorBanner: the banner is for a request that
+              failed, and clips to two lines -- the reason is the answer. */}
+          {scan.error ? (
+            <View
+              style={[
+                styles.reason,
+                scan.status === 'failed' ? styles.reasonFailed : null,
+              ]}
+            >
+              <Text style={styles.reasonLabel}>Why it ended</Text>
+              <Text style={styles.reasonText}>{scan.error}</Text>
+            </View>
+          ) : null}
+          {/* The scanner's own account of what it never reached. Above the
+              problems list, because an empty list under this means "not
+              checked", not "clean". */}
+          {caveats.length ? (
+            <View style={styles.reason}>
+              <Text style={styles.reasonLabel}>Not all of the app was checked</Text>
+              {caveats.map((c) => (
+                <Text key={c} style={styles.reasonText}>
+                  {'• '}
+                  {c}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+          {scan.budget_note ? (
+            <Text style={styles.budgetNote}>{scan.budget_note}</Text>
+          ) : null}
           {live ? (
             <Button
               title={stopping ? 'Stopping…' : 'Stop scan'}
@@ -116,18 +148,12 @@ export default function ScanDetailScreen() {
           ) : null}
         </Card>
 
-        {scan.error ? <ErrorBanner message={scan.error} /> : null}
-
         <Text style={styles.sectionTitle}>
           Problems found{scan.counts?.total ? ` (${scan.counts.total})` : ''}
         </Text>
 
         {findings.length === 0 ? (
-          <Text style={styles.empty}>
-            {live
-              ? 'Nothing found yet. A problem shows up here the moment the scanner proves it is real.'
-              : 'No problems were recorded for this scan.'}
-          </Text>
+          <Text style={styles.empty}>{emptyFindingsText(scan)}</Text>
         ) : (
           findings.map((f) => (
             <FindingCard
@@ -139,8 +165,52 @@ export default function ScanDetailScreen() {
             />
           ))
         )}
+
+        {scan.report ? <ReportCard report={scan.report} /> : null}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * The scanner's write-up — the result the scan was run for.
+ *
+ * Collapsed to begin with: a report runs to several screens, and a phone
+ * that opens on it buries the problems list above. Shown as the scanner
+ * wrote it, headings and all, rather than reformatted into something it did
+ * not say. The file is named underneath because it is saved on the workspace
+ * and outlives this screen.
+ */
+function ReportCard({ report }: { report: ScanReport }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Card style={styles.report}>
+      <TouchableOpacity
+        style={styles.reportHead}
+        onPress={() => setOpen(!open)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+      >
+        <Text style={styles.reportTitle}>What the scanner reported</Text>
+        <Ionicons
+          name={open ? 'chevron-up' : 'chevron-down'}
+          size={18}
+          color={colors.textMuted}
+        />
+      </TouchableOpacity>
+      {open ? (
+        <>
+          <Text style={styles.reportBody} selectable>
+            {report.text}
+          </Text>
+          {report.location ? (
+            <Text style={styles.reportFile} selectable>
+              Saved in this workspace as {report.location}
+            </Text>
+          ) : null}
+        </>
+      ) : null}
+    </Card>
   );
 }
 
@@ -255,6 +325,27 @@ const styles = StyleSheet.create({
   liveText: { color: colors.info, fontSize: font.size.xs, fontWeight: '600' },
   status: { color: colors.textMuted, fontSize: font.size.xs },
   summary: { color: colors.text, fontSize: font.size.sm, lineHeight: 20 },
+  reason: {
+    gap: 2,
+    paddingLeft: space.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.warning,
+  },
+  reasonFailed: { borderLeftColor: colors.danger },
+  reasonLabel: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+  reasonText: { color: colors.text, fontSize: font.size.sm, lineHeight: 20 },
+  budgetNote: { color: colors.textMuted, fontSize: font.size.xs, lineHeight: 18 },
+  report: { gap: space.sm, marginTop: space.sm },
+  reportHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    // 44pt so the expand target is comfortable.
+    minHeight: 44,
+  },
+  reportTitle: { flex: 1, color: colors.text, fontSize: font.size.md, fontWeight: '700' },
+  reportBody: { color: colors.text, fontSize: font.size.sm, lineHeight: 21 },
+  reportFile: { color: colors.textMuted, fontSize: font.size.xs, lineHeight: 18 },
   sectionTitle: {
     color: colors.text,
     fontSize: font.size.md,

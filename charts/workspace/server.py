@@ -13431,6 +13431,150 @@ class AppsManager:
                                    stop_at=stop_at)
         return names.get(inode, '')
 
+    # --- naming an app that runs in a container ---
+    #
+    # A container's published port is held by the container runtime's own
+    # proxy, which runs in the runtime's container where this server cannot
+    # see it, so the /proc walk above finds no owner: `docker run -p
+    # 3000:3000 bkimminich/juice-shop` stayed "Port 3000" on every page. The
+    # runtime knows which container publishes which port, so it is asked.
+
+    #: Docker's own name for a container started without `--name` —
+    #: adjective_surname, sometimes with a digit. It names nothing, so the
+    #: image is used instead.
+    _GENERATED_CONTAINER_NAME_RE = re.compile(r'^[a-z]+_[a-z]+\d?$')
+    #: An image given by id rather than by name.
+    _IMAGE_ID_RE = re.compile(r'^(sha256:)?[0-9a-f]{12,64}$')
+    #: `0.0.0.0:3000->3000/tcp`, `[::]:8000-8001->8000-8001/tcp`. A port
+    #: that is only exposed (`3000/tcp`) is not reachable, so it never
+    #: matches.
+    _PUBLISHED_PORT_RE = re.compile(r':(\d+)(?:-(\d+))?->')
+    #: A published range wider than this is a runtime's port pool, not an app.
+    _PORT_RANGE_MAX = 64
+    _CONTAINER_LOOKUP_TIMEOUT = 3
+    #: How long to stop asking after the runtime failed to answer in time.
+    #: The Apps list and the scan form both ask on every load, so a runtime
+    #: that hangs would otherwise make each of them wait the full timeout.
+    _CONTAINER_LOOKUP_BACKOFF = 30
+
+    #: inode → container name, for the same reason and with the same rule as
+    #: `_detected_names`: a socket's inode never changes hands.
+    _container_names = {}
+    #: monotonic time before which the runtime is not asked again.
+    _container_lookup_paused_until = 0.0
+    #: The failure last written to the server log, so a runtime that stays
+    #: down is logged once rather than on every page load.
+    _container_lookup_error = ''
+
+    @classmethod
+    def container_label(cls, names, image):
+        """The name to show for one container, or ''.
+
+        Its own name when someone chose it, else its image's — `juice-shop`
+        for `bkimminich/juice-shop:latest` — and never an id.
+        """
+        name = (names or '').split(',')[0].strip().lstrip('/')
+        if (name and not cls._GENERATED_CONTAINER_NAME_RE.match(name)
+                and cls._NAME_RE.match(name)):
+            return name
+        ref = (image or '').split('@', 1)[0].strip()
+        if cls._IMAGE_ID_RE.match(ref):
+            return ''
+        repo = ref.rsplit('/', 1)[-1].split(':', 1)[0]
+        if repo and not cls._IMAGE_ID_RE.match(repo) and cls._NAME_RE.match(repo):
+            return repo
+        return ''
+
+    @classmethod
+    def parse_container_ports(cls, ps_output):
+        """`{host port: name}` from `docker ps` in the format `_ps_containers`
+        asks for — one container per line, name, image and ports by tab."""
+        out = {}
+        for line in (ps_output or '').splitlines():
+            parts = line.split('\t')
+            if len(parts) != 3:
+                continue
+            label = cls.container_label(parts[0], parts[1])
+            if not label:
+                continue
+            for match in cls._PUBLISHED_PORT_RE.finditer(parts[2]):
+                first = int(match.group(1))
+                last = int(match.group(2) or first)
+                if last < first or last - first > cls._PORT_RANGE_MAX:
+                    last = first
+                for port in range(first, last + 1):
+                    out.setdefault(port, label)
+        return out
+
+    @classmethod
+    def _ps_containers(cls):
+        """`docker ps` output, '' when there is no runtime or it refused, or
+        None when it did not answer in time — the one outcome worth asking
+        again, after a pause so a hung runtime cannot slow every page."""
+        if not shutil.which('docker'):
+            return ''
+        if time.monotonic() < cls._container_lookup_paused_until:
+            return None
+        try:
+            r = subprocess.run(
+                ['docker', 'ps', '--format',
+                 '{{.Names}}\t{{.Image}}\t{{.Ports}}'],
+                capture_output=True, text=True,
+                timeout=cls._CONTAINER_LOOKUP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            cls._container_lookup_paused_until = (
+                time.monotonic() + cls._CONTAINER_LOOKUP_BACKOFF)
+            cls._note_container_lookup(
+                f'docker ps gave no answer in {cls._CONTAINER_LOOKUP_TIMEOUT}s;'
+                f' not asking again for {cls._CONTAINER_LOOKUP_BACKOFF}s')
+            return None
+        except (OSError, subprocess.SubprocessError) as e:
+            cls._note_container_lookup(f'docker ps could not run: {e}')
+            return ''
+        if r.returncode != 0:
+            why = (r.stderr or '').strip()[:300] or f'exit code {r.returncode}'
+            cls._note_container_lookup(f'docker ps failed: {why}')
+            return ''
+        cls._note_container_lookup('')
+        return r.stdout
+
+    @classmethod
+    def _note_container_lookup(cls, error):
+        """Log a container-lookup failure once per distinct message, and the
+        recovery after one. Apps then show their port, never an error."""
+        if error == cls._container_lookup_error:
+            return
+        if error:
+            print(f'[apps] {error}', file=sys.stderr, flush=True)
+        else:
+            print('[apps] docker ps is answering again', file=sys.stderr,
+                  flush=True)
+        cls._container_lookup_error = error
+
+    @classmethod
+    def container_names(cls, port_inodes):
+        """`{port: name}` for the ports in `{port: inode}` that a container
+        publishes. One `docker ps` for the lot, and only for sockets not
+        asked about before. Never raises."""
+        out = {}
+        unknown = {}
+        for port, inode in port_inodes.items():
+            if inode and inode in cls._container_names:
+                out[port] = cls._container_names[inode]
+            else:
+                unknown[port] = inode
+        if not unknown:
+            return out
+        listing = cls._ps_containers()
+        published = cls.parse_container_ports(listing or '')
+        for port, inode in unknown.items():
+            out[port] = published.get(port, '')
+            if inode and listing is not None:
+                if len(cls._container_names) >= cls._DETECTED_NAMES_MAX:
+                    cls._container_names.clear()
+                cls._container_names[inode] = out[port]
+        return out
+
     # --- pin persistence ---
 
     @staticmethod
@@ -13554,15 +13698,21 @@ class AppsManager:
             })
         # A pin's name is the user's choice and always wins; an unpinned app
         # gets the name its own project gives it, all of them resolved in one
-        # pass over /proc rather than one per port.
+        # pass over /proc rather than one per port. What /proc cannot name —
+        # an app in a container — the container runtime is asked about.
         discovered = [p for p in sorted(listeners.keys())
                       if p not in seen and p not in cls.INTERNAL_PORTS]
         names = cls.detected_names(
             [listeners[p].get('inode') for p in discovered])
+        names = {p: names.get(listeners[p].get('inode'), '') for p in discovered}
+        unnamed = {p: listeners[p].get('inode') for p in discovered
+                   if not names[p]}
+        if unnamed:
+            names.update(cls.container_names(unnamed))
         for port in discovered:
             rows.append({
                 'port': port,
-                'name': names.get(listeners[port].get('inode'), ''),
+                'name': names.get(port, ''),
                 'pinned': False, 'status': 'running',
                 'strip_prefix': False,
                 'addr': listeners[port].get('addr', ''),
@@ -16776,7 +16926,8 @@ if __name__ == "__main__":
             scans.ScansManager.configure(
                 backend_factory=lambda: scan_backends.LocalStrixBackend(
                     executable=strix_connection.executable_path(),
-                    redactor=strix_connection.redact_known_secrets),
+                    redactor=strix_connection.redact_known_secrets,
+                    explainer=strix_connection.provider_error_hint),
                 publish=EventBroker.publish,
                 emit_feed=FeedManager.emit,
                 targets_provider=lambda: scans.scannable_targets(
