@@ -12,7 +12,11 @@
  * SSE is intentionally not used: EventSource can't send an Authorization
  * header, so screens poll getTaskOutput()/listTasks() on an interval — the
  * same fallback the dashboard SPA uses when the event stream is unavailable.
+ * The desktop app (#833) is the exception: its Rust core holds the stream with
+ * the header and forwards events (src/store/liveEvents.ts), and every request
+ * goes through that core rather than `fetch` (./transport).
  */
+import { invoke, isDesktop } from '../desktop/bridge';
 import { getConfig } from '../store/config';
 import { reportAwake, reportDown } from '../store/workspaceState';
 import { validateHost } from '../util/urlPolicy';
@@ -110,6 +114,7 @@ import type {
   ScanMode,
   ScanConnection,
 } from './types';
+import { desktopFetch, type ResponseLike, type WorkspaceInit } from './transport';
 
 export class ApiError extends Error {
   status: number;
@@ -153,6 +158,12 @@ function buildUrl(host: string, path: string, query?: ReqOpts['query']): string 
 // recover on the next tick, and one-shot actions surface a real error.
 const REQUEST_TIMEOUT_MS = 15000;
 
+/** `fetch` for a workspace URL — or, in the desktop app, the desktop core,
+ *  which holds the real token and refuses any other host (./transport). */
+const workspaceFetch: (url: string, init: WorkspaceInit) => Promise<ResponseLike> = isDesktop()
+  ? desktopFetch(invoke, () => getConfig().host)
+  : (url, init) => fetch(url, init as RequestInit);
+
 async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   const { host, token } = getConfig();
   if (!host || !token) throw new ApiError('Not configured', 0);
@@ -164,9 +175,9 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   const url = buildUrl(host, path, opts.query);
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
+  let res: ResponseLike;
   try {
-    res = await fetch(url, {
+    res = await workspaceFetch(url, {
       method: opts.method ?? 'GET',
       headers: {
         Accept: 'application/json',
@@ -501,9 +512,9 @@ export async function uploadTaskImage(
   const url = buildUrl(host, '/api/files/upload');
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS * 2);
-  let res: Response;
+  let res: ResponseLike;
   try {
-    res = await fetch(url, {
+    res = await workspaceFetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -995,9 +1006,9 @@ export async function transcribeAudio(uri: string, mimeType = 'audio/m4a'): Prom
   // Transcription rides an upload + a provider round-trip — give it the same
   // doubled budget as file uploads.
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS * 2);
-  let res: Response;
+  let res: ResponseLike;
   try {
-    res = await fetch(url, {
+    res = await workspaceFetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,

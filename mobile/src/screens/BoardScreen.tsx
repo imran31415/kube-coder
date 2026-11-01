@@ -265,7 +265,7 @@ export default function BoardScreen() {
     }
   }, [boardId, boards, send]);
 
-  usePolling(load, 15000);
+  usePolling(load, 15000, ['boards.', 'feed.']);
   // Waking up flushes decisions queued while asleep: load() drains first.
   useOnAwake(load);
 

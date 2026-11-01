@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The bundled UI, and only the bundled UI. No shell, no filesystem, no HTTP plugin: every workspace request goes through kc_request, which the core scopes to the connected host. Embedded workspace apps open in other windows that no capability names, so they get no IPC.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-kc-item-get",
+    "allow-kc-item-set",
+    "allow-kc-item-remove",
+    "allow-kc-secret-get",
+    "allow-kc-secret-set",
+    "allow-kc-secret-delete",
+    "allow-kc-request",
+    "allow-kc-live-status",
+    "allow-kc-live-kick",
+    "allow-kc-take-targets",
+    "allow-kc-open-embed"
+  ]
+}

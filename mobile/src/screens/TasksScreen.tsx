@@ -55,7 +55,7 @@ export default function TasksScreen() {
     }
   }, []);
 
-  usePolling(load, 4000);
+  usePolling(load, 4000, ['task.']);
   useOnAwake(load);
 
   const onRefresh = async () => {

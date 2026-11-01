@@ -37,7 +37,8 @@ import DocsArticleScreen from './src/screens/DocsArticleScreen';
 import MetricsScreen from './src/screens/MetricsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ControllerScreen from './src/screens/ControllerScreen';
-import { NavDrawer } from './src/components/NavDrawer';
+import { NavDrawer, NavSidebar } from './src/components/NavDrawer';
+import { useWideLayout } from './src/components/WideLayout';
 import { WakeBanner } from './src/components/WakeBanner';
 import { MenuButton } from './src/components/ui';
 import type {
@@ -54,6 +55,7 @@ import {
   replayParkedNotificationTap,
 } from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
+import { initDesktop } from './src/desktop/desktopApp';
 import { colors, font } from './src/theme';
 
 const navTheme = {
@@ -154,42 +156,51 @@ function MainTabs() {
   // navigation from the NavDrawer overlay. Desktop is first so it's the home.
   // The Controller screen is only registered once a controller connection
   // exists — with none, the app is unchanged.
+  //
+  // A desktop-width window in the desktop app (#833) shows the drawer's panel
+  // as a permanent sidebar instead. The navigator keeps the same place in the
+  // tree either way (the pane), so resizing across the breakpoint keeps its
+  // state rather than remounting every screen.
   const showController = hasController(useConfig());
+  const wide = useWideLayout();
   return (
-    <View style={styles.tabsHost}>
-      <Tab.Navigator
-        tabBar={() => null}
-        backBehavior="history"
-        screenOptions={{ headerShown: false }}
-        screenListeners={{
-          state: (e) => {
-            const st = e.data?.state as { index?: number; routeNames?: string[] } | undefined;
-            if (st && typeof st.index === 'number' && st.routeNames) {
-              setActiveTab(st.routeNames[st.index]);
-            }
-          },
-        }}
-      >
-        <Tab.Screen name="Desktop" component={DesktopScreen} />
-        <Tab.Screen name="Hypervisor" component={HypervisorScreen} />
-        <Tab.Screen name="Walkie" component={WalkieScreen} />
-        <Tab.Screen name="MissionControl" component={MissionControlScreen} />
-        <Tab.Screen name="Feed" component={FeedScreen} />
-        <Tab.Screen name="Board" component={BoardScreen} />
-        <Tab.Screen name="Tasks" component={TasksStack} />
-        <Tab.Screen name="Security" component={SecurityStack} />
-        <Tab.Screen name="Apps" component={AppsStack} />
-        <Tab.Screen name="Memory" component={MemoryScreen} />
-        <Tab.Screen name="Files" component={FilesScreen} />
-        <Tab.Screen name="Skills" component={SkillsScreen} />
-        <Tab.Screen name="Triggers" component={TriggersScreen} />
-        <Tab.Screen name="Docs" component={DocsStack} />
-        <Tab.Screen name="Metrics" component={MetricsScreen} />
-        {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
-        <Tab.Screen name="Settings" component={SettingsScreen} />
-      </Tab.Navigator>
-      <WakeBanner />
-      <NavDrawer />
+    <View style={wide ? styles.wideHost : styles.tabsHost}>
+      {wide ? <NavSidebar /> : null}
+      <View style={styles.pane}>
+        <Tab.Navigator
+          tabBar={() => null}
+          backBehavior="history"
+          screenOptions={{ headerShown: false }}
+          screenListeners={{
+            state: (e) => {
+              const st = e.data?.state as { index?: number; routeNames?: string[] } | undefined;
+              if (st && typeof st.index === 'number' && st.routeNames) {
+                setActiveTab(st.routeNames[st.index]);
+              }
+            },
+          }}
+        >
+          <Tab.Screen name="Desktop" component={DesktopScreen} />
+          <Tab.Screen name="Hypervisor" component={HypervisorScreen} />
+          <Tab.Screen name="Walkie" component={WalkieScreen} />
+          <Tab.Screen name="MissionControl" component={MissionControlScreen} />
+          <Tab.Screen name="Feed" component={FeedScreen} />
+          <Tab.Screen name="Board" component={BoardScreen} />
+          <Tab.Screen name="Tasks" component={TasksStack} />
+          <Tab.Screen name="Security" component={SecurityStack} />
+          <Tab.Screen name="Apps" component={AppsStack} />
+          <Tab.Screen name="Memory" component={MemoryScreen} />
+          <Tab.Screen name="Files" component={FilesScreen} />
+          <Tab.Screen name="Skills" component={SkillsScreen} />
+          <Tab.Screen name="Triggers" component={TriggersScreen} />
+          <Tab.Screen name="Docs" component={DocsStack} />
+          <Tab.Screen name="Metrics" component={MetricsScreen} />
+          {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
+          <Tab.Screen name="Settings" component={SettingsScreen} />
+        </Tab.Navigator>
+        <WakeBanner />
+      </View>
+      {wide ? null : <NavDrawer />}
     </View>
   );
 }
@@ -212,10 +223,16 @@ export default function App() {
     // the tap that launched the app, then register once the saved connection
     // is hydrated (registerForPush no-ops until host+token are present).
     const detach = initPush();
+    // The desktop app's live events, deep links and notification clicks
+    // (#833). A no-op on the phone and in a browser.
+    const detachDesktop = initDesktop();
     hydrate().then(() => {
       void registerForPush();
     });
-    return detach;
+    return () => {
+      detach();
+      detachDesktop();
+    };
   }, []);
   return (
     <SafeAreaProvider>
@@ -235,6 +252,8 @@ export default function App() {
 
 const styles = StyleSheet.create({
   tabsHost: { flex: 1 },
+  wideHost: { flex: 1, flexDirection: 'row' },
+  pane: { flex: 1 },
   boot: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
   bootText: { color: colors.text, fontSize: font.size.xl, fontWeight: '800' },
 });

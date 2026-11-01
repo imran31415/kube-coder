@@ -14,6 +14,7 @@ import {
 import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { statusLabel } from '../util/format';
 import { openDrawer } from '../store/nav';
+import { useWideLayout } from './WideLayout';
 
 export function Card({
   children,
@@ -132,6 +133,9 @@ export function Button({
 /** Round ☰ button that opens the nav drawer. Shown at the start of every
  *  top-level screen header (the app navigates via the drawer, not a tab bar). */
 export function MenuButton() {
+  // The desktop app's wide layout (#833) shows the menu as a sidebar, so
+  // there is nothing to open.
+  if (useWideLayout()) return null;
   return (
     <Pressable
       onPress={openDrawer}

@@ -32,6 +32,7 @@ import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 
 import { markFeedRead, registerPushToken, unregisterPushToken } from '../api/client';
+import { isDesktop } from '../desktop/bridge';
 import { getConfig, setPushEnabled, subscribe } from '../store/config';
 import { navigateTo, navigationRef } from '../store/nav';
 import { requestBoardFocus } from '../store/boardFocus';
@@ -78,6 +79,9 @@ function projectId(): string | undefined {
 export async function registerForPush(): Promise<void> {
   try {
     if (!Device.isDevice) return; // push isn't delivered to simulators/emulators
+    // The desktop app (#833) raises its own notifications from the Feed; it
+    // has no Expo push token and must not prompt for web push permission.
+    if (isDesktop()) return;
     const { host, token, pushEnabled } = getConfig();
     if (!host || !token) return; // not connected yet — register after onboarding
     if (!pushEnabled) return; // switched off: don't even ask for permission
